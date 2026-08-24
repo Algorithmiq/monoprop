@@ -37,20 +37,13 @@
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/core/Monomial.h"
 
+#include "InlineWidths.h"
+
 using monoprop::Bitset;
 using monoprop::detail::WordKernel;
+using test_utils::for_each_inline_width;
 
 namespace {
-
-// W distinct compile-time widths, run through one generic body. Plus one, because W == 0 is not a
-// width the kernel accepts.
-template <size_t... Ws>
-auto for_each_width(std::index_sequence<Ws...>, auto &&body) -> void {
-    (body(std::integral_constant<size_t, Ws + 1>{}), ...);
-}
-auto for_each_inline_width(auto &&body) -> void {
-    for_each_width(std::make_index_sequence<Bitset::kInlineWords>{}, body);
-}
 
 // A bitset of exactly W words with the given words written straight in. Going through data() rather
 // than set() because these tests are about the words: a pattern like "every odd bit of word 3" is a
@@ -168,18 +161,22 @@ BOOST_AUTO_TEST_CASE(word_kernel_parity_and_matches_bitset) {
 
 // The cutoff's fully-paired clause. The oracle is cutoff_sums' xor_sum over the whole register, which
 // is the only window the kernel is allowed to answer for (a narrower one keeps going through the
-// evaluator -- see DenseTermProductsW).
+// evaluator -- see DenseTermProductsW). The kernel carries the even-bit pattern as a literal, so the
+// mask built here is also the check that the literal is what even_bits<LSb0> would have produced.
 BOOST_AUTO_TEST_CASE(word_kernel_fully_paired_matches_cutoff_sums) {
     std::mt19937_64 rng(5150U);
     for_each_inline_width([&]<size_t W>(std::integral_constant<size_t, W>) {
         const size_t num_bits = W * Bitset::word_width;
         const Bitset mask = monoprop::even_bits<monoprop::LSb0>(num_bits);
+        for (size_t w = 0; w < W; ++w) {
+            BOOST_TEST(mask.word(w) == 0x5555555555555555ULL);
+        }
         size_t paired = 0;
         size_t unpaired = 0;
         for (const auto &words : interesting_words<W>(rng)) {
             const Bitset bs = from_words<W>(words);
             const bool expected = monoprop::cutoff_sums(bs, num_bits / 2).xor_sum == 0;
-            BOOST_TEST(WordKernel<W>::fully_paired(bs.data(), mask.data()) == expected);
+            BOOST_TEST(WordKernel<W>::fully_paired(bs.data()) == expected);
             paired += expected ? 1 : 0;
             unpaired += expected ? 0 : 1;
         }

@@ -53,6 +53,45 @@ template <typename F>
     }
 }
 
+// The two popcounts a fused XOR reports, without its result. Nested in Bitset as FusedCounts, and
+// named here because the word pass that produces them is declared before the class.
+struct FusedWordCounts {
+    size_t overlap;      // popcount(a & b)
+    size_t result_count; // popcount(a ^ b)
+};
+
+// The word passes shared by Bitset's own inline arms and by the per-gate WordKernel below. They live
+// here, ahead of both, so each is defined once: Bitset reaches them through with_nwords and the kernel
+// through its bound W, and the two must not be able to drift -- one of them decides emitted term signs
+// and the other feeds a cutoff.
+//
+// W is the exact word count of every operand. Correct at W == 0 (an empty fold), which is the arm
+// with_nwords hands a zero-width bitset.
+template <size_t W>
+[[gnu::always_inline]] inline auto fused_xor_words(const uint64_t *a, const uint64_t *b, uint64_t *out) noexcept
+    -> FusedWordCounts {
+    size_t overlap = 0;
+    size_t result_count = 0;
+    for (size_t i = 0; i < W; ++i) {
+        const uint64_t n = a[i] ^ b[i];
+        out[i] = n;
+        overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
+        result_count += static_cast<size_t>(std::popcount(n));
+    }
+    return {overlap, result_count};
+}
+
+// XOR-fold of a & b into one word. Folding first and popcounting once is what makes the caller's
+// parity that of the whole AND rather than of any per-word rounding.
+template <size_t W>
+[[gnu::always_inline]] inline auto and_fold_words(const uint64_t *a, const uint64_t *b) noexcept -> uint64_t {
+    uint64_t folded = 0;
+    for (size_t i = 0; i < W; ++i) {
+        folded ^= a[i] & b[i];
+    }
+    return folded;
+}
+
 } // namespace monoprop::detail
 
 namespace monoprop {
@@ -91,8 +130,7 @@ private:
     //
     // Deliberately *not* initializing: a value-initialized inline_ zero-fills all kInlineWords words,
     // and since a default member initializer also runs before a copy constructor's body, every copy
-    // paid that fill before overwriting it. Storage is left indeterminate and each constructor writes
-    // exactly the words it owns -- see the indeterminate-tail invariant below.
+    // paid that fill before overwriting it. Each constructor writes exactly the words it owns.
     union Storage {
         std::array<word_type, kInlineWords> inline_;
         word_type *heap_;
@@ -150,7 +188,7 @@ private:
 public:
     Bitset() noexcept = default;
 
-    // num_bits: the logical width. Words [0, nwords_) are zeroed; the inline tail is not (invariant above).
+    // num_bits: the logical width, zeroed.
     explicit Bitset(size_t num_bits) noexcept
         : nwords_(static_cast<uint32_t>((num_bits + word_width - 1) / word_width)),
           top_bits_(static_cast<uint32_t>(num_bits % word_width)) {
@@ -181,9 +219,9 @@ public:
         }
     }
 
-    // Steals the pointer in the spilled case and copies the live words otherwise -- not the union's whole
-    // object representation, which would move kInlineWords words at every width. Zeroing the source's
-    // nwords_ makes it inline-empty, so its destructor frees nothing.
+    // Steals the pointer in the spilled case and copies the live words otherwise, not the union's whole
+    // object representation. Zeroing the source's nwords_ makes it inline-empty, so its destructor
+    // frees nothing.
     Bitset(Bitset &&o) noexcept : nwords_(o.nwords_), top_bits_(o.top_bits_) {
         if (spilled()) {
             s_.heap_ = o.s_.heap_;
@@ -342,10 +380,7 @@ public:
         word_type parity_word = 0;
         if (nwords_ <= kInlineWords) {
             parity_word = detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                word_type p = 0;
-                for (size_t i = 0; i < W; ++i)
-                    p ^= a[i] & b[i];
-                return p;
+                return detail::and_fold_words<W>(a, b);
             });
         }
         else {
@@ -369,12 +404,9 @@ public:
     // is no longer a template instantiated as one unit, so the usual incomplete-type rule applies.
     struct FusedXor;
 
-    // The two popcounts fused_xor reports, without its result. Returned by value so the pass that
-    // computes them can write the XOR straight into a caller-owned destination.
-    struct FusedCounts {
-        size_t overlap;      // popcount(*this & gen)
-        size_t result_count; // popcount(*this ^ gen)
-    };
+    // Returned by value so the pass that computes the two counts can write the XOR straight into a
+    // caller-owned destination.
+    using FusedCounts = detail::FusedWordCounts;
 
     // fused_xor's one word pass, writing the XOR into `out` instead of into a fresh Bitset. The hot
     // path wants this form: `out` is a scratch monomial that lives for the whole gate, so a term
@@ -607,25 +639,19 @@ inline auto Bitset::fused_xor_into(const Bitset &gen, Bitset &dst) const noexcep
     const word_type *a = data();
     const word_type *b = gen.data();
     word_type *out = dst.data();
-    size_t overlap = 0;
-    size_t result_count = 0;
     if (nwords_ <= kInlineWords) {
-        detail::with_nwords(nwords_, [&]<size_t W>(std::integral_constant<size_t, W>) {
-            for (size_t i = 0; i < W; ++i) {
-                const word_type n = a[i] ^ b[i];
-                out[i] = n;
-                overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
-                result_count += static_cast<size_t>(std::popcount(n));
-            }
+        return detail::with_nwords(nwords_, [a, b, out]<size_t W>(std::integral_constant<size_t, W>) {
+            return detail::fused_xor_words<W>(a, b, out);
         });
     }
-    else {
-        for (size_t i = 0; i < nwords_; ++i) {
-            const word_type n = a[i] ^ b[i];
-            out[i] = n;
-            overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
-            result_count += static_cast<size_t>(std::popcount(n));
-        }
+    // Spilled: no compile-time trip count to bind, so the plain loop.
+    size_t overlap = 0;
+    size_t result_count = 0;
+    for (size_t i = 0; i < nwords_; ++i) {
+        const word_type n = a[i] ^ b[i];
+        out[i] = n;
+        overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
+        result_count += static_cast<size_t>(std::popcount(n));
     }
     return {overlap, result_count};
 }
@@ -690,40 +716,33 @@ struct WordKernel {
         }
     }
 
-    // Bitset::fused_xor_into with W fixed. Same word order and same two counts.
+    // Bitset::fused_xor_into with W fixed -- the same pass, reached without the nwords_ load and
+    // storage-pointer select the method does per call.
     static auto fused_xor_into(const word_type *a, const word_type *b, word_type *out) noexcept -> Bitset::FusedCounts {
-        size_t overlap = 0;
-        size_t result_count = 0;
-        for (size_t i = 0; i < W; ++i) {
-            const word_type n = a[i] ^ b[i];
-            out[i] = n;
-            overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
-            result_count += static_cast<size_t>(std::popcount(n));
-        }
-        return {overlap, result_count};
+        return fused_xor_words<W>(a, b, out);
     }
 
-    // Bitset::parity_and with W fixed: fold first, then one popcount, so the parity is of the whole
-    // AND and not of any per-word rounding.
+    // Bitset::parity_and with W fixed, likewise.
     [[nodiscard]] static auto parity_and(const word_type *a, const word_type *b) noexcept -> bool {
-        word_type parity_word = 0;
-        for (size_t i = 0; i < W; ++i) {
-            parity_word ^= a[i] & b[i];
-        }
-        return (std::popcount(parity_word) & 1U) != 0;
+        return (std::popcount(and_fold_words<W>(a, b)) & 1U) != 0;
     }
 
     // xor_sum == 0 from cutoff_sums, i.e. "every occupied mode has both its Majoranas" -- the clause
     // that keeps a fully paired term whatever its length. Folded with OR and tested against zero
     // rather than summing popcounts: the caller only ever compares the sum to zero, and the two are
-    // equivalent because each per-word term is non-negative. `mask` is the even-bit pattern at this
-    // width; (word >> 1) & mask cannot cross a word because a mode's two bits are 2m and 2m+1.
-    [[nodiscard]] static auto fully_paired(const word_type *a, const word_type *mask) noexcept -> bool {
+    // equivalent because each per-word term is non-negative.
+    //
+    // The even-bit mask is the literal rather than an argument, which is what makes this W loads
+    // instead of 2W: a storage width is a whole number of words, so even_bits<LSb0> is this pattern in
+    // every one of them. Its top-word trim at a non-word-multiple width is unobservable here -- bits
+    // above the logical width are never set, so they pair with themselves either way.
+    // (word >> 1) & mask cannot cross a word because a mode's two bits are 2m and 2m+1.
+    [[nodiscard]] static auto fully_paired(const word_type *a) noexcept -> bool {
+        constexpr word_type kEven = 0x5555555555555555ULL;
         word_type unpaired = 0;
         for (size_t i = 0; i < W; ++i) {
             const word_type word = a[i];
-            const word_type m = mask[i];
-            unpaired |= (word & m) ^ ((word >> 1) & m);
+            unpaired |= (word & kEven) ^ ((word >> 1) & kEven);
         }
         return unpaired == 0;
     }

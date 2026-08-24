@@ -41,7 +41,7 @@ public:
 };
 
 // Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash index over
-// those rows. Row layout: slot 0 = popcount c (or the all-ones overflow marker if c > inline_width_),
+// those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_),
 // slots 1..c = ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay
 // stable, and so is the slot's width (see kNarrowPositions).
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
@@ -72,11 +72,14 @@ public:
     static constexpr size_t kNarrowPositions = static_cast<size_t>(std::numeric_limits<uint8_t>::max()) + 1;
     static constexpr size_t kMaxPositions = static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1;
 
-    // Asserted on the narrower of the two types, which covers both. The marker only ever occupies slot 0,
-    // whose value is a popcount bounded by inline_width_ <= kMaxInlinePositions, so it collides with no
-    // popcount at either width. A *position* slot may legitimately hold the marker value -- position 255
-    // under uint8_t -- and is never compared against it.
-    static_assert(kMaxInlinePositions < std::numeric_limits<uint8_t>::max(),
+    // The all-ones slot value, per row width. It only ever occupies slot 0, whose value is a popcount
+    // bounded by inline_width_ <= kMaxInlinePositions, so it collides with no popcount at either width
+    // -- asserted below on the narrower type, which covers both. A *position* slot may legitimately
+    // hold the marker value (position 255 under uint8_t) and is never compared against it.
+    template <typename P>
+    static constexpr P kOverflowMarker = std::numeric_limits<P>::max();
+
+    static_assert(kMaxInlinePositions < kOverflowMarker<uint8_t>,
                   "the overflow marker must not collide with a valid popcount at either row width");
 
     static constexpr size_t kIndexCeiling = RowHashTable::kIndexCeiling;
@@ -128,16 +131,18 @@ private:
         return narrow_ ? f(rows8_) : f(rows16_);
     }
 
-    // Row i's address, for the prefetch hint: the batch loop wants one branch, not a with_rows dispatch
-    // around a hint that discards its argument's type anyway.
+    // Row i's address, for the prefetch hint, which discards the element type anyway.
     [[nodiscard]] auto row_addr(size_t i) const noexcept -> const void * {
-        return narrow_ ? static_cast<const void *>(rows8_.data() + (i * stride_))
-                       : static_cast<const void *>(rows16_.data() + (i * stride_));
+        return with_rows([&](const auto &rows) -> const void * { return rows.data() + (i * stride_); });
     }
 
-    [[nodiscard]] auto row_bytes_capacity() const -> size_t {
-        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) { return rows.capacity() * sizeof(P); });
+    // The two row arrays differ only in element size, so everything that counts bytes rather than
+    // reading a slot is plain arithmetic off this and needs no type bound.
+    [[nodiscard]] auto slot_bytes() const noexcept -> size_t { return narrow_ ? sizeof(uint8_t) : sizeof(uint16_t); }
+    [[nodiscard]] auto row_slots_capacity() const -> size_t {
+        return with_rows([&](const auto &rows) { return rows.capacity(); });
     }
+    [[nodiscard]] auto row_bytes_capacity() const -> size_t { return row_slots_capacity() * slot_bytes(); }
 
 public:
     // Called only on an idle store, so it needs no synchronization.
@@ -169,7 +174,7 @@ public:
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
-        with_rows([&]<typename P>(DefaultInitVector<P> &rows) { rows.resize((base + n) * stride_); });
+        with_rows([&](auto &rows) { rows.resize((base + n) * stride_); });
         size_ = base + n;
         return base;
     }
@@ -183,7 +188,7 @@ public:
             const size_t c = mono.count();
             P *row = &rows[i * stride_];
             if (c > inline_width_) {
-                row[0] = std::numeric_limits<P>::max();
+                row[0] = kOverflowMarker<P>;
                 overflow_[i] = mono;
                 return;
             }
@@ -201,7 +206,7 @@ public:
     [[nodiscard]] auto row(size_t i) const -> value_type {
         return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) -> value_type {
             const P c = rows[i * stride_];
-            if (c == std::numeric_limits<P>::max()) {
+            if (c == kOverflowMarker<P>) {
                 return overflow_.at(i);
             }
             value_type mono(num_bits_);
@@ -216,7 +221,7 @@ public:
     auto for_each_position(size_t i, Fn &&fn) const -> void {
         with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
             const P c = rows[i * stride_];
-            if (c == std::numeric_limits<P>::max()) {
+            if (c == kOverflowMarker<P>) {
                 const auto &m = overflow_.at(i);
                 for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
                     fn(b);
@@ -231,7 +236,7 @@ public:
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
         return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) -> size_t {
-            if (const P c = rows[i * stride_]; c != std::numeric_limits<P>::max()) {
+            if (const P c = rows[i * stride_]; c != kOverflowMarker<P>) {
                 return static_cast<size_t>(c);
             }
             return overflow_.at(i).count();
@@ -286,9 +291,8 @@ public:
     }
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
-        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
-            return (rows.capacity() * sizeof(P)) - (std::min(rows.capacity(), size_ * stride_) * sizeof(P));
-        });
+        const size_t cap = row_slots_capacity();
+        return (cap - std::min(cap, size_ * stride_)) * slot_bytes();
     }
 
     auto index_estimated_memory_bytes() const -> size_t { return sizeof(OperatorIndex) + table_.slot_bytes(); }
@@ -302,11 +306,9 @@ private:
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
 
-    [[nodiscard]] auto capacity() const -> size_t {
-        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) { return rows.capacity() / stride_; });
-    }
+    [[nodiscard]] auto capacity() const -> size_t { return row_slots_capacity() / stride_; }
     auto reserve_rows(size_t n) -> void {
-        with_rows([&]<typename P>(DefaultInitVector<P> &rows) { rows.reserve(n * stride_); });
+        with_rows([&](auto &rows) { rows.reserve(n * stride_); });
     }
     auto reserve_index(size_t n) -> void { table_.reserve(n); }
 
@@ -315,7 +317,7 @@ private:
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
         return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
             const P c = rows[i * stride_];
-            if (c == std::numeric_limits<P>::max()) {
+            if (c == kOverflowMarker<P>) {
                 return overflow_.at(i) == q;
             }
             if (q.count() != static_cast<size_t>(c)) {

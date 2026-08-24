@@ -30,7 +30,6 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/Utilities.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/algebra/CodesAlgebra.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -122,10 +121,9 @@ private:
 // and to the same values -- what differs is that every word loop inside has a known trip count and
 // every operand's storage pointer is resolved once here instead of on each access.
 //
-// Why this is a separate class rather than a W parameter on DenseTermProducts: only the four hot
-// answers are worth specializing, the cold ones (record_words, product_row) are shared, and a fallback
-// is still needed for W outside the inline regime. Composing by holding a DenseTermProducts keeps one
-// definition of the cold half and makes the specialized half a strict override of it.
+// Why this is a separate class rather than a W parameter on DenseTermProducts: only the hot answers
+// are worth specializing, and a fallback is still needed for W outside the inline regime, where the
+// kernel's inline-operand precondition does not hold.
 //
 // The cutoff is specialized only for a length cutoff over the whole register. Both other cases -- a
 // support cutoff, or an active window narrower than the storage width -- keep going through the
@@ -137,20 +135,14 @@ template <Algebra A, size_t W>
 class DenseTermProductsW {
 public:
     DenseTermProductsW(const Bitset &gen, const CutoffEvaluator &cutoff_eval)
-        : inner_(gen, cutoff_eval),
-          ctx_(A::make_gen_context(gen)),
+        : ctx_(A::make_gen_context(gen)),
           cutoff_(&cutoff_eval),
           mono_(gen.size()),
           new_mono_(gen.size()),
-          even_mask_(monoprop::even_bits<LSb0>(gen.size())),
           gen_words_(A::generator(ctx_).data()),
           mono_words_(mono_.data()),
-          new_words_(new_mono_.data()),
-          mask_words_(even_mask_.data()) {
+          new_words_(new_mono_.data()) {
         assert(gen.num_words() == W && "the kernel's W must be the generator's word count");
-        // even_mask_ is held by value rather than taken from cached_even_bits: the cache is keyed by
-        // width on the thread, and one gate must not depend on nothing else having asked for another
-        // width.
         if (const auto *length = cutoff_eval.length_cutoff(); length != nullptr && length->masks.whole_register) {
             length_cutoff_ = length->cutoff;
         }
@@ -173,7 +165,7 @@ public:
             // Same two clauses as CutoffEvaluator::passes_with_popcount for a length cutoff, in the
             // same order: the popcount test proves keep without reading the monomial, and the paired
             // test is the xor_sum == 0 clause that rescues a fully paired term of any length.
-            return new_pop <= *length_cutoff_ || WordKernel<W>::fully_paired(new_words_, mask_words_);
+            return new_pop <= *length_cutoff_ || WordKernel<W>::fully_paired(new_words_);
         }
         return cutoff_->passes_with_popcount(new_mono_, new_pop);
     }
@@ -182,7 +174,7 @@ public:
     }
     auto push(QueryOut out, int phase) const -> void { query_push(out.records, new_mono_, phase); }
 
-    [[nodiscard]] auto record_words() const -> size_t { return inner_.record_words(); }
+    [[nodiscard]] auto record_words() const -> size_t { return query_words(W); }
     [[nodiscard]] auto product_row() const -> const Bitset & { return new_mono_; }
 
     // Whether passes() answers off the words or through the evaluator. Exists for the differential
@@ -191,18 +183,15 @@ public:
     [[nodiscard]] auto uses_word_cutoff() const -> bool { return length_cutoff_.has_value(); }
 
 private:
-    DenseTermProducts<A> inner_; // the cold half, and the shape this must agree with
     typename A::GenContext ctx_;
     const CutoffEvaluator *cutoff_;
     Bitset mono_;
     Bitset new_mono_;
-    Bitset even_mask_;
     // Resolved once, in the constructor's order: each is the data() of a member above, which does not
     // move for this object's lifetime because no member below is ever resized or reassigned.
     const uint64_t *gen_words_;
     uint64_t *mono_words_;
     uint64_t *new_words_;
-    const uint64_t *mask_words_;
     std::optional<unsigned int> length_cutoff_ = std::nullopt;
 };
 
@@ -366,17 +355,23 @@ private:
     bool dense_valid_ = false;
 };
 
-// Which kernel a store wants. Explicit specializations for the same reason QueryKeysFor has them: a
-// store must not know what the scan does with its rows, and an unhandled store must fail to compile
-// rather than pick a default.
-template <typename Store, Algebra A>
+// Which kernel a store wants at a given bound width. Explicit specializations for the same reason
+// QueryKeysFor has them: a store must not know what the scan does with its rows, and an unhandled
+// store must fail to compile rather than pick a default. W == 0 is the unspecialized arm, and it is
+// the only one the sparse store has -- a sparse row's per-term work is O(slots), not O(storage words),
+// so <SparseRowStore, A, W != 0> is deliberately left incomplete rather than silently dense.
+template <typename Store, Algebra A, size_t W = 0>
 struct TermProductsFor;
 template <Algebra A>
-struct TermProductsFor<OperatorIndex, A> {
+struct TermProductsFor<OperatorIndex, A, 0> {
     using type = DenseTermProducts<A>;
 };
+template <Algebra A, size_t W>
+struct TermProductsFor<OperatorIndex, A, W> {
+    using type = DenseTermProductsW<A, W>;
+};
 template <Algebra A>
-struct TermProductsFor<SparseRowStore, A> {
+struct TermProductsFor<SparseRowStore, A, 0> {
     using type = SparseTermProducts<A>;
 };
 
@@ -394,8 +389,7 @@ struct TermProductsFor<SparseRowStore, A> {
 //
 // Only W in [1, kNarrowKernelWords] is specialized. Above it the runtime loop is already at parity or
 // ahead: its trip count is amortized over more words, and one arm of code beats eight in the
-// instruction cache. The sparse store is never specialized -- its per-term work is O(slots), not
-// O(storage words), so there is no trip count for W to bind.
+// instruction cache.
 //
 // A build-time constant rather than a fixed 4, for the same reason monoprop_SPARSE_ROW_MIN_MODES is:
 // what it trades is .text against per-term instructions, and which side of that a build wants depends
@@ -411,51 +405,33 @@ inline constexpr size_t kNarrowKernelWords = monoprop_NARROW_KERNEL_MAX_WORDS;
 static_assert(kNarrowKernelWords <= Bitset::kInlineWords,
               "a specialized kernel assumes its operands are inline; above kInlineWords they spill");
 
-// W == 0 is the unspecialized arm: whatever kernel the store itself asks for.
-template <Algebra A, typename Store, size_t W>
-struct TermKernelFor {
-    using type = DenseTermProductsW<A, W>;
-};
-template <Algebra A, typename Store>
-struct TermKernelFor<A, Store, 0> {
-    using type = typename TermProductsFor<Store, A>::type;
-};
+// Whether a store's per-term work has a storage-word trip count for W to bind at all. A trait rather
+// than an is_same_v in the dispatch, so a new backend states its own answer next to the kernel it
+// asks for above, instead of silently inheriting "no".
+template <typename Store>
+inline constexpr bool kBindsKernelWidth = false;
+template <>
+inline constexpr bool kBindsKernelWidth<OperatorIndex> = true;
 
 // W as the dispatch will actually pass it: itself while the build specializes that width, 0 once it
-// does not. Applied per case below rather than by shortening the switch, so raising the cap needs no
-// new case and every arm of the inline regime is spelled out at one place.
+// does not. Mapping the arm rather than shortening the dispatch is what makes raising the cap a
+// one-line change with no new arm.
 template <size_t W>
 inline constexpr size_t kCappedKernelWidth = W <= kNarrowKernelWords ? W : 0;
 
 template <typename Store, typename F>
 [[gnu::always_inline]] inline auto with_kernel_width(size_t num_words, F &&f) -> decltype(auto) {
-    if constexpr (std::is_same_v<Store, OperatorIndex>) {
-        switch (num_words) {
-            case 1:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<1>>{});
-            case 2:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<2>>{});
-            case 3:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<3>>{});
-            case 4:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<4>>{});
-            case 5:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<5>>{});
-            case 6:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<6>>{});
-            case 7:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<7>>{});
-            case 8:
-                return f(std::integral_constant<size_t, kCappedKernelWidth<8>>{});
-            // Above kInlineWords the words are on the heap, so there is no width to bind even in
-            // principle: the kernel's precondition is that every operand is inline.
-            default:
-                return f(std::integral_constant<size_t, 0>{});
+    // The width regime, not the arm count, is what with_nwords' contract asks a caller to gate on:
+    // above kInlineWords the words are on the heap, so there is no width to bind even in principle --
+    // the kernel's precondition is that every operand is inline.
+    if constexpr (kBindsKernelWidth<Store>) {
+        if (num_words >= 1 && num_words <= Bitset::kInlineWords) {
+            return with_nwords(num_words, [&]<size_t W>(std::integral_constant<size_t, W>) -> decltype(auto) {
+                return f(std::integral_constant<size_t, kCappedKernelWidth<W>>{});
+            });
         }
     }
-    else {
-        return f(std::integral_constant<size_t, 0>{});
-    }
+    return f(std::integral_constant<size_t, 0>{});
 }
 
 } // namespace monoprop::detail

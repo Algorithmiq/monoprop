@@ -38,12 +38,13 @@ _WIDE = 4096
 _NARROW = 8  # the reference width, inside every old mode tier
 
 
-def _energy(num_modes, angle, comm):
-    """One rotation applied to a weight-2 observable, all inside Majoranas 0..3.
+def _build(num_modes, cutoff, comm):
+    """One rotation applied to a weight-2 observable, built and ready to evaluate.
 
-    Padding the system with unoccupied, ungated modes cannot change the answer, so this is the same
-    number at every num_modes >= 2 -- which is what makes it a check of the width handling rather than
-    of a value that happens to have been recorded.
+    The gate and the observable stay inside Majoranas 0..3, so a wider num_modes only pads the system
+    with ungated, unoccupied modes: the surviving term set is identical at every width and so is the
+    energy, and the only thing that moves is the storage width. That is what makes the tests below
+    checks of the width handling rather than of values that happen to have been recorded.
     """
     observable = MajoranaOperator({(0, 1): 1j}, num_modes)
     generator = MajoranaOperator({(2, 3): 1j}, num_modes)
@@ -51,10 +52,15 @@ def _energy(num_modes, angle, comm):
         gates=[ExpGate(generator)], system_size=num_modes, initial_state=[]
     )
 
-    mp = MajoranaPropagator(observable, [], cutoff=2 * _NARROW, comm=comm)
+    mp = MajoranaPropagator(observable, [], cutoff=cutoff, comm=comm)
     assert mp.num_modes == num_modes
     mp.build_graph(circuit)
-    return mp.expectation_value([angle])
+    return mp
+
+
+def _energy(num_modes, angle, comm):
+    """The rotated expectation value; the same number at every num_modes >= 2 (see _build)."""
+    return _build(num_modes, 2 * _NARROW, comm).expectation_value([angle])
 
 
 @pytest.mark.parametrize("num_modes", [_PAST_THE_OLD_CEILING, _WIDE])
@@ -87,19 +93,8 @@ def test_pauli_propagator_runs_past_the_old_compile_time_ceiling(serial_comm):
 
 
 def _terms_and_row_bytes(num_modes, comm):
-    """Return (term count, row-array bytes) after one gate at a given system width.
-
-    The gate and the observable stay inside Majoranas 0..3, so widening the system pads it with
-    ungated, unoccupied modes: the surviving term set is identical at every width, and the only thing
-    that moves is the storage width and hence the width of a row slot.
-    """
-    observable = MajoranaOperator({(0, 1): 1j}, num_modes)
-    generator = MajoranaOperator({(2, 3): 1j}, num_modes)
-    circuit = Circuit(
-        gates=[ExpGate(generator)], system_size=num_modes, initial_state=[]
-    )
-    mp = MajoranaPropagator(observable, [], cutoff=4, comm=comm)
-    mp.build_graph(circuit)
+    """Return (term count, row-array bytes) after one gate at a given system width."""
+    mp = _build(num_modes, 4, comm)
     breakdown = mp._simulator.operator_memory_breakdown()
     return mp.size(), breakdown["operator_terms_bytes"]
 

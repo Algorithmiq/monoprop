@@ -128,35 +128,15 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
 // raw product sign, so the emit site needs no extra negation (pinned by pauli_algebra_tests.cpp).
 // Loops only over gen's nonzero words (elsewhere mono/new_mono Y counts cancel and x_gen = 0). Exponent
 // e = g_y + Σ_w(yMono - yNew) + 2·Σ_w(v_mono & x_gen); raw sign = (e mod 4 == 1 ? +1 : -1), negated here.
-[[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
-                                                       const MonomialLike auto &mono,
-                                                       const auto &new_mono) -> int {
-    // From the context, not rebuilt: this runs once per emitted rotation, and since Stage 2b a mask
-    // is a runtime-width object construction rather than the compile-time constant it used to be.
-    const auto &e_mask = ctx.e_mask;
-    long delta = static_cast<long>(ctx.g_y);
-    long cross = 0;
-    for (size_t k = 0; k < ctx.nz_count; ++k) {
-        const size_t w = ctx.nz_words[k];
-        const uint64_t e = e_mask.word(w);
-        const auto [v_m, u_m] = detail::pauli_uv(mono.word(w), e);
-        const auto [v_n, u_n] = detail::pauli_uv(new_mono.word(w), e);
-        const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
-        delta += std::popcount(v_m & ~u_m);
-        delta -= std::popcount(v_n & ~u_n);
-        const uint64_t x_g = u_g ^ v_g;
-        cross += std::popcount(v_m & x_g);
-    }
-    return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
-}
-
-// The same sign off word pointers instead of monomials. Identical arithmetic and identical word
-// order; what it drops is the storage-pointer select that mono.word(w) / new_mono.word(w) repeat on
-// every one of the ctx.nz_count accesses. The pointers must be the data() of bitsets at the
-// generator's width, which is what the per-gate kernel that calls this guarantees.
+//
+// Takes the two operands as word pointers, which is the form the per-gate kernel already has: it
+// resolved them once, where mono.word(w) / new_mono.word(w) re-select a storage pointer on every one
+// of the ctx.nz_count accesses. Both must point at ctx.gen's width.
 [[gnu::always_inline]] inline auto pauli_rotation_sign_words(const auto &ctx,
                                                              const uint64_t *mono,
                                                              const uint64_t *new_mono) -> int {
+    // From the context, not rebuilt: this runs once per emitted rotation, and since Stage 2b a mask
+    // is a runtime-width object construction rather than the compile-time constant it used to be.
     const auto &e_mask = ctx.e_mask;
     long delta = static_cast<long>(ctx.g_y);
     long cross = 0;
@@ -172,6 +152,14 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
         cross += std::popcount(v_m & x_g);
     }
     return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
+}
+
+// The monomial form of the above, for callers that hold bitsets rather than words. data() is where
+// word(w) reads from, so this is the same computation and not a second one.
+[[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
+                                                       const MonomialLike auto &mono,
+                                                       const auto &new_mono) -> int {
+    return pauli_rotation_sign_words(ctx, mono.data(), new_mono.data());
 }
 
 // Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial product

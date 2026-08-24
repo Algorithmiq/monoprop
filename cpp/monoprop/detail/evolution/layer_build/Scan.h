@@ -191,7 +191,7 @@ struct FusedScanResult {
 // would put a branch on the per-term path, which is the one place it cannot go.
 //
 // W is the storage word count, bound by build_layer through with_kernel_width for the same reason and at
-// the same seam as the backend and the algebra; 0 means "not specialized" (see TermKernelFor). It is a
+// the same seam as the backend and the algebra; 0 means "not specialized" (see TermProductsFor). It is a
 // template parameter of the scan rather than something the kernel is handed, so that the per-term code
 // below stays an ordinary function body: wrapping it in a generic lambda instead measured 2-3% slower
 // even on the unspecialized arm, which does no different work.
@@ -286,7 +286,7 @@ auto fused_find_and_collect(const auto &op,
         // path. Which kernel this is follows from the store (TermProductsFor); the scan below names no
         // representation.
         using Store = std::remove_cvref_t<decltype(store)>;
-        typename TermKernelFor<A, Store, W>::type products(gen, cutoff_eval);
+        typename TermProductsFor<Store, A, W>::type products(gen, cutoff_eval);
 
         // The dynamic gate runs before the product, so a gate-rejected term computes none.
         // abs_c/v_src come from the caller's coeff read, not re-read.

@@ -44,6 +44,7 @@
 #include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
+#include "InlineWidths.h"
 #include "TestData.h"
 #include "TestUtilities.h"
 
@@ -512,17 +513,6 @@ auto sweep_narrow(const std::vector<Bitset> &terms,
     }
 }
 
-// W = 1..kInlineWords, i.e. 32..256 storage modes, run through one generic body. The kernel is only
-// *selected* up to monoprop_NARROW_KERNEL_MAX_WORDS, but it is correct over the whole inline regime and
-// raising the cap must not be what discovers otherwise.
-template <size_t... Ws>
-auto for_each_kernel_width(std::index_sequence<Ws...>, auto &&body) -> void {
-    (body(std::integral_constant<size_t, Ws + 1>{}), ...);
-}
-auto for_each_kernel_width(auto &&body) -> void {
-    for_each_kernel_width(std::make_index_sequence<Bitset::kInlineWords>{}, body);
-}
-
 // The W the dispatch bound, read back out of the arm it selected -- the only thing about the seam that
 // is observable, since every arm answers identically.
 template <typename Store>
@@ -551,7 +541,7 @@ auto narrow_kernel_terms(std::mt19937_64 &rng, size_t num_modes) -> std::vector<
 BOOST_AUTO_TEST_CASE(narrow_kernel_matches_dense_under_a_whole_register_length_cutoff) {
     std::mt19937_64 rng(20260821U);
     NarrowSeen seen;
-    for_each_kernel_width([&]<size_t W>(std::integral_constant<size_t, W>) {
+    test_utils::for_each_inline_width([&]<size_t W>(std::integral_constant<size_t, W>) {
         const size_t num_modes = (W * Bitset::word_width) / 2;
         const auto terms = narrow_kernel_terms(rng, num_modes);
         const std::vector<Bitset> gens{random_term(rng, num_modes, 2),
@@ -583,7 +573,7 @@ BOOST_AUTO_TEST_CASE(narrow_kernel_matches_dense_under_a_whole_register_length_c
 BOOST_AUTO_TEST_CASE(narrow_kernel_defers_to_the_evaluator_off_the_whole_register_length_cutoff) {
     std::mt19937_64 rng(606U);
     NarrowSeen seen;
-    for_each_kernel_width([&]<size_t W>(std::integral_constant<size_t, W>) {
+    test_utils::for_each_inline_width([&]<size_t W>(std::integral_constant<size_t, W>) {
         const size_t num_modes = (W * Bitset::word_width) / 2;
         const size_t logical_modes = num_modes - 5; // an inactive prefix of 5 modes
         const auto terms = narrow_kernel_terms(rng, num_modes);

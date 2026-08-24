@@ -127,15 +127,16 @@ Key files:
   truncate, because a truncated mode list still carries a plausible-looking `codes` word.
 - **The per-term kernel seam**: everything the scan asks about one anticommuting term — the product,
   the overlap, the rotation sign, the structural cutoff, the owner rank and the query record — goes
-  through the per-gate object `TermProductsFor<Store, A>` selects (`layer_build/TermProduct.h`), so the
+  through the per-gate object `TermProductsFor<Store, A, W>` selects (`layer_build/TermProduct.h`), so the
   scan itself names no representation. `SparseTermProducts` answers the first four off the `codes` word
   and falls back to `DenseTermProducts` per term when there is no row to read (a spilled store row, a
   product past the scratch capacity) or no codes form of the cutoff (`CutoffEvaluator` recovered neither
   concrete functor, e.g. under a basis change). `cpp/tests/term_product_tests.cpp` compares the two
   kernels answer for answer: extend it with any new answer, or that answer ships untested.
 - **The third thing bound once per layer**: the storage word count, beside the algebra and the backend.
-  `with_kernel_width<Store>` (`layer_build/TermProduct.h`) turns `gen.num_words()` into a template
-  parameter `W` at the same seam in `build_layer`, and `fused_find_and_collect<A, W>` and
+  `with_kernel_width<Store>` (`layer_build/TermProduct.h`, over `detail::with_nwords`) turns
+  `gen.num_words()` into a template parameter `W` at the same seam in `build_layer`, and
+  `fused_find_and_collect<A, W>` and the `TermProductsFor<Store, A, W>` specialization
   `DenseTermProductsW<A, W>` are templated on it, so every per-term word loop has a compile-time trip
   count and every operand's storage pointer is resolved once per gate — which is what a `Bitset<NumBits>`
   used to give for free. Measured worth ~10% at two and four storage words and nothing at seven or eight,
@@ -149,12 +150,17 @@ Key files:
   support cutoff or a narrower active window keeps going through `CutoffEvaluator`, and
   `uses_word_cutoff()` is how a test tells those apart. (A support arm was tried and measured: ~1% worse
   everywhere, and no gain even on the Pauli models that use it, because their per-term time is not in the
-  cutoff.) `WordKernel<W>` (`Bitset.h`) restates five `Bitset` word ops with `W` fixed, one of which is
-  `splitmix` — that is `monomial_hash`, so it routes MPI ownership and must stay bit-identical, and
-  `cpp/tests/word_kernel_tests.cpp` asserts equality with `SplitmixHash` at every `W` while
-  `term_product_tests.cpp` compares the whole kernel against `DenseTermProducts` over the whole inline
-  regime, not just the capped widths. And the kernel's precondition is that every operand is inline, so
-  `W` is never bound above `Bitset::kInlineWords`.
+  cutoff.) `WordKernel<W>` (`Bitset.h`) is the five word ops with `W` fixed. Two of them — the fused XOR
+  and the AND-fold behind `parity_and` — are the *same* definitions `Bitset`'s own inline arms use
+  (`detail::fused_xor_words` / `and_fold_words`, declared ahead of both), because one of them decides
+  emitted term signs and neither may drift from the method it stands in for. `splitmix` is deliberately
+  a second implementation instead: that value is `monomial_hash`, so it routes MPI ownership and must
+  stay bit-identical, and `cpp/tests/word_kernel_tests.cpp` asserts it equal to `SplitmixHash` at every
+  `W` rather than by construction. `term_product_tests.cpp` compares the whole kernel against
+  `DenseTermProducts` over the whole inline regime, not just the capped widths — both files sweep the
+  regime through the one `test_utils::for_each_inline_width` in `cpp/tests/InlineWidths.h`, so the range
+  cannot be narrowed in one of them alone. And the kernel's precondition is that every operand is
+  inline, so `W` is never bound above `Bitset::kInlineWords`.
 - **The query record**: a store is queried in the form it keys its rows by, so a resolve never converts —
   `QueryKeysFor<Store>` (`layer_build/Common.h`) picks the batch, and `query_payload_words_for(store,
   capacity)` the width. A buffer is `[nq][record 0]…[record nq-1][dense escape tail]`: the header,
