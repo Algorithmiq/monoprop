@@ -1,14 +1,9 @@
 name: Track benchmarks
 
 # Builds the historical baseline that Bencher's Perf page graphs and that pull
-# request runs are compared against. One data point per commit on main, so this
-# deliberately does not cancel in-progress runs -- a cancelled run is a hole in
-# the series.
-#
-# Alerts are recorded but do not fail the job: the timing measures need a few
-# weeks of history on a shared runner before their noise floor is known. Gating
-# belongs on pull requests, where a base-vs-head comparison on one runner
-# cancels out machine-to-machine variance.
+# request runs are compared against. One data point per commit on main.
+# Alerts are recorded but do not fail the job for now.
+
 
 on:
   workflow_dispatch:
@@ -20,85 +15,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  FORCE_COLOR: 3
-  COLUMNS: 120
-  CPM_USE_LOCAL_PACKAGES: "TRUE"
-  BENCHER_LABEL: ci-linux
-
 jobs:
-  benchmark-base-branch:
-    name: Continuous benchmarking with Bencher
-    # Skips forks, which have no BENCHER_API_KEY.
-    if: ${{ github.repository == 'Algorithmiq/monoprop' }}
-    runs-on: ubuntu-26.04
+  github-hosted:
+    uses: ./.github/workflows/bench.yml
+    with:
+      runner: ubuntu-26.04
+      testbed: ubuntu-26.04
+      label: ci-linux
+    secrets: inherit
     permissions:
+      contents: read
       checks: write
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libmsgpack-cxx-dev catch2
-
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.0.0
-        with:
-          enable-cache: true
-          python-version: "3.11"
-
-      - name: Install package
-        run: |
-          uv sync --no-progress --group bench --all-extras -v
-
-      - name: Run benchmarks
-        run: |
-          just bench-ci "$BENCHER_LABEL"
-
-      - name: Convert results to Bencher Metric Format
-        run: |
-          just bench-bmf "$BENCHER_LABEL" > bmf.json
-
-      - uses: bencherdev/bencher@v0.6.11
-
-      # Credentials and the project slug go through the environment rather than
-      # the command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY
-      # natively, and it keeps a maintainer-set variable out of the shell's
-      # parsing.
-      - name: Track benchmarks with Bencher
-        env:
-          BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'monoprop' }}
-          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          bencher run \
-            --branch main \
-            --testbed ubuntu-26.04 \
-            --adapter json \
-            --file bmf.json \
-            --github-actions "$GH_TOKEN" \
-            --thresholds-reset \
-            --threshold-measure latency \
-            --threshold-test t_test \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.99 \
-            --threshold-measure peak-memory \
-            --threshold-test percentage \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.10 \
-            --threshold-measure resting-memory \
-            --threshold-test percentage \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.10 \
-            --threshold-measure terms \
-            --threshold-test percentage \
-            --threshold-max-sample-size 1 \
-            --threshold-lower-boundary 0.0 \
-            --threshold-upper-boundary 0.0
