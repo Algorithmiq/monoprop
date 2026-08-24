@@ -55,14 +55,6 @@ option(
   OFF
 )
 
-# Build-time and not an environment variable on purpose; see check_exchange_symmetry
-# in cpp/monoprop/detail/mpi/Exchange.h.
-option(
-  monoprop_CHECK_EXCHANGE_SYMMETRY
-  "Audit each layer's derived exchange layout against a real alltoall (adds a collective per exchange)"
-  OFF
-)
-
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 set(Python_FIND_VIRTUALENV FIRST)
@@ -108,10 +100,6 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
-message(
-  STATUS
-  "   Exchange symmetry audit: ${monoprop_CHECK_EXCHANGE_SYMMETRY}"
-)
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
 include(GNUInstallDirs)

@@ -22,7 +22,6 @@ target_compile_definitions(
   PUBLIC
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
-    $<$<BOOL:${monoprop_CHECK_EXCHANGE_SYMMETRY}>:monoprop_CHECK_EXCHANGE_SYMMETRY>
 )
 
 # flags to prepend

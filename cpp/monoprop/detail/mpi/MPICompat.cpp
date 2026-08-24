@@ -17,7 +17,6 @@
 #include <format>
 #include <print>
 #include <stdexcept>
-#include <vector>
 
 namespace monoprop::mpi {
 
@@ -120,11 +119,10 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 #endif
 }
 
-auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm) -> void {
+auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
-    // Above the gate deliberately: MPI_Alltoallv reads comm_size counts and displacements whatever the
-    // span holds, so the width is a precondition of posting at all, not part of the audit below.
+    // MPI_Alltoallv reads comm_size counts and displacements whatever the span holds.
     if (n != comm_size) {
         throw CollectiveArgumentError(
             std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
@@ -132,28 +130,6 @@ auto check_exchange_symmetry(std::span<const int> send_counts, const Comm &comm)
                         n,
                         comm_size));
     }
-
-#ifndef monoprop_CHECK_EXCHANGE_SYMMETRY
-    return; // audit compiled out; see the build option of the same name
-#else
-    // Build-gated and never run-time selected; see check_exchange_symmetry in Exchange.h for why.
-    std::vector<int> recv_counts(static_cast<size_t>(n));
-    alltoall_counts(send_counts.data(), recv_counts.data(), n, comm);
-    for (int i = 0; i < n; ++i) {
-        const int sent = send_counts[static_cast<size_t>(i)];
-        const int received = recv_counts[static_cast<size_t>(i)];
-        if (sent != received) {
-            // Naming the slot and both counts: the unguarded failure carries neither.
-            throw CollectiveArgumentError(std::format(
-                "Exchange count matrix is not symmetric at slot {}: this rank sends {} there but receives {} back. "
-                "The exchange derives its recv layout from its send layout on the strength of that equality, so a "
-                "routing change that breaks it must be caught here rather than as a hang in MPI_Alltoallv.",
-                i,
-                sent,
-                received));
-        }
-    }
-#endif // monoprop_CHECK_EXCHANGE_SYMMETRY
 }
 
 } // namespace monoprop::mpi

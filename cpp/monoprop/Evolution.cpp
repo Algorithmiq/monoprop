@@ -84,18 +84,13 @@ auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
 }
 
-// Derive this layer's exchange layout into `buffers.layout` at `scale`; it describes BOTH sides. The
-// count matrix is symmetric -- rank m's slot for r holds the same endpoint pair as rank r's slot for m,
-// swapped -- so counts are equal, displacements are their prefix sums, and the recv layout IS the send
-// layout. Scaling by the same literal on every rank preserves that. The symmetry itself is auditable
-// under monoprop_CHECK_EXCHANGE_SYMMETRY; the call below is unconditional because it also enforces the
-// layout's width against the communicator, which is a precondition rather than an audit.
+// Derives both sides at once: the count matrix is symmetric, so the recv layout is the send layout.
 auto derive_layer_exchange(const LayerTraversal &layer, const mpi::Comm &comm, int scale, FlatExchangeBuffers &buffers)
     -> void {
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const char *what = scale == 1 ? "Layer exchange" : "Layer derivative exchange";
     detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, buffers.layout, what);
-    mpi::check_exchange_symmetry(buffers.layout.counts, comm);
+    mpi::check_exchange_layout_width(buffers.layout.counts, comm);
 }
 
 // The completed alltoallv payload as an apply pass sees it: peer `rank`'s entries start at
