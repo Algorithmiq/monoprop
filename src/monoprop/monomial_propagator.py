@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 import numpy as np
 
-from monoprop._dispatch import dispatch
+from monoprop._core import MonomialPropagator as _MonomialPropagatorCore
+from monoprop.exceptions import NumberOfModesInvalidError
 
 from .circuit import (
     Circuit,
@@ -88,7 +89,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         comm: MPI.Comm | None,
         basis: str = "majorana",
     ) -> None:
-        """Dispatch to the compiled per-mode simulator and record shared state.
+        """Construct the compiled simulator and record shared state.
 
         Args:
             majorana_operator: The observable; its ``num_modes`` sizes the simulator.
@@ -101,8 +102,19 @@ class MonomialPropagator(ABC, Generic[T_op]):
             basis_change: Internal per-Majorana basis change (``2 * num_modes`` entries).
             comm: Optional MPI communicator (must outlive the propagator).
             basis: Engine basis -- ``"majorana"`` (default) or ``"pauli"``.
+
+        Raises:
+            NumberOfModesInvalidError: If the operator's mode count is not a positive integer.
+                There is no upper bound: the C++ engine sizes its monomial storage at runtime.
         """
         num_modes = majorana_operator.num_modes
+        # The C++ constructor rejects a zero mode count too, but only after building an operator at
+        # that width; and it cannot see a non-int at all, since the binding would coerce it first.
+        if not isinstance(num_modes, int) or num_modes <= 0:
+            errmsg = (
+                f"Number of Fermionic modes {num_modes} invalid. num_modes must be > 0."
+            )
+            raise NumberOfModesInvalidError(errmsg)
         logger.debug(
             "_init_simulator. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s",
             num_modes,
@@ -115,12 +127,13 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._n_params = 0
         self._system_size = num_modes
         self._initial_state = list(initial_state)
-        # dispatch() returns the concrete adapter class for this mode count;
-        # call it with keyword args matching the public constructor.
-        self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
+        # One compiled class for every mode count: it takes the logical width as an argument and
+        # sizes its monomial storage from it, so there is nothing to dispatch on.
+        self._simulator = _MonomialPropagatorCore(
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
             initial_state=list(initial_state),
+            logical_num_modes=num_modes,
             schrodinger_cutoff=schrodinger_cutoff,
             lower_atol=lower_atol,
             upper_atol=upper_atol,

@@ -98,6 +98,49 @@ one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Select either group with
 `ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
 
+CTest's `-j` is safe for both, including MPI-enabled builds: the harness ignores
+`SIGPIPE` before `MPI_Init`. Each per-case process initialises MPI as a *singleton*
+(no launcher), so PMIx opens a socket to a daemon that is not running, and under
+concurrency a write to it would otherwise kill the process mid-init. If you embed
+monoprop in a C++ program that initialises MPI the same way, do the same — a library
+cannot set a process-wide signal disposition on its caller's behalf. Python callers
+need nothing: CPython already ignores `SIGPIPE`.
+
+You may still see OpenMPI warn that `/dev/shm` is too small for its shared-memory
+segment. That one is about performance, not correctness; raise the container's
+`--shm-size` (Docker defaults to 64 MB) to silence it.
+
+### The sparse-rows variants
+
+Every case is also registered a second time with `monoprop_ROW_STORE=sparse`,
+labelled `sparse-rows`, so the whole suite runs against both row backends. This is
+not redundancy: every fixture and oracle here is well below the automatic crossover
+(`monoprop_SPARSE_ROW_MIN_MODES`), so without forcing it the support-form backend
+would be compiled and never executed — and it is the one that ships for wide systems.
+Run just that configuration with `-L sparse-rows`, and its Python counterpart with
+`just test-sparse-rows`.
+
+Expect it to be *slower*: at fixture widths a monomial is one word, which is where
+dense rows win. That is the crossover working, not a regression.
+
+Forcing the backend covers the *code*; it does not cover the *width* the backend
+exists for. That is what the wide case is for: `tests/test_wide_system.py` and
+`cpp/tests/wide_system_tests.cpp` relabel the 12-mode LiH fixture into a 260-mode
+system, which stores at 288 modes — nine words per monomial, an active window 28
+modes short of its storage, and mode lanes past the first codes word. Nine words is
+also past the eight that fit inline in a `Bitset`, so this is the only case in either
+suite that propagates monomials whose words live on the heap. A released wheel
+selects sparse rows at that width on its own; a build with
+`monoprop_ENABLE_ARCH_FLAGS` on gets there through `monoprop_ROW_STORE=sparse`, and
+both suites assert they did, so the sparse variant cannot silently be a second dense
+run. See `tests/data/README.md` on why a wide case is derived rather than checked
+in.
+
+The two backends agree on term sets and expectation values but not on term *order*,
+so cross-backend checks use `tools/capture-baseline.py --compare` with a tolerance
+(`just diff-baseline-sparse`), never the byte diff that `just diff-baseline` applies
+within one backend.
+
 
 ## Adding tests
 

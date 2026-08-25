@@ -8,4 +8,6 @@ target_sources(
         "MPOperator.h"
         "OperatorIndex.h"
         "RowAccess.h"
+        "RowHashTable.h"
+        "SparseRowStore.h"
 )

@@ -42,17 +42,20 @@
 
 namespace monoprop {
 
-template <size_t NumModes>
-class MonomialPropagator; // completed before any PartitionGroup member body is instantiated (Impl.h)
+// Only MonomialPropagator.inl includes this header, and it does so *after* MonomialPropagator's
+// definition -- which this file now requires rather than merely prefers. The member bodies below are
+// ordinary functions, not templates, so they are parsed where they are written instead of at
+// instantiation, and make_unique<MonomialPropagator> needs the complete type right there. A future
+// include from anywhere earlier fails loudly on the incomplete type; it cannot go wrong quietly.
+class MonomialPropagator;
 
 namespace detail::partition {
 
-template <size_t NumModes>
 class PartitionGroup {
 public:
     // Builds each partition's propagator via `factory(partition_comm)` ON its master thread, so heap allocations
     // are first-touched on the owning core. `factory` must build a partitions=1 propagator.
-    using Factory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
+    using Factory = std::function<std::unique_ptr<MonomialPropagator>(mpi::Comm)>;
 
     // `parent` is the enclosing communicator (size R): R == 1 ⇒ an in-process ShmComm; R > 1 ⇒ a
     // HybridComm folding R ranks x S partitions into one flat P=R*S world.
@@ -106,8 +109,8 @@ public:
     ~PartitionGroup() { stop_and_join_(); }
 
     auto partition_count() const -> int { return n_; }
-    auto partition(int s) -> MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
-    auto partition(int s) const -> const MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
+    auto partition(int s) -> MonomialPropagator & { return *partitions_[static_cast<size_t>(s)]; }
+    auto partition(int s) const -> const MonomialPropagator & { return *partitions_[static_cast<size_t>(s)]; }
 
     // Run `body(partition_rank)` on all masters, block until every one finishes, then rethrow the first
     // exception raised (peers were released via poison, so a throw on one master never hangs the rest).
@@ -314,7 +317,7 @@ private:
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
 #endif
-    std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> partitions_;
+    std::vector<std::unique_ptr<MonomialPropagator>> partitions_;
     std::vector<std::exception_ptr> errs_;
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
@@ -332,8 +335,8 @@ private:
 // `body` must not touch the vector itself. Staged into a non-bit-packed `Slot` type: std::vector<bool> is
 // the bit-packed specialization, so concurrent partition-master writes to different logical elements can
 // tear the same underlying word (a data race) even though their indices are disjoint.
-template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
-auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
+template <typename Body, typename R = std::invoke_result_t<Body &, int>>
+auto collect_on_all(PartitionGroup &group, Body body) -> std::vector<R> {
     using Slot = std::conditional_t<std::is_same_v<R, bool>, std::uint8_t, R>;
     std::vector<Slot> staging(static_cast<size_t>(group.partition_count()));
     group.run_on_all([&](int r) { staging[static_cast<size_t>(r)] = static_cast<Slot>(body(r)); });
@@ -343,12 +346,6 @@ auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R
     else {
         return staging;
     }
-}
-
-// collect_on_all over the partition propagators themselves: `body(partition)` on each partition's master.
-template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, MonomialPropagator<NumModes> &>>
-auto map_partitions(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
-    return collect_on_all(group, [&](int r) -> R { return body(group.partition(r)); });
 }
 
 } // namespace detail::partition

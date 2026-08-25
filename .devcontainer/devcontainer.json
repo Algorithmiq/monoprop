@@ -16,6 +16,9 @@
     "source=monoprop-docs-next,target=${containerWorkspaceFolder}/docs/.next,type=volume",
     "source=monoprop-docs-node-modules,target=${containerWorkspaceFolder}/docs/node_modules,type=volume"
   ],
+  "runArgs": [
+    "--shm-size=1g"
+  ],
   "remoteUser": "vscode",
   "customizations": {
     "vscode": {

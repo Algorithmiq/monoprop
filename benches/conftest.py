@@ -178,6 +178,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         group.addoption(f"--{name}", type=int, default=default, help=help_text)
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
+    # One round is enough for the memory and term-count stats, which are deterministic, but it yields
+    # no spread for the timing -- and these models are expensive enough that a single sample can sit
+    # well off the median. Raise this when a timing difference is the point of the run.
+    models.addoption(
+        "--model-rounds",
+        type=int,
+        default=1,
+        help="Rounds per fixed model; each rebuilds the model first. >1 gives a median and stddev "
+        "(default: 1).",
+    )
     for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
             models.addoption(
@@ -214,6 +224,7 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         "nodes": nodes,
         "ranks_per_node": ranks_per_node,
         "monoprop_threads": os.environ.get("monoprop_NUM_THREADS", "default"),  # noqa: SIM112
+        "monoprop_row_store": os.environ.get("monoprop_ROW_STORE") or "auto",  # noqa: SIM112
         "cpu_count_logical": psutil.cpu_count(logical=True),
         "cpu_count_physical": psutil.cpu_count(logical=False),
         "hostname": socket.gethostname(),
@@ -236,6 +247,27 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
     if partitions_env is not None:
         meta["partitions_env"] = partitions_env
     return meta
+
+
+def _record_row_store(propagator: Any) -> None:
+    """Fold one propagator's resolved row backend into this run's metadata.
+
+    ``monoprop_ROW_STORE`` says what was asked for, not what ran: unset lets the storage width pick,
+    and the crossover it picks against is a build-time constant. The two backends accumulate a term
+    sum in different orders and have different footprints, so a report has to name the one that ran.
+    Widths differ within a run, hence so can the backend: a disagreement records as ``"mixed"``
+    rather than letting the last propagator speak for the others.
+    """
+    if _rank() != 0:
+        return
+    # Read straight off the binding, with no getattr fallback: a benchmark whose whole job is to name
+    # the backend that ran must fail loudly against an extension that cannot say, not quietly record
+    # nothing.
+    resolved = "sparse" if propagator._simulator.rows_are_sparse else "dense"
+    seen = _RESULTS["meta"].get("row_store_effective")
+    _RESULTS["meta"]["row_store_effective"] = (
+        resolved if seen in (None, resolved) else "mixed"
+    )
 
 
 def _params(config: pytest.Config) -> dict[str, Any]:
@@ -296,6 +328,12 @@ def bench_rounds(request: pytest.FixtureRequest) -> int:
 
 
 @pytest.fixture(scope="session")
+def model_rounds(request: pytest.FixtureRequest) -> int:
+    """Return the round count for the fixed-model benchmarks."""
+    return int(request.config.getoption("--model-rounds"))
+
+
+@pytest.fixture(scope="session")
 def model_configs(request: pytest.FixtureRequest) -> dict[str, Any]:
     """Return each fixed model's config, every field resolved from the CLI.
 
@@ -353,6 +391,7 @@ def _record_model_stats(
 ) -> None:
     """Record term count, operator memory breakdown and footprint under ``key``."""
     _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
+    _record_row_store(propagator)
 
     # Placement is only observable while the propagator's threads are alive.
     _record_placement(comm)
@@ -553,6 +592,7 @@ def built_graph(
 
     # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
+    _record_row_store(mp)
 
     # Settled RSS once the build's transients are released -- the persistent
     # footprint the per-operation peak cannot see.

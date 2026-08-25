@@ -100,8 +100,9 @@ cache-keys = [
   { file = "cpp/include/**/*.h.in" },
   { file = "cpp/monoprop/**/*.{h,cpp}" },
   { file = "src/monoprop/**/CMakeLists.txt" },
-  { file = "src/monoprop/bindings/binder.h" },
-  { file = "src/monoprop/bindings/bindings.cpp.in" },
+  # the binding sources themselves, not a template: bindings.cpp is a real file now, so a change to
+  # it has to invalidate the cached build
+  { file = "src/monoprop/bindings/*.cpp" },
   { file = "tools/*.py" },
 ]
 
@@ -149,7 +150,7 @@ sdist.exclude = [
   ".prettierignore",
   "cspell.json",
 ]
-sdist.include = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py", ".github/license-header.txt"]
+sdist.include = ["src/monoprop/_version.py", ".github/license-header.txt"]
 build.verbose = true
 build.tool-args = ["-j2"]
 # Default to a single build job for Python bindings; CI and one-off builds can
@@ -192,10 +193,10 @@ required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
 source = ["src/monoprop"]
 branch = true
 relative_files = true
-omit = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+omit = ["src/monoprop/_version.py"]
 
 [tool.coverage.report]
-omit = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+omit = ["src/monoprop/_version.py"]
 exclude_also = [
   '\.\.\.',
   "def __repr__",

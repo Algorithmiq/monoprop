@@ -40,8 +40,9 @@ BOOST_AUTO_TEST_CASE(operator_index_term_index_width_matches_build) {
 
 namespace {
 constexpr size_t N = 32;
-using Store = OperatorIndex<N>;
-using MSet = Monomial<N>;
+using Store = OperatorIndex;
+constexpr size_t kBits = 2 * N; // the store is runtime-width now
+using MSet = Bitset;
 
 // Owners hold the store by unique_ptr and share stable pointers into it, so it must stay
 // non-copyable and non-movable; clone() is the only deep copy.
@@ -49,12 +50,12 @@ static_assert(!std::is_move_constructible_v<Store>, "OperatorIndex must remain n
 static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain non-copyable");
 
 MSet bs(const VecZ &r) {
-    return indices_to_bitset<N>(r);
+    return indices_to_bitset(r, kBits);
 }
 } // namespace
 
 BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
-    Store s;
+    Store s(kBits);
     s.push_back(bs({0, 3, 5}));
     s.push_back(bs({1, 2}));
     BOOST_TEST(s.size() == 2u);
@@ -64,14 +65,14 @@ BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
     std::vector<size_t> pos;
     s.for_each_position(0, [&](size_t b) { pos.push_back(b); });
     BOOST_TEST(pos.size() == 3u);
-    // for_each_position yields raw bit positions (ascending). indices_to_bitset<32>({0,3,5})
+    // for_each_position yields raw bit positions (ascending). indices_to_bitset({0,3,5}, 64)
     // sets bits at 2*32-1-0=63, 2*32-1-3=60, 2*32-1-5=58, so find_first gives 58 first.
     BOOST_TEST(pos[0] == 58u);
     BOOST_TEST(pos[2] == 63u);
 }
 
 BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
-    Store s;
+    Store s(kBits);
     s.push_back(bs({0, 3, 5}));
     s.emplace(bs({0, 3, 5}), 0);
     s.push_back(bs({1, 2}));
@@ -83,7 +84,7 @@ BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
-    Store s(4);                    // stride = 1 + 4, fixed at construction
+    Store s(kBits, 4);             // stride = 1 + 4, fixed at construction
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
     s.reserve(20);                 // capacity only -- width/stride are never touched by reserve
     BOOST_TEST(s.popcount(0) == 4u);
@@ -91,14 +92,14 @@ BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
 }
 
 BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
-    Store s(2); // width 2; a 3-position row must overflow
+    Store s(kBits, 2); // width 2; a 3-position row must overflow
     s.push_back(bs({0, 1, 2}));
     BOOST_TEST(s.popcount(0) == 3u); // popcount recovered from the overflow map
     BOOST_TEST((s.row(0) == bs({0, 1, 2})));
 }
 
 BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
-    Store a;
+    Store a(kBits);
     // 64 distinct rows (positions i and (i+7)%62) force at least one rehash of the in-place index.
     for (int i = 0; i < 64; ++i) {
         a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
@@ -110,7 +111,7 @@ BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
 }
 
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
-    Store a(4); // non-default width must carry over
+    Store a(kBits, 4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
     a.emplace(bs({0, 3, 5}), 0);
     a.push_back(bs({1, 2}));
@@ -137,7 +138,7 @@ BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
 }
 
 BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
-    Store a(2); // width 2; a 3-position row overflows losslessly
+    Store a(kBits, 2); // width 2; a 3-position row overflows losslessly
     a.push_back(bs({0, 1, 2}));
     a.emplace(bs({0, 1, 2}), 0);
 
@@ -152,7 +153,7 @@ BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
 // present and absent keys, so every branch but the h32-collision fallback runs; that one needs a
 // real 32-bit hash collision, but the equivalence assertion pins it whichever path a key takes.
 BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
-    Store s;
+    Store s(kBits);
     constexpr size_t kRows = 200; // > 12 groups of G=16
     // (i/60, 4 + i%60) is a bijection for i < 240 over the disjoint ranges {0..3} and {4..63}.
     for (size_t i = 0; i < kRows; ++i) {
@@ -187,11 +188,86 @@ BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
 
 // Pins find_batch's partition.count == 0 early-out.
 BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
-    Store s;
+    Store s(kBits);
     const std::array<MSet, 3> keys{bs({0, 3}), bs({1, 2}), bs({4, 5, 6})};
     std::array<size_t, 3> out{0, 0, 0};
     s.find_batch(keys.data(), keys.size(), out.data());
     for (size_t i = 0; i < keys.size(); ++i) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
+}
+
+// The row payload width is chosen from num_bits: one byte per slot while a bit position fits one, two
+// above that. The row array is the operator's largest, and rows are payload -- never a hash input, never
+// serialized -- so a widening here changes no term and no energy and a baseline diff cannot see it. This
+// is the footprint gate. memory_bytes() - slack_bytes() is the *used* part of the array, which makes the
+// figure exact instead of allocator-dependent.
+BOOST_AUTO_TEST_CASE(row_slot_width_follows_the_position_count) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kRows = 500;
+    constexpr size_t kNarrowBits = Store::kNarrowPositions;
+    constexpr size_t kWideBits = Store::kNarrowPositions + 2;
+
+    Store narrow(kNarrowBits, kInline);
+    Store wide(kWideBits, kInline);
+    for (size_t i = 0; i < kRows; ++i) {
+        // One bit per row: any popcount <= kInline works, but staying at 1 keeps every row off the
+        // overflow side-map, whose bytes are counted separately and would blur the comparison.
+        narrow.push_back(Bitset(kNarrowBits, uint64_t{1} << (i % 64)));
+        wide.push_back(Bitset(kWideBits, uint64_t{1} << (i % 64)));
+    }
+
+    const size_t slots = kRows * (1 + kInline);
+    BOOST_TEST(narrow.memory_bytes() - narrow.slack_bytes() == slots);
+    BOOST_TEST(wide.memory_bytes() - wide.slack_bytes() == 2 * slots);
+}
+
+// The narrow overflow marker is 255, which is also a legal bit position at 256 positions. A row holding
+// it must read back as a position: the marker only ever occupies slot 0.
+BOOST_AUTO_TEST_CASE(a_narrow_row_holds_the_marker_valued_position) {
+    constexpr size_t kNarrowBits = Store::kNarrowPositions;
+    Store s(kNarrowBits, 4);
+    Bitset m(kNarrowBits);
+    m.set(0);
+    m.set(kNarrowBits - 1);
+    s.push_back(m);
+    s.emplace(m, 0);
+
+    BOOST_TEST(s.popcount(0) == 2u);
+    BOOST_TEST((s.row(0) == m));
+    BOOST_TEST(s.find(m).has_value());
+    BOOST_TEST(*s.find(m) == 0u);
+    std::vector<size_t> pos;
+    s.for_each_position(0, [&](size_t b) { pos.push_back(b); });
+    BOOST_TEST(pos.size() == 2u);
+    BOOST_TEST(pos[0] == 0u);
+    BOOST_TEST(pos[1] == kNarrowBits - 1);
+}
+
+// The marker is per-width, so the lossless spill has to be exercised on both sides of the crossover.
+BOOST_AUTO_TEST_CASE(overflow_spills_at_both_row_widths) {
+    for (const size_t bits : {Store::kNarrowPositions, Store::kNarrowPositions + 2}) {
+        Store s(bits, 2);
+        Bitset m(bits);
+        m.set(0);
+        m.set(1);
+        m.set(bits - 1); // popcount 3, above the inline width of 2
+        s.push_back(m);
+        s.emplace(m, 0);
+
+        BOOST_TEST(s.popcount(0) == 3u);
+        BOOST_TEST((s.row(0) == m));
+        BOOST_TEST(*s.find(m) == 0u);
+        // A round trip through clone() too: it copies both row arrays and the side-map.
+        const auto c = s.clone();
+        BOOST_TEST(c->popcount(0) == 3u);
+        BOOST_TEST((c->row(0) == m));
+    }
+}
+
+// A store past kMaxPositions has no row width that can hold its positions, and says so rather than
+// truncating a position into a plausible-looking row.
+BOOST_AUTO_TEST_CASE(a_width_past_the_row_payload_bound_throws) {
+    BOOST_CHECK_THROW(Store(Store::kMaxPositions + 2), OperatorIndexWidthUnsupported);
+    BOOST_CHECK_NO_THROW(Store(Store::kMaxPositions));
 }

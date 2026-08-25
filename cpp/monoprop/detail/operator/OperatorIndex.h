@@ -19,6 +19,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -29,68 +30,132 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/operator/RowHashTable.h"
 
 namespace monoprop::detail {
 
-class TermIndexCeilingReached : public std::runtime_error {
+// The requested monomial width needs bit positions wider than PosT can hold. Thrown rather than
+// asserted: with the compile-time mode ceiling gone, the width is user data.
+class OperatorIndexWidthUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
 // Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash index over
-// those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
-// ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
+// those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_),
+// slots 1..c = ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay
+// stable, and so is the slot's width (see kNarrowPositions).
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
 // Single-writer: one partition, one thread; parallelism is cross-partition.
-template <size_t NumModes>
 class OperatorIndex {
 public:
-    using value_type = Monomial<NumModes>;
-    using key_type = Monomial<NumModes>;
+    // The store carries its width as data (num_bits_), so a row is a plain Bitset and the width is not
+    // recoverable from the type.
+    using value_type = Bitset;
+    using key_type = Bitset;
     using mapped_type = size_t;
-
-    using PosT = std::
-        conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     static constexpr size_t kDefaultInlinePositions = 11;
     // A weight-w Pauli needs 2w positions; 32 covers the common case inline at the supported Pauli
     // cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
-    static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
 
-    static_assert((2 * NumModes) - 1 <= std::numeric_limits<PosT>::max(),
-                  "OperatorIndex PosT too narrow for 2*NumModes positions");
-    static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
-                  "kOverflowMarker sentinel must not collide with a valid popcount");
+    // A slot holds one bit position, so the narrowest integer that indexes num_bits_ is what a row costs
+    // per slot: uint8_t at or below kNarrowPositions, uint16_t above it. The width is data, so it is a
+    // member (narrow_) rather than the conditional_t on 2*NumModes it used to be, and the payload type is
+    // bound per call by with_rows(). One fixed uint16_t is the obvious simplification and was rejected on
+    // measurement: it doubles the entire operator's row footprint for every system at or below
+    // kNarrowPositions/2 modes, which is where both shipping models sit.
+    //
+    // Row payload only -- never a hash input, never serialized, never an owner-routing input -- so the
+    // width cannot change results, only footprint. That also means a term-and-energy baseline diff cannot
+    // see a regression here; the operator_terms_bytes checks in the unit tests are the gate.
+    static constexpr size_t kNarrowPositions = static_cast<size_t>(std::numeric_limits<uint8_t>::max()) + 1;
+    static constexpr size_t kMaxPositions = static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1;
 
-    // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling), so the
-    // all-ones TermIndex is free to mark an empty slot.
-    static constexpr size_t kIndexCeiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
-    static constexpr TermIndex kEmptySlot = std::numeric_limits<TermIndex>::max();
-    // find_batch's "absent" result; same value as detail::kMissingIndex (not included here — the
-    // operator store must not depend on evolution headers).
-    static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
+    // The all-ones slot value, per row width. It only ever occupies slot 0, whose value is a popcount
+    // bounded by inline_width_ <= kMaxInlinePositions, so it collides with no popcount at either width
+    // -- asserted below on the narrower type, which covers both. A *position* slot may legitimately
+    // hold the marker value (position 255 under uint8_t) and is never compared against it.
+    template <typename P>
+    static constexpr P kOverflowMarker = std::numeric_limits<P>::max();
 
-    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
-        : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_) {}
+    static_assert(kMaxInlinePositions < kOverflowMarker<uint8_t>,
+                  "the overflow marker must not collide with a valid popcount at either row width");
+
+    static constexpr size_t kIndexCeiling = RowHashTable::kIndexCeiling;
+    static constexpr size_t kNotFound = RowHashTable::kNotFound;
+
+    // num_bits is the storage bit width of every monomial this store will hold; row() reconstructs at
+    // exactly that width, and a wrong one would change num_words() and therefore the hash, the probe
+    // order and MPI owner routing. It also fixes the row payload width for the store's life, so a store
+    // holds exactly one of the two row arrays and narrow_ is never reassigned. The check replaces the
+    // static_assert that used to guard set()'s narrowing cast, which can no longer be a compile-time
+    // assertion.
+    explicit OperatorIndex(size_t num_bits, size_t inline_width = kDefaultInlinePositions)
+        : num_bits_(num_bits),
+          inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
+          stride_(1 + inline_width_),
+          narrow_(num_bits <= kNarrowPositions) {
+        if (num_bits > kMaxPositions) {
+            throw OperatorIndexWidthUnsupported(
+                std::format("OperatorIndex supports at most {} bit positions ({} modes); got {} bits ({} modes).",
+                            kMaxPositions,
+                            kMaxPositions / 2,
+                            num_bits,
+                            num_bits / 2));
+        }
+    }
+
+    [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
     OperatorIndex &operator=(OperatorIndex &&) = delete;
 
+private:
+    // The dispatcher sits here, mid-class, rather than with the other private members at the bottom: a
+    // deduced (decltype(auto)) return type is not available to a caller that appears earlier in the class
+    // body -- the body is a complete-class context for name lookup, but not for return-type deduction.
+    //
+    // Binds the row payload type for one call. narrow_ is fixed at construction, so the branch is a
+    // load-and-test on a member that never changes: predicted, and amortized over the row loop inside f.
+    // The dispatch is per call rather than hoisted into the store type on purpose -- the row width is not
+    // part of the seam the scan is templated on (see the with_store note in MPOperator), and making it so
+    // would double every downstream instantiation to save a predicted branch per row.
+    template <typename F>
+    [[gnu::always_inline]] auto with_rows(F &&f) const -> decltype(auto) {
+        return narrow_ ? f(rows8_) : f(rows16_);
+    }
+    template <typename F>
+    [[gnu::always_inline]] auto with_rows(F &&f) -> decltype(auto) {
+        return narrow_ ? f(rows8_) : f(rows16_);
+    }
+
+    // Row i's address, for the prefetch hint, which discards the element type anyway.
+    [[nodiscard]] auto row_addr(size_t i) const noexcept -> const void * {
+        return with_rows([&](const auto &rows) -> const void * { return rows.data() + (i * stride_); });
+    }
+
+    // The two row arrays differ only in element size, so everything that counts bytes rather than
+    // reading a slot is plain arithmetic off this and needs no type bound.
+    [[nodiscard]] auto slot_bytes() const noexcept -> size_t { return narrow_ ? sizeof(uint8_t) : sizeof(uint16_t); }
+    [[nodiscard]] auto row_slots_capacity() const -> size_t {
+        return with_rows([&](const auto &rows) { return rows.capacity(); });
+    }
+    [[nodiscard]] auto row_bytes_capacity() const -> size_t { return row_slots_capacity() * slot_bytes(); }
+
+public:
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_);
-        out->rows_ = rows_;
+        auto out = std::make_unique<OperatorIndex>(num_bits_, inline_width_);
+        // Both, not with_rows(): the dead one is empty, and copying it is cheaper than a dispatch.
+        out->rows8_ = rows8_;
+        out->rows16_ = rows16_;
         out->size_ = size_;
         out->overflow_ = overflow_;
-        out->reserve_index(table_.count);
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                out->insert_slot_(e.idx, e.h);
-            }
-        }
+        out->table_.reserve(table_.count());
+        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
         return out;
     }
 
@@ -110,7 +175,7 @@ public:
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
-        rows_.resize((base + n) * stride_);
+        with_rows([&](auto &rows) { rows.resize((base + n) * stride_); });
         size_ = base + n;
         return base;
     }
@@ -120,133 +185,94 @@ public:
     // Row i may be grown-but-uninitialized or hold a prior value, so the row header is never pre-read
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
-        const size_t c = mono.count();
-        PosT *row = &rows_[i * stride_];
-        if (c > inline_width_) {
-            row[0] = kOverflowMarker;
-            overflow_[i] = mono;
-            return;
-        }
-        if (!overflow_.empty()) {
-            overflow_.erase(i);
-        }
-        row[0] = static_cast<PosT>(c);
-        PosT *out = row + 1;
-        for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
-            *out++ = static_cast<PosT>(b);
-        }
+        with_rows([&]<typename P>(DefaultInitVector<P> &rows) {
+            const size_t c = mono.count();
+            P *row = &rows[i * stride_];
+            if (c > inline_width_) {
+                row[0] = kOverflowMarker<P>;
+                overflow_[i] = mono;
+                return;
+            }
+            if (!overflow_.empty()) {
+                overflow_.erase(i);
+            }
+            row[0] = static_cast<P>(c);
+            P *out = row + 1;
+            for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
+                *out++ = static_cast<P>(b);
+            }
+        });
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
-            return overflow_.at(i);
-        }
-        value_type mono;
-        const PosT *pos = &rows_[(i * stride_) + 1];
-        for (size_t j = 0; j < c; ++j) {
-            mono.set(pos[j]);
-        }
-        return mono;
+        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) -> value_type {
+            const P c = rows[i * stride_];
+            if (c == kOverflowMarker<P>) {
+                return overflow_.at(i);
+            }
+            value_type mono(num_bits_);
+            const P *pos = &rows[(i * stride_) + 1];
+            for (size_t j = 0; j < c; ++j) {
+                mono.set(pos[j]);
+            }
+            return mono;
+        });
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
-            const auto &m = overflow_.at(i);
-            for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-                fn(b);
+        with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
+            const P c = rows[i * stride_];
+            if (c == kOverflowMarker<P>) {
+                const auto &m = overflow_.at(i);
+                for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+                    fn(b);
+                }
+                return;
             }
-            return;
-        }
-        const PosT *pos = &rows_[(i * stride_) + 1];
-        for (size_t j = 0; j < c; ++j) {
-            fn(static_cast<size_t>(pos[j]));
-        }
+            const P *pos = &rows[(i * stride_) + 1];
+            for (size_t j = 0; j < c; ++j) {
+                fn(static_cast<size_t>(pos[j]));
+            }
+        });
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = rows_[i * stride_]; c != kOverflowMarker) {
-            return c;
-        }
-        return overflow_.at(i).count();
+        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) -> size_t {
+            if (const P c = rows[i * stride_]; c != kOverflowMarker<P>) {
+                return static_cast<size_t>(c);
+            }
+            return overflow_.at(i).count();
+        });
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
+        size_t total = row_bytes_capacity();
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
 
     auto find(const key_type &key) const -> std::optional<size_t> {
-        const uint32_t h = fold_hash(key);
-        if (table_.count == 0) {
-            return std::nullopt;
-        }
-        size_t s = spread(h) & table_.mask;
-        for (;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
-                return std::nullopt;
-            }
-            if (e.h == h && row_eq_key(static_cast<size_t>(e.idx), key)) {
-                return static_cast<size_t>(e.idx);
-            }
-        }
+        return table_.find(fold_hash(key), [&](size_t i) { return row_eq_key(i, key); });
     }
 
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
     // find() calls, but overlaps dram misses via a per-group hash/probe/confirm pipeline. An h
     // collision falls back to an exact find. must not run concurrently with inserts.
-    auto find_batch(const key_type *keys, size_t n, size_t *out) const -> void {
-        static constexpr size_t G = 16; // keys prefetched together per pipeline pass
-        std::array<uint32_t, G> hh;
-        std::array<size_t, G> sp;
-        std::array<TermIndex, G> cand;
-        for (size_t base = 0; base < n; base += G) {
-            const size_t g = std::min(G, n - base);
-            for (size_t j = 0; j < g; ++j) {
-                hh[j] = fold_hash(keys[base + j]);
-                sp[j] = spread(hh[j]);
-                __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
-            }
-            for (size_t j = 0; j < g; ++j) {
-                cand[j] = kEmptySlot;
-                if (table_.count == 0) {
-                    continue;
-                }
-                cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
-                if (cand[j] != kEmptySlot) {
-                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
-                }
-            }
-            for (size_t j = 0; j < g; ++j) {
-                if (cand[j] != kEmptySlot && row_eq_key(static_cast<size_t>(cand[j]), keys[base + j])) {
-                    out[base + j] = static_cast<size_t>(cand[j]);
-                }
-                else if (cand[j] != kEmptySlot) {
-                    const auto v = find(keys[base + j]);
-                    out[base + j] = v ? *v : kNotFound;
-                }
-                else {
-                    out[base + j] = kNotFound;
-                }
-            }
-        }
+    // Templated on the key type rather than taking `const key_type *`: any Key that binds to
+    // const key_type& works, since that is all fold_hash/row_eq_key need. SparseRowStore's twin takes
+    // its own key type through the same signature, which is what lets Resolve.h call one spelling.
+    template <typename Key>
+    auto find_batch(const Key *keys, size_t n, size_t *out) const -> void {
+        table_.find_batch(
+            keys,
+            n,
+            out,
+            [this](const Key &key) { return fold_hash(key); },
+            [this](size_t i) { __builtin_prefetch(row_addr(i), 0, 0); },
+            [this](size_t i, const Key &key) { return row_eq_key(i, key); });
     }
 
     // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
     auto emplace(const key_type &key, mapped_type value) -> void {
-        check_index_fits(value);
-        const uint32_t h = fold_hash(key);
-        table_.rehash_if_needed();
-        size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
-            if (table_.slots[s].h == h && row_eq_key(static_cast<size_t>(table_.slots[s].idx), key)) {
-                return;
-            }
-            s = (s + 1) & table_.mask;
-        }
-        table_.slots[s] = Slot{static_cast<TermIndex>(value), h};
-        ++table_.count;
+        table_.emplace(fold_hash(key), value, [&](size_t i) { return row_eq_key(i, key); });
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
@@ -254,152 +280,72 @@ public:
         if (n == 0) {
             return;
         }
-        check_index_fits(base + n - 1);
+        RowHashTable::check_index_fits(base + n - 1);
         for (size_t k = 0; k < n; ++k) {
-            insert_slot_(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
+            table_.insert_distinct(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
         }
     }
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (const Slot &e : table_.slots) {
-            if (e.idx != kEmptySlot) {
-                fn(row(static_cast<size_t>(e.idx)), static_cast<size_t>(e.idx));
-            }
-        }
+        table_.for_each_slot(
+            [&](TermIndex idx, uint32_t) { fn(row(static_cast<size_t>(idx)), static_cast<size_t>(idx)); });
     }
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
-        return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
+        const size_t cap = row_slots_capacity();
+        return (cap - std::min(cap, size_ * stride_)) * slot_bytes();
     }
 
-    auto index_estimated_memory_bytes() const -> size_t {
-        return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
-    }
+    auto index_estimated_memory_bytes() const -> size_t { return sizeof(OperatorIndex) + table_.slot_bytes(); }
 
 private:
-    struct Slot {
-        TermIndex idx = kEmptySlot;
-        uint32_t h = 0;
-    };
-
-    // First slot on h's probe chain whose stored hash matches, or kEmptySlot if the chain ends first.
-    // Matches on h alone and leaves the dense-row comparison to the caller — that deferral is what lets
-    // find_batch prefetch the row between probe and confirm, so do not fold row_eq_key in here (find()
-    // deliberately keeps its own confirming variant). `start` must already be masked; the table must not
-    // be mutated concurrently.
-    [[gnu::always_inline]] auto probe_hash_match_(uint32_t h, size_t start) const -> TermIndex {
-        for (size_t s = start;; s = (s + 1) & table_.mask) {
-            const Slot &e = table_.slots[s];
-            if (e.idx == kEmptySlot) {
-                return kEmptySlot;
-            }
-            if (e.h == h) {
-                return e.idx;
-            }
-        }
-    }
-
+    // SplitmixHash directly, which is exactly what MonomialHash<NumModes> forwarded to -- the hash is
+    // unchanged, and must stay so: it drives probe order and monomial_hash % rank_count owner routing
+    // (plan invariant 2).
     static uint32_t fold_hash(const key_type &q) noexcept {
-        const size_t full = MonomialHash<NumModes>{}(q);
+        const size_t full = SplitmixHash{}(q);
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
-    // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h
-    // is only an equality pre-filter, so it must be re-mixed before its low bits drive table bucketing.
-    static size_t spread(uint32_t h) noexcept {
-        uint64_t x = static_cast<uint64_t>(h) * 0x9E3779B97F4A7C15ULL;
-        x ^= x >> 30;
-        x *= 0xBF58476D1CE4E5B9ULL;
-        x ^= x >> 27;
-        x *= 0x94D049BB133111EBULL;
-        x ^= x >> 31;
-        return static_cast<size_t>(x);
+
+    [[nodiscard]] auto capacity() const -> size_t { return row_slots_capacity() / stride_; }
+    auto reserve_rows(size_t n) -> void {
+        with_rows([&](auto &rows) { rows.reserve(n * stride_); });
     }
-
-    // One open-addressing table: power-of-2 slot count, linear probing, max load factor 0.7
-    // (the group-prefetch win erodes at high load — longer probe chains add un-prefetched reads).
-    struct Table {
-        std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
-        size_t mask = kMinSlots - 1;
-        size_t count = 0;
-
-        auto rehash_if_needed() -> void {
-            if ((count + 1) * 10 >= slots.size() * 7) {
-                rehash_to(slots.size() * 2);
-            }
-        }
-        auto rehash_to(size_t new_cap) -> void {
-            new_cap = std::bit_ceil(std::max<size_t>(new_cap, kMinSlots));
-            if (new_cap <= slots.size()) {
-                return;
-            }
-            std::vector<Slot> old = std::move(slots);
-            slots.assign(new_cap, Slot{});
-            mask = new_cap - 1;
-            for (const Slot &e : old) {
-                if (e.idx == kEmptySlot) {
-                    continue;
-                }
-                size_t s = spread(e.h) & mask;
-                while (slots[s].idx != kEmptySlot) {
-                    s = (s + 1) & mask;
-                }
-                slots[s] = e;
-            }
-        }
-    };
-    static constexpr size_t kMinSlots = 16;
-    // Slot count for `n` entries at ≤0.7 load.
-    static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
-
-    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
-    auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
-
-    // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
-    // keys (⊕G-injective miss batches, clone re-insertion).
-    auto insert_slot_(TermIndex idx, uint32_t h) -> void {
-        table_.rehash_if_needed();
-        size_t s = spread(h) & table_.mask;
-        while (table_.slots[s].idx != kEmptySlot) {
-            s = (s + 1) & table_.mask;
-        }
-        table_.slots[s] = Slot{idx, h};
-        ++table_.count;
-    }
+    auto reserve_index(size_t n) -> void { table_.reserve(n); }
 
     // Compare row i against key q without materializing the row (the find confirm). Reads the
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
-            return overflow_.at(i) == q;
-        }
-        if (q.count() != static_cast<size_t>(c)) {
-            return false;
-        }
-        const PosT *pos = &rows_[(i * stride_) + 1];
-        for (size_t j = 0; j < c; ++j) {
-            if (!q.test(pos[j])) {
+        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
+            const P c = rows[i * stride_];
+            if (c == kOverflowMarker<P>) {
+                return overflow_.at(i) == q;
+            }
+            if (q.count() != static_cast<size_t>(c)) {
                 return false;
             }
-        }
-        return true;
+            const P *pos = &rows[(i * stride_) + 1];
+            for (size_t j = 0; j < c; ++j) {
+                if (!q.test(pos[j])) {
+                    return false;
+                }
+            }
+            return true;
+        });
     }
 
-    static auto check_index_fits(size_t value) -> void {
-        if (value >= kIndexCeiling) {
-            throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                          "-Dmonoprop_WIDE_TERM_INDEX (this partition's term count exceeded ~2^32).");
-        }
-    }
-
-    DefaultInitVector<PosT> rows_ = {};
+    // Exactly one is ever non-empty, selected by narrow_ -- the same one-live-backend shape MPOperator
+    // uses for its two stores.
+    DefaultInitVector<uint8_t> rows8_ = {};
+    DefaultInitVector<uint16_t> rows16_ = {};
+    size_t num_bits_ = 0;
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
+    bool narrow_ = false;
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
-    Table table_ = {};
+    RowHashTable table_ = {};
 };
 
 } // namespace monoprop::detail

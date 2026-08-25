@@ -22,15 +22,15 @@
 
 // Copy-constructing a simulator must produce a fully independent deep copy -- the mechanism behind
 // Python __deepcopy__. The operator store is non-copyable, so the copy rebuilds it via clone() and
-// find()/indexing() have to work on the copy's own rows. The MPI communicator handle is shared.
+// find()/for_each_term() have to work on the copy's own rows. The MPI communicator handle is shared.
 
 using namespace test_utils;
 using namespace monoprop;
 
 // Copy assignment is deliberately deleted: the unique_ptr-owned store needs no assignment.
-static_assert(std::is_copy_constructible_v<MonomialPropagator<8>>, "simulator must be copyable");
-static_assert(std::is_move_constructible_v<MonomialPropagator<8>>, "simulator must stay movable");
-static_assert(!std::is_copy_assignable_v<MonomialPropagator<8>>, "copy assignment stays deleted");
+static_assert(std::is_copy_constructible_v<MonomialPropagator>, "simulator must be copyable");
+static_assert(std::is_move_constructible_v<MonomialPropagator>, "simulator must stay movable");
+static_assert(!std::is_copy_assignable_v<MonomialPropagator>, "copy assignment stays deleted");
 
 BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_matches_energy, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
@@ -97,11 +97,10 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_index_valid, ExampleDataFix) 
 
     auto copy = sim;
 
-    const auto &idx = copy.indexing();
-    BOOST_TEST(idx.size() == sim.indexing().size());
+    BOOST_TEST(copy.num_local_terms() == sim.num_local_terms());
     bool all_found = true;
-    idx.for_each([&](const auto &mono, size_t i) {
-        const auto f = idx.find(mono);
+    copy.for_each_term([&](const auto &mono, size_t i) {
+        const auto f = copy.mp_op().find(mono);
         if (!f || *f != i) {
             all_found = false;
         }

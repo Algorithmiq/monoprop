@@ -15,6 +15,7 @@
 #pragma once
 
 #include <complex>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -23,57 +24,74 @@
 #include <boost/unordered/unordered_flat_map.hpp>
 
 #include "monoprop/Bitset.h"
+#include "monoprop/monopropExport.h"
 
 namespace monoprop {
 
-template <size_t NumModes>
-using Monomial = Bitset<2 * NumModes>;
+// A monomial is a Bitset of width 2 * num_modes, two bits per mode/qubit -- the width is data, so
+// there is no monomial *type* to name and no header-level alias for one: spell Bitset, and carry the
+// width with the value. Sites that need a NumModes deduce it from a monomial argument's own width
+// (mono.size() / 2), never from a template parameter.
 
-// Not the evolved operator's row storage -- that is detail::OperatorIndex (see detail/operator/OperatorIndex.h).
-template <size_t NumModes>
-using MonomialList = std::vector<Monomial<NumModes>>;
+// Structural stand-in for "a monomial, width unspecified", for the free functions in the algebra
+// headers and elsewhere that read a monomial parameter generically. Instance (not qualified) calls,
+// since a width only exists per value.
+template <typename T>
+concept MonomialLike = requires(const T &t) {
+    { t.size() } -> std::convertible_to<size_t>;
+    { t.num_words() } -> std::convertible_to<size_t>;
+    { t.count() } -> std::convertible_to<size_t>;
+    { t.find_first() } -> std::convertible_to<size_t>;
+};
 
-template <size_t NumModes>
+// Not the evolved operator's row storage -- that is detail::OperatorIndex (see
+// detail/operator/RowAccess.h).
+//
+// Element-width caveat, from Bitset being runtime-width: a sized construction `MonomialList l(n)`
+// fills with *width-0* bitsets, since nothing in the element type carries a width. Any site
+// that sizes up front and assigns into slots afterwards must pass a fill value of the intended
+// width, `MonomialList l(n, Bitset(num_bits))`; push_back-only sites need nothing. A width-0 element
+// reaching a binary op trips the width assertions in Bitset.h.
+using MonomialList = std::vector<Bitset>;
+
 struct MonomialHash final {
     using is_transparent = void;
 
-    auto operator()(const Monomial<NumModes> &arr) const noexcept -> size_t {
-        return SplitmixHash<Monomial<NumModes>>{}(arr);
-    }
+    auto operator()(const Bitset &arr) const noexcept -> size_t { return SplitmixHash{}(arr); }
 };
 
-template <size_t NumModes>
 struct MonomialEqual final {
     using is_transparent = void;
 
-    auto operator()(const Monomial<NumModes> &lhs, const Monomial<NumModes> &rhs) const noexcept -> bool {
-        return lhs == rhs;
-    }
+    auto operator()(const Bitset &lhs, const Bitset &rhs) const noexcept -> bool { return lhs == rhs; }
 };
 
-template <size_t NumModes>
-using MonomialMap =
-    boost::unordered_flat_map<Monomial<NumModes>, double, MonomialHash<NumModes>, MonomialEqual<NumModes>>;
+using MonomialMap = boost::unordered_flat_map<Bitset, double, MonomialHash, MonomialEqual>;
 
-template <size_t NumModes>
-inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
-    if constexpr (Monomial<NumModes>::num_words() == 1) {
-        return static_cast<size_t>(SplitmixHash<Monomial<NumModes>>::mix(mono.word(0)));
-    }
-    else {
-        return MonomialHash<NumModes>{}(mono);
-    }
+// MPI owner routing (find_rank) hashes through here, so the value must not change: it decides which
+// rank owns a term and, with it, probe order. It does not. The single-word fast path this used to
+// select with `if constexpr` is the same one SplitmixHash::operator() now takes at runtime, and the
+// wide arm was already a call to SplitmixHash via MonomialHash -- so both arms collapse into the one
+// call below. Kept as a named function rather than inlined at the call sites: the name is what marks a
+// hash as owner-routing (pinned) rather than an ordinary container hash.
+inline auto monomial_hash(const Bitset &mono) noexcept -> size_t {
+    return SplitmixHash{}(mono);
 }
 
 // Structural keep/drop predicate applied to a monomial after each gate.
-template <size_t NumModes>
-using CutoffFn = std::function<bool(const Monomial<NumModes> &)>;
+using CutoffFn = std::function<bool(const Bitset &)>;
 
-enum class CutoffType {
+enum class CutoffType : unsigned char {
     Length, // Keep if the monomial length (number of Majorana operators) <= cutoff (or fully paired)
     Support // Keep if the orbital support (number of distinct orbitals) <= cutoff (or fully paired)
 };
 
-enum class Basis : uint8_t { Majorana, Pauli };
+monoprop_EXPORT auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType;
+monoprop_EXPORT auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
+
+enum class Basis : unsigned char { Majorana, Pauli };
+
+monoprop_EXPORT auto basis_str_2_enum(const std::string &basis) -> Basis;
+monoprop_EXPORT auto basis_enum_2_str(Basis basis) -> std::string;
 
 } // namespace monoprop

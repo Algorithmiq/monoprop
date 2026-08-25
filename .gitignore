@@ -161,7 +161,6 @@ Thumbs.db
 
 external/upstream/_srcs/
 tests/cpp/_srcs/
-_dispatch*.py
 _constants.py
 build*/
 Testing/
@@ -177,6 +176,11 @@ benches/results/**
 
 # devcontainer files
 .devcontainer/devcontainer-lock.json
+
+notes/**
+
+# `just capture-baseline` / `just diff-baseline` output (tools/capture-baseline.py)
+.baseline-capture/**
 
 # Useful when running in clusters
 logs/

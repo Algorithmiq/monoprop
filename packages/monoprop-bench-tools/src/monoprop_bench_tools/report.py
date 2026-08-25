@@ -193,6 +193,15 @@ def _fmt_cpus(meta: dict) -> str:
     return f"{logical}/{physical}"
 
 
+def _fmt_row_store(meta: dict) -> str:
+    """Render the row backend as ``asked → ran`` (the two differ whenever the setting is ``auto``)."""
+    asked = meta.get("monoprop_row_store", "—")
+    ran = meta.get("row_store_effective")
+    if ran is None:
+        return str(asked)
+    return str(asked) if asked == ran else f"{asked} → {ran}"
+
+
 def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     """Render the run-configuration table (one row per run label)."""
     metas = {lbl: results.get(lbl, {}).get("meta", {}) for lbl in labels}
@@ -208,6 +217,7 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
         "Ranks/node",
         "Partitions (requested)",
         "monoprop threads",
+        "Row store",
         "CPUs (logical/physical)",
         "Host",
     ]
@@ -222,6 +232,7 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
             str(metas[label].get("ranks_per_node", "—")),
             str(metas[label].get("partitions_env", "—")),
             str(metas[label].get("monoprop_threads", "default")),
+            _fmt_row_store(metas[label]),
             _fmt_cpus(metas[label]),
             str(metas[label].get("hostname", "—")),
         ]
@@ -258,6 +269,114 @@ def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[s
             lambda lbl, f, m=model: (
                 _fmt_config(configs[lbl][m][f]) if f in configs[lbl].get(m, {}) else "—"
             ),
+            level=3,
+        )
+    return lines
+
+
+def _per_unit(total: float | None, count: int | None, unit: str) -> str:
+    """Format ``total / count`` with ``unit``, or ``—`` when either is missing."""
+    if not total or not count:
+        return "—"
+    return f"{total / count:.1f} {unit}"
+
+
+# Rows of the per-model tables: (row id, display). Cost and footprint per term are the two
+# width-comparable quantities -- the models grow their term count with their mode count, so the
+# totals beside them are not comparable across widths on their own.
+_MODEL_ROWS: list[tuple[str, str]] = [
+    ("terms", "Terms"),
+    ("time", "Time (mean)"),
+    ("cost_per_term", "Cost per term"),
+    ("peak_rss", "Peak RSS"),
+    ("base_rss", "Baseline RSS (pre-build)"),
+    ("rest_rss", "Resting RSS"),
+    ("op_bytes", "Operator accounting"),
+    ("bytes_per_term", "Operator bytes per term"),
+]
+
+
+def _model_cells(
+    data: dict, model: str, seconds: float | None, peak_rss: int | None
+) -> dict[str, str]:
+    """Return one label's formatted cells for ``model``, keyed as in :data:`_MODEL_ROWS`."""
+    terms = data.get("opsize", {}).get(model, {}).get("terms")
+    op_bytes = data.get("opmem", {}).get(model, {}).get("total_bytes")
+    return {
+        "terms": f"{terms:,}" if terms else "—",
+        "time": _fmt_time(seconds),
+        "cost_per_term": _per_unit(seconds * 1e9 if seconds else None, terms, "ns"),
+        "peak_rss": _fmt_mem(peak_rss),
+        "base_rss": _fmt_mem(data.get("membase", {}).get(model)),
+        "rest_rss": _fmt_mem(data.get("memrest", {}).get(model)),
+        "op_bytes": _fmt_mem(op_bytes),
+        "bytes_per_term": _per_unit(op_bytes, terms, "B"),
+    }
+
+
+def _model_results_section(
+    labels: list[str],
+    results: dict[str, dict],
+    timings: dict[str, dict[str, float]],
+    memory: dict[str, dict],
+    all_ops: list[str],
+) -> list[str]:
+    """Render one table of cost and footprint per fixed model.
+
+    The random benchmarks are sized from the CLI and reported by picture above; the fixed models
+    each own a mode count, so their numbers are collected per model instead.
+    """
+    # Order-preserving dedup across labels, as in _model_config_section.
+    models = list(
+        dict.fromkeys(
+            model for lbl in labels for model in results.get(lbl, {}).get("configs", {})
+        )
+    )
+    if not models:
+        return []
+
+    # The op key a model's timing and peak RSS are recorded under, e.g.
+    # "bench_models.py::test_model[hubbard]" -- matched rather than reconstructed, so a renamed
+    # test file does not silently blank the section.
+    op_keys = {
+        model: next(
+            (op for op in all_ops if _display_op(op) == f"model / {model}"), None
+        )
+        for model in models
+    }
+
+    cells = {
+        model: {
+            label: _model_cells(
+                results.get(label, {}),
+                model,
+                timings.get(label, {}).get(op_keys[model]) if op_keys[model] else None,
+                memory.get(label, {}).get(op_keys[model]) if op_keys[model] else None,
+            )
+            for label in labels
+        }
+        for model in models
+    }
+
+    lines = [
+        "## Fixed models",
+        "",
+        "Cost and footprint of each fixed model. `Time` is the mean over `--model-rounds`; "
+        "`Cost per term` divides it by the evolved operator's term count. `Peak RSS` is the "
+        "process high-water mark over the whole benchmark, `Baseline RSS` the resting footprint "
+        "before the model is built, and `Operator accounting` monoprop's own C++ accounting of "
+        "the evolved operator (`operator_memory_breakdown`), which is the only one of the three "
+        "that excludes the interpreter and the transient build buffers.",
+        "",
+    ]
+    for model in models:
+        lines += _section(
+            model,
+            "",
+            "Quantity",
+            _MODEL_ROWS,
+            labels,
+            lambda lbl, row_id, m=model: cells[m][lbl].get(row_id, "—"),
             level=3,
         )
     return lines
@@ -371,6 +490,7 @@ def build_report(results_dir: Path) -> str:
             lambda lbl, p: _fmt_mem(memrest.get(lbl, {}).get(p)),
         ),
         *_model_config_section(labels, results),
+        *_model_results_section(labels, results, timings, memory, all_ops),
         *ops_section("Heisenberg", "heisenberg"),
         *ops_section("Schrödinger", "schrodinger"),
     ]

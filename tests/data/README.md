@@ -34,6 +34,22 @@ The Hamiltonian is stored as three parallel arrays (msgpack has no native comple
 
 i.e. `terms = {tuple(k): complex(r, i) for k, r, i in zip(keys, real, imag)}`.
 
+## Wide cases are derived, not stored
+
+No fixture here is wider than 28 modes, so every one of them stores its monomials in a single 32-mode
+block. The wide-system regime — several words per monomial, the width past which those words spill to
+the heap, and the storage width at which the support-form row store is selected — is reached by
+*relabelling* one of these fixtures into a wider system rather than by adding a file:
+
+- Python: `ModeEmbedding` and `WIDE_EMBEDDING` in `tests/cases.py`, passed to `load_problem()`
+- C++: `test_utils::ModeEmbedding` and `embed_case()` in `cpp/tests/TestData.h`
+
+A monotone injection of modes is a canonical transformation: a sorted Majorana index tuple stays
+sorted, so no anticommutation sign appears, and `actual_energy` / `actual_gradient` still describe the
+embedded problem exactly. Prefer that to a new binary whose only difference from an existing one is a
+permutation of its mode labels — it needs no second reference calculation, and the wide run then owes
+the narrow run's evolved operator term for term, which is a sharper check than either value alone.
+
 The on-disk key names are **frozen** — the fixtures are checked-in binaries and are not rewritten
 when the code's notation changes. `hartree_fock` is the historical name for what the library now
 calls the *initial state*; both loaders (`tests/cases.py`, `cpp/tests/TestData.cpp`) read that key

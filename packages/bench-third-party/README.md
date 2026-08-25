@@ -123,6 +123,3 @@ Two things to know when reading the output:
   `run_model.py` feeds it monoprop's per-step term count; `run_scaling.py` feeds it
   monoprop's *final* term count for that size (recorded as `max_terms_budget`), which is
   more generous in the early steps.
-
-Building monoprop for the large sizes needs a mode tier at least as big as the qubit
-count — 324 qubits means `-Dmonoprop_MAX_NUM_MODES=352`, as tiers come in 32-mode blocks.

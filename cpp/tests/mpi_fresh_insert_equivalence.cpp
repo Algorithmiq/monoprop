@@ -40,15 +40,15 @@ using pauli_oracle::slots_of_string;
 // forces most partners to be fresh inserts, so the miss arm runs on nearly every partner.
 template <size_t NumModes>
 auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
-    MonomialPropagator<NumModes> sim(data.hamiltonian,
-                                     /*cutoff=*/2U,
-                                     data.initial_state,
-                                     /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
-                                     comm,
-                                     /*lower_atol=*/std::nullopt,
-                                     /*upper_atol=*/std::optional<double>{0.0},
-                                     CutoffType::Length,
-                                     /*basis_change=*/std::nullopt);
+    auto sim = test_utils::make_propagator<NumModes>(data.hamiltonian,
+                                                     /*cutoff=*/2U,
+                                                     data.initial_state,
+                                                     /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
+                                                     comm,
+                                                     /*lower_atol=*/std::nullopt,
+                                                     /*upper_atol=*/std::optional<double>{0.0},
+                                                     CutoffType::Length,
+                                                     /*basis_change=*/std::nullopt);
     sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
     auto energy_fn = sim.expectation_value_functional(std::nullopt);
     return energy_fn(VecD{});
@@ -73,17 +73,17 @@ auto run_schrodinger_pauli(MPI_Comm comm) -> double {
     OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
-    MonomialPropagator<kPauliQ> sim(init,
-                                    /*cutoff=*/2U,
-                                    VecZ{},
-                                    /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
-                                    comm,
-                                    /*lower_atol=*/std::nullopt,
-                                    /*upper_atol=*/std::optional<double>{0.0},
-                                    CutoffType::Support,
-                                    /*basis_change=*/std::nullopt,
-                                    kPauliQ,
-                                    Basis::Pauli);
+    auto sim = test_utils::make_propagator<kPauliQ>(init,
+                                                    /*cutoff=*/2U,
+                                                    VecZ{},
+                                                    /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
+                                                    comm,
+                                                    /*lower_atol=*/std::nullopt,
+                                                    /*upper_atol=*/std::optional<double>{0.0},
+                                                    CutoffType::Support,
+                                                    /*basis_change=*/std::nullopt,
+                                                    kPauliQ,
+                                                    Basis::Pauli);
     std::vector<VecZ> gens;
     VecZ pmap;
     VecD gcoeffs;

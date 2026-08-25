@@ -38,26 +38,24 @@ constexpr size_t kNumModes = 8;
 constexpr auto kBasis = Basis::Majorana;
 
 template <size_t NumModes>
-auto generator_of(const LayerTraversal &layer) -> Monomial<NumModes> {
-    Monomial<NumModes> gen{};
+auto generator_of(const LayerTraversal &layer) -> Bitset {
+    Bitset gen(2 * NumModes);
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;
 }
 
 // Reference oracle (test-only): replay a materialised FoldCache buffer, which the live path never does.
-template <size_t NumModes>
-void scale_cos_cached(const monoprop::detail::FoldCache<NumModes> &p, double *coeff, double cos_val) {
+void scale_cos_cached(const monoprop::detail::FoldCache &p, double *coeff, double cos_val) {
     const size_t mask_words = p.fold.mask_words;
     for (size_t wi = 0; wi < mask_words; ++wi) {
-        monoprop::detail::for_each_cos_index(wi * 64, monoprop::detail::fold_word<NumModes>(p, wi), [&](size_t i) {
+        monoprop::detail::for_each_cos_index(wi * 64, monoprop::detail::fold_word(p, wi), [&](size_t i) {
             coeff[i] *= cos_val;
         });
     }
 }
 
-template <size_t NumModes>
-double accumulate_cos_cached(const monoprop::detail::FoldCache<NumModes> &p,
+double accumulate_cos_cached(const monoprop::detail::FoldCache &p,
                              double *state,
                              double *ham,
                              double cos_val,
@@ -65,7 +63,7 @@ double accumulate_cos_cached(const monoprop::detail::FoldCache<NumModes> &p,
     const size_t mask_words = p.fold.mask_words;
     double loc = 0.0;
     for (size_t wi = 0; wi < mask_words; ++wi) {
-        monoprop::detail::for_each_cos_index(wi * 64, monoprop::detail::fold_word<NumModes>(p, wi), [&](size_t i) {
+        monoprop::detail::for_each_cos_index(wi * 64, monoprop::detail::fold_word(p, wi), [&](size_t i) {
             loc += state[i] * ham[i];
             ham[i] *= sec_val;
             state[i] *= cos_val;
@@ -107,13 +105,13 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
             ++odd_layers;
         }
 
-        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
-        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto prepared = monoprop::detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto recipe = monoprop::detail::make_lazy_fold(inverted_index, gen, layer.scaled_count(), kBasis);
 
         std::vector<double> a = baseline;
         std::vector<double> b = baseline;
-        scale_cos_cached<kNumModes>(prepared, a.data(), cos_val);
-        monoprop::detail::scale_cos_lazy<kNumModes>(inverted_index, recipe, b.data(), cos_val);
+        scale_cos_cached(prepared, a.data(), cos_val);
+        monoprop::detail::scale_cos_lazy(inverted_index, recipe, b.data(), cos_val);
 
         BOOST_TEST_INFO("layer " << li);
         BOOST_TEST(std::memcmp(a.data(), b.data(), n * sizeof(double)) == 0);
@@ -150,18 +148,14 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
             continue;
         }
         const auto gen = generator_of<kNumModes>(layer);
-        auto prepared = monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
-        auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto prepared = monoprop::detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), kBasis);
+        auto recipe = monoprop::detail::make_lazy_fold(inverted_index, gen, layer.scaled_count(), kBasis);
 
         std::vector<double> sa = state0, ha = ham0;
         std::vector<double> sb = state0, hb = ham0;
-        const double ea = accumulate_cos_cached<kNumModes>(prepared, sa.data(), ha.data(), cos_val, sec_val);
-        const double eb = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
-                                                                           recipe,
-                                                                           sb.data(),
-                                                                           hb.data(),
-                                                                           cos_val,
-                                                                           sec_val);
+        const double ea = accumulate_cos_cached(prepared, sa.data(), ha.data(), cos_val, sec_val);
+        const double eb =
+            monoprop::detail::accumulate_cos_lazy(inverted_index, recipe, sb.data(), hb.data(), cos_val, sec_val);
 
         BOOST_TEST_INFO("layer " << li);
         BOOST_TEST(std::memcmp(sa.data(), sb.data(), n * sizeof(double)) == 0);
@@ -313,7 +307,7 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
 
     const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();
     BOOST_REQUIRE(before != nullptr);
-    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
+    auto recipe = monoprop::detail::make_lazy_fold(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
 
     // Grow the operator, forcing the index and its row parity onto fresh storage.
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -328,12 +322,11 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     }
     const double cos_val = 0.6234;
 
-    auto prepared =
-        monoprop::detail::make_fold_cache<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
+    auto prepared = monoprop::detail::make_fold_cache(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
     std::vector<double> expected = baseline;
     std::vector<double> actual = baseline;
-    scale_cos_cached<kNumModes>(prepared, expected.data(), cos_val);
-    monoprop::detail::scale_cos_lazy<kNumModes>(sim.mp_op().inverted_index(), recipe, actual.data(), cos_val);
+    scale_cos_cached(prepared, expected.data(), cos_val);
+    monoprop::detail::scale_cos_lazy(sim.mp_op().inverted_index(), recipe, actual.data(), cos_val);
 
     BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
 }
