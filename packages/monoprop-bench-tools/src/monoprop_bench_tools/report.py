@@ -204,6 +204,9 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
         "nanobind",
         "Backend",
         "Ranks",
+        "Nodes",
+        "Ranks/node",
+        "Partitions (requested)",
         "monoprop threads",
         "CPUs (logical/physical)",
         "Host",
@@ -215,6 +218,9 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
             str(metas[label].get("nanobind_version", "—")),
             str(metas[label].get("nanobind_backend_version", "—")),
             str(metas[label].get("ranks", "—")),
+            str(metas[label].get("nodes", "—")),
+            str(metas[label].get("ranks_per_node", "—")),
+            str(metas[label].get("partitions_env", "—")),
             str(metas[label].get("monoprop_threads", "default")),
             _fmt_cpus(metas[label]),
             str(metas[label].get("hostname", "—")),
@@ -266,16 +272,18 @@ def build_report(results_dir: Path) -> str:
     def sec(name: str) -> dict[str, dict]:
         return {lbl: results.get(lbl, {}).get(name, {}) for lbl in labels}
 
-    params, opsize, memrest, memory = (
+    params, opsize, memrest, memory, memory_max = (
         sec("params"),
         sec("opsize"),
         sec("memrest"),
         sec("memhwm"),
+        sec("memhwm_max"),
     )
 
     all_ops = sorted(
         {op for table in timings.values() for op in table}
         | {op for table in memory.values() for op in table}
+        | {op for table in memory_max.values() for op in table}
     )
     if not labels or not all_ops:
         return (
@@ -304,12 +312,21 @@ def build_report(results_dir: Path) -> str:
                 level=3,
             ),
             *_section(
-                "Memory (peak RSS)",
+                "Memory (peak RSS, summed across ranks)",
                 "",
                 "Operation",
                 ops,
                 labels,
                 lambda lbl, op: _fmt_mem(memory.get(lbl, {}).get(op)),
+                level=3,
+            ),
+            *_section(
+                "Memory (peak RSS, max across ranks)",
+                "",
+                "Operation",
+                ops,
+                labels,
+                lambda lbl, op: _fmt_mem(memory_max.get(lbl, {}).get(op)),
                 level=3,
             ),
         ]
@@ -320,8 +337,8 @@ def build_report(results_dir: Path) -> str:
         f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
         "memory is the kernel's exact peak resident footprint (`VmHWM`) during each "
         "operation, measured from a window reset and settled per operation. Under MPI "
-        "it is summed across ranks, so ranks peaking at different moments are counted "
-        "together: an upper bound on the job total.",
+        "the summed figure counts ranks peaking at different moments together (an "
+        "upper bound on the job total); the max figure is the single worst rank.",
         "",
         *_config_table(labels, results),
         *_section(
