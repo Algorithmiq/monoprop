@@ -45,6 +45,10 @@ public:
 
     auto size() const -> int { return n_; }
 
+    // Per PROCESS, not per partition. R == 1 has no funnel: alltoallv memcpys out of published pointers.
+    [[nodiscard]] auto memory_bytes() const -> size_t { return sizeof(ShmComm) + (slots_.capacity() * sizeof(Slot)); }
+    [[nodiscard]] auto staging_bytes() const -> size_t { return 0uz; }
+
     // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
         slots_[static_cast<size_t>(rank)].counts = send_counts;

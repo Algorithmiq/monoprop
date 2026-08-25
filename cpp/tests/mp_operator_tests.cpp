@@ -27,6 +27,7 @@
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/ProcessMemory.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
@@ -79,6 +80,30 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
     -> bool {
     return std::ranges::equal(sparse.rows, expected.first, {}, [](TermIndex r) { return static_cast<size_t>(r); })
            && std::ranges::equal(sparse.values, expected.second);
+}
+
+// A distinct Monomial<8> per `bits`, so a caller can mint hundreds without enumerating index sets.
+auto monomial_from_bits(size_t bits) -> Monomial<8> {
+    Monomial<8> mono;
+    for (size_t b = 0; b < 16; ++b) {
+        if (((bits >> b) & 1UZ) != 0UZ) {
+            mono.set(b);
+        }
+    }
+    return mono;
+}
+
+// One insert_absent_terms call per batch: a single bulk call reserves once from empty, duplicating nothing.
+auto grow_in_batches(detail::MPOperator<8> &op, size_t batches, size_t per_batch) -> void {
+    for (size_t batch = 0; batch < batches; ++batch) {
+        detail::insert_absent_terms<8>(
+            op,
+            per_batch,
+            [&](size_t k) { return monomial_from_bits((batch * per_batch) + k + 1); },
+            [&](size_t k, size_t base) {
+                assign_row<8>(*op.store, base + k, monomial_from_bits((batch * per_batch) + k + 1));
+            });
+    }
 }
 
 } // namespace
@@ -398,6 +423,138 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_init_operator_entries_out_of_to
     acc += other;
     BOOST_CHECK_EQUAL(acc.init_operator_entries, 7U);
     BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
+}
+
+// transport_bytes IS summed by total_bytes(); group-owned, so estimate_memory_usage leaves it 0.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_counts_transport_in_total_and_sum) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.transport_bytes = 9;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 109U);
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.op_coeffs_bytes = 20;
+    other.transport_bytes = 4;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.transport_bytes, 13U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 133U);
+
+    const auto bare = detail::estimate_memory_usage<8>(build_indexed_op({indices_to_bitset<8>({0, 1})}));
+    BOOST_CHECK_EQUAL(bare.transport_bytes, 0U);
+    BOOST_CHECK_GT(bare.total_bytes(), 0U);
+}
+
+// All six are accumulated by operator+= and NONE reaches total_bytes(): summing them would double-count.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_new_diagnostics_out_of_total) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.transport_staging_bytes = 1;
+    acc.inverted_index_slack_bytes = 2;
+    acc.coeff_slack_bytes = 3;
+    acc.reserved_bytes = 4;
+    acc.operator_terms_peak_bytes = 5;
+    acc.indexing_peak_bytes = 6;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.op_coeffs_bytes = 20;
+    other.transport_staging_bytes = 10;
+    other.inverted_index_slack_bytes = 20;
+    other.coeff_slack_bytes = 30;
+    other.reserved_bytes = 40;
+    other.operator_terms_peak_bytes = 50;
+    other.indexing_peak_bytes = 60;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
+    BOOST_CHECK_EQUAL(acc.transport_staging_bytes, 11U);
+    BOOST_CHECK_EQUAL(acc.inverted_index_slack_bytes, 22U);
+    BOOST_CHECK_EQUAL(acc.coeff_slack_bytes, 33U);
+    BOOST_CHECK_EQUAL(acc.reserved_bytes, 44U);
+    BOOST_CHECK_EQUAL(acc.operator_terms_peak_bytes, 55U);
+    BOOST_CHECK_EQUAL(acc.indexing_peak_bytes, 66U);
+}
+
+// The counter must be shown to MOVE: strictly above the resting fields after growth, equal to them before.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_growth_peaks_exceed_resting_capacity) {
+    detail::MPOperator<8> op;
+    const auto fresh = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(fresh.operator_terms_peak_bytes, fresh.operator_terms_bytes);
+    BOOST_CHECK_EQUAL(fresh.indexing_peak_bytes, fresh.indexing_bytes);
+
+    grow_in_batches(op, 40, 15);
+    BOOST_CHECK_EQUAL(op.size(), 600U);
+
+    const auto grown = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_GT(grown.operator_terms_peak_bytes, grown.operator_terms_bytes);
+    BOOST_CHECK_GT(grown.indexing_peak_bytes, grown.indexing_bytes);
+    // The duplicate is the OLD buffer at a 1.5x growth, so the peak cannot reach 3x the resting bytes.
+    BOOST_CHECK_LT(grown.operator_terms_peak_bytes, 3U * grown.operator_terms_bytes);
+    BOOST_CHECK_LT(grown.indexing_peak_bytes, 3U * grown.indexing_bytes);
+}
+
+// reserved_bytes rolls up the three slacks: reserved and unwritten, which is not the same as costing nothing.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_reserved_bytes_rolls_up_the_slacks) {
+    detail::MPOperator<8> op;
+    grow_in_batches(op, 40, 15);
+    op.op_coeffs.reserve(op.op_coeffs.size() + 64);
+    (void)op.inverted_index();
+
+    const auto b = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(b.reserved_bytes,
+                      b.operator_terms_slack_bytes + b.inverted_index_slack_bytes + b.coeff_slack_bytes);
+    BOOST_CHECK_GT(b.operator_terms_slack_bytes, 0U); // geometric growth always overshoots
+    BOOST_CHECK_GT(b.coeff_slack_bytes, 0U);          // the reserve above
+    BOOST_CHECK_LE(b.inverted_index_slack_bytes, b.inverted_index_bytes);
+    BOOST_CHECK_LT(b.reserved_bytes, b.total_bytes());
+}
+
+// ASan and TSan replace malloc, so glibc's arenas stay empty and malloc_info(3) reports zero bytes.
+// Compile-time, never a runtime zero-check: that would let a regression on a normal build skip the checks.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define monoprop_TEST_MALLOC_REPLACED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define monoprop_TEST_MALLOC_REPLACED 1
+#endif
+#endif
+#ifndef monoprop_TEST_MALLOC_REPLACED
+#define monoprop_TEST_MALLOC_REPLACED 0
+#endif
+
+// The kernel's and the allocator's own numbers, so ledger coverage is derivable from the engine alone.
+BOOST_AUTO_TEST_CASE(process_memory_reports_the_kernel_and_the_allocator) {
+    const auto before = detail::process_memory();
+    // A live 32 MiB allocation: a diagnostic that cannot see one is not measuring.
+    std::vector<char> hold(32UZ << 20, '\1');
+    const auto after = detail::process_memory();
+    BOOST_CHECK_EQUAL(hold.front(), '\1'); // and keeps `hold` alive across the second read
+#if defined(__linux__) && defined(__GLIBC__)
+    // /proc is not the allocator's, so the kernel fields and the identity hold on both branches below.
+    BOOST_CHECK_GT(before.rss_bytes, 0U);
+    BOOST_CHECK_GE(before.peak_rss_bytes, before.rss_bytes);
+    BOOST_CHECK_GE(after.rss_bytes, before.rss_bytes);
+    BOOST_CHECK_EQUAL(before.alloc_in_use_bytes + before.alloc_retained_bytes, before.alloc_system_bytes);
+#if monoprop_TEST_MALLOC_REPLACED
+    // Absent COHERENTLY: every byte field zero, before and after, not merely the one CI tripped over.
+    BOOST_CHECK_EQUAL(before.alloc_system_bytes, 0U);
+    BOOST_CHECK_EQUAL(before.alloc_in_use_bytes, 0U);
+    BOOST_CHECK_EQUAL(before.alloc_retained_bytes, 0U);
+    BOOST_CHECK_EQUAL(after.alloc_system_bytes, 0U);
+    BOOST_CHECK_EQUAL(after.alloc_in_use_bytes, 0U);
+#else
+    BOOST_CHECK_GT(before.alloc_system_bytes, 0U);
+    BOOST_CHECK_GE(before.alloc_arenas, 1U);
+    BOOST_CHECK_GE(after.alloc_in_use_bytes, before.alloc_in_use_bytes + hold.size());
+#endif
+#else
+    // The documented contract off Linux/glibc: zero-filled rather than wrong.
+    BOOST_CHECK_EQUAL(before.rss_bytes, 0U);
+    BOOST_CHECK_EQUAL(after.rss_bytes, 0U);
+    BOOST_CHECK_EQUAL(before.alloc_system_bytes, 0U);
+    BOOST_CHECK_EQUAL(before.alloc_arenas, 0U);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {

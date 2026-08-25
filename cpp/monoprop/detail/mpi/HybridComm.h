@@ -97,6 +97,18 @@ public:
     auto operator=(const HybridComm &) -> HybridComm & = delete;
 
     auto size() const -> int { return r_ * s_; }
+
+    // Per PROCESS, not per partition; capacities, so staging reads at the largest exchange's high-water mark.
+    [[nodiscard]] auto staging_bytes() const -> size_t {
+        return stage_send_.capacity() + stage_recv_.capacity() + (red_vec_.capacity() * sizeof(double));
+    }
+    [[nodiscard]] auto memory_bytes() const -> size_t {
+        return sizeof(HybridComm) + staging_bytes() + cap_bytes_(slots_) + cap_bytes_(counts_send_)
+               + cap_bytes_(counts_recv_) + cap_bytes_(mpi_send_counts_) + cap_bytes_(mpi_send_displs_)
+               + cap_bytes_(mpi_recv_counts_) + cap_bytes_(mpi_recv_displs_) + cap_bytes_(pack_off_)
+               + cap_bytes_(base_send_) + cap_bytes_(base_recv_) + cap_bytes_(col_sum_) + cap_bytes_(recv_col_)
+               + cap_bytes_(counts_matrix_store_) + cap_bytes_(rows_store_);
+    }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
     auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
@@ -587,6 +599,11 @@ private:
     }
 
     auto sync() -> void { barrier_.sync(); }
+
+    template <typename T>
+    static auto cap_bytes_(const std::vector<T> &v) -> size_t {
+        return v.capacity() * sizeof(T);
+    }
 
     MPI_Comm parent_;
     int s_;

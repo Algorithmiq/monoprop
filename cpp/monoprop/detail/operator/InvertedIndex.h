@@ -203,6 +203,16 @@ struct InvertedIndex {
         return total;
     }
 
+    // Diagnostic: the part of memory_bytes() no resize ever wrote. Unfaulted, but see reserved_bytes.
+    auto slack_bytes() const -> size_t {
+        size_t total = 0;
+        for (const auto &col : cols) {
+            total += (col.words.capacity() - col.words.size()) * sizeof(uint64_t);
+            total += (col.set_rows.capacity() - col.set_rows.size()) * sizeof(TermIndex);
+        }
+        return total + ((row_parity_.capacity() - row_parity_.size()) * sizeof(uint64_t));
+    }
+
     // Diagnostic tier split of memory_bytes(): {dense_bytes, sparse_bytes, dense_columns}.
     auto tier_memory_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};

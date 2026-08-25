@@ -274,6 +274,12 @@ inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_
     return base;
 }
 
+// Reserved-but-never-written capacity. Unfaulted -- but not free: see reserved_bytes.
+template <typename Vec>
+inline auto capacity_slack_bytes(const Vec &v, size_t elem) -> size_t {
+    return (v.capacity() - v.size()) * elem;
+}
+
 template <typename FlatMap>
 inline auto unordered_flat_map_storage_bytes(const FlatMap &map) -> size_t {
     return sizeof(FlatMap) + map.bucket_count() * (sizeof(typename FlatMap::value_type) + sizeof(unsigned char));
@@ -290,6 +296,8 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_bytes{0uz};
     // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
     size_t matched_scratch_bytes{0uz};
+    // The group's transport, per process: 0 unless the partitioned facade fills it in (see matched_scratch).
+    size_t transport_bytes{0uz};
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -301,10 +309,19 @@ struct MPOperatorMemoryBreakdown final {
     size_t state_coeffs_nonzero{0uz};
     // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
     size_t init_operator_entries{0uz};
+    size_t transport_staging_bytes{0uz};    // of transport_bytes: the payload funnel, at its high-water mark
+    size_t inverted_index_slack_bytes{0uz}; // of inverted_index_bytes: capacity no resize ever wrote
+    size_t coeff_slack_bytes{0uz};          // of op_coeffs_bytes + state_coeffs_bytes: likewise
+    // Never written, yet peak RSS tracks CAPACITY not size (job 1851566): each x1.5 growth holds old+new at
+    // once, so this is deferred cost, not free space -- and shrink_to_fit adds a copy rather than removing one.
+    size_t reserved_bytes{0uz};
+    // Peaks over TIME: a growth holds old+new at once. Summed, an upper bound -- peaks need not coincide.
+    size_t operator_terms_peak_bytes{0uz};
+    size_t indexing_peak_bytes{0uz};
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
+               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes + transport_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -316,12 +333,19 @@ struct MPOperatorMemoryBreakdown final {
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
         matched_scratch_bytes += o.matched_scratch_bytes;
+        transport_bytes += o.transport_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
         init_operator_entries += o.init_operator_entries;
+        transport_staging_bytes += o.transport_staging_bytes;
+        inverted_index_slack_bytes += o.inverted_index_slack_bytes;
+        coeff_slack_bytes += o.coeff_slack_bytes;
+        reserved_bytes += o.reserved_bytes;
+        operator_terms_peak_bytes += o.operator_terms_peak_bytes;
+        indexing_peak_bytes += o.indexing_peak_bytes;
         return *this;
     }
 };
@@ -345,8 +369,17 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_dense_bytes = tiers[0];
         breakdown.inverted_index_sparse_bytes = tiers[1];
         breakdown.inverted_index_dense_columns = tiers[2];
+        breakdown.inverted_index_slack_bytes = op.inverted_index_->slack_bytes();
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
+    breakdown.operator_terms_peak_bytes = op.store->rows_peak_bytes();
+    breakdown.indexing_peak_bytes = op.store->index_peak_bytes();
+    breakdown.coeff_slack_bytes = capacity_slack_bytes(op.op_coeffs, sizeof(double))
+                                  + capacity_slack_bytes(op.state_coeffs, sizeof(double))
+                                  + capacity_slack_bytes(op.state_rows_, sizeof(TermIndex))
+                                  + capacity_slack_bytes(op.state_vals_, sizeof(double));
+    breakdown.reserved_bytes =
+        breakdown.operator_terms_slack_bytes + breakdown.inverted_index_slack_bytes + breakdown.coeff_slack_bytes;
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

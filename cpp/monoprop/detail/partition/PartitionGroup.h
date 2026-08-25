@@ -26,6 +26,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "monoprop/detail/mpi/Comm.h"
@@ -106,6 +107,16 @@ public:
     ~PartitionGroup() { stop_and_join_(); }
 
     auto partition_count() const -> int { return n_; }
+
+    // {total, staging} for the GROUP-owned transport: the facade adds it once, a partition reports 0.
+    [[nodiscard]] auto transport_memory_bytes() const -> std::pair<size_t, size_t> {
+#ifdef monoprop_ENABLE_MPI
+        if (hyb_) {
+            return {hyb_->memory_bytes(), hyb_->staging_bytes()};
+        }
+#endif
+        return shm_ ? std::pair{shm_->memory_bytes(), shm_->staging_bytes()} : std::pair{0uz, 0uz};
+    }
     auto partition(int s) -> MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
     auto partition(int s) const -> const MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
 

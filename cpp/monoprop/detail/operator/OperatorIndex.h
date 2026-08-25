@@ -276,6 +276,14 @@ public:
         return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
 
+    // Diagnostics: peak over TIME. A growth holds old+new at once; no capacity field can show that.
+    [[nodiscard]] auto rows_peak_bytes() const -> size_t {
+        return std::max(rows_peak_bytes_, rows_.capacity() * sizeof(PosT));
+    }
+    [[nodiscard]] auto index_peak_bytes() const -> size_t {
+        return std::max(table_.peak_bytes, index_estimated_memory_bytes());
+    }
+
 private:
     struct Slot {
         TermIndex idx = kEmptySlot;
@@ -321,6 +329,7 @@ private:
         std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
         size_t mask = kMinSlots - 1;
         size_t count = 0;
+        size_t peak_bytes = 0; // see index_peak_bytes()
 
         auto rehash_if_needed() -> void {
             if ((count + 1) * 10 >= slots.size() * 7) {
@@ -332,6 +341,8 @@ private:
             if (new_cap <= slots.size()) {
                 return;
             }
+            // assign() allocates before `old` dies, so both tables are live for the whole re-probe loop.
+            peak_bytes = std::max(peak_bytes, (slots.size() + new_cap) * sizeof(Slot));
             std::vector<Slot> old = std::move(slots);
             slots.assign(new_cap, Slot{});
             mask = new_cap - 1;
@@ -352,7 +363,13 @@ private:
     static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
+    auto reserve_rows(size_t n) -> void {
+        const size_t want = n * stride_;
+        if (want > rows_.capacity()) {
+            rows_peak_bytes_ = std::max(rows_peak_bytes_, (rows_.capacity() + want) * sizeof(PosT));
+        }
+        rows_.reserve(want);
+    }
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
     // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
@@ -400,6 +417,7 @@ private:
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
     Table table_ = {};
+    size_t rows_peak_bytes_ = 0; // see rows_peak_bytes()
 };
 
 } // namespace monoprop::detail
