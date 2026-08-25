@@ -14,7 +14,7 @@ high-water mark. It is the number to quote, and the only one that is like-for-li
 library written in another language.
 
 - **It is exact, not sampled.** The kernel updates `VmHWM` on every RSS increase, so no
-  transient can be missed and no background thread is needed — which also means the GIL cannot
+  transient can be missed and no background thread is needed, which also means the GIL cannot
   hide anything from it.
 - **The window is reset per step.** Each measured region settles the process first
   (`gc.collect()` + `malloc_trim`, or `GC.gc()` + `malloc_trim` on the Julia side) and then
@@ -22,14 +22,14 @@ library written in another language.
   step's retained garbage. Without the settling the figure tracks the allocator's willingness
   to return pages more than it tracks what the code needed.
 - **Every engine is measured by the same instrument**, from outside, over exactly the timed
-  region — not by asking each library what it thinks it is using.
+  region.
 
 It is a whole-process figure, so it includes the interpreter and the loaded libraries. That
 constant is why the curves are worth reading for their *growth*, and why an engine can be
 leaner in RSS while being far slower.
 
-Where an engine also accounts for itself — `monoprop`'s `operator_memory_bytes()`,
-`PauliPropagation.jl`'s `Base.summarysize`, cuPauliProp's device pool — that figure is recorded
+Where an engine also accounts for itself (`monoprop`'s `operator_memory_bytes()`,
+`PauliPropagation.jl`'s `Base.summarysize`, cuPauliProp's device pool) that figure is recorded
 alongside as `native_memory` and drawn as a faint companion line. **Those are not comparable
 with each other**: they count different things in different pools. They are context for a
 single engine's curve, never a cross-engine ranking.
@@ -137,12 +137,6 @@ The bare-metal workflow provisions a dedicated node per run, so nothing else is 
 while the benchmarks run. That lower noise floor is the point: it is what a testbed needs before
 its timing thresholds can be tightened enough to gate on, and it is why it can afford the slow
 fixed models the shared runner skips.
-
-It is skipped unless the `BENCH_BARE_METAL` repository variable is `true` — without a RunsOn
-stack answering the label, the job would queue until it timed out on every commit. The node's
-shape lives under `runners.bench` in `.github/runs-on.yml`; on public repositories RunsOn reads
-that file from the default branch only, so changes take effect after merge, not in the pull
-request making them.
 
 Which benchmarks run, and how many rounds each gets, are the `bench-markers` and `bench-rounds`
 inputs of the reusable `bench.yml`. Changing either for a testbed that already has history
