@@ -12,20 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// MatchedEpochSet and CutoffContext driven directly, not through build_layer.
+// MatchedEpochSet, CutoffContext and the self-resolve mark guard driven directly, not through build_layer.
 
 #include <boost/test/unit_test.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/Engine.h"
+#include "monoprop/detail/operator/MPOperator.h"
 
 using namespace monoprop;
 using monoprop::detail::CutoffContext;
 using monoprop::detail::MatchedEpochSet;
+
+namespace {
+
+// resolve_range_ touches only wants_values and self_hit, so the engine drives without the cross-rank sink surface.
+struct RecordingSink {
+    static constexpr bool wants_values = false;
+    std::vector<std::pair<size_t, size_t>> hits; // (src, found)
+    auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
+};
+
+// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
+auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
+    detail::MPOperator<8> op;
+    detail::insert_absent_terms<8>(
+        op,
+        terms.size(),
+        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
+        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
+    return op;
+}
+
+} // namespace
 
 BOOST_AUTO_TEST_CASE(matched_epoch_begin_gate_clears_all) {
     MatchedEpochSet set;
@@ -58,12 +86,12 @@ BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
     BOOST_TEST(!set.is_marked(3));
 }
 
-// When the epoch counter saturates uint32_t, begin_gate zero-fills and restarts so marks stay correct.
-BOOST_AUTO_TEST_CASE(matched_epoch_u32_wrap_resets) {
+// Reaches the wrap by assigning cur_, which pins the branch and the counter restart but not the fill.
+BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_resets) {
     MatchedEpochSet set;
     set.begin_gate(4); // allocate the backing array
     // Force the counter to the wrap boundary; a stale slot still equals the pre-wrap counter.
-    set.cur_ = std::numeric_limits<uint32_t>::max();
+    set.cur_ = std::numeric_limits<MatchedEpochSet::Stamp>::max();
     set.mark(1);
     BOOST_TEST(set.is_marked(1));
 
@@ -72,6 +100,73 @@ BOOST_AUTO_TEST_CASE(matched_epoch_u32_wrap_resets) {
     BOOST_TEST(!set.is_marked(1));
     set.mark(2);
     BOOST_TEST(set.is_marked(2));
+}
+
+// Reaches the wrap by counting gates, with the mark at epoch 1 so a missing fill would alias onto it.
+BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_reached_by_gate_count) {
+    constexpr auto kMaxStamp = std::numeric_limits<MatchedEpochSet::Stamp>::max();
+    constexpr size_t kPeriod = static_cast<size_t>(kMaxStamp);
+
+    MatchedEpochSet set;
+    set.begin_gate(4);
+    BOOST_REQUIRE(set.cur_ == MatchedEpochSet::Stamp{1});
+    set.mark(1);
+    BOOST_TEST(set.is_marked(1));
+
+    // One increment per gate, folded into a single assertion rather than 65534 of them.
+    bool one_epoch_per_gate = true;
+    for (size_t k = 2; k <= kPeriod; ++k) {
+        set.begin_gate(4);
+        one_epoch_per_gate = one_epoch_per_gate && (static_cast<size_t>(set.cur_) == k);
+    }
+    BOOST_TEST(one_epoch_per_gate);
+    BOOST_TEST(set.cur_ == kMaxStamp); // boundary reached by counting, not by assignment
+
+    // The wrap: cur_ returns to 1, the surviving mark's own stamp, so a false is_marked(1) is the fill.
+    set.begin_gate(4);
+    BOOST_TEST(set.cur_ == MatchedEpochSet::Stamp{1});
+    BOOST_TEST(!set.is_marked(1));
+    set.mark(2);
+    BOOST_TEST(set.is_marked(2));
+    BOOST_TEST(!set.is_marked(1));
+}
+
+// A self-resolve hit whose index the store only grew into after construction is a real hit -- it must reach
+// the sink -- but it is outside the matched set, whose array is sized to combined_size.
+BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
+    std::vector<Monomial<8>> terms;
+    for (size_t i = 0; i < 6; ++i) {
+        terms.push_back(indices_to_bitset<8>({i, i + 8}));
+    }
+    detail::MPOperator<8> op = indexed_op(terms);
+    const size_t combined_size = 4; // rows 4 and 5 stand for terms this layer inserted after construction
+
+    MatchedEpochSet matched;
+    // Pre-grown past combined_size on purpose: an unguarded mark then lands in an observable slot rather
+    // than past the end of epoch_, where it would be silent undefined behaviour.
+    matched.begin_gate(op.size());
+
+    detail::LayerBuildEngine<8, RecordingSink> eng(op,
+                                                   mpi::Comm{},
+                                                   /*R_=*/1,
+                                                   /*my_rank_=*/0,
+                                                   matched,
+                                                   combined_size,
+                                                   RecordingSink{});
+    detail::query_push<8>(eng.queries_r[0], terms[1], 1);
+    detail::query_push<8>(eng.queries_r[0], terms[5], -1);
+    eng.src_idx_r[0] = {0, 2};
+
+    eng.resolve_self_queries(/*is_leader_pass=*/true);
+
+    // Both keys are in the store, so both resolve as hits and neither may be deferred as a miss.
+    BOOST_TEST(eng.deferred_self_misses.empty());
+    BOOST_TEST_REQUIRE(eng.sink.hits.size() == 2U);
+    BOOST_TEST(eng.sink.hits[0].second == 1U);
+    BOOST_TEST(eng.sink.hits[1].second == 5U);
+    BOOST_TEST(matched.is_marked(1));
+    BOOST_TEST(!matched.is_marked(4));
+    BOOST_TEST(!matched.is_marked(5));
 }
 
 BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {
