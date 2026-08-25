@@ -34,9 +34,6 @@ whose partner lives in another partition are resolved through a per-gate exchang
 Boolean variables are off for `0`, `false`, `no` or `off` (whole word, any case)
 and on for any other non-empty value.
 
-Pinning each partition to a core is not configurable: leaving placement to the
-launcher measured `propagate[hubbard]` 2.90x slower, so the disabled arm is gone.
-
 ```bash
 # Run 8 partitions instead of one-per-core:
 export monoprop_NUM_THREADS=8
