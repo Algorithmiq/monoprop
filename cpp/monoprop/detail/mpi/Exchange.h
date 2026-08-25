@@ -19,16 +19,14 @@
 #include <vector>
 
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/RecvLayout.h"
 
 // Keeps #ifdef monoprop_ENABLE_MPI out of the consumers; non-MPI builds get self-copy stubs.
 
 namespace monoprop::mpi {
 
-// Resolve the recv side of a send-count vector, reusing `cache` when comm size is unchanged: a
-// replayed graph's send pattern is fixed, so a hit removes one blocking count round-trip per layer
-// per evaluation.
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout &;
+// Precondition, not a diagnostic: MPI_Alltoallv reads one count and one displacement per rank
+// whatever the span holds, so a layout built for a differently sized communicator reads out of bounds.
+auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void;
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
 // exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the
@@ -97,7 +95,7 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
         return Ticket{};
     }
     (void)num_ranks;
-    auto request = MPI_REQUEST_NULL;
+    MPI_Request request = MPI_REQUEST_NULL;
     MPI_Ialltoallv(args.send,
                    args.send_counts,
                    args.send_displs,

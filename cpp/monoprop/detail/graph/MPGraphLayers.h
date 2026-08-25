@@ -28,8 +28,7 @@ namespace monoprop {
 //   recompute (nullopt)   — cosine rebuilt from the generator's inverted-index columns at replay.
 //   pruned    (has value) — cosine pre-filtered to a backward-reachable subset, stored explicitly; an
 //                           empty stored list is still pruned (replay as nothing, do not recompute).
-// Cores are shared and immutable in value only: their eval-time caches (recv_cache, the lazy derivative
-// layout) are filled through const handles, so evaluating two aliasing propagators concurrently is a race.
+// Cores are shared and immutable: they hold no eval-time cache.
 
 // Cross-rank data is always read verbatim; only the cosine set is ever filtered.
 struct LayerTraversal final {
@@ -56,46 +55,48 @@ struct LayerTraversal final {
     auto cross_rank_sin_recv_size(size_t rank) const -> size_t { return core_->cross_rank.sin_recv_size(rank); }
     auto cross_rank_in_count(size_t rank) const -> size_t { return core_->cross_rank.in_count(rank); }
 
-    // Random access into the D list, for the paired self-slot derivative fetches d[k], d[k+P].
-    auto cross_rank_sin_recv_index_at(size_t rank, size_t idx) const -> size_t {
-        return detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx);
-    }
-    auto cross_rank_sin_recv_phase_at(size_t rank, size_t idx) const -> int {
-        return detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx);
+    auto cross_rank_self_slot() const -> detail::CrossRankSlotView {
+        return detail::cross_rank_self_slot(core_->cross_rank);
     }
 
+    // Every slot carrying traffic, ascending, each with its offset. Use this for a sweep.
+    template <typename Func>
+    auto for_each_occupied_slot(Func &&func) const -> void {
+        detail::for_each_occupied_slot(core_->cross_rank, std::forward<Func>(func));
+    }
+
+    // The size an array indexed by occupied position needs.
+    auto occupied_slot_count() const -> size_t { return detail::cross_rank_occupied_slots(core_->cross_rank); }
+
+    // Resolved once outside the loop: per endpoint would make per-slot work per-term.
     template <typename Func>
     auto for_each_cross_rank_sin_send_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
+        const auto slot = detail::cross_rank_slot(core_->cross_rank, rank);
         for (size_t idx = begin; idx < end; ++idx) {
-            func(idx, detail::cross_rank_sin_send_index(core_->cross_rank, rank, idx));
+            func(idx, detail::slot_sin_send_index(slot, idx));
         }
     }
 
     template <typename Func>
     auto for_each_cross_rank_sin_recv_range(size_t rank, size_t begin, size_t end, Func &&func) const -> void {
+        const auto slot = detail::cross_rank_slot(core_->cross_rank, rank);
         for (size_t idx = begin; idx < end; ++idx) {
-            func(idx,
-                 detail::cross_rank_sin_recv_index(core_->cross_rank, rank, idx),
-                 detail::cross_rank_sin_recv_phase(core_->cross_rank, rank, idx));
+            func(idx, detail::slot_sin_recv_index(slot, idx), detail::slot_sin_recv_phase(slot, idx));
         }
     }
 
-    auto evolution_exchange_layout() const -> const LayerExchangeLayout & { return core_->evolution_exchange_layout; }
-    auto derivative_exchange_layout() const -> const LayerExchangeLayout & {
-        return core_->derivative_exchange_layout();
-    }
+    // Both sides of the exchange layout derive from these.
+    auto cross_rank() const -> const PackedCrossRankStorage & { return core_->cross_rank; }
 
     auto param_index() const -> size_t { return core_->param_index; }
     auto gen_coeff() const -> double { return core_->gen_coeff; }
     auto gate_index() const -> size_t { return core_->gate_index; }
 
     // Rotations (Givens cycles) = sum of per-rank in-counts (one in-entry per rotation). sin_recv_size
-    // would double-count self-rank rotations (in+out).
+    // would double-count self-rank rotations (in+out); empty slots contribute nothing to either.
     auto total_cycles() const -> size_t {
         size_t count = 0;
-        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            count += cross_rank_in_count(rank);
-        }
+        for_each_occupied_slot([&count](size_t, const detail::CrossRankSlotView &slot) { count += slot.in_count; });
         return count;
     }
 
@@ -103,9 +104,8 @@ struct LayerTraversal final {
     // indices = num_cos_inds() - total_rotation_endpoints().
     auto total_rotation_endpoints() const -> size_t {
         size_t count = 0;
-        for (size_t rank = 0; rank < cross_rank_rank_count(); ++rank) {
-            count += cross_rank_sin_recv_size(rank);
-        }
+        for_each_occupied_slot(
+            [&count](size_t, const detail::CrossRankSlotView &slot) { count += slot.sin_send_count; });
         return count;
     }
 

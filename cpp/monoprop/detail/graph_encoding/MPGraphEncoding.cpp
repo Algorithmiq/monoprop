@@ -14,9 +14,11 @@
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 
+#include <algorithm>
 #include <format>
 #include <limits>
 #include <memory>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -32,32 +34,14 @@ auto checked_mpi_int(size_t value, const char *what) -> int {
     return static_cast<int>(value);
 }
 
-auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what)
-    -> LayerExchangeLayout {
-    const std::string count_label = std::format("{} count", what);
-    const std::string displacement_label = std::format("{} displacement", what);
-
-    LayerExchangeLayout layout;
-    layout.counts.resize(send_counts.size());
-    layout.displs.resize(send_counts.size());
-    size_t total = 0;
-    for (size_t r = 0; r < send_counts.size(); ++r) {
-        const size_t count = static_cast<size_t>(scale) * send_counts[r];
-        layout.counts[r] = checked_mpi_int(count, count_label.c_str());
-        layout.displs[r] = checked_mpi_int(total, displacement_label.c_str());
-        total += count;
+// The u32 slot id bounds the flat world; a narrowing conversion, so checked rather than cast.
+auto checked_world_slot(size_t rank) -> uint32_t {
+    if (rank > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        throw std::overflow_error(std::format("World slot {} exceeds the {} the occupied-slot record can hold.",
+                                              rank,
+                                              std::numeric_limits<uint32_t>::max()));
     }
-    layout.total_count = total;
-    return layout;
-}
-
-auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout {
-    std::vector<size_t> send_counts;
-    send_counts.reserve(evolution.counts.size());
-    for (const int count : evolution.counts) {
-        send_counts.push_back(static_cast<size_t>(count));
-    }
-    return build_layer_exchange_layout(send_counts, 2, "Layer derivative exchange");
+    return static_cast<uint32_t>(rank);
 }
 
 auto checked_term_index(size_t value, const char *what) -> TermIndex {
@@ -100,21 +84,44 @@ auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t {
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage {
     PackedCrossRankStorage storage;
     const size_t num_ranks = data.size();
-    storage.ranges.resize(num_ranks);
+    storage.world_size = num_ranks;
 
     size_t total_b = 0;
-    size_t total_d = 0;
     for (size_t rank = 0; rank < num_ranks; ++rank) {
         const auto &partner = data[rank];
-        auto &range = storage.ranges[rank];
-        range.sin_send_offset = total_b;
-        range.sin_send_count = static_cast<TermIndex>(partner.sin_send_indices.size());
-        range.sin_recv_offset = total_d;
-        range.sin_recv_count = static_cast<TermIndex>(partner.sin_recv_entries.size());
-        range.in_count = static_cast<TermIndex>(partner.in_count);
+        // One count and one offset serve both B and D: a skew mis-derives Q and reads the wrong
+        // endpoint rather than throwing.
+        if (partner.sin_send_indices.size() != partner.sin_recv_entries.size()) {
+            throw CrossRankSlotLayoutError(std::format(
+                "Cross-rank slot {} has {} send endpoints against {} recv endpoints; B and D are the same set.",
+                rank,
+                partner.sin_send_indices.size(),
+                partner.sin_recv_entries.size()));
+        }
+        // The in-block bounds a block within B, and Q is an unsigned subtraction, so a boundary past
+        // the end wraps near 2^64 instead of going negative and every D read runs off the array.
+        if (partner.in_count > partner.sin_send_indices.size()) {
+            throw CrossRankSlotLayoutError(
+                std::format("Cross-rank slot {} declares an in-block of {} inside {} endpoints; the in-block is a "
+                            "boundary within the endpoint list, not an addition to it.",
+                            rank,
+                            partner.in_count,
+                            partner.sin_send_indices.size()));
+        }
+        // A slot with no traffic gets no record; ascending rank order leaves `occupied` sorted.
+        if (partner.sin_send_indices.empty()) {
+            continue;
+        }
+        // Checked, not cast: readers rebuild offsets from the stored counts, so a truncated slot
+        // shifts every later slot's window.
+        storage.occupied.push_back(
+            {.slot = checked_world_slot(rank),
+             .sin_send_count = checked_term_index(partner.sin_send_indices.size(), "Cross-rank slot endpoint count"),
+             .in_count = checked_term_index(partner.in_count, "Cross-rank slot in-block size")});
         total_b += partner.sin_send_indices.size();
-        total_d += partner.sin_recv_entries.size();
     }
+    storage.occupied.shrink_to_fit(); // push_back overshoots, and this array is the thing being shrunk
+    const size_t total_d = total_b;
 
     bool uses_binary_phases = true;
     for (const auto &partner : data) {
@@ -128,10 +135,12 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
     storage.sin_send_indices.resize(total_b);
     storage.sin_recv_phases = make_packed_phase_storage(total_d, uses_binary_phases);
 
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        const auto &partner = data[rank];
-        const size_t b_off = storage.ranges[rank].sin_send_offset;
-        const size_t d_off = storage.ranges[rank].sin_recv_offset;
+    // The order the offsets accumulate in, so readers reconstruct this exact prefix.
+    size_t offset = 0;
+    for (const auto &entry : storage.occupied) {
+        const auto &partner = data[entry.slot];
+        const size_t b_off = offset;
+        const size_t d_off = b_off; // equal counts, so equal prefix sums
 
         for (size_t k = 0; k < partner.sin_send_indices.size(); ++k) {
             storage.sin_send_indices[b_off + k] = checked_term_index(partner.sin_send_indices[k], "Cross-rank B index");
@@ -142,61 +151,102 @@ auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &da
             (void)i;
             store_packed_phase(storage.sin_recv_phases, d_off + k, phi, "Cross-rank D phase");
         }
+        offset += entry.sin_send_count;
     }
 
     return storage;
 }
 
+auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void {
+    storage.self_pos = kNoSelfSlot;
+    storage.self_offset = 0;
+    size_t offset = 0;
+    for (size_t pos = 0; pos < storage.occupied.size(); ++pos) {
+        const auto &entry = storage.occupied[pos];
+        if (entry.slot == my_rank) {
+            storage.self_pos = pos;
+            storage.self_offset = offset;
+            return;
+        }
+        offset += entry.sin_send_count;
+    }
+}
+
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t {
-    size_t bytes =
-        storage.ranges.capacity() * sizeof(CrossRankPartnerRange) + packed_phase_storage_bytes(storage.sin_recv_phases);
+    size_t bytes = cross_rank_slot_record_bytes(storage) + packed_phase_storage_bytes(storage.sin_recv_phases);
     bytes += storage.sin_send_indices.capacity() * sizeof(TermIndex);
     return bytes;
 }
 
-auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t {
-    return layout.counts.capacity() * sizeof(int) + layout.displs.capacity() * sizeof(int);
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t {
+    return storage.occupied.capacity() * sizeof(CrossRankOccupiedSlot);
 }
 
-auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t {
+    return storage.occupied.size();
+}
+
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t {
+    size_t count = 0;
+    for (const auto &entry : storage.occupied) {
+        count += entry.sin_send_count;
+    }
+    return count;
+}
+
+namespace {
+// Formats the label only on the throwing path: this runs per posted exchange, not once at build.
+auto checked_exchange_int(size_t value, const char *what, const char *field) -> int {
+    if (value > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return checked_mpi_int(value, std::format("{} {}", what, field).c_str());
+    }
+    return static_cast<int>(value);
+}
+} // namespace
+
+auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
+                            size_t my_rank,
+                            int scale,
+                            LayerExchangeLayout &out,
+                            const char *what) -> void {
+    const size_t num_ranks = cross_rank.rank_count();
+    // assign(), not resize(): `out` is reused across layers and an empty slot must read zero.
+    out.counts.assign(num_ranks, 0);
+    out.displs.resize(num_ranks);
+
+    // Scatter over the occupied slots: a dense probe would binary-search every possible partner to
+    // fill an array that is mostly zeros.
+    for_each_occupied_slot(cross_rank, [my_rank, &out, scale, what](size_t slot, const CrossRankSlotView &view) {
+        if (slot == my_rank) {
+            return; // excluded from the transfer and handled locally, as the stored layout did
+        }
+        out.counts[slot] = checked_exchange_int(static_cast<size_t>(scale) * view.sin_send_count, what, "count");
+    });
+
+    // The prefix sum stays dense: MPI_Alltoallv wants a valid displacement for every rank.
+    size_t total = 0;
+    for (size_t r = 0; r < num_ranks; ++r) {
+        out.displs[r] = checked_exchange_int(total, what, "displacement");
+        total += static_cast<size_t>(out.counts[r]);
+    }
+    out.total_count = total;
+}
+
+auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore> {
     auto storage = std::make_shared<LayerCore>();
 
+    storage->cross_rank = build_packed_cross_rank_storage(all_partners);
+    resolve_self_slot(storage->cross_rank, my_rank);
+
     {
-        std::vector<size_t> send_counts;
-        send_counts.reserve(all_partners.size());
-        for (size_t r = 0; r < all_partners.size(); ++r) {
-            send_counts.push_back((r == my_rank) ? size_t{0} : all_partners[r].sin_send_indices.size());
-        }
-        storage->evolution_exchange_layout = build_layer_exchange_layout(send_counts, 1);
-
-        // The derivative layout (2x) is allocated lazily on first gradient read, but validated here: an
-        // overflow must throw during build_graph, not from inside the gradient collective window, where
-        // peers are already blocked in mpi::resolve_recv's count round -> a distributed hang, not an error.
-        static_cast<void>(build_derivative_exchange_layout(storage->evolution_exchange_layout));
+        // Result discarded: an int overflow must throw here, not inside a committed exchange. Scale 2
+        // bounds scale 1.
+        LayerExchangeLayout scratch;
+        derive_exchange_layout(storage->cross_rank, my_rank, 2, scratch, "Layer derivative exchange");
     }
 
-    storage->cross_rank = build_packed_cross_rank_storage(std::move(all_partners));
-
-    // Both are indexed by the same rank space.
-    if (storage->evolution_exchange_layout.counts.size() != storage->cross_rank.rank_count()) {
-        throw ExchangeLayoutRankMismatch(
-            std::format("Layer exchange layout covers {} ranks but cross-rank storage has {}.",
-                        storage->evolution_exchange_layout.counts.size(),
-                        storage->cross_rank.rank_count()));
-    }
     return storage;
 }
 
 } // namespace monoprop::detail
-
-namespace monoprop {
-
-auto LayerCore::derivative_exchange_layout() const -> const LayerExchangeLayout & {
-    if (!derivative_exchange_layout_cache_) {
-        derivative_exchange_layout_cache_ = detail::build_derivative_exchange_layout(evolution_exchange_layout);
-    }
-    return *derivative_exchange_layout_cache_;
-}
-
-} // namespace monoprop

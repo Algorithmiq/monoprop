@@ -14,26 +14,26 @@
 
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/detail/mpi/RecvLayout.h"
 
 namespace monoprop {
 
+// counts/displs for one alltoallv, dense int[P] as MPI requires. Materialised into per-thread scratch
+// for the exchange being posted, never retained per layer, and it describes the recv side too.
 struct LayerExchangeLayout final {
     std::vector<int> counts;
     std::vector<int> displs;
     size_t total_count = 0;
-
-    // Cached recv counts/displs (see mpi::resolve_recv); mutable — filled through const handles at eval time.
-    mutable mpi::RecvLayoutCache recv_cache;
 };
 
 } // namespace monoprop
@@ -41,15 +41,6 @@ struct LayerExchangeLayout final {
 namespace monoprop::detail {
 
 auto checked_mpi_int(size_t value, const char *what) -> int;
-
-// Per-rank MPI counts = send_counts[r] * scale, with prefix-sum displacements. send_counts is full-width
-// (size_t) so checked_mpi_int catches the narrowing to MPI's int.
-auto build_layer_exchange_layout(const std::vector<size_t> &send_counts, int scale, const char *what = "Layer exchange")
-    -> LayerExchangeLayout;
-
-// The derivative layout is the evolution layout at 2x (each rotation endpoint carries both the op and
-// state payload).
-auto build_derivative_exchange_layout(const LayerExchangeLayout &evolution) -> LayerExchangeLayout;
 
 } // namespace monoprop::detail
 
@@ -116,38 +107,63 @@ struct CrossRankPartnerData {
     // Default-init: every element is overwritten before any read.
     DefaultInitVector<size_t> sin_send_indices;
     DefaultInitVector<std::pair<size_t, int>> sin_recv_entries;
-    // Size of the in-block (P).
+    // In-block size, a boundary within sin_send_indices.
     size_t in_count = 0;
 };
 
-struct CrossRankPartnerRange final {
-    size_t sin_send_offset = 0; // into sin_send_indices; cumulative across ranks, so size_t (may exceed 2^32)
-    TermIndex sin_send_count =
-        0;                      // == sin_recv_count (both endpoints); TermIndex-wide so one rank/layer can exceed 2^32
-    size_t sin_recv_offset = 0; // into sin_recv_phases; cumulative across ranks, so size_t (see sin_send_offset)
-    TermIndex sin_recv_count = 0;
+// One world slot carrying traffic. Offsets come from a running prefix, which keeps the record at 12 B.
+struct CrossRankOccupiedSlot final {
+    uint32_t slot = 0; // flat world slot id -- what the dense array encoded by position
+    TermIndex sin_send_count = 0;
     TermIndex in_count = 0;
 };
+// A width-independent rule, so it is checked on both TermIndex widths.
+inline constexpr size_t kOccupiedSlotIdField = std::max(sizeof(uint32_t), alignof(TermIndex));
+static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + 2 * sizeof(TermIndex),
+              "the occupied-slot record is the graph's P coefficient: it must carry no padding beyond the "
+              "alignment slot its u32 id already occupies.");
+static_assert(alignof(CrossRankOccupiedSlot) == alignof(TermIndex),
+              "the record aligns to its widest member; if that stops holding the size rule above is "
+              "measuring something else.");
+
+// self_pos sentinel: this rank's own slot carries no traffic in this layer.
+inline constexpr size_t kNoSelfSlot = static_cast<size_t>(-1);
 
 struct PackedCrossRankStorage final {
-    std::vector<CrossRankPartnerRange> ranges; // size == R
+    std::vector<CrossRankOccupiedSlot> occupied;
     std::vector<TermIndex> sin_send_indices;
     PackedPhaseStorage sin_recv_phases; // one phased entry per D index, sign baked in
 
-    auto rank_count() const -> size_t { return ranges.size(); }
-    auto sin_send_size(size_t rank) const -> size_t { return ranges[rank].sin_send_count; }
-    auto sin_recv_size(size_t rank) const -> size_t { return ranges[rank].sin_recv_count; }
-    auto in_count(size_t rank) const -> size_t { return ranges[rank].in_count; }
+    // P. No longer recoverable from the array length, and MPI_Alltoallv still wants dense counts.
+    size_t world_size = 0;
+
+    // Read in the innermost gradient loop, so resolved once at build.
+    size_t self_pos = kNoSelfSlot;
+    size_t self_offset = 0;
+
+    auto rank_count() const -> size_t { return world_size; }
+
+    // O(log occupied); a sweep should use for_each_occupied_slot.
+    auto find(size_t rank) const -> const CrossRankOccupiedSlot * {
+        const auto it = std::ranges::lower_bound(occupied, rank, {}, [](const CrossRankOccupiedSlot &e) {
+            return static_cast<size_t>(e.slot);
+        });
+        return (it == occupied.end() || it->slot != rank) ? nullptr : std::to_address(it);
+    }
+
+    auto sin_send_size(size_t rank) const -> size_t {
+        const auto *e = find(rank);
+        return e == nullptr ? 0 : e->sin_send_count;
+    }
+    auto sin_recv_size(size_t rank) const -> size_t { return sin_send_size(rank); }
+    auto in_count(size_t rank) const -> size_t {
+        const auto *e = find(rank);
+        return e == nullptr ? 0 : e->in_count;
+    }
 };
 
 struct LayerCore final {
     PackedCrossRankStorage cross_rank;
-    LayerExchangeLayout evolution_exchange_layout;
-
-    auto derivative_exchange_layout() const -> const LayerExchangeLayout &;
-
-    // A copied core must not inherit the source's cache: it is eval-time state, not data.
-    auto reset_derivative_exchange_layout() -> void { derivative_exchange_layout_cache_.reset(); }
 
     // Per-layer recompute metadata: generator_words = this layer's generator G as backing words;
     // scaled_count = fold truncation bound = operator size after this layer's partner inserts.
@@ -159,9 +175,6 @@ struct LayerCore final {
     double gen_coeff = 0.0;
     // Shared by all layers of one multi-term gate; absolute across build_graph calls (parameter_mapping).
     size_t gate_index = 0;
-
-private:
-    mutable std::optional<LayerExchangeLayout> derivative_exchange_layout_cache_;
 };
 
 } // namespace monoprop

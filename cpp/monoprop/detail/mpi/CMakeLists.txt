@@ -12,7 +12,6 @@ target_sources(
         "MPICompat.h"
         "MPIUtils.h"
         "PartitionBarrier.h"
-        "RecvLayout.h"
         "ShmComm.h"
 )
 

@@ -1,5 +1,15 @@
 version: 2
 updates:
+  # Maintain dependencies for npm packages in docs/
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
+    groups:
+      docs-npm:
+        patterns:
+          - "*"
+
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
