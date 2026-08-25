@@ -67,24 +67,6 @@ A pure-MPI rank keeps its whole share in one partition unless
 `monoprop_NUM_THREADS` is set, so an MPI user who has not asked for threads gets
 one partition per rank.
 
-### Graph memory at large world sizes
-
-The operator partitions, but the graph does not: its per-layer bookkeeping is
-indexed by the **flat** world `P = R × S`, not by the rank count. Anything the
-graph keeps per layer for every possible partner therefore costs `O(P)` on each of
-the `P` participants — `O(P²)` across a job — whether or not those partners ever
-exchange anything, and the share of partners that do falls as `P` grows.
-
-Two consequences when sizing a run:
-
-- A layer keeps a record only for the world slots that actually carry traffic, so
-  its cost tracks the terms crossing partition boundaries rather than the number
-  of partitions that exist.
-- The all-to-all counts and displacements are **derived** when an exchange is
-  posted and dropped afterwards, instead of being kept on the layer. They are a
-  prefix sum over what the layer already holds, and the recv side equals the send
-  side, so neither is stored per layer nor resolved over the wire.
-
 ### Enabling MPI
 
 MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the
