@@ -21,21 +21,12 @@
 // Single home for runtime environment configuration. Kept dependency-free by design, because it is
 // pulled into hot-path headers.
 //
-//   monoprop_NUM_THREADS    positive int (1..1e6), else ignored                → num_threads
-//   monoprop_PARTITION_PINNING  bool, default ON; 0/false disables per-core pinning → partition_pinning
+//   monoprop_NUM_THREADS        positive int (1..1e6), else ignored → num_threads
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
 
 namespace monoprop::config {
 
 namespace detail {
-
-inline auto parse_flag(const char *value, bool default_value) -> bool {
-    if (value == nullptr || value[0] == '\0') {
-        return default_value;
-    }
-    const char c = value[0];
-    return !(c == '0' || c == 'f' || c == 'F' || c == 'n' || c == 'N');
-}
 
 inline auto parse_positive_int(const char *text) -> std::optional<int> {
     if (text == nullptr) {
@@ -56,7 +47,6 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 
 struct Settings {
     std::optional<int> num_threads;
-    bool partition_pinning = true;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -64,7 +54,6 @@ inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-        s.partition_pinning = detail::parse_flag(std::getenv("monoprop_PARTITION_PINNING"), true);
         return s;
     }();
     return settings;

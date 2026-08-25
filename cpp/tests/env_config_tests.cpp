@@ -18,29 +18,7 @@
 
 #include "monoprop/detail/EnvConfig.h"
 
-using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_default_when_unset_or_empty) {
-    BOOST_CHECK_EQUAL(parse_flag(nullptr, true), true);
-    BOOST_CHECK_EQUAL(parse_flag(nullptr, false), false);
-    BOOST_CHECK_EQUAL(parse_flag("", true), true);
-    BOOST_CHECK_EQUAL(parse_flag("", false), false);
-}
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_falsey_first_char) {
-    // Only the first character decides, so "0abc" is falsey too.
-    for (const char *v : {"0", "f", "F", "n", "N"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, true) == false, v);
-    }
-    BOOST_CHECK_EQUAL(parse_flag("0abc", true), false);
-}
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_truthy_first_char) {
-    for (const char *v : {"1", "t", "T", "y", "Y", "on", "true", "anything"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, false) == true, v);
-    }
-}
 
 BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_null_and_malformed) {
     BOOST_CHECK(parse_positive_int(nullptr) == std::nullopt);
@@ -64,5 +42,5 @@ BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
     const auto &b = monoprop::config::get();
     BOOST_CHECK_EQUAL(&a, &b);
     // Touch a field so the Settings aggregate is actually read.
-    BOOST_CHECK(a.partition_pinning == true || a.partition_pinning == false);
+    BOOST_CHECK(a.num_threads == std::nullopt || *a.num_threads >= 1);
 }
