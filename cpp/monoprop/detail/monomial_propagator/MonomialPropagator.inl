@@ -927,8 +927,6 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
             }
             return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, record, v, sec);
         };
-    // Sized once here rather than per call: the gradient records every layer, so nothing would be saved by
-    // deferring, and a recompute layer's count costs a fold.
     auto counts = std::make_shared<std::vector<size_t>>();
     counts->reserve(cache->size());
     for (const auto &e : *cache) {
