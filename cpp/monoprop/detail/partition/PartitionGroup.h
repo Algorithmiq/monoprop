@@ -27,7 +27,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "monoprop/detail/EnvConfig.h" // config::get().commplace -- gates the COMMPLACE line only
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h" // mpi::size for the transport choice
 #include "monoprop/detail/mpi/ShmComm.h"
@@ -204,9 +203,6 @@ private:
      * evidence that a multi-rank launcher did the right thing. Reached only from the primary ctor, so
      * a clone does not re-emit -- the mask belongs to the process, not the object. */
     auto report_placement_(const uint64_t *masks, size_t peers, const char *verdict) -> void {
-        if (!config::get().commplace) {
-            return;
-        }
         constexpr size_t kWords = monoprop::detail::partition::kAffinityMaskWords;
         std::array<uint64_t, kWords> own{};
         if (masks == nullptr && affinity_mask_words(own.data(), kWords)) {

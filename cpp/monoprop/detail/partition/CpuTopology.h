@@ -115,15 +115,15 @@ struct MaskSummary {
 [[nodiscard]] auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
     -> std::optional<MaskSummary>;
 
-/* COMMPLACE (monoprop_COMMPLACE): a rank seeing 16 of a host's 128 CPUs is equally "my own 16" and
- * "eight of us share these 16", and only the co-located ranks' masks separate them, so the exchange
- * PartitionGroup already runs to place also reports. Report-only; nothing branches on the line. */
+/* COMMPLACE: a rank seeing 16 of a host's 128 CPUs is equally "my own 16" and "eight of us share
+ * these 16", and only the co-located ranks' masks separate them, so the exchange PartitionGroup
+ * already runs to place also reports. Report-only, unconditional; nothing branches on the line. */
 
 /*! @brief One newline-terminated COMMPLACE line naming what the launcher handed this rank.
  *  @param verdict how the co-located masks relate: "private" (pairwise disjoint), "shared" (two ranks
  *         can land on one CPU), "alone" (the only rank on its host, which is NOT "private"), or
  *         "unknown" (a mask did not fit the exchanged window, so no verdict is sound).
- *  Returned, not written, so a binary launched without the knob set still reaches the formatting.
+ *  Returned, not written, so the formatting is testable without a live rank.
  */
 [[nodiscard]] auto format_place_line(int mpi_rank,
                                      int node_rank,

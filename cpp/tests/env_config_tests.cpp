@@ -18,35 +18,7 @@
 
 #include "monoprop/detail/EnvConfig.h"
 
-using monoprop::config::detail::parse_flag;
 using monoprop::config::detail::parse_positive_int;
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_default_when_unset_or_empty) {
-    BOOST_CHECK_EQUAL(parse_flag(nullptr, true), true);
-    BOOST_CHECK_EQUAL(parse_flag(nullptr, false), false);
-    BOOST_CHECK_EQUAL(parse_flag("", true), true);
-    BOOST_CHECK_EQUAL(parse_flag("", false), false);
-}
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_falsey_words_in_any_case) {
-    // `off`, `OFF` and `Off` are the cases the old first-character parser read as ON.
-    for (const char *v : {"0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF", "Off"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, true) == false, v);
-    }
-}
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_truthy_words) {
-    for (const char *v : {"1", "true", "TRUE", "yes", "on", "ON", "anything"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, false), v);
-    }
-}
-
-BOOST_AUTO_TEST_CASE(env_config_parse_flag_compares_whole_words) {
-    // Whole words, so a falsey word's prefix, extension and initial are all ON. `f` and `n` were falsey.
-    for (const char *v : {"offbeat", "november", "0abc", "nope", "falsey", "f", "n", "of", "fals"}) {
-        BOOST_CHECK_MESSAGE(parse_flag(v, false), v);
-    }
-}
 
 BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_null_and_malformed) {
     BOOST_CHECK(parse_positive_int(nullptr) == std::nullopt);
@@ -70,5 +42,5 @@ BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
     const auto &b = monoprop::config::get();
     BOOST_CHECK_EQUAL(&a, &b);
     // Touch a field so the Settings aggregate is actually read.
-    BOOST_CHECK(a.commplace == true || a.commplace == false);
+    BOOST_CHECK(a.num_threads == std::nullopt || *a.num_threads >= 1);
 }

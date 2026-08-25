@@ -22,31 +22,11 @@
 // pulled into hot-path headers.
 //
 //   monoprop_NUM_THREADS        positive int (1..1e6), else ignored → num_threads
-//   monoprop_COMMPLACE          bool, default OFF; one COMMPLACE line per rank on stderr → commplace
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
 
 namespace monoprop::config {
 
 namespace detail {
-
-// Case-insensitive whole-string compare; `lower` must already be lowercase.
-inline auto iequals(const char *value, const char *lower) -> bool {
-    for (; *value != '\0' && *lower != '\0'; ++value, ++lower) {
-        const char c = (*value >= 'A' && *value <= 'Z') ? static_cast<char>(*value - 'A' + 'a') : *value;
-        if (c != *lower) {
-            return false;
-        }
-    }
-    return *value == *lower;
-}
-
-inline auto parse_flag(const char *value, bool default_value) -> bool {
-    if (value == nullptr || value[0] == '\0') {
-        return default_value;
-    }
-    // Whole words: matching only the first character read `off` and `OFF` as ON.
-    return !(iequals(value, "0") || iequals(value, "false") || iequals(value, "no") || iequals(value, "off"));
-}
 
 inline auto parse_positive_int(const char *text) -> std::optional<int> {
     if (text == nullptr) {
@@ -67,7 +47,6 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 
 struct Settings {
     std::optional<int> num_threads;
-    bool commplace = false;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -75,7 +54,6 @@ inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-        s.commplace = detail::parse_flag(std::getenv("monoprop_COMMPLACE"), false);
         return s;
     }();
     return settings;

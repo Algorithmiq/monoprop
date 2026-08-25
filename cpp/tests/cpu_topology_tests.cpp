@@ -429,8 +429,7 @@ BOOST_AUTO_TEST_CASE(cpu_topology_summarize_masks) {
     BOOST_CHECK(!partition::summarize_masks(private_.data(), 2, kWords, 2).has_value()); // self out of range
 }
 
-// The formatter returns a string rather than writing one, so this is reachable in a binary launched
-// without monoprop_COMMPLACE set -- the knob gates only PartitionGroup's write.
+// The formatter returns a string rather than writing one, so the line is testable without a live rank.
 BOOST_AUTO_TEST_CASE(cpu_topology_place_line_reports_every_field) {
     const partition::MaskSummary sum{.cpus = 16, .node_cpus = 128, .cpu_list = "0-127"};
     // Whole line, not field lookups: a reordered or unterminated line has to fail too.
