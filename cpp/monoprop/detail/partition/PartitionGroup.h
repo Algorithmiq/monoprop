@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -211,14 +212,15 @@ private:
         }
         // No summary is "unknown" rather than a plausible zero: some mask did not fit the window.
         const auto sum = summarize_masks(masks, peers, kWords, static_cast<size_t>(node_rank_));
-        std::fputs(format_place_line(mpi::rank(parent_),
-                                     node_rank_,
-                                     node_size_,
-                                     sum ? verdict : "unknown",
-                                     sum.value_or(MaskSummary{}))
-                       .c_str(),
-                   stderr);
-        std::fflush(stderr);
+        const std::string line = format_place_line(mpi::rank(parent_),
+                                                   node_rank_,
+                                                   node_size_,
+                                                   sum ? verdict : "unknown",
+                                                   sum.value_or(MaskSummary{}));
+        if (place_line_is_new(line)) {
+            std::fputs(line.c_str(), stderr);
+            std::fflush(stderr);
+        }
     }
 
     auto make_transport_() -> void {

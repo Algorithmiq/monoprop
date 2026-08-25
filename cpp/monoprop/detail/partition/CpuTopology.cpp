@@ -343,6 +343,17 @@ auto format_place_line(int mpi_rank, int node_rank, int node_size, const char *v
                        summary.cpu_list);
 }
 
+auto place_line_is_new(const std::string &line) -> bool {
+    static std::mutex mu;
+    static std::string last;
+    const std::lock_guard lock(mu);
+    if (line == last) {
+        return false;
+    }
+    last = line;
+    return true;
+}
+
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */
 
 auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
