@@ -272,6 +272,7 @@ public:
         return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
     }
 
+    // Resident, not reserved: rehash_to assigns every slot, so unlike slack_bytes() this is all faulted.
     auto index_estimated_memory_bytes() const -> size_t {
         return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }

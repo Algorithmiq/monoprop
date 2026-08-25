@@ -15,6 +15,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -194,4 +195,35 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     for (size_t i = 0; i < keys.size(); ++i) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
+}
+
+// The table's slot count is the largest single item in the operator's byte ledger at scale (34.7%,
+// 21.90 B/term on the hubbard weak ladder), and nothing else pinned it. Both halves are load-bearing:
+// power-of-two is what makes bucket selection `& mask` instead of a modulo, and minimality is what
+// keeps the over-provision down to that quantisation alone. These slots are written by rehash_to, so
+// they are resident rather than reserved -- halving the table moved measured VmHWM by 18%.
+BOOST_AUTO_TEST_CASE(index_table_is_the_smallest_power_of_two_at_the_load_cap) {
+    constexpr size_t kEntries = 2000; // > kMinSlots*0.7, so several doublings run
+
+    // Derive sizeof(Slot) from an empty store's kMinSlots=16 rather than assuming it: it is 8 bytes
+    // by default but 16 under monoprop_WIDE_TERM_INDEX, where a padded 64-bit index widens it.
+    const Store empty;
+    const size_t slot_size = (empty.index_estimated_memory_bytes() - sizeof(Store)) / 16;
+    BOOST_TEST(slot_size > 0u);
+
+    Store s;
+    size_t inserted = 0;
+    for (size_t a = 0; a < 2 * N && inserted < kEntries; ++a) {
+        for (size_t b = a + 1; b < 2 * N && inserted < kEntries; ++b) {
+            s.push_back(bs({a, b}));
+            s.emplace(s.row(inserted), inserted);
+            ++inserted;
+        }
+    }
+    BOOST_TEST(inserted == kEntries); // 2*N positions must supply enough distinct pairs
+
+    const size_t slots = (s.index_estimated_memory_bytes() - sizeof(Store)) / slot_size;
+    BOOST_TEST(std::has_single_bit(slots));
+    BOOST_TEST(kEntries * 10 <= slots * 7);
+    BOOST_TEST(kEntries * 10 > (slots / 2) * 7);
 }
