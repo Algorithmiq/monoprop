@@ -22,6 +22,7 @@
 #include <mutex>
 #include <print>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -343,7 +344,7 @@ auto format_place_line(int mpi_rank, int node_rank, int node_size, const char *v
                        summary.cpu_list);
 }
 
-auto place_line_is_new(const std::string &line) -> bool {
+auto place_line_is_new(std::string_view line) -> bool {
     static std::mutex mu;
     static std::string last;
     const std::lock_guard lock(mu);
