@@ -21,10 +21,13 @@
 
 #include <algorithm>
 #include <complex>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
 using namespace monoprop;
@@ -330,6 +333,54 @@ BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_pre
     (void)op.inverted_index();
     const auto after = detail::estimate_memory_usage<8>(op);
     BOOST_CHECK_GT(after.inverted_index_bytes, 0U); // present arm
+}
+
+// matched_scratch_bytes is summed by total_bytes() and accumulated by operator+= for the facade's sum.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_counts_matched_scratch_in_total_and_sum) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.matched_scratch_bytes = 7;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 107U);
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.op_coeffs_bytes = 20;
+    other.matched_scratch_bytes = 3;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.matched_scratch_bytes, 10U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 130U);
+
+    // An operator on its own has no stamp array to report.
+    auto bare = build_indexed_op({indices_to_bitset<8>({0, 1})});
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(bare).matched_scratch_bytes, 0U);
+}
+
+// epoch_ is empty until the first begin_gate, so this must apply a gate before the bytes can be nonzero.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_matched_scratch_nonzero_after_a_gate) {
+    constexpr size_t kModes = 2;
+    OperatorDict ham;
+    ham[VecZ{0, 1}] = cd{0.0, 1.0};
+    VecZ initial_state{0, 1};
+    auto sim = MonomialPropagator<kModes>(ham,
+                                          2 * kModes,
+                                          initial_state,
+                                          std::nullopt,
+                                          MPI_COMM_SELF,
+                                          std::nullopt,
+                                          std::nullopt,
+                                          CutoffType::Length,
+                                          std::nullopt);
+    BOOST_CHECK_EQUAL(sim.operator_memory_usage().matched_scratch_bytes, 0U); // no gate applied yet
+
+    const std::vector<VecZ> monos{{0}};
+    sim.build_graph(monos, VecZ{0}, VecD{1.0});
+
+    const auto live = sim.operator_memory_usage();
+    BOOST_CHECK_GT(live.matched_scratch_bytes, 0U);
+
+    auto without = live;
+    without.matched_scratch_bytes = 0;
+    BOOST_CHECK_EQUAL(live.total_bytes() - without.total_bytes(), live.matched_scratch_bytes);
 }
 
 // init_operator_entries is a count: accumulated by operator+= but never summed into total_bytes().
