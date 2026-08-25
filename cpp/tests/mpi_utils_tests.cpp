@@ -132,10 +132,8 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
 
 // The self-owned bucket is staged as positions, not encoded, so it is invisible to the walk above --
 // without this the r == my_rank arm of the routing decision goes unchecked.
-auto check_self_ownership(const detail::SelfQueryStage<32> &stage,
-                          size_t ranks,
-                          size_t my_rank,
-                          size_t &checked) -> void {
+auto check_self_ownership(const detail::SelfQueryStage<32> &stage, size_t ranks, size_t my_rank, size_t &checked)
+    -> void {
     for (size_t q = 0; q < stage.size(); ++q) {
         Monomial<32> mono;
         for (size_t j = 0; j < stage.k_of[q]; ++j) {

@@ -101,8 +101,8 @@ struct SelfQueryStage {
     // DefaultInitVector, the allocator Resolve.h already uses for exactly this: a plain vector's resize
     // VALUE-initialises, so sizing pos_flat ahead would memset every byte a push is about to overwrite
     // -- trading the append cost for a per-gate zero-fill instead of removing it.
-    DefaultInitVector<PosT> pos_flat;   // ascending positions, concatenated in push order
-    DefaultInitVector<size_t> pos_off;  // query -> absolute offset into pos_flat
+    DefaultInitVector<PosT> pos_flat;  // ascending positions, concatenated in push order
+    DefaultInitVector<size_t> pos_off; // query -> absolute offset into pos_flat
     DefaultInitVector<uint32_t> k_of;
     DefaultInitVector<int8_t> phase_of; // emit_phase is ternary, so a byte is the whole range
 
