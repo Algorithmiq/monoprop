@@ -385,31 +385,24 @@ struct TermProductsFor<SparseRowStore, A, 0> {
 
 // Bind the storage word count once per gate and let the scan build a kernel that knows it.
 //
-// This is the same shape as with_algebra and with_store: a runtime property the whole gate shares
-// becomes a compile-time one at a single seam, and everything downstream of the seam is templated on
-// it. Doing it per gate is what makes it affordable -- the alternative, a Bitset carrying its width in
-// its type, is the compile-time ceiling this branch removed.
+// Like with_algebra and with_store, this turns one runtime gate-wide property into a compile-time one
+// at a single seam. Everything after that seam is templated on it. Doing this once per gate keeps
+// compile time under control; encoding Bitset width in the type was too expensive.
 //
-// Tag dispatch rather than handing the body a constructed kernel: the body has to be able to declare
-// the kernel as its own local. Passing one in by reference measured ~3% slower on the *unspecialized*
-// arm, which does no new work at all -- a reference parameter is opaque to the optimizer where a local
-// object is not, so the arm that gained nothing still paid.
+// We use tag dispatch instead of passing in a kernel object. The body needs to declare the kernel as a
+// local, and passing by reference was ~3% slower on the unspecialized arm because locals optimize better.
 //
-// Only W in [1, kNarrowKernelWords] is specialized. Above it the runtime loop is already at parity or
-// ahead: its trip count is amortized over more words, and one arm of code beats eight in the
-// instruction cache.
+// Only W in [1, kNarrowKernelWords] is specialized. Above that, the runtime loop is already as fast or
+// faster, and fewer code paths are better for instruction cache.
 //
-// A build-time constant rather than a fixed 4, for the same reason monoprop_SPARSE_ROW_MIN_MODES is:
-// what it trades is .text against per-term instructions, and which side of that a build wants depends
-// on the widths it will actually run. 0 selects the unspecialized kernel at every width, i.e. exactly
-// the code that shipped before this seam existed; the default 4 is where the measured win stops (the
-// numbers are in docs/content/docs/building.mdx). The cap is on the *storage* word count, so it names a
-// width regime and not a model: 4 words is 128 storage modes, which covers every model at or below 128
-// qubits -- including both shipping ones.
-#if !defined(monoprop_NARROW_KERNEL_MAX_WORDS)
-#define monoprop_NARROW_KERNEL_MAX_WORDS 4
-#endif
-inline constexpr size_t kNarrowKernelWords = monoprop_NARROW_KERNEL_MAX_WORDS;
+// This cap is fixed here, not a build option. Unlike monoprop_SPARSE_ROW_MIN_MODES (ISA-dependent),
+// this is a storage-word count and maps to the same width regime on every machine.
+//
+// kNarrowKernelWords = 4 means 128 storage modes, which covers all current shipped models. Measured
+// benefit is about 10% at 2-4 words, fading by 7 words, for about 11% extra `.text` from the four
+// specializations. Raising the cap to Bitset::kInlineWords is correct but not faster; setting it to 0
+// restores the pre-seam code path for re-measurement.
+inline constexpr size_t kNarrowKernelWords = 4;
 static_assert(kNarrowKernelWords <= Bitset::kInlineWords,
               "a specialized kernel assumes its operands are inline; above kInlineWords they spill");
 

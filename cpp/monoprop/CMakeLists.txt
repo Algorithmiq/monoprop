@@ -23,7 +23,6 @@ target_compile_definitions(
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
     monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
-    monoprop_NARROW_KERNEL_MAX_WORDS=${monoprop_NARROW_KERNEL_MAX_WORDS}
 )
 
 # flags to prepend
@@ -103,7 +102,6 @@ target_compile_definitions(
     $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
     monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
-    monoprop_NARROW_KERNEL_MAX_WORDS=${monoprop_NARROW_KERNEL_MAX_WORDS}
 )
 
 target_compile_features(monoprop INTERFACE cxx_std_23)

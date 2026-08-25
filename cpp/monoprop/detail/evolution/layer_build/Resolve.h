@@ -96,7 +96,7 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
     // eight inline words whatever the operator's real width, and above that width it allocates -- so a
     // layer paid nq_total of those, every layer, only to overwrite every word immediately (the record
     // reader overwrites whole, so no stale bit from a previous layer can survive). Reusing the buffer is
-    // worth -64% to -72% of this phase at 2-8 words and -41% at 16 (notes/monomial-storage/README.md §6b).
+    // worth -64% to -72% of this phase at 2-8 words and -41% at 16.
     //
     // thread_local, matching the scan's `nz`: each partition master gets its own and reuses its
     // capacity across layers. Two consequences, both load-bearing:

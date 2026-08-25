@@ -67,6 +67,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -89,8 +90,8 @@ DATA_DIR = REPO_ROOT / "tests" / "data"
 # Deliberately stops at 4: "support" grows combinatorially in num_modes (28 modes, support=6 ->
 # ~13.7M surviving terms on S0_14e14o_majoranic_c6 -- seconds to propagate, but a full term-by-term
 # JSON dump of that is exactly the kind of accidental multi-GB, multi-minute capture this tool must
-# not become). Wider cutoffs belong to the dedicated benchmarks (notes/monomial-storage/bench/,
-# benches/bench_models.py), not this smoke-level regression instrument.
+# not become). Wider cutoffs belong to the dedicated benchmarks (benches/bench_models.py), not
+# this smoke-level regression instrument.
 _PROBE_CUTOFFS = (2, 4)
 
 # Fixtures small enough that propagating with no truncation (cutoff = 2 * num_modes) is tractable,
@@ -328,10 +329,19 @@ def _compare_terms(
     if extra:
         problems.append(f"{len(extra)} unexpected term(s), e.g. {extra[0]}")
     worst = 0.0
+    unordered = 0
     for key in ref_terms.keys() & cand_terms.keys():
         for a, b in zip(ref_terms[key], cand_terms[key], strict=True):
             if not _close(a, b, tol):
-                worst = max(worst, abs(a - b))
+                diff = abs(a - b)
+                # A NaN never compares close, but it must not go through max(): max(0.0, nan) is 0.0
+                # in CPython, so the divergence would leave worst at 0.0 and report nothing at all.
+                if math.isnan(diff):
+                    unordered += 1
+                else:
+                    worst = max(worst, diff)
+    if unordered:
+        problems.append(f"{unordered} coefficient(s) not comparable (nan)")
     if worst > 0.0:
         problems.append(f"coefficient(s) differ by up to {worst:.3e} (tol {tol:.1e})")
     return problems

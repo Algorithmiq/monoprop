@@ -33,12 +33,17 @@
 // Logical mode count at or above which the sparse rows are the cheaper backend. Build-time and not a
 // runtime knob because what moves the crossover is the target ISA, which is fixed when the translation
 // unit is compiled: dense costs one pass per storage word and sparse is flat in the width, so without a
-// vector popcount the dense pass degrades an order of magnitude sooner. Set from CMake off
-// monoprop_ENABLE_ARCH_FLAGS (see the top-level CMakeLists for the measured values); the fallback here
-// is the conservative baseline-x86-64 one, so a consumer compiling these headers without the project's
-// definitions gets the value that suits the wheels rather than the developer's machine.
-#if !defined(monoprop_SPARSE_ROW_MIN_MODES)
-#define monoprop_SPARSE_ROW_MIN_MODES 256
+// vector popcount the dense pass degrades an order of magnitude sooner. Set from CMake off the arch
+// flags actually emitted (see the top-level CMakeLists for the measured values).
+//
+// Hard error rather than a fallback default: the value is a usage requirement of monoprop-objs, so a
+// translation unit reaching here without it did not inherit that target's requirements, and any
+// fallback would differ from the value the rest of the library was compiled with. kMinModes reaches
+// inline definitions (MPOperator, with_store), so under LTO that disagreement is an ODR violation
+// resolving to one arbitrary answer -- a silently wrong backend choice rather than a build failure.
+#ifndef monoprop_SPARSE_ROW_MIN_MODES
+#error \
+    "monoprop_SPARSE_ROW_MIN_MODES is undefined: link against the monoprop-objs target rather than adding its include paths by hand."
 #endif
 
 namespace monoprop::detail {
@@ -540,6 +545,10 @@ public:
         size_t total = modes_.capacity() * sizeof(ModeT);
         total += codes_.capacity() * sizeof(CodesT);
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
+        // Plus what each spilled monomial owns outside its own object
+        for (const auto &[key, value] : overflow_) {
+            total += value.heap_bytes();
+        }
         return total;
     }
 

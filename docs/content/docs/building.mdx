@@ -26,34 +26,23 @@ without MPI, so a from-source build is required for multi-rank runs.
 | `monoprop_ENABLE_ARCH_FLAGS` | `ON` (`OFF` for the published wheels) | Compile with `-march=native` / `-xHost`. |
 | `monoprop_WIDE_TERM_INDEX` | `OFF` | 64-bit term indices, for partitions holding more than ~2^32 terms. |
 | `monoprop_ENABLE_MPI` | `OFF` | Multi-rank support, as above. |
-| `monoprop_SPARSE_ROW_MIN_MODES` | ISA-dependent | Mode count at or above which the operator store prefers sparse rows. |
-| `monoprop_NARROW_KERNEL_MAX_WORDS` | `4` | Storage word counts `1..N` for which the scan's per-term kernel is specialized; `0` disables it. |
 
-`monoprop_SPARSE_ROW_MIN_MODES` follows `monoprop_ENABLE_ARCH_FLAGS` unless you set
-it explicitly: `768` with architecture flags on, `256` without them. The crossover
-moves because dense monomials cost one pass per storage word while sparse rows are
-flat in the width, so a target without a vector `popcount` reaches the crossover
-sooner. The number is build-time because the ISA is.
+`monoprop_ENABLE_ARCH_FLAGS` also moves the sparse-row crossover, which is derived
+from it rather than being an option of its own: `768` storage modes when the build
+actually emits architecture flags, `256` when it does not — which covers the published
+wheels and any `Debug` build, where the flags are suppressed. Dense monomials cost one
+pass per storage word while sparse rows are flat in the width, so a target without a
+vector `popcount` reaches the crossover sooner. The number is build-time because the
+ISA is, and there is no crossover you could pin that would be right independently of
+the flags you compiled with.
 
 Both values are measured end to end through the propagator, at the first whole
 32-mode storage block where sparse rows win by more than the run-to-run spread.
 Expect about one block of machine dependence either way — near the crossing the two
 backends are within a few percent of each other, so a threshold that is one block off
 costs very little. If you are running a width close to it and care, measure your own
-workload both ways with `monoprop_ROW_STORE` and pin the value.
-
-`monoprop_NARROW_KERNEL_MAX_WORDS` trades code size for per-term instructions. The
-scan binds a layer's storage word count at the same seam where it binds the basis and
-the row backend, and a kernel specialized on it has a compile-time trip count for
-every per-term word loop — worth up to about 10% at two and four storage words (64 and
-128 storage modes), tapering to nothing by seven, where the loop is long enough to
-amortize its own bookkeeping. How much of that a given run sees depends on how much of
-its time is in the per-term product at all: a tight `lower_atol` admits more terms per
-gate and gains the most, a loose one rejects them on their coefficient before the
-product is ever computed and gains little. The cost is one instantiation of the scan per specialized width,
-about 11% of `.text` at the default `4`. Set it to `0` for a build that only ever runs
-wide registers, and to `8` to cover the whole inline regime — which is also the ceiling, since a
-specialized kernel assumes its operands are inline. Configure rejects anything above it.
+workload both ways with `monoprop_ROW_STORE`, which forces a backend per run and needs
+no rebuild.
 
 ### Choosing the row backend at run time
 
@@ -64,7 +53,7 @@ for every propagator in the process:
 
 | Value | Effect |
 | --- | --- |
-| `auto` (default, or unset) | Sparse at or above `monoprop_SPARSE_ROW_MIN_MODES` storage modes, dense below. |
+| `auto` (default, or unset) | Sparse at or above the compiled-in crossover above, dense below. |
 | `dense` | Always dense monomials. |
 | `sparse` | Always sparse rows. |
 

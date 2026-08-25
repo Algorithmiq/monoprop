@@ -21,15 +21,14 @@
 
 namespace test_utils {
 
-// Runs `body` once per compile-time width in [1, Bitset::kInlineWords], i.e. 32..256 storage modes.
+// Runs `body` once per compile-time width in [1, Bitset::kInlineWords] (32..256 inline modes).
 //
-// The regime, not the cap: monoprop_NARROW_KERNEL_MAX_WORDS decides which widths the scan *selects* a
-// specialized kernel for, but the kernel and WordKernel are correct over the whole inline range, and
-// raising the cap must not be what discovers otherwise. Anything above kInlineWords is excluded
-// because the words spill to the heap there, which the word kernels forbid.
+// kNarrowKernelWords controls which widths pick a specialized scan kernel. The kernels themselves must
+// work for the full inline range. We stop at kInlineWords because larger widths spill to heap storage,
+// which word kernels do not allow.
 //
-// One definition for every width sweep: the range is a contract two test files assert against, and a
-// second copy of the fold could be narrowed in one of them without the other noticing.
+// Keep this width sweep defined in one place. Multiple test files rely on the same range, and duplicating
+// this fold could let one copy drift without notice.
 template <size_t... Ws>
 auto for_each_inline_width(std::index_sequence<Ws...>, auto &&body) -> void {
     // +1 because W == 0 is not a width any word kernel accepts.
@@ -37,7 +36,8 @@ auto for_each_inline_width(std::index_sequence<Ws...>, auto &&body) -> void {
 }
 
 auto for_each_inline_width(auto &&body) -> void {
-    for_each_inline_width(std::make_index_sequence<monoprop::Bitset::kInlineWords>{}, body);
+    for_each_inline_width(std::make_index_sequence<monoprop::Bitset::kInlineWords>{},
+                          std::forward<decltype(body)>(body));
 }
 
 } // namespace test_utils

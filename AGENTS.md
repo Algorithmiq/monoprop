@@ -175,8 +175,10 @@ Key files:
   `DenseTermProductsW<A, W>` are templated on it, so every per-term word loop has a compile-time trip
   count and every operand's storage pointer is resolved once per gate — which is what a `Bitset<NumBits>`
   used to give for free. Measured worth ~10% at two and four storage words and nothing at seven or eight,
-  so `monoprop_NARROW_KERNEL_MAX_WORDS` (default 4, `0` disables) caps which widths get an instantiation;
-  the cost is ~11% of `.text`. Two conditions on that number, both measured. It is the **Majorana** path:
+  so `kNarrowKernelWords` (`TermProduct.h`, 4) caps which widths get an instantiation; the cost is ~11%
+  of `.text`. Not a build option, unlike `monoprop_SPARSE_ROW_MIN_MODES`: the cap is a *storage word*
+  count, so it names the same width regime on every machine, where the sparse crossover has to follow
+  the target ISA. Two conditions on that number, both measured. It is the **Majorana** path:
   the Pauli rotation sign already loops over the generator's non-zero words only, so `W` binds no trip
   count there and the 127-qubit kicked-Ising model gains ~1%. And it scales with how much of a run is in
   the per-term product at all, so a loose `lower_atol` — which rejects a term on its coefficient before
@@ -198,9 +200,9 @@ Key files:
   `DenseTermProducts` over the whole inline regime, not just the capped widths — both files sweep the
   regime through the one `test_utils::for_each_inline_width` in `cpp/tests/InlineWidths.h`, so the range
   cannot be narrowed in one of them alone. And the kernel's precondition is that every operand is
-  inline, so `W` is never bound above `Bitset::kInlineWords` — the ceiling
-  `monoprop_NARROW_KERNEL_MAX_WORDS` is checked against at configure time, scraped out of `Bitset.h`
-  rather than restated in `CMakeLists.txt`. `DenseTermProductsW` is non-copyable because its three word
+  inline, so `W` is never bound above `Bitset::kInlineWords` — which `kNarrowKernelWords` is
+  `static_assert`ed against in the same header, so lowering `kInlineWords` fails the compile rather than
+  silently specializing a spilled width. `DenseTermProductsW` is non-copyable because its three word
   pointers point into its own bitsets; a copy would read and write the original's storage.
   Two further bindings were tried past this seam and both measured at nothing — under 0.05% of the
   instruction count on either shipping model, pinned single-threaded — because the optimizer already
@@ -223,9 +225,9 @@ Key files:
   everywhere including `find_rank` — so a multi-rank run still materializes one monomial per surviving
   term, and moving that means changing `find_rank` too.
 - **The anticommutation fold** (`detail::InvertedIndex`): the transpose of the row store, one column per
-  *bit position* — not per mode. That keying is settled and measured (`notes/monomial-storage/README.md`
-  §6c): a mode-keyed column cannot answer a generator slot that names one Majorana of a mode, which is
-  66% of the Hubbard generators' slots and 31% of the kicked-Ising ones, so anything mode-shaped is an
+  *bit position* — not per mode. That keying is settled and measured: a mode-keyed column cannot answer
+  a generator slot that names one Majorana of a mode, which is 66% of the Hubbard generators' slots and
+  31% of the kicked-Ising ones, so anything mode-shaped is an
   additional derived tier, never a re-keying. Two facts to keep in mind before touching it. The fold is
   `O(rows)` per *gate* regardless of how few terms anticommute, so it is 15% of a many-cheap-gates Pauli
   run and under 3% of a few-expensive-gates Majorana one — measure on the right workload. And its memory

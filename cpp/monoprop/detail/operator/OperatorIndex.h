@@ -246,6 +246,10 @@ public:
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = row_bytes_capacity();
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
+        // Plus what each spilled monomial owns outside its own object
+        for (const auto &[key, val] : overflow_) {
+            total += val.heap_bytes();
+        }
         return total;
     }
 
