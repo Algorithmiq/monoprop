@@ -35,14 +35,6 @@ alongside as `native_memory` and drawn as a faint companion line. **Those are no
 with each other**: they count different things in different pools. They are context for a
 single engine's curve, never a cross-engine ranking.
 
-<Callout type="warn">
-GPU engines are the one case where host RSS says nothing: the operator lives on the card, so
-`cuPauliProp`'s host RSS stays flat near 530 MB at every lattice size while its device footprint
-grows past 34 GB. It is therefore reported on its own pool, via
-`plot_scaling.py --memory-key working_set_MB`, which takes host RSS for CPU engines and the
-device peak for GPU ones.
-</Callout>
-
 ## Internal benchmarks
 
 A pytest suite measuring the **time** and **peak RSS** of `monoprop`'s core operations. It is
@@ -91,13 +83,6 @@ rank.
 just bench-build-mpi                           # build once (MPI on)
 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
-
-<Callout type="warn">
-**The MPI build must stay loaded.** `monoprop` builds `MPI=OFF` by default, and a non-MPI
-extension ignores the communicator — every rank then holds the **full** operator, for N× the
-memory. The recipes pass `--no-sync` so the MPI build survives; rebuild after editing sources.
-`just bench-mpi` checks `monoprop.has_mpi` and aborts if it is missing.
-</Callout>
 
 ### Continuous benchmarking
 
@@ -345,17 +330,3 @@ All Pauli model parameters live in
 and are shared by every engine, so one edit compares them all on an identical problem instance.
 The output schemas, the full field lists and the per-engine caveats are documented in
 [`packages/bench-third-party/README.md`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party).
-
-<Callout type="info">
-Three things that reliably bite:
-
-- **324 qubits needs a large enough mode tier** — build with `-Dmonoprop_MAX_NUM_MODES=352`,
-  since tiers come in 32-mode blocks.
-- **The two Pauli benchmarks want different Julia packages.** The lattice ladder needs
-  `PauliPropagation.jl` **dev (0.8.0+)** for the `Performance` submodule; the fixed-lattice
-  `run_model.jl` runs on the pinned **v0.7.3**.
-- **`run_model.py` and `run_model.jl` merge into the same `results.json`.** Each preserves the
-  other's entries, so they can be run in either order and re-run independently — but the Qiskit
-  backend needs a `monoprop` run in the *same* invocation, since its mandatory term budget
-  tracks `monoprop`'s per-step term count.
-</Callout>
