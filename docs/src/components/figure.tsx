@@ -6,10 +6,11 @@
 import type { ReactNode } from 'react';
 
 export function Figure({ children }: { children?: ReactNode }) {
-  // Markdown wraps a lone image in a `<p>`; its prose margin-bottom collapses
-  // with (and swamps) `Caption`'s margin-top, so it has to be zeroed here for
-  // the caption's own spacing to have any visible effect.
-  return <figure className="my-6 [&>p]:mb-0">{children}</figure>;
+  // Markdown wraps a lone image in a `<p>`, and prose typography puts its own
+  // margin on both: `mb-0` on the `<p>` and `my-0` on the `<img>` (a block
+  // element with no border/padding around it, so its margin would otherwise
+  // collapse straight through the `<p>` and swamp `Caption`'s margin-top).
+  return <figure className="my-6 [&>p]:mb-0 [&_img]:my-0">{children}</figure>;
 }
 
 export function Caption({ children }: { children?: ReactNode }) {
