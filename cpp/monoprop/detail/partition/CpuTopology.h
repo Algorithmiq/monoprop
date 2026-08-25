@@ -20,6 +20,7 @@
  * Policy: one partition per physical core, spread across L3/CCX domains, each worker thread pinned
  * to its representative PU. Falls back to unpinned execution when hwloc cannot load the topology or
  * when binding is unsupported — pinning is a performance optimisation, not a correctness requirement.
+ * Pinning has no runtime knob: leaving placement to the launcher measured propagate[hubbard] 2.90x slower.
  */
 
 #pragma once
@@ -27,9 +28,9 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
-
-#include "monoprop/detail/EnvConfig.h"
 
 namespace monoprop::detail::partition {
 
@@ -83,10 +84,6 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
  *
  * @returns Vector of PhysicalCore in hwloc logical-core order, or empty when hwloc cannot load
  *          the topology or when no core passes the affinity filter.
- *
- * @note This function deliberately ignores @c monoprop_PARTITION_PINNING so that the auto
- *       partition-count heuristic (one partition per physical core) works even when pinning is
- *       disabled by the user.
  */
 auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
@@ -104,6 +101,36 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
  */
 [[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
+//! What one host's exchanged affinity masks add up to. The union says what the JOB got, not what one rank got.
+struct MaskSummary {
+    size_t cpus = 0;               //!< CPUs in our own mask
+    size_t node_cpus = 0;          //!< CPUs in the union over the host
+    std::string cpu_list = "none"; //!< that union as ascending ranges, "0-15,64-79"
+};
+
+/*! @brief Summarize the @p n masks of @p words words laid end to end in @p masks, row @p self being ours.
+ *  @returns nullopt for a null/empty argument or any all-zero row: a mask that did not fit the exchange
+ *           window cannot be summed with the others. Diagnostic only; nothing branches on the result.
+ */
+[[nodiscard]] auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
+    -> std::optional<MaskSummary>;
+
+/* COMMPLACE: a rank seeing 16 of a host's 128 CPUs is equally "my own 16" and "eight of us share
+ * these 16", and only the co-located ranks' masks separate them, so the exchange PartitionGroup
+ * already runs to place also reports. Report-only, unconditional; nothing branches on the line. */
+
+/*! @brief One newline-terminated COMMPLACE line naming what the launcher handed this rank.
+ *  @param verdict how the co-located masks relate: "private" (pairwise disjoint), "shared" (two ranks
+ *         can land on one CPU), "alone" (the only rank on its host, which is NOT "private"), or
+ *         "unknown" (a mask did not fit the exchanged window, so no verdict is sound).
+ *  Returned, not written, so the formatting is testable without a live rank.
+ */
+[[nodiscard]] auto format_place_line(int mpi_rank,
+                                     int node_rank,
+                                     int node_size,
+                                     const char *verdict,
+                                     const MaskSummary &summary) -> std::string;
+
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };
 
@@ -119,8 +146,8 @@ enum class NodeMask { Shared, PerRank };
  * @param group_count  Total number of co-located ranks on the host.
  * @param mask         NodeMask::PerRank only when the co-located ranks' affinity masks have been measured
  *                     pairwise DISJOINT (PartitionGroup::classify_node_masks_), so this mask is our share.
- * @returns Vector of @p n CpuSet tokens, or empty when @c monoprop_PARTITION_PINNING is disabled,
- *          hwloc is unavailable, or fewer than @p group_count x @p n cores are visible (@p n under PerRank).
+ * @returns Vector of @p n CpuSet tokens, or empty when hwloc is unavailable or fewer than
+ *          @p group_count x @p n cores are visible (@p n under PerRank).
  *
  * @note Under NodeMask::PerRank the group split is skipped: our share is already this rank's alone.
  */
