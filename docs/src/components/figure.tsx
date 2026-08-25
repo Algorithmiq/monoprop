@@ -6,7 +6,10 @@
 import type { ReactNode } from 'react';
 
 export function Figure({ children }: { children?: ReactNode }) {
-  return <figure className="my-6">{children}</figure>;
+  // Markdown wraps a lone image in a `<p>`; its prose margin-bottom collapses
+  // with (and swamps) `Caption`'s margin-top, so it has to be zeroed here for
+  // the caption's own spacing to have any visible effect.
+  return <figure className="my-6 [&>p]:mb-0">{children}</figure>;
 }
 
 export function Caption({ children }: { children?: ReactNode }) {
