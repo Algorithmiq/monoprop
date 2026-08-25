@@ -209,10 +209,14 @@ foreach(LINE ${LINES})
       ENVIRONMENT
         ${serial_env}
     )
-    # The same case again with the support-form row backend forced. Every fixture and oracle in the
-    # suite is well below SparseRowStore::preferred_for_modes()'s crossover, so the automatic choice
-    # alone would leave that backend compiled and never run -- and it is the one that ships for wide
-    # systems. Per case rather than one whole-suite run, so a divergence names itself.
+    # Run the same case again with the support-form row backend forced. The suite is below
+    # SparseRowStore::preferred_for_modes()'s crossover, so the automatic choice would compile
+    # that backend but never run it, even though it is the one used for wide systems. Running each
+    # case separately makes any divergence easy to identify.
+    #
+    # Keep serial_env for the same reason as the variant above: this is another world-size-1 run
+    # of the same case, so without it half of `-L serial` would pay the MPI_Init setup cost that
+    # the other half avoids.
     register_variant("${test}_sparse_rows"
       COMMAND
         "${TEST_EXECUTABLE}"
@@ -224,6 +228,7 @@ foreach(LINE ${LINES})
         serial
         sparse-rows
       ENVIRONMENT
+        ${serial_env}
         "monoprop_ROW_STORE=sparse"
     )
   endif()

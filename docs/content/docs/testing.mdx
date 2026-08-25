@@ -87,8 +87,9 @@ just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then r
 
 CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
-(default) skips that probe for the single-process `serial` variants only; multi-rank variants
-keep the full component set, since they exchange real messages. Turn it off by adding
+(default) skips that probe for the single-process `serial` variants only — including the
+`sparse-rows` half of them, which is a second world-size-1 launch of the same case; multi-rank
+variants keep the full component set, since they exchange real messages. Turn it off by adding
 `-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
 
 CTest registers every Boost case individually as a `serial` variant. When the

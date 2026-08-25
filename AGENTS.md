@@ -89,10 +89,11 @@ Key files:
   series.
 - **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
   teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
-  not per-op cost (use `op_memory`).
-- **Peak memory is the kernel's `VmHWM` high-water mark** — exact, with no sampling. Under
-  MPI the ranks' peaks are summed, which errs high (disjoint transients, and shared pages
-  charged to every rank): an upper bound, good for regressions, not for provisioning.
+  not per-op cost (use `op_memory`). The overlap is not fixable from the benchmark's side —
+  pytest-benchmark holds the prior round's args across `setup=` — so anything that must be read
+  with nothing built is taken on the first round only, as `bench_models.py` does for its baseline
+  RSS.
+- **Peak memory is `HighWaterMark`, not sampled PSS** — exact, unlike `/proc/self/smaps_rollup`.
 
 ### Core abstractions (the propagation backbone)
 
@@ -135,8 +136,9 @@ Key files:
   `tests/test_mode_width.py`.
 - **Which backend, and where it is bound**: a propagator uses one of the two, chosen once from its
   storage width by `SparseRowStore::preferred_for_modes()` — a build-time constant
-  (`monoprop_SPARSE_ROW_MIN_MODES`, defaulted off `monoprop_ENABLE_ARCH_FLAGS`) because what moves the
-  crossover is the target ISA. `monoprop_ROW_STORE=dense|sparse` forces it process-wide; an
+  (`monoprop_SPARSE_ROW_MIN_MODES`, derived in `CMakeLists.txt` from whether `ARCH_FLAG` is actually
+  emitted rather than from the option that asks for it, and deliberately not a cache entry) because what
+  moves the crossover is the target ISA. `monoprop_ROW_STORE=dense|sparse` forces it process-wide; an
   unrecognized value throws rather than falling back, since the point of setting it is to know which
   backend ran. `MPOperator` holds one pointer per backend with exactly one non-null and binds the live
   one via `with_store` — **once per layer, inside `build_layer`**, never per term: the scan asks the

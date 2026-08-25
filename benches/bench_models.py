@@ -65,7 +65,12 @@ def test_model(
     state: dict[str, Any] = {}
 
     def setup():
-        state["baseline_rss"] = resting_rss_bytes()
+        # First round only: only then does setup() run before any model is built, matching
+        # `Baseline RSS` (resting memory before construction). In later rounds,
+        # pytest-benchmark still holds the previous round's args during setup(), so the
+        # old propagator is still live and cannot be reclaimed. That would make the reading
+        # baseline + one full model and misstate the model's memory cost versus `Peak RSS`.
+        state.setdefault("baseline_rss", resting_rss_bytes())
         state["built"] = build_fn(config, comm=bench_comm)
         return (state["built"], steps), {}
 

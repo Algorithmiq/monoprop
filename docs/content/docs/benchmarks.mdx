@@ -279,11 +279,12 @@ The suite contains two benchmark groups:
   run (`test_model[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers
   (`test_model[pauli]`). Override any config field with `--<model>-<field>`, e.g.
   `--pauli-num-layers 30`; `just bench --help` lists them all. `--model-rounds` (1) sets the rounds
-  per model, each rebuilding the model first: the default of one round records the memory and
-  term-count statistics, which are deterministic, but gives no spread for the timing, so pass
-  `--model-rounds 5` or more whenever a timing *difference* is the point of the run — a single
-  sample on these models can sit well off the median, and comparing two one-sample runs will read
-  noise as signal.
+  per model, each rebuilding the model first. Term counts, the operator accounting and `Baseline
+  RSS` are round count-independent; `Peak RSS` is not, because from the second round on the model
+  is rebuilt while pytest-benchmark still holds the previous round's, so the high-water mark covers
+  two of them. Pass `--model-rounds 5` or more whenever a timing *difference* is the point of the
+  run — a single sample on these models can sit well off the median, and comparing two one-sample
+  runs will read noise as signal.
 
 Each run writes pytest-benchmark timings to `results/time-<label>.json` and the remaining metrics
 to `<label>.json`. `monoprop-bench-report` combines all labels in `results/REPORT.md`. The
