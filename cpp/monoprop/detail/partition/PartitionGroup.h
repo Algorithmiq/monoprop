@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -168,8 +169,10 @@ private:
             MPI_Comm_size(node, &node_size_);
             classify_node_masks_(node);
             MPI_Comm_free(&node);
+            return;
         }
 #endif
+        report_placement_(nullptr, 0, "alone");
     }
 
 #ifdef monoprop_ENABLE_MPI
@@ -177,6 +180,7 @@ private:
     auto classify_node_masks_(MPI_Comm node) -> void {
         node_mask_ = NodeMask::Shared;
         if (node_size_ <= 1) {
+            report_placement_(nullptr, 0, "alone");
             return; // nobody to collide with; the normal split already handles group_count == 1
         }
         constexpr size_t kMaskWords = monoprop::detail::partition::kAffinityMaskWords;
@@ -189,8 +193,33 @@ private:
                                                                                        static_cast<size_t>(node_size_),
                                                                                        kMaskWords);
         node_mask_ = disjoint ? NodeMask::PerRank : NodeMask::Shared;
+        report_placement_(all.data(), static_cast<size_t>(node_size_), disjoint ? "private" : "shared");
     }
 #endif
+
+    /* COMMPLACE only, over the array MPI_Allgather already filled: no extra collective, and no
+     * reduction either, since every rank reads the same rows and so reaches the same verdict. `masks`
+     * nullptr means no peers, so measure our own mask; the verdict is then "alone", which is NOT
+     * evidence that a multi-rank launcher did the right thing. Reached only from the primary ctor, so
+     * a clone does not re-emit -- the mask belongs to the process, not the object. */
+    auto report_placement_(const uint64_t *masks, size_t peers, const char *verdict) -> void {
+        constexpr size_t kWords = monoprop::detail::partition::kAffinityMaskWords;
+        std::array<uint64_t, kWords> own{};
+        if (masks == nullptr && affinity_mask_words(own.data(), kWords)) {
+            masks = own.data();
+            peers = 1;
+        }
+        // No summary is "unknown" rather than a plausible zero: some mask did not fit the window.
+        const auto sum = summarize_masks(masks, peers, kWords, static_cast<size_t>(node_rank_));
+        std::fputs(format_place_line(mpi::rank(parent_),
+                                     node_rank_,
+                                     node_size_,
+                                     sum ? verdict : "unknown",
+                                     sum.value_or(MaskSummary{}))
+                       .c_str(),
+                   stderr);
+        std::fflush(stderr);
+    }
 
     auto make_transport_() -> void {
 #ifdef monoprop_ENABLE_MPI

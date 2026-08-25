@@ -15,10 +15,14 @@
 #include "monoprop/detail/partition/CpuTopology.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <format>
 #include <map>
 #include <mutex>
 #include <print>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <hwloc.h>
@@ -144,8 +148,8 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
     if (offset + n > order.size()) {
         return {};
     }
-    return std::vector<int>(order.begin() + static_cast<std::ptrdiff_t>(offset),
-                            order.begin() + static_cast<std::ptrdiff_t>(offset + n));
+    return {order.begin() + static_cast<std::ptrdiff_t>(offset),
+            order.begin() + static_cast<std::ptrdiff_t>(offset + n)};
 }
 
 } // namespace topo_detail
@@ -153,7 +157,7 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
 /* ── enumerate_physical_cores ──────────────────────────────────────────────── */
 
 auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
-    const auto topo = get_topology();
+    auto *const topo = get_topology();
     if (!topo) {
         return {};
     }
@@ -175,7 +179,7 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
 
     const unsigned num_cores = hwloc_get_nbobjs_by_depth(topo, core_depth);
     for (unsigned i = 0; i < num_cores; ++i) {
-        const hwloc_obj_t core = hwloc_get_obj_by_depth(topo, core_depth, i);
+        auto *const core = hwloc_get_obj_by_depth(topo, core_depth, i);
         if (!core || !core->cpuset) {
             continue;
         }
@@ -202,7 +206,7 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
          * receive their own singleton domain so the placement algorithm can still spread across
          * whatever structure the topology does have. */
         int domain;
-        const hwloc_obj_t l3 = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_L3CACHE, core);
+        auto *const l3 = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_L3CACHE, core);
         if (l3) {
             const auto [it, inserted] = l3_domain_map.emplace(l3->logical_index, next_domain_id);
             if (inserted) {
@@ -214,7 +218,7 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
             domain = next_domain_id++;
         }
 
-        cores.push_back(PhysicalCore{rep, domain});
+        cores.push_back(PhysicalCore{.cpu = rep, .l3_domain = domain});
     }
 
     hwloc_bitmap_free(allowed);
@@ -228,7 +232,7 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
         return false;
     }
     std::fill_n(out, nwords, uint64_t{0});
-    const auto topo = get_topology();
+    auto *const topo = get_topology();
     if (!topo) {
         return false;
     }
@@ -276,12 +280,72 @@ auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) 
     return true;
 }
 
+/* ── summarize_masks ──────────────────────────────────────────────────────── */
+
+// hwloc indexes a bitmap in unsigned long units, so a 64-bit word must be one of them.
+static_assert(sizeof(unsigned long) == sizeof(uint64_t), "the mask word is not an hwloc bitmap unit");
+
+auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self) -> std::optional<MaskSummary> {
+    if (masks == nullptr || n == 0 || words == 0 || self >= n) {
+        return std::nullopt;
+    }
+    auto *const row = hwloc_bitmap_alloc();
+    auto *const all = hwloc_bitmap_alloc();
+    if (row == nullptr || all == nullptr) {
+        hwloc_bitmap_free(row);
+        hwloc_bitmap_free(all);
+        return std::nullopt;
+    }
+    MaskSummary out;
+    bool ok = true;
+    for (size_t r = 0; r < n; ++r) {
+        hwloc_bitmap_zero(row);
+        for (size_t w = 0; w < words; ++w) {
+            hwloc_bitmap_set_ith_ulong(row, static_cast<unsigned>(w), masks[(r * words) + w]);
+        }
+        const int weight = hwloc_bitmap_weight(row);
+        if (weight <= 0) { // an all-zero row is a mask that did not fit the exchange window
+            ok = false;
+            break;
+        }
+        if (r == self) {
+            out.cpus = static_cast<size_t>(weight);
+        }
+        hwloc_bitmap_or(all, all, row);
+    }
+    if (ok) {
+        out.node_cpus = static_cast<size_t>(hwloc_bitmap_weight(all));
+        std::array<char, 512> text{};
+        const int need = hwloc_bitmap_list_snprintf(text.data(), text.size(), all);
+        out.cpu_list = text.data();
+        // Truncation is stated, never silent: a cut list read as complete is a smaller machine. Cut
+        // back to the last whole range first, so the marker never follows a half-written CPU id.
+        if (std::cmp_greater_equal(need, text.size())) {
+            const size_t last = out.cpu_list.rfind(',');
+            out.cpu_list.resize(last == std::string::npos ? 0 : last + 1);
+            out.cpu_list += "+";
+        }
+    }
+    hwloc_bitmap_free(row);
+    hwloc_bitmap_free(all);
+    return ok ? std::optional{out} : std::nullopt;
+}
+
+auto format_place_line(int mpi_rank, int node_rank, int node_size, const char *verdict, const MaskSummary &summary)
+    -> std::string {
+    return std::format("COMMPLACE rank={} node_rank={} node_size={} masks={} cpus={} node_cpus={} cpu_list={}\n",
+                       mpi_rank,
+                       node_rank,
+                       node_size,
+                       verdict,
+                       summary.cpus,
+                       summary.node_cpus,
+                       summary.cpu_list);
+}
+
 /* ── partition_cpusets ─────────────────────────────────────────────────────── */
 
 auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
-    if (!config::get().partition_pinning) {
-        return {};
-    }
     const auto cores = enumerate_physical_cores();
 
     // A private mask IS this rank's share: the launcher already separated co-located ranks.
@@ -317,7 +381,7 @@ auto pin_this_thread(const CpuSet &set) -> void {
     if (set.pu < 0) {
         return;
     }
-    const auto topo = get_topology();
+    auto *const topo = get_topology();
     if (!topo) {
         return;
     }

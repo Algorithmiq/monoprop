@@ -29,12 +29,30 @@ whose partner lives in another partition are resolved through a per-gate exchang
 | --- | --- | --- |
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
-| `monoprop_PARTITION_PINNING` | `on` | `0`/`false`/`no` disables pinning each partition to a core. Supported on platforms where hwloc can bind threads. |
 
 ```bash
 # Run 8 partitions instead of one-per-core:
 export monoprop_NUM_THREADS=8
 ```
+
+## Placement report
+
+Building a propagator writes one `COMMPLACE` line per rank to stderr, naming the
+CPUs the launcher gave that rank and whether co-located ranks got disjoint masks.
+It is report-only — no placement decision reads it — and there is no knob: redirect
+stderr to drop it.
+
+```text
+COMMPLACE rank=0 node_rank=0 node_size=2 masks=private cpus=64 node_cpus=128 cpu_list=0-63
+```
+
+`masks` is `private` when the co-located ranks' affinity masks are pairwise
+disjoint, `shared` when two ranks can land on the same CPU, `alone` when this rank
+is the only one on its host (which is *not* evidence a multi-rank launcher bound
+correctly), and `unknown` when a mask did not fit the exchanged window.
+
+Pinning each partition to a core is not configurable: leaving placement to the
+launcher measured `propagate[hubbard]` 2.90x slower, so the disabled arm is gone.
 
 ## MPI distribution (multi-node)
 
