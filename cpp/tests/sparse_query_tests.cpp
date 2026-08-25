@@ -349,8 +349,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_is_exactly_the_gap_code_it_costed) {
         const size_t w = SQ::push(buf, pos.data(), pos.size(), 1);
         const size_t gwid = SQ::gap_width(pos.data(), pos.size());
         BOOST_TEST(w == SQ::words_of(SQ::gap_bits(pos.size(), gwid)),
-                   "k=" << k << " wrote " << w << " words, costed "
-                        << SQ::words_of(SQ::gap_bits(pos.size(), gwid)));
+                   "k=" << k << " wrote " << w << " words, costed " << SQ::words_of(SQ::gap_bits(pos.size(), gwid)));
         BOOST_TEST(w <= SQ::words_of(SQ::header_bits_for(pos.size()) + (pos.size() * SQ::kPosBits)));
     }
 }
