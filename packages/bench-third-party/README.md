@@ -18,6 +18,8 @@ The end-to-end workflow is:
 4. Run the benchmarks to produce `results.json`.
 5. Plot the results to produce `pauli_results.png`.
 
+`plot_headline.py`, at the top level here, draws the docs site's two-panel headline figure from
+both benchmarks' committed results at once: Pauli on the left, Majorana on the right.
 
 For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.tech/benchmarks).
 
