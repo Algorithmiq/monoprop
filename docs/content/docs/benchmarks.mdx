@@ -12,7 +12,7 @@ Majorana propagation engines.
 Memory on this page means **peak resident set size**, read from the kernel's `VmHWM` high-water
 mark. It is the number to quote, and the only one that is like-for-like against a library
 written in another language. The one exception is the GPU engine, whose operator is not in host
-memory at all — see the callout below.
+memory at all. See the callout below.
 
 - **It is exact, not sampled.** The kernel updates `VmHWM` on every RSS increase, so no
   transient can be missed and no background thread is needed, which also means the GIL cannot
@@ -159,8 +159,8 @@ repository workspace: it pins CUDA-specific wheels and a narrower Python range t
 itself.
 
 The comparisons are measured on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html),
-on exclusive nodes. The GPU engine cannot share the CPU node — it needs a card, and Leonardo's
-accelerated partition is a different node shape — so it ran separately:
+on exclusive nodes. The GPU engine cannot share the CPU node, since it needs a card and
+Leonardo's accelerated partition is a different node shape, so it ran separately:
 
 | | node | hardware | engines |
 | --- | --- | --- | --- |
@@ -217,12 +217,12 @@ subprocess, with a **300 s budget per point**.
 
 At a fixed coefficient truncation the operator **saturates**: past ~100 qubits every engine
 carries the same ~55.0M terms whatever the lattice. This therefore measures *cost per term kept*,
-not a growing problem — which is why `monoprop`'s total runtime rises only from 6.35 s to 14.1 s
+not a growing problem, which is why `monoprop`'s total runtime rises only from 6.35 s to 14.1 s
 (2.2×) across a 9× larger lattice.
 
 At this depth the 300 s budget is binding for the single-core engines: `QuEra ppvm` and `Qiskit
 pauli-prop` do not finish even 6×6, and `PauliPropagation.jl` stops after 10×10. Their curves end
-where they ran out of budget, not where the engines stop working — a longer budget would extend
+where they ran out of budget, not where the engines stop working. A longer budget would extend
 them.
 
 ![Peak working memory versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_memory_working_set.png)
@@ -231,7 +231,7 @@ This figure reads each engine against the pool its operator actually lives in. F
 engines that **is** the peak host RSS described above; only `cuPauliProp` differs, contributing
 its device peak instead, because host RSS does not describe it. `monoprop` goes from 5045 MB to
 7835 MB (1.55×) across the full ladder. `cuPauliProp` climbs from 7.6 GB to **34.4 GB of the
-A100's 64 GB** — 4.5× `monoprop`'s host footprint at 324 qubits, and within sight of the card's
+A100's 64 GB**, 4.5× `monoprop`'s host footprint at 324 qubits, and within sight of the card's
 limit.
 
 ![Bar chart of monoprop's speed-up over each engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
@@ -257,7 +257,7 @@ engine did not finish that size within the 300 s budget.
 Two caveats belong with these ratios:
 
 - **Only two of the four CPU engines use more than one core.** `QuEra ppvm` and Qiskit's
-  `pauli-prop` propagate on a single core — measured at 0.99 busy cores mid-propagation — and no
+  `pauli-prop` propagate on a single core, measured at 0.99 busy cores mid-propagation, and no
   environment variable changes it: ppvm's rayon-parallel `PauliSum` lives in its `config::dashmap`
   variant while its Python bindings expose only `indexmap`, and Qiskit's `_accelerate` extension
   has no parallel path at all. Those ratios are wall-clock, not per-core, which is most of why
@@ -283,7 +283,7 @@ flat reads as small rather than as zero.
 
 Both engines simulate the same physics: the expectation values agree to within 2.0e-6 at every
 layer. `monoprop` keeps 1.38× more terms at equal truncation (109.4M against 79.4M), and still
-finishes the 20 layers in **57.1 s against 1583.7 s**, a 27.7× speed-up — 27.9× on the final
+finishes the 20 layers in **57.1 s against 1583.7 s**, a 27.7× speed-up, and 27.9× on the final
 layer alone (22.9 s against 639.4 s). Peak RSS is **8.8 GB against 17.5 GB**, half the footprint
 for a third more terms retained.
 
