@@ -175,7 +175,7 @@ struct GraphSink {
             append_inserted_endpoints<NumModes>(cos_all, combined_size, op);
             *out_cos = std::move(cos_all);
         }
-        return build_layer_storage_unified(std::move(partners), my_rank);
+        return build_layer_storage_unified(partners, my_rank);
     }
 };
 

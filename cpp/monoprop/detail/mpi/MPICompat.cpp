@@ -119,12 +119,10 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm)
 #endif
 }
 
-auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayoutCache &cache) -> const RecvLayout & {
+auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);
-    // alltoall_counts moves comm_size ints each way regardless of `n`, so a send vector that is not
-    // exactly one entry per rank reads and writes out of bounds — reachable because layouts outlive
-    // propagator copies and pare rebuilds.
+    // MPI_Alltoallv reads comm_size counts and displacements whatever the span holds.
     if (n != comm_size) {
         throw CollectiveArgumentError(
             std::format("Exchange layout has {} send counts but the communicator has {} ranks — a graph built for one "
@@ -132,22 +130,6 @@ auto resolve_recv(std::span<const int> send_counts, const Comm &comm, RecvLayout
                         n,
                         comm_size));
     }
-    if (cache.comm_size == comm_size && static_cast<int>(cache.layout.counts.size()) == n) {
-        return cache.layout;
-    }
-
-    RecvLayout &out = cache.layout;
-    out.counts.resize(static_cast<size_t>(n));
-    alltoall_counts(send_counts.data(), out.counts.data(), n, comm);
-    out.displs.resize(static_cast<size_t>(n));
-    long long total = 0;
-    for (int i = 0; i < n; ++i) {
-        out.displs[static_cast<size_t>(i)] = checked_mpi_count(total);
-        total += out.counts[static_cast<size_t>(i)];
-    }
-    out.total = checked_mpi_count(total);
-    cache.comm_size = comm_size;
-    return out;
 }
 
 } // namespace monoprop::mpi

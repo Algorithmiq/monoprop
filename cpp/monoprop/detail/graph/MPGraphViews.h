@@ -40,6 +40,13 @@ struct GraphMemoryBreakdown final {
     size_t cross_rank_bytes = 0;
     size_t exchange_layout_bytes = 0;
 
+    // Diagnostics, outside total_bytes(): counts, or a subset of a byte field, not additions to it.
+    size_t slot_record_bytes = 0;
+    size_t layer_cores = 0;
+    size_t slot_records = 0; // slot_records / layer_cores is the flat world P
+    size_t occupied_slots = 0;
+    size_t cross_rank_endpoints = 0;
+
     auto total_bytes() const -> size_t {
         return layer_descriptor_bytes + layer_storage_object_bytes + cos_data_bytes + cross_rank_bytes
                + exchange_layout_bytes;
@@ -52,6 +59,11 @@ struct GraphMemoryBreakdown final {
         cos_data_bytes += o.cos_data_bytes;
         cross_rank_bytes += o.cross_rank_bytes;
         exchange_layout_bytes += o.exchange_layout_bytes;
+        slot_record_bytes += o.slot_record_bytes;
+        layer_cores += o.layer_cores;
+        slot_records += o.slot_records;
+        occupied_slots += o.occupied_slots;
+        cross_rank_endpoints += o.cross_rank_endpoints;
         return *this;
     }
 };

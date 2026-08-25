@@ -14,21 +14,18 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 
 namespace monoprop::detail {
-// The layer exchange layout and the packed cross-rank storage disagree on the rank count.
-class ExchangeLayoutRankMismatch : public std::logic_error {
-public:
-    using std::logic_error::logic_error;
-};
 
 // The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
 auto checked_term_index(size_t value, const char *what) -> TermIndex;
@@ -75,33 +72,128 @@ inline auto store_packed_phase(PackedPhaseStorage &storage, size_t idx, int phas
     }
 }
 
+// Invariants of how the layer was built, so a violation is a bug here rather than bad input.
+class CrossRankSlotLayoutError : public std::logic_error {
+public:
+    using std::logic_error::logic_error;
+};
+
 auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
 
-inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
-    const size_t offset = storage.ranges[rank].sin_send_offset + idx;
-    return static_cast<size_t>(storage.sin_send_indices[offset]);
+// Record where my_rank's own slot sits, so the gradient's self-slot reads are O(1). Once per layer.
+auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void;
+
+// One world slot's position in the flat B/D arrays. The accessors below take this rather than a slot
+// id, so walking a slot's endpoints pays the lookup once instead of per endpoint.
+struct CrossRankSlotView final {
+    const TermIndex *sin_send_indices = nullptr; // B, already advanced to this slot's offset
+    const PackedPhaseStorage *sin_recv_phases = nullptr;
+    size_t phase_offset = 0;
+    size_t sin_send_count = 0;
+    size_t in_count = 0;
+};
+
+namespace slot_detail {
+inline auto view_at(const PackedCrossRankStorage &storage, const CrossRankOccupiedSlot &entry, size_t offset)
+    -> CrossRankSlotView {
+    return CrossRankSlotView{.sin_send_indices = storage.sin_send_indices.data() + offset,
+                             .sin_recv_phases = &storage.sin_recv_phases,
+                             .phase_offset = offset,
+                             .sin_send_count = entry.sin_send_count,
+                             .in_count = entry.in_count};
+}
+} // namespace slot_detail
+
+// Every occupied slot in ascending order with its B/D offset. func(slot_id, view), or
+// func(occupied_pos, slot_id, view) -- the position is handed out because a counter at the call site
+// would skew past those loops' self-slot `return`s. O(occupied) for the whole sweep.
+template <typename Func>
+auto for_each_occupied_slot(const PackedCrossRankStorage &storage, Func &&func) -> void {
+    size_t offset = 0;
+    for (size_t pos = 0; pos < storage.occupied.size(); ++pos) {
+        const auto &entry = storage.occupied[pos];
+        if constexpr (std::is_invocable_v<Func &, size_t, size_t, const CrossRankSlotView &>) {
+            func(pos, static_cast<size_t>(entry.slot), slot_detail::view_at(storage, entry, offset));
+        }
+        else {
+            func(static_cast<size_t>(entry.slot), slot_detail::view_at(storage, entry, offset));
+        }
+        offset += entry.sin_send_count;
+    }
 }
 
-// Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_recv_count-P):
+// O(1), for the innermost gradient loop; an all-zero view when this rank's slot carries no traffic.
+inline auto cross_rank_self_slot(const PackedCrossRankStorage &storage) -> CrossRankSlotView {
+    if (storage.self_pos == kNoSelfSlot) {
+        return CrossRankSlotView{.sin_recv_phases = &storage.sin_recv_phases};
+    }
+    return slot_detail::view_at(storage, storage.occupied[storage.self_pos], storage.self_offset);
+}
+
+// Arbitrary slot, O(occupied) because the offset is a prefix. Diagnostic and test use.
+inline auto cross_rank_slot(const PackedCrossRankStorage &storage, size_t rank) -> CrossRankSlotView {
+    size_t offset = 0;
+    for (const auto &entry : storage.occupied) {
+        if (entry.slot == rank) {
+            return slot_detail::view_at(storage, entry, offset);
+        }
+        if (entry.slot > rank) {
+            break;
+        }
+        offset += entry.sin_send_count;
+    }
+    return CrossRankSlotView{.sin_recv_phases = &storage.sin_recv_phases};
+}
+
+inline auto slot_sin_send_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
+    return static_cast<size_t>(slot.sin_send_indices[idx]);
+}
+
+// Invariant B=[in(P)]++[out(Q)], D=[out(Q)]++[in(P)] (P=in_count, Q=sin_send_count-P):
 // D[idx] = (idx<Q) ? B[P+idx] : B[idx-Q]. So D is not stored (saves ~half of cross_rank).
+inline auto slot_sin_recv_index(const CrossRankSlotView &slot, size_t idx) -> size_t {
+    // Unsigned subtraction, kept safe by the precondition build_packed_cross_rank_storage enforces.
+    assert(slot.in_count <= slot.sin_send_count && "in-block cannot exceed the slot's endpoint count");
+    const size_t out_count = slot.sin_send_count - slot.in_count; // Q
+    const size_t sin_send_local = (idx < out_count) ? (slot.in_count + idx) : (idx - out_count);
+    return slot_sin_send_index(slot, sin_send_local);
+}
+
+inline auto slot_sin_recv_phase(const CrossRankSlotView &slot, size_t idx) -> int {
+    return packed_phase_at(*slot.sin_recv_phases, slot.phase_offset + idx);
+}
+
+inline auto cross_rank_sin_send_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
+    return slot_sin_send_index(cross_rank_slot(storage, rank), idx);
+}
+
 inline auto cross_rank_sin_recv_index(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> size_t {
-    const auto &range = storage.ranges[rank];
-    const size_t in_count = range.in_count;                   // P
-    const size_t out_count = range.sin_recv_count - in_count; // Q
-    const size_t sin_send_local = (idx < out_count) ? (in_count + idx) : (idx - out_count);
-    return cross_rank_sin_send_index(storage, rank, sin_send_local);
+    return slot_sin_recv_index(cross_rank_slot(storage, rank), idx);
 }
 
 inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, size_t rank, size_t idx) -> int {
-    return packed_phase_at(storage.sin_recv_phases, storage.ranges[rank].sin_recv_offset + idx);
+    return slot_sin_recv_phase(cross_rank_slot(storage, rank), idx);
 }
 
 auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
-auto layer_exchange_layout_storage_bytes(const LayerExchangeLayout &layout) -> size_t;
+// The slot-proportional slice of cross_rank_storage_bytes: one record per stored world slot.
+auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
+
+auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
+
+// The B array's length, and an upper bound on the occupied slot count.
+auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t;
+
+// Derive a layer's send layout into caller-owned scratch; `out` is resized, not reallocated, on reuse.
+auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
+                            size_t my_rank,
+                            int scale,
+                            LayerExchangeLayout &out,
+                            const char *what = "Layer exchange") -> void;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
-auto build_layer_storage_unified(std::vector<CrossRankPartnerData> all_partners, size_t my_rank)
+auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore>;
 } // namespace monoprop::detail
