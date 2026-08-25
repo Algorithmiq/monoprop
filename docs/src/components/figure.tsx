@@ -15,7 +15,7 @@ export function Figure({ children }: { children?: ReactNode }) {
 
 export function Caption({ children }: { children?: ReactNode }) {
   return (
-    <figcaption className="text-fd-muted-foreground text-sm mt-2 prose-no-margin">
+    <figcaption className="text-fd-muted-foreground text-sm mt-4 prose-no-margin">
       {children}
     </figcaption>
   );
