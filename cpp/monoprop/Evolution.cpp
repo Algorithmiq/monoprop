@@ -14,6 +14,7 @@
 
 #include "monoprop/Evolution.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdlib>
@@ -71,23 +72,18 @@ auto &acquire_flat_exchange_buffers() {
     return scratch.buffers;
 }
 
-void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers) {
-    const size_t alloc = layout.total_count == 0 ? 1 : layout.total_count;
-    buffers.send_buffer.resize(alloc);
-}
-
 // A property of the communicator, not the layer: all ranks participate even at local total_count 0.
 auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
 }
 
 // Derives both sides at once: the count matrix is symmetric, so the recv layout is the send layout.
-auto derive_layer_exchange(const LayerTraversal &layer, const mpi::Comm &comm, int scale, FlatExchangeBuffers &buffers)
+auto derive_layer_exchange(const LayerTraversal &layer, const mpi::Comm &comm, int scale, LayerExchangeLayout &layout)
     -> void {
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const char *what = scale == 1 ? "Layer exchange" : "Layer derivative exchange";
-    detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, buffers.layout, what);
-    mpi::check_exchange_layout_width(buffers.layout.counts, comm);
+    detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, layout, what);
+    mpi::check_exchange_layout_width(layout.counts, comm);
 }
 
 // The completed alltoallv payload as an apply pass sees it: peer `rank`'s entries start at
@@ -142,8 +138,8 @@ inline auto begin_layer_exchange(const LayerTraversal &layer, int scale, const m
     in_flight.active = true;
 
     auto &buffers = acquire_flat_exchange_buffers();
-    derive_layer_exchange(layer, comm, scale, buffers);
-    resize_flat_exchange_buffers(buffers.layout, buffers);
+    derive_layer_exchange(layer, comm, scale, buffers.layout);
+    buffers.send_buffer.resize(buffers.layout.total_count == 0 ? 1 : buffers.layout.total_count);
     pack(in_flight.my_rank, buffers.layout, buffers.send_buffer);
     in_flight.handle = begin_flat_exchange(buffers, comm);
     return in_flight;
@@ -402,15 +398,10 @@ void snapshot_remote_endpoints(const VecD &state,
                                DerivativeSnapshotScratch &snap) {
     // Grow-only: shrinking would free the allocations this scratch exists to reuse.
     const size_t occupied = layer.occupied_slot_count();
-    const auto grow = [occupied](std::vector<VecD> &v) {
-        if (v.size() < occupied) {
-            v.resize(occupied);
-        }
-    };
-    grow(snap.sin_send_state);
-    grow(snap.sin_send_op);
-    grow(snap.sin_recv_state);
-    grow(snap.sin_recv_op);
+    snap.sin_send_state.resize(std::max(snap.sin_send_state.size(), occupied));
+    snap.sin_send_op.resize(std::max(snap.sin_send_op.size(), occupied));
+    snap.sin_recv_state.resize(std::max(snap.sin_recv_state.size(), occupied));
+    snap.sin_recv_op.resize(std::max(snap.sin_recv_op.size(), occupied));
     layer.for_each_occupied_slot(
         [&snap, my_rank, &state, &op](size_t pos, size_t r, const detail::CrossRankSlotView &slot) {
             if (r == my_rank) {

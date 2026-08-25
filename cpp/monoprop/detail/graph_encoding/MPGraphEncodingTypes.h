@@ -111,9 +111,7 @@ struct CrossRankPartnerData {
     size_t in_count = 0;
 };
 
-// One world slot that carries traffic, so the array is bounded by the traffic and not by the flat
-// world P. The D range is the B range permuted, and the B/D offset is a running prefix, so neither is
-// a field: a size_t offset would pad the record from 12 B to 24.
+// One world slot carrying traffic. Offsets come from a running prefix, which keeps the record at 12 B.
 struct CrossRankOccupiedSlot final {
     uint32_t slot = 0; // flat world slot id -- what the dense array encoded by position
     TermIndex sin_send_count = 0;

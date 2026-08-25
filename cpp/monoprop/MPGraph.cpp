@@ -51,11 +51,6 @@ auto layer_storage_memory_usage(const LayerCore &storage) -> GraphMemoryBreakdow
     GraphMemoryBreakdown breakdown;
     breakdown.layer_storage_object_bytes = sizeof(LayerCore);
     breakdown.cross_rank_bytes = detail::cross_rank_storage_bytes(storage.cross_rank);
-    // Nothing retained: derived into per-thread scratch. The field stays so the row does not vanish
-    // from a memory A/B.
-    breakdown.exchange_layout_bytes = 0;
-
-    // Diagnostics. The graph does not partition: its arrays are indexed by the flat world.
     breakdown.slot_record_bytes = detail::cross_rank_slot_record_bytes(storage.cross_rank);
     breakdown.layer_cores = 1;
     breakdown.slot_records = storage.cross_rank.rank_count();
