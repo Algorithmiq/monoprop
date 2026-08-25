@@ -1,5 +1,6 @@
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import * as Py from '@/components/py';
+import { Figure, Caption } from '@/components/figure';
 import type { MDXComponents } from 'mdx/types';
 import type { ImgHTMLAttributes } from 'react';
 
@@ -22,6 +23,8 @@ export function getMDXComponents(components?: MDXComponents) {
     ...defaultMdxComponents,
     // Py* components (plus Tab/Tabs) used by the generated Python API pages.
     ...Py,
+    Figure,
+    Caption,
     img: Img,
     ...components,
   } satisfies MDXComponents;
