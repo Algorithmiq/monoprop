@@ -170,7 +170,7 @@ CPU memory denotes **peak resident set size (RSS)**, obtained from the Linux ker
 counter. This definition is independent of the implementation language. For `cuPauliProp`, whose
 operator resides on the GPU, working memory instead denotes peak device allocation.
 
-- **The measurement is exact rather than sampled.** The kernel updates `VmHWM` whenever RSS
+- **The measurement is exact.** The kernel updates `VmHWM` whenever RSS
   increases, including during native code that does not hold the Python GIL.
 - **The measurement interval is reset for each step.** Before resetting `VmHWM`, the harness runs
   `gc.collect()` and `malloc_trim` for Python, or `GC.gc()` and `malloc_trim` for Julia. The
