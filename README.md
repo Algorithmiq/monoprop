@@ -19,17 +19,15 @@ the operator across cores and across nodes with MPI.
 
 ## Benchmarks
 
-Check out the comparison of `monoprop` against other open-source Pauli propagation engines:
+`monoprop` is compared with other open-source Pauli and Majorana propagation engines:
 
 <p align="center">
-  <img src="docs/public/benchmarks/pauli_scaling_runtime.png" alt="PP Runtime Benchmark" width="49%" />
-  <img src="docs/public/benchmarks/pauli_scaling_memory.png" alt="PP Memory Benchmark" width="49%" />
+  <img src="docs/public/benchmarks/headline_runtime.png" alt="Runtime per step for Pauli and Majorana propagation benchmarks" width="100%" />
 </p>
 
-and against [`MajoranaPropagation.jl`](https://github.com/SparqleSim/MajoranaPropagation.jl):
-
 <p align="center">
-  <img src="docs/public/benchmarks/majorana_results.png" alt="MP Benchmark" width="50%" />
+  <img src="docs/public/benchmarks/pauli_scaling_runtime.png" alt="Pauli propagation runtime versus lattice size" width="49%" />
+  <img src="docs/public/benchmarks/pauli_scaling_memory_working_set.png" alt="Pauli propagation working memory versus lattice size" width="49%" />
 </p>
 
 Head to our [benchmarks page](https://docs.monoprop.algorithmiq.tech/benchmarks) for more details.

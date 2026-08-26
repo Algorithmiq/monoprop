@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import resource
 import sys
@@ -32,23 +31,6 @@ from pathlib import Path
 
 import backends as backend_mod
 from model import SETTINGS_PATH, Settings
-
-
-def _num_threads(backend: str) -> int:
-    """The thread count `backend` will actually use.
-
-    A per-backend cap has to win over the allocation size: a run pinned to 56 threads on a
-    112-core node must not record 112, or per-thread results silently collide. Only this
-    backend's own variable counts — the others are exported node-wide.
-    """
-    for var in backend_mod.THREAD_VARS.get(backend, ()):
-        capped = os.environ.get(var)
-        if capped:
-            return int(capped)
-    slurm = os.environ.get("SLURM_CPUS_PER_TASK")
-    if slurm:
-        return int(slurm)
-    return len(os.sched_getaffinity(0))
 
 
 def main() -> None:
@@ -119,7 +101,7 @@ def main() -> None:
         "ny": settings.ny,
         "num_qubits": settings.num_qubits,
         "num_steps": len(result.runtime),
-        "threads": _num_threads(args.backend),
+        "threads": backend_mod.num_threads(args.backend),
         "host": platform.node(),
         "status": "ok",
         "total_runtime_s": sum(result.runtime),

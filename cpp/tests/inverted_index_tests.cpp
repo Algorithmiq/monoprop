@@ -22,6 +22,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 // Internals of the even-parity scan inverted index: the tiered column store, the lazily-built
 // per-row parity(|M|) bitmap, and the fill order. Rows are read through the backend-agnostic

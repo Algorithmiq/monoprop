@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The dense-vector and packed OperatorIndex backends must agree through every TypeAliases.h accessor.
+// The dense-vector and packed OperatorIndex backends must agree through every RowAccess.h accessor.
 
 #include <boost/test/unit_test.hpp>
 
@@ -20,6 +20,8 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
+#include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 using namespace monoprop;
 
