@@ -20,11 +20,16 @@
 #include <bitset>
 #include <cstdint>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/Bitset.h"
 
 using monoprop::Bitset;
+
+// data() is one deducing-this member, so const-ness of the pointer is deduced rather than declared.
+static_assert(std::is_same_v<decltype(std::declval<Bitset<70> &>().data()), uint64_t *>);
+static_assert(std::is_same_v<decltype(std::declval<const Bitset<70> &>().data()), const uint64_t *>);
 
 namespace {
 
