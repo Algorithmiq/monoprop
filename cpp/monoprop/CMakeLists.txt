@@ -100,6 +100,8 @@ target_compile_definitions(
     $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
 )
 
+target_compile_features(monoprop INTERFACE cxx_std_23)
+
 target_link_libraries(
   monoprop
   INTERFACE

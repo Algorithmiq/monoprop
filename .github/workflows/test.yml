@@ -127,7 +127,6 @@ jobs:
 
           add_executable(smoke main.cpp)
           target_link_libraries(smoke PRIVATE monoprop::monoprop)
-          target_compile_features(smoke PRIVATE cxx_std_23)
           EOF
 
           cat > find-package-smoke/main.cpp <<'EOF'
