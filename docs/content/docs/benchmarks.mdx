@@ -45,8 +45,8 @@ terms.
 
 The observables produced by the coefficient-threshold implementations differ by at most 3.8e-4.
 `Qiskit pauli-prop`, which truncates by term count instead, differs by 2.8e-3. The `cuPauliProp`
-operator resides in GPU memory; consequently, the table reports its peak device allocation rather
-than its 552 MB host RSS.
+operator resides in GPU memory; consequently, the table reports its peak GPU allocation rather
+than the host RSS (which we measured at 552 MB).
 
 <Figure>
 ![Runtime and peak RSS per Trotter step for five Pauli propagation engines](/benchmarks/pauli_results.png)
@@ -75,8 +75,7 @@ subprocess with a 300 s limit.
 </Figure>
 
 The 300 s limit excludes `QuEra ppvm` and `Qiskit pauli-prop` at all lattice sizes, and excludes
-`PauliPropagation.jl` above 10×10. The endpoints of these curves therefore indicate timeouts, not
-implementation limits.
+`PauliPropagation.jl` above 10×10. We remark that this is not an implementation limit for the packages but a consequence of the timeout limit.
 
 <Figure>
 ![Peak working memory versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_memory_working_set.png)
@@ -140,7 +139,7 @@ Both implementations use 24 threads.
   not merge duplicate strings, so its reported term count is a storage count rather than the
   number of distinct operator terms.
 - **The CPU and GPU measurements use different node types.** Each scaling curve is obtained on a
-  single node, and the plotting scripts reject curves whose records contain multiple hosts. The
+  single node. The
   `cuPauliProp` runtime comparison nevertheless includes both hardware and implementation effects.
 
 ## Methods
@@ -171,7 +170,7 @@ CPU memory denotes **peak resident set size (RSS)**, obtained from the Linux ker
 counter. This definition is independent of the implementation language. For `cuPauliProp`, whose
 operator resides on the GPU, working memory instead denotes peak device allocation.
 
-- **The measurement is exact rather than sampled.** The kernel updates `VmHWM` whenever RSS
+- **The measurement is exact.** The kernel updates `VmHWM` whenever RSS
   increases, including during native code that does not hold the Python GIL.
 - **The measurement interval is reset for each step.** Before resetting `VmHWM`, the harness runs
   `gc.collect()` and `malloc_trim` for Python, or `GC.gc()` and `malloc_trim` for Julia. The
