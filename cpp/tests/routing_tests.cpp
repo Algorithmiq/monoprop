@@ -23,6 +23,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstdint>
+#include <cstdlib>
 #include <random>
 #include <set>
 #include <vector>
@@ -208,4 +209,26 @@ BOOST_AUTO_TEST_CASE(routing_gf2_rank_detects_a_degenerate_shift_set) {
         shifts.push_back(static_cast<uint64_t>(router.rank_shift<kN>(g)));
     }
     BOOST_TEST(routing::gf2_rank(shifts) == 7U); // == log2(128): every rank is reachable
+}
+
+// The SHIPPED default. Flipping this is the whole point of the change, so it is pinned by a test
+// rather than left to a comment: with no environment override, a power-of-two rank count routes at
+// fanout 1, and a geometry with no XOR structure keeps the dense path instead of silently losing
+// ranks. Skipped when the environment does override it, because then the default is not what is
+// under test.
+BOOST_AUTO_TEST_CASE(routing_default_is_linear_where_the_geometry_allows_it) {
+    const char *mode = std::getenv("monoprop_ROUTING");
+    const char *bits = std::getenv("monoprop_ROUTE_LINEAR_BITS");
+    if ((mode != nullptr && *mode != '\0') || (bits != nullptr && *bits != '\0')) {
+        BOOST_TEST_MESSAGE("routing overridden in the environment; default not under test");
+        return;
+    }
+    BOOST_TEST(routing::make_router(8, 14).fanout() == 1U);
+    BOOST_TEST(routing::make_router(128, 14).fanout() == 1U);
+    BOOST_TEST(routing::make_router(1, 112).fanout() == 1U); // single rank: nothing to route between
+
+    // 6 and 12 are not powers of two: no XOR structure, so Router clamps to d = 0 and every rank
+    // stays reachable through splitmix rather than a subspace of them.
+    BOOST_TEST(routing::make_router(6, 14).fanout() == 6U);
+    BOOST_TEST(routing::make_router(12, 28).fanout() == 12U);
 }
