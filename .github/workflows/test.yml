@@ -136,8 +136,13 @@ jobs:
           // Drives monoprop::MonomialPropagator<N> down the same two chains that
           // cpp/tests/link_export_probe/link_export_probe.cpp checks at link time, but through the
           // *installed* monoprop::monoprop target with zero special flags -- exactly what an ordinary
-          // find_package(monoprop CONFIG) consumer does. If the shared library fails to export a symbol
-          // either chain calls into, this fails at dynamic-load/runtime, not just at link time.
+          // find_package(monoprop CONFIG) consumer does. A hidden-visibility export gap on either
+          // chain already fails this program's *link* step (ld resolves an executable's undefined
+          // symbols against the shared library's dynamic symbol table, so a non-exported symbol is
+          // unresolved there too, not just at dynamic-load time) -- so the CI step below both builds
+          // and runs this binary: the build catches a missing export, and actually running the
+          // installed binary additionally exercises real runtime concerns a build-only step can't,
+          // like RPATH / shared-library discovery for the installed package.
           #include "monoprop/MonomialPropagator.h"
           #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -190,6 +195,10 @@ jobs:
           cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
 
           cmake --build find-package-smoke/build
+
+          # Must actually run, not just build: this is what proves the installed package loads and
+          # runs cleanly (RPATH / shared-library discovery), not only that it links.
+          find-package-smoke/build/smoke
 
       - name: Get test group label
         id: test-group-label
