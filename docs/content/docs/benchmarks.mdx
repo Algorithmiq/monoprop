@@ -75,8 +75,7 @@ subprocess with a 300 s limit.
 </Figure>
 
 The 300 s limit excludes `QuEra ppvm` and `Qiskit pauli-prop` at all lattice sizes, and excludes
-`PauliPropagation.jl` above 10×10. The endpoints of these curves therefore indicate timeouts, not
-implementation limits.
+`PauliPropagation.jl` above 10×10. We remark that this is not an implementation limit for the packages but a consequence of the timeout limit.
 
 <Figure>
 ![Peak working memory versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_memory_working_set.png)
