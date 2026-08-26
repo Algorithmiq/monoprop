@@ -207,10 +207,15 @@ inline auto requested_linear_bits() -> size_t {
             return value > 0 ? static_cast<size_t>(value) : size_t{0};
         }
         const char *mode = std::getenv("monoprop_ROUTING");
-        if (mode != nullptr && std::string_view{mode} == "linear") {
-            return ~size_t{0}; // "as many as this geometry allows" -- Router clamps to log2(R)
+        if (mode != nullptr && std::string_view{mode} == "splitmix") {
+            return size_t{0}; // full avalanche across the flat world: every rank talks to every rank
         }
-        return size_t{0};
+        // Default. "As many bits as this geometry allows" -- Router clamps to log2(R), and to 0
+        // when R is not a power of two, so a geometry without XOR structure keeps the dense path.
+        // Measured at the production point: fanout 1 costs nothing on balance (rank occupancy
+        // max/mean 1.001 at R=128, all ranks used) and takes messages per rank per layer from
+        // 362,712 to 1,397, i.e. from proportional-to-R to flat.
+        return ~size_t{0};
     }();
     return bits;
 }
