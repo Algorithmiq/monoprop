@@ -324,7 +324,7 @@ def _figure(
     and cited separately, and a shared canvas forces a shared size and one title for two
     different claims. Each figure therefore repeats the model line under its own headline.
     """
-    fig, ax = plt.subplots(figsize=(7.4, 5.4))
+    fig, ax = plt.subplots(figsize=(7.4, 6.0))
     _plot_axes(ax, records, key, ylabel)
     # Title = what was computed, and nothing about where: the machine goes in provenance().
     ax.set_title(
