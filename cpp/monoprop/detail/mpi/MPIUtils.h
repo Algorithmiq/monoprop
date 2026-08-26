@@ -16,6 +16,8 @@
 
 #include <cstddef>
 #include <cstring>
+#include <format>
+#include <stdexcept>
 #include <vector>
 
 #include "monoprop/MPGraph.h"
@@ -70,6 +72,36 @@ auto find_rank(const Monomial<NumModes> &mono, const size_t n_ranks) -> size_t {
 inline auto router_for(const mpi::Comm &comm) -> routing::Router {
     const auto geom = mpi::geometry(comm);
     return routing::make_router(static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
+}
+
+class RoutingDisagreement : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+// Every participant must resolve the SAME router, and the failure mode if they do not is a hang, not a
+// wrong answer: linear routing makes each rank post receives from the peers its own bits imply, so a
+// rank whose monoprop_ROUTING or _ROUTE_SEED did not reach it waits forever on a peer that never sends.
+// One allreduce at construction turns that into an exception. Called once, never per gate.
+inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
+    const auto router = router_for(comm);
+    const size_t world = static_cast<size_t>(mpi::size(comm));
+    if (world <= 1) {
+        return;
+    }
+    const uint64_t mine =
+        routing::mix64((static_cast<uint64_t>(router.linear_bits()) << 40) ^ routing::seed_from_env());
+    const uint64_t total = mpi::allreduce_sum<uint64_t>(mine, comm);
+    if (total != mine * static_cast<uint64_t>(world)) {
+        throw RoutingDisagreement(
+            std::format("routing configuration differs across the {} participants (this one: linear_bits={}, "
+                        "seed={}). monoprop_ROUTING / monoprop_ROUTE_LINEAR_BITS / monoprop_ROUTE_SEED must "
+                        "reach every rank identically -- under linear routing a disagreement deadlocks the "
+                        "exchange rather than corrupting it.",
+                        world,
+                        router.linear_bits(),
+                        routing::seed_from_env()));
+    }
 }
 
 } // namespace monoprop
