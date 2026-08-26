@@ -28,29 +28,10 @@ def plot_metric(
     step_range: list[int],
     metric_dict: dict[str, list[float]],
     ylabel: str,
-    secondary_dict: dict[str, list[float]] | None = None,
 ) -> None:
-    """Plot ``metric_dict[source]`` vs. ``step_range`` for each source onto ``ax``.
-
-    ``secondary_dict``, where given, is drawn as a faint unlabeled line reusing each source's own
-    color and linestyle (only reduced alpha, no marker, distinguishes it) — a different
-    measurement of the same source, not a new series.
-    """
-    colors_by_source = {}
+    """Plot ``metric_dict[source]`` vs. ``step_range`` for each source onto ``ax``."""
     for source, values in metric_dict.items():
-        (line,) = ax.plot(step_range, values, STYLES.get(source, "-o"), label=source)
-        colors_by_source[source] = line.get_color()
-    if secondary_dict:
-        for source, values in secondary_dict.items():
-            linestyle = "--" if STYLES.get(source, "-o").startswith("--") else "-"
-            ax.plot(
-                step_range,
-                values,
-                linestyle=linestyle,
-                color=colors_by_source.get(source),
-                alpha=0.4,
-                linewidth=1,
-            )
+        ax.plot(step_range, values, STYLES.get(source, "-o"), label=source)
     ax.set_xlabel("layers")
     ax.set_ylabel(ylabel)
     ax.legend(fontsize="small")
@@ -125,13 +106,11 @@ def main() -> None:
     plot_metric(axes[0, 1], step_range, data["num_terms"], "number of terms")
     axes[0, 1].set_title("Number of terms vs layers")
 
-    native_memory_dict = data.get("native_memory_MB", {})
     plot_metric(
         axes[1, 0],
         step_range,
         data["memory_MB"],
         "memory (MB)",
-        secondary_dict=native_memory_dict,
     )
     axes[1, 0].set_title("Memory vs layers")
 
@@ -139,15 +118,6 @@ def main() -> None:
     axes[1, 1].set_title("Expectation value vs layers")
 
     fig.tight_layout()
-    if native_memory_dict:
-        fig.text(
-            0.5,
-            0.005,
-            "Faint lines: each engine's own native memory accounting (reference only, not the plotted peak)",
-            ha="center",
-            fontsize=8,
-            color="gray",
-        )
     fig.savefig(args.output_dir / "majorana_results.png", bbox_inches="tight")
 
     plot_runtime_figure(

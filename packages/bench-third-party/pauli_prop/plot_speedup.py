@@ -28,14 +28,12 @@ point of the chart.
 from __future__ import annotations
 
 import argparse
-import textwrap
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-
 from plot_scaling import (  # noqa: E402
     COLORS,
     layers,
@@ -59,17 +57,6 @@ CHALLENGERS = [
 # colour alone would not separate them; the hatch also carries the honest distinction
 # that this bar is a different device class.
 HATCH = {"cuPauliProp (GPU)": "//"}
-
-# Properties of the comparison itself, not of the run that produced a particular file, so they
-# are the default rather than something the caller has to remember to pass. A ratio against a
-# single-core backend means something different from one against a threaded backend, and an
-# absent bar has to be readable as "did not finish" rather than "not measured".
-DEFAULT_FOOTNOTE = (
-    "PauliPropagation.jl runs Performance.propagate!, which leaves duplicate Paulis unmerged. "
-    "QuEra ppvm and Qiskit pauli-prop propagate on a single core, so those ratios are "
-    "wall-clock, not per-core. A missing bar means that backend did not finish that size "
-    "within the sweep's per-point budget."
-)
 
 
 def speedups(records: list[dict]) -> tuple[list[int], dict[str, dict[int, float]]]:
@@ -165,13 +152,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=Path, nargs="+", help="scaling JSONL file(s)")
     parser.add_argument("--output-dir", type=Path, default=Path("."))
-    parser.add_argument(
-        "--footnote",
-        default=DEFAULT_FOOTNOTE,
-        help="Small print under the axes; pass an empty string to drop it. Defaults to the "
-        "caveats that hold for any run of this benchmark. What a particular run used — host, "
-        "thread caps, library versions — is provenance and goes in the .md sidecar instead.",
-    )
     args = parser.parse_args()
 
     records = load(args.results)
@@ -187,16 +167,7 @@ def main() -> None:
         f"{layers(records)}, {truncation(records)}",
         fontsize="medium",
     )
-    if args.footnote:
-        # Wrapped, and the axes shrunk by however many lines that came to: a footnote
-        # that runs off the canvas is worse than no footnote, because the caveat it
-        # carries is exactly the part a reader must not miss.
-        wrapped = textwrap.fill(args.footnote, width=125)
-        lines = wrapped.count("\n") + 1
-        fig.text(0.01, 0.012, wrapped, fontsize=7, color="#555555", va="bottom")
-        fig.tight_layout(rect=(0, 0.015 + 0.022 * lines, 1, 1))
-    else:
-        fig.tight_layout()
+    fig.tight_layout()
 
     out = args.output_dir / "pauli_speedup.png"
     fig.savefig(out, dpi=150)

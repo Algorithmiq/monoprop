@@ -52,8 +52,8 @@ than its 552 MB host RSS.
 ![Runtime and peak RSS per Trotter step for five Pauli propagation engines](/benchmarks/pauli_results.png)
 
 <Caption>
-  Solid lines denote peak RSS. Faint lines denote implementation-specific memory estimates and
-  are not comparable across implementations.
+  Runtime and peak RSS per Trotter step. Peak RSS is measured by the same procedure for every CPU
+  implementation; `cuPauliProp` reports peak GPU allocation.
 </Caption>
 </Figure>
 
@@ -95,7 +95,7 @@ implementation limits.
 <Caption>
   Relative to `monoprop`, the runtime ratio increases from 14× to 31× for
   `PauliPropagation.jl` over its completed points, and from 4.2× to 20× for `cuPauliProp` over
-  the full range.
+  the full range. A missing bar denotes a run that exceeded the 300 s limit.
 </Caption>
 </Figure>
 
