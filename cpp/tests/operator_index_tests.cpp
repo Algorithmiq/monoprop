@@ -22,6 +22,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
+#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 using namespace monoprop;

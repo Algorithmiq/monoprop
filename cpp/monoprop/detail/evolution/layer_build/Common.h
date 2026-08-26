@@ -16,15 +16,21 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 
 namespace monoprop::detail {
+
+// Sentinel for "no index resolved yet" in the resolve slots. Deliberately equal to
+// OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
+inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
 // Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
 // across gates.

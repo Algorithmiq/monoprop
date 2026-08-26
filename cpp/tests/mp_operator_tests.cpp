@@ -29,6 +29,7 @@
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 using namespace monoprop;
 using cd = std::complex<double>;

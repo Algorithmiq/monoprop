@@ -34,6 +34,7 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
 

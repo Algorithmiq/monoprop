@@ -94,6 +94,11 @@ Key files:
 - **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
   mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
   Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
+- **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
+  (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
+  `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row
+  store must include that header — the `OperatorIndex` overloads live in `monoprop::`, so ADL cannot
+  find them from a `monoprop::detail` argument.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is

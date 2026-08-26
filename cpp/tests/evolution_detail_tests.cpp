@@ -28,6 +28,7 @@
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 using namespace monoprop;
 using monoprop::detail::CutoffContext;
