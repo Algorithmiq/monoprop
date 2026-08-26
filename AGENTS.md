@@ -87,7 +87,9 @@ Key files:
 - **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
   teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
   not per-op cost (use `op_memory`).
-- **Peak memory is `HighWaterMark`, not sampled PSS** — exact, unlike `/proc/self/smaps_rollup`.
+- **Peak memory is the kernel's `VmHWM` high-water mark** — exact, with no sampling. Under
+  MPI the ranks' peaks are summed, which errs high (disjoint transients, and shared pages
+  charged to every rank): an upper bound, good for regressions, not for provisioning.
 
 ### Core abstractions (the propagation backbone)
 

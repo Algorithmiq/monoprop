@@ -18,7 +18,8 @@ Reads the JSONL written by run_scaling.py (one or more files) and draws one curv
 backend, as two standalone figures — `pauli_scaling_runtime.png` and
 `pauli_scaling_memory.png` — plus a `pauli_scaling.md` sidecar holding the same numbers
 as a table and the provenance of each backend's points. A backend's curve simply ends at
-the last size it completed; why it stopped is in the table, not on the axes.
+the last size it completed; the runtime figure marks the timeout threshold when the result
+records specify one.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -33,22 +35,25 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-# Fixed per backend so the runtime and memory figures, successive runs, and the speed-up
-# chart in plot_speedup.py all keep the same colour->backend mapping.
-COLORS = {
-    "monoprop": "#0072B2",
-    "QuEra ppvm": "#D55E00",
-    "Qiskit pauli-prop": "#009E73",
-    "cuPauliProp (GPU)": "#CC79A7",
-    "PauliPropagation.jl": "#E69F00",
-}
-ORDER = list(COLORS)
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from palette import ENGINE_COLORS as COLORS  # noqa: E402
+from palette import PAULI_ENGINES as ORDER  # noqa: E402
 
 # Backends whose operator lives in device memory. Host RSS does not describe their
 # footprint at all -- it stays flat while the card fills up -- so the working-set column
 # reads them off the device instead. Membership is a property of the backend, not of a
 # run, which is why it is a constant rather than something inferred per record.
 DEVICE_BACKENDS = {"cuPauliProp (GPU)"}
+
+# What `final_memory_MB` must have been measured with for the default figure's axis label
+# to be true. Kept in sync with `backends.HOST_MEMORY_METRIC` by `check_memory_metric`
+# rather than imported, so this script stays runnable without the backend dependencies.
+HOST_MEMORY_METRIC = "peak process RSS over the step (kernel VmHWM)"
+
+# Columns whose value is only a host-RSS figure if the record was written by the current
+# schema. An older runner put each library's own accounting in `final_memory_MB`, which is
+# indistinguishable from a host figure once it is a bare float on an axis.
+HOST_MEMORY_COLUMNS = {"final_memory_MB"}
 
 # Per memory column: axis label and headline fragment. The label has to follow the column
 # actually plotted -- a figure titled "final memory" whichever key was passed is how an
@@ -120,6 +125,39 @@ def add_working_set(records: list[dict]) -> None:
         r["working_set_MB"] = None if device is None else device + (host or 0.0)
 
 
+def check_memory_metric(records: list[dict], memory_key: str) -> list[str]:
+    """Flag records whose `final_memory_MB` was not measured as host RSS.
+
+    The axis label for this column asserts a specific instrument. A record written before
+    `final_memory_MB` became the host high-water mark carries its library's own accounting
+    there instead -- a smaller number, on a different pool, that plots perfectly happily
+    under an RSS title. `memory_metric` is the only thing that distinguishes them, so it is
+    checked rather than assumed: regenerate the sweep, or pass an explicit `--memory-key`.
+    """
+    if memory_key not in HOST_MEMORY_COLUMNS:
+        return []
+    stale: dict[str, str] = {}
+    for r in records:
+        if r.get("status") != "ok":
+            continue
+        metric = r.get("memory_metric", "")
+        if metric != HOST_MEMORY_METRIC:
+            stale.setdefault(r["label"], metric or "(unrecorded)")
+    if not stale:
+        return []
+    detail = ", ".join(
+        f"{label}: {metric!r}" for label, metric in sorted(stale.items())
+    )
+    return [
+        (
+            f"WARNING: `{memory_key}` is labelled {HOST_MEMORY_METRIC!r} but these "
+            f"records were measured otherwise -- {detail}. The memory figure is "
+            "mislabelled; re-run run_scaling.py, or plot --memory-key "
+            "operator_memory_MB explicitly."
+        )
+    ]
+
+
 def warn_mixed_hosts(records: list[dict]) -> list[str]:
     """Flag any backend whose points were not all measured on the same machine.
 
@@ -170,6 +208,17 @@ def _grid_ticks(records: list[dict]) -> tuple[list[int], list[str]]:
         r["nx"]: f"{r['nx']}x{r['ny']}" for r in sorted(records, key=lambda r: r["nx"])
     }
     return list(grids), list(grids.values())
+
+
+def _timeout_limit(records: list[dict]) -> float | None:
+    """Return the common timeout limit recorded by failed runs, if unambiguous."""
+    limits = {
+        float(match.group(1))
+        for record in records
+        if record.get("status") == "timeout"
+        and (match := re.search(r"exceeded ([0-9.]+)s", record.get("detail", "")))
+    }
+    return limits.pop() if len(limits) == 1 else None
 
 
 def layers(records: list[dict]) -> str:
@@ -269,7 +318,7 @@ def _figure(
     and cited separately, and a shared canvas forces a shared size and one title for two
     different claims. Each figure therefore repeats the model line under its own headline.
     """
-    fig, ax = plt.subplots(figsize=(7.4, 5.4))
+    fig, ax = plt.subplots(figsize=(7.4, 6.0))
     _plot_axes(ax, records, key, ylabel)
     # Title = what was computed, and nothing about where: the machine goes in provenance().
     ax.set_title(
@@ -286,9 +335,22 @@ def _plot_axes(ax, records, key, ylabel) -> None:
         sides, values = _series(records, label, key)
         if not sides:
             continue
-        # A curve simply ends at the last size the backend completed; the per-size status
-        # (timeout / killed) is in the table and the JSONL, not drawn on the axes.
+        # A curve ends at the last size the backend completed; per-size status remains in
+        # the table and JSONL, while the common timeout threshold is shown below.
         ax.plot(sides, values, "o-", color=COLORS[label], label=label, markersize=5)
+    if key == "total_runtime_s" and (timeout := _timeout_limit(records)) is not None:
+        ax.axhline(timeout, color="#555555", linestyle="--", linewidth=1.2)
+        ax.annotate(
+            "Timeout limit",
+            xy=(1, timeout),
+            xycoords=("axes fraction", "data"),
+            xytext=(-6, 5),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+            fontsize="small",
+            color="#555555",
+        )
     ticks, tick_labels = _grid_ticks(records)
     ax.set_xticks(ticks)
     ax.set_xticklabels(tick_labels)
@@ -358,6 +420,8 @@ def main() -> None:
     add_working_set(records)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for warning in warn_mixed_hosts(records):
+        print(warning)
+    for warning in check_memory_metric(records, args.memory_key):
         print(warning)
 
     _figure(
