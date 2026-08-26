@@ -13,6 +13,14 @@ discovers every Boost.Test case and registers it twice:
   `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2`),
   registered when an MPI launcher is detected.
 
+Both `serial` and `mpi` also get a `sparse-rows` variant per case/rank count
+(`monoprop_ROW_STORE=sparse` forced), because the sparse backend has its own
+wire format (`query_payload_words_for`'s stride, the escape tail) with no dense
+counterpart, and it is the backend wide systems resolve to. The MPI sparse-rows
+ranks are a separate list, `monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`),
+kept independent of `monoprop_MPI_TEST_PROCS` so widening dense rank coverage
+does not silently multiply how many sparse-row `mpiexec` launches CI pays for.
+
 Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
 skip (with a message) when run with too few.
 
@@ -124,6 +132,10 @@ per case, because the ranks have to reach the same collectives. For exhaustive
 rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
 MPI while debugging, invoke the binary directly:
 `mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
+
+The sparse-rows MPI variants (`monoprop_ROW_STORE=sparse`, label `sparse-rows`)
+use their own rank list, `monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`),
+independent of `monoprop_MPI_TEST_PROCS`.
 
 ## Adding New Tests
 

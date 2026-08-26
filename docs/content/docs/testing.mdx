@@ -99,6 +99,14 @@ one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Select either group with
 `ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
 
+Both groups also get a `sparse-rows` counterpart (`monoprop_ROW_STORE=sparse`
+forced) — the sparse backend has its own wire format with no dense equivalent,
+so it needs its own coverage rather than riding along with the dense runs. The
+MPI `sparse-rows` variants use a separate rank list,
+`monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`), so growing
+`monoprop_MPI_TEST_PROCS` for dense coverage does not also multiply how many
+sparse-row `mpiexec` launches run.
+
 CTest's `-j` is safe for both, including MPI-enabled builds: the harness ignores
 `SIGPIPE` before `MPI_Init`. Each per-case process initialises MPI as a *singleton*
 (no launcher), so PMIx opens a socket to a daemon that is not running, and under

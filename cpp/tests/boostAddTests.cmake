@@ -4,6 +4,9 @@ endif()
 if(NOT DEFINED TEST_MPI_NUMPROCS)
   set(TEST_MPI_NUMPROCS "2")
 endif()
+if(NOT DEFINED TEST_MPI_SPARSE_ROWS_NUMPROCS)
+  set(TEST_MPI_SPARSE_ROWS_NUMPROCS "2")
+endif()
 if(TEST_ENABLE_MPI_VARIANTS AND NOT MPIEXEC_EXECUTABLE)
   message(
     WARNING
@@ -35,6 +38,28 @@ if(TEST_ENABLE_MPI_VARIANTS)
 
   set(_mpi_ranks ${TEST_MPI_NUMPROCS})
   list(REMOVE_DUPLICATES _mpi_ranks)
+endif()
+
+# Validated the same way as _mpi_ranks above, but kept in its own list (TEST_MPI_SPARSE_ROWS_NUMPROCS)
+# rather than reusing _mpi_ranks: growing dense-backend rank coverage must not silently multiply how
+# many sparse-row mpiexec launches CI pays for.
+set(_mpi_sparse_ranks)
+if(TEST_ENABLE_MPI_VARIANTS)
+  if("${TEST_MPI_SPARSE_ROWS_NUMPROCS}" STREQUAL "")
+    set(TEST_MPI_SPARSE_ROWS_NUMPROCS 2)
+  endif()
+
+  foreach(_rank IN LISTS TEST_MPI_SPARSE_ROWS_NUMPROCS)
+    if(NOT _rank MATCHES "^[1-9][0-9]*$")
+      message(
+        FATAL_ERROR
+        "Invalid MPI rank '${_rank}' in TEST_MPI_SPARSE_ROWS_NUMPROCS='${TEST_MPI_SPARSE_ROWS_NUMPROCS}'. Use positive integers."
+      )
+    endif()
+  endforeach()
+
+  set(_mpi_sparse_ranks ${TEST_MPI_SPARSE_ROWS_NUMPROCS})
+  list(REMOVE_DUPLICATES _mpi_sparse_ranks)
 endif()
 
 set(extra_args ${TEST_EXTRA_ARGS})
@@ -267,6 +292,47 @@ if(TEST_ENABLE_MPI_VARIANTS AND MPIEXEC_EXECUTABLE)
       ENVIRONMENT
         "OMPI_ALLOW_RUN_AS_ROOT=1"
         "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+    )
+  endforeach()
+
+  # MPI counterpart of the "_sparse_rows" serial variant above: the sparse backend is not just an
+  # alternate local layout, it changes the wire format (query_payload_words_for's per-backend
+  # stride, the escape tail, kOverflowLane, append_escape_tail have no dense counterpart), and it
+  # is the backend wide (MPI-scale) systems actually resolve to -- so it needs its own multi-rank
+  # coverage, not just the single-rank one above. Runs over _mpi_sparse_ranks, not _mpi_ranks, so
+  # it stays cheap by default regardless of how wide the dense rank list grows.
+  foreach(_mpi_rank IN LISTS _mpi_sparse_ranks)
+    set(mpi_cmd "${MPIEXEC_EXECUTABLE}")
+    list(
+      APPEND mpi_cmd
+      "${MPIEXEC_NUMPROC_FLAG}"
+      "${_mpi_rank}"
+    )
+    if(MPIEXEC_PREFLAGS)
+      list(APPEND mpi_cmd ${MPIEXEC_PREFLAGS})
+    endif()
+    list(
+      APPEND mpi_cmd
+      "${TEST_EXECUTABLE}"
+      "--report_level=detailed"
+      "--catch_system_errors=yes"
+      ${extra_args}
+    )
+    if(MPIEXEC_POSTFLAGS)
+      list(APPEND mpi_cmd ${MPIEXEC_POSTFLAGS})
+    endif()
+
+    register_variant("${TEST_TARGET}_mpi_${_mpi_rank}_sparse_rows"
+      COMMAND
+        ${mpi_cmd}
+      LABELS
+        mpi
+        "mpi-${_mpi_rank}"
+        sparse-rows
+      ENVIRONMENT
+        "OMPI_ALLOW_RUN_AS_ROOT=1"
+        "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+        "monoprop_ROW_STORE=sparse"
     )
   endforeach()
 endif()
