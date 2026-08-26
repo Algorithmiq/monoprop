@@ -318,6 +318,9 @@ struct LayerBuildEngine {
     std::vector<std::vector<double>> src_val_r;
     // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
     std::vector<VecZ> combined_qv_;
+    // Which destination ranks this gate's queries can reach. Dense unless the router is GF(2)-linear;
+    // see mpi::PeerPlan. Derived once per layer in build_layer, never per query.
+    mpi::PeerPlan plan;
     Sink sink;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
@@ -326,7 +329,8 @@ struct LayerBuildEngine {
                      size_t my_rank_,
                      MatchedEpochSet &matched_scratch,
                      size_t combined_size_,
-                     Sink &&sink_)
+                     Sink &&sink_,
+                     mpi::PeerPlan plan_ = {}) // dense by default: the tests build the engine directly
         : local_op(local_op_),
           comm(comm_),
           R(R_),
@@ -335,6 +339,7 @@ struct LayerBuildEngine {
           combined_size(combined_size_),
           queries_r(R_),
           src_idx_r(R_),
+          plan(plan_),
           sink(std::move(sink_)) {
         matched.begin_gate(combined_size);
     }
@@ -379,11 +384,12 @@ struct LayerBuildEngine {
         }
         std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         std::vector<std::vector<size_t>> inc_q;
-        mpi::begin_alltoallv(send, comm).wait_into(inc_q);
+        mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan).wait_into(inc_q);
         auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
         std::vector<int> resp_recv = response_recv_counts();
         std::vector<std::vector<typename Sink::Response>> inc_r;
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
+        // The answers retrace the queries, and the pairing is an XOR involution, so the same plan holds.
+        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan).wait_into(inc_r);
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
     }
 
@@ -544,6 +550,11 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
     const auto router = router_for(comm);
     assert(router.flat_world() == R);
+    // Under linear routing every query for THIS generator lands on a rank whose low `linear_bits` are
+    // this rank's own XOR rank_shift(gen), so the exchange knows its peers before it starts. Dense
+    // (bits == 0) otherwise, which is today's collective.
+    const auto plan = mpi::PeerPlan{.bits = static_cast<int>(router.linear_bits()),
+                                    .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
@@ -602,7 +613,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              my_rank,
                                              matched_scratch,
                                              /*combined_size=*/local_op.store->size(),
-                                             std::move(sink));
+                                             std::move(sink),
+                                             plan);
         // An empty generator anticommutes with nothing, so the scan already returned zero queries on
         // every rank -- but run_exchange's collectives fire regardless of payload, and each pass costs
         // three of them. The generator list is replicated, so `gen.none()` is unanimous and skipping

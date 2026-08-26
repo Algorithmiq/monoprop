@@ -65,6 +65,34 @@ struct Comm {
     }
 };
 
+// Which destination RANKS a round can touch, when the caller knows. Under GF(2)-linear routing
+// (routing::Router) the low `bits` of the destination rank are determined by the generator: they are
+// this rank's own low bits XOR `shift`, so the peers are
+//
+//     peer(k) = ((me & (2^bits - 1)) ^ shift) | (k << bits),   k in [0, ranks >> bits)
+//
+// -- `ranks >> bits` of them instead of all `ranks`, and the relation is symmetric (XOR is an
+// involution), so every rank derives the same pairing with no communication. That is what lets a verb
+// replace a dense collective with point-to-point over the peers it can actually reach.
+//
+// bits == 0 is the dense default: peer(k) == k and count == ranks, so the same loops walk every rank
+// and the verbs take their collective path. A caller that gets `shift` wrong does not corrupt data --
+// the counts for a non-peer are zero -- it deadlocks, which is why the plan is derived in one place.
+struct PeerPlan {
+    int bits = 0;
+    int shift = 0;
+
+    [[nodiscard]] constexpr auto dense() const -> bool { return bits == 0; }
+    [[nodiscard]] constexpr auto count(int ranks) const -> int { return bits == 0 ? ranks : (ranks >> bits); }
+    [[nodiscard]] constexpr auto peer(int me, int k) const -> int {
+        if (bits == 0) {
+            return k;
+        }
+        const int mask = (1 << bits) - 1;
+        return ((me & mask) ^ shift) | (k << bits);
+    }
+};
+
 // Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:
 // ShmComm.h takes the resolve bundle and compiles in non-MPI builds, so neither bundle may name an
 // MPI-only type. MPI_Datatype therefore stays a separate parameter on the HybridComm verbs that need
