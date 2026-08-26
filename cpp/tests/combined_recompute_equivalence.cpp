@@ -19,6 +19,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -168,6 +169,106 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
         BOOST_TEST(std::memcmp(ha.data(), hb.data(), n * sizeof(double)) == 0);
         BOOST_CHECK_SMALL(std::abs(ea - eb), 1e-9 * (1.0 + std::abs(ea)));
     }
+}
+
+// A record must leave the reverse kernel's ham bitwise pre-layer and its sum as though nothing had been
+// divided, whatever the ham it was handed. Driven with a `ham` that disagrees with the record -- which is
+// the situation the record exists for, an operator the layers above amplified away from its forward value
+// -- so a run that ignored the record would differ by value rather than by trust. The record covers every
+// index, so those outside the cosine set, which the kernel never visits, are exercised too.
+BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    SimulatorConfig cfg{.comm = MPI_COMM_SELF};
+    auto sim = build_simulator<kNumModes>(data, cfg);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+
+    const auto &inverted_index = sim.mp_op().inverted_index();
+    const auto &graph = sim.graph();
+    const size_t n = sim.mp_op().size();
+    BOOST_REQUIRE(n > 0);
+
+    std::vector<double> recorded(n), polluted(n), state0(n);
+    std::vector<uint32_t> indices(n);
+    for (size_t i = 0; i < n; ++i) {
+        recorded[i] = 1.0 + static_cast<double>(i) * 1e-3;
+        // What a divide-based reverse pass would have arrived at: the same value, amplified apart.
+        polluted[i] = recorded[i] * (i % 2 == 0 ? 8.0 : 0.125);
+        state0[i] = 0.5 + static_cast<double>(i) * 1e-3;
+        indices[i] = static_cast<uint32_t>(i);
+    }
+    const monoprop::detail::CosRecordView record{.indices = indices.data(), .values = recorded.data(), .count = n};
+
+    // 0.5 is an ordinary angle; the second is one ulp below 1, where state[i]*cos_val rounds back to
+    // state[i] for most i -- a layer the spread bound can still ask for a record on.
+    for (const double cos_val : {0.5, 1.0 - 0x1p-53}) {
+        const double sec_val = 1.0 / cos_val;
+        BOOST_TEST_CONTEXT("cos_val " << cos_val) {
+            size_t exercised_layers = 0;
+            for (size_t li = 0; li < graph.layers(); ++li) {
+                const auto layer = graph.get_layer_traversal(li);
+                if (layer.generator_words().empty()) {
+                    continue;
+                }
+                const auto gen = generator_of<kNumModes>(layer);
+                auto recipe =
+                    monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+                auto prepared =
+                    monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
+                if (monoprop::detail::fold_popcount<kNumModes>(prepared) == 0) {
+                    continue;
+                }
+                ++exercised_layers;
+
+                // Sum over the cosine set of state * the recorded ham, with no scaling anywhere.
+                std::vector<double> ref_state = state0, ref_ham = recorded;
+                const double expected = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
+                                                                                         recipe,
+                                                                                         ref_state.data(),
+                                                                                         ref_ham.data(),
+                                                                                         1.0,
+                                                                                         1.0);
+
+                std::vector<double> state = state0, ham = polluted;
+                monoprop::detail::predivide_cos_record(ham.data(), record, cos_val);
+                double got = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
+                                                                              recipe,
+                                                                              state.data(),
+                                                                              ham.data(),
+                                                                              cos_val,
+                                                                              sec_val);
+                got *= sec_val;
+                monoprop::detail::restore_cos_record(ham.data(), record);
+
+                BOOST_TEST_INFO("layer " << li);
+                BOOST_TEST(std::memcmp(ham.data(), recorded.data(), n * sizeof(double)) == 0);
+                BOOST_TEST_INFO("layer " << li);
+                BOOST_CHECK_SMALL(std::abs(got - expected), 1e-9 * (1.0 + std::abs(expected)));
+
+                // Without the record the pollution shows through, so the checks above are not vacuous.
+                std::vector<double> bare_state = state0, bare_ham = polluted;
+                const double bare = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
+                                                                                     recipe,
+                                                                                     bare_state.data(),
+                                                                                     bare_ham.data(),
+                                                                                     cos_val,
+                                                                                     sec_val);
+                BOOST_TEST(std::abs((bare * sec_val) - expected) > 1e-9 * (1.0 + std::abs(expected)));
+            }
+            BOOST_TEST(exercised_layers > 0u);
+        }
+    }
+}
+
+// The one-ulp-below-1 case above is only interesting if that cosine really does leave the state alone at
+// some index the kernel visits: a membership test that read the state would miss exactly those.
+BOOST_AUTO_TEST_CASE(a_cosine_one_ulp_below_one_leaves_states_unchanged) {
+    const double cos_val = 1.0 - 0x1p-53;
+    size_t unchanged = 0;
+    for (size_t i = 0; i < 512; ++i) {
+        const double s = 0.5 + static_cast<double>(i) * 1e-3;
+        unchanged += static_cast<size_t>(s * cos_val == s);
+    }
+    BOOST_TEST(unchanged > 0u);
 }
 
 // Lives here because it re-runs the same recompute machinery exercised above.
