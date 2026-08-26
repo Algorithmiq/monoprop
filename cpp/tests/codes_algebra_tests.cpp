@@ -228,7 +228,7 @@ BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_fixtures_padded_storage) {
                                    "S0_8e8o_majoranic_c6.msgpack",
                                    "majorana_lattice_layer_30.msgpack"}) {
         const auto data = test_utils::load_case_data(name);
-        size_t storage = MonomialPropagator::storage_modes_for(data.num_modes);
+        size_t storage = monoprop::detail::storage_modes_for(data.num_modes);
         if (storage == data.num_modes) {
             // A mode count that is already a whole block leaves no inactive prefix, which is the case
             // above. One more block is still a legal storage width -- the C++ suite passes such widths

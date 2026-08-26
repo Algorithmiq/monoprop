@@ -42,7 +42,7 @@ def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool
         upper_atol=None,
         cutoff_type="length",
         basis_change=None,
-        logical_num_modes=problem.n_modes,
+        num_modes=problem.n_modes,
     )
 
 

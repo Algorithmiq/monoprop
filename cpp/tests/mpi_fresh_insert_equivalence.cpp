@@ -83,7 +83,6 @@ auto run_schrodinger_pauli(MPI_Comm comm) -> double {
                                            /*upper_atol=*/std::optional<double>{0.0},
                                            CutoffType::Support,
                                            /*basis_change=*/std::nullopt,
-                                           kPauliQ,
                                            Basis::Pauli);
     std::vector<VecZ> gens;
     VecZ pmap;

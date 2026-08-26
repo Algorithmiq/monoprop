@@ -79,7 +79,6 @@ auto build_pauli_sim(size_t num_modes,
                                        std::nullopt,
                                        CutoffType::Support,
                                        std::nullopt,
-                                       std::nullopt,
                                        Basis::Pauli);
 }
 
@@ -97,7 +96,7 @@ auto dense_operator(size_t num_modes, MonomialPropagator &mp) -> std::vector<cd>
         }
         std::string s(num_modes, 'I');
         for (size_t q = 0; q < num_modes; ++q) {
-            s[q] = letter_from_bitset(num_modes, mono, q);
+            s[q] = letter_from_bitset(mono, q);
         }
         const auto pm = matrix_from_string(s);
         for (size_t k = 0; k < d * d; ++k) {
@@ -251,7 +250,6 @@ auto build_jw_sim(size_t num_modes,
                                        std::nullopt,
                                        CutoffType::Support,
                                        jw_basis_indices(num_modes, num_modes),
-                                       std::nullopt,
                                        Basis::Majorana);
 }
 
@@ -404,7 +402,9 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
         BOOST_TEST_REQUIRE(layers.size() == 1U);
         const VecZ &cos_inds = std::get<0>(layers[0]);
         std::set<size_t> got(cos_inds.begin(), cos_inds.end());
-        const auto Gb = indices_to_bitset(slots_of_string("XII"), 2 * N);
+        // The generator has to be as wide as the terms it is compared against, which is the
+        // propagator's storage width, not 2 * N.
+        const auto Gb = indices_to_bitset(slots_of_string("XII"), 2 * mp.storage_num_modes());
         std::set<size_t> expected;
         (void)mp.mp_op().get_operator(); // materialize the store size
         mp.for_each_term([&](const auto &mono, size_t idx) {

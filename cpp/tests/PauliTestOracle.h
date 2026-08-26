@@ -45,7 +45,7 @@ auto native_bitset(size_t num_modes, const std::string &p) -> Bitset;
 
 // Decode the single-qubit letter of qubit q from a native-encoded bitset
 // (MSb0 physical mapping): slot 2q is the x-plane bit, slot 2q+1 the z-plane bit.
-auto letter_from_bitset(size_t num_modes, const Bitset &mono, size_t q) -> char;
+auto letter_from_bitset(const Bitset &mono, size_t q) -> char;
 
 // Faithful C++ port of _pauli_to_fermi (conversion_utils.py) -- indices only
 // (coeff dropped; the bitset only cares which Majorana modes are present).

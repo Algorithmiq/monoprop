@@ -275,7 +275,7 @@ struct MPOperator {
         VecD new_op_coeffs(size(), 0.0);
 
         for (const auto &[k, v] : op_dict) {
-            // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
+            // Unchecked by design: the only caller bounds-checks against its num_modes_.
             const auto mono = indices_to_bitset(k, num_bits());
             const auto rank_evolved_op = find(mono);
             const auto rank_init_op = init_op_map.find(mono);

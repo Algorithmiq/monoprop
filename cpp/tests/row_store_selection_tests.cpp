@@ -72,7 +72,7 @@ BOOST_AUTO_TEST_CASE(row_store_auto_crossover_is_a_whole_storage_block) {
     BOOST_TEST(!monoprop::detail::SparseRowStore::preferred_for_modes(kMin - 1));
     BOOST_TEST(monoprop::detail::SparseRowStore::preferred_for_modes(kMin));
     BOOST_TEST(monoprop::detail::SparseRowStore::preferred_for_modes(kMin + 32));
-    BOOST_TEST(MonomialPropagator::storage_modes_for(kMin) == kMin);
+    BOOST_TEST(monoprop::detail::storage_modes_for(kMin) == kMin);
 }
 
 // An unrecognized value must be rejected, not silently treated as `auto`: the whole reason to set the

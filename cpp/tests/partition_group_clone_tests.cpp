@@ -57,7 +57,6 @@ public:
                std::nullopt,
                Basis::Majorana,
                partitions,
-               /*storage_num_modes=*/kNumModes,
                Base::PartitionChildFactory{[=](mpi::Comm partition_comm) -> std::unique_ptr<Base> {
                    return std::make_unique<DerivedPropagator>(initial_operator,
                                                               cutoff,
@@ -90,7 +89,7 @@ protected:
 } // namespace
 
 BOOST_AUTO_TEST_CASE(partition_facade_children_are_derived_type) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     DerivedPropagator sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/4);
 
     BOOST_TEST(sim.is_facade());
@@ -99,7 +98,7 @@ BOOST_AUTO_TEST_CASE(partition_facade_children_are_derived_type) {
 }
 
 BOOST_AUTO_TEST_CASE(partition_facade_copy_children_are_derived_type) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     DerivedPropagator sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/4);
 
     DerivedPropagator copy(sim); // exercises PartitionGroup's copy ctor -> clone_()

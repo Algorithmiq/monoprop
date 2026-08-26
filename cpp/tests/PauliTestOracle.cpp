@@ -45,9 +45,11 @@ auto native_bitset(size_t num_modes, const std::string &p) -> Bitset {
     return indices_to_bitset(slots_of_string(p), 2 * num_modes);
 }
 
-auto letter_from_bitset(size_t num_modes, const Bitset &mono, size_t q) -> char {
-    const bool u = mono.test(2 * num_modes - 1 - 2 * q); // slot 2q
-    const bool v = mono.test(2 * num_modes - 2 - 2 * q); // slot 2q+1
+auto letter_from_bitset(const Bitset &mono, size_t q) -> char {
+    // Slots are MSb0 over the monomial's own width, which is the storage width and need not be
+    // 2*num_modes -- the propagator rounds a logical width up to a whole block.
+    const bool u = mono.test(mono.size() - 1 - 2 * q); // slot 2q
+    const bool v = mono.test(mono.size() - 2 - 2 * q); // slot 2q+1
     if (!u && !v) {
         return 'I';
     }

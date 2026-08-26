@@ -133,7 +133,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
             initial_state=list(initial_state),
-            logical_num_modes=num_modes,
+            num_modes=num_modes,
             schrodinger_cutoff=schrodinger_cutoff,
             lower_atol=lower_atol,
             upper_atol=upper_atol,

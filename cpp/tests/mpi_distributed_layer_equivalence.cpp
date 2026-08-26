@@ -127,7 +127,6 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
                                            std::nullopt,
                                            CutoffType::Support,
                                            std::nullopt,
-                                           kPauliQ,
                                            Basis::Pauli);
     std::vector<VecZ> gens;
     VecZ pmap;
@@ -178,7 +177,6 @@ auto run_energy_partitioned(const TestInputs& inputs, MPI_Comm comm, size_t part
                                            std::nullopt,
                                            std::nullopt,
                                            CutoffType::Length,
-                                           std::nullopt,
                                            std::nullopt,
                                            Basis::Majorana,
                                            partitions);

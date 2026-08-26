@@ -105,7 +105,7 @@ NB_MODULE(_core, mod) {
            const std::map<std::vector<size_t>, std::complex<double>> &initial_operator,
            unsigned int cutoff,
            const std::vector<size_t> &initial_state,
-           size_t logical_num_modes,
+           size_t num_modes,
            nb::object py_comm,
            std::optional<unsigned int> schrodinger_cutoff,
            std::optional<double> lower_atol,
@@ -113,12 +113,11 @@ NB_MODULE(_core, mod) {
            const std::string &cutoff_type,
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            const std::string &basis,
-           size_t partitions,
-           std::optional<size_t> storage_num_modes) {
+           size_t partitions) {
             new (t) MonomialPropagator(initial_operator,
                                        cutoff,
                                        initial_state,
-                                       logical_num_modes,
+                                       num_modes,
                                        schrodinger_cutoff,
                                        get_mpi_comm(py_comm),
                                        lower_atol,
@@ -126,13 +125,12 @@ NB_MODULE(_core, mod) {
                                        cutoff_type_str_2_enum(cutoff_type),
                                        basis_change,
                                        basis_str_2_enum(basis),
-                                       partitions,
-                                       storage_num_modes);
+                                       partitions);
         },
         "initial_operator"_a,
         "cutoff"_a,
         "initial_state"_a,
-        "logical_num_modes"_a,
+        "num_modes"_a,
         "comm"_a = nb::none(),
         "schrodinger_cutoff"_a = std::nullopt,
         "lower_atol"_a = std::nullopt,
@@ -141,7 +139,6 @@ NB_MODULE(_core, mod) {
         "basis_change"_a = std::nullopt,
         "basis"_a = "majorana",
         "partitions"_a = 0,
-        "storage_num_modes"_a = std::nullopt,
         "Instantiate the simulator.");
 
     cls.def("build_graph",
@@ -260,7 +257,7 @@ NB_MODULE(_core, mod) {
         "atol"_a,
         "The evolved operator as a {indices: coefficient} dict, keeping terms with |coeff| >= atol");
 
-    cls.def_prop_ro("num_modes", &MonomialPropagator::logical_num_modes, "Number of modes the operator actually uses");
+    cls.def_prop_ro("num_modes", &MonomialPropagator::num_modes, "Number of modes the operator actually uses");
 
     cls.def_prop_ro("storage_num_modes",
                     &MonomialPropagator::storage_num_modes,

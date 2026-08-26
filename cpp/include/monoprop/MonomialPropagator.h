@@ -53,11 +53,26 @@ struct FusedContract;
 namespace partition {
 class PartitionGroup;
 } // namespace partition
+
+/*! \brief Compute the storage width for a given system width.
+ *
+ * Rounds \a num_modes up to the next whole 32-mode block and returns at least
+ * one full block.
+ *
+ * This keeps the hash index probe layout aligned across nearby system sizes
+ * while avoiding partially populated words for small systems.
+ *
+ * \param num_modes Number of modes in the system.
+ * \return Storage width rounded up to a whole 32-mode block.
+ */
+[[nodiscard]] inline auto storage_modes_for(size_t num_modes) -> size_t {
+    constexpr size_t kModesPerBlock = 32;
+    return std::max(kModesPerBlock, ((num_modes + kModesPerBlock - 1) / kModesPerBlock) * kModesPerBlock);
+}
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
-// Covers a crossed atol pair and a logical width outside [1, storage_num_modes]; also thrown from
-// MonomialPropagator.cpp
+// Covers a crossed atol pair and a zero mode count; also thrown from MonomialPropagator.cpp
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -87,7 +102,7 @@ public:
 
 /// The (basis, cutoff_type, basis_change) triple is inconsistent.
 // A Pauli basis with a Length cutoff or a basis change, or a basis-change table that is not
-// 2*logical_num_modes rows.
+// 2*num_modes rows.
 class CutoffConfigError : public std::invalid_argument {
 public:
     using std::invalid_argument::invalid_argument;
@@ -104,16 +119,10 @@ class MonomialPropagator {
 public:
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator>(mpi::Comm)>;
 
-    /// logical_num_modes moved ahead of the defaulted parameters and lost its default: it used to fall
-    /// back to the NumModes this class was instantiated at, and there is no such width any more.
-    ///
-    /// storage_num_modes is the width monomials are actually stored at, and defaults to rounding
-    /// logical_num_modes up per storage_modes_for(). Pass it explicitly to store at exactly a given
-    /// width -- what the C++ tests do, since their oracles predate the rounding.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
-                       size_t logical_num_modes,
+                       size_t num_modes,
                        std::optional<unsigned int> schrodinger_cutoff,
                        mpi::Comm comm,
                        std::optional<double> lower_atol = std::nullopt,
@@ -122,7 +131,6 @@ public:
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0,
-                       std::optional<size_t> storage_num_modes = std::nullopt,
                        PartitionChildFactory child_factory = nullptr);
 
     /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
@@ -133,16 +141,9 @@ public:
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
-    /// Storage width for a logical width: rounded up to a whole 32-mode block, and never below one
-    /// block. Rounding keeps the hash index's probe layout aligned across nearby system sizes; the
-    /// floor keeps a small system from paying a partially-populated word.
-    [[nodiscard]] static auto storage_modes_for(size_t logical_num_modes) -> size_t {
-        constexpr size_t kModesPerBlock = 32;
-        return std::max(kModesPerBlock, ((logical_num_modes + kModesPerBlock - 1) / kModesPerBlock) * kModesPerBlock);
-    }
-
-    auto logical_num_modes() const -> size_t { return logical_num_modes_; }
-    /// Monomials are stored at this width; >= logical_num_modes(). See storage_modes_for.
+    /// The system's width, as passed to the constructor.
+    auto num_modes() const -> size_t { return num_modes_; }
+    /// Monomials are stored at this width; >= num_modes(). See detail::storage_modes_for.
     auto storage_num_modes() const -> size_t { return storage_num_modes_; }
 
     /// Whether this propagator stores its terms as sparse rows rather than dense monomials — the choice
@@ -447,28 +448,32 @@ protected:
     auto use_sparse_rows_() const -> bool;
 
 private:
+    CutoffType cutoff_type_;
+
+    // Immutable after construction.
+    Basis basis_{Basis::Majorana};
+
     unsigned int cutoff_;
 
-    std::optional<double> lower_atol_, upper_atol_;
     double core_term_{0.0};
 
     // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
 
-    size_t logical_num_modes_;
-
-    CutoffType cutoff_type_;
-    std::optional<std::vector<VecZ>> basis_change_;
-
-    // Immutable after construction.
-    Basis basis_{Basis::Majorana};
+    // The system's width
+    size_t num_modes_;
 
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
     std::unique_ptr<detail::partition::PartitionGroup> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
     friend class detail::partition::PartitionGroup;
+
+    std::optional<double> lower_atol_;
+    std::optional<double> upper_atol_;
+
+    std::optional<std::vector<VecZ>> basis_change_;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.

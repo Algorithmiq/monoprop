@@ -52,7 +52,6 @@ auto majorana_sim(const CaseData &data, size_t partitions, std::optional<double>
                                        std::nullopt,
                                        CutoffType::Length,
                                        std::nullopt,
-                                       std::nullopt,
                                        Basis::Majorana,
                                        partitions);
 }
@@ -185,7 +184,6 @@ BOOST_AUTO_TEST_CASE(partition_setters_reach_every_partition) {
                                                std::nullopt,
                                                CutoffType::Length,
                                                std::nullopt,
-                                               std::nullopt,
                                                Basis::Majorana,
                                                /*partitions=*/4);
         if (cutoff != updated_cutoff) {
@@ -231,7 +229,6 @@ auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> M
                                        /*lower_atol=*/1e-12,
                                        std::nullopt,
                                        CutoffType::Support,
-                                       std::nullopt,
                                        std::nullopt,
                                        Basis::Pauli,
                                        partitions);
@@ -285,8 +282,8 @@ BOOST_AUTO_TEST_CASE(partition_pauli_energy_matches_across_partition_counts) {
 // already-started threads. Every MonomialPropagator ctor validation reaches this path.
 BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
     const auto data = load_case_data("random_exact.msgpack");
-    // logical_num_modes = 0 is rejected by each partition's own constructor, on its own master thread.
-    BOOST_CHECK_THROW(test_utils::make_propagator(kNumModes,
+    // num_modes = 0 is rejected by each partition's own constructor, on its own master thread.
+    BOOST_CHECK_THROW(test_utils::make_propagator(/*num_modes=*/0,
                                                   data.hamiltonian,
                                                   kCutoff,
                                                   data.initial_state,
@@ -296,7 +293,6 @@ BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
                                                   std::nullopt,
                                                   CutoffType::Length,
                                                   std::nullopt,
-                                                  /*logical_num_modes=*/0,
                                                   Basis::Majorana,
                                                   /*partitions=*/4),
                       std::runtime_error);
@@ -313,7 +309,6 @@ BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
                                                   std::nullopt,
                                                   std::nullopt,
                                                   CutoffType::Length,
-                                                  std::nullopt,
                                                   std::nullopt,
                                                   Basis::Majorana,
                                                   /*partitions=*/4),

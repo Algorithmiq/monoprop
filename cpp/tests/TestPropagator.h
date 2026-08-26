@@ -23,18 +23,13 @@
 namespace test_utils {
 using namespace monoprop;
 
-// Every propagator in this suite is built through here, and the reason is the storage width.
+// Every propagator in this suite is built through here, so a change to the ctor's argument list is one
+// edit rather than 26.
 //
-// The propagator rounds a logical width up to a whole 32-mode block by default. That width is not
-// cosmetic: indices are laid out MSb0, so widening moves every bit position, which changes each
-// monomial's hash, which changes owner routing, probe order, and therefore the order coefficients
-// accumulate in. The expected values in this suite were computed at the unrounded width, so tests pin
-// storage_num_modes to num_modes instead of accepting the rounding. Production code (and the Python
-// front-end) takes the default -- the rounding is what keeps the hash index's probe layout aligned
-// across nearby system sizes.
-//
-// logical_num_modes defaults to num_modes; pass it to vary the logical width on its own, which is what
-// the ctor-validation tests do.
+// num_modes is the system's width; the propagator rounds it up to a whole 32-mode block to get the width
+// it stores monomials at. That width is not cosmetic -- indices are laid out MSb0, so it moves every bit
+// position, which changes each monomial's hash, which changes owner routing, probe order, and therefore
+// the order coefficients accumulate in. Expected values here are pinned to the rounded width.
 inline auto make_propagator(size_t num_modes,
                             const OperatorDict& initial_operator,
                             unsigned int cutoff,
@@ -45,13 +40,12 @@ inline auto make_propagator(size_t num_modes,
                             std::optional<double> upper_atol = std::nullopt,
                             CutoffType cutoff_type = CutoffType::Length,
                             std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                            std::optional<size_t> logical_num_modes = std::nullopt,
                             Basis basis = Basis::Majorana,
                             size_t partitions = 0) -> MonomialPropagator {
     return MonomialPropagator(initial_operator,
                               cutoff,
                               initial_state,
-                              logical_num_modes.value_or(num_modes),
+                              num_modes,
                               schrodinger_cutoff,
                               comm,
                               lower_atol,
@@ -59,7 +53,6 @@ inline auto make_propagator(size_t num_modes,
                               cutoff_type,
                               basis_change,
                               basis,
-                              partitions,
-                              /*storage_num_modes=*/num_modes);
+                              partitions);
 }
 } // namespace test_utils

@@ -44,7 +44,7 @@ namespace monoprop {
 MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
                                        unsigned int cutoff,
                                        const VecZ &initial_state,
-                                       size_t logical_num_modes,
+                                       size_t num_modes,
                                        std::optional<unsigned int> schrodinger_cutoff,
                                        mpi::Comm comm,
                                        std::optional<double> lower_atol,
@@ -53,26 +53,23 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
                                        std::optional<std::vector<VecZ>> basis_change,
                                        Basis basis,
                                        size_t partitions,
-                                       std::optional<size_t> storage_num_modes,
                                        PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
-      storage_num_modes_{storage_num_modes.value_or(storage_modes_for(logical_num_modes))},
+      storage_num_modes_{detail::storage_modes_for(num_modes)},
       mp_op_(2 * storage_num_modes_),
       graph_(schrodinger_cutoff.has_value()),
+      cutoff_type_{cutoff_type},
+      basis_{basis},
       cutoff_{cutoff},
+      num_modes_{num_modes},
       lower_atol_{lower_atol},
       upper_atol_{upper_atol},
-      logical_num_modes_{logical_num_modes},
-      cutoff_type_{cutoff_type},
-      basis_change_{basis_change},
-      basis_{basis} {
-    // The storage width is the ceiling now, and it is derived from logical_num_modes rather than fixed by
-    // the type, so the only way to fail this is an explicit storage_num_modes narrower than the system.
-    if (logical_num_modes_ == 0 || logical_num_modes_ > storage_num_modes_) {
-        throw PropagatorConfigError(std::format("logical_num_modes ({}) must be in the range [1, {}].",
-                                                logical_num_modes_,
-                                                storage_num_modes_));
+      basis_change_{basis_change} {
+    // The storage width is derived from this one, so it can no longer be too narrow for the system;
+    // zero modes is the only width left to reject.
+    if (num_modes_ == 0) {
+        throw PropagatorConfigError("num_modes must be at least 1.");
     }
 
     validate_cutoff_config_(cutoff_type_, basis_change_);
@@ -95,26 +92,23 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
     if (n_partitions > 1) {
-        // The partitions get this propagator's *resolved* storage width, not the default rounding: they
-        // hash-partition one operator between them, so a partition storing at a different width would
-        // hash the same monomial to a different value than the facade's settings imply.
+        // The partitions hash-partition one operator between them, so they must store at the same width
+        // as the facade -- which they do by construction, the width being a pure function of num_modes.
         PartitionChildFactory factory =
-            child_factory ? std::move(child_factory)
-                          : PartitionChildFactory{[=, storage = storage_num_modes_](mpi::Comm partition_comm) {
-                                return std::make_unique<MonomialPropagator>(initial_operator,
-                                                                            cutoff,
-                                                                            initial_state,
-                                                                            logical_num_modes,
-                                                                            schrodinger_cutoff,
-                                                                            partition_comm,
-                                                                            lower_atol,
-                                                                            upper_atol,
-                                                                            cutoff_type,
-                                                                            basis_change,
-                                                                            basis,
-                                                                            /*partitions=*/1,
-                                                                            storage);
-                            }};
+            child_factory ? std::move(child_factory) : PartitionChildFactory{[=](mpi::Comm partition_comm) {
+                return std::make_unique<MonomialPropagator>(initial_operator,
+                                                            cutoff,
+                                                            initial_state,
+                                                            num_modes,
+                                                            schrodinger_cutoff,
+                                                            partition_comm,
+                                                            lower_atol,
+                                                            upper_atol,
+                                                            cutoff_type,
+                                                            basis_change,
+                                                            basis,
+                                                            /*partitions=*/1);
+            }};
         partition_group_ =
             std::make_unique<detail::partition::PartitionGroup>(static_cast<int>(n_partitions), factory, comm);
         return;
@@ -126,7 +120,7 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
 
     double core_term = 0.0;
     for (const auto &[indices, coefficient] : initial_operator) {
-        const auto majorana_bitset = indices_to_bitset_checked(indices, 2 * logical_num_modes_, mp_op_.num_bits());
+        const auto majorana_bitset = indices_to_bitset_checked(indices, 2 * num_modes_, mp_op_.num_bits());
         const auto encoded_coeff = algebra_encode_coeff(basis_, coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
@@ -141,15 +135,14 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     }
 
     auto sc = schrodinger_cutoff.value_or(cutoff + 2);
-    sc = std::min(sc, static_cast<unsigned int>(2 * logical_num_modes_));
+    sc = std::min(sc, static_cast<unsigned int>(2 * num_modes_));
 
     // Schrodinger's initial basis is streamed, not listed: it is the whole term count (~11.0M at 128
     // modes / cutoff 6), only the ~1/num_ranks share this rank owns is kept, and with S partitions
     // every one of the S propagators would hold its own complete copy at the same moment. Heisenberg's
     // list is one entry per owned initial-operator term, so it is already small and stays a list.
     const size_t max_pairs = sc / 2 + sc % 2;
-    const size_t total_terms =
-        schrodinger_ ? count_paired_op(max_pairs, logical_num_modes_) : local_heisenberg_terms.size();
+    const size_t total_terms = schrodinger_ ? count_paired_op(max_pairs, num_modes_) : local_heisenberg_terms.size();
 
     const size_t expected_local_terms = std::max<size_t>(1, total_terms / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
@@ -180,7 +173,7 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
         }
     };
     if (schrodinger_) {
-        for_each_paired_op(max_pairs, logical_num_modes_, mp_op_.num_bits(), insert_if_owned);
+        for_each_paired_op(max_pairs, num_modes_, mp_op_.num_bits(), insert_if_owned);
     }
     else {
         for (size_t r = 0; r < local_heisenberg_terms.size(); ++r) {
@@ -204,18 +197,18 @@ MonomialPropagator::MonomialPropagator(const MonomialPropagator &other)
       mp_op_(other.mp_op_),
       graph_(other.graph_),
       matched_scratch_(other.matched_scratch_),
+      cutoff_type_(other.cutoff_type_),
+      basis_(other.basis_),
       cutoff_(other.cutoff_),
-      lower_atol_(other.lower_atol_),
-      upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
-      logical_num_modes_(other.logical_num_modes_),
-      cutoff_type_(other.cutoff_type_),
-      basis_change_(other.basis_change_),
-      basis_(other.basis_),
+      num_modes_(other.num_modes_),
       partition_group_(other.partition_group_
                            ? std::make_unique<detail::partition::PartitionGroup>(*other.partition_group_)
-                           : nullptr) {}
+                           : nullptr),
+      lower_atol_(other.lower_atol_),
+      upper_atol_(other.upper_atol_),
+      basis_change_(other.basis_change_) {}
 
 auto MonomialPropagator::resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t {
     if (requested >= 1) {
@@ -258,8 +251,7 @@ auto MonomialPropagator::for_each_partition_(const std::function<void(MonomialPr
     partition_group_->run_on_all([&](int r) { fn(partition_group_->partition(r)); });
 }
 
-auto MonomialPropagator::for_each_partition_indexed_(const std::function<void(int, MonomialPropagator &)> &fn)
-    -> void {
+auto MonomialPropagator::for_each_partition_indexed_(const std::function<void(int, MonomialPropagator &)> &fn) -> void {
     partition_group_->run_on_all([&](int r) { fn(r, partition_group_->partition(r)); });
 }
 
@@ -347,7 +339,7 @@ auto MonomialPropagator::use_sparse_rows_() const -> bool {
     const auto &settings = config::get();
     if (settings.row_store_unrecognized) {
         throw PropagatorConfigError(
-            "monoprop_ROW_STORE must be \"auto\", \"dense\" or \"sparse\". Unset it to pick by system size.");
+            R"(monoprop_ROW_STORE must be "auto", "dense" or "sparse". Unset it to pick by system size.)");
     }
     switch (settings.row_store) {
         case config::RowStore::Dense:
@@ -372,7 +364,7 @@ auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) ->
 
     OperatorDict new_op;
     for (const auto &[ind, coeff] : op_dict) {
-        const auto mono = indices_to_bitset_checked(ind, 2 * logical_num_modes_, mp_op_.num_bits());
+        const auto mono = indices_to_bitset_checked(ind, 2 * num_modes_, mp_op_.num_bits());
         if (ind.empty()) { // Core term, store in all
             core_term_ = algebra_encode_coeff(basis_, coeff, mono);
             continue;
@@ -468,11 +460,11 @@ auto MonomialPropagator::validate_cutoff_config_(CutoffType cutoff_type,
                                     "(the encoding is already the Jordan-Wigner image).");
         }
     });
-    // regenerate_cutoff_fn_ indexes rows [0, 2*logical_num_modes) unconditionally, so a short
+    // regenerate_cutoff_fn_ indexes rows [0, 2*num_modes) unconditionally, so a short
     // basis_change is an out-of-bounds read.
-    if (basis_change.has_value() && basis_change->size() != 2 * logical_num_modes_) {
-        throw CutoffConfigError(std::format("basis_change must have exactly 2*logical_num_modes ({}) rows; got {}.",
-                                            2 * logical_num_modes_,
+    if (basis_change.has_value() && basis_change->size() != 2 * num_modes_) {
+        throw CutoffConfigError(std::format("basis_change must have exactly 2*num_modes ({}) rows; got {}.",
+                                            2 * num_modes_,
                                             basis_change->size()));
     }
 }
@@ -480,15 +472,14 @@ auto MonomialPropagator::validate_cutoff_config_(CutoffType cutoff_type,
 auto MonomialPropagator::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
         MonomialList basis;
-        basis.reserve(2 * logical_num_modes_);
-        for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
-            basis.push_back(
-                indices_to_bitset_checked(basis_change_.value()[i], 2 * logical_num_modes_, mp_op_.num_bits()));
+        basis.reserve(2 * num_modes_);
+        for (size_t i = 0; i < 2 * num_modes_; ++i) {
+            basis.push_back(indices_to_bitset_checked(basis_change_.value()[i], 2 * num_modes_, mp_op_.num_bits()));
         }
-        cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, basis, logical_num_modes_);
+        cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, basis, num_modes_);
     }
     else {
-        cutoff_fn_ = detail::cutoff_function(cutoff_type_, cutoff_, logical_num_modes_, mp_op_.num_bits());
+        cutoff_fn_ = detail::cutoff_function(cutoff_type_, cutoff_, num_modes_, mp_op_.num_bits());
     }
 }
 
@@ -614,7 +605,7 @@ auto MonomialPropagator::build_graph(const std::vector<VecZ> &majoranas,
                                      std::optional<VecZ> gate_indices,
                                      std::optional<VecD> parameters,
                                      std::optional<size_t> only_rotate_len_k) -> void {
-    validate_only_rotate_len_k(only_rotate_len_k, 2 * logical_num_modes_);
+    validate_only_rotate_len_k(only_rotate_len_k, 2 * num_modes_);
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
@@ -684,7 +675,7 @@ auto MonomialPropagator::propagate(const std::vector<VecZ> &majoranas,
                                    const VecD &gen_coeffs,
                                    const VecD &parameters,
                                    std::optional<size_t> only_rotate_len_k) -> void {
-    validate_only_rotate_len_k(only_rotate_len_k, 2 * logical_num_modes_);
+    validate_only_rotate_len_k(only_rotate_len_k, 2 * num_modes_);
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
@@ -730,7 +721,7 @@ auto MonomialPropagator::build_evolve_result_(const VecZ &gen_vec,
                                               bool *fused_scale) -> std::shared_ptr<LayerCore> {
     // The only place a gate generator's indices are bounds-checked: nothing between the public entry
     // points and here constrains them.
-    const auto gen_mono = indices_to_bitset_checked(gen_vec, 2 * logical_num_modes_, mp_op_.num_bits());
+    const auto gen_mono = indices_to_bitset_checked(gen_vec, 2 * num_modes_, mp_op_.num_bits());
 
     // The cos-recompute metadata is written onto the returned LayerCore.
     return detail::build_layer(mp_op_,
@@ -743,7 +734,7 @@ auto MonomialPropagator::build_evolve_result_(const VecZ &gen_vec,
                                only_rotate_len_k,
                                matched_scratch_,
                                comm_,
-                               logical_num_modes_,
+                               num_modes_,
                                out_cos,
                                fused_contract,
                                schrodinger_,

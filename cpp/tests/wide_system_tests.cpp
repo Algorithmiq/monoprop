@@ -64,11 +64,10 @@ auto wide_case() -> test_utils::CaseData {
     return test_utils::embed_case(test_utils::load_case_data("lih_fermionic_spin_exact.msgpack"), wide_embedding());
 }
 
-// Storage pinned to 288 and the logical width to 260 -- which is what storage_modes_for(260) would have
-// produced anyway, so this is the one place in the suite where the pinned width is the production one.
+// 260 logical modes, which storage_modes_for rounds to the 288 the two cases below assert on.
 auto wide_propagator(const test_utils::CaseData &data, unsigned int cutoff, CutoffType cutoff_type)
     -> MonomialPropagator {
-    return test_utils::make_propagator(kWideStorageModes,
+    return test_utils::make_propagator(kWideModes,
                                        data.hamiltonian,
                                        cutoff,
                                        data.initial_state,
@@ -77,8 +76,7 @@ auto wide_propagator(const test_utils::CaseData &data, unsigned int cutoff, Cuto
                                        /*lower_atol=*/std::nullopt,
                                        /*upper_atol=*/std::nullopt,
                                        cutoff_type,
-                                       /*basis_change=*/std::nullopt,
-                                       /*logical_num_modes=*/kWideModes);
+                                       /*basis_change=*/std::nullopt);
 }
 
 // (cutoff_type, cutoff) pairs that truncate nothing for this problem, and the pair that does.
@@ -96,9 +94,9 @@ BOOST_AUTO_TEST_CASE(wide_case_stores_at_two_hundred_eighty_eight_modes) {
     const auto data = wide_case();
     const auto propagator = wide_propagator(data, 2 * kSourceModes, CutoffType::Length);
     BOOST_TEST(data.num_modes == kWideModes);
-    BOOST_TEST(propagator.logical_num_modes() == kWideModes);
+    BOOST_TEST(propagator.num_modes() == kWideModes);
     BOOST_TEST(propagator.storage_num_modes() == kWideStorageModes);
-    BOOST_TEST(MonomialPropagator::storage_modes_for(kWideModes) == kWideStorageModes);
+    BOOST_TEST(monoprop::detail::storage_modes_for(kWideModes) == kWideStorageModes);
     if (config::get().row_store == config::RowStore::Sparse) {
         BOOST_TEST(propagator.rows_are_sparse());
     }

@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_product_phase_vs_brute_force) {
 
                 std::string pr(n, 'I');
                 for (size_t q = 0; q < n; ++q) {
-                    pr[q] = letter_from_bitset(N, r, q);
+                    pr[q] = letter_from_bitset(r, q);
                 }
                 const auto mr = matrix_from_string(pr);
                 const auto mb = matrix_from_string(pb);

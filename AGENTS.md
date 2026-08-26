@@ -70,10 +70,11 @@ Key files:
   `src/monoprop/pauli_propagator.py` (`PauliPropagator`).
 - `cpp/include/monoprop/MonomialPropagator.h`: the single C++ engine `MonomialPropagator` (the
   Majorana/Pauli choice is a runtime `Basis`, not a separate class; so is the mode count).
-  `storage_modes_for()` is the storage-width rule: a logical width rounds up to a whole 32-mode block,
-  never below one block. Pass `storage_num_modes` to override it — the C++ tests do, via
-  `cpp/tests/TestPropagator.h`, because the width is part of a monomial's hash and hence of the order
-  coefficients accumulate in.
+  The ctor takes one width, `num_modes`, the logical one. `detail::storage_modes_for()` derives the width
+  monomials are actually stored at from it — rounded up to a whole 32-mode block, never below one
+  block.
+  Test code that reads a propagator's monomials therefore has to take the width from the monomial
+  (`mono.size()`) or from `storage_num_modes()`, never from the logical width.
 - `src/monoprop/bindings/bindings.cpp`: the binding for that one class, in one translation unit.
   Nothing here is generated -- there is no `binder.h` and no `bindings.cpp.in` any more, so the nanobind
   version the module reports arrives as `monoprop_NANOBIND_VERSION` from CMake rather than through a
