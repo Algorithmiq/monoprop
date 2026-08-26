@@ -27,6 +27,7 @@
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop {
 

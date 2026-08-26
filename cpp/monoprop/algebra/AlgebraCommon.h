@@ -24,6 +24,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop {
 

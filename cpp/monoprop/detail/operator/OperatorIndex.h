@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/core/Monomial.h"
 
 namespace monoprop::detail {
 

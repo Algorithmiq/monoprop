@@ -1,0 +1,19 @@
+# LeakSanitizer suppressions for the GCC ASan+UBSan C++ test leg.
+#
+# Entries are limited to unavoidable uninstrumented third-party allocations that persist until
+# process exit. Never suppress first-party allocations or common frames such as
+# `leak:_PyObject_Malloc` and `leak:default_malloc`, which would hide real leaks.
+#
+# The Python leg disables leak checks: an instrumented extension in stock CPython cannot give
+# LSan a clean baseline.
+
+# Open MPI and PMIx retain process state initialized by MPI_Init.
+leak:ompi_mpi_init
+leak:ompi_mpi_instance_init
+leak:ompi_comm_init_mpi3
+leak:pmix_hash_fetch
+leak:PMIx_Value_create
+leak:pmix_bfrops_base_value_load
+
+# Open MPI tears down this libevent base after LSan's exit-time check.
+leak:event_base_loop
