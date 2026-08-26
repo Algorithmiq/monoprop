@@ -103,7 +103,7 @@ monoprop_EXPORT auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
 /*! @brief Whether the @p n masks of @p words words laid end to end in @p masks are pairwise disjoint.
  *  False for @p n < 2 and for any empty mask: all-zero is disjoint from everything, and shared is the safe error.
  */
-monoprop_EXPORT [[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
+[[nodiscard]] monoprop_EXPORT auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
 //! What one host's exchanged affinity masks add up to. The union says what the JOB got, not what one rank got.
 struct MaskSummary {
@@ -116,7 +116,7 @@ struct MaskSummary {
  *  @returns nullopt for a null/empty argument or any all-zero row: a mask that did not fit the exchange
  *           window cannot be summed with the others. Diagnostic only; nothing branches on the result.
  */
-monoprop_EXPORT [[nodiscard]] auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
+[[nodiscard]] monoprop_EXPORT auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
     -> std::optional<MaskSummary>;
 
 /* COMMPLACE: a rank seeing 16 of a host's 128 CPUs is equally "my own 16" and "eight of us share
@@ -129,7 +129,7 @@ monoprop_EXPORT [[nodiscard]] auto summarize_masks(const uint64_t *masks, size_t
  *         "unknown" (a mask did not fit the exchanged window, so no verdict is sound).
  *  Returned, not written, so the formatting is testable without a live rank.
  */
-monoprop_EXPORT [[nodiscard]] auto format_place_line(int mpi_rank,
+[[nodiscard]] monoprop_EXPORT auto format_place_line(int mpi_rank,
                                                      int node_rank,
                                                      int node_size,
                                                      const char *verdict,
