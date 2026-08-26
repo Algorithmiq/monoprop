@@ -17,25 +17,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+from plot_scaling import COLORS as colors  # noqa: E402
 
 # The early steps are too noisy to plot.
 min_step = 5
-
-colors = {
-    "monoprop": "tab:purple",
-    "QuEra ppvm": "tab:orange",
-    "Qiskit pauli-prop": "tab:blue",
-    "cuPauliProp (GPU)": "tab:green",
-    "PauliPropagation.jl": "tab:red",
-}
 
 with open(Path(__file__).parent / "results.json") as file:
     data = json.load(file)
 step_range = data["step_range"]
 runtime_dict = data["runtime"]
 memory_dict = data["memory"]
-native_memory_dict = data.get("native_memory", {})
 expvals_dict = data["expvals"]
 
 
@@ -70,19 +65,7 @@ _style_axes(ax1, "Time per step [s]")
 for label, memory in memory_dict.items():
     steps, values = _filter_from_min_step(step_range, memory)
     ax2.plot(steps, values, color=colors[label], label=label, marker="o", markersize=4)
-for label, native_memory in native_memory_dict.items():
-    steps, values = _filter_from_min_step(step_range, native_memory)
-    ax2.plot(steps, values, color=colors[label], linestyle="--", alpha=0.5)
 _style_axes(ax2, "Memory per step [MB]")
 
 fig.tight_layout()
-if native_memory_dict:
-    fig.text(
-        0.5,
-        -0.03,
-        "Dashed: each engine's own native memory accounting (reference only, not the plotted peak)",
-        ha="center",
-        fontsize=8,
-        color="gray",
-    )
 fig.savefig(Path(__file__).parent / "pauli_results.png", dpi=150, bbox_inches="tight")
