@@ -152,12 +152,14 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     // inverted index with it.
     //
     // Which backend: the crossover is on the *storage* width, not the logical one, because what the dense
-    // representation costs is one pass per storage word. Rows are sized from the cutoff -- a surviving
-    // term occupies at most `cutoff` modes under either cutoff kind -- and anything wider (a fully paired
-    // term, which escapes the cutoff) spills losslessly.
+    // representation costs is one pass per storage word. Rows are sized from row_width_bound_() -- a
+    // surviving term occupies at most that many modes under either cutoff kind, with Schrödinger's own
+    // special case included -- and anything wider (a fully paired term, which escapes the cutoff) spills
+    // losslessly.
     if (use_sparse_rows_()) {
-        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_,
-                                                                  detail::SparseRowStore::slots_for_bound(cutoff_)));
+        mp_op_.set_store(
+            std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_,
+                                                     detail::SparseRowStore::slots_for_bound(row_width_bound_())));
     }
     else {
         mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_()));
@@ -321,18 +323,23 @@ auto MonomialPropagator::partitioned_graph_memory_usage_() const -> GraphMemoryB
     return sum_partitions_([](const MonomialPropagator &s) { return s.graph_memory_usage(); });
 }
 
-auto MonomialPropagator::packed_inline_width_() const -> size_t {
-    constexpr size_t kMax = detail::OperatorIndex::kMaxInlinePositions;
+auto MonomialPropagator::row_width_bound_() const -> size_t {
     constexpr size_t kDefault = detail::OperatorIndex::kDefaultInlinePositions;
+    // Schrödinger's initial term set is every fully paired monomial with up to ceil(schrodinger_cutoff/2)
+    // occupied modes -- schrodinger_cutoff is an independent user knob, not cutoff_, so a bound derived
+    // from cutoff_fn_ below can be far narrower than what the initial fill actually needs. Both row-store
+    // backends would otherwise spill most of the initial rows into their overflow map.
     if (schrodinger_) {
         return kDefault;
     }
     // The bound is already in physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale.
     const auto bound = detail::CutoffEvaluator(cutoff_fn_).max_slot_bound();
-    if (!bound) {
-        return kDefault;
-    }
-    return std::min<size_t>(*bound, kMax);
+    return bound.value_or(kDefault);
+}
+
+auto MonomialPropagator::packed_inline_width_() const -> size_t {
+    constexpr size_t kMax = detail::OperatorIndex::kMaxInlinePositions;
+    return std::min<size_t>(row_width_bound_(), kMax);
 }
 
 auto MonomialPropagator::use_sparse_rows_() const -> bool {

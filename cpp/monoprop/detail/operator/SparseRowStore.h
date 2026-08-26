@@ -520,8 +520,9 @@ public:
             [this](size_t i, const Key &key) { return row_eq_key(i, key); });
     }
 
-    // Rows in index order, as fn(row_index). Not the row itself: a spilled row has no view, so what a
-    // caller wants off the index is the index.
+    // Rows in table order (for_each_slot walks the slot array, i.e. hash/probe order, not ascending row
+    // index -- see the class comment above), as fn(row_index). Not the row itself: a spilled row has no
+    // view, so what a caller wants off the index is the index.
     template <typename Fn>
     auto for_each_index(Fn &&fn) const -> void {
         table_.for_each_slot([&](TermIndex idx, uint32_t) { fn(static_cast<size_t>(idx)); });

@@ -296,10 +296,15 @@ inline auto sparse_query_read(const VecZ &buf,
 // Resolve.h -- want exactly this, and both used to hand-roll it: allocate once, keep the storage across
 // layers, overwrite every element before reading it, and hand the whole run to find_batch contiguously.
 //
-// Grow-only and never cleared between layers. That is the measured shape (see Resolve.h): an element is
-// overwritten whole before any read, so a per-layer rebuild bought nothing and cost a construction per
-// query. The trade is that the buffer holds the largest layer's worth until the thread exits; peak RSS is
-// unchanged because the peak was always reached *during* a layer.
+// Grow-only and never cleared by ensure()/read within one object's lifetime: an element is overwritten
+// whole before any read, so a per-batch rebuild bought nothing and cost a construction per query. Whether
+// that lifetime spans layers depends on the call site, not the class. The thread_local batch in Resolve.h
+// keeps its storage across layers on purpose, so its resting footprint is the largest layer's worth until
+// the thread exits (peak RSS is unchanged -- the peak was always reached *during* a layer). Engine.h's
+// keys_ does not: it is a plain member of a LayerBuildEngine built fresh per build_layer call, so it
+// starts default-constructed and pays ensure()'s construction cost every layer -- required, not a missed
+// optimization, because retain()'s handles index into storage that must not survive past the layer that
+// produced them.
 //
 // configure() must be called before any use and re-called if the extent changes -- a thread servicing two
 // propagators of different widths must not reuse elements sized for the other.
@@ -367,6 +372,8 @@ public:
             keys_.clear();
             escapes_.clear();
             retained_lanes_.clear();
+            retained_bases_.clear();
+            retained_escapes_.clear();
             retained_.clear();
             capacity_ = capacity;
             num_bits_ = num_bits;

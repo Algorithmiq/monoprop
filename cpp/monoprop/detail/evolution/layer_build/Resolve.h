@@ -108,7 +108,9 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
     //     elements sized for the other, or the reader would write a wide record into a narrow element.
     // It holds the largest layer's worth of keys until the thread exits, where before it was
     // released after every layer. Peak RSS is unchanged -- the peak was always reached *during* a
-    // layer -- but the resting footprint after one is not; the same trade `nz` and `keys_` already make.
+    // layer -- but the resting footprint after one is not; the same trade `nz` already makes. Engine.h's
+    // own `keys_` does not make this trade: it is a plain member of a LayerBuildEngine built fresh per
+    // build_layer call, so it starts default-constructed every layer (see DenseQueryKeys's comment).
     thread_local Keys scratch;
     scratch.configure(op.num_bits(), record_capacity);
     scratch.ensure(pr.nq_total);

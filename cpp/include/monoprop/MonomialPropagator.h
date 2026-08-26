@@ -374,8 +374,13 @@ protected:
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
     detail::MatchedEpochSet matched_scratch_;
 
+    // Row width bound in modes, shared by both row-store backends so a construction-time choice (in
+    // particular, Schrödinger's initial term set being wider than the post-first-layer cutoff would
+    // suggest) is made once rather than risking the two backends disagreeing on it.
+    auto row_width_bound_() const -> size_t;
+
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
-    // structural position bound when it has one.
+    // structural position bound when it has one, clamped to OperatorIndex's own inline cap.
     auto packed_inline_width_() const -> size_t;
 
     // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
