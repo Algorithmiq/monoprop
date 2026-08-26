@@ -35,7 +35,7 @@ This experiment uses a 12×12 lattice (144 qubits), 28 Trotter points, `dt = 0.0
 threshold of `1e-6`, and no weight cutoff. The final operator contains approximately 33 million
 terms.
 
-| engine | final step | vs `monoprop` | peak RSS | vs `monoprop` |
+| Engine | Final step | VS `monoprop` | Peak RSS | VS `monoprop` |
 | --- | ---: | ---: | ---: | ---: |
 | `monoprop` | 1.56 s | — | 4275 MB | — |
 | `cuPauliProp (GPU)` | 12.23 s | 7.8× | 11652 MB *(device)* | 2.7× |
@@ -155,10 +155,10 @@ The measurements use exclusive nodes on
 [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html). CPU and GPU measurements use
 different partitions because Leonardo's DCGP nodes do not contain GPUs.
 
-| | node | hardware | engines |
-| --- | --- | --- | --- |
-| CPU | `lrdn4635` (DCGP) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` (56 threads), `PauliPropagation.jl` (28), `QuEra ppvm`, `Qiskit pauli-prop` |
-| GPU | `lrdn0219` (Booster) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` |
+| Partition | Hardware | Engines |
+| --- | --- | --- |
+`DCGP (CPU) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` (56 threads), `PauliPropagation.jl` (28), `QuEra ppvm`, `Qiskit pauli-prop` |
+| Booster (GPU) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` |
 
 The benchmarks use each engine's best known configuration. `monoprop` uses all 56 cores of one
 socket; `PauliPropagation.jl` uses 28 threads because higher thread counts reduce its throughput.
