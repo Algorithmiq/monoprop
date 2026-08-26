@@ -25,7 +25,9 @@
 // to construct the storage its product goes into (see the note on the scratch monomials below).
 
 #include <cstddef>
+#include <format>
 #include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -116,6 +118,17 @@ private:
     Bitset new_mono_;
 };
 
+// Thrown by DenseTermProductsW's constructor: with_kernel_width picks W from the store's row word
+// count and the generator's own width is independent of that (a stale generator bank, a basis
+// change that resized the store but not the gates, ...), so unlike the per-term word ops in
+// Bitset.h -- deliberately assert-only, since Release must keep their loops bare -- this binding
+// happens once per gate. A real branch there costs nothing next to the per-term work it guards, so
+// it stays a check even in Release rather than silently reading past W words of gen/mono/new_mono.
+class KernelWidthMismatch : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 // The dense kernel with the storage word count bound at compile time, chosen once per gate by the
 // scan (see with_kernel_width). Answers exactly what DenseTermProducts answers, in the same order
 // and to the same values -- what differs is that every word loop inside has a known trip count and
@@ -142,7 +155,13 @@ public:
           gen_words_(A::generator(ctx_).data()),
           mono_words_(mono_.data()),
           new_words_(new_mono_.data()) {
-        assert(gen.num_words() == W && "the kernel's W must be the generator's word count");
+        if (gen.num_words() != W) {
+            throw KernelWidthMismatch(
+                std::format("DenseTermProductsW<W={}> bound against a generator of {} words; the kernel's W must "
+                            "be the generator's word count.",
+                            W,
+                            gen.num_words()));
+        }
         if (const auto *length = cutoff_eval.length_cutoff(); length != nullptr && length->masks.whole_register) {
             length_cutoff_ = length->cutoff;
         }

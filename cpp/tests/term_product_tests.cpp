@@ -631,3 +631,18 @@ BOOST_AUTO_TEST_CASE(with_kernel_width_binds_the_capped_storage_word_count) {
     // Above the inline regime the words are on the heap, so there is no width to bind.
     BOOST_TEST(bound_kernel_width<OperatorIndex>(Bitset::kInlineWords + 1) == 0U);
 }
+
+// with_kernel_width binds W from the store's row word count, independently of whatever gen a caller
+// hands to the constructor it dispatches into -- so a mismatch is a real (if never-yet-observed) call
+// site bug, not an internal-only invariant, and unlike the per-term word ops in Bitset.h (deliberately
+// assert-only) this must not compile away under NDEBUG.
+BOOST_AUTO_TEST_CASE(narrow_kernel_constructor_rejects_a_generator_of_the_wrong_width) {
+    constexpr size_t kWords = 2;
+    constexpr size_t kNumModes = (kWords * Bitset::word_width) / 2;
+    const Bitset narrower_gen(2 * (kNumModes - Bitset::word_width / 2));
+    const Bitset wider_gen(2 * (kNumModes + Bitset::word_width / 2));
+
+    const CutoffEvaluator cutoff_eval{cutoff_function(CutoffType::Length, 4, kNumModes, 2 * kNumModes)};
+    BOOST_CHECK_THROW((DenseTermProductsW<MajoranaAlgebra, kWords>(narrower_gen, cutoff_eval)), KernelWidthMismatch);
+    BOOST_CHECK_THROW((DenseTermProductsW<MajoranaAlgebra, kWords>(wider_gen, cutoff_eval)), KernelWidthMismatch);
+}
