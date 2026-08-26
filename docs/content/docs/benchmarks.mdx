@@ -8,15 +8,20 @@ propagation engines, and an internal pytest suite for detecting performance regr
 
 ## Results
 
+<Figure>
 ![Time per step for monoprop against other Pauli and Majorana propagation engines](/benchmarks/headline_runtime.png)
 
-The figure compares wall-clock time per propagation step on a logarithmic scale. At the final
-Pauli step, the runtime ratios relative to `monoprop` are 267-325× for the other CPU
-implementations and 7.8× for the GPU implementation. Over the complete Majorana evolution, the
-runtime ratio for `MajoranaPropagation.jl` is 27.7×. `monoprop` also has the lowest measured
-working-memory value in both comparisons. All results were obtained on
-[Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html); the experimental conditions are
-specified under [Methods](#methods).
+<Caption>
+  Wall-clock time per propagation step on a logarithmic scale. At the final Pauli step, the
+  runtime ratios relative to `monoprop` are 267-325× for the other CPU implementations and 7.8×
+  for the GPU implementation. Over the complete Majorana evolution, the runtime ratio for
+  `MajoranaPropagation.jl` is 27.7×.
+</Caption>
+</Figure>
+
+`monoprop` has the lowest measured working-memory value in both comparisons. All results were
+obtained on [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html); the experimental
+conditions are specified under [Methods](#methods).
 
 ### Pauli propagation
 
@@ -43,10 +48,14 @@ The observables produced by the coefficient-threshold implementations differ by 
 operator resides in GPU memory; consequently, the table reports its peak device allocation rather
 than its 552 MB host RSS.
 
+<Figure>
 ![Runtime and peak RSS per Trotter step for five Pauli propagation engines](/benchmarks/pauli_results.png)
 
-Solid lines denote peak RSS. Faint lines denote implementation-specific memory estimates and are
-not comparable across implementations.
+<Caption>
+  Solid lines denote peak RSS. Faint lines denote implementation-specific memory estimates and
+  are not comparable across implementations.
+</Caption>
+</Figure>
 
 #### Increasing lattice size
 
@@ -54,29 +63,41 @@ This experiment holds the circuit depth and truncation threshold fixed while inc
 from 6×6 (36 qubits) to 18×18 (324 qubits). Each model size and implementation runs in a separate
 subprocess with a 300 s limit.
 
+<Figure>
 ![Total runtime versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_runtime.png)
 
-At the selected coefficient threshold, the operator size saturates at approximately 55.0
-million terms above 100 qubits. Beyond this point, the experiment primarily measures the cost per
-retained term. Across the full range, `monoprop` runtime increases from 6.35 s to 14.1 s (2.2×),
-while the qubit count increases 9×.
+<Caption>
+  At the selected coefficient threshold, the operator size saturates at approximately 55.0
+  million terms above 100 qubits. Beyond this point, the experiment primarily measures the cost
+  per retained term. Across the full range, `monoprop` runtime increases from 6.35 s to 14.1 s
+  (2.2×), while the qubit count increases 9×.
+</Caption>
+</Figure>
 
 The 300 s limit excludes `QuEra ppvm` and `Qiskit pauli-prop` at all lattice sizes, and excludes
 `PauliPropagation.jl` above 10×10. The endpoints of these curves therefore indicate timeouts, not
 implementation limits.
 
+<Figure>
 ![Peak working memory versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_memory_working_set.png)
 
-Working memory denotes peak host RSS for CPU implementations and peak device allocation for
-`cuPauliProp`. Across the full range, `monoprop` increases from 5045 MB to 7835 MB (1.55×), while
-`cuPauliProp` increases from 7.6 GB to 34.4 GB. At 324 qubits, the latter is 4.5× the
-`monoprop` host footprint and occupies more than half of the A100's 64 GB device memory.
+<Caption>
+  Working memory denotes peak host RSS for CPU implementations and peak device allocation for
+  `cuPauliProp`. Across the full range, `monoprop` increases from 5045 MB to 7835 MB (1.55×),
+  while `cuPauliProp` increases from 7.6 GB to 34.4 GB. At 324 qubits, the latter is 4.5× the
+  `monoprop` host footprint and occupies more than half of the A100's 64 GB device memory.
+</Caption>
+</Figure>
 
+<Figure>
 ![Bar chart of monoprop's speed-up over each engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
 
-Relative to `monoprop`, the runtime ratio increases from 14× to 31× for
-`PauliPropagation.jl` over its completed points, and from 4.2× to 20× for `cuPauliProp` over the
-full range.
+<Caption>
+  Relative to `monoprop`, the runtime ratio increases from 14× to 31× for
+  `PauliPropagation.jl` over its completed points, and from 4.2× to 20× for `cuPauliProp` over
+  the full range.
+</Caption>
+</Figure>
 
 ### Majorana propagation
 
@@ -84,18 +105,26 @@ The Majorana benchmark simulates 20 Trotter layers of a one-dimensional Fermi-Hu
 60 spinful sites. Runtime, expectation value, term count, and memory are recorded after each layer.
 Both implementations use 24 threads.
 
+<Figure>
 ![Term count, expectation value, runtime and peak RSS versus layer, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_results.png)
 
-The expectation values differ by at most 2.0e-6 at every layer. At equal truncation,
-`monoprop` retains 109.4 million terms, compared with 79.4 million for
-`MajoranaPropagation.jl`. The complete evolution takes 57.1 s and 1583.7 s, respectively, a
-runtime ratio of 27.7×. At the final layer, the corresponding times are 22.9 s and 639.4 s
-(27.9×). Peak RSS is 8.8 GB and 17.5 GB, respectively.
+<Caption>
+  The expectation values differ by at most 2.0e-6 at every layer. At equal truncation,
+  `monoprop` retains 109.4 million terms, compared with 79.4 million for
+  `MajoranaPropagation.jl`. The complete evolution takes 57.1 s and 1583.7 s, respectively, a
+  runtime ratio of 27.7×. At the final layer, the corresponding times are 22.9 s and 639.4 s
+  (27.9×). Peak RSS is 8.8 GB and 17.5 GB, respectively.
+</Caption>
+</Figure>
 
+<Figure>
 ![Runtime versus circuit depth on linear axes, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_runtime.png)
 
-The separate linear-scale plot preserves the absolute runtime ratio. The annotation gives the
-upper bound of the `monoprop` curve, which otherwise lies close to the horizontal axis.
+<Caption>
+  The linear scale preserves the absolute runtime ratio. The annotation gives the upper bound of
+  the `monoprop` curve, which otherwise lies close to the horizontal axis.
+</Caption>
+</Figure>
 
 ### Caveats
 
