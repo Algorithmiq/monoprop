@@ -128,6 +128,15 @@ inline auto for_each_mode_slot(const Bitset &mono, Fn &&fn) -> void {
     }
 }
 
+// Occupied modes in a dense monomial, via the same slot walk as sparse_row_hash/dense_row_equals below --
+// what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs
+// (see generator_mode_count in layer_build/TermProduct.h).
+[[nodiscard]] inline auto occupied_mode_count(const Bitset &mono) -> size_t {
+    size_t n = 0;
+    for_each_mode_slot(mono, [&](size_t, unsigned int) { ++n; });
+    return n;
+}
+
 // The row hash, as an accumulator over (mode, code) slots. One definition with two walkers -- a sparse
 // row and a dense monomial -- because a keyed store must hold both and hash them identically: a fully
 // paired term escapes the cutoff, so a row can occupy more modes than any codes word holds and has to
@@ -189,6 +198,29 @@ private:
         ++j;
     });
     return equal && j == n;
+}
+
+// Writes a sparse row's occupied slots into `mono`, which must already be at the row's width and
+// cleared -- a fresh Bitset(num_bits), or one a caller reset itself before refilling it. The shared body
+// behind every dense materialization of a SparseRow below and in layer_build/Common.h and TermProduct.h.
+inline auto fill_from_sparse_row(const SparseRow &row, Bitset &mono) -> void {
+    const size_t n = row.num_slots();
+    for (size_t j = 0; j < n; ++j) {
+        const unsigned int code = row.code(j);
+        if ((code & 1U) != 0U) {
+            mono.set(2 * row.mode(j));
+        }
+        if ((code & 2U) != 0U) {
+            mono.set((2 * row.mode(j)) + 1);
+        }
+    }
+}
+
+// Materializes a sparse row as a fresh dense monomial at the given width.
+[[nodiscard]] inline auto sparse_row_to_bitset(const SparseRow &row, size_t num_bits) -> Bitset {
+    Bitset mono(num_bits);
+    fill_from_sparse_row(row, mono);
+    return mono;
 }
 
 // Operator-term store in support form: each row is a fixed-width list of the *modes* it occupies plus
@@ -286,8 +318,7 @@ public:
         out->codes_ = codes_;
         out->size_ = size_;
         out->overflow_ = overflow_;
-        out->table_.reserve(table_.count());
-        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
+        out->table_ = table_; // RowHashTable is rule-of-zero copyable; a plain copy preserves slot order exactly.
         return out;
     }
 
@@ -302,11 +333,18 @@ public:
         out->modes_.resize(size_ * out->slots_per_row_);
         out->codes_.resize(size_);
         out->size_ = size_;
+        // Reflow via view()/overflow_ directly rather than row(i): row() would materialize a fresh
+        // Bitset from the slots and set() would immediately re-walk it to rebuild them, a double pass
+        // this store's own non-allocating set(SparseRow) / set(value_type) overloads make unnecessary.
         for (size_t i = 0; i < size_; ++i) {
-            out->set(i, row(i));
+            if (spilled(i)) {
+                out->set(i, overflow_.at(i));
+            }
+            else {
+                out->set(i, view(i));
+            }
         }
-        out->table_.reserve(table_.count());
-        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
+        out->table_ = table_; // RowHashTable is rule-of-zero copyable; a plain copy preserves slot order exactly.
         return out;
     }
 
@@ -321,8 +359,7 @@ public:
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows_(std::max(base + n, cap + (cap / 2) + 1));
+            reserve_rows_(geometric_row_capacity(base, n, capacity()));
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
@@ -417,16 +454,7 @@ public:
         if (spilled(i)) {
             return overflow_.at(i);
         }
-        value_type mono(num_bits_);
-        for_each_slot(i, [&](size_t mode, unsigned int code) {
-            if ((code & 1U) != 0U) {
-                mono.set(2 * mode);
-            }
-            if ((code & 2U) != 0U) {
-                mono.set((2 * mode) + 1);
-            }
-        });
-        return mono;
+        return sparse_row_to_bitset(view(i), num_bits_);
     }
 
     // Ascending, matching the dense backends: slots are stored ascending in the mode, and within a mode
@@ -595,11 +623,7 @@ public:
 
 private:
     // Spilled rows have no codes word, so their support is counted the dense way.
-    [[nodiscard]] static auto occupied_modes(const value_type &mono) -> size_t {
-        size_t n = 0;
-        for_each_mode_slot(mono, [&](size_t, unsigned int) { ++n; });
-        return n;
-    }
+    [[nodiscard]] static auto occupied_modes(const value_type &mono) -> size_t { return occupied_mode_count(mono); }
 
     // The 32-bit fold the table stores as its equality pre-filter, over the full-width row hash.
     template <typename Key>
@@ -642,18 +666,7 @@ private:
 
     // A row at this store's width. Only the spill arms need it: everything else reads slots in place.
     [[nodiscard]] auto to_monomial_(const SparseRow &row) const -> value_type {
-        value_type mono(num_bits_);
-        const size_t n = row.num_slots();
-        for (size_t j = 0; j < n; ++j) {
-            const unsigned int code = row.code(j);
-            if ((code & 1U) != 0U) {
-                mono.set(2 * row.mode(j));
-            }
-            if ((code & 2U) != 0U) {
-                mono.set((2 * row.mode(j)) + 1);
-            }
-        }
-        return mono;
+        return sparse_row_to_bitset(row, num_bits_);
     }
 
     auto reserve_rows_(size_t n) -> void {

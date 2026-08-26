@@ -62,22 +62,6 @@ struct OwnedRow {
     }
 };
 
-auto to_bitset(const SparseRow &row, size_t num_bits) -> Bitset {
-    Bitset out(num_bits);
-    const size_t n = row.num_slots();
-    for (size_t j = 0; j < n; ++j) {
-        const size_t mode = row.mode(j);
-        const unsigned int code = row.code(j);
-        if ((code & 1U) != 0U) {
-            out.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            out.set((2 * mode) + 1);
-        }
-    }
-    return out;
-}
-
 struct Seen {
     bool cancelled_a_mode = false; // a mode present in both, cancelling to nothing
     bool nonzero_overlap = false;
@@ -116,7 +100,7 @@ auto check_product(const Bitset &mono, const Bitset &gen, size_t capacity, Seen 
     const SparseRow product_row{out_lanes.data(), product.codes};
     BOOST_TEST(product.overlap == fused.overlap);
     BOOST_TEST(product.num_slots == row_slot_count(product.codes));
-    BOOST_TEST((to_bitset(product_row, num_bits) == dense_product));
+    BOOST_TEST((sparse_row_to_bitset(product_row, num_bits) == dense_product));
 
     // The two rotation signs. Majorana's dense form goes through the per-layer interleave mask, which is
     // the hot path the sparse walk replaces, so compare against that and not only against

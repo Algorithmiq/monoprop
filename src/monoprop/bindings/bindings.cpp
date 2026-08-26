@@ -86,8 +86,6 @@ NB_MODULE(_core, mod) {
     mod.attr("has_mpi") = false;
 #endif
 
-    using namespace monoprop;
-
     mod.def("is_antihermitian",
             &is_antihermitian,
             "indices"_a,

@@ -27,6 +27,14 @@
 
 namespace monoprop::detail {
 
+// The next row-array capacity for a geometric (1.5x) grow by `n` rows from `base` (the pre-growth size),
+// given the current capacity. Never exact-fit: an exact fit would realloc the whole operator every layer.
+// Shared by OperatorIndex and SparseRowStore, whose grow_rows_geometric() differ only in which arrays
+// that capacity gets applied to.
+[[nodiscard]] inline auto geometric_row_capacity(size_t base, size_t n, size_t capacity) noexcept -> size_t {
+    return std::max(base + n, capacity + (capacity / 2) + 1);
+}
+
 class TermIndexCeilingReached : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;

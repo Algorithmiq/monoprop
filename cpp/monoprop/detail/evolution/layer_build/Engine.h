@@ -333,7 +333,9 @@ struct LayerBuildEngine {
     std::vector<VecZ> combined_qv_;
     Sink sink;
     // The *plain* query record's payload width. Self-resolve records are plain even under the fused sink,
-    // whose wider stride applies only to the cross-rank wire, so this is not sink.stride().
+    // whose wider stride applies only to the cross-rank wire, so this is not sink.stride(). Kept as its
+    // own field rather than read off sink: Sink is a minimal concept (see RecordingSink in
+    // evolution_detail_tests.cpp), and only the two production sinks happen to also carry num_words.
     size_t words_ = 0;
     // The support form's row capacity (see GraphSink::record_capacity), for the key batch below.
     size_t record_capacity_ = 0;
@@ -518,6 +520,7 @@ private:
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
         std::array<size_t, kResolveBatch> found;
+        const size_t stride = query_words(words_); // loop-invariant: words_ is fixed for the whole call
         size_t q = lo;
         while (q < hi) {
             size_t m = 0;
@@ -527,7 +530,7 @@ private:
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                phases[m] = keys.read_record(lq, q, query_words(words_), m);
+                phases[m] = keys.read_record(lq, q, stride, m);
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
                     vals[m] = (*lv)[q];

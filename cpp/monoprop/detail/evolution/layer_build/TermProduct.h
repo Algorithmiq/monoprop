@@ -162,7 +162,7 @@ public:
                             W,
                             gen.num_words()));
         }
-        if (const auto *length = cutoff_eval.length_cutoff(); length != nullptr && length->masks.whole_register) {
+        if (const auto *length = cutoff_eval.length_cutoff(); length != nullptr && length->masks.whole_register()) {
             length_cutoff_ = length->cutoff;
         }
     }
@@ -224,9 +224,7 @@ private:
 
 // Modes the generator occupies: the slot count of its support form. Per gate, never per term.
 [[nodiscard]] inline auto generator_mode_count(const Bitset &gen) -> size_t {
-    size_t n = 0;
-    for_each_mode_slot(gen, [&](size_t, unsigned int) { ++n; });
-    return n;
+    return occupied_mode_count(gen);
 }
 
 // The slot capacity a support-form query record is cut to, which is also the scan's scratch product
@@ -350,18 +348,7 @@ private:
         }
         if (!dense_valid_) {
             dense_.reset(); // as in the dense kernel: the slot walk only sets bits
-            const SparseRow row = product_row();
-            const size_t n = row.num_slots();
-            for (size_t j = 0; j < n; ++j) {
-                const size_t mode = row.mode(j);
-                const unsigned int code = row.code(j);
-                if ((code & 1U) != 0U) {
-                    dense_.set(2 * mode);
-                }
-                if ((code & 2U) != 0U) {
-                    dense_.set((2 * mode) + 1);
-                }
-            }
+            fill_from_sparse_row(product_row(), dense_);
             dense_valid_ = true;
         }
         return dense_;

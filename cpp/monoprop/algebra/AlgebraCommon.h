@@ -49,17 +49,18 @@ struct CutoffMasks {
     uint64_t even_active = 0; // single-word arm: the even-bit pattern AND `active`
     size_t active_bit_offset = 0;
     size_t num_bits = 0; // the width these were built for; only checked in assertions
-    bool single_word = false;
-    bool whole_register = false;
+
+    // Derived from num_bits/active_bit_offset rather than stored: each is a one-line fact about the
+    // other two fields, read at 3 call sites total.
+    [[nodiscard]] auto single_word() const -> bool { return num_bits <= 64; }
+    [[nodiscard]] auto whole_register() const -> bool { return active_bit_offset == 0; }
 
     [[nodiscard]] static auto make(size_t num_bits, size_t logical_num_modes) -> CutoffMasks {
         CutoffMasks m;
         const size_t num_modes = num_bits / 2;
         m.num_bits = num_bits;
         m.active_bit_offset = 2 * (num_modes - logical_num_modes);
-        m.single_word = num_bits <= 64;
-        m.whole_register = logical_num_modes == num_modes;
-        if (m.single_word) {
+        if (m.single_word()) {
             // The even-bit pattern spelled as a literal rather than via even_bits(): identical value,
             // plain integer arithmetic, and no Bitset to construct.
             const uint64_t valid = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
@@ -76,7 +77,7 @@ struct CutoffMasks {
     // A runtime branch, not `if constexpr`: the width is data now. Still a branch rather than folded
     // into the general loop because this arm skips the mask lookup and the loop entirely, and one word
     // covers every model up to 32 modes.
-    if (masks.single_word) {
+    if (masks.single_word()) {
         const uint64_t active_word = mono.word(0) & masks.active;
         const uint64_t first_pair = active_word & masks.even_active;
         const uint64_t second_pair = (active_word >> 1) & masks.even_active;
@@ -114,7 +115,7 @@ struct CutoffMasks {
 
     // The shift is the uncommon case (logical_num_modes < num_modes); keep its temporary out of the
     // path that does not need one.
-    if (masks.whole_register) {
+    if (masks.whole_register()) {
         return accumulate(mono);
     }
     return accumulate(mono >> active_bit_offset);
@@ -136,8 +137,7 @@ auto length_cutoff(const MonomialLike auto &mono, unsigned int cutoff, const Cut
 }
 
 auto length_cutoff(const MonomialLike auto &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const auto sums = cutoff_sums(mono, logical_num_modes);
-    return sums.xor_sum == 0 || sums.popcount_sum <= cutoff;
+    return length_cutoff(mono, cutoff, CutoffMasks::make(mono.size(), logical_num_modes));
 }
 
 // Whole-register overload: every mode is active. Reads the width off the instance -- a qualified
@@ -152,8 +152,7 @@ auto support_cutoff(const MonomialLike auto &mono, unsigned int cutoff, const Cu
 }
 
 auto support_cutoff(const MonomialLike auto &mono, unsigned int cutoff, size_t logical_num_modes) -> bool {
-    const auto sums = cutoff_sums(mono, logical_num_modes);
-    return sums.xor_sum == 0 || sums.or_sum <= cutoff;
+    return support_cutoff(mono, cutoff, CutoffMasks::make(mono.size(), logical_num_modes));
 }
 
 auto support_cutoff(const MonomialLike auto &mono, unsigned int cutoff) -> bool {

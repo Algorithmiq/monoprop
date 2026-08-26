@@ -471,18 +471,7 @@ private:
     if (key.is_spilled()) {
         return *key.spilled;
     }
-    Bitset mono(num_bits);
-    const size_t n = key.row.num_slots();
-    for (size_t j = 0; j < n; ++j) {
-        const unsigned int code = key.row.code(j);
-        if ((code & 1U) != 0U) {
-            mono.set(2 * key.row.mode(j));
-        }
-        if ((code & 2U) != 0U) {
-            mono.set((2 * key.row.mode(j)) + 1);
-        }
-    }
-    return mono;
+    return sparse_row_to_bitset(key.row, num_bits);
 }
 
 // The payload width of one query record for a store, in VecZ words -- the quantity every stride, alltoallv

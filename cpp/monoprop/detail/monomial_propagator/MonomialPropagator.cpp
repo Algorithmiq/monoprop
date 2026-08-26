@@ -119,8 +119,9 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     MonomialList local_heisenberg_terms;
 
     double core_term = 0.0;
+    const size_t storage_bits = mp_op_.num_bits(); // invariant for this loop: no store swap happens until below
     for (const auto &[indices, coefficient] : initial_operator) {
-        const auto majorana_bitset = indices_to_bitset_checked(indices, 2 * num_modes_, mp_op_.num_bits());
+        const auto majorana_bitset = indices_to_bitset_checked(indices, 2 * num_modes_, storage_bits);
         const auto encoded_coeff = algebra_encode_coeff(basis_, coefficient, majorana_bitset);
 
         // Store the core term separately as it is orders of magnitude larger than the other terms
@@ -154,11 +155,12 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     //
     // Which backend: the crossover is on the *storage* width, not the logical one, because what the dense
     // representation costs is one pass per storage word.
-    if (use_sparse_rows_()) {
-        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_, target_row_width_()));
+    const bool sparse = use_sparse_rows_();
+    if (sparse) {
+        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_, target_row_width_(sparse)));
     }
     else {
-        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, target_row_width_()));
+        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, target_row_width_(sparse)));
     }
     mp_op_.reserve_terms(expected_local_terms);
 
@@ -246,7 +248,7 @@ auto MonomialPropagator::resolve_partition_count_(size_t requested, mpi::Comm co
 // Partition fan-out vocabulary; the declarations record which helper is legal where.
 
 auto MonomialPropagator::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
-    partition_group_->run_on_all([&](int r) { fn(partition_group_->partition(r)); });
+    for_each_partition_indexed_([&](int, MonomialPropagator &p) { fn(p); });
 }
 
 auto MonomialPropagator::for_each_partition_indexed_(const std::function<void(int, MonomialPropagator &)> &fn) -> void {
@@ -356,7 +358,11 @@ auto MonomialPropagator::use_sparse_rows_() const -> bool {
 }
 
 auto MonomialPropagator::target_row_width_() const -> size_t {
-    if (use_sparse_rows_()) {
+    return target_row_width_(use_sparse_rows_());
+}
+
+auto MonomialPropagator::target_row_width_(bool sparse) const -> size_t {
+    if (sparse) {
         return detail::SparseRowStore::slots_for_bound(row_width_bound_());
     }
     return packed_inline_width_();
@@ -384,8 +390,9 @@ auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) ->
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
+    const size_t storage_bits = mp_op_.num_bits(); // invariant across this loop
     for (const auto &[ind, coeff] : op_dict) {
-        const auto mono = indices_to_bitset_checked(ind, 2 * num_modes_, mp_op_.num_bits());
+        const auto mono = indices_to_bitset_checked(ind, 2 * num_modes_, storage_bits);
         if (ind.empty()) { // Core term, store in all
             core_term_ = algebra_encode_coeff(basis_, coeff, mono);
             continue;
@@ -404,6 +411,7 @@ auto MonomialPropagator::graph_data() const -> std::vector<LayerData> {
     std::vector<LayerData> layers;
     const auto num_layers = graph_.layers();
     layers.reserve(num_layers);
+    const size_t storage_bits = mp_op_.num_bits(); // invariant across this loop
     for (size_t i = 0; i < num_layers; ++i) {
         const auto traversal = graph_.get_layer_traversal(i);
         const size_t rank_count = traversal.cross_rank_rank_count();
@@ -438,7 +446,7 @@ auto MonomialPropagator::graph_data() const -> std::vector<LayerData> {
             }
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
-            const auto gen = detail::generator_from_words(gw, mp_op_.num_bits());
+            const auto gen = detail::generator_from_words(gw, storage_bits);
             auto p = detail::make_fold_cache(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_inds = detail::fold_to_indices(p);
         }
@@ -452,6 +460,7 @@ auto MonomialPropagator::cos_index_count_() const -> size_t {
     // minus the rotation endpoints, saturating at 0.
     size_t total = 0;
     const auto num_layers = graph_.layers();
+    const size_t storage_bits = mp_op_.num_bits(); // invariant across this loop
     for (size_t i = 0; i < num_layers; ++i) {
         const auto traversal = graph_.get_layer_traversal(i);
         size_t cos_total = 0;
@@ -459,7 +468,7 @@ auto MonomialPropagator::cos_index_count_() const -> size_t {
             cos_total = traversal.num_cos_inds();
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
-            const auto gen = detail::generator_from_words(gw, mp_op_.num_bits());
+            const auto gen = detail::generator_from_words(gw, storage_bits);
             const auto fold = detail::make_fold_cache(mp_op_.inverted_index(), gen, traversal.scaled_count(), basis_);
             cos_total = detail::fold_popcount(fold);
         }
@@ -491,16 +500,17 @@ auto MonomialPropagator::validate_cutoff_config_(CutoffType cutoff_type,
 }
 
 auto MonomialPropagator::regenerate_cutoff_fn_() -> void {
+    const size_t storage_bits = mp_op_.num_bits();
     if (basis_change_.has_value()) {
         MonomialList basis;
         basis.reserve(2 * num_modes_);
         for (size_t i = 0; i < 2 * num_modes_; ++i) {
-            basis.push_back(indices_to_bitset_checked(basis_change_.value()[i], 2 * num_modes_, mp_op_.num_bits()));
+            basis.push_back(indices_to_bitset_checked(basis_change_.value()[i], 2 * num_modes_, storage_bits));
         }
         cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, basis, num_modes_);
     }
     else {
-        cutoff_fn_ = detail::cutoff_function(cutoff_type_, cutoff_, num_modes_, mp_op_.num_bits());
+        cutoff_fn_ = detail::cutoff_function(cutoff_type_, cutoff_, num_modes_, storage_bits);
     }
 }
 
@@ -959,9 +969,10 @@ auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_
     // (build_cos_callbacks holds pointers into its layers' stored cos); non-pare aliases graph_.
     std::shared_ptr<const MPGraph> graph;
     if (pare_threshold.has_value()) {
-        auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
+        const size_t storage_bits = mp_op_.num_bits(); // invariant across every layer this lambda is called for
+        auto full_cos_of_layer = [this, &inverted_index, storage_bits](size_t i) -> CosMask {
             const auto layer = graph_.get_layer_traversal(i);
-            const auto gen = detail::generator_from_words(layer.generator_words(), mp_op_.num_bits());
+            const auto gen = detail::generator_from_words(layer.generator_words(), storage_bits);
             const auto combined = detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), basis_);
             return detail::fold_to_cos_mask(combined);
         };

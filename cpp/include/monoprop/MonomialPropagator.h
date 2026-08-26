@@ -393,6 +393,9 @@ protected:
     // for the branch the constructor's store setup and resize_row_store_if_needed_() would otherwise
     // duplicate.
     auto target_row_width_() const -> size_t;
+    // Same, for a caller that already holds the use_sparse_rows_() decision (the constructor, which needs
+    // it separately to pick the backend type) -- skips a second lookup of the same answer.
+    auto target_row_width_(bool sparse) const -> size_t;
 
     // Resizes the live backend to target_row_width_() when it has moved, migrating existing rows rather
     // than dropping them. Must run after any setting change that can move the cutoff-derived bound

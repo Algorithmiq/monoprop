@@ -155,8 +155,7 @@ public:
         out->rows16_ = rows16_;
         out->size_ = size_;
         out->overflow_ = overflow_;
-        out->table_.reserve(table_.count());
-        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
+        out->table_ = table_; // RowHashTable is rule-of-zero copyable; a plain copy preserves slot order exactly.
         return out;
     }
 
@@ -173,8 +172,7 @@ public:
         for (size_t i = 0; i < size_; ++i) {
             out->set(i, row(i));
         }
-        out->table_.reserve(table_.count());
-        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
+        out->table_ = table_; // RowHashTable is rule-of-zero copyable; a plain copy preserves slot order exactly.
         return out;
     }
 
@@ -189,8 +187,7 @@ public:
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
+            reserve_rows(geometric_row_capacity(base, n, capacity()));
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.

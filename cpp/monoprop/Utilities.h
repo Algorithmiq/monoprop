@@ -157,8 +157,9 @@ auto bitset_to_indices(const MonomialLike auto &bs) -> VecZ {
     const auto pop = bs.count();
     VecZ indices(pop);
     size_t idx = pop;
-    for (size_t pos = bs.find_first(); pos < bs.size(); pos = bs.find_next(pos)) {
-        indices[--idx] = bs.size() - 1 - pos;
+    const size_t n = bs.size();
+    for (size_t pos = bs.find_first(); pos < n; pos = bs.find_next(pos)) {
+        indices[--idx] = n - 1 - pos;
     }
     return indices;
 }

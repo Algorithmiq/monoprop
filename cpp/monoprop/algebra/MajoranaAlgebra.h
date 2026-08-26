@@ -211,7 +211,8 @@ auto decode_coeff(const std::complex<double> &coeff, const MonomialLike auto &ma
 // every call site -- required, since the XOR below asserts matching widths.
 auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remove_cvref_t<decltype(maj)> {
     using Mono = std::remove_cvref_t<decltype(maj)>;
-    const size_t num_modes = maj.size() / 2;
+    const size_t width = maj.size();
+    const size_t num_modes = width / 2;
     // Copy-then-reset, rather than `Mono new_maj;` (width 0) or a width-argument constructor:
     // MonomialLike constrains operations, not constructors, so a deduced Mono is not known to have
     // one. The copied words are immediately overwritten; this path only runs when a basis change is
@@ -220,7 +221,7 @@ auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remov
     new_maj.reset();
 
     size_t pos = maj.find_first();
-    while (pos < maj.size()) {
+    while (pos < width) {
         new_maj ^= materialize_row(basis, 2 * num_modes - pos - 1);
         pos = maj.find_next(pos);
     }
