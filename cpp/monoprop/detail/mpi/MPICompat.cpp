@@ -14,6 +14,7 @@
 
 #include "monoprop/detail/mpi/Exchange.h"
 
+#include <algorithm>
 #include <format>
 #include <print>
 #include <stdexcept>
@@ -114,19 +115,43 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
+auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
         return;
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts, plan);
+        return;
+    }
+    if (!plan.dense()) {
+        // S == 1 world: exchange one int with each reachable peer; the rest of the row is zero by
+        // definition, so it must be cleared rather than left from a previous round.
+        int me = 0;
+        MPI_Comm_rank(comm.mpi, &me);
+        std::fill(recv_counts, recv_counts + n, 0);
+        const int f = plan.count(n);
+        std::vector<MPI_Request> reqs;
+        reqs.reserve(static_cast<size_t>(2 * f));
+        for (int k = 0; k < f; ++k) {
+            const int b = plan.peer(me, k);
+            if (b == me) {
+                recv_counts[b] = send_counts[b];
+                continue;
+            }
+            reqs.emplace_back();
+            MPI_Irecv(&recv_counts[b], 1, MPI_INT, b, 0x6D73, comm.mpi, &reqs.back());
+            reqs.emplace_back();
+            MPI_Isend(&send_counts[b], 1, MPI_INT, b, 0x6D73, comm.mpi, &reqs.back());
+        }
+        MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
         return;
     }
     (void)n;
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
+    (void)plan; // single participant: nothing to narrow
     for (int i = 0; i < n; ++i) {
         recv_counts[i] = send_counts[i];
     }

@@ -143,6 +143,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+    check_routing_agreement(comm_);        // a disagreement here would hang the first exchange, not corrupt it
     const auto router = router_for(comm_); // hoisted: geometry() can hit MPI, so never per term
     MonomialList<NumModes> local_heisenberg_terms;
 

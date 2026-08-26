@@ -101,27 +101,33 @@ public:
     auto partitions() const -> int { return s_; }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
-    auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
-        guard_partition0_(local_partition, "alltoall_counts", [this, local_partition, send_counts, recv_counts] {
-            alltoall_counts_impl_(local_partition, send_counts, recv_counts);
+    auto alltoall_counts(int local_partition,
+                         const int *send_counts /*[P]*/,
+                         int *recv_counts /*[P]*/,
+                         PeerPlan plan = {}) -> void {
+        guard_partition0_(local_partition, "alltoall_counts", [this, local_partition, send_counts, recv_counts, plan] {
+            alltoall_counts_impl_(local_partition, send_counts, recv_counts, plan);
         });
     }
 
     // See AlltoallvArgs for the send-buffer lifetime and the element-vs-byte convention; `dt` is the MPI
     // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
     // with the non-MPI-capable transport.
-    auto alltoallv(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
-        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt] {
-            alltoallv_impl_(local_partition, args, dt);
+    auto alltoallv(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt, PeerPlan plan = {}) -> void {
+        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt, plan] {
+            alltoallv_impl_(local_partition, args, dt, plan);
         });
     }
 
     // See AlltoallvResolveArgs: the recv side is an output, and args.recv is resized here.
     template <typename T>
-    auto alltoallv_resolve(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+    auto alltoallv_resolve(int local_partition,
+                           const AlltoallvResolveArgs<T> &args,
+                           MPI_Datatype dt,
+                           PeerPlan plan = {}) -> void {
         // `args` by reference, not by value: the impl resizes args.recv and then writes through it.
-        guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt] {
-            alltoallv_resolve_impl_<T>(local_partition, args, dt);
+        guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt, plan] {
+            alltoallv_resolve_impl_<T>(local_partition, args, dt, plan);
         });
     }
 
@@ -172,18 +178,29 @@ private:
         }
     }
 
-    // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int MPI_Alltoall.
-    auto alltoall_counts_impl_(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+    // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one S*S-int
+    // MPI_Alltoall -- or, under a sparse plan, `f = R>>bits` S*S-int point-to-point pairs.
+    auto alltoall_counts_impl_(int local_partition,
+                               const int *send_counts /*[P]*/,
+                               int *recv_counts /*[P]*/,
+                               PeerPlan plan) -> void {
         publish_counts_row_(local_partition, send_counts);
         sync();
         if (local_partition == 0) {
-            pack_count_matrix_();
-            MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
+            pack_count_matrix_(plan);
+            exchange_count_blocks_(plan);
         }
         sync();
         // Partition t extracts its row: recv from (rank a, partition su) is contiguous per source rank a.
+        // Under a plan only the f peer ranks were exchanged, so the rest of the row is zero by definition
+        // (a non-peer cannot own the partner of any term this rank owns).
         const int t = local_partition;
-        for (int a = 0; a < r_; ++a) {
+        const int f = plan.count(r_);
+        if (!plan.dense()) {
+            std::fill(recv_counts, recv_counts + static_cast<size_t>(r_) * static_cast<size_t>(s_), 0);
+        }
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             for (int su = 0; su < s_; ++su) {
                 recv_counts[a * s_ + su] = counts_recv_[counts_idx_(a, t, su)];
             }
@@ -194,7 +211,7 @@ private:
     }
 
     // Flat variable all-to-all over caller-owned buffers; see AlltoallvArgs for the conventions.
-    auto alltoallv_impl_(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
+    auto alltoallv_impl_(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt, PeerPlan plan) -> void {
         const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
         me.ptr = args.send;
@@ -205,27 +222,19 @@ private:
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
         if (local_partition == 0) {
-            size_staging_send_(args.elem);
-            fill_recv_col_from_rows_();
-            size_staging_recv_(args.elem);
+            size_staging_send_(args.elem, plan);
+            fill_recv_col_from_rows_(plan);
+            size_staging_recv_(args.elem, plan);
         }
         sync(); // B2
 
         // B3: each partition packs its own cross-rank blocks into stage_send_ (disjoint writes).
-        pack_send_(local_partition, args.elem);
+        pack_send_(local_partition, args.elem, plan);
         sync(); // B3
 
-        // B4: partition 0 runs the single MPI_Alltoallv while peers park at the barrier.
+        // B4: partition 0 moves the payload while peers park at the barrier.
         if (local_partition == 0) {
-            MPI_Alltoallv(stage_send_.data(),
-                          mpi_send_counts_.data(),
-                          mpi_send_displs_.data(),
-                          dt,
-                          stage_recv_.data(),
-                          mpi_recv_counts_.data(),
-                          mpi_recv_displs_.data(),
-                          dt,
-                          parent_);
+            exchange_payload_(dt, plan);
         }
         sync(); // B4
 
@@ -234,7 +243,9 @@ private:
         // block starts from base_recv_ and this partition's own counts.
         std::byte *dst = args.recv;
         const int t = local_partition;
-        for (int a = 0; a < r_; ++a) {
+        const int f = plan.count(r_);
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             size_t cur = base_recv_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)];
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
@@ -254,7 +265,10 @@ private:
     // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are outputs.
     // Bit-identical to alltoall_counts + alltoallv.
     template <typename T>
-    auto alltoallv_resolve_impl_(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+    auto alltoallv_resolve_impl_(int local_partition,
+                                 const AlltoallvResolveArgs<T> &args,
+                                 MPI_Datatype dt,
+                                 PeerPlan plan) -> void {
         // Typed verb: element bytes are sizeof(T) by construction, so they are derived rather than passed.
         constexpr size_t elem = sizeof(T);
         const size_t u = static_cast<size_t>(local_partition);
@@ -268,17 +282,24 @@ private:
         sync(); // B1
 
         if (local_partition == 0) {
-            pack_count_matrix_();
-            MPI_Alltoall(counts_send_.data(), s_ * s_, MPI_INT, counts_recv_.data(), s_ * s_, MPI_INT, parent_);
-            size_staging_send_(elem);
-            fill_recv_col_from_counts_recv_();
-            size_staging_recv_(elem);
+            pack_count_matrix_(plan);
+            exchange_count_blocks_(plan);
+            size_staging_send_(elem, plan);
+            fill_recv_col_from_counts_recv_(plan);
+            size_staging_recv_(elem, plan);
         }
         sync(); // B2
 
         const int t = local_partition;
+        const int f = plan.count(r_);
         long long total = 0;
-        for (int a = 0; a < r_; ++a) {
+        if (!plan.dense()) {
+            const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
+            std::fill(args.recv_counts, args.recv_counts + p, 0);
+            std::fill(args.recv_displs, args.recv_displs + p, 0);
+        }
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
                 const int c = counts_recv_[counts_idx_(a, t, su)];
@@ -289,24 +310,17 @@ private:
         }
         args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
 
-        pack_send_(local_partition, elem);
+        pack_send_(local_partition, elem, plan);
         sync(); // B3
 
         if (local_partition == 0) {
-            MPI_Alltoallv(stage_send_.data(),
-                          mpi_send_counts_.data(),
-                          mpi_send_displs_.data(),
-                          dt,
-                          stage_recv_.data(),
-                          mpi_recv_counts_.data(),
-                          mpi_recv_displs_.data(),
-                          dt,
-                          parent_);
+            exchange_payload_(dt, plan);
         }
         sync(); // B4
 
         std::byte *dst = reinterpret_cast<std::byte *>(args.recv.data()); // after the resize: it may reallocate
-        for (int a = 0; a < r_; ++a) {
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             size_t cur = base_recv_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)];
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
@@ -390,6 +404,11 @@ private:
         // No trailing barrier: red_vec_ is rewritten only inside a future verb's barriered phases.
     }
 
+    // Distinct tags so a count round in flight cannot be matched by a payload receive: partition 0 is
+    // the only participant per rank, so every message of a verb shares one (source, tag) pair.
+    static constexpr int kCountTag = 0x6D70; // 'mp'
+    static constexpr int kPayloadTag = 0x6D71;
+
     static constexpr size_t kLineBytes = 64;
     static constexpr size_t kIntsPerLine = kLineBytes / sizeof(int);
     static constexpr size_t kLongsPerLine = kLineBytes / sizeof(long long);
@@ -442,15 +461,92 @@ private:
     // Transpose the published count rows into counts_send_, dest-major then source-minor, for the one
     // S*S-int MPI_Alltoall. Partition 0 only, inside a barriered window. Source partition outer, so the
     // peer-owned side streams. Every element is written here, so no pre-zeroing.
-    auto pack_count_matrix_() -> void {
+    auto pack_count_matrix_(PeerPlan plan) -> void {
+        const int f = plan.count(r_);
         for (int su = 0; su < s_; ++su) {
             const int *row = counts_row_(su);
-            for (int b = 0; b < r_; ++b) {
+            for (int k = 0; k < f; ++k) {
+                const int b = plan.peer(mpi_rank_, k);
                 for (int t = 0; t < s_; ++t) {
                     counts_send_[counts_idx_(b, t, su)] = row[b * s_ + t];
                 }
             }
         }
+    }
+
+    // The count blocks: one S*S-int MPI_Alltoall when dense, else f point-to-point pairs (a self peer
+    // is a copy, not a message -- with the full linear bits a zero rank shift keeps the whole round
+    // on-rank). Partition 0 only, inside a barriered window.
+    auto exchange_count_blocks_(PeerPlan plan) -> void {
+        const int block = s_ * s_;
+        if (plan.dense()) {
+            MPI_Alltoall(counts_send_.data(), block, MPI_INT, counts_recv_.data(), block, MPI_INT, parent_);
+            return;
+        }
+        const int f = plan.count(r_);
+        grow_(reqs_, static_cast<size_t>(2 * f));
+        int n_req = 0;
+        for (int k = 0; k < f; ++k) {
+            const int b = plan.peer(mpi_rank_, k);
+            const size_t off = static_cast<size_t>(b) * static_cast<size_t>(block);
+            if (b == mpi_rank_) {
+                std::memcpy(counts_recv_.data() + off,
+                            counts_send_.data() + off,
+                            static_cast<size_t>(block) * sizeof(int));
+                continue;
+            }
+            MPI_Irecv(counts_recv_.data() + off, block, MPI_INT, b, kCountTag, parent_, &reqs_[n_req++]);
+            MPI_Isend(counts_send_.data() + off, block, MPI_INT, b, kCountTag, parent_, &reqs_[n_req++]);
+        }
+        MPI_Waitall(n_req, reqs_.data(), MPI_STATUSES_IGNORE);
+    }
+
+    // The staged payload: one MPI_Alltoallv when dense, else f point-to-point pairs over the same
+    // per-rank counts and displacements (a non-peer's count is zero, so nothing is dropped).
+    auto exchange_payload_(MPI_Datatype dt, PeerPlan plan) -> void {
+        if (plan.dense()) {
+            MPI_Alltoallv(stage_send_.data(),
+                          mpi_send_counts_.data(),
+                          mpi_send_displs_.data(),
+                          dt,
+                          stage_recv_.data(),
+                          mpi_recv_counts_.data(),
+                          mpi_recv_displs_.data(),
+                          dt,
+                          parent_);
+            return;
+        }
+        // Counts and displacements are in ELEMENTS; the byte offset into staging needs the datatype's
+        // extent, which the dense MPI_Alltoallv derived for us and point-to-point does not.
+        MPI_Aint lb = 0;
+        MPI_Aint extent = 0;
+        MPI_Type_get_extent(dt, &lb, &extent);
+        const int f = plan.count(r_);
+        grow_(reqs_, static_cast<size_t>(2 * f));
+        int n_req = 0;
+        for (int k = 0; k < f; ++k) {
+            const int b = plan.peer(mpi_rank_, k);
+            const auto ub = static_cast<size_t>(b);
+            const int sc = mpi_send_counts_[ub];
+            const int rc = mpi_recv_counts_[ub];
+            std::byte *rbuf =
+                stage_recv_.data() + static_cast<size_t>(mpi_recv_displs_[ub]) * static_cast<size_t>(extent);
+            const std::byte *sbuf =
+                stage_send_.data() + static_cast<size_t>(mpi_send_displs_[ub]) * static_cast<size_t>(extent);
+            if (b == mpi_rank_) {
+                if (rc != 0) {
+                    std::memcpy(rbuf, sbuf, static_cast<size_t>(rc) * static_cast<size_t>(extent));
+                }
+                continue;
+            }
+            if (rc != 0) {
+                MPI_Irecv(rbuf, rc, dt, b, kPayloadTag, parent_, &reqs_[n_req++]);
+            }
+            if (sc != 0) {
+                MPI_Isend(const_cast<std::byte *>(sbuf), sc, dt, b, kPayloadTag, parent_, &reqs_[n_req++]);
+            }
+        }
+        MPI_Waitall(n_req, reqs_.data(), MPI_STATUSES_IGNORE);
     }
 
     template <typename V>
@@ -462,17 +558,27 @@ private:
 
     // Partition 0's send-side staging sizing, between B1 and B2, in two sweeps of counts_matrix_. Wire
     // block order is destination major, source minor: a per-destination base plus a per-source prefix.
-    auto size_staging_send_(size_t elem) -> void {
-        const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
+    // Under a plan the two O(R*S^2) sweeps below shrink to O(f*S^2) -- which is the point as much as the
+    // message count is: these sweeps run SERIALLY on partition 0 while S-1 partitions park, so at R=128,
+    // S=14 they are ~25k int ops per verb that nothing else overlaps.
+    auto size_staging_send_(size_t elem, PeerPlan plan) -> void {
+        const int f = plan.count(r_);
         // Pass A: the column sums W over source partitions, u outer so both sides sweep in address order.
         std::fill(col_sum_.begin(), col_sum_.end(), 0LL);
         for (int u = 0; u < s_; ++u) {
             const int *row = counts_row_(u);
-            for (size_t g = 0; g < p; ++g) {
-                col_sum_[g] += row[g];
+            for (int k = 0; k < f; ++k) {
+                const size_t base = static_cast<size_t>(plan.peer(mpi_rank_, k)) * static_cast<size_t>(s_);
+                for (int t = 0; t < s_; ++t) {
+                    col_sum_[base + static_cast<size_t>(t)] += row[base + static_cast<size_t>(t)];
+                }
             }
         }
-        for (int b = 0; b < r_; ++b) {
+        if (!plan.dense()) {
+            std::fill(mpi_send_counts_.begin(), mpi_send_counts_.end(), 0);
+        }
+        for (int k = 0; k < f; ++k) {
+            const int b = plan.peer(mpi_rank_, k);
             const long long *col = col_sum_.data() + static_cast<size_t>(b) * static_cast<size_t>(s_);
             long long send_sum = 0;
             for (int t = 0; t < s_; ++t) {
@@ -486,7 +592,8 @@ private:
             send_running += mpi_send_counts_[static_cast<size_t>(b)];
         }
         const size_t total_send = static_cast<size_t>(checked_mpi_count(send_running, "Total send count"));
-        for (int b = 0; b < r_; ++b) {
+        for (int k = 0; k < f; ++k) {
+            const int b = plan.peer(mpi_rank_, k);
             size_t cur = static_cast<size_t>(mpi_send_displs_[static_cast<size_t>(b)]);
             for (int t = 0; t < s_; ++t) {
                 const size_t g = static_cast<size_t>(b) * static_cast<size_t>(s_) + static_cast<size_t>(t);
@@ -499,9 +606,13 @@ private:
         for (int u = 0; u < s_; ++u) {
             const int *row = counts_row_(u);
             size_t *off = pack_off_.data() + pack_idx_(u, 0);
-            for (size_t g = 0; g < p; ++g) {
-                off[g] = base_send_[g] + static_cast<size_t>(col_sum_[g]);
-                col_sum_[g] += row[g];
+            for (int k = 0; k < f; ++k) {
+                const size_t base = static_cast<size_t>(plan.peer(mpi_rank_, k)) * static_cast<size_t>(s_);
+                for (int t = 0; t < s_; ++t) {
+                    const size_t g = base + static_cast<size_t>(t);
+                    off[g] = base_send_[g] + static_cast<size_t>(col_sum_[g]);
+                    col_sum_[g] += row[g];
+                }
             }
         }
         // Grow-only, no zero-fill: pack_send_'s blocks tile [0, total_send) exactly.
@@ -509,16 +620,26 @@ private:
     }
 
     // recv_col_[a*S + t] = what partition t receives from rank a: the rows published in Phase P0.
-    auto fill_recv_col_from_rows_() -> void {
-        for (int a = 0; a < r_; ++a) {
+    auto fill_recv_col_from_rows_(PeerPlan plan) -> void {
+        const int f = plan.count(r_);
+        if (!plan.dense()) {
+            std::fill(recv_col_.begin(), recv_col_.end(), 0LL);
+        }
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             for (int t = 0; t < s_; ++t) {
                 recv_col_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)] = row_recv_(t)[a];
             }
         }
     }
 
-    auto fill_recv_col_from_counts_recv_() -> void {
-        for (int a = 0; a < r_; ++a) {
+    auto fill_recv_col_from_counts_recv_(PeerPlan plan) -> void {
+        const int f = plan.count(r_);
+        if (!plan.dense()) {
+            std::fill(recv_col_.begin(), recv_col_.end(), 0LL);
+        }
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             for (int t = 0; t < s_; ++t) {
                 const int *blk = counts_recv_.data() + counts_idx_(a, t, 0);
                 long long sum = 0;
@@ -532,8 +653,13 @@ private:
 
     // Partition 0's recv-side staging sizing, from recv_col_. Only the per-(rank, partition) base; the
     // post-B4 scatter re-derives the per-source offsets as it walks (a, su).
-    auto size_staging_recv_(size_t elem) -> void {
-        for (int a = 0; a < r_; ++a) {
+    auto size_staging_recv_(size_t elem, PeerPlan plan) -> void {
+        const int f = plan.count(r_);
+        if (!plan.dense()) {
+            std::fill(mpi_recv_counts_.begin(), mpi_recv_counts_.end(), 0);
+        }
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             long long recv_sum = 0;
             for (int t = 0; t < s_; ++t) {
                 recv_sum += recv_col_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)];
@@ -546,7 +672,8 @@ private:
             recv_running += mpi_recv_counts_[static_cast<size_t>(a)];
         }
         const size_t total_recv = static_cast<size_t>(checked_mpi_count(recv_running, "Total recv count"));
-        for (int a = 0; a < r_; ++a) {
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             size_t cur = static_cast<size_t>(mpi_recv_displs_[static_cast<size_t>(a)]);
             for (int t = 0; t < s_; ++t) {
                 const size_t g = static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t);
@@ -557,7 +684,7 @@ private:
         grow_(stage_recv_, total_recv * elem);
     }
 
-    auto pack_send_(int local_partition, size_t elem) -> void {
+    auto pack_send_(int local_partition, size_t elem, PeerPlan plan) -> void {
         const int u = local_partition;
         // Own slot only — no peer's published send buffer is read here, which is what lets every
         // partition pack concurrently in the B2→B3 window.
@@ -565,13 +692,17 @@ private:
         const int *my_send_counts = counts_row_(u);
         const int *my_send_displs = slots_[static_cast<size_t>(u)].send_displs;
         const size_t *off = pack_off_.data() + pack_idx_(u, 0);
-        const int p = r_ * s_;
-        for (int g = 0; g < p; ++g) {
-            const int cnt = my_send_counts[g];
-            if (cnt != 0) {
-                std::memcpy(stage_send_.data() + off[g] * elem,
-                            src + static_cast<size_t>(my_send_displs[g]) * elem,
-                            static_cast<size_t>(cnt) * elem);
+        const int f = plan.count(r_);
+        for (int k = 0; k < f; ++k) {
+            const int base = plan.peer(mpi_rank_, k) * s_;
+            for (int t = 0; t < s_; ++t) {
+                const int g = base + t;
+                const int cnt = my_send_counts[g];
+                if (cnt != 0) {
+                    std::memcpy(stage_send_.data() + off[g] * elem,
+                                src + static_cast<size_t>(my_send_displs[g]) * elem,
+                                static_cast<size_t>(cnt) * elem);
+                }
             }
         }
     }
@@ -629,6 +760,8 @@ private:
     double red_f64_ = 0.0;
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
+    // Point-to-point request scratch for the sparse paths; grown on demand, partition 0 only.
+    std::vector<MPI_Request> reqs_;
 
     PartitionBarrier barrier_;
 };

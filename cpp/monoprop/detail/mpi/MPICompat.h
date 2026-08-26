@@ -119,8 +119,10 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 
 monoprop_EXPORT auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
-// `n` is the comm size.
-monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
+// `n` is the comm size. `plan` narrows the exchange to the destination ranks it can reach (see PeerPlan);
+// the default is dense, i.e. today's collective.
+monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan = {})
+    -> void;
 
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
@@ -162,7 +164,8 @@ template <typename T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,
-                            const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
+                            const std::vector<int> *known_recv_counts = nullptr,
+                            PeerPlan plan = {}) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
         throw CollectiveArgumentError(
@@ -219,7 +222,7 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get());
+        comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get(), plan);
         return h;
     }
 #endif
@@ -234,7 +237,7 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         }
     }
     else {
-        alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm);
+        alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm, plan);
     }
 
     // Wide accumulator + checked narrowing: see checked_mpi_count.
@@ -265,21 +268,50 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
+        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get(), plan);
     }
 #endif
     else {
 #ifdef monoprop_ENABLE_MPI
-        MPI_Ialltoallv(h.send_buffer.data(),
-                       h.send_counts.data(),
-                       h.send_displs.data(),
-                       datatype<T>::get(),
-                       h.recv_buffer.data(),
-                       h.recv_counts.data(),
-                       h.recv_displs.data(),
-                       datatype<T>::get(),
-                       comm.mpi,
-                       &h.request);
+        if (plan.dense()) {
+            MPI_Ialltoallv(h.send_buffer.data(),
+                           h.send_counts.data(),
+                           h.send_displs.data(),
+                           datatype<T>::get(),
+                           h.recv_buffer.data(),
+                           h.recv_counts.data(),
+                           h.recv_displs.data(),
+                           datatype<T>::get(),
+                           comm.mpi,
+                           &h.request);
+        }
+        else {
+            // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer. Blocking
+            // here rather than through the Ticket, because the request set is per-peer, not one handle.
+            const int me = rank(comm);
+            const int f = plan.count(num_ranks);
+            std::vector<MPI_Request> reqs;
+            reqs.reserve(static_cast<size_t>(2 * f));
+            for (int k = 0; k < f; ++k) {
+                const int b = plan.peer(me, k);
+                const auto ub = static_cast<size_t>(b);
+                T *rbuf = h.recv_buffer.data() + h.recv_displs[ub];
+                const T *sbuf = h.send_buffer.data() + h.send_displs[ub];
+                if (b == me) {
+                    std::copy(sbuf, sbuf + h.recv_counts[ub], rbuf);
+                    continue;
+                }
+                if (h.recv_counts[ub] != 0) {
+                    reqs.emplace_back();
+                    MPI_Irecv(rbuf, h.recv_counts[ub], datatype<T>::get(), b, 0x6D72, comm.mpi, &reqs.back());
+                }
+                if (h.send_counts[ub] != 0) {
+                    reqs.emplace_back();
+                    MPI_Isend(sbuf, h.send_counts[ub], datatype<T>::get(), b, 0x6D72, comm.mpi, &reqs.back());
+                }
+            }
+            MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+        }
 #else
         h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
 #endif
