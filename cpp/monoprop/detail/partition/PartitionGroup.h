@@ -42,11 +42,11 @@
 
 namespace monoprop {
 
-// Only MonomialPropagator.inl includes this header, and it does so *after* MonomialPropagator's
-// definition -- which this file now requires rather than merely prefers. The member bodies below are
-// ordinary functions, not templates, so they are parsed where they are written instead of at
-// instantiation, and make_unique<MonomialPropagator> needs the complete type right there. A future
-// include from anywhere earlier fails loudly on the incomplete type; it cannot go wrong quietly.
+// Only detail/monomial_propagator/MonomialPropagator.cpp includes this header, and it does so *after*
+// MonomialPropagator's definition -- which this file now requires rather than merely prefers. The
+// member bodies below are ordinary functions, not templates, so they are parsed where they are written
+// instead of at instantiation, and make_unique<MonomialPropagator> needs the complete type right there.
+// A future include from anywhere earlier fails loudly on the incomplete type; it cannot go wrong quietly.
 class MonomialPropagator;
 
 namespace detail::partition {

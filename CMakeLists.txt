@@ -117,15 +117,6 @@ message(
   STATUS
   "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes"
 )
-# Testing is enabled from the *top-level* list file on purpose: CTest's root is wherever
-# enable_testing() was called, so called from cpp/ it wrote no top-level CTestTestfile.cmake and every
-# documented entry point (the CMakePresets test presets, `just test-mpi`, `just test-wide`) pointed
-# ctest at a directory with no tests. ctest reports "No tests were found" and exits 0 for that, so those
-# commands were silently running nothing.
-if(monoprop_ENABLE_CXX_UNIT_TESTS)
-  enable_testing()
-  include(CTest)
-endif()
 
 include(GNUInstallDirs)
 
@@ -135,8 +126,13 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 add_library(monoprop-objs OBJECT "")
 add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
-# must run before add_subdirectory(cpp): CTest's enabled-ness does not propagate
-# back up to a parent directory that has already been added as a subdirectory.
+# Testing is enabled from the *top-level* list file, and must run before add_subdirectory(cpp), on
+# purpose: CTest's root is wherever enable_testing() was called, so called from cpp/ it wrote no
+# top-level CTestTestfile.cmake and every documented entry point (the CMakePresets test presets,
+# `just test-mpi`, `just test-wide`) pointed ctest at a directory with no tests -- ctest reports "No
+# tests were found" and exits 0 for that, so those commands were silently running nothing. And
+# CTest's enabled-ness does not propagate back up to a parent directory that has already been added
+# as a subdirectory, so this must precede add_subdirectory(cpp) below rather than follow it.
 if(monoprop_ENABLE_CXX_UNIT_TESTS)
   enable_testing()
   include(CTest)
