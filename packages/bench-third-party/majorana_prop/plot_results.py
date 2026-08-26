@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-COLORS = {"monoprop": "tab:purple", "MajoranaPropagation.jl": "tab:red"}
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from palette import ENGINE_COLORS as COLORS  # noqa: E402
 
 
 def plot_metric(

@@ -27,17 +27,9 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-HERE = Path(__file__).parent
+from palette import ENGINE_COLORS as COLORS
 
-# monoprop keeps one colour across both panels; the rest only have to be distinguishable.
-COLORS = {
-    "monoprop": "tab:purple",
-    "QuEra ppvm": "tab:orange",
-    "Qiskit pauli-prop": "tab:blue",
-    "cuPauliProp (GPU)": "tab:green",
-    "PauliPropagation.jl": "tab:red",
-    "MajoranaPropagation.jl": "tab:red",
-}
+HERE = Path(__file__).parent
 
 # The first Pauli steps are dominated by warm-up rather than by propagation; the first Majorana
 # layers by an operator still too small to time. Both would otherwise spend decades of a log axis

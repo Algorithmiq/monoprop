@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -34,16 +35,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-# Fixed per backend so the runtime and memory figures, successive runs, and the speed-up
-# chart in plot_speedup.py all keep the same colour->backend mapping.
-COLORS = {
-    "monoprop": "#0072B2",
-    "QuEra ppvm": "#D55E00",
-    "Qiskit pauli-prop": "#009E73",
-    "cuPauliProp (GPU)": "#CC79A7",
-    "PauliPropagation.jl": "#E69F00",
-}
-ORDER = list(COLORS)
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from palette import ENGINE_COLORS as COLORS  # noqa: E402
+from palette import PAULI_ENGINES as ORDER  # noqa: E402
 
 # Backends whose operator lives in device memory. Host RSS does not describe their
 # footprint at all -- it stays flat while the card fills up -- so the working-set column
