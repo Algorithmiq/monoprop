@@ -167,8 +167,9 @@ Julia 1.12.6, and `PauliPropagation.jl` 0.8.2.
 ### How memory is measured
 
 CPU memory denotes **peak resident set size (RSS)**, obtained from the Linux kernel's `VmHWM`
-counter. This definition is independent of the implementation language. For `cuPauliProp`, whose
-operator resides on the GPU, working memory instead denotes peak device allocation.
+counter. RSS is the physical memory resident for one process; pages shared with other processes
+are counted in full. For `cuPauliProp`, whose operator resides on the GPU, working memory
+instead denotes peak device allocation.
 
 - **The measurement is exact.** The kernel updates `VmHWM` whenever RSS
   increases, including during native code that does not hold the Python GIL.
@@ -283,8 +284,9 @@ to `<label>.json`. `monoprop-bench-report` combines all labels in `results/REPOR
 ### MPI
 
 For MPI benchmarks, barriers delimit each timed operation; runtime is therefore the **makespan**
-across ranks. Memory is the **peak of the summed concurrent PSS**, reconstructed from per-rank
-timelines. This procedure excludes nonconcurrent per-rank peaks and counts shared pages once.
+across ranks. Memory is the sum of the per-rank peak RSS values. This is an upper bound on the
+job-wide peak: shared pages are counted once per rank, and rank-local peaks are summed even when
+they occur at different times.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
