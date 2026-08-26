@@ -662,16 +662,24 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              matched_scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink));
-        eng.run_exchange(/*is_leader_pass=*/true,
-                         std::move(fused.leader_queries),
-                         std::move(fused.leader_src),
-                         std::move(fused.leader_val),
-                         std::move(fused.leader_self));
-        eng.run_exchange(/*is_leader_pass=*/false,
-                         std::move(fused.follower_queries),
-                         std::move(fused.follower_src),
-                         std::move(fused.follower_val),
-                         std::move(fused.follower_self));
+        // An empty generator anticommutes with nothing, so the scan already returned zero queries on
+        // every rank -- but run_exchange's collectives fire regardless of payload, and each pass costs
+        // three of them. The generator list is replicated, so `gen.none()` is unanimous and skipping
+        // needs no agreement. (These are the identity monomials a gate whose every term fell below its
+        // atol expands to; a zero chemical potential alone contributes 60 of the 60-site Hubbard's 476
+        // generators per Trotter layer.) No gate is merged: a no-op gate is simply not exchanged for.
+        if (gen.any()) {
+            eng.run_exchange(/*is_leader_pass=*/true,
+                             std::move(fused.leader_queries),
+                             std::move(fused.leader_src),
+                             std::move(fused.leader_val),
+                             std::move(fused.leader_self));
+            eng.run_exchange(/*is_leader_pass=*/false,
+                             std::move(fused.follower_queries),
+                             std::move(fused.follower_src),
+                             std::move(fused.follower_val),
+                             std::move(fused.follower_self));
+        }
 
         return eng.finish(std::move(cos_all), out_cos);
     };
