@@ -23,6 +23,7 @@
 #ifdef monoprop_ENABLE_MPI
 
 #include <atomic>
+#include <bit>
 #include <exception>
 #include <numeric>
 #include <thread>
@@ -481,6 +482,106 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
             BOOST_REQUIRE(errs[static_cast<size_t>(u)] != nullptr);
             BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(u)]), monoprop::mpi::ShmCommPoisoned);
         }
+    }
+}
+
+// A sparse PeerPlan replaces the collectives with point-to-point over the peers the plan names, so the
+// two failure modes it can have are DROPPED data and a HANG -- neither of which a dense-path test can
+// see. Every rank derives the same pairing from the same (bits, shift), and a block whose destination is
+// not a peer must be empty: send only to the plan's peer and check the delivery is exactly that.
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_delivers_only_to_its_peers) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return; // the XOR pairing needs a power-of-two rank count
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    for (const int S : {1, 2, 3}) {
+        const int P = R * S;
+        for (int shift = 0; shift < R; ++shift) {
+            const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+            const int peer = plan.peer(world_rank(), 0);
+            BOOST_REQUIRE_EQUAL(plan.count(R), 1); // full bits => pairwise
+            std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+            auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+                Comm c = Comm::make_hybrid(&hyb, u);
+                const int g = monoprop::mpi::rank(c);
+                std::vector<std::vector<int>> send(static_cast<size_t>(P));
+                for (int t = 0; t < S; ++t) {
+                    auto &blk = send[static_cast<size_t>(peer * S + t)];
+                    for (int j = 0; j <= t; ++j) {
+                        blk.push_back(g * 1000 + t * 10 + j);
+                    }
+                }
+                auto h = monoprop::mpi::begin_alltoallv(send,
+                                                        c,
+                                                        /*skip_self=*/false,
+                                                        /*known_recv_counts=*/nullptr,
+                                                        plan);
+                std::vector<std::vector<int>> out;
+                h.wait_into(out);
+                recv[static_cast<size_t>(u)] = out;
+            });
+            for (const auto &e : errs) {
+                BOOST_CHECK(e == nullptr);
+            }
+            // XOR is an involution, so whoever I send to sends to me: my sources are exactly `peer`'s
+            // partitions, and the block from (peer, su) to my partition t has t+1 entries.
+            for (int t = 0; t < S; ++t) {
+                const auto &out = recv[static_cast<size_t>(t)];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+                for (int src = 0; src < P; ++src) {
+                    const auto &blk = out[static_cast<size_t>(src)];
+                    if (src / S != peer) {
+                        BOOST_CHECK(blk.empty()); // a non-peer must not appear at all
+                        continue;
+                    }
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), t + 1);
+                    for (int j = 0; j <= t; ++j) {
+                        BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], src * 1000 + t * 10 + j);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Same contract on the S == 1 world, which takes the pure-MPI branch (MPI_Ialltoallv vs Isend/Irecv)
+// rather than HybridComm's staged one, and on the KNOWN-recv-counts path the response round uses.
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    Comm c{MPI_COMM_WORLD};
+    for (int shift = 0; shift < R; ++shift) {
+        const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+        const int peer = plan.peer(world_rank(), 0);
+        std::vector<std::vector<int>> send(static_cast<size_t>(R));
+        for (int j = 0; j < 4; ++j) {
+            send[static_cast<size_t>(peer)].push_back(world_rank() * 1000 + j);
+        }
+        // Unknown recv layout: the counts round is point-to-point too.
+        std::vector<std::vector<int>> out;
+        monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+        for (int src = 0; src < R; ++src) {
+            if (src != peer) {
+                BOOST_CHECK(out[static_cast<size_t>(src)].empty());
+                continue;
+            }
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(src)].size()), 4);
+            for (int j = 0; j < 4; ++j) {
+                BOOST_CHECK_EQUAL(out[static_cast<size_t>(src)][static_cast<size_t>(j)], src * 1000 + j);
+            }
+        }
+        // Known recv layout (the response round): counts are the transpose, so peer-only again.
+        std::vector<int> known(static_cast<size_t>(R), 0);
+        known[static_cast<size_t>(peer)] = 4;
+        std::vector<std::vector<int>> out2;
+        monoprop::mpi::begin_alltoallv(send, c, false, &known, plan).wait_into(out2);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(out2.size()), R);
+        BOOST_CHECK(out2[static_cast<size_t>(peer)] == out[static_cast<size_t>(peer)]);
     }
 }
 
