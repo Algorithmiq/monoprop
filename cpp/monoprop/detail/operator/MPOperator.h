@@ -28,6 +28,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
+#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 

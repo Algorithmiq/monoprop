@@ -20,6 +20,7 @@
 
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 namespace monoprop::mpi_detail {
