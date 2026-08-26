@@ -51,10 +51,10 @@ struct EvalScratch {
     VecD op;
     VecD mapped_params;
     VecD gradient;
-    std::vector<uint32_t> cos_indices; ///< recorded coefficient indices, layer slices back to back
-    VecD cos_values;                   ///< the pre-layer coefficient at each of them
-    VecZ cos_offset;                   ///< per layer: start of its slice, plus a tail entry
-    std::vector<uint8_t> cos_wanted;   ///< per layer: which records the parameters earn it
+    std::vector<TermIndex> cos_indices; ///< recorded coefficient indices, layer slices back to back
+    VecD cos_values;                    ///< the pre-layer coefficient at each of them
+    VecZ cos_offset;                    ///< per layer: start of its slice, plus a tail entry
+    std::vector<uint8_t> cos_wanted;    ///< per layer: which records the parameters earn it
 };
 
 auto eval_scratch() -> EvalScratch & {
@@ -103,7 +103,7 @@ auto record_pre_layer(EvalScratch &scratch,
     if ((wanted & kRecordRotationsBelow) != 0U) {
         const auto below = graph.get_layer_traversal(layer_idx - 1);
         const auto mark = [&scratch](size_t, size_t i, auto) {
-            scratch.cos_indices.push_back(static_cast<uint32_t>(i));
+            scratch.cos_indices.push_back(static_cast<TermIndex>(i));
         };
         for (size_t r = 0; r < below.cross_rank_rank_count(); ++r) {
             below.for_each_cross_rank_sin_recv_range(r, 0, below.cross_rank_sin_recv_size(r), mark);

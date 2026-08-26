@@ -184,7 +184,7 @@ template <size_t NumModes>
 // Append a layer's cosine-set indices to `out`, walking the same blocks as scale_cos_* rather than sharing
 // a visitor with them, so the scaling kernels stay verbatim.
 template <size_t NumModes>
-auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, std::vector<uint32_t> &out)
+auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, std::vector<TermIndex> &out)
     -> void {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
@@ -195,14 +195,14 @@ auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes
         for (size_t wi = bb; wi < be; ++wi) {
             for_each_cos_index(wi * 64,
                                recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity),
-                               [&out](size_t i) { out.push_back(static_cast<uint32_t>(i)); });
+                               [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
         }
     }
 }
 
-inline auto cos_indices_mask(const CosMask &cos, std::vector<uint32_t> &out) -> void {
+inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) -> void {
     for (const auto &[base, bits] : cos.blocks) {
-        for_each_cos_index(base, bits, [&out](size_t i) { out.push_back(static_cast<uint32_t>(i)); });
+        for_each_cos_index(base, bits, [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
     }
 }
 

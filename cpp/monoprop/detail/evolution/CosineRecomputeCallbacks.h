@@ -18,9 +18,10 @@
 // without dragging in the build-pipeline templates.
 
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <vector>
+
+#include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
 
@@ -34,8 +35,8 @@ inline constexpr double kRecordSpreadBits = 53.0;
 
 /// Pre-layer coefficients the forward pass kept for one reverse layer, in place of dividing them back out.
 struct CosRecordView {
-    const uint32_t *indices = nullptr; ///< coefficient indices, ascending within a source but not merged
-    const double *values = nullptr;    ///< the pre-layer coefficient at each of those indices
+    const TermIndex *indices = nullptr; ///< coefficient indices, ascending within a source but not merged
+    const double *values = nullptr;     ///< the pre-layer coefficient at each of those indices
     size_t count = 0;
 };
 
@@ -60,7 +61,7 @@ using LayerCosScale = std::function<void(size_t layer, double *coeff, double cos
 using LayerCosAccumulate =
     std::function<double(size_t layer, double *state, double *ham, double cos_val, double sec_val)>;
 /// Appends one layer's cosine-set indices to `out`; the gradient calls it only where the cosine vanishes.
-using LayerCosIndices = std::function<void(size_t layer, std::vector<uint32_t> &out)>;
+using LayerCosIndices = std::function<void(size_t layer, std::vector<TermIndex> &out)>;
 
 struct CosCallbacks {
     LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty

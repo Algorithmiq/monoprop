@@ -188,13 +188,13 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
     BOOST_REQUIRE(n > 0);
 
     std::vector<double> recorded(n), polluted(n), state0(n);
-    std::vector<uint32_t> indices(n);
+    std::vector<TermIndex> indices(n);
     for (size_t i = 0; i < n; ++i) {
         recorded[i] = 1.0 + static_cast<double>(i) * 1e-3;
         // What a divide-based reverse pass would have arrived at: the same value, amplified apart.
         polluted[i] = recorded[i] * (i % 2 == 0 ? 8.0 : 0.125);
         state0[i] = 0.5 + static_cast<double>(i) * 1e-3;
-        indices[i] = static_cast<uint32_t>(i);
+        indices[i] = static_cast<TermIndex>(i);
     }
     const monoprop::detail::CosRecordView record{.indices = indices.data(), .values = recorded.data(), .count = n};
 

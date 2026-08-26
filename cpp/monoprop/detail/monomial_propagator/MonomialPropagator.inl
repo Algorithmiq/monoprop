@@ -911,7 +911,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
         }
         return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
     };
-    detail::LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<uint32_t> &out) {
+    detail::LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<TermIndex> &out) {
         const auto &e = (*cache)[i];
         if (!e.recomputes_cos) {
             detail::cos_indices_mask(*e.filtered, out);
