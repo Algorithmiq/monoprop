@@ -319,7 +319,7 @@ NB_MODULE(_core, mod) {
 
     // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P
     // the MPI rank count never reveals.
-    cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
+    cls.def("graph_memory_breakdown", [](const MonomialPropagator &self) {
         const auto b = self.graph_memory_usage();
         return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},
                                              {"layer_storage_object_bytes", b.layer_storage_object_bytes},
