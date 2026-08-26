@@ -155,10 +155,10 @@ The measurements use exclusive nodes on
 [Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html). CPU and GPU measurements use
 different partitions because Leonardo's DCGP nodes do not contain GPUs.
 
-| | node | hardware | engines |
-| --- | --- | --- | --- |
-| CPU | `lrdn4635` (DCGP) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` (56 threads), `PauliPropagation.jl` (28), `QuEra ppvm`, `Qiskit pauli-prop` |
-| GPU | `lrdn0219` (Booster) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` |
+| Partition | Hardware | Engines |
+| --- | --- | --- |
+`DCGP (CPU) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` (56 threads), `PauliPropagation.jl` (28), `QuEra ppvm`, `Qiskit pauli-prop` |
+| Booster (GPU) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` |
 
 Each result record includes `host`, `threads`, and `library_version`; the plotting scripts report
 these fields alongside derived metrics. The measurements use `monoprop 0.8.1.dev61+gcb9a033aa`,
