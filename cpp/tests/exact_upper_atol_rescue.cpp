@@ -34,21 +34,20 @@ constexpr double kEnergyAtol = 1e-9;
 
 enum class CommMode { Self, World };
 
-// build_simulator cannot express this: it hardcodes cutoff = 2*NumModes.
-template <size_t NumModes>
-auto build_zero_cutoff_full_rescue(const CaseData& data, MPI_Comm comm) -> MonomialPropagator {
-    return test_utils::make_propagator<NumModes>(data.hamiltonian,
-                                                 /*cutoff=*/0U,
-                                                 data.initial_state,
-                                                 /*schrodinger_cutoff=*/std::nullopt,
-                                                 comm,
-                                                 /*atol=*/std::nullopt,
-                                                 /*upper_atol=*/std::optional<double>{0.0},
-                                                 CutoffType::Length,
-                                                 /*basis_change=*/std::nullopt);
+// build_simulator cannot express this: it hardcodes cutoff = 2*num_modes.
+auto build_zero_cutoff_full_rescue(size_t num_modes, const CaseData& data, MPI_Comm comm) -> MonomialPropagator {
+    return test_utils::make_propagator(num_modes,
+                                       data.hamiltonian,
+                                       /*cutoff=*/0U,
+                                       data.initial_state,
+                                       /*schrodinger_cutoff=*/std::nullopt,
+                                       comm,
+                                       /*atol=*/std::nullopt,
+                                       /*upper_atol=*/std::optional<double>{0.0},
+                                       CutoffType::Length,
+                                       /*basis_change=*/std::nullopt);
 }
 
-template <size_t NumModes>
 auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator& simulator, const CaseData& data) -> double {
     simulator.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
     auto energy_fn = simulator.expectation_value_functional(std::nullopt);
@@ -58,16 +57,16 @@ auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator& simulator, cons
 } // namespace
 
 // One test per (fixture, comm) so a failure pinpoints the configuration.
-#define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken)                                            \
-    BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken, FixtureType) {                                                \
-        MPI_Comm comm = (CommMode::CommToken == CommMode::Self) ? MPI_COMM_SELF : MPI_COMM_WORLD;             \
-        if (CommMode::CommToken == CommMode::World && mpi::size(comm) == 1) {                                 \
-            BOOST_TEST_MESSAGE("Skipping multi-rank scenario for " #NAME " (world size=1)");                  \
-            return;                                                                                           \
-        }                                                                                                     \
-        auto simulator = build_zero_cutoff_full_rescue<FixtureType::n_modes>(data, comm);                     \
-        const double energy = evaluate_zero_cutoff_full_rescue_energy<FixtureType::n_modes>(simulator, data); \
-        BOOST_CHECK_SMALL(std::abs(energy - data.actual_expval), kEnergyAtol);                                \
+#define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken)                                \
+    BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken, FixtureType) {                                    \
+        MPI_Comm comm = (CommMode::CommToken == CommMode::Self) ? MPI_COMM_SELF : MPI_COMM_WORLD; \
+        if (CommMode::CommToken == CommMode::World && mpi::size(comm) == 1) {                     \
+            BOOST_TEST_MESSAGE("Skipping multi-rank scenario for " #NAME " (world size=1)");      \
+            return;                                                                               \
+        }                                                                                         \
+        auto simulator = build_zero_cutoff_full_rescue(FixtureType::n_modes, data, comm);         \
+        const double energy = evaluate_zero_cutoff_full_rescue_energy(simulator, data);           \
+        BOOST_CHECK_SMALL(std::abs(energy - data.actual_expval), kEnergyAtol);                    \
     }
 
 MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, ExampleDataFix, Self)

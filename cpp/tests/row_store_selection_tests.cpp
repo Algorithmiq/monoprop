@@ -37,8 +37,8 @@ namespace {
 constexpr size_t kNumModes = 8;
 
 auto small_propagator() -> MonomialPropagator {
-    const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
-    return test_utils::build_simulator<kNumModes>(data);
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
+    return test_utils::build_simulator(kNumModes, data);
 }
 
 } // namespace

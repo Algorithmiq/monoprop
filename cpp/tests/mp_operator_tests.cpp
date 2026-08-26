@@ -445,7 +445,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_matched_scratch_nonzero_after_a_gate)
     OperatorDict ham;
     ham[VecZ{0, 1}] = cd{0.0, 1.0};
     VecZ initial_state{0, 1};
-    auto sim = test_utils::make_propagator<kModes>(ham, 2 * kModes, initial_state);
+    auto sim = test_utils::make_propagator(kModes, ham, 2 * kModes, initial_state);
     BOOST_CHECK_EQUAL(sim.operator_memory_usage().matched_scratch_bytes, 0U); // no gate applied yet
 
     const std::vector<VecZ> monos{{0}};

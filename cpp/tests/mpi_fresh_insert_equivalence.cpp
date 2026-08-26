@@ -38,17 +38,17 @@ using pauli_oracle::slots_of_string;
 
 // schrodinger_cutoff engages the picture; a low structural cutoff plus the upper_atol = 0 rescue
 // forces most partners to be fresh inserts, so the miss arm runs on nearly every partner.
-template <size_t NumModes>
-auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
-    auto sim = test_utils::make_propagator<NumModes>(data.hamiltonian,
-                                                     /*cutoff=*/2U,
-                                                     data.initial_state,
-                                                     /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
-                                                     comm,
-                                                     /*lower_atol=*/std::nullopt,
-                                                     /*upper_atol=*/std::optional<double>{0.0},
-                                                     CutoffType::Length,
-                                                     /*basis_change=*/std::nullopt);
+auto run_schrodinger_majorana(size_t num_modes, const CaseData& data, MPI_Comm comm) -> double {
+    auto sim = test_utils::make_propagator(num_modes,
+                                           data.hamiltonian,
+                                           /*cutoff=*/2U,
+                                           data.initial_state,
+                                           /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
+                                           comm,
+                                           /*lower_atol=*/std::nullopt,
+                                           /*upper_atol=*/std::optional<double>{0.0},
+                                           CutoffType::Length,
+                                           /*basis_change=*/std::nullopt);
     sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
     auto energy_fn = sim.expectation_value_functional(std::nullopt);
     return energy_fn(VecD{});
@@ -59,8 +59,8 @@ BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv
         BOOST_TEST_MESSAGE("Skipping Schrödinger Majorana fresh-insert equivalence (world size = 1).");
         return;
     }
-    const double e_serial = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_SELF);
-    const double e_world = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_WORLD);
+    const double e_serial = run_schrodinger_majorana(ExampleDataFix::n_modes, data, MPI_COMM_SELF);
+    const double e_world = run_schrodinger_majorana(ExampleDataFix::n_modes, data, MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("schrodinger majorana serial=" << e_serial << " world=" << e_world);
     BOOST_TEST(near(e_serial, e_world));
 }
@@ -73,17 +73,18 @@ auto run_schrodinger_pauli(MPI_Comm comm) -> double {
     OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
-    auto sim = test_utils::make_propagator<kPauliQ>(init,
-                                                    /*cutoff=*/2U,
-                                                    VecZ{},
-                                                    /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
-                                                    comm,
-                                                    /*lower_atol=*/std::nullopt,
-                                                    /*upper_atol=*/std::optional<double>{0.0},
-                                                    CutoffType::Support,
-                                                    /*basis_change=*/std::nullopt,
-                                                    kPauliQ,
-                                                    Basis::Pauli);
+    auto sim = test_utils::make_propagator(kPauliQ,
+                                           init,
+                                           /*cutoff=*/2U,
+                                           VecZ{},
+                                           /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
+                                           comm,
+                                           /*lower_atol=*/std::nullopt,
+                                           /*upper_atol=*/std::optional<double>{0.0},
+                                           CutoffType::Support,
+                                           /*basis_change=*/std::nullopt,
+                                           kPauliQ,
+                                           Basis::Pauli);
     std::vector<VecZ> gens;
     VecZ pmap;
     VecD gcoeffs;

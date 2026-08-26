@@ -36,9 +36,9 @@ constexpr size_t kNumModes = 8;
 
 // Mirrors the streaming provider the pare functional uses: fold the operator's inverted index,
 // truncated to each layer's scaled_count.
-template <size_t NumModes>
-auto recompute_cos(const monoprop::detail::InvertedIndex &inverted_index, const LayerTraversal &layer) -> CosMask {
-    Bitset gen(2 * NumModes);
+auto recompute_cos(size_t num_modes, const monoprop::detail::InvertedIndex &inverted_index, const LayerTraversal &layer)
+    -> CosMask {
+    Bitset gen(2 * num_modes);
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     const auto combined =
@@ -50,10 +50,10 @@ auto recompute_cos(const monoprop::detail::InvertedIndex &inverted_index, const 
 
 // The streaming pare sweep must engage pruned_cos on exactly the layers whose cos loses an index.
 BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
 
-    auto sim = build_simulator<kNumModes>(data, cfg);
+    auto sim = build_simulator(kNumModes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const auto &graph = sim.graph();
@@ -79,7 +79,7 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     const uint64_t synth_bit = uint64_t{1} << (synth_index & 63U);
 
     auto provider = [&](size_t i) -> CosMask {
-        CosMask cos = recompute_cos<kNumModes>(inverted_index, graph.get_layer_traversal(i));
+        CosMask cos = recompute_cos(kNumModes, inverted_index, graph.get_layer_traversal(i));
         if (i == marked_layer) {
             bool merged = false;
             for (auto &b : cos.blocks) {
@@ -140,10 +140,10 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
 }
 
 BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
 
-    auto sim_full = build_simulator<kNumModes>(data, cfg);
+    auto sim_full = build_simulator(kNumModes, data, cfg);
     sim_full.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_full = sim_full.expectation_value_functional(std::nullopt);
     const double e_full = ev_full(data.parameters);
@@ -151,13 +151,13 @@ BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {
     // The pared and unpared replays reduce in an unpinned accumulation order, so they differ by a
     // few ULP (~1e-18 here) run-to-run: exact == is the wrong assertion. The tolerance is far tighter
     // than any real pruning effect but comfortably above that reorder noise.
-    auto sim_tiny = build_simulator<kNumModes>(data, cfg);
+    auto sim_tiny = build_simulator(kNumModes, data, cfg);
     sim_tiny.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_tiny = sim_tiny.expectation_value_functional(std::optional<double>{1e-12});
     const double e_tiny = ev_tiny(data.parameters);
     BOOST_CHECK_SMALL(std::abs(e_full - e_tiny), 1e-12);
 
-    auto sim_real = build_simulator<kNumModes>(data, cfg);
+    auto sim_real = build_simulator(kNumModes, data, cfg);
     sim_real.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto ev_real = sim_real.expectation_value_functional(std::optional<double>{1e-10});
     const double e_real = ev_real(data.parameters);

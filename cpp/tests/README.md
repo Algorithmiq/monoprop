@@ -60,7 +60,7 @@ name and cannot address suite-nested cases, tests use flat
   `LihFixture` = LiH/n=12), the `build_simulator`/`SimulatorConfig` helpers,
   expectation-value helpers, and the `near()` float comparison used by the
   equivalence suites.
-- **`PauliTestOracle.h`**: independent Pauli reference oracle — native/JW
+- **`PauliTestOracle.{h,cpp}`**: independent Pauli reference oracle — native/JW
   encoding (`slots_of_string`, `native_bitset`, `jw_basis`), dense Pauli-matrix
   brute force (`matrix_from_string`, `matmul`, ...), and string helpers. Shared
   by the Pauli algebra/build-layer tests and the equivalence suites.

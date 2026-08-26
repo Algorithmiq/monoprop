@@ -33,7 +33,7 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
         .cutoff_type = cutoff_type,
         .basis_change = basis_change,
     };
-    test_evolve_build_graph<n_modes>(data, cfg, pare, data.actual_expval);
+    test_evolve_build_graph(n_modes, data, cfg, pare, data.actual_expval);
 }
 
 BOOST_DATA_TEST_CASE_F(ExampleDataFix,
@@ -47,7 +47,7 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix,
         .cutoff_type = cutoff_type,
         .basis_change = basis_change,
     };
-    test_evolve_build_graph_with_coeffs<n_modes>(data, cfg, pare, data.actual_expval);
+    test_evolve_build_graph_with_coeffs(n_modes, data, cfg, pare, data.actual_expval);
 }
 
 // Schrodinger-only by construction; the reason is on test_evolve_build_graph_with_coeffs_extend.
@@ -58,17 +58,17 @@ BOOST_DATA_TEST_CASE_F(ExampleDataFix, build_graph_with_coeffs_extend_cases, bda
         .cutoff_type = cutoff_type,
         .basis_change = basis_change,
     };
-    test_evolve_build_graph_with_coeffs_extend<n_modes>(data, cfg, pare, data.actual_expval);
+    test_evolve_build_graph_with_coeffs_extend(n_modes, data, cfg, pare, data.actual_expval);
 }
 
 // graph_size().first counts cos-scaled non-endpoints, recomputed from the operator's inverted index.
 BOOST_AUTO_TEST_CASE(graph_size_reports_real_cosine_only_count) {
     constexpr size_t N = 8;
-    const auto data = test_utils::load_case_data<N>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
 
     const auto sized = [&](unsigned int cutoff) {
         auto sim =
-            test_utils::make_propagator<N>(data.hamiltonian, cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
+            test_utils::make_propagator(N, data.hamiltonian, cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         return sim.graph_size();
     };

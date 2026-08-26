@@ -24,14 +24,13 @@
 
 namespace monoprop {
 
-template <size_t NumModes>
-auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList {
+inline auto fermionic_to_binary_operator(size_t num_modes, const std::vector<VecZ> &op) -> MonomialList {
     MonomialList majorana_operator;
     majorana_operator.reserve(op.size());
     // push_back, not a sized construction plus transform: sizing up front would fill with width-0
     // bitsets, and every slot is written here anyway.
-    std::ranges::transform(op, std::back_inserter(majorana_operator), [](const VecZ &term) {
-        return indices_to_bitset(term, 2 * NumModes);
+    std::ranges::transform(op, std::back_inserter(majorana_operator), [num_modes](const VecZ &term) {
+        return indices_to_bitset(term, 2 * num_modes);
     });
     return majorana_operator;
 }

@@ -41,7 +41,6 @@ using monoprop::detail::query_words_fused;
 
 constexpr size_t kModes = 8;         // 2*kModes = 16 majorana bits, one 64-bit word
 constexpr size_t kBits = 2 * kModes; // a monomial's width is data, so every one here is built at it
-// The wire record width is in words now, not derived from a NumModes template argument.
 constexpr size_t kWordsPerMono = (kBits + 63) / 64;
 
 // query_value takes the word count; wrap it so the assertions below stay readable.

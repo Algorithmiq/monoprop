@@ -31,9 +31,8 @@ test:
 baseline_dir := ".baseline-capture"
 
 # Capture a golden baseline snapshot into `.baseline-capture/LABEL` (default "golden") via
-# tools/capture-baseline.py -- the regression instrument for the NumModes-NTTP removal refactor
-# (see the plan's Stage 0). Run once on an unmodified tree to seed the golden baseline, then
-# `just diff-baseline` after every later-stage change.
+# tools/capture-baseline.py. Run once on an unmodified tree to seed the golden baseline, then
+# `just diff-baseline` after any change that must not move a term or a coefficient.
 capture-baseline LABEL='golden':
     uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/{{ LABEL }}"
 

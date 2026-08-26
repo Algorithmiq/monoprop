@@ -179,7 +179,7 @@ auto check_all(Encoded &enc, size_t logical_num_modes) -> Seen {
 // Majorana products, so the set includes fully paired rows, which are the inputs both cutoffs treat
 // specially.
 auto check_fixture(const std::string &name, size_t storage_num_modes) -> Seen {
-    const auto data = test_utils::load_case_data<0>(name);
+    const auto data = test_utils::load_case_data(name);
     BOOST_REQUIRE(data.num_modes > 0);
     BOOST_REQUIRE(storage_num_modes >= data.num_modes);
     const size_t num_bits = 2 * storage_num_modes;
@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_fixtures_whole_register) {
                                    "lih_fermionic_spin_exact.msgpack",
                                    "S0_8e8o_majoranic_c6.msgpack",
                                    "majorana_lattice_layer_30.msgpack"}) {
-        const auto data = test_utils::load_case_data<0>(name);
+        const auto data = test_utils::load_case_data(name);
         seen |= check_fixture(name, data.num_modes);
     }
     require_discriminating(seen);
@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_fixtures_padded_storage) {
                                    "lih_fermionic_spin_exact.msgpack",
                                    "S0_8e8o_majoranic_c6.msgpack",
                                    "majorana_lattice_layer_30.msgpack"}) {
-        const auto data = test_utils::load_case_data<0>(name);
+        const auto data = test_utils::load_case_data(name);
         size_t storage = MonomialPropagator::storage_modes_for(data.num_modes);
         if (storage == data.num_modes) {
             // A mode count that is already a whole block leaves no inactive prefix, which is the case

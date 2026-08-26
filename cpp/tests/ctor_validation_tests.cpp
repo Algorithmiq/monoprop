@@ -41,19 +41,20 @@ auto make(const OperatorDict &op,
           std::optional<double> upper_atol = std::nullopt,
           CutoffType cutoff_type = CutoffType::Length,
           std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-          size_t logical_num_modes = N,
+          std::optional<size_t> logical_num_modes = std::nullopt,
           Basis basis = Basis::Majorana) -> MP {
-    return test_utils::make_propagator<N>(op,
-                                          cutoff,
-                                          VecZ{},
-                                          std::nullopt,
-                                          MPI_COMM_SELF,
-                                          lower_atol,
-                                          upper_atol,
-                                          cutoff_type,
-                                          basis_change,
-                                          logical_num_modes,
-                                          basis);
+    return test_utils::make_propagator(N,
+                                       op,
+                                       cutoff,
+                                       VecZ{},
+                                       std::nullopt,
+                                       MPI_COMM_SELF,
+                                       lower_atol,
+                                       upper_atol,
+                                       cutoff_type,
+                                       basis_change,
+                                       logical_num_modes,
+                                       basis);
 }
 } // namespace
 
@@ -80,7 +81,7 @@ BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
                       std::runtime_error);
 }
 
-// The storage-width rule that replaced the compile-time NumModes. Rounding keeps the hash index's probe
+// The storage-width rule. Rounding keeps the hash index's probe
 // layout aligned across nearby system sizes; the one-block floor keeps a small system off a partly
 // populated word. Both are observable, since the width is part of every monomial's hash.
 BOOST_AUTO_TEST_CASE(storage_modes_for_rounds_up_to_a_whole_block_with_a_floor) {
@@ -155,7 +156,7 @@ BOOST_AUTO_TEST_CASE(ctor_operator_index_out_of_range_throws) {
     BOOST_CHECK_THROW(make(op), std::runtime_error);
 }
 
-// A gate generator index outside the system must throw, not underflow 2*NumModes-1-index into an
+// A gate generator index outside the system must throw, not underflow 2*num_modes-1-index into an
 // out-of-bounds Bitset::set.
 BOOST_AUTO_TEST_CASE(build_graph_generator_index_out_of_range_throws) {
     OperatorDict op;
@@ -217,7 +218,7 @@ BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
 }
 
 BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
-    auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
+    auto sim = build_simulator(n_modes, data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_REQUIRE(sim.graph_layers() > 0);
     BOOST_CHECK_THROW(sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters),
@@ -226,7 +227,7 @@ BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
 
 // Pins MPGraph::get_layer's checked_layer_offset throw site.
 BOOST_FIXTURE_TEST_CASE(graph_get_layer_out_of_range_throws, ExampleDataFix) {
-    auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
+    auto sim = build_simulator(n_modes, data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const auto &graph = sim.graph();
     const size_t n_layers = graph.layers();

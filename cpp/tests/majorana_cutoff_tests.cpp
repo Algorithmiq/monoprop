@@ -112,8 +112,8 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_logical_num_modes_masks_prefix_multi_word) 
 BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     constexpr size_t N = 32;
 
-    // Both the logical width and the storage width must be stated now that neither comes from a
-    // NumModes: the functor precomputes its masks from them.
+    // Both the logical width and the storage width must be stated: the functor precomputes its masks
+    // from them.
     CutoffFn length_fn = detail::LengthCutoff{3, N, 2 * N};
     detail::CutoffEvaluator length_ev(length_fn);
     BOOST_TEST((length_ev.length_cutoff() != nullptr));

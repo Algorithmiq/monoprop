@@ -25,19 +25,18 @@ using namespace monoprop;
 
 // Every propagator in this suite is built through here, and the reason is the storage width.
 //
-// The propagator used to be a class template storing monomials at exactly 2*NumModes bits; it now
-// rounds a logical width up to a whole 32-mode block by default. That width is not
+// The propagator rounds a logical width up to a whole 32-mode block by default. That width is not
 // cosmetic: indices are laid out MSb0, so widening moves every bit position, which changes each
 // monomial's hash, which changes owner routing, probe order, and therefore the order coefficients
 // accumulate in. The expected values in this suite were computed at the unrounded width, so tests pin
-// storage_num_modes to their own NumModes instead of accepting the rounding. Production code (and the
-// Python front-end) takes the default -- the rounding is what keeps the hash index's probe layout
-// aligned across nearby system sizes.
+// storage_num_modes to num_modes instead of accepting the rounding. Production code (and the Python
+// front-end) takes the default -- the rounding is what keeps the hash index's probe layout aligned
+// across nearby system sizes.
 //
-// The argument order is the pre-refactor one, with logical_num_modes still in its old late position so
-// the ctor-validation tests can override it on its own.
-template <size_t NumModes>
-inline auto make_propagator(const OperatorDict& initial_operator,
+// logical_num_modes defaults to num_modes; pass it to vary the logical width on its own, which is what
+// the ctor-validation tests do.
+inline auto make_propagator(size_t num_modes,
+                            const OperatorDict& initial_operator,
                             unsigned int cutoff,
                             const VecZ& initial_state,
                             std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
@@ -46,13 +45,13 @@ inline auto make_propagator(const OperatorDict& initial_operator,
                             std::optional<double> upper_atol = std::nullopt,
                             CutoffType cutoff_type = CutoffType::Length,
                             std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                            size_t logical_num_modes = NumModes,
+                            std::optional<size_t> logical_num_modes = std::nullopt,
                             Basis basis = Basis::Majorana,
                             size_t partitions = 0) -> MonomialPropagator {
     return MonomialPropagator(initial_operator,
                               cutoff,
                               initial_state,
-                              logical_num_modes,
+                              logical_num_modes.value_or(num_modes),
                               schrodinger_cutoff,
                               comm,
                               lower_atol,
@@ -61,6 +60,6 @@ inline auto make_propagator(const OperatorDict& initial_operator,
                               basis_change,
                               basis,
                               partitions,
-                              /*storage_num_modes=*/NumModes);
+                              /*storage_num_modes=*/num_modes);
 }
 } // namespace test_utils

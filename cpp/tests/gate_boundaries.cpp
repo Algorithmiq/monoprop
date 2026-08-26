@@ -33,15 +33,16 @@ auto make_sim() -> MonomialPropagator {
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
     VecZ initial_state{0, 1};
-    return test_utils::make_propagator<kModes>(ham,
-                                               2 * kModes,
-                                               initial_state,
-                                               std::nullopt,
-                                               MPI_COMM_SELF,
-                                               std::nullopt,
-                                               std::nullopt,
-                                               CutoffType::Length,
-                                               std::nullopt);
+    return test_utils::make_propagator(kModes,
+                                       ham,
+                                       2 * kModes,
+                                       initial_state,
+                                       std::nullopt,
+                                       MPI_COMM_SELF,
+                                       std::nullopt,
+                                       std::nullopt,
+                                       CutoffType::Length,
+                                       std::nullopt);
 }
 
 } // namespace

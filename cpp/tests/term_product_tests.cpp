@@ -243,7 +243,7 @@ BOOST_AUTO_TEST_CASE(term_product_sparse_kernel_matches_dense_on_randomized_rows
 BOOST_AUTO_TEST_CASE(term_product_sparse_kernel_matches_dense_on_fixture_generators) {
     Seen seen;
     for (const std::string name : {"random_exact.msgpack", "lih_fermionic_spin_exact.msgpack"}) {
-        const auto data = test_utils::load_case_data<0>(name);
+        const auto data = test_utils::load_case_data(name);
         const size_t num_bits = 2 * data.num_modes;
         const size_t max_index = 2 * data.num_modes;
 

@@ -83,20 +83,20 @@ BOOST_DATA_TEST_CASE(length_cutoff_test,
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_empty) {
     std::vector<VecZ> empty_operator;
-    auto result = fermionic_to_binary_operator<NumQubits>(empty_operator);
+    auto result = fermionic_to_binary_operator(NumQubits, empty_operator);
     BOOST_CHECK(result.empty());
 }
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_single_term) {
     std::vector<VecZ> single_term_operator = {{0, 1, 2}};
-    auto result = fermionic_to_binary_operator<NumQubits>(single_term_operator);
+    auto result = fermionic_to_binary_operator(NumQubits, single_term_operator);
     BOOST_CHECK(result.size() == 1);
     BOOST_CHECK(result[0] == Bitset(2 * NumQubits, 0b11100000));
 }
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_multiple_terms) {
     std::vector<VecZ> multi_term_operator = {{0, 1}, {2, 3}};
-    auto result = fermionic_to_binary_operator<NumQubits>(multi_term_operator);
+    auto result = fermionic_to_binary_operator(NumQubits, multi_term_operator);
     BOOST_CHECK(result.size() == 2);
     BOOST_CHECK(result[0] == Bitset(2 * NumQubits, 0b11000000));
     BOOST_CHECK(result[1] == Bitset(2 * NumQubits, 0b00110000));
@@ -271,12 +271,12 @@ BOOST_AUTO_TEST_CASE(eval_state_indices_above_matches_the_dense_scan) {
 // graph and on the pared one, in both pictures.
 BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly) {
     constexpr size_t kNumModes = 8;
-    const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
 
     for (const auto schrodinger_cutoff : {std::optional<unsigned int>{}, std::optional<unsigned int>{4}}) {
         BOOST_TEST_CONTEXT("schrodinger_cutoff = " << (schrodinger_cutoff ? "4" : "none")) {
             test_utils::SimulatorConfig cfg{.schrodinger_cutoff = schrodinger_cutoff, .comm = MPI_COMM_SELF};
-            auto sim = test_utils::build_simulator<kNumModes>(data, cfg);
+            auto sim = test_utils::build_simulator(kNumModes, data, cfg);
             sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
             BOOST_CHECK_EQUAL(sim.expectation_value(data.parameters),
@@ -296,14 +296,15 @@ BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly)
 // interleaving gradient calls must each keep reproducing their isolated value exactly.
 BOOST_AUTO_TEST_CASE(interleaved_gradients_do_not_share_scratch_state) {
     constexpr size_t kNumModes = 8;
-    const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
 
     auto build = [&data](unsigned int cutoff) {
-        auto sim = test_utils::make_propagator<kNumModes>(data.hamiltonian,
-                                                          cutoff,
-                                                          data.initial_state,
-                                                          std::nullopt,
-                                                          MPI_COMM_SELF);
+        auto sim = test_utils::make_propagator(kNumModes,
+                                               data.hamiltonian,
+                                               cutoff,
+                                               data.initial_state,
+                                               std::nullopt,
+                                               MPI_COMM_SELF);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         return sim;
     };

@@ -61,24 +61,24 @@ auto wide_embedding() -> test_utils::ModeEmbedding {
 }
 
 auto wide_case() -> test_utils::CaseData {
-    return test_utils::embed_case(test_utils::load_case_data<kSourceModes>("lih_fermionic_spin_exact.msgpack"),
-                                  wide_embedding());
+    return test_utils::embed_case(test_utils::load_case_data("lih_fermionic_spin_exact.msgpack"), wide_embedding());
 }
 
 // Storage pinned to 288 and the logical width to 260 -- which is what storage_modes_for(260) would have
 // produced anyway, so this is the one place in the suite where the pinned width is the production one.
 auto wide_propagator(const test_utils::CaseData &data, unsigned int cutoff, CutoffType cutoff_type)
     -> MonomialPropagator {
-    return test_utils::make_propagator<kWideStorageModes>(data.hamiltonian,
-                                                          cutoff,
-                                                          data.initial_state,
-                                                          /*schrodinger_cutoff=*/std::nullopt,
-                                                          MPI_COMM_SELF,
-                                                          /*lower_atol=*/std::nullopt,
-                                                          /*upper_atol=*/std::nullopt,
-                                                          cutoff_type,
-                                                          /*basis_change=*/std::nullopt,
-                                                          /*logical_num_modes=*/kWideModes);
+    return test_utils::make_propagator(kWideStorageModes,
+                                       data.hamiltonian,
+                                       cutoff,
+                                       data.initial_state,
+                                       /*schrodinger_cutoff=*/std::nullopt,
+                                       MPI_COMM_SELF,
+                                       /*lower_atol=*/std::nullopt,
+                                       /*upper_atol=*/std::nullopt,
+                                       cutoff_type,
+                                       /*basis_change=*/std::nullopt,
+                                       /*logical_num_modes=*/kWideModes);
 }
 
 // (cutoff_type, cutoff) pairs that truncate nothing for this problem, and the pair that does.
@@ -123,20 +123,21 @@ BOOST_AUTO_TEST_CASE(wide_case_reaches_its_exact_expectation_value) {
 // rather than term by term because that comparison is the Python suite's (tests/test_wide_system.py),
 // which can hold the two term sets side by side.
 BOOST_AUTO_TEST_CASE(truncated_wide_run_matches_the_narrow_run) {
-    const auto narrow_data = test_utils::load_case_data<kSourceModes>("lih_fermionic_spin_exact.msgpack");
+    const auto narrow_data = test_utils::load_case_data("lih_fermionic_spin_exact.msgpack");
     const auto wide_data = test_utils::embed_case(narrow_data, wide_embedding());
     constexpr unsigned int kTruncating = 4;
 
     for (const auto cutoff_type : {CutoffType::Length, CutoffType::Support}) {
         BOOST_TEST_CONTEXT("cutoff_type=" << static_cast<int>(cutoff_type)) {
-            auto narrow = test_utils::make_propagator<kSourceModes>(narrow_data.hamiltonian,
-                                                                    kTruncating,
-                                                                    narrow_data.initial_state,
-                                                                    std::nullopt,
-                                                                    MPI_COMM_SELF,
-                                                                    std::nullopt,
-                                                                    std::nullopt,
-                                                                    cutoff_type);
+            auto narrow = test_utils::make_propagator(kSourceModes,
+                                                      narrow_data.hamiltonian,
+                                                      kTruncating,
+                                                      narrow_data.initial_state,
+                                                      std::nullopt,
+                                                      MPI_COMM_SELF,
+                                                      std::nullopt,
+                                                      std::nullopt,
+                                                      cutoff_type);
             auto wide = wide_propagator(wide_data, kTruncating, cutoff_type);
             const double narrow_expval = test_utils::evaluate_expval(narrow, narrow_data, /*pare=*/false);
             const double wide_expval = test_utils::evaluate_expval(wide, wide_data, /*pare=*/false);

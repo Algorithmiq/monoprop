@@ -37,9 +37,8 @@ constexpr size_t kNumModes = 8;
 // These oracles cover the Majorana fold only; the Pauli J(G) fold generator has no equivalence test yet.
 constexpr auto kBasis = Basis::Majorana;
 
-template <size_t NumModes>
-auto generator_of(const LayerTraversal &layer) -> Bitset {
-    Bitset gen(2 * NumModes);
+auto generator_of(size_t num_modes, const LayerTraversal &layer) -> Bitset {
+    Bitset gen(2 * num_modes);
     const auto &gw = layer.generator_words();
     std::memcpy(gen.data(), gw.data(), gw.size() * sizeof(uint64_t));
     return gen;
@@ -77,9 +76,9 @@ double accumulate_cos_cached(const monoprop::detail::FoldCache &p,
 // scale: coeff[i] *= cos over the layer's cosine index set — a pure per-index scatter, so the two
 // paths must produce byte-identical arrays.
 BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<kNumModes>(data, cfg);
+    auto sim = build_simulator(kNumModes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const auto &inverted_index = sim.mp_op().inverted_index();
@@ -100,7 +99,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
         if (layer.generator_words().empty()) {
             continue;
         }
-        const auto gen = generator_of<kNumModes>(layer);
+        const auto gen = generator_of(kNumModes, layer);
         if (gen.count() % 2 != 0) {
             ++odd_layers;
         }
@@ -123,9 +122,9 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
 // accumulate: the per-index state/ham mutations must be byte-identical; the returned reduction may be
 // summed in a different order, so it is compared within a tight fp tolerance.
 BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<kNumModes>(data, cfg);
+    auto sim = build_simulator(kNumModes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const auto &inverted_index = sim.mp_op().inverted_index();
@@ -147,7 +146,7 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
         if (layer.generator_words().empty()) {
             continue;
         }
-        const auto gen = generator_of<kNumModes>(layer);
+        const auto gen = generator_of(kNumModes, layer);
         auto prepared = monoprop::detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), kBasis);
         auto recipe = monoprop::detail::make_lazy_fold(inverted_index, gen, layer.scaled_count(), kBasis);
 
@@ -268,7 +267,7 @@ BOOST_AUTO_TEST_CASE(a_cosine_near_one_leaves_the_state_unchanged) {
 // Lives here because it re-runs the same recompute machinery exercised above.
 BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<n_modes>(data, cfg);
+    auto sim = build_simulator(n_modes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     auto fn = sim.expectation_value_functional();
@@ -284,9 +283,9 @@ BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix)
 // so it must hold no pointer into that buffer. Pins both halves — that the buffer really does move
 // under growth, and that a fold built before the growth still folds like a FoldCache built after it.
 BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<kNumModes>(data, cfg);
+    auto sim = build_simulator(kNumModes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     // Find an odd-|G| layer: row_parity_ is only consulted for those (Pauli and even |G| never touch it).
@@ -294,7 +293,7 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     size_t odd_layer = graph.layers();
     for (size_t li = 0; li < graph.layers(); ++li) {
         const auto layer = graph.get_layer_traversal(li);
-        if (!layer.generator_words().empty() && generator_of<kNumModes>(layer).count() % 2 != 0) {
+        if (!layer.generator_words().empty() && generator_of(kNumModes, layer).count() % 2 != 0) {
             odd_layer = li;
             break;
         }
@@ -302,7 +301,7 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     BOOST_REQUIRE(odd_layer < graph.layers());
 
     const auto layer = graph.get_layer_traversal(odd_layer);
-    const auto gen = generator_of<kNumModes>(layer);
+    const auto gen = generator_of(kNumModes, layer);
     const auto scaled_count = layer.scaled_count();
 
     const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();

@@ -34,7 +34,7 @@ static_assert(!std::is_copy_assignable_v<MonomialPropagator>, "copy assignment s
 
 BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_matches_energy, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<n_modes>(data, cfg);
+    auto sim = build_simulator(n_modes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     auto copy = sim;
@@ -49,7 +49,7 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_matches_energy, ExampleDataFi
 
 BOOST_FIXTURE_TEST_CASE(copy_is_independent_of_source, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<n_modes>(data, cfg);
+    auto sim = build_simulator(n_modes, data, cfg);
 
     auto copy = sim;
     BOOST_TEST(copy.graph_layers() == 0u);
@@ -69,7 +69,7 @@ BOOST_FIXTURE_TEST_CASE(copy_is_independent_of_source, ExampleDataFix) {
 // core references.
 BOOST_FIXTURE_TEST_CASE(copy_graph_survives_other_being_contracted_and_destroyed, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto original = build_simulator<n_modes>(data, cfg);
+    auto original = build_simulator(n_modes, data, cfg);
     original.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const size_t layers_before = original.graph_layers();
@@ -92,7 +92,7 @@ BOOST_FIXTURE_TEST_CASE(copy_graph_survives_other_being_contracted_and_destroyed
 
 BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_index_valid, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<n_modes>(data, cfg);
+    auto sim = build_simulator(n_modes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     auto copy = sim;
