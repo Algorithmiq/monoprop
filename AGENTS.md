@@ -143,13 +143,6 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Heavy use of `@parametrize_with_cases` decorators
 - **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
 - **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
-- `cpp/tests/link_export_probe/` builds `monoprop_link_export_probe.x`: a permanent guard that
-  link-time-checks the installed shared `monoprop` library for any `detail/**` free function reachable
-  from the public template chain that's missing `monoprop_EXPORT` (elided by `CXX_VISIBILITY_PRESET
-  hidden`, such a function would otherwise only crash a client at dynamic-load time) — it catches that
-  whole regression class, not just the headers fixed once. Built by default
-  (`monoprop_ENABLE_CXX_UNIT_TESTS`) and registered with CTest, so it runs automatically in the
-  existing `ctest` invocation; no separate CI step was needed.
 
 ## Key Dependencies & Integration
 
