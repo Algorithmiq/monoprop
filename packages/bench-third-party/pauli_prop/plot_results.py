@@ -17,18 +17,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+from plot_scaling import COLORS as colors  # noqa: E402
 
 # The early steps are too noisy to plot.
 min_step = 5
-
-colors = {
-    "monoprop": "tab:purple",
-    "QuEra ppvm": "tab:orange",
-    "Qiskit pauli-prop": "tab:blue",
-    "cuPauliProp (GPU)": "tab:green",
-    "PauliPropagation.jl": "tab:red",
-}
 
 with open(Path(__file__).parent / "results.json") as file:
     data = json.load(file)
