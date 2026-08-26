@@ -84,6 +84,20 @@ auto size(const Comm &comm) -> int {
 #endif
 }
 
+auto geometry(const Comm &comm) -> Geometry {
+    if (comm.kind == Comm::Kind::Shm) {
+        return {.ranks = 1, .partitions = comm.shm->size()};
+    }
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return {.ranks = comm.hyb->ranks(), .partitions = comm.hyb->partitions()};
+    }
+    return {.ranks = size(comm), .partitions = 1};
+#else
+    return {.ranks = 1, .partitions = 1};
+#endif
+}
+
 auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());

@@ -97,6 +97,8 @@ public:
     auto operator=(const HybridComm &) -> HybridComm & = delete;
 
     auto size() const -> int { return r_ * s_; }
+    auto ranks() const -> int { return r_; }
+    auto partitions() const -> int { return s_; }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
     auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
