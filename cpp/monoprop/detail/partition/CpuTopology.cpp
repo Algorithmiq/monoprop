@@ -20,7 +20,6 @@
 #include <format>
 #include <map>
 #include <mutex>
-#include <print>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -88,7 +87,37 @@ auto effective_allowed_cpuset(hwloc_topology_t topo) -> hwloc_cpuset_t {
     return hwloc_bitmap_dup(hwloc_topology_get_allowed_cpuset(topo));
 }
 
+/* ── Process-wide placement record ────────────────────────────────────────── */
+
+// One process has one placement, so the last verdict is the whole state. Locked rather than atomic:
+// the five fields are read together and a torn mix of two placements would explain neither.
+struct PlacementRecord {
+    std::mutex mu;
+    PlacementReport report;
+};
+
+auto placement_record() -> PlacementRecord & {
+    static PlacementRecord rec;
+    return rec;
+}
+
 } // anonymous namespace
+
+/* ── placement_report / format_unpinned_line ──────────────────────────────── */
+
+auto placement_report() -> PlacementReport {
+    auto &rec = placement_record();
+    const std::lock_guard lock(rec.mu);
+    return rec.report;
+}
+
+auto format_unpinned_line(const PlacementReport &report) -> std::string {
+    return std::format("monoprop: partition pinning requested but not possible "
+                       "({} cores visible, {} groups x {} partitions); threads run unpinned.\n",
+                       report.cores_visible,
+                       report.groups,
+                       report.partitions);
+}
 
 /* ── topo_detail::placement_order ─────────────────────────────────────────── */
 
@@ -367,15 +396,23 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMas
     }
     const auto order = topo_detail::placement_order(cores, n, group_index, group_count);
 
-    if (order.empty()) {
+    // `groups` is the count actually used, so a PerRank collapse reads back as the 1 group it became.
+    PlacementReport report{.pinned = !order.empty(),
+                           .cores_visible = cores.size(),
+                           .groups = group_count,
+                           .partitions = n};
+    {
+        auto &rec = placement_record();
+        const std::lock_guard lock(rec.mu);
+        report.decisions = rec.report.decisions + 1;
+        rec.report = report;
+    }
+
+    if (!report.pinned) {
+        // Kept: this is the only channel that survives with no Python in the process at all.
         static std::once_flag warned;
         std::call_once(warned, [&] {
-            std::print(stderr,
-                       "monoprop: partition pinning requested but not possible "
-                       "({} cores visible, {} groups x {} partitions); threads run unpinned.\n",
-                       cores.size(),
-                       group_count,
-                       n);
+            std::fputs(format_unpinned_line(report).c_str(), stderr);
             std::fflush(stderr);
         });
     }

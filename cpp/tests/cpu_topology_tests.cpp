@@ -457,3 +457,58 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_line_unknown_is_not_a_verdict) {
                       "COMMPLACE rank=0 node_rank=0 node_size=1 masks=unknown cpus=0 node_cpus=0 "
                       "cpu_list=none\n");
 }
+
+/* ── The placement record ─────────────────────────────────────────────────── */
+
+// partition_cpusets() answers an oversubscribed request with an empty vector and a line on C++
+// stderr, which pytest's fd capture swallows; until this record, nothing in-process could tell that
+// refusal from a host where hwloc simply loaded no topology.
+BOOST_AUTO_TEST_CASE(cpu_topology_placement_report_records_the_refusal) {
+    const auto cores = partition::enumerate_physical_cores();
+    const auto before = partition::placement_report();
+
+    const auto too_many = partition::partition_cpusets(/*n=*/1'000'000);
+    // The branch under test, asserted rather than assumed: nothing below means anything if it placed.
+    BOOST_REQUIRE(too_many.empty());
+
+    const auto after = partition::placement_report();
+    BOOST_CHECK(!after.pinned);
+    BOOST_CHECK_EQUAL(after.partitions, 1'000'000U);
+    BOOST_CHECK_EQUAL(after.groups, 1U);
+    BOOST_CHECK_EQUAL(after.cores_visible, cores.size());
+    BOOST_CHECK_EQUAL(after.decisions, before.decisions + 1);
+}
+
+// The other outcome, so a record that answered "unpinned" unconditionally fails here. Neither arm
+// skips: a host with no topology is itself a verdict the record has to state.
+BOOST_AUTO_TEST_CASE(cpu_topology_placement_report_records_a_placement) {
+    const auto cores = partition::enumerate_physical_cores();
+    const auto one = partition::partition_cpusets(/*n=*/1);
+    const auto report = partition::placement_report();
+
+    BOOST_CHECK_EQUAL(report.partitions, 1U);
+    BOOST_CHECK_EQUAL(report.cores_visible, cores.size());
+    BOOST_CHECK_EQUAL(report.pinned, !cores.empty());
+    BOOST_CHECK_EQUAL(one.size(), cores.empty() ? 0U : 1U);
+}
+
+// `groups` is the count the placement USED, so the per-rank collapse has to show as the 1 it became.
+BOOST_AUTO_TEST_CASE(cpu_topology_placement_report_shows_the_collapsed_group_count) {
+    partition::partition_cpusets(/*n=*/1, /*group_index=*/3, /*group_count=*/8, partition::NodeMask::PerRank);
+    BOOST_CHECK_EQUAL(partition::placement_report().groups, 1U);
+
+    partition::partition_cpusets(/*n=*/1, /*group_index=*/3, /*group_count=*/8, partition::NodeMask::Shared);
+    BOOST_CHECK_EQUAL(partition::placement_report().groups, 8U);
+}
+
+// One text for the stderr line and for the binding's RuntimeWarning: a drift between them is two bugs.
+BOOST_AUTO_TEST_CASE(cpu_topology_unpinned_line_names_every_field) {
+    const partition::PlacementReport report{.pinned = false,
+                                            .cores_visible = 128,
+                                            .groups = 1,
+                                            .partitions = 256,
+                                            .decisions = 4};
+    BOOST_CHECK_EQUAL(partition::format_unpinned_line(report),
+                      "monoprop: partition pinning requested but not possible "
+                      "(128 cores visible, 1 groups x 256 partitions); threads run unpinned.\n");
+}
