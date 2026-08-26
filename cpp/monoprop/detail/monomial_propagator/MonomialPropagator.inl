@@ -146,6 +146,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+    const auto router = router_for(comm_); // hoisted: geometry() can hit MPI, so never per term
     MonomialList<NumModes> local_heisenberg_terms;
 
     double core_term = 0.0;
@@ -158,7 +159,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             core_term = encoded_coeff;
             continue;
         }
-        if (my_rank == find_rank<NumModes>(majorana_bitset, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(majorana_bitset, router)) {
             mp_op_.init_op_map[majorana_bitset] = encoded_coeff;
             local_heisenberg_terms.push_back(majorana_bitset);
         }
@@ -203,7 +204,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here. A row
     // index is a position in the kept subsequence, so the enumeration order below is load-bearing.
     const auto keep_if_owned = [&](const Monomial<NumModes> &mono) {
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(mono, router)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
         }
@@ -402,7 +403,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
+    const auto router = router_for(comm_); // hoisted: geometry() can hit MPI, so never per term
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
@@ -412,7 +413,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
             core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
             continue;
         }
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(mono, router)) {
             const auto mono_indices = bitset_to_indices<NumModes>(mono);
             new_op[mono_indices] = coeff;
         }
