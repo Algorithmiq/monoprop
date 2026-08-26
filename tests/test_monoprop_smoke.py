@@ -155,3 +155,62 @@ def test_bound_graph_methods_accept_declared_arguments(
     assert core.graph_layers() is not None
 
     core.update_initial_operator(op_dict=problem.operator.terms)
+
+
+# The ledger keys are a measurement contract: an A/B reads this dictionary from two builds and
+# subtracts, so a key that appears, disappears or crosses ``total_bytes`` compares two different
+# quantities. Nothing on the C++ side notices.
+_GRAPH_LEDGER_KEYS = (
+    "layer_descriptor_bytes",
+    "layer_storage_object_bytes",
+    "cos_data_bytes",
+    "cross_rank_bytes",
+    "exchange_layout_bytes",
+)
+_GRAPH_DIAGNOSTIC_KEYS = (
+    "d_slot_record_bytes",
+    "d_layer_cores",
+    "d_slot_records",
+    "d_occupied_slots",
+    "d_cross_rank_endpoints",
+)
+
+
+@parametrize_with_cases(
+    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
+)
+def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
+    """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
+    monomial_circuit = problem.monomial_circuit
+    core = _make_bound_core(problem, serial_comm, schrodinger=False)
+    _evolve_bound_core(core, monomial_circuit)
+
+    breakdown = core.graph_memory_breakdown()
+
+    # Exact, not a superset: both a dropped key and an undecided new one are what this catches.
+    assert set(breakdown) == {
+        *_GRAPH_LEDGER_KEYS,
+        "total_bytes",
+        *_GRAPH_DIAGNOSTIC_KEYS,
+    }
+
+    # total_bytes() sums the ledger keys only; the d_ keys are counts or subsets, so folding one in
+    # would double-count.
+    assert breakdown["total_bytes"] == sum(breakdown[k] for k in _GRAPH_LEDGER_KEYS)
+    assert breakdown["total_bytes"] == core.graph_memory_bytes()
+    assert breakdown["total_bytes"] > 0
+
+    # Zero because the per-layer counts/displs are no longer retained. The key is kept rather than
+    # deleted so an A/B against a build that retained them shows the drop instead of losing the row.
+    assert breakdown["exchange_layout_bytes"] == 0
+
+    # The slot array is indexed by the flat world, so slot_records / layer_cores recovers P. Stated as
+    # divisibility, not `== 1`, because the MPI gate also runs this at 16 partitions per rank.
+    assert breakdown["d_layer_cores"] > 0
+    assert breakdown["d_slot_records"] % breakdown["d_layer_cores"] == 0
+    assert breakdown["d_slot_records"] // breakdown["d_layer_cores"] >= 1
+
+    # An occupied slot holds at least one endpoint, so the endpoint count is the P-independent ceiling.
+    assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]
+    assert breakdown["d_occupied_slots"] <= breakdown["d_cross_rank_endpoints"]
+    assert breakdown["d_slot_record_bytes"] <= breakdown["cross_rank_bytes"]

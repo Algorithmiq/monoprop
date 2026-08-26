@@ -61,6 +61,25 @@ References are defined in `docs/bibliography.bib`. Cite them with `[@key]`:
 This follows the approach of [@smith2024].
 ```
 
+### Figures
+
+Fumadocs UI ships no figure/caption pair, so use the `Figure` and `Caption`
+components (`docs/src/components/figure.tsx`) instead of a plain paragraph
+after an image:
+
+```mdx
+<Figure>
+![Alt text describing the image](/path/to/image.png)
+
+<Caption>
+  What the figure shows and how to read it.
+</Caption>
+</Figure>
+```
+
+`Caption` is optional — omit it for a figure that needs no caption. See
+`docs/content/docs/benchmarks.mdx` for real examples.
+
 ### Cross-references to the API
 
 Link to any documented Python symbol with the mkdocstrings-style reference

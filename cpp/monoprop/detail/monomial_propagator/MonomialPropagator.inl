@@ -82,7 +82,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
                                                  Basis basis,
-                                                 size_t partitions)
+                                                 size_t partitions,
+                                                 PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       mp_op_{},
@@ -119,20 +120,21 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
     if (n_partitions > 1) {
-        auto factory = [=](mpi::Comm partition_comm) {
-            return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
-                                                                  cutoff,
-                                                                  initial_state,
-                                                                  schrodinger_cutoff,
-                                                                  partition_comm,
-                                                                  lower_atol,
-                                                                  upper_atol,
-                                                                  cutoff_type,
-                                                                  basis_change,
-                                                                  logical_num_modes,
-                                                                  basis,
-                                                                  /*partitions=*/1);
-        };
+        PartitionChildFactory factory =
+            child_factory ? std::move(child_factory) : PartitionChildFactory{[=](mpi::Comm partition_comm) {
+                return std::make_unique<MonomialPropagator<NumModes>>(initial_operator,
+                                                                      cutoff,
+                                                                      initial_state,
+                                                                      schrodinger_cutoff,
+                                                                      partition_comm,
+                                                                      lower_atol,
+                                                                      upper_atol,
+                                                                      cutoff_type,
+                                                                      basis_change,
+                                                                      logical_num_modes,
+                                                                      basis,
+                                                                      /*partitions=*/1);
+            }};
         partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
                                                                                          factory,
                                                                                          comm);
@@ -258,6 +260,13 @@ template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_(Fn fn) -> std::vector<R> {
     return detail::partition::map_partitions(*partition_group_, fn);
+}
+
+template <size_t NumModes>
+template <typename Fn, typename R>
+auto MonomialPropagator<NumModes>::map_partitions_indexed_(Fn fn) -> std::vector<R> {
+    return detail::partition::collect_on_all(*partition_group_,
+                                             [&](int r) -> R { return fn(r, partition_group_->partition(r)); });
 }
 
 template <size_t NumModes>
@@ -389,31 +398,23 @@ auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> 
         // Always empty: local cycles are folded into cross_rank[my_rank].
         std::vector<LocalCycleData> local_cyc_data;
 
-        std::vector<CrossRankData> b_data, d_data;
-        b_data.reserve(rank_count);
-        d_data.reserve(rank_count);
-        for (size_t rank = 0; rank < rank_count; ++rank) {
-            VecZ sin_send_indices(traversal.cross_rank_sin_send_size(rank));
-            VecI b_phases(traversal.cross_rank_sin_send_size(rank), 0);
-            VecZ d_indices(traversal.cross_rank_sin_recv_size(rank));
-            VecI sin_recv_phases(traversal.cross_rank_sin_recv_size(rank));
-
-            traversal.for_each_cross_rank_sin_send_range(
-                rank,
-                0,
-                traversal.cross_rank_sin_send_size(rank),
-                [&](size_t logical_idx, size_t value_idx) { sin_send_indices[logical_idx] = value_idx; });
-            traversal.for_each_cross_rank_sin_recv_range(rank,
-                                                         0,
-                                                         traversal.cross_rank_sin_recv_size(rank),
-                                                         [&](size_t logical_idx, size_t value_idx, int phase) {
-                                                             d_indices[logical_idx] = value_idx;
-                                                             sin_recv_phases[logical_idx] = phase;
-                                                         });
-
-            b_data.emplace_back(std::move(sin_send_indices), std::move(b_phases));
-            d_data.emplace_back(std::move(d_indices), std::move(sin_recv_phases));
-        }
+        // The exported shape stays dense (callers index by rank), but it is filled by scattering the
+        // occupied slots rather than by asking every possible slot how much it holds.
+        std::vector<CrossRankData> b_data(rank_count), d_data(rank_count);
+        traversal.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+            const size_t count = slot.sin_send_count;
+            VecZ sin_send_indices(count);
+            VecI b_phases(count, 0);
+            VecZ d_indices(count);
+            VecI sin_recv_phases(count);
+            for (size_t k = 0; k < count; ++k) {
+                sin_send_indices[k] = detail::slot_sin_send_index(slot, k);
+                d_indices[k] = detail::slot_sin_recv_index(slot, k);
+                sin_recv_phases[k] = detail::slot_sin_recv_phase(slot, k);
+            }
+            b_data[rank] = CrossRankData{std::move(sin_send_indices), std::move(b_phases)};
+            d_data[rank] = CrossRankData{std::move(d_indices), std::move(sin_recv_phases)};
+        });
         // Same two-way read as cos_index_count_(): a pared layer's stored set is authoritative, and
         // recomputing the fold over it would report the indices the pare removed.
         VecZ cos_inds;
@@ -819,8 +820,6 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
     auto relabel = [this](size_t layer, size_t new_param_index) {
         auto &target = graph_.get_layer(layer);
         auto new_core = std::make_shared<LayerCore>(target.core());
-        // Drop the inherited eval-time derivative layout: it must not depend on a prior gradient run.
-        new_core->reset_derivative_exchange_layout();
         new_core->param_index = new_param_index;
         if (const CosMask *pruned = target.pruned_cos()) {
             target = Layer(std::move(new_core), *pruned);

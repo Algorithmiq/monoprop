@@ -14,6 +14,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <memory>
 
@@ -45,7 +47,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     }
     p.in_count = 12; // in-block size P (D indices are derived from B via in_count)
 
-    auto storage = detail::build_layer_storage_unified(std::move(cross_rank), /*my_rank=*/0);
+    auto storage = detail::build_layer_storage_unified(cross_rank, /*my_rank=*/0);
 
     // An engaged pruned_cos stores its filtered cosine list explicitly, so num_cos_inds() reports its
     // total_count.
@@ -64,7 +66,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     lt.for_each_cross_rank_sin_send_range(1, 0, 1, [&](size_t, size_t i) { b_idx = i; });
     BOOST_CHECK_EQUAL(b_idx, 200UL);
 
-    // D[0] is derived from B: Q = sin_recv_count - in_count = 20 - 12 = 8, so D[0] = out-block[0] = 100,
+    // D[0] derives from B: Q = 20 - 12 = 8, so D[0] = out-block[0] = 100,
     // stored phase = -(out_phases[0]) = -(+1) = -1.
     size_t d_idx = static_cast<size_t>(-1);
     int d_phi = 0;
@@ -79,10 +81,14 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
 // The per-rank cross-rank counts index into one layer's term set, so under the wide build they must
 // be TermIndex-wide; uint32_t would silently cap a single partition/layer at ~2^32 terms.
 BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
-    CrossRankPartnerRange r{};
+    CrossRankOccupiedSlot r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
-    BOOST_CHECK_EQUAL(sizeof(r.sin_recv_count), sizeof(TermIndex));
     BOOST_CHECK_EQUAL(sizeof(r.in_count), sizeof(TermIndex));
+    // One record per occupied slot, so its width scales traffic, not P squared.
+    // Written out rather than imported: a check that borrows the value it checks cannot fail.
+    constexpr size_t slot_field = std::max(sizeof(uint32_t), alignof(TermIndex));
+    BOOST_CHECK_EQUAL(alignof(CrossRankOccupiedSlot), alignof(TermIndex));
+    BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), slot_field + 2 * sizeof(TermIndex));
 }
 
 #if defined(monoprop_WIDE_TERM_INDEX)
@@ -105,7 +111,7 @@ BOOST_AUTO_TEST_CASE(cross_rank_sin_send_index_round_trips_above_u32) {
 
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 0), big_in);
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 1), big_out);
-    // D[0] is derived from B: Q = sin_recv_count - in_count = 1, so D[0] = out-block[0] = big_out.
+    // D[0] derives from B: Q = 1, so D[0] = out-block[0] = big_out.
     BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_index(storage, 1, 0), big_out);
 }
 #endif
