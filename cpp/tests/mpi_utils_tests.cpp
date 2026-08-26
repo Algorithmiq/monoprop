@@ -28,6 +28,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -111,7 +112,8 @@ auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> 
     return op;
 }
 
-auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size_t &checked) -> void {
+auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked)
+    -> void {
     // Every offset comes from the codec's walk: the record is VARIABLE WIDTH, so a hardcoded stride
     // would compare a monomial decoded at the wrong offset against the wrong rank.
     using QC = detail::QueryCodec<32>;
@@ -122,7 +124,7 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
             Monomial<32> mono;
             int phase = 0;
             QC::read_mono(buckets[r], off, mono, phase);
-            BOOST_REQUIRE_EQUAL(find_rank<32>(mono, ranks), r);
+            BOOST_REQUIRE_EQUAL(find_rank<32>(mono, router), r);
             off = QC::next_off(buckets[r], layout, off);
             ++checked;
         }
@@ -132,14 +134,16 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
 
 // The self-owned bucket is staged as positions, not encoded, so it is invisible to the walk above --
 // without this the r == my_rank arm of the routing decision goes unchecked.
-auto check_self_ownership(const detail::SelfQueryStage<32> &stage, size_t ranks, size_t my_rank, size_t &checked)
-    -> void {
+auto check_self_ownership(const detail::SelfQueryStage<32> &stage,
+                          const routing::Router &router,
+                          size_t my_rank,
+                          size_t &checked) -> void {
     for (size_t q = 0; q < stage.size(); ++q) {
         Monomial<32> mono;
         for (size_t j = 0; j < stage.k_of[q]; ++j) {
             mono.set(static_cast<size_t>(stage.pos_flat[stage.pos_off[q] + j]));
         }
-        BOOST_REQUIRE_EQUAL(find_rank<32>(mono, ranks), my_rank);
+        BOOST_REQUIRE_EQUAL(find_rank<32>(mono, router), my_rank);
         ++checked;
     }
 }
@@ -171,31 +175,40 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     size_t checked = 0;
     size_t self_checked = 0;
     for (const size_t ranks : {2U, 4U, 8U}) {
-        const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
-                                                                                 gen,
-                                                                                 eval,
-                                                                                 cut,
-                                                                                 coeffs,
-                                                                                 std::nullopt,
-                                                                                 ranks,
-                                                                                 0,
-                                                                                 false,
-                                                                                 nullptr,
-                                                                                 1.0);
-        BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
-        // The scan routes a self-owned partner to the stage, so bucket 0 must be empty here.
-        BOOST_REQUIRE(res.leader_queries[0].empty());
-        BOOST_REQUIRE(res.follower_queries[0].empty());
-        check_bucket_ownership(res.leader_queries, ranks, checked);
-        check_bucket_ownership(res.follower_queries, ranks, checked);
-        check_self_ownership(res.leader_self, ranks, /*my_rank=*/0, self_checked);
-        check_self_ownership(res.follower_self, ranks, /*my_rank=*/0, self_checked);
+        // BOTH routers, because the agreement is a property of the pair and not of either hash: the
+        // scan calls Router::dest and find_rank calls the same Router, so a divergence introduced by
+        // one of them shows up here whichever routing the geometry resolves to. bits=~0 asks for as
+        // many linear bits as log2(ranks) allows, i.e. fanout 1.
+        for (const size_t bits : {size_t{0}, ~size_t{0}}) {
+            const routing::Router router{ranks, /*partitions=*/1, bits};
+            const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
+                                                                                     gen,
+                                                                                     eval,
+                                                                                     cut,
+                                                                                     coeffs,
+                                                                                     std::nullopt,
+                                                                                     ranks,
+                                                                                     0,
+                                                                                     router,
+                                                                                     false,
+                                                                                     nullptr,
+                                                                                     1.0);
+            BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
+            // The scan routes a self-owned partner to the stage, so bucket 0 must be empty here.
+            BOOST_REQUIRE(res.leader_queries[0].empty());
+            BOOST_REQUIRE(res.follower_queries[0].empty());
+            check_bucket_ownership(res.leader_queries, router, checked);
+            check_bucket_ownership(res.follower_queries, router, checked);
+            check_self_ownership(res.leader_self, router, /*my_rank=*/0, self_checked);
+            check_self_ownership(res.follower_self, router, /*my_rank=*/0, self_checked);
+        }
     }
     // Without this the loop above passes trivially if the scan emitted nothing. The floor is on the SUM
     // because that is what is invariant across the split: the encoded counter alone fell to 797 of 1161
     // when the self-owned partners moved into the stage, with nothing going unchecked. Each arm still
     // carries its own floor -- a routing bug sending everything one way leaves the sum intact -- and the
-    // message prints the measured 797/364 so those can be re-grounded rather than guessed.
+    // message prints the measured counts so those can be re-grounded rather than guessed. The floors
+    // are unchanged although the loop now runs twice (one router each): they were never tight.
     BOOST_TEST_MESSAGE("encoded=" << checked << " staged=" << self_checked);
     BOOST_TEST(checked + self_checked > 1000U);
     BOOST_TEST(checked > 500U);
