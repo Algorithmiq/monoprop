@@ -26,6 +26,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/algebra/AlgebraCommon.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop {
 

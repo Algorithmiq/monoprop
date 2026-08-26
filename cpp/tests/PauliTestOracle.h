@@ -27,6 +27,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
+#include "monoprop/core/Monomial.h"
 
 namespace pauli_oracle {
 

@@ -88,6 +88,7 @@ target_sources(
       TYPE HEADERS
       FILES
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/Bitset.h"
+        "${PROJECT_SOURCE_DIR}/cpp/monoprop/DefaultInitAllocator.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/MPGraphEncoding.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/TypeAliases.h"
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/Utilities.h"
