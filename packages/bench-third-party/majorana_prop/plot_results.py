@@ -20,7 +20,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-STYLES = {"monoprop": "-o", "MajoranaPropagation.jl": "--x"}
+COLORS = {"monoprop": "tab:purple", "MajoranaPropagation.jl": "tab:red"}
 
 
 def plot_metric(
@@ -31,7 +31,15 @@ def plot_metric(
 ) -> None:
     """Plot ``metric_dict[source]`` vs. ``step_range`` for each source onto ``ax``."""
     for source, values in metric_dict.items():
-        ax.plot(step_range, values, STYLES.get(source, "-o"), label=source)
+        ax.plot(
+            step_range,
+            values,
+            color=COLORS[source],
+            label=source,
+            linestyle="-",
+            marker="o",
+            markersize=4,
+        )
     ax.set_xlabel("layers")
     ax.set_ylabel(ylabel)
     ax.legend(fontsize="small")
