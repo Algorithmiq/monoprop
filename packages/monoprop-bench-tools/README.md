@@ -7,7 +7,7 @@ vendoring the repository's `benches/` directory.
 
 | Module | What it gives you |
 | --- | --- |
-| `monoprop_bench_tools.memory.cpu` | Exact peak-RSS measurement from the kernel's `VmHWM`, plus PSS sampling for MPI node accounting. |
+| `monoprop_bench_tools.memory.cpu` | Exact peak-RSS measurement from the kernel's `VmHWM`. |
 | `monoprop_bench_tools.memory.gpu` | The device-side counterpart, over CUDA memory-pool counters or a CuPy allocation hook. |
 | `monoprop_bench_tools.models` | Builders for the benchmarked problems: a configurable random problem, a 120-mode Fermi-Hubbard model, and a 127-qubit kicked-Ising model. |
 | `monoprop_bench_tools.report` | Renders a run's artifacts into a side-by-side Markdown report. |
