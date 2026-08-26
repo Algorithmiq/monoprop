@@ -198,9 +198,9 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
     }
     const monoprop::detail::CosRecordView record{.indices = indices.data(), .values = recorded.data(), .count = n};
 
-    // 0.5 is an ordinary angle; the second is one ulp below 1, where state[i]*cos_val rounds back to
-    // state[i] for most i -- a layer the spread bound can still ask for a record on.
-    for (const double cos_val : {0.5, 1.0 - 0x1p-53}) {
+    // 0.5 is an ordinary angle; the second is so near 1 that state[i]*cos_val rounds back to state[i] --
+    // a layer the spread bound can still ask for a record on, because of the layers above it.
+    for (const double cos_val : {0.5, 1.0 - 0x1p-60}) {
         const double sec_val = 1.0 / cos_val;
         BOOST_TEST_CONTEXT("cos_val " << cos_val) {
             size_t exercised_layers = 0;
@@ -259,16 +259,16 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
     }
 }
 
-// The one-ulp-below-1 case above is only interesting if that cosine really does leave the state alone at
-// some index the kernel visits: a membership test that read the state would miss exactly those.
-BOOST_AUTO_TEST_CASE(a_cosine_one_ulp_below_one_leaves_states_unchanged) {
-    const double cos_val = 1.0 - 0x1p-53;
+// The near-1 case above is only interesting if that cosine really does leave the state alone: a membership
+// test reading the state would miss exactly those indices, and drop their terms from the sum.
+BOOST_AUTO_TEST_CASE(a_cosine_near_one_leaves_the_state_unchanged) {
+    const double cos_val = 1.0 - 0x1p-60;
     size_t unchanged = 0;
     for (size_t i = 0; i < 512; ++i) {
-        const double s = 0.5 + static_cast<double>(i) * 1e-3;
-        unchanged += static_cast<size_t>(s * cos_val == s);
+        const double state = 0.5 + static_cast<double>(i) * 1e-3;
+        unchanged += static_cast<size_t>(state * cos_val == state);
     }
-    BOOST_TEST(unchanged > 0u);
+    BOOST_TEST(unchanged == 512u);
 }
 
 // Lives here because it re-runs the same recompute machinery exercised above.
