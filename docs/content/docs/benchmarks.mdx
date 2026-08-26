@@ -157,15 +157,14 @@ different partitions because Leonardo's DCGP nodes do not contain GPUs.
 
 | Partition | Hardware | Engines |
 | --- | --- | --- |
-`DCGP (CPU) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` (56 threads), `PauliPropagation.jl` (28), `QuEra ppvm`, `Qiskit pauli-prop` |
-| Booster (GPU) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` |
+| DCGP (CPU) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` `0.8.1.dev61+gcb9a033aa` (56 threads), `PauliPropagation.jl` `0.8.2` on Julia `1.12.6` (28 threads), `QuEra ppvm` `0.1.0`, `Qiskit pauli-prop` `0.2.0` |
+| Booster (GPU) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` via `cuquantum-python-cu12` `26.6.0` |
 
 The benchmarks use each engine's best known configuration. `monoprop` uses all 56 cores of one
 socket; `PauliPropagation.jl` uses 28 threads because higher thread counts reduce its throughput.
 
 Each result record includes `host`, `threads`, and `library_version`; the plotting scripts report
-these fields alongside derived metrics. The measurements use `monoprop 0.8.1.dev61+gcb9a033aa`,
-Julia 1.12.6, and `PauliPropagation.jl` 0.8.2.
+these fields alongside derived metrics.
 
 ### How memory is measured
 
