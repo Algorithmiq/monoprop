@@ -127,10 +127,64 @@ jobs:
 
           add_executable(smoke main.cpp)
           target_link_libraries(smoke PRIVATE monoprop::monoprop)
+          # monoprop::monoprop does not propagate a C++ standard requirement, so any consumer of its
+          # C++23 headers (std::popcount, std::format, ...) has to opt in itself, same as here.
+          target_compile_features(smoke PRIVATE cxx_std_23)
           EOF
 
           cat > find-package-smoke/main.cpp <<'EOF'
-          auto main() -> int { return 0; }
+          // Drives monoprop::MonomialPropagator<N> down the same two chains that
+          // cpp/tests/link_export_probe/link_export_probe.cpp checks at link time, but through the
+          // *installed* monoprop::monoprop target with zero special flags -- exactly what an ordinary
+          // find_package(monoprop CONFIG) consumer does. If the shared library fails to export a symbol
+          // either chain calls into, this fails at dynamic-load/runtime, not just at link time.
+          #include "monoprop/MonomialPropagator.h"
+          #include "monoprop/detail/mpi/MPICompat.h"
+
+          #include <complex>
+          #include <optional>
+          #include <vector>
+
+          using namespace monoprop;
+
+          auto main() -> int {
+              constexpr size_t kModes = 2;
+              OperatorDict ham;
+              ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+
+              // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
+              MonomialPropagator<kModes> graph_sim(ham,
+                                                   2 * kModes,
+                                                   VecZ{0, 1},
+                                                   std::optional<unsigned int>{4U},
+                                                   MPI_COMM_SELF,
+                                                   std::nullopt,
+                                                   std::nullopt,
+                                                   CutoffType::Length,
+                                                   std::nullopt);
+              const std::vector<VecZ> monos{{0}, {1}, {2}};
+              graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
+              graph_sim.graph_memory_usage();
+              graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
+
+              // Partition path: detail/partition/CpuTopology.h. partitions > 1 is required for
+              // PartitionGroup to actually place and pin worker threads, not merely compile.
+              MonomialPropagator<kModes> partition_sim(ham,
+                                                       2 * kModes,
+                                                       VecZ{0, 1},
+                                                       std::nullopt,
+                                                       MPI_COMM_SELF,
+                                                       std::nullopt,
+                                                       std::nullopt,
+                                                       CutoffType::Length,
+                                                       std::nullopt,
+                                                       kModes,
+                                                       Basis::Majorana,
+                                                       2);
+              partition_sim.size();
+
+              return 0;
+          }
           EOF
 
           cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
