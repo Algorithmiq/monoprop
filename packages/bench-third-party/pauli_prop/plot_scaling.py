@@ -18,7 +18,8 @@ Reads the JSONL written by run_scaling.py (one or more files) and draws one curv
 backend, as two standalone figures — `pauli_scaling_runtime.png` and
 `pauli_scaling_memory.png` — plus a `pauli_scaling.md` sidecar holding the same numbers
 as a table and the provenance of each backend's points. A backend's curve simply ends at
-the last size it completed; why it stopped is in the table, not on the axes.
+the last size it completed; the runtime figure marks the timeout threshold when the result
+records specify one.
 """
 
 from __future__ import annotations
@@ -215,6 +216,17 @@ def _grid_ticks(records: list[dict]) -> tuple[list[int], list[str]]:
     return list(grids), list(grids.values())
 
 
+def _timeout_limit(records: list[dict]) -> float | None:
+    """Return the common timeout limit recorded by failed runs, if unambiguous."""
+    limits = {
+        float(match.group(1))
+        for record in records
+        if record.get("status") == "timeout"
+        and (match := re.search(r"exceeded ([0-9.]+)s", record.get("detail", "")))
+    }
+    return limits.pop() if len(limits) == 1 else None
+
+
 def layers(records: list[dict]) -> str:
     """How many Trotter layers every curve carries, for the title.
 
@@ -329,9 +341,22 @@ def _plot_axes(ax, records, key, ylabel) -> None:
         sides, values = _series(records, label, key)
         if not sides:
             continue
-        # A curve simply ends at the last size the backend completed; the per-size status
-        # (timeout / killed) is in the table and the JSONL, not drawn on the axes.
+        # A curve ends at the last size the backend completed; per-size status remains in
+        # the table and JSONL, while the common timeout threshold is shown below.
         ax.plot(sides, values, "o-", color=COLORS[label], label=label, markersize=5)
+    if key == "total_runtime_s" and (timeout := _timeout_limit(records)) is not None:
+        ax.axhline(timeout, color="#555555", linestyle="--", linewidth=1.2)
+        ax.annotate(
+            "Timeout limit",
+            xy=(1, timeout),
+            xycoords=("axes fraction", "data"),
+            xytext=(-6, 5),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+            fontsize="small",
+            color="#555555",
+        )
     ticks, tick_labels = _grid_ticks(records)
     ax.set_xticks(ticks)
     ax.set_xticklabels(tick_labels)
