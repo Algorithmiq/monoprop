@@ -90,6 +90,15 @@ inline auto finalize() -> void {}
 auto rank(const Comm &comm) -> int;
 auto size(const Comm &comm) -> int;
 
+// How the flat world of size() is actually built: ranks * partitions. Routing needs the split, because
+// an inter-rank message costs a network hop while an inter-partition one is a shared-memory copy --
+// size() alone cannot tell them apart. ranks * partitions == size() for every Kind.
+struct Geometry {
+    int ranks = 1;
+    int partitions = 1;
+};
+auto geometry(const Comm &comm) -> Geometry;
+
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {

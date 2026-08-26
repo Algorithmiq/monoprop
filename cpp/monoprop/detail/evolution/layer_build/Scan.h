@@ -187,7 +187,7 @@ struct FusedScanResult {
 };
 
 // Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
-// M'=M⊕G (hash%R; self at R==1) in ascending source-index order, so resolve and index assignment are
+// M'=M⊕G (routing::Router; self at R==1) in ascending source-index order, so resolve and index assignment are
 // deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
@@ -200,6 +200,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             std::optional<size_t> only_rotate_len_k,
                             size_t rank_count,
                             size_t my_rank,
+                            const routing::Router &router,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
@@ -286,7 +287,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
+            // routing::Router is the ONLY owner function; find_rank must stay in step with it.
+            const size_t r_prime = (rank_count == 1) ? my_rank : router.dest<NumModes>(new_mono);
             const size_t source = i;
             if (is_follower) {
                 query_push<NumModes>(fq[r_prime], new_mono, phase);
