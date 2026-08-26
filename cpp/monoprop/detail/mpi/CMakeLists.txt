@@ -12,6 +12,7 @@ target_sources(
         "MPICompat.h"
         "MPIUtils.h"
         "PartitionBarrier.h"
+        "Routing.h"
         "ShmComm.h"
 )
 

@@ -223,7 +223,7 @@ struct FusedScanResult {
 };
 
 // Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
-// M'=M⊕G (hash%R; self at R==1) in ascending source-index order, so resolve and index assignment are
+// M'=M⊕G (routing::Router; self at R==1) in ascending source-index order, so resolve and index assignment are
 // deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
@@ -236,6 +236,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             std::optional<size_t> only_rotate_len_k,
                             size_t rank_count,
                             size_t my_rank,
+                            const routing::Router &router,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
@@ -323,11 +324,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         double v_src,
                         bool is_follower) {
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            // Must be the same function find_rank computes (MPIUtils.h) or a term is placed and queried
-            // on different ranks, which duplicates a row silently; mpi_utils_tests.cpp asserts it.
+            // routing::Router is the only owner function; find_rank (MPIUtils.h) must stay in step with it
+            // or a term is placed and queried on different ranks, which duplicates a row silently.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
-                r_prime = monomial_hash<NumModes>(dense) % rank_count;
+                r_prime = router.dest<NumModes>(dense);
             }
             if (r_prime == my_rank) {
                 (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
