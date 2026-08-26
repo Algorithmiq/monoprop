@@ -127,22 +127,10 @@ jobs:
 
           add_executable(smoke main.cpp)
           target_link_libraries(smoke PRIVATE monoprop::monoprop)
-          # monoprop::monoprop does not propagate a C++ standard requirement, so any consumer of its
-          # C++23 headers (std::popcount, std::format, ...) has to opt in itself, same as here.
           target_compile_features(smoke PRIVATE cxx_std_23)
           EOF
 
           cat > find-package-smoke/main.cpp <<'EOF'
-          // Drives monoprop::MonomialPropagator<N> down the same two chains that
-          // cpp/tests/link_export_probe/link_export_probe.cpp checks at link time, but through the
-          // *installed* monoprop::monoprop target with zero special flags -- exactly what an ordinary
-          // find_package(monoprop CONFIG) consumer does. A hidden-visibility export gap on either
-          // chain already fails this program's *link* step (ld resolves an executable's undefined
-          // symbols against the shared library's dynamic symbol table, so a non-exported symbol is
-          // unresolved there too, not just at dynamic-load time) -- so the CI step below both builds
-          // and runs this binary: the build catches a missing export, and actually running the
-          // installed binary additionally exercises real runtime concerns a build-only step can't,
-          // like RPATH / shared-library discovery for the installed package.
           #include "monoprop/MonomialPropagator.h"
           #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -172,8 +160,6 @@ jobs:
               graph_sim.graph_memory_usage();
               graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
 
-              // Partition path: detail/partition/CpuTopology.h. partitions > 1 is required for
-              // PartitionGroup to actually place and pin worker threads, not merely compile.
               MonomialPropagator<kModes> partition_sim(ham,
                                                        2 * kModes,
                                                        VecZ{0, 1},
@@ -196,8 +182,6 @@ jobs:
 
           cmake --build find-package-smoke/build
 
-          # Must actually run, not just build: this is what proves the installed package loads and
-          # runs cleanly (RPATH / shared-library discovery), not only that it links.
           find-package-smoke/build/smoke
 
       - name: Get test group label
