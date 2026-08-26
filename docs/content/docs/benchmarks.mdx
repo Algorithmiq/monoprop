@@ -45,8 +45,8 @@ terms.
 
 The observables produced by the coefficient-threshold implementations differ by at most 3.8e-4.
 `Qiskit pauli-prop`, which truncates by term count instead, differs by 2.8e-3. The `cuPauliProp`
-operator resides in GPU memory; consequently, the table reports its peak device allocation rather
-than its 552 MB host RSS.
+operator resides in GPU memory; consequently, the table reports its peak GPU allocation rather
+than the host RSS (which we measured at 552 MB).
 
 <Figure>
 ![Runtime and peak RSS per Trotter step for five Pauli propagation engines](/benchmarks/pauli_results.png)
