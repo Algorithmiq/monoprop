@@ -68,9 +68,19 @@ struct GraphMemoryBreakdown final {
     }
 };
 
+// The layer-window vocabulary shared by MPGraph and its views: the deriving class supplies get_layer(),
+// this supplies everything derivable from it. Deducing this rather than CRTP, so a deriving class need not
+// name itself as a template argument, and the mixin stays an empty base.
+struct LayerWindow {
+    template <typename Self>
+    auto get_layer_traversal(this const Self &self, size_t layer_idx) -> LayerTraversal {
+        return self.get_layer(layer_idx).traversal();
+    }
+};
+
 // `reverse` traverses the window newest-first (Schrödinger replay order). Non-owning — the layer vector
 // must outlive the view.
-class MPGraphView {
+class MPGraphView : public LayerWindow {
 public:
     MPGraphView(const std::vector<Layer> &layers, size_t base, size_t count, bool reverse)
         : layers_(&layers),
@@ -81,8 +91,6 @@ public:
     auto layers() const -> size_t { return count_; }
 
     auto get_layer(size_t layer_idx) const -> const Layer & { return (*layers_)[checked_layer_offset(layer_idx)]; }
-
-    auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
 
 private:
     auto checked_layer_offset(size_t layer_idx) const -> size_t {
