@@ -184,7 +184,7 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
                                              VecD &send_buffer) {
     layer.for_each_occupied_slot(
         [my_rank, &layout, &snap, &send_buffer](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
-            if (static_cast<int>(rank) == my_rank) {
+            if (std::cmp_equal(rank, my_rank)) {
                 return;
             }
             // The send layout stays dense in the world; only the snapshot is indexed by position.
@@ -192,8 +192,8 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
             const auto &bs = snap.sin_send_state[pos];
             const auto &bh = snap.sin_send_op[pos];
             for (size_t k = 0; k < slot.sin_send_count; ++k) {
-                send_buffer[base + 2 * k] = bs[k];
-                send_buffer[base + 2 * k + 1] = bh[k];
+                send_buffer[base + (2 * k)] = bs[k];
+                send_buffer[base + (2 * k) + 1] = bh[k];
             }
         });
 }
@@ -209,7 +209,7 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
     EndpointContrib local{};
     layer.for_each_occupied_slot(
         [&payload, &snap, &trig, &op, &state, &local](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
-            if (static_cast<int>(rank) == payload.my_rank) {
+            if (std::cmp_equal(rank, payload.my_rank)) {
                 return;
             }
             const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
@@ -223,7 +223,7 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                 const double s_old = ds[k];
                 const double h_old = dh[k];
                 const double s_p = rv[2 * k];
-                const double h_p = rv[2 * k + 1];
+                const double h_p = rv[(2 * k) + 1];
                 local.cos_terms += s_old * op[i]; // pre-layer, matching what the cos pass added to A
                 local.sin_terms += phi * s_old * h_p;
                 op[i] = (h_old * trig.cos_val) + (ps * h_p);
@@ -270,7 +270,7 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
                                             VecD &send_buffer) {
     layer.for_each_occupied_slot(
         [my_rank, &layout, &send_buffer, &op](size_t rank, const detail::CrossRankSlotView &slot) {
-            if (static_cast<int>(rank) == my_rank) {
+            if (std::cmp_equal(rank, my_rank)) {
                 return;
             }
             const auto base = static_cast<size_t>(layout.displs[rank]);
@@ -286,7 +286,7 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               const ExchangePayload &payload) {
     // op[i] is already cos-scaled, so only the sine term is added; rv[k] is the partner's pre-cos value.
     layer.for_each_occupied_slot([&payload, sin_val, &op](size_t rank, const detail::CrossRankSlotView &slot) {
-        if (static_cast<int>(rank) == payload.my_rank) {
+        if (std::cmp_equal(rank, payload.my_rank)) {
             return;
         }
         const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
@@ -462,6 +462,7 @@ auto state_operator_derivative_local(VecD &state,
     return -trig.g_val * (trig.sin_val * (A - ep.cos_terms) - ep.sin_terms);
 }
 
+namespace {
 auto evolve_step_traversal_impl(VecD &op,
                                 const LayerTraversal &layer,
                                 double param,
@@ -494,6 +495,7 @@ auto evolve_step_traversal_impl(VecD &op,
         op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(self_slot, k)) * self_b_snapshot[k];
     }
 }
+} // namespace
 
 auto evolve_step(VecD &op,
                  const MPGraphView &graph,

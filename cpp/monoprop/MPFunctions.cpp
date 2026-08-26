@@ -260,7 +260,7 @@ auto EvalState::indices_above(double threshold) const -> VecZ {
     // than silently paring against a different keep-set.
     if (threshold < 0.0) {
         VecZ all(length_);
-        std::iota(all.begin(), all.end(), size_t{0});
+        std::ranges::iota(all, size_t{0});
         return all;
     }
 
