@@ -206,6 +206,58 @@ BOOST_AUTO_TEST_CASE(sparse_row_store_clone_preserves_rows_and_spills) {
     BOOST_TEST(copy->row(1) == spilled_row);
 }
 
+// resized() is the migration update_cutoff() relies on: every row keeps its index and its content,
+// whichever way the width moved -- including a row that crosses the overflow boundary, since set()
+// re-decides that per row rather than trusting the old classification.
+BOOST_AUTO_TEST_CASE(sparse_row_store_resized_preserves_rows_when_widening) {
+    constexpr size_t kNumBits = 64;
+    SparseRowStore store(kNumBits, 2); // width 2: the 3-slot row below starts spilled
+    Bitset inline_row(kNumBits);
+    inline_row.set(4);
+    inline_row.set(5);
+    Bitset spilled_row(kNumBits);
+    for (const size_t b : {0U, 6U, 10U, 30U}) {
+        spilled_row.set(b);
+    }
+    store.push_back(inline_row);
+    store.push_back(spilled_row);
+
+    const auto wide = store.resized(4); // now fits inline
+    BOOST_REQUIRE(wide->size() == 2U);
+    BOOST_TEST(wide->slots_per_row() == 4U);
+    BOOST_TEST(!wide->spilled(0));
+    BOOST_TEST(wide->row(0) == inline_row);
+    BOOST_TEST(!wide->spilled(1));
+    BOOST_TEST(wide->row(1) == spilled_row);
+
+    // Independent of the source: mutating store after the fact must not reach wide.
+    store.set(0, Bitset(kNumBits));
+    BOOST_TEST(wide->row(0) == inline_row);
+}
+
+BOOST_AUTO_TEST_CASE(sparse_row_store_resized_preserves_rows_when_narrowing) {
+    constexpr size_t kNumBits = 64;
+    SparseRowStore store(kNumBits, 4); // width 4: both rows below fit inline
+    Bitset a(kNumBits);
+    a.set(4);
+    a.set(5);
+    Bitset b(kNumBits);
+    for (const size_t bit : {0U, 6U, 10U, 30U}) {
+        b.set(bit);
+    }
+    store.push_back(a);
+    store.push_back(b);
+    BOOST_REQUIRE(!store.spilled(1));
+
+    const auto narrow = store.resized(2); // row 1 must now spill
+    BOOST_REQUIRE(narrow->size() == 2U);
+    BOOST_TEST(narrow->slots_per_row() == 2U);
+    BOOST_TEST(!narrow->spilled(0));
+    BOOST_TEST(narrow->row(0) == a);
+    BOOST_TEST(narrow->spilled(1));
+    BOOST_TEST(narrow->row(1) == b);
+}
+
 // K comes from the cutoff in modes, and is the same number for both cutoff kinds -- halving the slot
 // bound for a support cutoff would truncate rows a length cutoff of the same size admits.
 BOOST_AUTO_TEST_CASE(sparse_row_store_slots_come_from_the_cutoff_in_modes) {

@@ -108,6 +108,7 @@ public:
     }
 
     [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
+    [[nodiscard]] auto inline_width() const noexcept -> size_t { return inline_width_; }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -154,6 +155,24 @@ public:
         out->rows16_ = rows16_;
         out->size_ = size_;
         out->overflow_ = overflow_;
+        out->table_.reserve(table_.count());
+        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
+        return out;
+    }
+
+    // Same term set at a different inline_width_, e.g. after a cutoff change moves the bound rows are
+    // sized from. Every row's monomial is re-flowed through set() at the new stride, which decides
+    // inline-vs-overflow the same way a fresh insert would; the hash index is copied as-is, since
+    // fold_hash depends only on the monomial, never on inline_width_, so no rehash is needed. Row index i
+    // is preserved for every row -- load-bearing, since callers key op_coeffs, state_rows_/state_vals_
+    // and the evolution graph by this same index.
+    [[nodiscard]] auto resized(size_t new_inline_width) const -> std::unique_ptr<OperatorIndex> {
+        auto out = std::make_unique<OperatorIndex>(num_bits_, new_inline_width);
+        out->with_rows([&](auto &rows) { rows.resize(size_ * out->stride_); });
+        out->size_ = size_;
+        for (size_t i = 0; i < size_; ++i) {
+            out->set(i, row(i));
+        }
         out->table_.reserve(table_.count());
         table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
         return out;

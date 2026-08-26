@@ -201,6 +201,41 @@ BOOST_AUTO_TEST_CASE(partition_setters_reach_every_partition) {
     BOOST_CHECK_EQUAL(n_tight, build(2 * kLihModes, 4));
 }
 
+// update_cutoff() resizes the live row store in place (MPOperator::resize_store) rather than dropping
+// it, so the initial fill's rows -- inserted before the setter runs -- must migrate to the new width
+// with their content and index intact. Both propagators below end up at the same cutoff before
+// build_graph, so the row-store width at construction time (single-partition single-rank data, no width
+// past kMaxInlinePositions the migration could disagree over the encoding of) is the only difference:
+// if migration ever corrupted a row or its index, the initial fill's coefficients would be wrong for
+// every layer built from them, not just the resized one.
+BOOST_AUTO_TEST_CASE(update_cutoff_after_initial_fill_matches_direct_construction) {
+    const auto data = load_case_data("random_exact.msgpack");
+
+    auto ref = majorana_sim(data, 1);
+    ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const double e_ref = ref.expectation_value(data.parameters);
+
+    // Constructed at cutoff 1 -- the narrowest row-store width available -- so every initial term with
+    // more than one occupied mode starts in the dense backend's overflow map, then widened to kCutoff
+    // before the graph is built at all.
+    auto sim = test_utils::make_propagator(kNumModes,
+                                           data.hamiltonian,
+                                           /*cutoff=*/1U,
+                                           data.initial_state,
+                                           std::nullopt,
+                                           MPI_COMM_SELF);
+    sim.update_cutoff(kCutoff);
+    BOOST_REQUIRE_EQUAL(sim.cutoff(), kCutoff);
+    BOOST_REQUIRE_EQUAL(sim.size(), ref.size()); // the initial fill survived the resize term-for-term
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const double e_sim = sim.expectation_value(data.parameters);
+
+    BOOST_TEST_CONTEXT("e_ref=" << e_ref << " e_sim=" << e_sim) {
+        BOOST_TEST(near(e_ref, e_sim));
+    }
+    BOOST_CHECK_EQUAL(ref.size(), sim.size());
+}
+
 BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
     const auto data = load_case_data("random_exact.msgpack");
     auto sim = majorana_sim(data, 4);

@@ -138,6 +138,36 @@ struct MPOperator {
     }
     [[nodiscard]] auto rows_are_sparse() const -> bool { return sparse_rows != nullptr; }
 
+    // The live backend's own row-width parameter (OperatorIndex::inline_width() or
+    // SparseRowStore::slots_per_row()), off the store rather than a member of its own for the same
+    // reason as num_bits(): a caller deciding whether resize_store() has anything to do must read the
+    // width that would actually be resized.
+    [[nodiscard]] auto row_width() const -> size_t {
+        return with_store([]<typename Store>(const Store &rows) -> size_t {
+            if constexpr (requires { rows.inline_width(); }) {
+                return rows.inline_width();
+            }
+            else {
+                return rows.slots_per_row();
+            }
+        });
+    }
+
+    // Rebuilds the live backend at a new row width, migrating every existing row rather than dropping
+    // them the way set_store() would: OperatorIndex::resized() / SparseRowStore::resized() re-flow each
+    // row at the new width while preserving its index, so a caller with terms already inserted (e.g. a
+    // cutoff change after the initial fill) keeps them at the same row number. The lazy inverted index is
+    // dropped with it, exactly as set_store() would.
+    auto resize_store(size_t new_width) -> void {
+        if (sparse_rows) {
+            sparse_rows = sparse_rows->resized(new_width);
+        }
+        else {
+            dense_rows = dense_rows->resized(new_width);
+        }
+        inverted_index_.reset();
+    }
+
     auto size() const -> size_t {
         return with_store([](const auto &rows) { return rows.size(); });
     }

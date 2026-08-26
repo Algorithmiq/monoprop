@@ -291,6 +291,25 @@ public:
         return out;
     }
 
+    // Same term set at a different slots_per_row_, e.g. after a cutoff change moves the bound rows are
+    // sized from. Every row's monomial is re-flowed through set() at the new stride, which decides
+    // inline-vs-overflow the same way a fresh insert would; the hash index is copied as-is, since
+    // fold_hash (via sparse_row_hash) depends only on the monomial, never on slots_per_row_, so no rehash
+    // is needed. Row index i is preserved for every row -- load-bearing, since callers key op_coeffs,
+    // state_rows_/state_vals_ and the evolution graph by this same index.
+    [[nodiscard]] auto resized(size_t new_slots_per_row) const -> std::unique_ptr<SparseRowStore> {
+        auto out = std::make_unique<SparseRowStore>(num_bits_, new_slots_per_row);
+        out->modes_.resize(size_ * out->slots_per_row_);
+        out->codes_.resize(size_);
+        out->size_ = size_;
+        for (size_t i = 0; i < size_; ++i) {
+            out->set(i, row(i));
+        }
+        out->table_.reserve(table_.count());
+        table_.for_each_slot([&](TermIndex idx, uint32_t h) { out->table_.insert_distinct(idx, h); });
+        return out;
+    }
+
     auto reserve(size_t n) -> void {
         reserve_rows_(n);
         table_.reserve(n);

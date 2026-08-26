@@ -254,11 +254,15 @@ public:
         update_setting_([&](MonomialPropagator &p) { p.upper_atol_ = new_upper_atol; });
     }
 
-    /// Existing terms are not re-truncated.
+    /// Existing terms are not re-truncated by the cutoff function itself; the row store that holds them
+    /// is resized in place when the new cutoff moves its width bound, so a term admitted under the old
+    /// cutoff keeps its row (same index, same content) rather than paying the overflow-map cost for the
+    /// rest of the propagator's life.
     auto update_cutoff(unsigned int new_cutoff) -> void {
         update_setting_([&](MonomialPropagator &p) {
             p.cutoff_ = new_cutoff;
             p.regenerate_cutoff_fn_();
+            p.resize_row_store_if_needed_();
         });
     }
 
@@ -267,6 +271,7 @@ public:
         update_setting_([&](MonomialPropagator &p) {
             p.cutoff_type_ = new_cutoff_type;
             p.regenerate_cutoff_fn_();
+            p.resize_row_store_if_needed_();
         });
     }
 
@@ -276,6 +281,7 @@ public:
         update_setting_([&](MonomialPropagator &p) {
             p.basis_change_ = new_basis_change;
             p.regenerate_cutoff_fn_();
+            p.resize_row_store_if_needed_();
         });
     }
 
@@ -382,6 +388,17 @@ protected:
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
     // structural position bound when it has one, clamped to OperatorIndex's own inline cap.
     auto packed_inline_width_() const -> size_t;
+
+    // The live backend's ideal row width for the current cutoff/basis-change configuration: one function
+    // for the branch the constructor's store setup and resize_row_store_if_needed_() would otherwise
+    // duplicate.
+    auto target_row_width_() const -> size_t;
+
+    // Resizes the live backend to target_row_width_() when it has moved, migrating existing rows rather
+    // than dropping them. Must run after any setting change that can move the cutoff-derived bound
+    // (update_cutoff, update_cutoff_type, update_basis_change) -- see the row-width discussion on
+    // update_cutoff().
+    auto resize_row_store_if_needed_() -> void;
 
     // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
     static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;

@@ -145,24 +145,20 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     const size_t total_terms = schrodinger_ ? count_paired_op(max_pairs, num_modes_) : local_heisenberg_terms.size();
 
     const size_t expected_local_terms = std::max<size_t>(1, total_terms / std::max<size_t>(1, num_ranks));
-    // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
+    // Must run before the store: target_row_width_() derives the row width from cutoff_fn_.
     regenerate_cutoff_fn_();
     // Replaces the store MPOperator's constructor made: same width, but now with the cutoff-derived row
     // width, which is only knowable after regenerate_cutoff_fn_() above. set_store() drops the stale lazy
-    // inverted index with it.
+    // inverted index with it. A plain set_store() rather than resize_row_store_if_needed_(), because
+    // nothing has been inserted yet -- there are no rows to migrate.
     //
     // Which backend: the crossover is on the *storage* width, not the logical one, because what the dense
-    // representation costs is one pass per storage word. Rows are sized from row_width_bound_() -- a
-    // surviving term occupies at most that many modes under either cutoff kind, with Schrödinger's own
-    // special case included -- and anything wider (a fully paired term, which escapes the cutoff) spills
-    // losslessly.
+    // representation costs is one pass per storage word.
     if (use_sparse_rows_()) {
-        mp_op_.set_store(
-            std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_,
-                                                     detail::SparseRowStore::slots_for_bound(row_width_bound_())));
+        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_, target_row_width_()));
     }
     else {
-        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, packed_inline_width_()));
+        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, target_row_width_()));
     }
     mp_op_.reserve_terms(expected_local_terms);
 
@@ -357,6 +353,24 @@ auto MonomialPropagator::use_sparse_rows_() const -> bool {
             break;
     }
     return detail::SparseRowStore::preferred_for_modes(storage_num_modes_);
+}
+
+auto MonomialPropagator::target_row_width_() const -> size_t {
+    if (use_sparse_rows_()) {
+        return detail::SparseRowStore::slots_for_bound(row_width_bound_());
+    }
+    return packed_inline_width_();
+}
+
+// A no-op resize (the common case: update_lower_atol/update_upper_atol never call this at all, and most
+// update_cutoff_type/update_basis_change changes leave the structural bound where it was) costs one
+// comparison. An actual resize is an O(current term count) migration -- see MPOperator::resize_store()
+// -- paid once per call that moves the bound, not per term for the rest of the propagator's life.
+auto MonomialPropagator::resize_row_store_if_needed_() -> void {
+    const size_t target = target_row_width_();
+    if (mp_op_.row_width() != target) {
+        mp_op_.resize_store(target);
+    }
 }
 
 auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList, VecD> {

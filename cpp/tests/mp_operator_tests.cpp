@@ -492,3 +492,46 @@ BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     BOOST_CHECK_EQUAL(op.size(), 2U);
     BOOST_CHECK_EQUAL(copy.size(), 3U);
 }
+
+// resize_store() is what update_cutoff() calls when the cutoff-derived row-width bound moves: unlike
+// set_store(), it must keep existing rows (and their index, since op_coeffs/state_rows_/the graph key
+// off it) rather than installing an empty store. Both backends, since row_width() and resize_store()
+// must dispatch to whichever is live without the caller knowing which.
+BOOST_AUTO_TEST_CASE(mp_operator_resize_store_migrates_existing_rows_dense) {
+    detail::MPOperator op(kNumBits);
+    op.set_store(std::make_unique<detail::OperatorIndex>(kNumBits, 2)); // row 1 (3 positions) spills
+    op.append_term(bs({0, 1}));
+    op.index_term(bs({0, 1}), 0);
+    op.append_term(bs({2, 3, 4}));
+    op.index_term(bs({2, 3, 4}), 1);
+    BOOST_REQUIRE(!op.rows_are_sparse());
+    BOOST_REQUIRE_EQUAL(op.row_width(), 2U);
+
+    op.resize_store(4); // wide enough that row 1 no longer needs to spill
+    BOOST_CHECK_EQUAL(op.row_width(), 4U);
+    BOOST_CHECK_EQUAL(op.size(), 2U);
+    BOOST_CHECK((op.find(bs({0, 1})).has_value()));
+    BOOST_CHECK_EQUAL(*op.find(bs({0, 1})), 0U);
+    BOOST_CHECK((op.find(bs({2, 3, 4})).has_value()));
+    BOOST_CHECK_EQUAL(*op.find(bs({2, 3, 4})), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(mp_operator_resize_store_migrates_existing_rows_sparse) {
+    detail::MPOperator op(kNumBits);
+    op.set_store(std::make_unique<detail::SparseRowStore>(kNumBits, 2));
+    op.append_term(bs({0, 1}));
+    op.index_term(bs({0, 1}), 0);
+    op.append_term(bs({2, 3, 4}));
+    op.index_term(bs({2, 3, 4}), 1);
+    BOOST_REQUIRE(op.rows_are_sparse());
+    BOOST_REQUIRE_EQUAL(op.row_width(), 2U);
+
+    op.resize_store(4);
+    BOOST_CHECK(op.rows_are_sparse());
+    BOOST_CHECK_EQUAL(op.row_width(), 4U);
+    BOOST_CHECK_EQUAL(op.size(), 2U);
+    BOOST_CHECK((op.find(bs({0, 1})).has_value()));
+    BOOST_CHECK_EQUAL(*op.find(bs({0, 1})), 0U);
+    BOOST_CHECK((op.find(bs({2, 3, 4})).has_value()));
+    BOOST_CHECK_EQUAL(*op.find(bs({2, 3, 4})), 1U);
+}

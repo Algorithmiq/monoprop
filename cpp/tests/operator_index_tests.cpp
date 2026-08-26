@@ -148,6 +148,52 @@ BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
     BOOST_TEST(*b->find(bs({0, 1, 2})) == 0u);
 }
 
+// resized() is the migration update_cutoff() relies on: every row keeps its index, its content and its
+// findability, whichever way the width moved -- including rows that cross the overflow boundary in
+// either direction, since set() re-decides that per row rather than trusting the old classification.
+BOOST_AUTO_TEST_CASE(resized_preserves_index_content_and_find_when_widening) {
+    Store a(kBits, 2); // width 2: the 3-position row below starts in overflow_
+    a.push_back(bs({0, 1}));
+    a.emplace(bs({0, 1}), 0);
+    a.push_back(bs({0, 1, 2}));
+    a.emplace(bs({0, 1, 2}), 1);
+
+    auto b = a.resized(4); // now fits inline at both rows
+    BOOST_TEST(b->inline_width() == 4u);
+    BOOST_TEST(b->size() == 2u);
+    BOOST_TEST((b->row(0) == bs({0, 1})));
+    BOOST_TEST((b->row(1) == bs({0, 1, 2})));
+    BOOST_TEST(b->popcount(1) == 3u);
+    auto f0 = b->find(bs({0, 1}));
+    auto f1 = b->find(bs({0, 1, 2}));
+    BOOST_TEST(f0.has_value());
+    BOOST_TEST(*f0 == 0u);
+    BOOST_TEST(f1.has_value());
+    BOOST_TEST(*f1 == 1u);
+
+    // Independent of the source: mutating a after the fact must not reach b.
+    a.set(0, bs({5, 6}));
+    BOOST_TEST((b->row(0) == bs({0, 1})));
+}
+
+BOOST_AUTO_TEST_CASE(resized_preserves_index_content_and_find_when_narrowing) {
+    Store a(kBits, 4); // width 4: both rows below fit inline
+    a.push_back(bs({0, 1}));
+    a.emplace(bs({0, 1}), 0);
+    a.push_back(bs({0, 1, 2}));
+    a.emplace(bs({0, 1, 2}), 1);
+
+    auto b = a.resized(2); // row 1 must now spill to overflow_
+    BOOST_TEST(b->inline_width() == 2u);
+    BOOST_TEST(b->size() == 2u);
+    BOOST_TEST((b->row(0) == bs({0, 1})));
+    BOOST_TEST((b->row(1) == bs({0, 1, 2}))); // recovered from overflow_, popcount unaffected
+    BOOST_TEST(b->popcount(1) == 3u);
+    auto f1 = b->find(bs({0, 1, 2}));
+    BOOST_TEST(f1.has_value());
+    BOOST_TEST(*f1 == 1u);
+}
+
 // find_batch (the group-prefetch pipelined lookup) must be semantically identical to n independent
 // find() calls. The query mix below spans several G=16 groups plus a short tail and interleaves
 // present and absent keys, so every branch but the h32-collision fallback runs; that one needs a
