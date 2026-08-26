@@ -263,14 +263,33 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"init_operator_bytes", b.init_operator_bytes},
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
+                                             {"matched_scratch_bytes", b.matched_scratch_bytes},
                                              {"total_bytes", b.total_bytes()},
-                                             // Diagnostics (not part of total_bytes; see the struct).
+                                             // Diagnostics, outside total_bytes().
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
                                              {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
                                              {"d_init_operator_entries", b.init_operator_entries}};
+    });
+
+    // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P
+    // the MPI rank count never reveals.
+    cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
+        const auto b = self.graph_memory_usage();
+        return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},
+                                             {"layer_storage_object_bytes", b.layer_storage_object_bytes},
+                                             {"cos_data_bytes", b.cos_data_bytes},
+                                             {"cross_rank_bytes", b.cross_rank_bytes},
+                                             {"exchange_layout_bytes", b.exchange_layout_bytes},
+                                             {"total_bytes", b.total_bytes()},
+                                             // Diagnostics, outside total_bytes().
+                                             {"d_slot_record_bytes", b.slot_record_bytes},
+                                             {"d_layer_cores", b.layer_cores},
+                                             {"d_slot_records", b.slot_records},
+                                             {"d_occupied_slots", b.occupied_slots},
+                                             {"d_cross_rank_endpoints", b.cross_rank_endpoints}};
     });
 }
 } // namespace monoprop::bindings::detail

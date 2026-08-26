@@ -27,13 +27,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <set>
+#include <string>
 #include <vector>
 
 #if defined(__linux__)
 #include <sched.h>
 #endif
 
-#include "monoprop/detail/EnvConfig.h" // config::get().partition_pinning -- the one licensed empty placement
 #include "monoprop/detail/partition/CpuTopology.h"
 
 namespace partition = monoprop::detail::partition;
@@ -49,19 +49,6 @@ struct AffinityGuard {
 #endif
 };
 
-namespace {
-
-// An empty placement is licensed by pinning being off and by nothing else; "placed nothing" is the bug.
-auto empty_placement_is_licensed() -> bool {
-    if (monoprop::config::get().partition_pinning) {
-        return false;
-    }
-    BOOST_TEST_MESSAGE("monoprop_PARTITION_PINNING is off; partition_cpusets places nothing");
-    return true;
-}
-
-} // namespace
-
 /* ── Live smoke tests ─────────────────────────────────────────────────────── */
 
 BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
@@ -76,8 +63,8 @@ BOOST_AUTO_TEST_CASE(cpu_topology_enumerate_and_place) {
         partition::pin_this_thread(one.front());
         // guard restores affinity on scope exit
     }
-    // When topology discovery succeeds, a non-empty core list must produce a non-empty placement.
-    if (!cores.empty() && !(one.empty() && empty_placement_is_licensed())) {
+    // Pinning is unconditional, so a non-empty core list must produce a non-empty placement.
+    if (!cores.empty()) {
         BOOST_CHECK_EQUAL(one.size(), 1u);
     }
 
@@ -119,9 +106,6 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_co_located_ranks) {
                                                            /*group_index=*/1,
                                                            /*group_count=*/2,
                                                            partition::NodeMask::PerRank);
-    if (private_mask.empty() && empty_placement_is_licensed()) {
-        return;
-    }
     BOOST_REQUIRE_EQUAL(private_mask.size(), cores.size());
     std::set<int> placed;
     for (const auto &set : private_mask) {
@@ -367,9 +351,6 @@ BOOST_AUTO_TEST_CASE(cpu_topology_per_rank_mask_still_places) {
     // What `srun --cpu-bind=cores` produces: our whole share, told there are eight sibling ranks.
     const auto sets =
         partition::partition_cpusets(/*n=*/k, /*group_index=*/3, /*group_count=*/8, partition::NodeMask::PerRank);
-    if (sets.empty() && empty_placement_is_licensed()) {
-        return;
-    }
     BOOST_REQUIRE_EQUAL(sets.size(), k);
     for (const auto &set : sets) {
         // Never pin outside the mask the launcher gave us.
@@ -406,9 +387,6 @@ BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
                                                     /*group_index=*/1,
                                                     /*group_count=*/2,
                                                     partition::NodeMask::Shared);
-    if (rank0.empty() && rank1.empty() && empty_placement_is_licensed()) {
-        return;
-    }
     BOOST_REQUIRE_EQUAL(rank0.size(), per_rank);
     BOOST_REQUIRE_EQUAL(rank1.size(), per_rank);
     for (const auto &a : rank0) {
@@ -420,3 +398,49 @@ BOOST_AUTO_TEST_CASE(cpu_topology_shared_mask_keeps_co_located_ranks_disjoint) {
 }
 
 #endif // __linux__
+
+/* ── summarize_masks and the COMMPLACE line ───────────────────────────────── */
+
+BOOST_AUTO_TEST_CASE(cpu_topology_summarize_masks) {
+    constexpr size_t kWords = partition::kAffinityMaskWords;
+
+    // Two ranks holding one CPU each and two ranks sharing the same CPUs differ in exactly node_cpus.
+    const auto private_ = packed_masks({{0, 1}, {2, 3}}, kWords);
+    const auto priv = partition::summarize_masks(private_.data(), 2, kWords, 0);
+    BOOST_REQUIRE(priv.has_value());
+    BOOST_CHECK_EQUAL(priv->cpus, 2U);
+    BOOST_CHECK_EQUAL(priv->node_cpus, 4U);
+    BOOST_CHECK_EQUAL(priv->cpu_list, "0-3");
+
+    const auto shared = packed_masks({{0, 1}, {0, 1}}, kWords);
+    const auto shd = partition::summarize_masks(shared.data(), 2, kWords, 1);
+    BOOST_REQUIRE(shd.has_value());
+    BOOST_CHECK_EQUAL(shd->cpus, 2U);
+    BOOST_CHECK_EQUAL(shd->node_cpus, 2U);
+
+    // A run crossing a 64-bit word boundary is ONE run: a per-word loop would print "63,64".
+    const auto cross = packed_masks({{63, 64}}, kWords);
+    BOOST_CHECK_EQUAL(partition::summarize_masks(cross.data(), 1, kWords, 0).value().cpu_list, "63-64");
+
+    // No summary rather than a plausible zero: an all-zero row is a mask that did not fit the window.
+    const auto with_empty = packed_masks({{0, 1}, {}}, kWords);
+    BOOST_CHECK(!partition::summarize_masks(with_empty.data(), 2, kWords, 0).has_value());
+    BOOST_CHECK(!partition::summarize_masks(nullptr, 1, kWords, 0).has_value());
+    BOOST_CHECK(!partition::summarize_masks(private_.data(), 2, kWords, 2).has_value()); // self out of range
+}
+
+// The formatter returns a string rather than writing one, so the line is testable without a live rank.
+BOOST_AUTO_TEST_CASE(cpu_topology_place_line_reports_every_field) {
+    const partition::MaskSummary sum{.cpus = 16, .node_cpus = 128, .cpu_list = "0-127"};
+    // Whole line, not field lookups: a reordered or unterminated line has to fail too.
+    BOOST_CHECK_EQUAL(partition::format_place_line(5, 2, 8, "private", sum),
+                      "COMMPLACE rank=5 node_rank=2 node_size=8 masks=private cpus=16 node_cpus=128 "
+                      "cpu_list=0-127\n");
+}
+
+// The state summarize_masks refuses to classify must SAY unknown rather than print a plausible zero.
+BOOST_AUTO_TEST_CASE(cpu_topology_place_line_unknown_is_not_a_verdict) {
+    BOOST_CHECK_EQUAL(partition::format_place_line(0, 0, 1, "unknown", partition::MaskSummary{}),
+                      "COMMPLACE rank=0 node_rank=0 node_size=1 masks=unknown cpus=0 node_cpus=0 "
+                      "cpu_list=none\n");
+}

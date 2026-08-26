@@ -26,20 +26,28 @@ range than `monoprop` itself, so it is kept out of the main resolution.
 The chosen problem is the 1D Hubbard model, tracking the runtime, expectation value,
 and operator size at each Trotter step.
 
+<Figure>
 ![Benchmark results for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: number of terms, final overlap, runtime, and memory vs layers](/benchmarks/majorana_results.png)
 
-Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1D Fermi-Hubbard
-model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
-section below for details on the setup and how to reproduce these results.
+<Caption>
+  Number of terms, final overlap, runtime, and memory vs. circuit layers for the 1D Fermi-Hubbard
+  model, comparing `monoprop` against `MajoranaPropagation.jl`. See the
+  section below for details on the setup and how to reproduce these results.
+</Caption>
+</Figure>
 
+<Figure>
 ![Runtime for the 1D Hubbard model in MajoranaPropagation.jl vs monoprop: seconds vs circuit layers, linear axes](/benchmarks/majorana_runtime.png)
 
-Runtime on its own, both axes linear. Solid lines are `monoprop`, dashed are
-`MajoranaPropagation.jl`, and colour is the system size. Read it as seconds: the Julia engine's
-591 s at 60 sites / 18 layers is drawn 140× the height of `monoprop`'s 4.2 s, and all three
-`monoprop` curves consequently lie along the bottom of the axis — annotated with the top of that
-band, since flat here means small, not zero. For `monoprop`'s own growth with depth, read the
-term-count and memory panels of the combined figure, or the numbers below.
+<Caption>
+  Runtime on its own, both axes linear. Solid lines are `monoprop`, dashed are
+  `MajoranaPropagation.jl`, and colour is the system size. Read it as seconds: the Julia engine's
+  591 s at 60 sites / 18 layers is drawn 140× the height of `monoprop`'s 4.2 s, and all three
+  `monoprop` curves consequently lie along the bottom of the axis — annotated with the top of that
+  band, since flat here means small, not zero. For `monoprop`'s own growth with depth, read the
+  term-count and memory panels of the combined figure, or the numbers below.
+</Caption>
+</Figure>
 
 
 #### SPECS
@@ -158,11 +166,15 @@ The chosen problem is the Trotterized time evolution of a 2D transverse-field Is
 expectation value, and operator size at each Trotter step.
 
 
+<Figure>
 ![Benchmark results for Pauli Propagation engines: Runtime and Memory per Trotter step](/benchmarks/pauli_results.png)
 
-Runtime and memory usage per Trotter step for the 2D TFIM problem, comparing `monoprop` against
-other Pauli propagation engines. See the [Pauli Propagation](#pauli-propagation) section below for
-details on the setup and how to reproduce these results.
+<Caption>
+  Runtime and memory usage per Trotter step for the 2D TFIM problem, comparing `monoprop` against
+  other Pauli propagation engines. See the [Pauli Propagation](#pauli-propagation) section below for
+  details on the setup and how to reproduce these results.
+</Caption>
+</Figure>
 
 
 #### SPECS
@@ -307,20 +319,30 @@ benchmark does the opposite: it holds the circuit depth and the truncation fixed
 lattice, from 6x6 (36 qubits) to 18x18 (324 qubits). Every engine runs the identical model at
 each size, in its own subprocess, and contributes one totals record per size.
 
+<Figure>
 ![Total runtime versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling_runtime.png)
 
-At a fixed coefficient truncation the operator saturates: past ~100 qubits every engine carries
-the same ~5.8M terms whatever the lattice, so this measures *cost per term kept* rather than a
-growing problem. `monoprop`'s total runtime stays nearly flat in that regime, which is what makes
-the gap widen with size.
+<Caption>
+  At a fixed coefficient truncation the operator saturates: past ~100 qubits every engine carries
+  the same ~5.8M terms whatever the lattice, so this measures *cost per term kept* rather than a
+  growing problem. `monoprop`'s total runtime stays nearly flat in that regime, which is what makes
+  the gap widen with size.
+</Caption>
+</Figure>
 
+<Figure>
 ![Final operator memory versus lattice size, for five Pauli-propagation engines](/benchmarks/pauli_scaling_memory.png)
 
-The same saturation shows up in memory: `monoprop`'s footprint flattens near 690 MB from 12x12
-on, while `PauliPropagation.jl`'s keeps climbing to ~1.8 GB at 324 qubits. Compare across engines
-only with the third caveat below in mind — these are not all the same measurement.
+<Caption>
+  The same saturation shows up in memory: `monoprop`'s footprint flattens near 690 MB from 12x12
+  on, while `PauliPropagation.jl`'s keeps climbing to ~1.8 GB at 324 qubits. Compare across engines
+  only with the third caveat below in mind — these are not all the same measurement.
+</Caption>
+</Figure>
 
+<Figure>
 ![Bar chart of monoprop's speed-up over each other engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
+</Figure>
 
 | qubits | PauliPropagation.jl | QuEra ppvm | Qiskit pauli-prop | cuPauliProp (GPU) |
 | -----: | -----: | -----: | -----: | -----: |

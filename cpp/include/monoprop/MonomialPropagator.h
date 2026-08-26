@@ -135,7 +135,11 @@ public:
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
-        return detail::estimate_memory_usage(mp_op_);
+        // The stamp array is a member of THIS class, not of the operator, so the operator-side estimate
+        // leaves matched_scratch_bytes at 0 and only this level can fill it in.
+        auto breakdown = detail::estimate_memory_usage(mp_op_);
+        breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
+        return breakdown;
     }
 
     auto graph_layers() const -> size_t { return partition_group_ ? partitioned_graph_layers_() : graph_.layers(); }

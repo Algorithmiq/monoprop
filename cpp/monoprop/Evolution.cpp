@@ -14,6 +14,7 @@
 
 #include "monoprop/Evolution.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdlib>
@@ -60,8 +61,7 @@ auto combine_endpoint_contrib(const EndpointContrib &a, const EndpointContrib &b
 struct FlatExchangeBuffers {
     VecD send_buffer;
     VecD recv_buffer;
-    std::vector<int> recv_counts;
-    std::vector<int> recv_displs;
+    LayerExchangeLayout layout;
 };
 
 auto &acquire_flat_exchange_buffers() {
@@ -72,22 +72,18 @@ auto &acquire_flat_exchange_buffers() {
     return scratch.buffers;
 }
 
-void resize_flat_exchange_buffers(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers) {
-    // Recv size isn't known until counts are exchanged; keep it at 1 element so data() stays non-null.
-    const size_t send_alloc = layout.total_count == 0 ? 1 : layout.total_count;
-    buffers.send_buffer.resize(send_alloc);
-    buffers.recv_buffer.resize(1);
-    buffers.recv_counts.clear();
-    buffers.recv_displs.clear();
+// A property of the communicator, not the layer: all ranks participate even at local total_count 0.
+auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
+    return mpi::size(comm) != 1;
 }
 
-auto active_evolution_exchange_layout(const LayerTraversal &layer, const mpi::Comm &comm)
-    -> const LayerExchangeLayout * {
-    if (mpi::size(comm) == 1) {
-        return nullptr;
-    }
-    // All ranks must participate even at local total_count 0, else MPI_Alltoallv deadlocks.
-    return &layer.evolution_exchange_layout();
+// Derives both sides at once: the count matrix is symmetric, so the recv layout is the send layout.
+auto derive_layer_exchange(const LayerTraversal &layer, const mpi::Comm &comm, int scale, LayerExchangeLayout &layout)
+    -> void {
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm));
+    const char *what = scale == 1 ? "Layer exchange" : "Layer derivative exchange";
+    detail::derive_exchange_layout(layer.cross_rank(), my_rank, scale, layout, what);
+    mpi::check_exchange_layout_width(layout.counts, comm);
 }
 
 // The completed alltoallv payload as an apply pass sees it: peer `rank`'s entries start at
@@ -105,21 +101,19 @@ struct CrossRankExchangeHandle {
     [[no_unique_address]] mpi::Ticket ticket;
 };
 
-inline auto begin_flat_exchange(const LayerExchangeLayout &layout, FlatExchangeBuffers &buffers, const mpi::Comm &comm)
-    -> CrossRankExchangeHandle {
+inline auto begin_flat_exchange(FlatExchangeBuffers &buffers, const mpi::Comm &comm) -> CrossRankExchangeHandle {
+    const LayerExchangeLayout &layout = buffers.layout;
     CrossRankExchangeHandle handle;
     handle.layout = &layout;
     handle.buffers = &buffers;
-    const auto &recv = mpi::resolve_recv(layout.counts, comm, layout.recv_cache);
-    buffers.recv_counts = recv.counts;
-    buffers.recv_displs = recv.displs;
-    buffers.recv_buffer.resize(recv.total == 0 ? 1 : static_cast<size_t>(recv.total));
+    buffers.recv_buffer.resize(layout.total_count == 0 ? 1 : layout.total_count);
+    // Same arrays on both sides: MPI reads recvcounts/recvdispls and never writes them.
     handle.ticket = mpi::post_flat_alltoallv<double>({.send = buffers.send_buffer.data(),
                                                       .send_counts = layout.counts.data(),
                                                       .send_displs = layout.displs.data(),
                                                       .recv = buffers.recv_buffer.data(),
-                                                      .recv_counts = buffers.recv_counts.data(),
-                                                      .recv_displs = buffers.recv_displs.data()},
+                                                      .recv_counts = layout.counts.data(),
+                                                      .recv_displs = layout.displs.data()},
                                                      mpi::size(comm),
                                                      comm);
     return handle;
@@ -136,19 +130,18 @@ struct InFlightExchange {
     bool active = false;
 };
 
-// Callers run the participation guard first (see active_evolution_exchange_layout) so the layout is
-// never materialized at a single rank.
 template <typename Pack>
-inline auto begin_layer_exchange(const LayerExchangeLayout &layout, const mpi::Comm &comm, Pack pack)
+inline auto begin_layer_exchange(const LayerTraversal &layer, int scale, const mpi::Comm &comm, Pack pack)
     -> InFlightExchange {
     InFlightExchange in_flight;
     in_flight.my_rank = mpi::rank(comm);
     in_flight.active = true;
 
     auto &buffers = acquire_flat_exchange_buffers();
-    resize_flat_exchange_buffers(layout, buffers);
-    pack(in_flight.my_rank, layout, buffers.send_buffer);
-    in_flight.handle = begin_flat_exchange(layout, buffers, comm);
+    derive_layer_exchange(layer, comm, scale, buffers.layout);
+    buffers.send_buffer.resize(buffers.layout.total_count == 0 ? 1 : buffers.layout.total_count);
+    pack(in_flight.my_rank, buffers.layout, buffers.send_buffer);
+    in_flight.handle = begin_flat_exchange(buffers, comm);
     return in_flight;
 }
 
@@ -167,13 +160,12 @@ inline auto finish_layer_exchange(InFlightExchange &in_flight, Apply apply)
     }
     wait_flat_exchange(in_flight.handle);
     return apply(ExchangePayload{.recv_buffer = in_flight.handle.buffers->recv_buffer,
-                                 .recv_displs = in_flight.handle.buffers->recv_displs,
+                                 .recv_displs = in_flight.handle.buffers->layout.displs,
                                  .my_rank = in_flight.my_rank});
 }
 
-// Per-thread pre-cos snapshot buffers, reused across layers to avoid a malloc/free per layer. Passed whole
-// to the pack and apply passes: each reads two of the four vectors, and re-splitting them at every hand-off
-// is what lets a send buffer be mistaken for a recv one.
+// Per-thread pre-cos snapshot buffers, reused across layers, indexed by occupied position. Passed
+// whole rather than re-split at each hand-off, which is how a send buffer becomes a recv one.
 struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_state;
     std::vector<VecD> sin_send_op;
@@ -192,23 +184,20 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
                                              int my_rank,
                                              const LayerExchangeLayout &layout,
                                              VecD &send_buffer) {
-    const size_t num_ranks = layer.cross_rank_rank_count();
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        if (static_cast<int>(rank) == my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_send_size(rank);
-        if (end == 0) {
-            continue;
-        }
-        const auto base = static_cast<size_t>(layout.displs[rank]);
-        const auto &bs = snap.sin_send_state[rank];
-        const auto &bh = snap.sin_send_op[rank];
-        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &bs, &bh](size_t k, size_t /*i*/) {
-            send_buffer[base + 2 * k] = bs[k];
-            send_buffer[base + 2 * k + 1] = bh[k];
+    layer.for_each_occupied_slot(
+        [my_rank, &layout, &snap, &send_buffer](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
+            if (static_cast<int>(rank) == my_rank) {
+                return;
+            }
+            // The send layout stays dense in the world; only the snapshot is indexed by position.
+            const auto base = static_cast<size_t>(layout.displs[rank]);
+            const auto &bs = snap.sin_send_state[pos];
+            const auto &bh = snap.sin_send_op[pos];
+            for (size_t k = 0; k < slot.sin_send_count; ++k) {
+                send_buffer[base + 2 * k] = bs[k];
+                send_buffer[base + 2 * k + 1] = bh[k];
+            }
         });
-    }
 }
 
 // Remote endpoint pass: own pre-cos values come from the sin_recv snapshots, partner values from the
@@ -219,25 +208,18 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                                                const DerivativeSnapshotScratch &snap,
                                                const TrigValues &trig,
                                                const ExchangePayload &payload) -> EndpointContrib {
-    const size_t num_ranks = layer.cross_rank_rank_count();
     EndpointContrib local{};
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        if (static_cast<int>(rank) == payload.my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_recv_size(rank);
-        if (end == 0) {
-            continue;
-        }
-        const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
-        const auto &ds = snap.sin_recv_state[rank];
-        const auto &dh = snap.sin_recv_op[rank];
-        layer.for_each_cross_rank_sin_recv_range(
-            rank,
-            0,
-            end,
-            [&trig, &ds, &dh, &rv, &local, &op, &state](size_t k, size_t i, int phi_signed) {
-                const auto phi = static_cast<double>(phi_signed);
+    layer.for_each_occupied_slot(
+        [&payload, &snap, &trig, &op, &state, &local](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
+            if (static_cast<int>(rank) == payload.my_rank) {
+                return;
+            }
+            const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
+            const auto &ds = snap.sin_recv_state[pos];
+            const auto &dh = snap.sin_recv_op[pos];
+            for (size_t k = 0; k < slot.sin_send_count; ++k) {
+                const size_t i = detail::slot_sin_recv_index(slot, k);
+                const auto phi = static_cast<double>(detail::slot_sin_recv_phase(slot, k));
                 // Inverse-rotation write-back (−sin): un-evolves state/op for the next reverse layer.
                 const double ps = -trig.sin_val * phi;
                 const double s_old = ds[k];
@@ -248,8 +230,8 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                 local.sin_terms += phi * s_old * h_p;
                 op[i] = (h_old * trig.cos_val) + (ps * h_p);
                 state[i] = (s_old * trig.cos_val) + (ps * s_p);
-            });
-    }
+            }
+        });
     return local;
 }
 
@@ -258,11 +240,13 @@ inline auto begin_cross_rank_derivative_exchange(const DerivativeSnapshotScratch
                                                  const LayerTraversal &layer,
                                                  const mpi::Comm &comm) -> InFlightExchange {
     // Single-rank (or no peer participating): nothing to exchange — the self slot covers everything.
-    if (active_evolution_exchange_layout(layer, comm) == nullptr) {
+    if (!layer_exchange_participates(comm)) {
         return {};
     }
     // Safe to fire before the cos pass: pack reads pre-cos snapshots and the transfer touches only buffers.
-    return begin_layer_exchange(layer.derivative_exchange_layout(),
+    // Scale 2: each rotation endpoint carries both the op and the state payload.
+    return begin_layer_exchange(layer,
+                                2,
                                 comm,
                                 [&snap, &layer](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
                                     pack_cross_rank_derivative_payload_impl(snap, layer, my_rank, layout, send_buffer);
@@ -286,20 +270,16 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
                                             int my_rank,
                                             const LayerExchangeLayout &layout,
                                             VecD &send_buffer) {
-    const size_t num_ranks = layer.cross_rank_rank_count();
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
-        if (static_cast<int>(rank) == my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_send_size(rank);
-        if (end == 0) {
-            continue;
-        }
-        const auto base = static_cast<size_t>(layout.displs[rank]);
-        layer.for_each_cross_rank_sin_send_range(rank, 0, end, [&send_buffer, &base, &op](size_t k, size_t i) {
-            send_buffer[base + k] = op[i];
+    layer.for_each_occupied_slot(
+        [my_rank, &layout, &send_buffer, &op](size_t rank, const detail::CrossRankSlotView &slot) {
+            if (static_cast<int>(rank) == my_rank) {
+                return;
+            }
+            const auto base = static_cast<size_t>(layout.displs[rank]);
+            for (size_t k = 0; k < slot.sin_send_count; ++k) {
+                send_buffer[base + k] = op[detail::slot_sin_send_index(slot, k)];
+            }
         });
-    }
 }
 
 void apply_cross_rank_evolution_exchange_impl(VecD &op,
@@ -307,33 +287,26 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               double sin_val,
                                               const ExchangePayload &payload) {
     // op[i] is already cos-scaled, so only the sine term is added; rv[k] is the partner's pre-cos value.
-    const size_t num_ranks = layer.cross_rank_rank_count();
-    for (size_t rank = 0; rank < num_ranks; ++rank) {
+    layer.for_each_occupied_slot([&payload, sin_val, &op](size_t rank, const detail::CrossRankSlotView &slot) {
         if (static_cast<int>(rank) == payload.my_rank) {
-            continue;
-        }
-        const size_t end = layer.cross_rank_sin_recv_size(rank);
-        if (end == 0) {
-            continue;
+            return;
         }
         const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
-        layer.for_each_cross_rank_sin_recv_range(rank,
-                                                 0,
-                                                 end,
-                                                 [&op, &sin_val, &rv](size_t k, size_t i, int phi_signed) {
-                                                     op[i] += sin_val * static_cast<double>(phi_signed) * rv[k];
-                                                 });
-    }
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
+            const size_t i = detail::slot_sin_recv_index(slot, k);
+            op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(slot, k)) * rv[k];
+        }
+    });
 }
 
 inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &layer, const mpi::Comm &comm)
     -> InFlightExchange {
-    const auto *layout = active_evolution_exchange_layout(layer, comm);
-    if (layout == nullptr) {
+    if (!layer_exchange_participates(comm)) {
         return {};
     }
     return begin_layer_exchange(
-        *layout,
+        layer,
+        1,
         comm,
         [&op, &layer](int my_rank, const LayerExchangeLayout &active_layout, VecD &send_buffer) {
             pack_cross_rank_evolution_payload_impl(op, layer, my_rank, active_layout, send_buffer);
@@ -352,22 +325,20 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
 // Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
 // rotation, so reading both (pre-cos recovered from the post-cos slots) before writing either avoids the
 // read-after-write hazard.
-auto apply_self_slot_derivative_paired(VecD &state,
-                                       VecD &op,
-                                       const LayerTraversal &layer,
-                                       size_t my_rank,
-                                       const TrigValues &trig) -> EndpointContrib {
-    const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
+auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTraversal &layer, const TrigValues &trig)
+    -> EndpointContrib {
+    const auto slot = layer.cross_rank_self_slot();
+    const size_t self_d_count = slot.sin_send_count;
     if (self_d_count == 0) {
         return {};
     }
     const auto pairs = self_d_count / 2;
     EndpointContrib local{};
     for (size_t k = 0; k < pairs; ++k) {
-        const size_t i1 = layer.cross_rank_sin_recv_index_at(my_rank, k);
-        const double phi1 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k));
-        const size_t i2 = layer.cross_rank_sin_recv_index_at(my_rank, k + pairs);
-        const auto phi2 = static_cast<double>(layer.cross_rank_sin_recv_phase_at(my_rank, k + pairs));
+        const size_t i1 = detail::slot_sin_recv_index(slot, k);
+        const auto phi1 = static_cast<double>(detail::slot_sin_recv_phase(slot, k));
+        const size_t i2 = detail::slot_sin_recv_index(slot, k + pairs);
+        const auto phi2 = static_cast<double>(detail::slot_sin_recv_phase(slot, k + pairs));
         // Recover pre-cos values.
         const double s1 = state[i1] * trig.sec_val;
         const double h1 = op[i1] * trig.cos_val;
@@ -386,52 +357,59 @@ auto apply_self_slot_derivative_paired(VecD &state,
     return local;
 }
 
+// Emptied, not filled: the self slot recovers live, and a previous layer's snapshot must not be read.
+void clear_slot_snapshot(DerivativeSnapshotScratch &snap, size_t pos) {
+    snap.sin_send_state[pos].clear();
+    snap.sin_send_op[pos].clear();
+    snap.sin_recv_state[pos].clear();
+    snap.sin_recv_op[pos].clear();
+}
+
+void fill_slot_snapshot(DerivativeSnapshotScratch &snap,
+                        size_t pos,
+                        const VecD &state,
+                        const VecD &op,
+                        const detail::CrossRankSlotView &slot) {
+    const size_t count = slot.sin_send_count;
+    auto &bs = snap.sin_send_state[pos];
+    auto &bh = snap.sin_send_op[pos];
+    auto &ds = snap.sin_recv_state[pos];
+    auto &dh = snap.sin_recv_op[pos];
+    bs.resize(count);
+    bh.resize(count);
+    ds.resize(count);
+    dh.resize(count);
+    for (size_t k = 0; k < count; ++k) {
+        const size_t bi = detail::slot_sin_send_index(slot, k);
+        bs[k] = state[bi];
+        bh[k] = op[bi];
+        const size_t di = detail::slot_sin_recv_index(slot, k);
+        ds[k] = state[di];
+        dh[k] = op[di];
+    }
+}
+
 // Snapshot pre-cos (state, op) at every remote rank's sin_send/sin_recv endpoints before the cos pass
 // clobbers them. The self slot needs none — it recovers live — so it is cleared.
 void snapshot_remote_endpoints(const VecD &state,
                                const VecD &op,
                                const LayerTraversal &layer,
                                size_t my_rank,
-                               size_t R,
                                DerivativeSnapshotScratch &snap) {
-    snap.sin_send_state.resize(R);
-    snap.sin_send_op.resize(R);
-    snap.sin_recv_state.resize(R);
-    snap.sin_recv_op.resize(R);
-    for (size_t r = 0; r < R; ++r) {
-        if (r == my_rank) {
-            snap.sin_send_state[r].clear();
-            snap.sin_send_op[r].clear();
-            snap.sin_recv_state[r].clear();
-            snap.sin_recv_op[r].clear();
-            continue;
-        }
-        const size_t bc = layer.cross_rank_sin_send_size(r);
-        snap.sin_send_state[r].resize(bc);
-        snap.sin_send_op[r].resize(bc);
-        if (bc > 0) {
-            auto &bs = snap.sin_send_state[r];
-            auto &bh = snap.sin_send_op[r];
-            layer.for_each_cross_rank_sin_send_range(r, 0, bc, [&bs, &bh, &state, &op](size_t k, size_t i) {
-                bs[k] = state[i];
-                bh[k] = op[i];
-            });
-        }
-        const size_t dc = layer.cross_rank_sin_recv_size(r);
-        snap.sin_recv_state[r].resize(dc);
-        snap.sin_recv_op[r].resize(dc);
-        if (dc > 0) {
-            auto &ds = snap.sin_recv_state[r];
-            auto &dh = snap.sin_recv_op[r];
-            layer.for_each_cross_rank_sin_recv_range(r,
-                                                     0,
-                                                     dc,
-                                                     [&ds, &dh, &state, &op](size_t k, size_t i, int /*phi*/) {
-                                                         ds[k] = state[i];
-                                                         dh[k] = op[i];
-                                                     });
-        }
-    }
+    // Grow-only: shrinking would free the allocations this scratch exists to reuse.
+    const size_t occupied = layer.occupied_slot_count();
+    snap.sin_send_state.resize(std::max(snap.sin_send_state.size(), occupied));
+    snap.sin_send_op.resize(std::max(snap.sin_send_op.size(), occupied));
+    snap.sin_recv_state.resize(std::max(snap.sin_recv_state.size(), occupied));
+    snap.sin_recv_op.resize(std::max(snap.sin_recv_op.size(), occupied));
+    layer.for_each_occupied_slot(
+        [&snap, my_rank, &state, &op](size_t pos, size_t r, const detail::CrossRankSlotView &slot) {
+            if (r == my_rank) {
+                clear_slot_snapshot(snap, pos);
+                return;
+            }
+            fill_slot_snapshot(snap, pos, state, op, slot);
+        });
 }
 
 } // namespace
@@ -449,7 +427,7 @@ auto state_operator_derivative_local(VecD &state,
     const size_t R = layer.cross_rank_rank_count();
 
     auto &snap = derivative_snapshot_scratch();
-    snapshot_remote_endpoints(state, op, layer, my_rank, R, snap);
+    snapshot_remote_endpoints(state, op, layer, my_rank, snap);
 
     // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
     auto in_flight = begin_cross_rank_derivative_exchange(snap, layer, comm);
@@ -459,7 +437,7 @@ auto state_operator_derivative_local(VecD &state,
 
     EndpointContrib ep;
     if (my_rank < R) {
-        ep = apply_self_slot_derivative_paired(state, op, layer, my_rank, trig);
+        ep = apply_self_slot_derivative_paired(state, op, layer, trig);
     }
     const auto remote = finish_cross_rank_derivative_exchange(state, op, layer, snap, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
@@ -478,19 +456,15 @@ auto evolve_step_traversal_impl(VecD &op,
     const double sin_val = std::sin(2 * param);
 
     auto *const op_data = op.data();
-    const int my_rank_int = mpi::rank(comm);
-    const auto my_rank = static_cast<size_t>(my_rank_int);
 
-    // Snapshot my_rank's own sin_send values before the cos pass; runs unconditionally (the remote pack
-    // skips my_rank) so single-rank works.
-    const size_t self_b_count = (my_rank < layer.cross_rank_rank_count()) ? layer.cross_rank_sin_send_size(my_rank) : 0;
+    // This rank's own sin_send values before the cos pass. Unconditional, since the remote pack skips
+    // the self slot, so single-rank works.
+    const auto self_slot = layer.cross_rank_self_slot();
+    const size_t self_b_count = self_slot.sin_send_count;
     VecD self_b_snapshot;
     self_b_snapshot.resize(self_b_count);
-    if (self_b_count > 0) {
-        auto &snap = self_b_snapshot;
-        layer.for_each_cross_rank_sin_send_range(my_rank, 0, self_b_count, [&snap, &op](size_t k, size_t i) {
-            snap[k] = op[i];
-        });
+    for (size_t k = 0; k < self_b_count; ++k) {
+        self_b_snapshot[k] = op[detail::slot_sin_send_index(self_slot, k)];
     }
 
     // Pack + start the exchange before the cos scan so partner values are pre-cos and the transfer overlaps.
@@ -499,15 +473,9 @@ auto evolve_step_traversal_impl(VecD &op,
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
     // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added.
-    if (self_b_count > 0) {
-        const size_t self_d_count = layer.cross_rank_sin_recv_size(my_rank);
-        layer.for_each_cross_rank_sin_recv_range(my_rank,
-                                                 0,
-                                                 self_d_count,
-                                                 [&op, &sin_val, &self_b_snapshot](size_t k, size_t i, int phi_signed) {
-                                                     op[i] +=
-                                                         sin_val * static_cast<double>(phi_signed) * self_b_snapshot[k];
-                                                 });
+    for (size_t k = 0; k < self_b_count; ++k) {
+        const size_t i = detail::slot_sin_recv_index(self_slot, k);
+        op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(self_slot, k)) * self_b_snapshot[k];
     }
 }
 

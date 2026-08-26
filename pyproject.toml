@@ -149,7 +149,7 @@ sdist.exclude = [
   ".prettierignore",
   "cspell.json",
 ]
-sdist.include = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py"]
+sdist.include = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py", ".github/license-header.txt"]
 build.verbose = true
 build.tool-args = ["-j2"]
 # Default to a single build job for Python bindings; CI and one-off builds can
