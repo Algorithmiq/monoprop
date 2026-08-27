@@ -56,11 +56,11 @@ dev = ["prek>=0.4", "ruff==0.15.20"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
-# `docs/scripts/gen_api_dump.py` in the `gen-api` recipe). `griffecli` is griffe's
-# CLI, split into its own distribution in griffe 2; it drives the `check-api`
-# recipe's breaking-change check.
+# `docs/scripts/gen_api_dump.py` in the `gen-api` recipe). `griffelib` also
+# drives `docs/scripts/check_api.py` (the `check-api` recipe's breaking-change
+# check), used as a library rather than through its `griffecli` CLI -- see the
+# script's module docstring for why.
 docs = [
-  "griffecli>=2.2,<3",
   "griffelib>=2.2,<3",
   "nbconvert",
   "pytest-markdown-docs",
@@ -336,6 +336,8 @@ flake8-annotations.allow-star-arg-any = true
 # the report renderer writes to stdout by design (T201) and the MPI communicator
 # type is unavoidably dynamic (ANN401).
 "packages/monoprop-bench-tools/src/**" = ["ANN401", "T201"]
+# the breaking-change report is written to stderr by design (T201).
+"docs/scripts/check_api.py" = ["T201"]
 # cupy comes from an optional, GPU-only extra, so it is imported inside the
 # functions that need it (PLC0415).
 "packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = [
