@@ -136,19 +136,22 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm,
         MPI_Comm_rank(comm.mpi, &me);
         std::fill(recv_counts, recv_counts + n, 0);
         const PeerLayout one{.block = 1};
+        // Eager by contract: recv_counts is caller memory the caller reads on return, so unlike the
+        // payload round this one cannot be handed on in a handle.
         std::vector<MPI_Request> reqs;
-        sparse_pairwise(plan,
-                        me,
-                        n,
-                        comm.mpi,
-                        kFlatCountTag,
-                        MPI_INT,
-                        sizeof(int),
-                        reinterpret_cast<const std::byte *>(send_counts),
-                        one,
-                        reinterpret_cast<std::byte *>(recv_counts),
-                        one,
-                        reqs);
+        const int posted = sparse_pairwise(plan,
+                                           me,
+                                           n,
+                                           comm.mpi,
+                                           kFlatCountTag,
+                                           MPI_INT,
+                                           sizeof(int),
+                                           reinterpret_cast<const std::byte *>(send_counts),
+                                           one,
+                                           reinterpret_cast<std::byte *>(recv_counts),
+                                           one,
+                                           reqs);
+        MPI_Waitall(posted, reqs.data(), MPI_STATUSES_IGNORE);
         return;
     }
     (void)n;

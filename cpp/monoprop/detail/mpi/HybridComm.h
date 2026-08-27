@@ -480,18 +480,19 @@ private:
             return;
         }
         const PeerLayout blocks{.block = block};
-        sparse_pairwise(plan,
-                        mpi_rank_,
-                        r_,
-                        parent_,
-                        kHybridCountTag,
-                        MPI_INT,
-                        sizeof(int),
-                        reinterpret_cast<const std::byte *>(counts_send_.data()),
-                        blocks,
-                        reinterpret_cast<std::byte *>(counts_recv_.data()),
-                        blocks,
-                        reqs_);
+        const int posted = sparse_pairwise(plan,
+                                           mpi_rank_,
+                                           r_,
+                                           parent_,
+                                           kHybridCountTag,
+                                           MPI_INT,
+                                           sizeof(int),
+                                           reinterpret_cast<const std::byte *>(counts_send_.data()),
+                                           blocks,
+                                           reinterpret_cast<std::byte *>(counts_recv_.data()),
+                                           blocks,
+                                           reqs_);
+        MPI_Waitall(posted, reqs_.data(), MPI_STATUSES_IGNORE);
     }
 
     // The staged payload: one MPI_Alltoallv when dense, else a pair per peer over the same per-rank
@@ -510,18 +511,20 @@ private:
                           parent_);
             return;
         }
-        sparse_pairwise(plan,
-                        mpi_rank_,
-                        r_,
-                        parent_,
-                        kHybridPayloadTag,
-                        dt,
-                        elem,
-                        stage_send_.data(),
-                        PeerLayout{.counts = mpi_send_counts_.data(), .displs = mpi_send_displs_.data()},
-                        stage_recv_.data(),
-                        PeerLayout{.counts = mpi_recv_counts_.data(), .displs = mpi_recv_displs_.data()},
-                        reqs_);
+        const int posted =
+            sparse_pairwise(plan,
+                            mpi_rank_,
+                            r_,
+                            parent_,
+                            kHybridPayloadTag,
+                            dt,
+                            elem,
+                            stage_send_.data(),
+                            PeerLayout{.counts = mpi_send_counts_.data(), .displs = mpi_send_displs_.data()},
+                            stage_recv_.data(),
+                            PeerLayout{.counts = mpi_recv_counts_.data(), .displs = mpi_recv_displs_.data()},
+                            reqs_);
+        MPI_Waitall(posted, reqs_.data(), MPI_STATUSES_IGNORE);
     }
 
     template <typename V>
