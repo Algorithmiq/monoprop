@@ -31,8 +31,6 @@ namespace monoprop::detail::partition {
 
 namespace {
 
-/* ── Process-lifetime hwloc topology ──────────────────────────────────────── */
-
 // hwloc_topology_t is safe for concurrent read-only access after hwloc_topology_load().
 struct TopologyHolder {
     hwloc_topology_t topo = nullptr;
@@ -69,8 +67,6 @@ auto get_topology() -> hwloc_topology_t {
     return holder.topo;
 }
 
-/* ── Effective allowed cpuset for the calling thread ──────────────────────── */
-
 // Queries the current thread's affinity to respect any launcher-imposed restriction (cgroup, MPI
 // process binding) narrower than the topology's own allowed cpuset. Falls back to the topology
 // allowed cpuset when the cpubind query is unsupported on this platform. Caller must free the bitmap.
@@ -87,8 +83,6 @@ auto effective_allowed_cpuset(hwloc_topology_t topo) -> hwloc_cpuset_t {
     return hwloc_bitmap_dup(hwloc_topology_get_allowed_cpuset(topo));
 }
 
-/* ── Process-wide placement record ────────────────────────────────────────── */
-
 // One process has one placement, so the last verdict is the whole state. Locked rather than atomic:
 // the five fields are read together and a torn mix of two placements would explain neither.
 struct PlacementRecord {
@@ -103,8 +97,6 @@ auto placement_record() -> PlacementRecord & {
 
 } // anonymous namespace
 
-/* ── placement_report / format_unpinned_line ──────────────────────────────── */
-
 auto placement_report() -> PlacementReport {
     auto &rec = placement_record();
     const std::lock_guard lock(rec.mu);
@@ -118,8 +110,6 @@ auto format_unpinned_line(const PlacementReport &report) -> std::string {
                        report.groups,
                        report.partitions);
 }
-
-/* ── topo_detail::placement_order ─────────────────────────────────────────── */
 
 namespace topo_detail {
 
@@ -183,8 +173,6 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
 }
 
 } // namespace topo_detail
-
-/* ── enumerate_physical_cores ──────────────────────────────────────────────── */
 
 auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     auto *const topo = get_topology();
@@ -255,8 +243,6 @@ auto enumerate_physical_cores() -> std::vector<PhysicalCore> {
     return cores;
 }
 
-/* ── affinity_mask_words ───────────────────────────────────────────────────── */
-
 auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
     if (out == nullptr || nwords == 0) {
         return false;
@@ -281,8 +267,6 @@ auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool {
     hwloc_bitmap_free(allowed);
     return representable;
 }
-
-/* ── masks_are_pairwise_disjoint ───────────────────────────────────────────── */
 
 auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool {
     if (masks == nullptr || words == 0 || n < 2) {
@@ -309,8 +293,6 @@ auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) 
     }
     return true;
 }
-
-/* ── summarize_masks ──────────────────────────────────────────────────────── */
 
 // hwloc indexes a bitmap in unsigned long units, so a 64-bit word must be one of them.
 static_assert(sizeof(unsigned long) == sizeof(uint64_t), "the mask word is not an hwloc bitmap unit");
@@ -384,8 +366,6 @@ auto place_line_is_new(std::string_view line) -> bool {
     return true;
 }
 
-/* ── partition_cpusets ─────────────────────────────────────────────────────── */
-
 auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMask mask) -> std::vector<CpuSet> {
     const auto cores = enumerate_physical_cores();
 
@@ -423,8 +403,6 @@ auto partition_cpusets(size_t n, size_t group_index, size_t group_count, NodeMas
     }
     return sets;
 }
-
-/* ── pin_this_thread ───────────────────────────────────────────────────────── */
 
 auto pin_this_thread(const CpuSet &set) -> void {
     if (set.pu < 0) {
