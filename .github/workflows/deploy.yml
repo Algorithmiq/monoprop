@@ -6,17 +6,10 @@ on:
     types:
       - published
   pull_request:
-    # PRs trigger for the "opened", "reopened", "synchronize" events (default) and
-    # "ready_for_review"
     paths:
       - .github/workflows/deploy.yml
       - pyproject.toml
       - packages/monoprop-bench-tools/pyproject.toml
-    types:
-      - opened
-      - reopened
-      - synchronize # when new commits are pushed to the PR
-      - ready_for_review # when the PR is un-drafted
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -147,10 +140,8 @@ jobs:
           path: bench-tools-dist/*
 
   build-wheels:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
     needs: check-pr-changes
-    if: ${{ github.event_name != 'pull_request' || (needs.check-pr-changes.outputs.should-run == 'true' && !github.event.pull_request.draft) }}
+    if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     name: Build Python wheels for ${{ matrix.os }}
     runs-on: ${{ matrix.runs-on }}
     strategy:
