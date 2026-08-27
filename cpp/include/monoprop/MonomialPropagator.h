@@ -47,6 +47,7 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/partition/StagedCollect.h"
+#include "monoprop/monopropExport.h"
 
 namespace monoprop {
 namespace detail {
@@ -116,7 +117,7 @@ public:
     using std::invalid_argument::invalid_argument;
 };
 
-class MonomialPropagator {
+class monoprop_EXPORT MonomialPropagator {
 public:
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator>(mpi::Comm)>;
 
