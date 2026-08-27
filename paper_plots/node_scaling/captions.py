@@ -25,7 +25,8 @@ def _cores(curves):
 # authored in plain text because the artifact page renders them as prose; LaTeX is derived.
 MATH = {
     "t(N0)N0/t(N)N": r"$t(N_0)N_0 / t(N)N$",
-    "t(128 cores) / t(N)": r"$t(128\ \mathrm{cores}) / t(N)$",
+    "t(128 cores) / t(N)": r"$t(128\,\mathrm{cores}) / t(N)$",  # \, not "\ ": wrap() splits on
+    # whitespace, and a lone trailing backslash at a line break is not safe LaTeX
     "1/N": r"$1/N$",
     "R = 8N": r"$R = 8N$",
     "N nodes": r"$N$ nodes",
@@ -95,3 +96,33 @@ def weak_efficiency(curves):
     return (f"Weak-scaling parallel efficiency, t({lo} cores) / t(N), for the same runs. At {hi} "
             f"cores the efficiencies are {', '.join(eff)}. The larger the load a node carries, "
             f"the closer weak scaling stays to ideal. {CONFIG}")
+
+
+def combined(drawn):
+    """The 2x2 composite. Written from the SAME per-panel definitions, so a fact stated in one of
+    the standalone captions cannot contradict the composite's."""
+    strong, weak = drawn["strong"], drawn["weak"]
+    lo, hi = _cores(strong + weak)
+    sizes = ", ".join(lab.replace(" terms", "") for lab, _ in strong)
+    loads = ", ".join(lab.replace("/node", "") for lab, _ in weak)
+    seff, weff = [], []
+    for lab, pts in strong:
+        p0, pn = min(pts, key=lambda p: p["cores"]), max(pts, key=lambda p: p["cores"])
+        seff.append(f"{100 * p0['median'] * p0['nodes'] / (pn['median'] * pn['nodes']):.0f}%")
+    for lab, pts in weak:
+        p0, pn = min(pts, key=lambda p: p["cores"]), max(pts, key=lambda p: p["cores"])
+        weff.append(f"{100 * p0['median'] / pn['median']:.0f}%")
+    return (f"Strong and weak scaling of the Hubbard propagate operator on {lo} to {hi} cores "
+            f"({lo // 128} to {hi // 128} nodes; both axes label the same runs). "
+            f"Top row, strong scaling at three fixed problem sizes ({sizes} terms): "
+            f"(a) wall time, with each curve’s own ideal 1/N dotted beside it, and "
+            f"(b) parallel efficiency t(N0)N0/t(N)N, each curve normalised to the narrowest run "
+            f"its problem fits in, so all three begin at 100% and the single ideal line applies "
+            f"to every one — reaching {', '.join(seff)} at {hi} cores. "
+            f"Bottom row, weak scaling at three loads per node ({loads} terms/node): "
+            f"(c) wall time, with each curve’s own flat ideal dotted beside it, and "
+            f"(d) parallel efficiency t({lo} cores) / t(N), reaching {', '.join(weff)} at {hi} "
+            f"cores. Colour and marker encode problem size (top) or load per node (bottom); the "
+            f"legend in each row’s left panel serves both panels of that row. Together the rows "
+            f"show one thing: the departure from ideal is set by the load a node carries, not by "
+            f"a core count, and it moves to higher core counts as the problem grows. {CONFIG}")

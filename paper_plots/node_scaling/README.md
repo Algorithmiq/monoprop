@@ -57,9 +57,11 @@ light-to-dark **single-hue ordinal** ramp — the three curves differ in a *magn
 identity — validated colourblind-safe against a white surface with
 `scripts/palette/validate_palette.js --ordinal`. Marker shape carries the same information so
 identity survives greyscale print. Deliberately minimal, conventional HPC style: no titles, no
-`(a)`/`(b)` lettering, no secondary axes, no in-plot annotations. Drawn at final single-column
-width (3.4 in) so the type is at true size in the paper. Vector `.pdf` plus a `.png` twin for
-preview, in `figures/`.
+in-plot annotations. Every panel carries **cores below and nodes above** — one axis in the two
+units the machine and the reader respectively think in (they differ by exactly the 128 cores per
+node), never a second quantity on a second scale. Drawn at final size so the type is true in the
+paper: **3.4 × 2.95 in** for the standalone single-column figures, **7.0 × 5.2 in** for the
+page-wide composite. Vector `.pdf` plus a `.png` twin for preview, in `figures/`.
 
 **`fig-strong-time`** — wall time vs cores, log–log, at three fixed problem sizes. The dotted line
 beside each curve is *that curve's own* ideal `1/N`, anchored at its first point. The y-axis is
@@ -77,7 +79,15 @@ beside each curve is its own ideal, flat from its first point.
 **`fig-weak-efficiency`** — weak efficiency `t(128 cores) / t(N)`. The headline plot: the larger
 the load a node carries, the closer weak scaling stays to ideal.
 
-LaTeX-ready captions for all four are in **`figures/captions.txt`**, generated from `captions.py`
+**`fig-scaling-2x2`** — the same four panels as one page-wide float for the top of a page,
+lettered **(a)–(d)**: rows are the scaling family (strong above, weak below), columns the quantity
+(time left, efficiency right). Both families span the same 128–8192 cores, so the four panels
+share one x axis exactly; the cores labels appear once per column at the foot of the figure, and
+the legend in each row's left panel serves both panels of that row. It is drawn by the *same*
+per-panel code as the four standalone figures, so it cannot disagree with them — use the four or
+the one, not both.
+
+LaTeX-ready captions for all five are in **`figures/captions.txt`**, generated from `captions.py`
 by `make_paper_figures.py` — edit the Python, never the `.txt`. Every range and percentage in a
 caption is computed from the rows the figure is drawn from, so a caption cannot describe rungs
 that were not plotted.
@@ -88,8 +98,7 @@ Figures and captions from the shipped data (matplotlib only; no cluster, no mono
 
 ```bash
 ./build.sh                                        # -> figures/*.pdf, *.png, captions.txt
-# or explicitly, naming the interpreter:
-PY=/projects/EEHPC-DEV-2026D08-260/venvs/plot296/bin/python ./build.sh    # on Deucalion
+# or explicitly:
 python make_paper_figures.py data/SCALE-CELLS.tsv figures
 ```
 
@@ -136,9 +145,11 @@ scripts/                  campaign drivers (copies of the canonical files)
   calibseq.sh, submit_scale.sh, scaleladder.sh, scanlogs.sh, collatescale.py
   palette/                colourblind-safety validator for the ramp
 figures/                  fig-strong-time, fig-strong-efficiency, fig-weak-time,
-                          fig-weak-efficiency (each .pdf + .png); captions.txt
+                          fig-weak-efficiency, fig-scaling-2x2 (each .pdf + .png);
+                          captions.txt
+  retired/                superseded figure sets, kept as the record of what was shown before
+  ab-supporting/          the A/B routing figures; not part of the scaling story
 ```
 
-The prose results document (`RESULTS-296-scaling.md`), the superseded figure sets and the A/B
-routing record this study deliberately excludes all live in the campaign harness on Deucalion
-(`/projects/EEHPC-DEV-2026D08-260/harness/`), not in this repository.
+The prose results document is `harness/RESULTS-296-scaling.md`; the A/B routing record it
+deliberately excludes is `harness/RESULTS-296-ab-routing-2026-08-27.md`.

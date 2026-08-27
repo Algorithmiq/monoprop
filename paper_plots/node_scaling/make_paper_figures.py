@@ -20,7 +20,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import FixedLocator, FuncFormatter, LogLocator  # noqa: E402
+from matplotlib.ticker import (FixedLocator, FuncFormatter, LogLocator,  # noqa: E402
+                              NullLocator)
 
 import captions  # noqa: E402
 
@@ -38,7 +39,10 @@ RAMP3 = ["#86b6ef", "#2a78d6", "#0d366b"]
 # colour alone.
 MARKS = ["o", "s", "^"]
 
-W, H = 3.4, 2.7                   # single column, drawn at final size
+W, H = 3.4, 2.95                  # single column, drawn at final size
+# The 2x2 composite is a page-wide top-of-page float: 7.0 in is the usual two-column textwidth,
+# and 4.9 in keeps it to roughly the top half of the page so body text still follows it.
+W2, H2 = 7.0, 5.2
 CORES_PER_NODE = 128
 
 # STIXGeneral is Times-metric, so the figure text matches the body text of a Times-set paper
@@ -96,14 +100,32 @@ def plain_log(axis):
     axis.set_minor_formatter(fmt)
 
 
-def panel(cores, logy=True):
-    """A bare axes: cores on a log2 x-axis, no title, no second axis, light major grid."""
-    fig, ax = plt.subplots(figsize=(W, H))
+def nodes_axis(ax, cores, label=True):
+    """A second x-axis on top reading in NODES. Cores are what the machine is booked in, nodes are
+    what the reader reasons about, and the two differ by exactly CORES_PER_NODE -- so this is a
+    relabelling of the same axis, never a second scale carrying a second quantity."""
+    top = ax.secondary_xaxis("top", functions=(lambda c: c / CORES_PER_NODE,
+                                              lambda n: n * CORES_PER_NODE))
+    top.xaxis.set_major_locator(FixedLocator([c / CORES_PER_NODE for c in cores]))
+    top.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{int(round(v))}"))
+    top.xaxis.set_minor_locator(NullLocator())
+    if label:
+        top.set_xlabel("Nodes", labelpad=3)
+    top.tick_params(colors=INK2, labelsize=plt.rcParams["xtick.labelsize"], pad=2)
+    top.spines["top"].set_color(plt.rcParams["axes.edgecolor"])
+    top.spines["top"].set_linewidth(plt.rcParams["axes.linewidth"])
+    return top
+
+
+def dress(ax, cores, logy=True, xlabel=True):
+    """Cores on a log2 x-axis, light major grid, no title and no right/top furniture of its own
+    (the nodes axis supplies the top spine)."""
     ax.set_xscale("log", base=2)
     ax.xaxis.set_major_locator(FixedLocator(cores))
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{int(v)}"))
     ax.set_xlim(min(cores) / 1.3, max(cores) * 1.3)
-    ax.set_xlabel("Cores")
+    if xlabel:
+        ax.set_xlabel("Cores")
     if logy:
         ax.set_yscale("log")
         plain_log(ax.yaxis)
@@ -111,6 +133,14 @@ def panel(cores, logy=True):
     ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
+    return ax
+
+
+def panel(cores, logy=True):
+    """One standalone single-column figure, with its own nodes axis on top."""
+    fig, ax = plt.subplots(figsize=(W, H))
+    dress(ax, cores, logy=logy)
+    nodes_axis(ax, cores)
     return fig, ax
 
 
@@ -165,11 +195,11 @@ def all_cores(curves):
     return sorted({p["cores"] for _, pts in curves for p in pts})
 
 
-def fig_strong_time(rungs, outdir):
-    curves = strong_curves(rungs)
-    if not curves:
-        return
-    fig, ax = panel(all_cores(curves))
+# --- the four drawing bodies. Each takes an axes so the standalone figure and the 2x2 composite
+# --- draw from the SAME code: a composite rebuilt with its own copy of the plotting would drift
+# --- from the singles, and the two would then disagree in a paper that shows both.
+
+def draw_strong_time(ax, curves, legend=True):
     ax.set_ylabel("Time (s)")
     for i, (lab, pts) in enumerate(curves):
         xs = [p["cores"] for p in pts]
@@ -178,13 +208,11 @@ def fig_strong_time(rungs, outdir):
         ax.plot(xs, [t0 * c0 / x for x in xs], color=RAMP3[i], lw=0.7, ls=":",
                 alpha=0.65, zorder=2)
     clip_y(ax, curves, lambda p: p["median"])
-    ax.legend(loc="lower left")
-    fig.tight_layout()
-    save(fig, outdir, "fig-strong-time")
-    return curves
+    if legend:
+        ax.legend(loc="lower left")
 
 
-def fig_strong_efficiency(rungs, outdir):
+def draw_strong_efficiency(ax, curves, legend=True):
     """Strong-scaling parallel efficiency, t(N0)*N0 / (t(N)*N), each curve from its OWN smallest
     run (1, 2 and 8 nodes).
 
@@ -194,10 +222,6 @@ def fig_strong_efficiency(rungs, outdir):
     that the three baselines differ -- so the curves say how well each SIZE scales from the
     narrowest run that fits it, not how fast one is against another.
     """
-    curves = strong_curves(rungs)
-    if not curves:
-        return
-    fig, ax = panel(all_cores(curves), logy=False)
     ax.set_ylabel("Parallel efficiency (%)")
     ax.axhline(100.0, color=GUIDE, lw=0.8, ls="--", zorder=2)
     for i, (lab, pts) in enumerate(curves):
@@ -208,37 +232,25 @@ def fig_strong_efficiency(rungs, outdir):
     # measurement to make the ideal line look like a ceiling.
     ax.set_ylim(0, 112)
     ax.yaxis.set_major_locator(FixedLocator([0, 20, 40, 60, 80, 100]))
-    ax.legend(loc="lower left")
-    fig.tight_layout()
-    save(fig, outdir, "fig-strong-efficiency")
-    return curves
+    if legend:
+        ax.legend(loc="lower left")
 
 
-def fig_weak_time(rungs, outdir):
-    curves = weak_curves(rungs)
-    if not curves:
-        return
-    fig, ax = panel(all_cores(curves))
+def draw_weak_time(ax, curves, legend=True):
     ax.set_ylabel("Time (s)")
     for i, (lab, pts) in enumerate(curves):
         xs = [p["cores"] for p in pts]
         line(ax, xs, [p["median"] for p in pts], i, lab)
         ax.plot(xs, [pts[0]["median"]] * len(xs), color=RAMP3[i], lw=0.7, ls=":",
                 alpha=0.65, zorder=2)
+    # Headroom above the top curve is the one region empty at every x, so the legend goes there.
     clip_y(ax, curves, lambda p: p["median"], hi=3.4)
-    ax.legend(loc="upper left", ncol=3, columnspacing=1.1, handlelength=1.6,
-              handletextpad=0.4)
-    fig.tight_layout()
-    save(fig, outdir, "fig-weak-time")
-    return curves
+    if legend:
+        ax.legend(loc="upper left", ncol=3, columnspacing=1.1, handlelength=1.6,
+                  handletextpad=0.4)
 
 
-def fig_weak_efficiency(rungs, outdir):
-    curves = weak_curves(rungs)
-    if not curves:
-        return
-    cores = all_cores(curves)
-    fig, ax = panel(cores, logy=False)
+def draw_weak_efficiency(ax, curves, legend=True):
     ax.set_ylabel("Parallel efficiency (%)")
     ax.axhline(100.0, color=GUIDE, lw=0.8, ls="--", zorder=2)
     for i, (lab, pts) in enumerate(curves):
@@ -246,28 +258,90 @@ def fig_weak_efficiency(rungs, outdir):
         line(ax, [p["cores"] for p in pts], [100.0 * t0 / p["median"] for p in pts], i, lab)
     ax.set_ylim(0, 108)
     ax.yaxis.set_major_locator(FixedLocator([0, 20, 40, 60, 80, 100]))
-    ax.legend(loc="lower left")
+    if legend:
+        ax.legend(loc="lower left")
+
+
+# (kind, stem, which curves, drawing body, log y)
+SINGLES = [
+    ("strong", "fig-strong-time", draw_strong_time, True),
+    ("strong", "fig-strong-efficiency", draw_strong_efficiency, False),
+    ("weak", "fig-weak-time", draw_weak_time, True),
+    ("weak", "fig-weak-efficiency", draw_weak_efficiency, False),
+]
+
+
+def fig_single(rungs, outdir, kind, stem, draw, logy):
+    curves = strong_curves(rungs) if kind == "strong" else weak_curves(rungs)
+    if not curves:
+        return None
+    fig, ax = panel(all_cores(curves), logy=logy)
+    draw(ax, curves)
     fig.tight_layout()
-    save(fig, outdir, "fig-weak-efficiency")
+    save(fig, outdir, stem)
     return curves
+
+
+def fig_combined(rungs, outdir):
+    """The 2x2 page-wide composite: rows are the scaling family, columns are the quantity.
+
+    Both families span the same 128-8192 cores, so the four panels share one x axis exactly and
+    only the bottom row needs the cores labels and only the top row the nodes axis -- which buys
+    back the vertical space the second axis costs. The row legend lives in the left panel and
+    serves the right one too, since colour and marker mean the same thing across a row.
+    """
+    strong, weak = strong_curves(rungs), weak_curves(rungs)
+    if not (strong and weak):
+        return None
+    cores = sorted(set(all_cores(strong)) | set(all_cores(weak)))
+    fig, axes = plt.subplots(2, 2, figsize=(W2, H2), sharex=True)
+    rows = [(strong, draw_strong_time, draw_strong_efficiency, (True, False)),
+            (weak, draw_weak_time, draw_weak_efficiency, (True, False))]
+    for r, (curves, draw_t, draw_e, logys) in enumerate(rows):
+        for c, (draw, logy) in enumerate(zip((draw_t, draw_e), logys)):
+            ax = axes[r][c]
+            dress(ax, cores, logy=logy, xlabel=(r == 1))
+            # legend in the left panel of each row only; the right panel shares it
+            draw(ax, curves, legend=(c == 0))
+            nodes_axis(ax, cores)
+            letter(ax, "abcd"[2 * r + c], above=True)
+    fig.tight_layout(h_pad=1.6, w_pad=1.4)
+    save(fig, outdir, "fig-scaling-2x2")
+    return {"strong": strong, "weak": weak}
+
+
+def letter(ax, ch, above=False):
+    """Panel label outside the axes' top-left. `above` clears the nodes axis on the top row, so
+    each letter sits just above its own panel's topmost furniture rather than at a shared height
+    that would collide in one row and float in the other."""
+    ax.annotate(f"({ch})", xy=(0.0, 1.0), xycoords="axes fraction",
+                xytext=(-2, 30 if above else 4), textcoords="offset points",
+                ha="left", va="bottom", fontsize=9.5, fontweight="bold", color=INK)
 
 
 TITLE = "Figure captions -- strong and weak scaling of the Hubbard propagate operator"
 
-PREAMBLE = """LaTeX-ready captions for the four figures in this directory, converted from the
-single caption definition in ../captions.py -- edit that file, not this one, and re-run
+PREAMBLE = """LaTeX-ready captions for the figures in this directory, converted from the single
+caption definition in ../captions.py -- edit that file, not this one, and re-run
 make_paper_figures.py. Ranges and percentages are computed from the plotted rows, never typed.
 
-Encoding shared by all four figures: colour and marker = problem size (strong) or load per node
+Figs. 1-4 are the standalone single-column figures. Fig. 5 is the page-wide 2x2 composite of the
+same four panels, lettered (a)-(d), for use as a single top-of-page float; it draws from the same
+code, so it cannot disagree with them. Use either the four or the one, not both.
+
+Encoding shared by every figure: colour and marker = problem size (strong) or load per node
 (weak), on a light-to-dark single-hue ordinal ramp, since the three curves differ in a MAGNITUDE
-rather than in identity. The figures carry no titles and no (a)/(b) lettering, so the caption is
-the only place the reference lines and the machine configuration are stated."""
+rather than in identity. Each panel carries a cores axis below and a nodes axis above -- the same
+axis in the two units the machine and the reader respectively think in, not a second quantity.
+The figures carry no titles, so the caption is the only place the reference lines and the machine
+configuration are stated."""
 
 FIGURES = [
     ("fig-strong-time", "Strong scaling, wall time", captions.strong_time),
     ("fig-strong-efficiency", "Strong scaling, parallel efficiency", captions.strong_efficiency),
     ("fig-weak-time", "Weak scaling, wall time", captions.weak_time),
     ("fig-weak-efficiency", "Weak scaling, parallel efficiency", captions.weak_efficiency),
+    ("fig-scaling-2x2", "All four panels, page-wide composite", captions.combined),
 ]
 
 
@@ -307,12 +381,9 @@ def main():
     missing = [l for l in STRONG + WEAK if l not in have]
     if missing:
         print(f"  NOT MEASURED (curve omitted, not drawn short): {', '.join(missing)}")
-    drawn = {
-        "fig-strong-time": fig_strong_time(rungs, outdir),
-        "fig-strong-efficiency": fig_strong_efficiency(rungs, outdir),
-        "fig-weak-time": fig_weak_time(rungs, outdir),
-        "fig-weak-efficiency": fig_weak_efficiency(rungs, outdir),
-    }
+    drawn = {stem: fig_single(rungs, outdir, kind, stem, draw, logy)
+             for kind, stem, draw, logy in SINGLES}
+    drawn["fig-scaling-2x2"] = fig_combined(rungs, outdir)
     write_captions(drawn, outdir)
 
 
