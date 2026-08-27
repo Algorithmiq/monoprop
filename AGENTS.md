@@ -122,8 +122,8 @@ Key files:
   indeterminate so a copy costs the operand's own width instead of the widest supported one. Every
   reader — the word loops, `operator==`, `SplitmixHash`, the MPI readers — must therefore stop at
   `num_words()`, and a new one that walks the whole inline array will read garbage rather than zeros.
-- **The row-store seam**: a dense monomial is a transient, not the storage. `TypeAliases.h` declares
-  four accessors — `materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position` — and
+- **The row-store seam**: a dense monomial is a transient, not the storage. `detail/operator/RowAccess.h`
+  declares four accessors — `materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position` — and
   three backends answer them: `std::vector<Bitset>`, `detail::OperatorIndex` (packed position lists) and
   `detail::SparseRowStore` (fixed-width mode lanes plus one 2-bit-per-slot `codes` word per row). Reach
   rows through the accessors, never through a backend's own API, and add any fourth backend to

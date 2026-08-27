@@ -170,9 +170,9 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
 // -- so a run that ignored the record would differ by value rather than by trust. The record covers every
 // index, so those outside the cosine set, which the kernel never visits, are exercised too.
 BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
-    auto sim = build_simulator<kNumModes>(data, cfg);
+    auto sim = build_simulator(kNumModes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
     const auto &inverted_index = sim.mp_op().inverted_index();
@@ -202,33 +202,31 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
                 if (layer.generator_words().empty()) {
                     continue;
                 }
-                const auto gen = generator_of<kNumModes>(layer);
-                auto recipe =
-                    monoprop::detail::make_lazy_fold<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
-                auto prepared =
-                    monoprop::detail::make_fold_cache<kNumModes>(inverted_index, gen, layer.scaled_count(), kBasis);
-                if (monoprop::detail::fold_popcount<kNumModes>(prepared) == 0) {
+                const auto gen = generator_of(kNumModes, layer);
+                auto recipe = monoprop::detail::make_lazy_fold(inverted_index, gen, layer.scaled_count(), kBasis);
+                auto prepared = monoprop::detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), kBasis);
+                if (monoprop::detail::fold_popcount(prepared) == 0) {
                     continue;
                 }
                 ++exercised_layers;
 
                 // Sum over the cosine set of state * the recorded ham, with no scaling anywhere.
                 std::vector<double> ref_state = state0, ref_ham = recorded;
-                const double expected = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
-                                                                                         recipe,
-                                                                                         ref_state.data(),
-                                                                                         ref_ham.data(),
-                                                                                         1.0,
-                                                                                         1.0);
+                const double expected = monoprop::detail::accumulate_cos_lazy(inverted_index,
+                                                                              recipe,
+                                                                              ref_state.data(),
+                                                                              ref_ham.data(),
+                                                                              1.0,
+                                                                              1.0);
 
                 std::vector<double> state = state0, ham = polluted;
                 monoprop::detail::predivide_cos_record(ham.data(), record, cos_val);
-                double got = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
-                                                                              recipe,
-                                                                              state.data(),
-                                                                              ham.data(),
-                                                                              cos_val,
-                                                                              sec_val);
+                double got = monoprop::detail::accumulate_cos_lazy(inverted_index,
+                                                                   recipe,
+                                                                   state.data(),
+                                                                   ham.data(),
+                                                                   cos_val,
+                                                                   sec_val);
                 got *= sec_val;
                 monoprop::detail::restore_cos_record(ham.data(), record);
 
@@ -239,12 +237,12 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
 
                 // Without the record the pollution shows through, so the checks above are not vacuous.
                 std::vector<double> bare_state = state0, bare_ham = polluted;
-                const double bare = monoprop::detail::accumulate_cos_lazy<kNumModes>(inverted_index,
-                                                                                     recipe,
-                                                                                     bare_state.data(),
-                                                                                     bare_ham.data(),
-                                                                                     cos_val,
-                                                                                     sec_val);
+                const double bare = monoprop::detail::accumulate_cos_lazy(inverted_index,
+                                                                          recipe,
+                                                                          bare_state.data(),
+                                                                          bare_ham.data(),
+                                                                          cos_val,
+                                                                          sec_val);
                 BOOST_TEST(std::abs((bare * sec_val) - expected) > 1e-9 * (1.0 + std::abs(expected)));
             }
             BOOST_TEST(exercised_layers > 0u);

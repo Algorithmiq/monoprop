@@ -23,6 +23,7 @@
 
 #include "monoprop/Bitset.h"
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/operator/RowAccess.h"
 #include "monoprop/monopropExport.h"
 
 namespace monoprop {
