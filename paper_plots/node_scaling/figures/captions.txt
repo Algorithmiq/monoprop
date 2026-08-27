@@ -1,0 +1,54 @@
+Figure captions -- strong and weak scaling of the Hubbard propagate operator
+============================================================================
+
+LaTeX-ready captions for the four figures in this directory, converted from the
+single caption definition in ../captions.py -- edit that file, not this one, and re-run
+make_paper_figures.py. Ranges and percentages are computed from the plotted rows, never typed.
+
+Encoding shared by all four figures: colour and marker = problem size (strong) or load per node
+(weak), on a light-to-dark single-hue ordinal ramp, since the three curves differ in a MAGNITUDE
+rather than in identity. The figures carry no titles and no (a)/(b) lettering, so the caption is
+the only place the reference lines and the machine configuration are stated.
+
+
+Fig. 1  (fig-strong-time)  --  Strong scaling, wall time
+--------------------------------------------------------
+Strong scaling of the Hubbard propagate operator: wall time against core count, 128 to
+8192 cores, at three fixed problem sizes (1.57e9, 6.13e9, 24.42e9 terms). The dotted
+line beside each curve is that curve's own ideal $1/N$, anchored at its first point.
+Deucalion x86, 128 cores per node, 8 MPI ranks per node with 16 partitions per rank, so
+$R = 8N$ ranks at $N$ nodes. Each point is the median of five reps.
+
+
+Fig. 2  (fig-strong-efficiency)  --  Strong scaling, parallel efficiency
+------------------------------------------------------------------------
+Strong-scaling parallel efficiency, $t(N_0)N_0 / t(N)N$, for the same runs. Each curve
+is normalised to the narrowest run its problem fits in (1.57e9 from 128; 6.13e9 from
+256; 24.42e9 from 1024 cores), so every curve begins at 100\% and the single ideal line
+applies to all three; the curves therefore describe how well each size scales from that
+point, and are not absolute comparisons between sizes. The departure from ideal moves to
+higher core counts as the problem grows, reaching 1.57e9: 14\%, 6.13e9: 38\%, 24.42e9:
+74\% at 8192 cores. Deucalion x86, 128 cores per node, 8 MPI ranks per node with 16
+partitions per rank, so $R = 8N$ ranks at $N$ nodes. Each point is the median of five
+reps.
+
+
+Fig. 3  (fig-weak-time)  --  Weak scaling, wall time
+----------------------------------------------------
+Weak scaling of the same operator: wall time against core count, 128 to 8192 cores,
+holding the load per node constant at 96M (92--98M measured); 385M (377--392M measured);
+1529M (1479--1569M measured) terms. The problem sizes form a sequence stepping by
+$\times$1.90--2.07 rather than exactly $\times$2, so the load along a curve drifts by a
+few per cent and every quantity is normalised on the measured term count. The dotted
+line beside each curve is that curve's own ideal, flat from its first point. Deucalion
+x86, 128 cores per node, 8 MPI ranks per node with 16 partitions per rank, so $R = 8N$
+ranks at $N$ nodes. Each point is the median of five reps.
+
+
+Fig. 4  (fig-weak-efficiency)  --  Weak scaling, parallel efficiency
+--------------------------------------------------------------------
+Weak-scaling parallel efficiency, $t(128\ \mathrm{cores}) / t(N)$, for the same runs. At
+8192 cores the efficiencies are 96M/node: 29\%, 385M/node: 60\%, 1529M/node: 84\%. The
+larger the load a node carries, the closer weak scaling stays to ideal. Deucalion x86,
+128 cores per node, 8 MPI ranks per node with 16 partitions per rank, so $R = 8N$ ranks
+at $N$ nodes. Each point is the median of five reps.

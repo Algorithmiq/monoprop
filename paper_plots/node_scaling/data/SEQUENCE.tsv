@@ -1,0 +1,12 @@
+k	lower_atol	terms	ratio_to_prev	source
+0	1.25e-05	96981051	-	earlier weak ladder
+1	8.8e-06	184124520	1.899	earlier weak ladder
+2	5.9e-06	377482074	2.050	earlier weak ladder
+3	3.9e-06	781669404	2.071	earlier weak ladder
+4	2.6e-06	1569152761	2.007	earlier weak ladder
+5	1.73e-06	3104527573	1.978	earlier weak ladder
+6	1.14e-06	6125805627	1.973	earlier weak ladder
+7	7.35e-07	12255330837	2.001	calibseq job 1854652
+8	4.68e-07	24419998198	1.993	calibseq job 1854652
+9	2.94e-07	48317129677	1.979	calibseq job 1854652
+10	1.82e-07	94684031363	1.960	calibseq job 1854652
