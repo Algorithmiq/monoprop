@@ -141,7 +141,7 @@ struct MaskSummary {
  *  the whole line is compared rather than a once-flag set, because a process that builds an `alone`
  *  propagator before an MPI one has two placements and both are worth saying. Process-wide, locked.
  */
-[[nodiscard]] auto place_line_is_new(std::string_view line) -> bool;
+[[nodiscard]] monoprop_EXPORT auto place_line_is_new(std::string_view line) -> bool;
 
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };
