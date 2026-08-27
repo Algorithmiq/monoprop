@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
 

@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "monoprop/monopropExport.h"
@@ -134,6 +135,13 @@ struct MaskSummary {
                                                      int node_size,
                                                      const char *verdict,
                                                      const MaskSummary &summary) -> std::string;
+
+/*! @brief True the first time @p line is seen, and whenever it differs from the previous call.
+ *  One process has one placement, so a propagator built 437 times reports it 437 times identically;
+ *  the whole line is compared rather than a once-flag set, because a process that builds an `alone`
+ *  propagator before an MPI one has two placements and both are worth saying. Process-wide, locked.
+ */
+[[nodiscard]] auto place_line_is_new(std::string_view line) -> bool;
 
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };

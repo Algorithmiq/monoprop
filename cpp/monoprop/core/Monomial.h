@@ -29,7 +29,7 @@ namespace monoprop {
 template <size_t NumModes>
 using Monomial = Bitset<2 * NumModes>;
 
-// Not the evolved operator's row storage -- that is detail::OperatorIndex (see TypeAliases.h).
+// Not the evolved operator's row storage -- that is detail::OperatorIndex (see detail/operator/OperatorIndex.h).
 template <size_t NumModes>
 using MonomialList = std::vector<Monomial<NumModes>>;
 

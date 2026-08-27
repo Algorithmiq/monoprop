@@ -911,7 +911,15 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
         }
         return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
     };
-    return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc)};
+    detail::LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<TermIndex> &out) {
+        const auto &e = (*cache)[i];
+        if (!e.recomputes_cos) {
+            detail::cos_indices_mask(*e.filtered, out);
+            return;
+        }
+        detail::cos_indices_lazy<NumModes>(*sc, e.recipe, out);
+    };
+    return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc), .indices = std::move(cos_inds)};
 }
 
 template <size_t NumModes>

@@ -40,9 +40,11 @@
 #include "monoprop/Utilities.h"
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/PauliAlgebra.h"
+#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/operator/MPOperator.h"
 
 namespace monoprop {
 namespace detail {

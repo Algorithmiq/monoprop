@@ -25,6 +25,7 @@
 #include "monoprop/MPFunctions.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/graph/MPGraphLayers.h"
+#include "monoprop/detail/operator/InvertedIndex.h"
 
 using namespace test_utils;
 using namespace monoprop;

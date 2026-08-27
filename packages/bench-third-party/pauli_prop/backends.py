@@ -24,6 +24,7 @@ that: `run_model.py` plots the series, `run_one.py` reduces it to totals.
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -304,3 +305,20 @@ LABELS = {
     "cupauliprop": "cuPauliProp (GPU)",
     JULIA_BACKEND: "PauliPropagation.jl",
 }
+
+
+def num_threads(backend: str) -> int:
+    """The thread count `backend` will actually use.
+
+    A per-backend cap has to win over the allocation size: a run pinned to 56 threads on a
+    112-core node must not record 112, or per-thread results silently collide. Only this
+    backend's own variable counts -- the others are exported node-wide.
+    """
+    for var in THREAD_VARS.get(backend, ()):
+        capped = os.environ.get(var)
+        if capped:
+            return int(capped)
+    slurm = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm:
+        return int(slurm)
+    return len(os.sched_getaffinity(0))
