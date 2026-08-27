@@ -137,9 +137,9 @@ jobs:
 
               // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
               MonomialPropagator graph_sim(ham,
-                                           6
+                                           6,
                                            VecZ{0, 1},
-                                           2,
+                                           4,
                                            std::optional{4U},
                                            MPI_COMM_SELF,
                                            std::nullopt,
@@ -154,7 +154,7 @@ jobs:
               MonomialPropagator partition_sim(ham,
                                                6,
                                                VecZ{0, 1},
-                                               4
+                                               4,
                                                std::nullopt,
                                                MPI_COMM_SELF,
                                                std::nullopt,
