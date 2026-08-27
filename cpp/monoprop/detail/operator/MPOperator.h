@@ -61,18 +61,12 @@ public:
 
 template <size_t NumModes>
 struct MPOperator {
-    // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
-    // itself cheaply movable). Always non-null.
+    // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr. Always non-null.
     std::unique_ptr<OperatorIndex<NumModes>> store{std::make_unique<OperatorIndex<NumModes>>()};
     VecD op_coeffs;
-    // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
-    // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
-    // scored in ascending order and the set is only ever appended to.
-    std::vector<TermIndex> state_rows_;
+    std::vector<TermIndex> state_rows_; // sparse state
     VecD state_vals_;               // parallel to state_rows_; every entry is a unit phase (+-1), never 0
-    size_t state_scored_rows_{0uz}; // rows [0, state_scored_rows_) have been scored into state_rows_/state_vals_
-    // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
-    // it is the live coefficient vector evolution mutates in place.
+    size_t state_scored_rows_{0uz}; // cache of the state values (its super sparse so this is useful)
     VecD state_coeffs;
     MonomialMap<NumModes> init_op_map{};
     VecZ initial_state;
@@ -260,9 +254,7 @@ struct MPOperator {
     }
 };
 
-// Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
-// slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
-// (op.size() must equal the returned base).
+// Callers must pass pairwise-distinct
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
@@ -294,28 +286,19 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes{0uz};
     size_t initial_state_bytes{0uz};
     size_t inverted_index_bytes{0uz};
-    // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
     size_t matched_scratch_bytes{0uz};
-    // The group's transport, per process: 0 unless the partitioned facade fills it in (see matched_scratch).
     size_t transport_bytes{0uz};
-
-    // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
-    // never double-count.
-    size_t inverted_index_dense_bytes{0uz};  // of inverted_index_bytes: full-height bitmap columns
-    size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
+    // Diagnostics: breakdowns of the fields above
+    size_t inverted_index_dense_bytes{0uz};  // full-height bitmap columns
+    size_t inverted_index_sparse_bytes{0uz}; // ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
-    size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
-    // of state_coeffs_bytes: entries of the state that are not exactly 0.0
+    size_t operator_terms_slack_bytes{0uz}; // unused geometric-growth capacity
     size_t state_coeffs_nonzero{0uz};
-    // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
     size_t init_operator_entries{0uz};
     size_t transport_staging_bytes{0uz};    // of transport_bytes: the payload funnel, at its high-water mark
     size_t inverted_index_slack_bytes{0uz}; // of inverted_index_bytes: capacity no resize ever wrote
     size_t coeff_slack_bytes{0uz};          // of op_coeffs_bytes + state_coeffs_bytes: likewise
-    // Never written, yet peak RSS tracks CAPACITY not size (job 1851566): each x1.5 growth holds old+new at
-    // once, so this is deferred cost, not free space -- and shrink_to_fit adds a copy rather than removing one.
     size_t reserved_bytes{0uz};
-    // Peaks over TIME: a growth holds old+new at once. Summed, an upper bound -- peaks need not coincide.
     size_t operator_terms_peak_bytes{0uz};
     size_t indexing_peak_bytes{0uz};
 
