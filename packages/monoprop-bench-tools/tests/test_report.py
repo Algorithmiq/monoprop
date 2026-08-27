@@ -137,6 +137,26 @@ def test_build_report_includes_runtime_provenance(tmp_path: Path) -> None:
     assert "| np1 | 3.13.2 | 3.2.0 | 2.4.0 |" in md
 
 
+def test_build_report_includes_node_placement(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        meta={"nodes": 4, "ranks_per_node": 8, "partitions_env": "16"},
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| Nodes | Ranks/node | Partitions (requested) |" in md
+    assert "| 4 | 8 | 16 |" in md
+
+
+def test_build_report_omits_node_placement_when_absent(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(tmp_path, meta={"ranks": 8})
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| 8 | — | — | — | default |" in md
+
+
 def test_fmt_config_formats_floats_compactly() -> None:
     assert report._fmt_config(1e-5) == "1e-05"
     assert report._fmt_config(1.0) == "1"
@@ -196,12 +216,17 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
             "bench_random.py::test_random_energy[heisenberg]": 52428800,
             "bench_random.py::test_random_energy[schrodinger]": 104857600,
         },
+        memhwm_max={
+            "bench_random.py::test_random_energy[heisenberg]": 41943040,
+        },
     )
     md = _collapse(report.build_report(tmp_path))
 
-    assert "Memory (peak RSS)" in md
+    assert "Memory (peak RSS, summed across ranks)" in md
+    assert "Memory (peak RSS, max across ranks)" in md
     assert "50.00 MiB" in md
     assert "100.00 MiB" in md
+    assert "40.00 MiB" in md
 
 
 def test_build_report_includes_resting(tmp_path: Path) -> None:
