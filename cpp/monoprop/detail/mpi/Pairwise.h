@@ -52,20 +52,24 @@ struct PeerLayout {
 
 // A variable all-to-all as point-to-point over `plan`'s peers: one Irecv/Isend pair each, the self peer
 // copied in place. Counts and displacements are in ELEMENTS of `dt`, whose extent must be `elem`.
-// `reqs` is caller scratch, grown then INDEXED: MPI holds these pointers until Waitall, so a
+// `reqs` is caller storage, grown then INDEXED: MPI holds these pointers until the wait, so a
 // reallocating push_back would dangle them.
-inline auto sparse_pairwise(PeerPlan plan,
-                            int me,
-                            int n_ranks,
-                            MPI_Comm comm,
-                            int tag,
-                            MPI_Datatype dt,
-                            size_t elem,
-                            const std::byte *send,
-                            PeerLayout send_lay,
-                            std::byte *recv,
-                            PeerLayout recv_lay,
-                            std::vector<MPI_Request> &reqs) -> void {
+//
+// POSTS ONLY, and returns how many of `reqs` are live. The caller waits, so `send`, `recv` and `reqs`
+// must all outlive that wait -- which is what lets a caller hold the round open (PendingAlltoallv) the
+// same way the dense branch holds an MPI_Ialltoallv.
+[[nodiscard]] inline auto sparse_pairwise(PeerPlan plan,
+                                          int me,
+                                          int n_ranks,
+                                          MPI_Comm comm,
+                                          int tag,
+                                          MPI_Datatype dt,
+                                          size_t elem,
+                                          const std::byte *send,
+                                          PeerLayout send_lay,
+                                          std::byte *recv,
+                                          PeerLayout recv_lay,
+                                          std::vector<MPI_Request> &reqs) -> int {
     const int f = plan.count(n_ranks);
     if (reqs.size() < static_cast<size_t>(2 * f)) {
         reqs.resize(static_cast<size_t>(2 * f));
@@ -92,7 +96,7 @@ inline auto sparse_pairwise(PeerPlan plan,
             MPI_Isend(sbuf, sc, dt, b, tag, comm, &reqs[static_cast<size_t>(n_req++)]);
         }
     }
-    MPI_Waitall(n_req, reqs.data(), MPI_STATUSES_IGNORE);
+    return n_req;
 }
 
 } // namespace monoprop::mpi

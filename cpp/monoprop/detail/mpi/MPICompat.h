@@ -139,7 +139,10 @@ struct PendingAlltoallv {
     std::vector<T> send_buffer;
     std::vector<T> recv_buffer;
 #ifdef monoprop_ENABLE_MPI
-    MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
+    MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi dense async path
+    std::vector<MPI_Request> requests;      // the Kind::Mpi sparse path's pairs; `posted` of them live
+    int posted = 0;                         // MPI reads send_buffer/recv_buffer until these complete,
+                                            // and both move with the handle, so the pointers hold
 #endif
 
     auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
@@ -147,6 +150,10 @@ struct PendingAlltoallv {
         if (request != MPI_REQUEST_NULL) {
             MPI_Wait(&request, MPI_STATUS_IGNORE);
             request = MPI_REQUEST_NULL;
+        }
+        if (posted != 0) {
+            MPI_Waitall(posted, requests.data(), MPI_STATUSES_IGNORE);
+            posted = 0;
         }
 #endif
         recv_data.resize(static_cast<size_t>(num_ranks));
@@ -182,21 +189,17 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     h.recv_displs.resize(static_cast<size_t>(num_ranks));
 
     const int self = skip_self ? rank(comm) : -1;
-    // Wide accumulator + checked narrowing: a wrapped count would size send_buffer short and then feed
-    // MPI a negative count/displacement.
-    long long total_send = 0;
+    // Counts and their prefix in ONE sweep. Wide accumulator + checked narrowing: a wrapped count would
+    // size send_buffer short and then feed MPI a negative count/displacement.
+    long long running_send = 0;
     for (int i = 0; i < num_ranks; ++i) {
         const size_t n = (i == self) ? 0 : send_data[static_cast<size_t>(i)].size();
         const int c = checked_mpi_count(n, "Send count");
         h.send_counts[static_cast<size_t>(i)] = c;
-        total_send += c;
-    }
-    long long running_send = 0;
-    for (int i = 0; i < num_ranks; ++i) {
         h.send_displs[static_cast<size_t>(i)] = checked_mpi_count(running_send, "Send displacement");
-        running_send += h.send_counts[static_cast<size_t>(i)];
+        running_send += c;
     }
-    h.send_buffer.resize(static_cast<size_t>(checked_mpi_count(total_send, "Total send count")));
+    h.send_buffer.resize(static_cast<size_t>(checked_mpi_count(running_send, "Total send count")));
     for (int i = 0; i < num_ranks; ++i) {
         const int c = h.send_counts[static_cast<size_t>(i)];
         if (c == 0) {
@@ -230,24 +233,28 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
 #endif
 
     if (known_recv_counts != nullptr) {
-        std::copy(
-            known_recv_counts->begin(),
-            known_recv_counts->begin() + std::min<size_t>(known_recv_counts->size(), static_cast<size_t>(num_ranks)),
-            h.recv_counts.begin());
-        if (self >= 0) {
-            h.recv_counts[static_cast<size_t>(self)] = 0;
-        }
+        const auto avail =
+            static_cast<int>(std::min<size_t>(known_recv_counts->size(), static_cast<size_t>(num_ranks)));
         // Mask the caller's array through the plan, as alltoall_counts already does for the counts it
         // exchanges: no receive is ever posted for a non-peer, so a non-zero count there sizes
-        // recv_buffer for bytes nothing writes and wait_into hands the caller uninitialised memory.
-        if (!plan.dense()) {
+        // recv_buffer for bytes nothing writes and wait_into hands the caller uninitialised memory. Done
+        // by copying only the f peer blocks -- recv_counts is freshly zeroed, so the rest is the mask.
+        if (plan.dense()) {
+            std::copy_n(known_recv_counts->begin(), avail, h.recv_counts.begin());
+        }
+        else {
             const auto geom = geometry(comm);
             const int me = rank(comm) / geom.partitions;
-            for (int g = 0; g < num_ranks; ++g) {
-                if (!plan.contains(me, g / geom.partitions)) {
-                    h.recv_counts[static_cast<size_t>(g)] = 0;
+            const int f = plan.count(geom.ranks);
+            for (int k = 0; k < f; ++k) {
+                const int base = plan.peer(me, k) * geom.partitions;
+                for (int t = 0; t < geom.partitions && base + t < avail; ++t) {
+                    h.recv_counts[static_cast<size_t>(base + t)] = (*known_recv_counts)[static_cast<size_t>(base + t)];
                 }
             }
+        }
+        if (self >= 0) {
+            h.recv_counts[static_cast<size_t>(self)] = 0;
         }
     }
     else {
@@ -300,21 +307,22 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                            &h.request);
         }
         else {
-            // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer. Blocking
-            // here rather than through the Ticket, because the request set is per-peer, not one handle.
-            std::vector<MPI_Request> reqs;
-            sparse_pairwise(plan,
-                            rank(comm),
-                            num_ranks,
-                            comm.mpi,
-                            kFlatPayloadTag,
-                            datatype<T>::get(),
-                            sizeof(T),
-                            reinterpret_cast<const std::byte *>(h.send_buffer.data()),
-                            PeerLayout{.counts = h.send_counts.data(), .displs = h.send_displs.data()},
-                            reinterpret_cast<std::byte *>(h.recv_buffer.data()),
-                            PeerLayout{.counts = h.recv_counts.data(), .displs = h.recv_displs.data()},
-                            reqs);
+            // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer, left
+            // in flight in the handle exactly as MPI_Ialltoallv is. The buffers MPI holds live in `h`
+            // and travel with it: a vector move keeps its heap block, so returning `h` moves nothing
+            // MPI is reading.
+            h.posted = sparse_pairwise(plan,
+                                       rank(comm),
+                                       num_ranks,
+                                       comm.mpi,
+                                       kFlatPayloadTag,
+                                       datatype<T>::get(),
+                                       sizeof(T),
+                                       reinterpret_cast<const std::byte *>(h.send_buffer.data()),
+                                       PeerLayout{.counts = h.send_counts.data(), .displs = h.send_displs.data()},
+                                       reinterpret_cast<std::byte *>(h.recv_buffer.data()),
+                                       PeerLayout{.counts = h.recv_counts.data(), .displs = h.recv_displs.data()},
+                                       h.requests);
         }
 #else
         h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
