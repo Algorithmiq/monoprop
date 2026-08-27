@@ -585,4 +585,80 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
     }
 }
 
+// known_recv_counts is CALLER-supplied, so it can carry a count for a rank the plan does not name --
+// the response round's transpose is only as masked as whatever produced it. No receive is ever posted
+// for a non-peer, so an unmasked count sizes recv_buffer for bytes nothing writes and wait_into would
+// hand that slot to the caller as data. Both the plain-MPI and the staged HybridComm path must drop it.
+BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    constexpr int kReal = 4;
+    constexpr int kBogus = 7; // what a stale or unmasked transpose would claim a non-peer is sending
+    for (int shift = 0; shift < R; ++shift) {
+        const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+        const int peer = plan.peer(world_rank(), 0);
+        const int bad = (peer + 1) % R; // at full bits the peer set is exactly {peer}
+        BOOST_REQUIRE(bad != peer);
+
+        // S == 1: the plain-MPI Isend/Irecv branch of begin_alltoallv.
+        {
+            Comm c{MPI_COMM_WORLD};
+            std::vector<std::vector<int>> send(static_cast<size_t>(R));
+            for (int j = 0; j < kReal; ++j) {
+                send[static_cast<size_t>(peer)].push_back(world_rank() * 1000 + j);
+            }
+            std::vector<int> known(static_cast<size_t>(R), 0);
+            known[static_cast<size_t>(peer)] = kReal;
+            known[static_cast<size_t>(bad)] = kBogus;
+            std::vector<std::vector<int>> out;
+            monoprop::mpi::begin_alltoallv(send, c, false, &known, plan).wait_into(out);
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+            BOOST_CHECK(out[static_cast<size_t>(bad)].empty()); // unmasked, this holds kBogus elements
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(peer)].size()), kReal);
+            for (int j = 0; j < kReal; ++j) {
+                BOOST_CHECK_EQUAL(out[static_cast<size_t>(peer)][static_cast<size_t>(j)], peer * 1000 + j);
+            }
+        }
+
+        // S == 2: the same array through HybridComm's staged alltoallv.
+        constexpr int S = 2;
+        const int P = R * S;
+        std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            Comm c = Comm::make_hybrid(&hyb, u);
+            const int g = monoprop::mpi::rank(c);
+            std::vector<std::vector<int>> send(static_cast<size_t>(P));
+            std::vector<int> known(static_cast<size_t>(P), 0);
+            for (int t = 0; t < S; ++t) {
+                for (int j = 0; j < kReal; ++j) {
+                    send[static_cast<size_t>((peer * S) + t)].push_back((g * 1000) + j);
+                }
+                known[static_cast<size_t>((peer * S) + t)] = kReal;
+                known[static_cast<size_t>((bad * S) + t)] = kBogus;
+            }
+            std::vector<std::vector<int>> out;
+            monoprop::mpi::begin_alltoallv(send, c, false, &known, plan).wait_into(out);
+            recv[static_cast<size_t>(u)] = out;
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        for (int t = 0; t < S; ++t) {
+            const auto &out = recv[static_cast<size_t>(t)];
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+            for (int su = 0; su < S; ++su) {
+                BOOST_CHECK(out[static_cast<size_t>((bad * S) + su)].empty());
+                const auto &blk = out[static_cast<size_t>((peer * S) + su)];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), kReal);
+                for (int j = 0; j < kReal; ++j) {
+                    BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], (((peer * S) + su) * 1000) + j);
+                }
+            }
+        }
+    }
+}
+
 #endif // monoprop_ENABLE_MPI

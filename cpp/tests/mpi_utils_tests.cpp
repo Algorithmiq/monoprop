@@ -34,8 +34,9 @@
 
 using namespace monoprop;
 
-// find_rank is splitmix over the dense words modulo the rank count, and nothing else, so the oracle
-// is asserted unconditionally rather than as one of several permitted hashes.
+// Under the splitmix router find_rank is the dense words modulo the rank count and nothing else, so the
+// oracle is asserted unconditionally rather than as one of several permitted hashes. The router is
+// constructed explicitly: there is no rank-count overload to reach it by accident.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
     constexpr size_t N = 32;
     std::mt19937_64 rng(0x9E3779B9ULL);
@@ -47,19 +48,21 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         }
         const auto mono = indices_to_bitset<N>(inds);
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
-            const size_t r = find_rank<N>(mono, n_ranks);
+            const auto router = routing::Router::splitmix(n_ranks);
+            const size_t r = find_rank<N>(mono, router);
             BOOST_TEST(r == monomial_hash<N>(mono) % n_ranks);
             BOOST_TEST(r < n_ranks);
-            BOOST_TEST(r == find_rank<N>(mono, n_ranks)); // deterministic
+            BOOST_TEST(r == find_rank<N>(mono, router)); // deterministic
         }
     }
 }
 
-// n_ranks == 0 is degenerate: owner is rank 0, not a modulo by zero.
+// A zero-rank world is degenerate: Router clamps it to one slot, so the owner is rank 0 rather than a
+// modulo by zero.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
     constexpr size_t N = 32;
     const auto mono = indices_to_bitset<N>(VecZ{0, 3, 5});
-    BOOST_TEST(find_rank<N>(mono, 0) == 0U);
+    BOOST_TEST(find_rank<N>(mono, routing::Router::splitmix(0)) == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {

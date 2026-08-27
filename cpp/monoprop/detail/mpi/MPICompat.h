@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -235,6 +236,18 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         if (self >= 0) {
             h.recv_counts[static_cast<size_t>(self)] = 0;
         }
+        // Mask the caller's array through the plan, as alltoall_counts already does for the counts it
+        // exchanges: no receive is ever posted for a non-peer, so a non-zero count there sizes
+        // recv_buffer for bytes nothing writes and wait_into hands the caller uninitialised memory.
+        if (!plan.dense()) {
+            const auto geom = geometry(comm);
+            const int me = rank(comm) / geom.partitions;
+            for (int g = 0; g < num_ranks; ++g) {
+                if (!plan.contains(me, g / geom.partitions)) {
+                    h.recv_counts[static_cast<size_t>(g)] = 0;
+                }
+            }
+        }
     }
     else {
         alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm, plan);
@@ -298,6 +311,8 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                 T *rbuf = h.recv_buffer.data() + h.recv_displs[ub];
                 const T *sbuf = h.send_buffer.data() + h.send_displs[ub];
                 if (b == me) {
+                    // The self slot is a copy, not a message: its two counts are each other's transpose.
+                    assert(h.send_counts[ub] == h.recv_counts[ub]);
                     std::copy(sbuf, sbuf + h.recv_counts[ub], rbuf);
                     continue;
                 }

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -76,20 +77,43 @@ struct Comm {
 // replace a dense collective with point-to-point over the peers it can actually reach.
 //
 // bits == 0 is the dense default: peer(k) == k and count == ranks, so the same loops walk every rank
-// and the verbs take their collective path. A caller that gets `shift` wrong does not corrupt data --
-// the counts for a non-peer are zero -- it deadlocks, which is why the plan is derived in one place.
+// and the verbs take their collective path.
+//
+// Two distinct failure modes if `shift` is wrong, which is why the plan is derived in one place. Ranks
+// that DISAGREE deadlock: the pairing stops being symmetric and someone waits on a send never posted.
+// Ranks that all agree on the same wrong shift stay symmetric and never hang -- they silently DROP the
+// blocks outside the peer set, because pack_count_matrix_ / size_staging_send_ / pack_send_ only ever
+// touch peers. pack_count_matrix_ asserts the non-peer remainder is empty to catch that one.
 struct PeerPlan {
     int bits = 0;
     int shift = 0;
 
     [[nodiscard]] constexpr auto dense() const -> bool { return bits == 0; }
-    [[nodiscard]] constexpr auto count(int ranks) const -> int { return bits == 0 ? ranks : (ranks >> bits); }
+    // A plan too narrow for the world would yield 0 peers and turn the exchange into a silent no-op.
+    [[nodiscard]] constexpr auto count(int ranks) const -> int {
+        if (bits == 0) {
+            return ranks;
+        }
+        assert(bits > 0 && bits < 31 && (ranks >> static_cast<unsigned>(bits)) > 0);
+        return ranks >> static_cast<unsigned>(bits);
+    }
+    // Unsigned shifts: `bits` is a public field, and 1 << 31 on a signed int is UB.
     [[nodiscard]] constexpr auto peer(int me, int k) const -> int {
         if (bits == 0) {
             return k;
         }
-        const int mask = (1 << bits) - 1;
-        return ((me & mask) ^ shift) | (k << bits);
+        assert(bits > 0 && bits < 31);
+        const auto ubits = static_cast<unsigned>(bits);
+        const auto mask = static_cast<int>((1U << ubits) - 1U);
+        return ((me & mask) ^ shift) | static_cast<int>(static_cast<unsigned>(k) << ubits);
+    }
+    // Membership without a search: by the XOR structure every peer shares the same low `bits`.
+    [[nodiscard]] constexpr auto contains(int me, int b) const -> bool {
+        if (bits == 0) {
+            return true;
+        }
+        const auto mask = static_cast<int>((1U << static_cast<unsigned>(bits)) - 1U);
+        return (b & mask) == ((me & mask) ^ shift);
     }
 };
 

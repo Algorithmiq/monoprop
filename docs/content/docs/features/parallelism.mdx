@@ -114,9 +114,9 @@ that bound into an identity.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `monoprop_ROUTING` | `linear` | `splitmix` (the literal string) forces $d = 0$, the dense all-to-all. Any other value, including unset, selects linear routing with $d$ as large as the geometry allows. |
-| `monoprop_ROUTE_LINEAR_BITS` | unset | An explicit $d$, clamped to $[0, \log_2 R]$. Takes precedence over `monoprop_ROUTING`; a value that is zero, negative or unparseable means $d = 0$. |
-| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in any of these three variables is caught by one allreduce at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
+| `monoprop_ROUTING` | `linear` | `splitmix` forces $d = 0$, the dense all-to-all; `linear`, or unset, takes $d$ as large as the geometry allows. Any other value is rejected at startup rather than silently defaulting. |
+| `monoprop_ROUTE_LINEAR_BITS` | unset | An explicit $d$, clamped to $[0, \log_2 R]$. Takes precedence over `monoprop_ROUTING`. `0` selects the dense path; a negative, out-of-range or unparseable value is rejected at startup. |
+| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in any of these three variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
 
 ### Single-node (`MPI.COMM_SELF`)
 
