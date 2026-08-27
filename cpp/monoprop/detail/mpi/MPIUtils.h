@@ -81,7 +81,7 @@ public:
 // survives at ~2^-128 rather than ~2^-64. Partitions are in the digest because S enters Router::dest:
 // two ranks differing only in S agree on linear_bits and the seed and still route apart.
 inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
-    const size_t world = static_cast<size_t>(mpi::size(comm));
+    const auto world = static_cast<size_t>(mpi::size(comm));
     if (world <= 1) {
         return;
     }
