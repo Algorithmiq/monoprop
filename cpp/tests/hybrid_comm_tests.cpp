@@ -661,4 +661,285 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan) 
     }
 }
 
+namespace {
+
+// Varies along BOTH ends and hits 0, so a block landing on the wrong peer or the wrong partition
+// changes a length, not just a value.
+auto sparse_count(int src, int dst) -> int {
+    return ((src * 3) + (dst * 5)) % 4;
+}
+auto sparse_tag(int src, int dst, int j) -> int {
+    return (((src * 128) + dst) * 1000) + j;
+}
+
+} // namespace
+
+// f > 1. Both sparse cases above pin bits == log2(R), so `plan.count(R)` is 1 and every `for k in
+// [0, f)` in the sparse path has only ever run once -- the interleaving of peer-ordered blocks with the
+// [0, R)-ordered prefix sums in size_staging_send_ / size_staging_recv_ is what that leaves unchecked.
+// bits < log2(R) is the only way to reach it, and a mis-indexed prefix shows up as a block delivered at
+// the wrong offset, i.e. a wrong tag, not a hang.
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_several_peers) {
+    const int R = world_size();
+    if (R < 4 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int full = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    int cases = 0;
+    for (const int f : {2, 4}) {
+        const int bits = full - std::countr_zero(static_cast<unsigned>(f));
+        if (bits < 1) {
+            continue; // bits == 0 is the dense path, which these cases are not about
+        }
+        for (int shift = 0; shift < (1 << bits); ++shift) {
+            const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+            BOOST_REQUIRE_EQUAL(plan.count(R), f);
+            ++cases;
+
+            // The S == 1 world first: the plain-MPI Isend/Irecv branch, no staging in the way.
+            {
+                Comm c{MPI_COMM_WORLD};
+                std::vector<std::vector<int>> send(static_cast<size_t>(R));
+                for (int k = 0; k < f; ++k) {
+                    const int b = plan.peer(me, k);
+                    for (int j = 0; j < sparse_count(me, b); ++j) {
+                        send[static_cast<size_t>(b)].push_back(sparse_tag(me, b, j));
+                    }
+                }
+                std::vector<std::vector<int>> out;
+                monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+                BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+                for (int src = 0; src < R; ++src) {
+                    const int want = plan.contains(me, src) ? sparse_count(src, me) : 0;
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(src)].size()), want);
+                    for (int j = 0; j < want; ++j) {
+                        BOOST_CHECK_EQUAL(out[static_cast<size_t>(src)][static_cast<size_t>(j)],
+                                          sparse_tag(src, me, j));
+                    }
+                }
+            }
+
+            // Then the staged HybridComm path, where the peer-ordered sweeps live.
+            for (const int S : {1, 2, 3}) {
+                const int P = R * S;
+                std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+                auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+                    Comm c = Comm::make_hybrid(&hyb, u);
+                    const int g = monoprop::mpi::rank(c);
+                    std::vector<std::vector<int>> send(static_cast<size_t>(P));
+                    for (int k = 0; k < f; ++k) {
+                        const int b = plan.peer(me, k);
+                        for (int t = 0; t < S; ++t) {
+                            const int d = (b * S) + t;
+                            for (int j = 0; j < sparse_count(g, d); ++j) {
+                                send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                            }
+                        }
+                    }
+                    std::vector<std::vector<int>> out;
+                    monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+                    recv[static_cast<size_t>(u)] = out;
+                });
+                for (const auto &e : errs) {
+                    BOOST_CHECK(e == nullptr);
+                }
+                for (int t = 0; t < S; ++t) {
+                    const int g = (me * S) + t;
+                    const auto &out = recv[static_cast<size_t>(t)];
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+                    for (int src = 0; src < P; ++src) {
+                        const int want = plan.contains(me, src / S) ? sparse_count(src, g) : 0;
+                        BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(src)].size()), want);
+                        for (int j = 0; j < want; ++j) {
+                            BOOST_CHECK_EQUAL(out[static_cast<size_t>(src)][static_cast<size_t>(j)],
+                                              sparse_tag(src, g, j));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    BOOST_TEST(cases > 0); // at R < 4 the case is a no-op and must not read as coverage
+}
+
+// A zero-count leg is where a send/recv posting asymmetry deadlocks rather than mis-delivers: both ends
+// must skip on the SAME value. Nothing above ever sends an empty block over a real message, so force
+// one -- the lower-numbered end of every pair sends nothing while its peer sends four.
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_an_empty_leg) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    constexpr int kLen = 4;
+    for (int shift = 1; shift < R; ++shift) { // shift 0 is the self peer, covered separately
+        const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+        const int peer = plan.peer(me, 0);
+        BOOST_REQUIRE(peer != me);
+        const int my_len = me < peer ? 0 : kLen; // exactly one end of the pair is silent
+        const int peer_len = peer < me ? 0 : kLen;
+
+        {
+            Comm c{MPI_COMM_WORLD};
+            std::vector<std::vector<int>> send(static_cast<size_t>(R));
+            for (int j = 0; j < my_len; ++j) {
+                send[static_cast<size_t>(peer)].push_back(sparse_tag(me, peer, j));
+            }
+            std::vector<std::vector<int>> out;
+            monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(peer)].size()), peer_len);
+            for (int j = 0; j < peer_len; ++j) {
+                BOOST_CHECK_EQUAL(out[static_cast<size_t>(peer)][static_cast<size_t>(j)], sparse_tag(peer, me, j));
+            }
+        }
+
+        for (const int S : {1, 2}) {
+            const int P = R * S;
+            std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+            auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+                Comm c = Comm::make_hybrid(&hyb, u);
+                const int g = monoprop::mpi::rank(c);
+                std::vector<std::vector<int>> send(static_cast<size_t>(P));
+                for (int t = 0; t < S; ++t) {
+                    const int d = (peer * S) + t;
+                    for (int j = 0; j < my_len; ++j) {
+                        send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                    }
+                }
+                std::vector<std::vector<int>> out;
+                monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+                recv[static_cast<size_t>(u)] = out;
+            });
+            for (const auto &e : errs) {
+                BOOST_CHECK(e == nullptr);
+            }
+            for (int t = 0; t < S; ++t) {
+                const int g = (me * S) + t;
+                const auto &out = recv[static_cast<size_t>(t)];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+                for (int su = 0; su < S; ++su) {
+                    const auto &blk = out[static_cast<size_t>((peer * S) + su)];
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), peer_len);
+                    for (int j = 0; j < peer_len; ++j) {
+                        BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], sparse_tag((peer * S) + su, g, j));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// shift == 0 makes every rank its own and only peer, so the sparse path's self slot is the whole
+// exchange -- and skip_self then removes the one leg that would have moved anything for a partition.
+// The remaining S-1 in-rank legs must still arrive.
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = 0};
+    BOOST_REQUIRE_EQUAL(plan.peer(me, 0), me);
+
+    {
+        Comm c{MPI_COMM_WORLD}; // the self peer is the ONLY peer, and skip_self drops it
+        std::vector<std::vector<int>> send(static_cast<size_t>(R));
+        for (int j = 0; j < 5; ++j) {
+            send[static_cast<size_t>(me)].push_back(sparse_tag(me, me, j));
+        }
+        std::vector<std::vector<int>> out;
+        monoprop::mpi::begin_alltoallv(send, c, /*skip_self=*/true, nullptr, plan).wait_into(out);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+        for (const auto &blk : out) {
+            BOOST_CHECK(blk.empty());
+        }
+    }
+
+    for (const int S : {2, 3}) {
+        const int P = R * S;
+        std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            Comm c = Comm::make_hybrid(&hyb, u);
+            const int g = monoprop::mpi::rank(c);
+            std::vector<std::vector<int>> send(static_cast<size_t>(P));
+            for (int t = 0; t < S; ++t) {
+                const int d = (me * S) + t;
+                for (int j = 0; j <= t; ++j) {
+                    send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                }
+            }
+            std::vector<std::vector<int>> out;
+            monoprop::mpi::begin_alltoallv(send, c, /*skip_self=*/true, nullptr, plan).wait_into(out);
+            recv[static_cast<size_t>(u)] = out;
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        for (int t = 0; t < S; ++t) {
+            const int g = (me * S) + t;
+            const auto &out = recv[static_cast<size_t>(t)];
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+            for (int src = 0; src < P; ++src) {
+                const bool in_rank = (src / S) == me;
+                const int want = (in_rank && src != g) ? t + 1 : 0; // own slot dropped by skip_self
+                BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(src)].size()), want);
+                for (int j = 0; j < want; ++j) {
+                    BOOST_CHECK_EQUAL(out[static_cast<size_t>(src)][static_cast<size_t>(j)], sparse_tag(src, g, j));
+                }
+            }
+        }
+    }
+}
+
+// Engine.h's run_exchange posts both its rounds on ONE communicator under kFlatPayloadTag, and the
+// non-overtaking argument in Pairwise.h is what says a round-2 receive cannot match a round-1 send.
+// Two back-to-back sparse rounds, the second on the transpose of the first's counts, assert it.
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    Comm c{MPI_COMM_WORLD};
+    for (int shift = 0; shift < R; ++shift) {
+        const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+        const int peer = plan.peer(me, 0);
+        const int len = 3 + (me % 2); // asymmetric, so a swapped round is a length mismatch
+
+        std::vector<std::vector<int>> q(static_cast<size_t>(R));
+        for (int j = 0; j < len; ++j) {
+            q[static_cast<size_t>(peer)].push_back(sparse_tag(me, peer, j));
+        }
+        std::vector<std::vector<int>> q_out;
+        monoprop::mpi::begin_alltoallv(q, c, false, nullptr, plan).wait_into(q_out);
+
+        // Round 2 immediately, same comm and tag, sized from round 1's transpose -- the response shape.
+        std::vector<int> known(static_cast<size_t>(R), 0);
+        known[static_cast<size_t>(peer)] = len;
+        std::vector<std::vector<int>> r(static_cast<size_t>(R));
+        const int back = static_cast<int>(q_out[static_cast<size_t>(peer)].size());
+        for (int j = 0; j < back; ++j) {
+            r[static_cast<size_t>(peer)].push_back(q_out[static_cast<size_t>(peer)][static_cast<size_t>(j)] + 7);
+        }
+        std::vector<std::vector<int>> r_out;
+        monoprop::mpi::begin_alltoallv(r, c, false, &known, plan).wait_into(r_out);
+
+        BOOST_REQUIRE_EQUAL(back, 3 + (peer % 2));
+        BOOST_REQUIRE_EQUAL(static_cast<int>(r_out[static_cast<size_t>(peer)].size()), len);
+        for (int j = 0; j < len; ++j) {
+            BOOST_CHECK_EQUAL(r_out[static_cast<size_t>(peer)][static_cast<size_t>(j)], sparse_tag(me, peer, j) + 7);
+        }
+        for (int src = 0; src < R; ++src) {
+            if (src != peer) {
+                BOOST_CHECK(r_out[static_cast<size_t>(src)].empty());
+            }
+        }
+    }
+}
+
 #endif // monoprop_ENABLE_MPI
