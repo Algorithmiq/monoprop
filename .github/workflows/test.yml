@@ -113,6 +113,8 @@ jobs:
           cmake_minimum_required(VERSION 3.28)
           project(monoprop_find_package_smoke LANGUAGES CXX)
 
+          set(CMAKE_CXX_EXTENSIONS OFF)
+
           find_package(monoprop CONFIG REQUIRED)
 
           add_executable(smoke main.cpp)
@@ -120,12 +122,58 @@ jobs:
           EOF
 
           cat > find-package-smoke/main.cpp <<'EOF'
-          auto main() -> int { return 0; }
+          #include "monoprop/MonomialPropagator.h"
+          #include "monoprop/detail/mpi/MPICompat.h"
+
+          #include <complex>
+          #include <optional>
+          #include <vector>
+
+          using namespace monoprop;
+
+          auto main() -> int {
+              constexpr size_t kModes = 2;
+              OperatorDict ham;
+              ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+
+              // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
+              MonomialPropagator<kModes> graph_sim(ham,
+                                                   2 * kModes,
+                                                   VecZ{0, 1},
+                                                   std::optional<unsigned int>{4U},
+                                                   MPI_COMM_SELF,
+                                                   std::nullopt,
+                                                   std::nullopt,
+                                                   CutoffType::Length,
+                                                   std::nullopt);
+              const std::vector<VecZ> monos{{0}, {1}, {2}};
+              graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
+              graph_sim.graph_memory_usage();
+              graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
+
+              MonomialPropagator<kModes> partition_sim(ham,
+                                                       2 * kModes,
+                                                       VecZ{0, 1},
+                                                       std::nullopt,
+                                                       MPI_COMM_SELF,
+                                                       std::nullopt,
+                                                       std::nullopt,
+                                                       CutoffType::Length,
+                                                       std::nullopt,
+                                                       kModes,
+                                                       Basis::Majorana,
+                                                       2);
+              partition_sim.size();
+
+              return 0;
+          }
           EOF
 
           cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
 
           cmake --build find-package-smoke/build
+
+          find-package-smoke/build/smoke
 
       - name: Get test group label
         id: test-group-label
