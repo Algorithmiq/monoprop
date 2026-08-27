@@ -7,7 +7,17 @@
 
 add_executable(monoprop_link_export_probe.x link_export_probe.cpp)
 
-target_link_libraries(monoprop_link_export_probe.x PRIVATE monoprop)
+# monoprop-sanitizers is a no-op interface library outside a sanitizer build. Under one, libmonoprop.so
+# is ASan-instrumented; without this, the probe executable itself is not, so the ASan runtime reaches
+# the process only as a transitive dependency instead of as its own first library, and ASan refuses to
+# start ("runtime does not come first in initial library list"). A real external consumer building
+# against an ASan-instrumented monoprop would face the same requirement to sanitize their own code.
+target_link_libraries(
+  monoprop_link_export_probe.x
+  PRIVATE
+    monoprop-sanitizers
+    monoprop
+)
 
 if(APPLE)
   target_link_options(
