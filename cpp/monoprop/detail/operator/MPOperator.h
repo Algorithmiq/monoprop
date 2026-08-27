@@ -65,8 +65,8 @@ struct MPOperator {
     std::unique_ptr<OperatorIndex<NumModes>> store{std::make_unique<OperatorIndex<NumModes>>()};
     VecD op_coeffs;
     std::vector<TermIndex> state_rows_; // sparse state
-    VecD state_vals_;               // parallel to state_rows_; every entry is a unit phase (+-1), never 0
-    size_t state_scored_rows_{0uz}; // cache of the state values (its super sparse so this is useful)
+    VecD state_vals_;                   // parallel to state_rows_; every entry is a unit phase (+-1), never 0
+    size_t state_scored_rows_{0uz};     // cache of the state values (its super sparse so this is useful)
     VecD state_coeffs;
     MonomialMap<NumModes> init_op_map{};
     VecZ initial_state;
