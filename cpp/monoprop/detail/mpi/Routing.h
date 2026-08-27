@@ -18,12 +18,11 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/EnvConfig.h"
 
 // The single home for "which flat slot owns this monomial". Two call sites depend on agreeing exactly
 // (Scan.h emits queries by it, MonomialPropagator seeds the operator by it), and a disagreement splits
@@ -53,9 +52,9 @@
 // d is a dial, not a cliff: fanout is R >> d, so d = 0 is EXACTLY today's `q % (R*S)` (see dest()) and
 // d = log2(R) is fanout 1. Non-power-of-two R has no XOR structure at all and falls back to d = 0.
 //
-// Knobs:
-//   monoprop_ROUTING            splitmix (default) | linear   -- linear defaults d to log2(R)
-//   monoprop_ROUTE_LINEAR_BITS  explicit d, clamped to [0, log2(R)]
+// Knobs, parsed and validated in EnvConfig.h:
+//   monoprop_ROUTING            linear (default) | splitmix   -- linear defaults d to log2(R)
+//   monoprop_ROUTE_LINEAR_BITS  explicit d, clamped to [0, log2(R)]; overrides monoprop_ROUTING
 //   monoprop_ROUTE_SEED         uint64 seed for the linear basis (default kDefaultSeed)
 
 namespace monoprop::routing {
@@ -70,11 +69,7 @@ inline constexpr auto mix64(uint64_t x) noexcept -> uint64_t {
 }
 
 inline auto seed_from_env() -> uint64_t {
-    static const uint64_t seed = [] {
-        const char *text = std::getenv("monoprop_ROUTE_SEED");
-        return (text == nullptr || *text == '\0') ? kDefaultSeed : std::strtoull(text, nullptr, 10);
-    }();
-    return seed;
+    return config::get().route_seed.value_or(kDefaultSeed);
 }
 
 // One 64-bit vector per Majorana mode. Deterministic from the seed alone, so every rank builds the
@@ -200,24 +195,19 @@ private:
 
 // The requested linear-bit count, before clamping to a particular geometry. Parsed once.
 inline auto requested_linear_bits() -> size_t {
-    static const size_t bits = [] {
-        const char *explicit_bits = std::getenv("monoprop_ROUTE_LINEAR_BITS");
-        if (explicit_bits != nullptr && *explicit_bits != '\0') {
-            const long value = std::strtol(explicit_bits, nullptr, 10);
-            return value > 0 ? static_cast<size_t>(value) : size_t{0};
-        }
-        const char *mode = std::getenv("monoprop_ROUTING");
-        if (mode != nullptr && std::string_view{mode} == "splitmix") {
-            return size_t{0}; // full avalanche across the flat world: every rank talks to every rank
-        }
-        // Default. "As many bits as this geometry allows" -- Router clamps to log2(R), and to 0
-        // when R is not a power of two, so a geometry without XOR structure keeps the dense path.
-        // Measured at the production point: fanout 1 costs nothing on balance (rank occupancy
-        // max/mean 1.001 at R=128, all ranks used) and takes messages per rank per layer from
-        // 362,712 to 1,397, i.e. from proportional-to-R to flat.
-        return ~size_t{0};
-    }();
-    return bits;
+    const auto &env = config::get();
+    if (env.route_linear_bits.has_value()) {
+        return static_cast<size_t>(*env.route_linear_bits);
+    }
+    if (env.routing_mode == config::RoutingMode::Splitmix) {
+        return 0; // full avalanche across the flat world: every rank talks to every rank
+    }
+    // Default. "As many bits as this geometry allows" -- Router clamps to log2(R), and to 0 when R is
+    // not a power of two, so a geometry without XOR structure keeps the dense path. Measured at the
+    // production point: fanout 1 costs nothing on balance (rank occupancy max/mean 1.001 at R=128, all
+    // ranks used) and takes messages per rank per layer from 362,712 to 1,397, i.e. from
+    // proportional-to-R to flat.
+    return ~size_t{0};
 }
 
 inline auto make_router(size_t ranks, size_t partitions) -> Router {

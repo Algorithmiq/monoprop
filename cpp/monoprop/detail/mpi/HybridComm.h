@@ -217,7 +217,7 @@ private:
         me.ptr = args.send;
         me.send_displs = args.send_displs;
         publish_counts_row_(local_partition, args.send_counts);
-        publish_recv_rows_(local_partition, args.recv_counts);
+        publish_recv_rows_(local_partition, args.recv_counts, plan);
         sync(); // B1
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
@@ -446,13 +446,17 @@ private:
                     static_cast<size_t>(r_) * static_cast<size_t>(s_) * sizeof(int));
     }
 
-    // long long: it sums S int counts.
-    auto publish_recv_rows_(int local_partition, const int *recv_counts) -> void {
+    // long long: it sums S int counts. Masked through the plan, symmetric with the one reader
+    // (fill_recv_col_from_rows_): a non-peer's row is zero by definition, and a caller who left a count
+    // there would otherwise size staging for a block no receive is posted for.
+    auto publish_recv_rows_(int local_partition, const int *recv_counts, PeerPlan plan) -> void {
         long long *rr = row_recv_(local_partition);
         for (int a = 0; a < r_; ++a) {
             long long sum = 0;
-            for (int su = 0; su < s_; ++su) {
-                sum += recv_counts[a * s_ + su];
+            if (plan.contains(mpi_rank_, a)) {
+                for (int su = 0; su < s_; ++su) {
+                    sum += recv_counts[a * s_ + su];
+                }
             }
             rr[a] = sum;
         }
@@ -463,6 +467,7 @@ private:
     // peer-owned side streams. Every element is written here, so no pre-zeroing.
     auto pack_count_matrix_(PeerPlan plan) -> void {
         const int f = plan.count(r_);
+        assert(narrowing_is_lossless_(plan)); // a wrong shift every rank agrees on drops blocks silently
         for (int su = 0; su < s_; ++su) {
             const int *row = counts_row_(su);
             for (int k = 0; k < f; ++k) {
@@ -472,6 +477,19 @@ private:
                 }
             }
         }
+    }
+
+    // Do the published rows put anything outside the plan's peers? If so the narrowing silently drops it.
+    auto narrowing_is_lossless_(PeerPlan plan) const -> bool {
+        for (int su = 0; su < s_; ++su) {
+            const int *row = counts_matrix_ + static_cast<size_t>(su) * counts_stride_;
+            for (int g = 0; g < r_ * s_; ++g) {
+                if (row[g] != 0 && !plan.contains(mpi_rank_, g / s_)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     // The count blocks: one S*S-int MPI_Alltoall when dense, else f point-to-point pairs (a self peer
@@ -531,9 +549,11 @@ private:
             const int rc = mpi_recv_counts_[ub];
             std::byte *rbuf =
                 stage_recv_.data() + static_cast<size_t>(mpi_recv_displs_[ub]) * static_cast<size_t>(extent);
-            const std::byte *sbuf =
+            std::byte *sbuf =
                 stage_send_.data() + static_cast<size_t>(mpi_send_displs_[ub]) * static_cast<size_t>(extent);
             if (b == mpi_rank_) {
+                // The self slot is a copy, not a message: its two counts are each other's transpose.
+                assert(sc == rc);
                 if (rc != 0) {
                     std::memcpy(rbuf, sbuf, static_cast<size_t>(rc) * static_cast<size_t>(extent));
                 }
@@ -543,7 +563,7 @@ private:
                 MPI_Irecv(rbuf, rc, dt, b, kPayloadTag, parent_, &reqs_[n_req++]);
             }
             if (sc != 0) {
-                MPI_Isend(const_cast<std::byte *>(sbuf), sc, dt, b, kPayloadTag, parent_, &reqs_[n_req++]);
+                MPI_Isend(sbuf, sc, dt, b, kPayloadTag, parent_, &reqs_[n_req++]);
             }
         }
         MPI_Waitall(n_req, reqs_.data(), MPI_STATUSES_IGNORE);

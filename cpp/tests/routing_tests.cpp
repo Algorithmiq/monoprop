@@ -66,7 +66,6 @@ BOOST_AUTO_TEST_CASE(routing_zero_bits_is_bit_identical_to_splitmix) {
         for (const auto &m : monos) {
             const size_t expected = monomial_hash<kN>(m) % flat;
             BOOST_TEST(router.dest<kN>(m) == expected);
-            BOOST_TEST(find_rank<kN>(m, flat) == expected);
             BOOST_TEST(find_rank<kN>(m, router) == expected);
         }
     }
@@ -208,6 +207,8 @@ BOOST_AUTO_TEST_CASE(routing_gf2_rank_detects_a_degenerate_shift_set) {
     for (const auto &g : random_monomials(200, 4, 0x7777ULL)) {
         shifts.push_back(static_cast<uint64_t>(router.rank_shift<kN>(g)));
     }
+    // Seed-independent, so this is NOT skipped when monoprop_ROUTE_SEED is overridden: 200 vectors fail
+    // to span F_2^7 with probability ~2^-194, whatever basis the seed picks.
     BOOST_TEST(routing::gf2_rank(shifts) == 7U); // == log2(128): every rank is reachable
 }
 
