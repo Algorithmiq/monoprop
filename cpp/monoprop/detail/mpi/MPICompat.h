@@ -33,6 +33,7 @@
 #include "monoprop/detail/mpi/ShmComm.h"
 #ifdef monoprop_ENABLE_MPI
 #include "monoprop/detail/mpi/HybridComm.h"
+#include "monoprop/detail/mpi/Pairwise.h"
 #endif
 
 // These includes are here on purpose and should not be moved to the top
@@ -301,31 +302,19 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         else {
             // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer. Blocking
             // here rather than through the Ticket, because the request set is per-peer, not one handle.
-            const int me = rank(comm);
-            const int f = plan.count(num_ranks);
             std::vector<MPI_Request> reqs;
-            reqs.reserve(static_cast<size_t>(2 * f));
-            for (int k = 0; k < f; ++k) {
-                const int b = plan.peer(me, k);
-                const auto ub = static_cast<size_t>(b);
-                T *rbuf = h.recv_buffer.data() + h.recv_displs[ub];
-                const T *sbuf = h.send_buffer.data() + h.send_displs[ub];
-                if (b == me) {
-                    // The self slot is a copy, not a message: its two counts are each other's transpose.
-                    assert(h.send_counts[ub] == h.recv_counts[ub]);
-                    std::copy(sbuf, sbuf + h.recv_counts[ub], rbuf);
-                    continue;
-                }
-                if (h.recv_counts[ub] != 0) {
-                    reqs.emplace_back();
-                    MPI_Irecv(rbuf, h.recv_counts[ub], datatype<T>::get(), b, 0x6D72, comm.mpi, &reqs.back());
-                }
-                if (h.send_counts[ub] != 0) {
-                    reqs.emplace_back();
-                    MPI_Isend(sbuf, h.send_counts[ub], datatype<T>::get(), b, 0x6D72, comm.mpi, &reqs.back());
-                }
-            }
-            MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+            sparse_pairwise(plan,
+                            rank(comm),
+                            num_ranks,
+                            comm.mpi,
+                            kFlatPayloadTag,
+                            datatype<T>::get(),
+                            sizeof(T),
+                            reinterpret_cast<const std::byte *>(h.send_buffer.data()),
+                            PeerLayout{.counts = h.send_counts.data(), .displs = h.send_displs.data()},
+                            reinterpret_cast<std::byte *>(h.recv_buffer.data()),
+                            PeerLayout{.counts = h.recv_counts.data(), .displs = h.recv_displs.data()},
+                            reqs);
         }
 #else
         h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
