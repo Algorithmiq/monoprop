@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -90,7 +91,7 @@ public:
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
             run_on_all([&](int r) {
-                auto p = std::make_unique<MonomialPropagator<NumModes>>(*src.partitions_[static_cast<size_t>(r)]);
+                auto p = src.partitions_[static_cast<size_t>(r)]->clone_(); // virtual: keeps the derived type
                 p->comm_ = comm_for_(r); // PartitionGroup is a friend of MonomialPropagator
                 partitions_[static_cast<size_t>(r)] = std::move(p);
             });
@@ -211,14 +212,15 @@ private:
         }
         // No summary is "unknown" rather than a plausible zero: some mask did not fit the window.
         const auto sum = summarize_masks(masks, peers, kWords, static_cast<size_t>(node_rank_));
-        std::fputs(format_place_line(mpi::rank(parent_),
-                                     node_rank_,
-                                     node_size_,
-                                     sum ? verdict : "unknown",
-                                     sum.value_or(MaskSummary{}))
-                       .c_str(),
-                   stderr);
-        std::fflush(stderr);
+        const std::string line = format_place_line(mpi::rank(parent_),
+                                                   node_rank_,
+                                                   node_size_,
+                                                   sum ? verdict : "unknown",
+                                                   sum.value_or(MaskSummary{}));
+        if (place_line_is_new(line)) {
+            std::fputs(line.c_str(), stderr);
+            std::fflush(stderr);
+        }
     }
 
     auto make_transport_() -> void {
@@ -327,12 +329,20 @@ private:
 };
 
 // One result per partition, indexed by partition rank. The slots are written from the owning master, so
-// `body` must not touch the vector itself.
+// `body` must not touch the vector itself. Staged into a non-bit-packed `Slot` type: std::vector<bool> is
+// the bit-packed specialization, so concurrent partition-master writes to different logical elements can
+// tear the same underlying word (a data race) even though their indices are disjoint.
 template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
 auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
-    std::vector<R> results(static_cast<size_t>(group.partition_count()));
-    group.run_on_all([&](int r) { results[static_cast<size_t>(r)] = body(r); });
-    return results;
+    using Slot = std::conditional_t<std::is_same_v<R, bool>, std::uint8_t, R>;
+    std::vector<Slot> staging(static_cast<size_t>(group.partition_count()));
+    group.run_on_all([&](int r) { staging[static_cast<size_t>(r)] = static_cast<Slot>(body(r)); });
+    if constexpr (std::is_same_v<R, bool>) {
+        return std::vector<R>(staging.begin(), staging.end());
+    }
+    else {
+        return staging;
+    }
 }
 
 // collect_on_all over the partition propagators themselves: `body(partition)` on each partition's master.

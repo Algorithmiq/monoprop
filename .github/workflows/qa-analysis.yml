@@ -5,14 +5,8 @@ on:
   push:
     branches:
       - main
-  # PRs trigger for the "opened", "reopened", "synchronize" events (default) and
-  # "ready_for_review"
+  # PRs trigger for all the default events
   pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize # when new commits are pushed to the PR
-      - ready_for_review # when the PR is un-drafted
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,10 +19,6 @@ env:
 
 jobs:
   cpp-changes:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
     name: Detect C++ file changes
     runs-on: ubuntu-slim
     outputs:
@@ -53,10 +43,6 @@ jobs:
             cpp/include/monoprop/**/*.inl
 
   code-coverage:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
     name: Check code coverage
     runs-on: ubuntu-26.04
     env:
@@ -140,11 +126,115 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  sonarqube-analysis:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
+  gcc-asan-ubsan:
+    name: GCC ASan+LSan+UBSan
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    # Sanitizer options are per-step: only the C++ binary is fully instrumented.
+    env:
+      SKBUILD_CMAKE_BUILD_TYPE: "AsanUbsan"
+      SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=asan-ubsan"
+      UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
 
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group workspace-test --all-extras -v
+
+      # ASan needs libstdc++ preloaded too so its __cxa_throw interceptor can resolve.
+      - name: Resolve GCC sanitizer runtimes
+        run: |
+          echo "ASAN_PRELOAD=$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" >> "$GITHUB_ENV"
+
+      # The fully instrumented binary also runs leak detection.
+      - name: Run C++ unit tests
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1"
+          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/lsan.supp"
+        run: |
+          ctest --test-dir build/editable/AsanUbsan --output-on-failure
+
+      # CPython is uninstrumented, so its leak, pointer-pair, and initialization checks are off.
+      # The C++ leg covers leaks.
+      #
+      # pytest replaces stderr; log files preserve sanitizer reports.
+      - name: Run Python tests
+        env:
+          LD_PRELOAD: ${{ env.ASAN_PRELOAD }}
+          ASAN_OPTIONS: "detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path=${{ github.workspace }}/sanitizer-log"
+          UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1:log_path=${{ github.workspace }}/sanitizer-log"
+        run: |
+          uv run pytest -r aR --durations=50 --durations-min=5.0
+
+      - name: Show sanitizer reports
+        if: failure()
+        run: |
+          shopt -s nullglob
+          files=("${{ github.workspace }}"/sanitizer-log.*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No sanitizer report was written; the failure came from the tests themselves."
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
+  gcc-tsan:
+    # TSan cannot load instrumented _core into stock CPython; Python coverage needs an
+    # instrumented interpreter. C++ tests cover the relevant partition and ShmComm paths.
+    name: GCC ThreadSanitizer (C++)
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    env:
+      SKBUILD_CMAKE_BUILD_TYPE: "Tsan"
+      SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=tsan"
+      TSAN_OPTIONS: "halt_on_error=1:history_size=4"
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          uv sync --no-progress --group workspace-test --all-extras -v
+
+      # Restrict TSan to the concurrent partition and shared-memory paths.
+      - name: Run C++ partition and ShmComm tests
+        run: |
+          ctest --test-dir build/editable/Tsan --output-on-failure -R "(partition_|shm_comm_)"
+
+  sonarqube-analysis:
     name: SonarQube analysis
     runs-on: ubuntu-26.04
     needs: [code-coverage]

@@ -16,10 +16,12 @@ The end-to-end workflow is:
 2. Set up the Python environment.
 3. (Optional) install Julia and `PauliPropagation.jl`
 4. Run the benchmarks to produce `results.json`.
-5. Plot the results to produce `runtime.png` and `memory.png`.
+5. Plot the results to produce `pauli_results.png`.
 
+`plot_headline.py`, at the top level here, draws the docs site's two-panel headline figure from
+both benchmarks' committed results at once: Pauli on the left, Majorana on the right.
 
-For more details, check the documentation at [benchmark guide](https://docs.algorithmiq.fi/monoprop/benchmarks.html)
+For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.tech/benchmarks).
 
 ## Layout of the Pauli benchmarks
 
@@ -37,7 +39,8 @@ For more details, check the documentation at [benchmark guide](https://docs.algo
 | `run_scaling.jl` | the `PauliPropagation.jl` counterpart of `run_one.py`, same record schema. |
 | `plot_scaling.py` | total runtime and final memory vs lattice size, one figure each → `pauli_scaling_runtime.png`, `pauli_scaling_memory.png`. |
 | `plot_speedup.py` | monoprop's speed-up over each other backend, per size → `pauli_speedup.png`. |
-| `scaling_results.jsonl` | the committed 36→324-qubit ladder, so both figures can be redrawn without re-measuring. |
+| `scaling_cpu.jsonl` | the committed 36→324-qubit ladder for the CPU engines, so both figures can be redrawn without re-measuring. |
+| `scaling_gpu.jsonl` | the same ladder for `cuPauliProp`, measured on a GPU node and combined at plot time. |
 
 Any lattice size works: `--nx/--ny` override `settings.json`, and the observable follows the
 lattice (the central horizontally-adjacent bond, which is the committed `[20, 21]` at 6x6)
@@ -46,9 +49,14 @@ rather than staying pinned to indices that a resize would invalidate.
 ### Scaling with lattice size
 
 ```bash
-# Redraw both committed figures from the committed ladder — seconds, no propagation
-uv run python plot_scaling.py scaling_results.jsonl
-uv run python plot_speedup.py scaling_results.jsonl
+# Redraw both committed figures from the committed ladder — seconds, no propagation.
+# The CPU file goes first: where a backend appears in both, the first file wins, which is
+# what keeps monoprop's curve on the CPU node instead of taking points from the GPU node.
+uv run python plot_scaling.py scaling_cpu.jsonl scaling_gpu.jsonl
+uv run python plot_speedup.py scaling_cpu.jsonl scaling_gpu.jsonl
+
+# The GPU's operator is not in host memory, so the cross-pool view is a separate figure:
+uv run python plot_scaling.py scaling_cpu.jsonl scaling_gpu.jsonl --memory-key working_set_MB
 
 # Or measure your own: square grids 6x6 ... 18x18 (36 -> 324 qubits), 5 minutes per point
 uv run python run_scaling.py --output results/scaling.jsonl --timeout 300

@@ -23,6 +23,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
 

@@ -26,12 +26,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 from pathlib import Path
 
 import backends as backend_mod
 from model import SETTINGS_PATH, Settings
 
 RESULTS_PATH = Path(__file__).parent / "results.json"
+
+
+def _provenance(settings: Settings, backends: list[str]) -> dict:
+    """Record where and how this run was taken, beside the numbers it produced.
+
+    The scaling sweep stamps every record with its host and thread count; without the same
+    here, the hardware a published per-step figure was measured on survives only as prose
+    in the docs, where nothing can check it against the data.
+    """
+    return {
+        "host": platform.node(),
+        "settings": settings.describe(),
+        "memory_metric": backend_mod.HOST_MEMORY_METRIC,
+        "threads": {
+            backend_mod.LABELS[backend]: backend_mod.num_threads(backend)
+            for backend in backends
+        },
+    }
 
 
 def main() -> None:
@@ -88,6 +107,7 @@ def main() -> None:
         },
         "expvals": {r.label: r.expvals for r in results.values()},
     }
+    provenance = _provenance(settings, list(results))
     # Preserve any backend already in the file (e.g. PauliPropagation.jl from an earlier
     # run_model.jl run) rather than dropping it on rewrite.
     if args.output.exists():
@@ -99,7 +119,16 @@ def main() -> None:
             merged = dict(existing.get(section, {}))
             merged.update(values)
             payload[section] = merged
+        # Keep the other engines' provenance (e.g. run_model.jl's) alongside this run's.
+        merged_prov = dict(existing.get("provenance", {}))
+        merged_prov.update(provenance)
+        merged_prov["threads"] = {
+            **existing.get("provenance", {}).get("threads", {}),
+            **provenance["threads"],
+        }
+        provenance = merged_prov
 
+    payload["provenance"] = provenance
     with args.output.open("w") as f:
         json.dump(payload, f, indent=4)
     print(f"wrote {args.output}")

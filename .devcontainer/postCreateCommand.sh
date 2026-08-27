@@ -24,3 +24,8 @@ from libstdcxx.v6.printers import register_libstdcxx_printers
 register_libstdcxx_printers (None)
 end
 EOT
+
+# set permissions for node_modules and .next directories to avoid permission
+# issues when running commands in the container
+sudo mkdir -p "$WORKSPACE/docs/.next" "$WORKSPACE/docs/node_modules"
+sudo chown -R vscode:vscode "$WORKSPACE/docs/.next" "$WORKSPACE/docs/node_modules"

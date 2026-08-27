@@ -87,13 +87,20 @@ Key files:
 - **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
   teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
   not per-op cost (use `op_memory`).
-- **Peak memory is `HighWaterMark`, not sampled PSS** — exact, unlike `/proc/self/smaps_rollup`.
+- **Peak memory is the kernel's `VmHWM` high-water mark** — exact, with no sampling. Under
+  MPI the ranks' peaks are summed, which errs high (disjoint transients, and shared pages
+  charged to every rank): an upper bound, good for regressions, not for provisioning.
 
 ### Core abstractions (the propagation backbone)
 
 - **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
   mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
   Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
+- **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
+  (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
+  `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row
+  store must include that header — the `OperatorIndex` overloads live in `monoprop::`, so ADL cannot
+  find them from a `monoprop::detail` argument.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
@@ -113,6 +120,8 @@ We also use [`just`](https://github.com/casey/just) for task automation.
 ```bash
 uv sync --all-groups --all-extras -v  # Build & install (workspace-wide)
 uv run pytest  # Run tests (monoprop's suite + the workspace members' suites)
+SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v  # Rebuild when changing sanitizer settings.
+LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" ASAN_OPTIONS=detect_leaks=0 uv run pytest  # Python tests against a sanitizer tree
 just build-docs  # Build documentation
 ```
 

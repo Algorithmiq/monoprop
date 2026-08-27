@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 
 // Query+value fusion codec: the fused R>1 exchange rides the source coefficient (v_src) on each query

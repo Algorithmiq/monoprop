@@ -14,20 +14,15 @@
 
 """Memory-measurement primitives for the benchmark suite.
 
-Two metrics, deliberately kept apart:
+One metric, :class:`HighWaterMark`: the kernel's own peak RSS over a resettable window.
+Exact -- there is no sampling, so no transient can be missed -- and it needs no background
+thread, so the GIL cannot hide anything from it. This is the metric to quote, and the only
+one that is like-for-like against a non-Python library.
 
-:class:`HighWaterMark`
-    The kernel's own peak RSS over a resettable window. Exact -- there is no sampling, so
-    no transient can be missed -- and it needs no background thread, so the GIL cannot
-    hide anything from it. This is the metric to quote, and the only one that is
-    like-for-like against a non-Python library.
-
-:class:`PssSampler`
-    A sampled ``(wall_clock, pss)`` timeline. Needed only under MPI, where the job's
-    footprint is the **peak-of-sum, not the sum-of-peaks**: summing each rank's
-    independently-timed peak counts transients that never coexisted, so
-    :func:`merge_peak_of_sum` replays the timelines instead. A scalar per-rank peak
-    cannot reconstruct that, which is the one thing sampling still buys.
+Under MPI the ranks' peaks are summed, which is a sum-of-peaks: it counts transients that
+never coexisted, and RSS charges each shared page in full to every rank mapping it. Both
+err high, so the figure is an upper bound on the node's true footprint -- fine for
+tracking regressions, but not a number to quote as a provisioning requirement.
 """
 
 from __future__ import annotations
@@ -35,8 +30,6 @@ from __future__ import annotations
 import contextlib
 import gc
 import os
-import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,9 +38,6 @@ import psutil
 if TYPE_CHECKING:
     from types import TracebackType
     from typing import Self
-
-# Sampling cadence for the MPI timeline.
-SAMPLE_INTERVAL_S = 0.005
 
 # Reset VmHWM to the current RSS, starting a new measurement window
 _CLEAR_REFS_MM_HIWATER_RSS = "5\n"
@@ -71,17 +61,6 @@ def rss_bytes() -> int:
     Read from ``/proc/self/status`` (``VmRSS``), which is a cheap single-line lookup
     """
     return proc_field("/proc/self/status", "VmRSS:")
-
-
-def pss_bytes() -> int:
-    """Return this process's proportional set size (PSS) in bytes.
-
-    PSS divides each shared page among the processes mapping it, so PSS summed over the
-    ranks on a node counts every page exactly once. RSS charges a shared page (the Python
-    interpreter, libstdc++, a shared graph) in full to every rank, which inflates an
-    MPI sum by roughly the shared footprint times the rank count.
-    """
-    return proc_field("/proc/self/smaps_rollup", "Pss:")
 
 
 def peak_rss_bytes() -> int:
@@ -245,79 +224,3 @@ class HighWaterMark:
     def baseline_mb(self) -> float:
         """Return :attr:`baseline_bytes` in MiB."""
         return self.baseline_bytes / 1024**2
-
-
-class PssSampler:
-    """Background thread sampling this process's live PSS over time.
-
-    Records ``(wall_clock, pss_bytes)`` pairs while active. Uses ``time.time`` (not
-    ``time.monotonic``) so timestamps are comparable across ranks sharing a node's clock,
-    which :func:`merge_peak_of_sum` needs to correlate readings.
-
-    Use as a context manager around the operation; it samples on entry and exit, so even a
-    sub-interval operation yields a usable timeline.
-
-    The timeline is only as dense as the timed thread's GIL releases allow, so treat it as
-    a lower bound on the true peak-of-sum and :class:`HighWaterMark` as the exact per-rank
-    figure. It is kept because no per-rank scalar can recover which peaks coexisted.
-    """
-
-    def __init__(self, interval: float = SAMPLE_INTERVAL_S) -> None:
-        """Prepare a sampler.
-
-        Args:
-            interval: Seconds between samples. Shorter closes the gap to the true peak
-                at the cost of perturbing the timed thread more often.
-        """
-        self._interval = interval
-        self._samples: list[tuple[float, int]] = []
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            self._samples.append((time.time(), pss_bytes()))
-            self._stop.wait(self._interval)
-
-    def __enter__(self) -> Self:
-        """Record one sample, then start sampling in the background."""
-        self._samples.append((time.time(), pss_bytes()))
-        self._thread.start()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        """Stop the thread, join it, and record a final sample. Exceptions propagate."""
-        self._stop.set()
-        self._thread.join()
-        self._samples.append((time.time(), pss_bytes()))
-
-    @property
-    def samples(self) -> list[tuple[float, int]]:
-        """Return the recorded ``(wall_clock, pss_bytes)`` samples."""
-        return self._samples
-
-
-def merge_peak_of_sum(per_rank: list[list[tuple[float, int]]]) -> int:
-    """Return the peak of the summed live PSS across ranks, in bytes.
-
-    ``per_rank[i]`` is rank ``i``'s samples. Walks all samples in time order,
-    step-holding each rank's most recent reading, and tracks the maximum of the
-    running sum -- the largest summed footprint that actually coexisted.
-    """
-    # Seed each rank at its pre-op baseline sample; empty series contribute 0.
-    current = [series[0][1] if series else 0 for series in per_rank]
-    running = sum(current)
-    peak = running
-    events = sorted(
-        (t, r, pss) for r, series in enumerate(per_rank) for t, pss in series
-    )
-    for _t, rank, pss in events:
-        running += pss - current[rank]
-        current[rank] = pss
-        peak = max(peak, running)
-    return peak

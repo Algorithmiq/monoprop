@@ -438,6 +438,19 @@ BOOST_AUTO_TEST_CASE(cpu_topology_place_line_reports_every_field) {
                       "cpu_list=0-127\n");
 }
 
+// 437 identical lines in one 585-test run is noise; a CHANGED line still has to get through.
+BOOST_AUTO_TEST_CASE(cpu_topology_place_line_repeats_are_collapsed) {
+    // Distinctive, so a real COMMPLACE line emitted by some other case cannot be the previous value.
+    const std::string a = "COMMPLACE test-a\n";
+    const std::string b = "COMMPLACE test-b\n";
+    BOOST_CHECK(partition::place_line_is_new(a));
+    BOOST_CHECK(!partition::place_line_is_new(a));
+    BOOST_CHECK(!partition::place_line_is_new(a));
+    BOOST_CHECK(partition::place_line_is_new(b)); // a different placement is not a repeat
+    BOOST_CHECK(!partition::place_line_is_new(b));
+    BOOST_CHECK(partition::place_line_is_new(a)); // and neither is coming back to the first one
+}
+
 // The state summarize_masks refuses to classify must SAY unknown rather than print a plausible zero.
 BOOST_AUTO_TEST_CASE(cpu_topology_place_line_unknown_is_not_a_verdict) {
     BOOST_CHECK_EQUAL(partition::format_place_line(0, 0, 1, "unknown", partition::MaskSummary{}),
