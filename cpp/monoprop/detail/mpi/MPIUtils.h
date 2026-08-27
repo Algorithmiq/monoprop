@@ -61,9 +61,11 @@ auto find_rank(const Monomial<NumModes> &mono, const routing::Router &router) ->
 }
 
 // The router this communicator's geometry implies, honouring monoprop_ROUTING / _ROUTE_LINEAR_BITS.
+// Templated because the router binds the transposed basis for this monomial width.
+template <size_t NumModes>
 inline auto router_for(const mpi::Comm &comm) -> routing::Router {
     const auto geom = mpi::geometry(comm);
-    return routing::make_router(static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
+    return routing::make_router<NumModes>(static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
 }
 
 class RoutingDisagreement : public std::runtime_error {
@@ -85,9 +87,9 @@ inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
     if (world <= 1) {
         return;
     }
-    const auto router = router_for(comm);
-    const auto parts = static_cast<uint64_t>(mpi::geometry(comm).partitions);
-    const auto bits = static_cast<uint64_t>(router.linear_bits());
+    const auto geom = mpi::geometry(comm);
+    const auto parts = static_cast<uint64_t>(geom.partitions);
+    const auto bits = static_cast<uint64_t>(routing::linear_bits_for(static_cast<size_t>(geom.ranks)));
     const uint64_t seed = routing::seed_from_env();
     const auto digest = [&](uint64_t salt) {
         return routing::mix64(routing::mix64(routing::mix64(salt ^ bits) ^ parts) ^ seed);
