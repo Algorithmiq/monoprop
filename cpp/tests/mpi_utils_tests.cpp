@@ -112,8 +112,7 @@ auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> 
     return op;
 }
 
-auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked)
-    -> void {
+auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked) -> void {
     // Every offset comes from the codec's walk: the record is VARIABLE WIDTH, so a hardcoded stride
     // would compare a monomial decoded at the wrong offset against the wrong rank.
     using QC = detail::QueryCodec<32>;
