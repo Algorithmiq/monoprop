@@ -51,7 +51,7 @@ inline constexpr bool unsupported_mpi_datatype_v = false;
 
 template <typename T>
 struct datatype {
-    static inline auto get() -> MPI_Datatype {
+    static auto get() -> MPI_Datatype {
         if constexpr (std::is_same_v<T, int>) {
             return MPI_INT;
         }
