@@ -402,7 +402,7 @@ public:
             // The tail entry this record named. Its offset needs the record count and the stride, both of
             // which the buffer and the caller already carry.
             const size_t tail = query_tail_offset(buf, stride);
-            const size_t words = (num_bits_ + 63) / 64;
+            const size_t words = Bitset::words_for(num_bits_);
             escapes_.emplace_back(num_bits_);
             mpi_detail::read_monomial_from_words(buf, tail + (buf[base + lane_words] * words), escapes_.back());
             keys_[slot].spilled = &escapes_.back();
@@ -484,7 +484,7 @@ private:
 // form is tied to the store rather than chosen per layer: a runtime record form would double the engine's
 // template instantiations again, to save a word in a narrow range.
 [[nodiscard]] inline auto query_payload_words_for(const OperatorIndex &store, size_t /*capacity*/) -> size_t {
-    return (store.num_bits() + 63) / 64;
+    return Bitset::words_for(store.num_bits());
 }
 [[nodiscard]] inline auto query_payload_words_for(const SparseRowStore & /*store*/, size_t capacity) -> size_t {
     return sparse_payload_words(capacity);

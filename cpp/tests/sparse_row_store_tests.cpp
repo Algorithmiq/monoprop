@@ -30,6 +30,8 @@
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
+#include "RandomMonomial.h"
+
 using namespace monoprop;
 using namespace monoprop::detail;
 
@@ -65,22 +67,6 @@ auto row_of(const Bitset &mono) -> RowBuffer {
         out.lanes.push_back(static_cast<RowMode>(mode));
     });
     return out;
-}
-
-auto random_monomial(std::mt19937_64 &rng, size_t num_modes, size_t max_slots) -> Bitset {
-    Bitset mono(2 * num_modes);
-    const size_t occupied = rng() % (max_slots + 1);
-    for (size_t k = 0; k < occupied; ++k) {
-        const size_t mode = rng() % num_modes;
-        const unsigned int code = 1U + static_cast<unsigned int>(rng() % 3U);
-        if ((code & 1U) != 0U) {
-            mono.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            mono.set((2 * mode) + 1);
-        }
-    }
-    return mono;
 }
 
 } // namespace
@@ -304,7 +290,7 @@ BOOST_AUTO_TEST_CASE(sparse_row_store_row_form_set_matches_the_dense_one) {
         SparseRowStore dense_written(2 * num_modes, SparseRowStore::kMaxSlots);
         SparseRowStore row_written(2 * num_modes, SparseRowStore::kMaxSlots);
         for (size_t trial = 0; trial < 200; ++trial) {
-            const Bitset mono = random_monomial(rng, num_modes, SparseRowStore::kMaxSlots);
+            const Bitset mono = test_utils::random_monomial(rng, num_modes, SparseRowStore::kMaxSlots);
             const RowBuffer row = row_of(mono);
 
             dense_written.push_back(mono);
@@ -418,7 +404,7 @@ BOOST_AUTO_TEST_CASE(sparse_row_key_batch_resolves_both_shapes) {
     std::vector<Bitset> monos;
     for (size_t k = 0; k < 64; ++k) {
         // Up to 6 slots against a capacity of 3, so roughly half the rows spill.
-        Bitset mono = random_monomial(rng, kNumBits / 2, 6);
+        Bitset mono = test_utils::random_monomial(rng, kNumBits / 2, 6);
         if (std::find(monos.begin(), monos.end(), mono) != monos.end()) {
             continue;
         }

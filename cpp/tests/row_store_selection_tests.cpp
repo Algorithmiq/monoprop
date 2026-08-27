@@ -53,7 +53,10 @@ BOOST_AUTO_TEST_CASE(row_store_selection_follows_the_environment) {
     // ever fails, the suite's sparse coverage has stopped being a second configuration.
     BOOST_REQUIRE(!monoprop::detail::SparseRowStore::preferred_for_modes(storage_modes));
 
-    switch (config::get().row_store) {
+    // Dereferenced: an unrecognized value is nullopt, and the propagator above would have thrown on it
+    // before this line -- see the rejects-an-unrecognized-value case below.
+    BOOST_REQUIRE(config::get().row_store.has_value());
+    switch (*config::get().row_store) {
         case config::RowStore::Sparse:
             BOOST_TEST(propagator.rows_are_sparse());
             break;

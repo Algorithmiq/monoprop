@@ -31,6 +31,8 @@
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
+#include "TestOperator.h"
+
 using namespace monoprop;
 using monoprop::detail::CutoffContext;
 using monoprop::detail::MatchedEpochSet;
@@ -46,18 +48,8 @@ struct RecordingSink {
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
 
-// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
 auto indexed_op(const MonomialList &terms) -> detail::MPOperator {
-    detail::MPOperator op(kNumBits);
-    op.with_store([&](auto &rows) {
-        detail::insert_absent_terms(
-            op,
-            rows,
-            terms.size(),
-            [&](size_t k) -> const Bitset & { return terms[k]; },
-            [&](size_t k, size_t base) { assign_row(rows, base + k, terms[k]); });
-    });
-    return op;
+    return test_utils::indexed_operator(kNumBits, terms);
 }
 
 } // namespace

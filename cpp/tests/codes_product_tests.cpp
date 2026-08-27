@@ -31,6 +31,7 @@
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
 
+#include "RandomMonomial.h"
 #include "TestData.h"
 #include "TestUtilities.h"
 
@@ -135,22 +136,6 @@ auto check_product(const Bitset &mono, const Bitset &gen, size_t capacity, Seen 
     seen.cancelled_a_mode |= shared_cancelling > 0;
 }
 
-auto random_mono(std::mt19937_64 &rng, size_t num_modes, size_t max_modes) -> Bitset {
-    Bitset mono(2 * num_modes);
-    const size_t occupied = rng() % (max_modes + 1);
-    for (size_t k = 0; k < occupied; ++k) {
-        const size_t mode = rng() % num_modes;
-        const auto code = 1U + static_cast<unsigned int>(rng() % 3U);
-        if ((code & 1U) != 0U) {
-            mono.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            mono.set((2 * mode) + 1);
-        }
-    }
-    return mono;
-}
-
 } // namespace
 
 // Randomized terms against randomized generators. Generators are drawn from the same distribution and
@@ -161,8 +146,8 @@ BOOST_AUTO_TEST_CASE(codes_product_matches_dense_on_randomized_rows) {
     Seen seen;
     for (const size_t num_modes : {32U, 64U, 300U}) {
         for (size_t trial = 0; trial < 400; ++trial) {
-            const auto mono = random_mono(rng, num_modes, 6);
-            const auto gen = random_mono(rng, num_modes, 4);
+            const auto mono = test_utils::random_monomial(rng, num_modes, 6);
+            const auto gen = test_utils::random_monomial(rng, num_modes, 4);
             check_product(mono, gen, SparseRowStore::kMaxSlots, seen);
         }
     }
@@ -181,8 +166,8 @@ BOOST_AUTO_TEST_CASE(codes_product_matches_dense_under_heavy_overlap) {
     std::mt19937_64 rng(4242U);
     Seen seen;
     for (size_t trial = 0; trial < 2000; ++trial) {
-        const auto mono = random_mono(rng, 6, 6);
-        const auto gen = random_mono(rng, 6, 6);
+        const auto mono = test_utils::random_monomial(rng, 6, 6);
+        const auto gen = test_utils::random_monomial(rng, 6, 6);
         check_product(mono, gen, SparseRowStore::kMaxSlots, seen);
     }
     BOOST_TEST(seen.cancelled_a_mode);

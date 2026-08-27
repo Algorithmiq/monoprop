@@ -46,6 +46,7 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/partition/StagedCollect.h"
 
 namespace monoprop {
 namespace detail {
@@ -144,7 +145,9 @@ public:
     /// The system's width, as passed to the constructor.
     auto num_modes() const -> size_t { return num_modes_; }
     /// Monomials are stored at this width; >= num_modes(). See detail::storage_modes_for.
-    auto storage_num_modes() const -> size_t { return storage_num_modes_; }
+    /// Read off the operator rather than kept as a member: it is the width that actually runs, and a
+    /// second copy of a derived value is a second thing the copy constructor has to keep in step.
+    auto storage_num_modes() const -> size_t { return mp_op_.num_bits() / 2; }
 
     /// Whether this propagator stores its terms as sparse rows rather than dense monomials — the choice
     /// made from storage_num_modes() and `monoprop_ROW_STORE`. Both backends compute the same terms and
@@ -372,9 +375,6 @@ protected:
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
     CutoffFn cutoff_fn_;
-    // Declared before mp_op_ on purpose: members initialize in declaration order, and mp_op_'s
-    // initializer reads this. Moving it below would leave the operator sized from an uninitialized value.
-    size_t storage_num_modes_;
     detail::MPOperator mp_op_;
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
@@ -385,19 +385,14 @@ protected:
     // suggest) is made once rather than risking the two backends disagreeing on it.
     auto row_width_bound_() const -> size_t;
 
-    // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
-    // structural position bound when it has one, clamped to OperatorIndex's own inline cap.
-    auto packed_inline_width_() const -> size_t;
-
-    // The live backend's ideal row width for the current cutoff/basis-change configuration: one function
-    // for the branch the constructor's store setup and resize_row_store_if_needed_() would otherwise
-    // duplicate.
-    auto target_row_width_() const -> size_t;
-    // Same, for a caller that already holds the use_sparse_rows_() decision (the constructor, which needs
-    // it separately to pick the backend type) -- skips a second lookup of the same answer.
+    // The named backend's ideal row width for the current cutoff/basis-change configuration: one
+    // function for the branch the constructor's store setup and resize_row_store_if_needed_() would
+    // otherwise duplicate. A perf hint, never a correctness constraint -- an over-long row spills
+    // losslessly. The caller names the backend, since the constructor picks one before there is a store
+    // to read it off and every later caller has one.
     auto target_row_width_(bool sparse) const -> size_t;
 
-    // Resizes the live backend to target_row_width_() when it has moved, migrating existing rows rather
+    // Resizes the live backend to its target row width when it has moved, migrating existing rows rather
     // than dropping them. Must run after any setting change that can move the cutoff-derived bound
     // (update_cutoff, update_cutoff_type, update_basis_change) -- see the row-width discussion on
     // update_cutoff().
@@ -429,22 +424,13 @@ protected:
         return map_partitions_indexed_([&](int, MonomialPropagator &p) -> R { return fn(p); });
     }
 
-    // The slots are written from the owning master, so `fn` must not touch the vector itself. Staged
-    // into a non-bit-packed `Slot` type: std::vector<bool> is the bit-packed specialization, so
-    // concurrent partition-master writes to different logical elements can tear the same underlying
-    // word (a data race) even though their indices are disjoint.
+    // The slots are written from the owning master, so `fn` must not touch the vector itself -- see
+    // detail::staged_collect for what that rules out.
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R> {
-        using Slot = std::conditional_t<std::is_same_v<R, bool>, std::uint8_t, R>;
-        std::vector<Slot> staging(partition_count_());
-        for_each_partition_indexed_(
-            [&](int r, MonomialPropagator &p) { staging[static_cast<size_t>(r)] = static_cast<Slot>(fn(r, p)); });
-        if constexpr (std::is_same_v<R, bool>) {
-            return std::vector<R>(staging.begin(), staging.end());
-        }
-        else {
-            return staging;
-        }
+        return detail::staged_collect<R>(partition_count_(), [&](auto &&emit) {
+            for_each_partition_indexed_([&](int r, MonomialPropagator &p) { emit(r, fn(r, p)); });
+        });
     }
 
     // Concatenated in partition order. The partitions are disjoint, so the result enumerates the whole
@@ -469,7 +455,7 @@ protected:
 
     // The backend decision, in one place: monoprop_ROW_STORE if it forces one, else the measured
     // crossover on the storage width. Throws if the variable holds something unrecognized -- see
-    // config::Settings::row_store_unrecognized for why this one is not silently ignored.
+    // config::Settings::row_store for why an unrecognized value is not silently ignored.
     auto use_sparse_rows_() const -> bool;
 
 private:

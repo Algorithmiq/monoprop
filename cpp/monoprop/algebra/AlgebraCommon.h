@@ -48,7 +48,9 @@ struct CutoffMasks {
     uint64_t active = 0;      // single-word arm: valid bits AND the active window
     uint64_t even_active = 0; // single-word arm: the even-bit pattern AND `active`
     size_t active_bit_offset = 0;
-    size_t num_bits = 0; // the width these were built for; only checked in assertions
+    size_t num_bits = 0;                     // the width these were built for; only checked in assertions
+    size_t first_active_word = 0;            // multi-word arm: words below this one are entirely inactive
+    uint64_t first_word_mask = ~uint64_t{0}; // multi-word arm: the active bits within that word
 
     // Derived from num_bits/active_bit_offset rather than stored: each is a one-line fact about the
     // other two fields, read at 3 call sites total.
@@ -66,6 +68,15 @@ struct CutoffMasks {
             const uint64_t valid = num_bits == 64 ? ~uint64_t{0} : ((uint64_t{1} << num_bits) - 1);
             m.active = m.active_bit_offset == 0 ? valid : (valid & ~((uint64_t{1} << m.active_bit_offset) - 1));
             m.even_active = (0x5555555555555555ULL & valid) & m.active;
+        }
+        else {
+            // The same "mask off the inactive low bits" the single-word arm above does, split into the
+            // word to start at and the mask for that word. The active window is the *high* end of the
+            // register, so every word below first_active_word contributes nothing to any of the three
+            // sums and is skipped rather than masked.
+            m.first_active_word = m.active_bit_offset / Bitset::word_width;
+            const size_t within = m.active_bit_offset % Bitset::word_width;
+            m.first_word_mask = within == 0 ? ~uint64_t{0} : ~((uint64_t{1} << within) - 1);
         }
         return m;
     }
@@ -85,9 +96,6 @@ struct CutoffMasks {
                 static_cast<size_t>(std::popcount(active_word)),
                 static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
-    const size_t num_bits = masks.num_bits;
-    const size_t active_bit_offset = masks.active_bit_offset;
-
     // One pass over the words, with no Bitset temporaries. The `active & mask` / `(active >> 1) & mask`
     // / `^` / `|` / `>>` chain this replaces built five of them per term, and since Stage 2b each is a
     // full runtime-width object construction rather than a trivially copyable value.
@@ -95,30 +103,31 @@ struct CutoffMasks {
     // (word >> 1) & even_mask equals ((bits >> 1) & mask).word(w): a full-width shift carries the low
     // bit of word w+1 into bit 63 of word w, which is an odd position and so masked off regardless.
     // The same within-word-pairs argument pair_swap() and pauli_uv() already rely on.
-    const auto &mask = cached_even_bits<LSb0>(num_bits);
-    const auto accumulate = [&mask](const auto &bits) -> CutoffSums {
-        size_t xor_sum = 0;
-        size_t popcount_sum = 0;
-        size_t or_sum = 0;
-        const size_t nw = bits.num_words();
-        for (size_t w = 0; w < nw; ++w) {
-            const uint64_t word = bits.word(w);
-            const uint64_t m = mask.word(w);
-            const uint64_t first_pair = word & m;
-            const uint64_t second_pair = (word >> 1) & m;
-            xor_sum += static_cast<size_t>(std::popcount(first_pair ^ second_pair));
-            popcount_sum += static_cast<size_t>(std::popcount(word));
-            or_sum += static_cast<size_t>(std::popcount(first_pair | second_pair));
-        }
-        return {xor_sum, popcount_sum, or_sum};
-    };
-
-    // The shift is the uncommon case (logical_num_modes < num_modes); keep its temporary out of the
-    // path that does not need one.
-    if (masks.whole_register()) {
-        return accumulate(mono);
+    //
+    // A narrower active window is masked, not shifted -- `mono >> active_bit_offset` would copy the
+    // whole monomial per term (and allocate, past kInlineWords), and it is the *common* case: the
+    // storage width rounds up to a whole 32-mode block, so the offset is non-zero for any logical
+    // width that is not a multiple of 32. Masking gives the same three sums because the offset is even,
+    // so a mode's two bits are dropped or kept together and every surviving mode keeps its parity --
+    // exactly the argument the single-word arm above already rests on. word_mask applies to
+    // first_active_word only; the assignment in the loop is a register move rather than a branch.
+    const auto &mask = cached_even_bits<LSb0>(masks.num_bits);
+    size_t xor_sum = 0;
+    size_t popcount_sum = 0;
+    size_t or_sum = 0;
+    const size_t nw = mono.num_words();
+    uint64_t word_mask = masks.first_word_mask;
+    for (size_t w = masks.first_active_word; w < nw; ++w) {
+        const uint64_t word = mono.word(w) & word_mask;
+        word_mask = ~uint64_t{0};
+        const uint64_t m = mask.word(w);
+        const uint64_t first_pair = word & m;
+        const uint64_t second_pair = (word >> 1) & m;
+        xor_sum += static_cast<size_t>(std::popcount(first_pair ^ second_pair));
+        popcount_sum += static_cast<size_t>(std::popcount(word));
+        or_sum += static_cast<size_t>(std::popcount(first_pair | second_pair));
     }
-    return accumulate(mono >> active_bit_offset);
+    return {xor_sum, popcount_sum, or_sum};
 }
 
 // Cold-path form: derives the masks per call. Every per-term caller goes through a cutoff functor,

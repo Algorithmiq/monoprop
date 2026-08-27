@@ -35,6 +35,20 @@ namespace monoprop::detail {
     return std::max(base + n, capacity + (capacity / 2) + 1);
 }
 
+// What a row store's spilled rows cost outside its own arrays: the map node per entry (key, mapped
+// value and ~24 bytes of std::unordered_map node and bucket overhead) plus whatever each spilled
+// monomial owns past its inline words. Shared for the same reason as the capacity rule above -- the
+// node-overhead estimate is a single number that must not be corrected in one store and not the other,
+// which would skew operator_memory_breakdown() for one backend only.
+template <typename OverflowMap>
+[[nodiscard]] inline auto spilled_rows_bytes(const OverflowMap &overflow) -> size_t {
+    size_t total = overflow.size() * (sizeof(typename OverflowMap::mapped_type) + sizeof(size_t) + 24);
+    for (const auto &[key, value] : overflow) {
+        total += value.heap_bytes();
+    }
+    return total;
+}
+
 class TermIndexCeilingReached : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -71,6 +85,13 @@ public:
     // Slot capacity for `n` rows at <= 0.7 load. The +1 keeps a table reserved for exactly n rows off
     // the rehash threshold on the n-th insert.
     auto reserve(size_t n) -> void { rehash_to(slots_for_(n + 1)); }
+
+    // The 32-bit form of a full-width row hash, which is what a slot stores as its equality
+    // pre-filter. Each store supplies its own full-width hash and folds it here, so the two agree on
+    // the pre-filter's format by construction.
+    [[nodiscard]] static constexpr auto fold(size_t full) noexcept -> uint32_t {
+        return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
+    }
 
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
@@ -115,6 +136,19 @@ public:
 
     // Insert with no duplicate probe -- callers on this path insert provably distinct keys
     // (+G-injective miss batches, clone re-insertion).
+    // insert_distinct over consecutive row indices [base, base + n), hashing each through hash_at(k).
+    // The stores' bulk_insert is this and nothing else, so it lives here rather than once per backend.
+    template <typename HashFn>
+    auto insert_distinct_range(size_t base, size_t n, HashFn &&hash_at) -> void {
+        if (n == 0) {
+            return;
+        }
+        check_index_fits(base + n - 1);
+        for (size_t k = 0; k < n; ++k) {
+            insert_distinct(static_cast<TermIndex>(base + k), hash_at(k));
+        }
+    }
+
     auto insert_distinct(TermIndex idx, uint32_t h) -> void {
         rehash_if_needed();
         size_t s = spread(h) & mask_;

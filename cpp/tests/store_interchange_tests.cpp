@@ -36,26 +36,12 @@
 #include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
+#include "RandomMonomial.h"
+
 using namespace monoprop;
 using namespace monoprop::detail;
 
 namespace {
-
-auto random_term(std::mt19937_64 &rng, size_t num_modes, size_t max_modes) -> Bitset {
-    Bitset mono(2 * num_modes);
-    const size_t occupied = rng() % (max_modes + 1);
-    for (size_t k = 0; k < occupied; ++k) {
-        const size_t mode = rng() % num_modes;
-        const auto code = 1U + static_cast<unsigned int>(rng() % 3U);
-        if ((code & 1U) != 0U) {
-            mono.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            mono.set((2 * mode) + 1);
-        }
-    }
-    return mono;
-}
 
 // Every observable of a built index, so a difference cannot hide in a field the test forgot.
 auto columns_agree(const InvertedIndex &a, const InvertedIndex &b) -> bool {
@@ -97,7 +83,7 @@ BOOST_AUTO_TEST_CASE(store_interchange_inverted_index_is_store_agnostic) {
         SparseRowStore sparse(num_bits, 4);
         size_t spilled = 0;
         for (size_t t = 0; t < 400; ++t) {
-            const auto mono = random_term(rng, num_modes, 8);
+            const auto mono = test_utils::random_monomial(rng, num_modes, 8);
             packed.push_back(mono);
             sparse.push_back(mono);
             spilled += sparse.spilled(sparse.size() - 1) ? 1 : 0;
@@ -120,7 +106,7 @@ BOOST_AUTO_TEST_CASE(store_interchange_inverted_index_is_store_agnostic) {
         appended_sparse.rebuild(sparse);
         appended_packed.rebuild(packed);
         for (size_t t = 0; t < 50; ++t) {
-            const auto mono = random_term(rng, num_modes, 8);
+            const auto mono = test_utils::random_monomial(rng, num_modes, 8);
             const size_t base = sparse.size();
             packed.push_back(mono);
             sparse.push_back(mono);
@@ -144,7 +130,7 @@ BOOST_AUTO_TEST_CASE(store_interchange_monomial_map_keys_still_resolve) {
     MonomialMap pending;
     std::vector<Bitset> stored;
     for (size_t t = 0; t < 200; ++t) {
-        const auto mono = random_term(rng, kNumModes, 8);
+        const auto mono = test_utils::random_monomial(rng, kNumModes, 8);
         // One row per distinct monomial: emplace is insert-or-no-op, so a duplicate would resolve to the
         // first row holding it and the coefficient below would name the wrong index.
         if (sparse.find(mono).has_value()) {
@@ -205,7 +191,7 @@ BOOST_AUTO_TEST_CASE(store_interchange_for_each_visits_every_row) {
     SparseRowStore sparse(kNumBits, 4);
     std::vector<Bitset> stored;
     for (size_t t = 0; t < 200; ++t) {
-        const auto mono = random_term(rng, 32, 8);
+        const auto mono = test_utils::random_monomial(rng, 32, 8);
         if (sparse.find(mono).has_value()) {
             continue; // one row per distinct monomial, so an index maps to one term
         }

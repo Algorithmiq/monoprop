@@ -165,10 +165,9 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
 
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
-    // The escape tails are folded into the query buffers before this is returned, so a consumer sees only
-    // the finished streams; they are members rather than locals because the emit lambda pushes into them.
-    std::vector<VecZ> leader_escapes;
-    std::vector<VecZ> follower_escapes;
+    // No escape tails here: they are folded into the query buffers before this is returned, so a
+    // consumer only ever sees the finished streams. They live as locals of the scan for exactly as long
+    // as they are pushed to.
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
     std::vector<std::vector<size_t>> leader_src;   // size R: parallel to leader_queries (source op idx)
     std::vector<VecZ> follower_queries;            // size R: serialized follower queries per owner rank
@@ -220,8 +219,10 @@ auto fused_find_and_collect(const auto &op,
     res.leader_src.assign(rank_count, std::vector<size_t>{});
     res.follower_queries.assign(rank_count, query_buffer());
     res.follower_src.assign(rank_count, std::vector<size_t>{});
-    res.leader_escapes.assign(rank_count, VecZ{});
-    res.follower_escapes.assign(rank_count, VecZ{});
+    // Drained into the query buffers by append_escape_tail before this function returns, so they are
+    // locals; nothing outside this scan ever sees an unfinished stream.
+    std::vector<VecZ> leader_escapes(rank_count);
+    std::vector<VecZ> follower_escapes(rank_count);
     // Sized to R even on the early-return paths below so the fused engine's per-rank src_val_r access
     // is always in bounds (parallel to leader_src / follower_src).
     if (capture_values) {
@@ -277,8 +278,8 @@ auto fused_find_and_collect(const auto &op,
         auto &fq = res.follower_queries;
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
-        auto &lesc = res.leader_escapes;
-        auto &fesc = res.follower_escapes;
+        auto &lesc = leader_escapes;
+        auto &fesc = follower_escapes;
 
         // Per-gate, not per-term: the kernel's product scratch is overwritten whole per term, so
         // constructing it per term would buy nothing and cost a width derivation, an inline-capacity test
@@ -374,7 +375,7 @@ auto fused_find_and_collect(const auto &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = store.popcount(i);
+                    const size_t mono_pop = row_popcount(store, i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -390,7 +391,7 @@ auto fused_find_and_collect(const auto &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = store.popcount(i);
+                    const size_t mono_pop = row_popcount(store, i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -401,7 +402,7 @@ auto fused_find_and_collect(const auto &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const size_t mono_pop = store.popcount(i);
+                    const size_t mono_pop = row_popcount(store, i);
                     if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
                         continue;
                     }
@@ -417,8 +418,8 @@ auto fused_find_and_collect(const auto &op,
     // The one place a stream is finished. The early returns above are all before the first push, so their
     // escape buffers are empty and skipping this is a no-op for them.
     for (size_t r = 0; r < rank_count; ++r) {
-        append_escape_tail(res.leader_queries[r], res.leader_escapes[r]);
-        append_escape_tail(res.follower_queries[r], res.follower_escapes[r]);
+        append_escape_tail(res.leader_queries[r], leader_escapes[r]);
+        append_escape_tail(res.follower_queries[r], follower_escapes[r]);
     }
     return res;
 }

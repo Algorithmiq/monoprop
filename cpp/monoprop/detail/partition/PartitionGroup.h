@@ -332,20 +332,11 @@ private:
 };
 
 // One result per partition, indexed by partition rank. The slots are written from the owning master, so
-// `body` must not touch the vector itself. Staged into a non-bit-packed `Slot` type: std::vector<bool> is
-// the bit-packed specialization, so concurrent partition-master writes to different logical elements can
-// tear the same underlying word (a data race) even though their indices are disjoint.
+// `body` must not touch the vector itself -- see detail::staged_collect for what that rules out.
 template <typename Body, typename R = std::invoke_result_t<Body &, int>>
 auto collect_on_all(PartitionGroup &group, Body body) -> std::vector<R> {
-    using Slot = std::conditional_t<std::is_same_v<R, bool>, std::uint8_t, R>;
-    std::vector<Slot> staging(static_cast<size_t>(group.partition_count()));
-    group.run_on_all([&](int r) { staging[static_cast<size_t>(r)] = static_cast<Slot>(body(r)); });
-    if constexpr (std::is_same_v<R, bool>) {
-        return std::vector<R>(staging.begin(), staging.end());
-    }
-    else {
-        return staging;
-    }
+    return detail::staged_collect<R>(static_cast<size_t>(group.partition_count()),
+                                     [&](auto &&emit) { group.run_on_all([&](int r) { emit(r, body(r)); }); });
 }
 
 } // namespace detail::partition

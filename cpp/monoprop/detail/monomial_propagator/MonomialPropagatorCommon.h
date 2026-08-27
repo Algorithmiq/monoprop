@@ -16,6 +16,7 @@
 
 #include <cassert>
 #include <stdexcept>
+#include <utility>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/AlgebraCommon.h"
@@ -60,18 +61,20 @@ inline auto cutoff_function(CutoffType cutoff_type, unsigned int cutoff, size_t 
 // std::function. That is the intended behaviour here, not the silent miss described above: the
 // predicate is length/support applied to the *mapped* monomial, so the fast paths -- which read a raw
 // popcount and a bare cutoff -- do not apply.
+// `basis` is taken by value and moved into the closure: it is one Bitset per Majorana, and every caller
+// builds it as a local it discards straight after.
 inline auto cutoff_function_basis_change(CutoffType cutoff_type,
                                          unsigned int cutoff,
-                                         const MonomialList &basis,
+                                         MonomialList basis,
                                          size_t logical_num_modes) -> CutoffFn {
     switch (cutoff_type) {
         case CutoffType::Length:
-            return [cutoff, logical_num_modes, basis_copy = basis](const Bitset &mono) {
+            return [cutoff, logical_num_modes, basis_copy = std::move(basis)](const Bitset &mono) {
                 const auto mapped_mono = change_basis(mono, basis_copy);
                 return length_cutoff(mapped_mono, cutoff, logical_num_modes);
             };
         case CutoffType::Support:
-            return [cutoff, logical_num_modes, basis_copy = basis](const Bitset &mono) {
+            return [cutoff, logical_num_modes, basis_copy = std::move(basis)](const Bitset &mono) {
                 const auto mapped_mono = change_basis(mono, basis_copy);
                 return support_cutoff(mapped_mono, cutoff, logical_num_modes);
             };

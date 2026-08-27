@@ -130,7 +130,7 @@ inline auto for_each_mode_slot(const Bitset &mono, Fn &&fn) -> void {
 
 // Occupied modes in a dense monomial, via the same slot walk as sparse_row_hash/dense_row_equals below --
 // what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs
-// (see generator_mode_count in layer_build/TermProduct.h).
+// (see sparse_record_capacity in layer_build/TermProduct.h).
 [[nodiscard]] inline auto occupied_mode_count(const Bitset &mono) -> size_t {
     size_t n = 0;
     for_each_mode_slot(mono, [&](size_t, unsigned int) { ++n; });
@@ -309,6 +309,9 @@ public:
 
     [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
     [[nodiscard]] auto slots_per_row() const noexcept -> size_t { return slots_per_row_; }
+    // The backend-neutral spelling of the line above, so a caller holding either store asks the same
+    // question of both (see MPOperator::row_width).
+    [[nodiscard]] auto row_width() const noexcept -> size_t { return slots_per_row_; }
     [[nodiscard]] auto size() const noexcept -> size_t { return size_; }
 
     // Called only on an idle store, so it needs no synchronization.
@@ -540,13 +543,7 @@ public:
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
     auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
-        if (n == 0) {
-            return;
-        }
-        RowHashTable::check_index_fits(base + n - 1);
-        for (size_t k = 0; k < n; ++k) {
-            table_.insert_distinct(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
-        }
+        table_.insert_distinct_range(base, n, [&](size_t k) { return fold_hash(key_at(k)); });
     }
 
     // out[i] = row index of keys[i], or kNotFound. Same result as n find() calls; see
@@ -590,14 +587,8 @@ public:
     }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = modes_.capacity() * sizeof(ModeT);
-        total += codes_.capacity() * sizeof(CodesT);
-        total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
-        // Plus what each spilled monomial owns outside its own object
-        for (const auto &[key, value] : overflow_) {
-            total += value.heap_bytes();
-        }
-        return total;
+        return (modes_.capacity() * sizeof(ModeT)) + (codes_.capacity() * sizeof(CodesT))
+               + spilled_rows_bytes(overflow_);
     }
 
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
@@ -628,8 +619,7 @@ private:
     // The 32-bit fold the table stores as its equality pre-filter, over the full-width row hash.
     template <typename Key>
     static auto fold_hash(const Key &key) noexcept -> uint32_t {
-        const size_t full = sparse_row_hash(key);
-        return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
+        return RowHashTable::fold(sparse_row_hash(key));
     }
 
     template <typename Key>

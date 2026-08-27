@@ -68,13 +68,12 @@ inline auto parse_row_store(const char *text) -> std::optional<RowStore> {
 
 struct Settings {
     std::optional<int> num_threads;
-    RowStore row_store = RowStore::Auto;
-    // Set when monoprop_ROW_STORE held something unrecognized. Reported rather than ignored, unlike
-    // every other setting here: this one exists to prove the sparse backend was exercised, so a typo
-    // that silently fell back to auto would mean believing a configuration ran that never did. The
+    // nullopt means monoprop_ROW_STORE held something unrecognized -- reported rather than ignored,
+    // unlike every other setting here: this one exists to prove the sparse backend was exercised, so a
+    // typo that silently fell back to auto would mean believing a configuration ran that never did. The
     // throw is raised by the propagator, which has the exception types; this header stays
     // dependency-free.
-    bool row_store_unrecognized = false;
+    std::optional<RowStore> row_store = RowStore::Auto;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs. Cached deliberately: a
@@ -84,9 +83,7 @@ inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-        const auto row_store = detail::parse_row_store(std::getenv("monoprop_ROW_STORE"));
-        s.row_store = row_store.value_or(RowStore::Auto);
-        s.row_store_unrecognized = !row_store.has_value();
+        s.row_store = detail::parse_row_store(std::getenv("monoprop_ROW_STORE"));
         return s;
     }();
     return settings;

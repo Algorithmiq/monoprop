@@ -366,7 +366,6 @@ struct LayerBuildEngine {
           words_(payload_words),
           record_capacity_(record_capacity) {
         keys_.configure(local_op_.num_bits(), record_capacity_);
-        keys_.ensure(kResolveBatch);
         matched.begin_gate(combined_size);
     }
 
@@ -516,6 +515,9 @@ private:
                         bool is_leader_pass) -> void {
         const size_t op_size = store.size();
         auto &keys = keys_;
+        // Here rather than in the constructor: the engine is built per gate, including for gates that
+        // resolve nothing, and ensure() is a no-op once the batch is sized.
+        keys.ensure(kResolveBatch);
         std::array<int, kResolveBatch> phases;
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;

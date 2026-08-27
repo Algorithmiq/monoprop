@@ -27,6 +27,8 @@
 #include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
+#include "RandomMonomial.h"
+
 using namespace monoprop;
 using namespace monoprop::detail;
 
@@ -56,22 +58,6 @@ struct RowSet {
     }
 };
 
-auto random_row(std::mt19937_64 &rng, size_t num_modes, size_t max_occupied) -> Bitset {
-    Bitset mono(2 * num_modes);
-    const size_t occupied = rng() % (max_occupied + 1);
-    for (size_t k = 0; k < occupied; ++k) {
-        const size_t mode = rng() % num_modes;
-        const auto code = 1U + static_cast<unsigned int>(rng() % 3U);
-        if ((code & 1U) != 0U) {
-            mono.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            mono.set((2 * mode) + 1);
-        }
-    }
-    return mono;
-}
-
 } // namespace
 
 // A spilled row has no codes word, so it can only be hashed by walking the dense monomial. That walk
@@ -84,7 +70,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_hash_agrees_between_row_and_monomial) {
         SparseRowStore store(2 * num_modes, SparseRowStore::kMaxSlots);
         std::vector<Bitset> rows;
         for (size_t t = 0; t < 200; ++t) {
-            rows.push_back(random_row(rng, num_modes, SparseRowStore::kMaxSlots));
+            rows.push_back(test_utils::random_monomial(rng, num_modes, SparseRowStore::kMaxSlots));
             store.push_back(rows.back());
         }
         for (size_t i = 0; i < rows.size(); ++i) {
@@ -104,7 +90,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_hash_is_independent_of_row_capacity) {
     SparseRowStore wide(64, SparseRowStore::kMaxSlots);
     size_t compared = 0;
     for (size_t t = 0; t < 300; ++t) {
-        const auto mono = random_row(rng, 32, 8);
+        const auto mono = test_utils::random_monomial(rng, 32, 8);
         narrow.push_back(mono);
         wide.push_back(mono);
         const size_t i = narrow.size() - 1;
@@ -130,7 +116,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_lookups_match_the_packed_backend) {
             OperatorIndex packed(num_bits);
             RowSet set;
             for (size_t t = 0; t < 300; ++t) {
-                const auto mono = random_row(rng, num_modes, 12);
+                const auto mono = test_utils::random_monomial(rng, num_modes, 12);
                 if (!set.add(mono)) {
                     continue;
                 }
@@ -198,7 +184,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_find_batch_matches_find) {
     SparseRowStore store(kNumBits, 8);
     RowSet set;
     for (size_t t = 0; t < 400; ++t) {
-        const auto mono = random_row(rng, 64, 10);
+        const auto mono = test_utils::random_monomial(rng, 64, 10);
         if (!set.add(mono)) {
             continue;
         }
@@ -251,7 +237,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_bulk_insert_indexes_every_row) {
     SparseRowStore store(kNumBits, 8);
     RowSet set;
     for (size_t t = 0; t < 200; ++t) {
-        const auto mono = random_row(rng, 32, 6);
+        const auto mono = test_utils::random_monomial(rng, 32, 6);
         if (set.add(mono)) {
             store.push_back(mono);
         }
@@ -273,7 +259,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_hash_differs_from_the_dense_hash) {
     size_t differing = 0;
     size_t total = 0;
     for (size_t t = 0; t < 200; ++t) {
-        const auto mono = random_row(rng, 32, 8);
+        const auto mono = test_utils::random_monomial(rng, 32, 8);
         if (mono.count() == 0) {
             continue;
         }
@@ -292,7 +278,7 @@ BOOST_AUTO_TEST_CASE(sparse_index_hash_folds_are_near_injective) {
     SparseRowStore store(kNumBits, SparseRowStore::kMaxSlots);
     RowSet set;
     for (size_t t = 0; t < 4000; ++t) {
-        const auto mono = random_row(rng, 64, 10);
+        const auto mono = test_utils::random_monomial(rng, 64, 10);
         if (set.add(mono)) {
             store.push_back(mono);
         }

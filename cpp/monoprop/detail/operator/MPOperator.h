@@ -138,19 +138,13 @@ struct MPOperator {
     }
     [[nodiscard]] auto rows_are_sparse() const -> bool { return sparse_rows != nullptr; }
 
-    // The live backend's own row-width parameter (OperatorIndex::inline_width() or
-    // SparseRowStore::slots_per_row()), off the store rather than a member of its own for the same
-    // reason as num_bits(): a caller deciding whether resize_store() has anything to do must read the
-    // width that would actually be resized.
+    // The live backend's own row-width parameter, off the store rather than a member of its own for the
+    // same reason as num_bits(): a caller deciding whether resize_store() has anything to do must read
+    // the width that would actually be resized. Both stores spell it row_width(), so this is a plain
+    // forward like every other accessor here -- a backend detected by which accessor it happens to have
+    // would put the one decision a third backend has to get right outside the seam.
     [[nodiscard]] auto row_width() const -> size_t {
-        return with_store([]<typename Store>(const Store &rows) -> size_t {
-            if constexpr (requires { rows.inline_width(); }) {
-                return rows.inline_width();
-            }
-            else {
-                return rows.slots_per_row();
-            }
-        });
+        return with_store([](const auto &rows) { return rows.row_width(); });
     }
 
     // Rebuilds the live backend at a new row width, migrating every existing row rather than dropping
@@ -179,7 +173,7 @@ struct MPOperator {
         return with_store([](const auto &rows) { return rows.num_bits(); });
     }
     // The per-word loops are sized in words, not bits.
-    [[nodiscard]] auto num_words() const -> size_t { return (num_bits() + 63) / 64; }
+    [[nodiscard]] auto num_words() const -> size_t { return Bitset::words_for(num_bits()); }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.

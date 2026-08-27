@@ -41,22 +41,12 @@ using namespace monoprop::detail;
 namespace {
 
 // Rebuild a dense monomial from a row's mode lanes and an arbitrary codes word, so a codes-side
-// transform (pair_swap) can be compared against its dense counterpart. Only valid where the codes word
+// transform (pair_swap) can be compared against its dense counterpart. sparse_row_to_bitset is the
+// store's own materialization, which is the point: re-implementing it here would leave this oracle
+// agreeing with a slot convention the store no longer uses. Only valid where the substituted codes word
 // has the same occupancy as the row's own, which is the case for every transform here.
 auto to_bitset(const SparseRow &row, RowCodes codes, size_t num_bits) -> Bitset {
-    Bitset out(num_bits);
-    const size_t n = row_slot_count(codes);
-    for (size_t j = 0; j < n; ++j) {
-        const size_t mode = row.mode(j);
-        const auto code = static_cast<unsigned int>((codes >> (2 * j)) & 0b11U);
-        if ((code & 1U) != 0U) {
-            out.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            out.set((2 * mode) + 1);
-        }
-    }
-    return out;
+    return sparse_row_to_bitset(SparseRow{.modes = row.modes, .codes = codes}, num_bits);
 }
 
 // Which outcomes the comparison actually reached. Every branch of every ported function must be

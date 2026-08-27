@@ -56,8 +56,7 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
                                        PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
-      storage_num_modes_{detail::storage_modes_for(num_modes)},
-      mp_op_(2 * storage_num_modes_),
+      mp_op_(2 * detail::storage_modes_for(num_modes)),
       graph_(schrodinger_cutoff.has_value()),
       cutoff_type_{cutoff_type},
       basis_{basis},
@@ -157,10 +156,10 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     // representation costs is one pass per storage word.
     const bool sparse = use_sparse_rows_();
     if (sparse) {
-        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(2 * storage_num_modes_, target_row_width_(sparse)));
+        mp_op_.set_store(std::make_unique<detail::SparseRowStore>(mp_op_.num_bits(), target_row_width_(sparse)));
     }
     else {
-        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(2 * storage_num_modes_, target_row_width_(sparse)));
+        mp_op_.set_store(std::make_unique<detail::OperatorIndex>(mp_op_.num_bits(), target_row_width_(sparse)));
     }
     mp_op_.reserve_terms(expected_local_terms);
 
@@ -193,7 +192,6 @@ MonomialPropagator::MonomialPropagator(const MonomialPropagator &other)
     : schrodinger_(other.schrodinger_),
       comm_(other.comm_),
       cutoff_fn_(other.cutoff_fn_),
-      storage_num_modes_(other.storage_num_modes_),
       mp_op_(other.mp_op_),
       graph_(other.graph_),
       matched_scratch_(other.matched_scratch_),
@@ -335,18 +333,13 @@ auto MonomialPropagator::row_width_bound_() const -> size_t {
     return bound.value_or(kDefault);
 }
 
-auto MonomialPropagator::packed_inline_width_() const -> size_t {
-    constexpr size_t kMax = detail::OperatorIndex::kMaxInlinePositions;
-    return std::min<size_t>(row_width_bound_(), kMax);
-}
-
 auto MonomialPropagator::use_sparse_rows_() const -> bool {
     const auto &settings = config::get();
-    if (settings.row_store_unrecognized) {
+    if (!settings.row_store) {
         throw PropagatorConfigError(
             R"(monoprop_ROW_STORE must be "auto", "dense" or "sparse". Unset it to pick by system size.)");
     }
-    switch (settings.row_store) {
+    switch (*settings.row_store) {
         case config::RowStore::Dense:
             return false;
         case config::RowStore::Sparse:
@@ -354,18 +347,16 @@ auto MonomialPropagator::use_sparse_rows_() const -> bool {
         case config::RowStore::Auto:
             break;
     }
-    return detail::SparseRowStore::preferred_for_modes(storage_num_modes_);
-}
-
-auto MonomialPropagator::target_row_width_() const -> size_t {
-    return target_row_width_(use_sparse_rows_());
+    return detail::SparseRowStore::preferred_for_modes(storage_num_modes());
 }
 
 auto MonomialPropagator::target_row_width_(bool sparse) const -> size_t {
+    // Each backend applies its own cap, so both answers are directly comparable against the width the
+    // built store reports -- the comparison resize_row_store_if_needed_() makes.
     if (sparse) {
         return detail::SparseRowStore::slots_for_bound(row_width_bound_());
     }
-    return packed_inline_width_();
+    return detail::OperatorIndex::inline_width_for_bound(row_width_bound_());
 }
 
 // A no-op resize (the common case: update_lower_atol/update_upper_atol never call this at all, and most
@@ -373,7 +364,10 @@ auto MonomialPropagator::target_row_width_(bool sparse) const -> size_t {
 // comparison. An actual resize is an O(current term count) migration -- see MPOperator::resize_store()
 // -- paid once per call that moves the bound, not per term for the rest of the propagator's life.
 auto MonomialPropagator::resize_row_store_if_needed_() -> void {
-    const size_t target = target_row_width_();
+    // The installed store, not use_sparse_rows_(): the backend is chosen once at construction, and
+    // re-deriving it from the environment here would be the same decision made twice, one of them from
+    // configuration rather than from what is actually installed.
+    const size_t target = target_row_width_(mp_op_.rows_are_sparse());
     if (mp_op_.row_width() != target) {
         mp_op_.resize_store(target);
     }
@@ -507,7 +501,7 @@ auto MonomialPropagator::regenerate_cutoff_fn_() -> void {
         for (size_t i = 0; i < 2 * num_modes_; ++i) {
             basis.push_back(indices_to_bitset_checked(basis_change_.value()[i], 2 * num_modes_, storage_bits));
         }
-        cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, basis, num_modes_);
+        cutoff_fn_ = detail::cutoff_function_basis_change(cutoff_type_, cutoff_, std::move(basis), num_modes_);
     }
     else {
         cutoff_fn_ = detail::cutoff_function(cutoff_type_, cutoff_, num_modes_, storage_bits);

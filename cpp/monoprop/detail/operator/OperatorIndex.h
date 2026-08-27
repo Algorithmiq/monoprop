@@ -19,11 +19,13 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -109,6 +111,17 @@ public:
 
     [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
     [[nodiscard]] auto inline_width() const noexcept -> size_t { return inline_width_; }
+    // The backend-neutral spelling of the line above, so a caller holding either store asks the same
+    // question of both (see MPOperator::row_width).
+    [[nodiscard]] auto row_width() const noexcept -> size_t { return inline_width_; }
+
+    // Inline position count for a row-width bound, clamped exactly as the constructor clamps its
+    // argument. Mirrors SparseRowStore::slots_for_bound, and exists for the same reason: a caller
+    // comparing a target width against a built store's row_width() must compare like with like, or the
+    // comparison never converges at a bound of 0 and re-migrates every row on every settings change.
+    [[nodiscard]] static auto inline_width_for_bound(size_t width_bound) noexcept -> size_t {
+        return std::clamp<size_t>(width_bound, 1, kMaxInlinePositions);
+    }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -167,11 +180,29 @@ public:
     // and the evolution graph by this same index.
     [[nodiscard]] auto resized(size_t new_inline_width) const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(num_bits_, new_inline_width);
-        out->with_rows([&](auto &rows) { rows.resize(size_ * out->stride_); });
         out->size_ = size_;
-        for (size_t i = 0; i < size_; ++i) {
-            out->set(i, row(i));
-        }
+        // The position slots are copied across rather than reflowed through row(i)/set(i, mono): row()
+        // would materialize a fresh Bitset from the slots (and allocate, past kInlineWords) and set()
+        // would immediately re-walk it to rebuild them, a double pass per row over the whole operator.
+        // Only a row that changes regime -- spilled, or too long for the narrower width -- needs the
+        // dense form. Same argument SparseRowStore::resized already makes for its own reflow.
+        //
+        // out shares num_bits_, so it shares narrow_ and therefore the payload type P.
+        with_rows([&]<typename P>(const DefaultInitVector<P> &src) {
+            auto &dst = out->rows_ref<P>();
+            dst.resize(size_ * out->stride_);
+            for (size_t i = 0; i < size_; ++i) {
+                const P *s = &src[i * stride_];
+                const P c = s[0];
+                if (c == kOverflowMarker<P> || static_cast<size_t>(c) > out->inline_width_) {
+                    // Widening can bring a spilled row back inline and narrowing can push an inline row
+                    // out, so either way the regime is re-decided by set().
+                    out->set(i, row(i));
+                    continue;
+                }
+                std::memcpy(&dst[i * out->stride_], s, (1 + static_cast<size_t>(c)) * sizeof(P));
+            }
+        });
         out->table_ = table_; // RowHashTable is rule-of-zero copyable; a plain copy preserves slot order exactly.
         return out;
     }
@@ -259,15 +290,7 @@ public:
             return overflow_.at(i).count();
         });
     }
-    [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = row_bytes_capacity();
-        total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
-        // Plus what each spilled monomial owns outside its own object
-        for (const auto &[key, val] : overflow_) {
-            total += val.heap_bytes();
-        }
-        return total;
-    }
+    [[nodiscard]] auto memory_bytes() const -> size_t { return row_bytes_capacity() + spilled_rows_bytes(overflow_); }
 
     auto find(const key_type &key) const -> std::optional<size_t> {
         return table_.find(fold_hash(key), [&](size_t i) { return row_eq_key(i, key); });
@@ -297,13 +320,7 @@ public:
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
     auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
-        if (n == 0) {
-            return;
-        }
-        RowHashTable::check_index_fits(base + n - 1);
-        for (size_t k = 0; k < n; ++k) {
-            table_.insert_distinct(static_cast<TermIndex>(base + k), fold_hash(key_at(k)));
-        }
+        table_.insert_distinct_range(base, n, [&](size_t k) { return fold_hash(key_at(k)); });
     }
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
@@ -322,9 +339,18 @@ private:
     // SplitmixHash directly, which is exactly what MonomialHash<NumModes> forwarded to -- the hash is
     // unchanged, and must stay so: it drives probe order and monomial_hash % rank_count owner routing
     // (plan invariant 2).
-    static uint32_t fold_hash(const key_type &q) noexcept {
-        const size_t full = SplitmixHash{}(q);
-        return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
+    static uint32_t fold_hash(const key_type &q) noexcept { return RowHashTable::fold(SplitmixHash{}(q)); }
+
+    // The row array of a given payload type, for the one caller that has P bound but needs the array on
+    // *another* store of the same width (resized()); with_rows cannot express that.
+    template <typename P>
+    [[nodiscard]] auto rows_ref() noexcept -> DefaultInitVector<P> & {
+        if constexpr (std::is_same_v<P, uint8_t>) {
+            return rows8_;
+        }
+        else {
+            return rows16_;
+        }
     }
 
     [[nodiscard]] auto capacity() const -> size_t { return row_slots_capacity() / stride_; }

@@ -45,6 +45,7 @@
 #include "monoprop/detail/operator/SparseRowStore.h"
 
 #include "InlineWidths.h"
+#include "RandomMonomial.h"
 #include "TestData.h"
 #include "TestUtilities.h"
 
@@ -64,22 +65,6 @@ struct Seen {
     size_t row_records = 0;          // survivors pushed as a support-form record
     size_t escaped_records = 0;      // survivors pushed as an escape plus a tail entry
 };
-
-auto random_term(std::mt19937_64 &rng, size_t num_modes, size_t max_modes) -> Bitset {
-    Bitset mono(2 * num_modes);
-    const size_t occupied = rng() % (max_modes + 1);
-    for (size_t k = 0; k < occupied; ++k) {
-        const size_t mode = rng() % num_modes;
-        const auto code = 1U + static_cast<unsigned int>(rng() % 3U);
-        if ((code & 1U) != 0U) {
-            mono.set(2 * mode);
-        }
-        if ((code & 2U) != 0U) {
-            mono.set((2 * mode) + 1);
-        }
-    }
-    return mono;
-}
 
 // A fully paired term of `modes` modes. These are the rows that make support unbounded -- xor_sum == 0
 // escapes the cutoff -- so they are what drives a store row to spill and a product to overflow.
@@ -207,11 +192,11 @@ BOOST_AUTO_TEST_CASE(term_product_sparse_kernel_matches_dense_on_randomized_rows
     for (const size_t num_modes : {32U, 64U, 300U}) {
         std::vector<Bitset> terms;
         for (size_t t = 0; t < 150; ++t) {
-            terms.push_back(random_term(rng, num_modes, 6));
+            terms.push_back(test_utils::random_monomial(rng, num_modes, 6));
         }
         std::vector<Bitset> gens;
         for (size_t t = 0; t < 8; ++t) {
-            gens.push_back(random_term(rng, num_modes, 4));
+            gens.push_back(test_utils::random_monomial(rng, num_modes, 4));
         }
         for (const unsigned int cutoff : {4U, 8U}) {
             const auto length = cutoff_function(CutoffType::Length, cutoff, num_modes, 2 * num_modes);
@@ -291,10 +276,11 @@ BOOST_AUTO_TEST_CASE(term_product_falls_back_on_a_spilled_row) {
     constexpr size_t kNumModes = 64;
     std::vector<Bitset> terms;
     for (size_t t = 0; t < 60; ++t) {
-        terms.push_back(random_term(rng, kNumModes, 3));
+        terms.push_back(test_utils::random_monomial(rng, kNumModes, 3));
         terms.push_back(paired_term(kNumModes, 9)); // 9 modes > the 4 slots below
     }
-    std::vector<Bitset> gens{random_term(rng, kNumModes, 2), random_term(rng, kNumModes, 4)};
+    std::vector<Bitset> gens{test_utils::random_monomial(rng, kNumModes, 2),
+                             test_utils::random_monomial(rng, kNumModes, 4)};
 
     Seen seen;
     sweep<MajoranaAlgebra>(terms, gens, cutoff_function(CutoffType::Length, 6, kNumModes, 2 * kNumModes), 4, seen);
@@ -311,11 +297,11 @@ BOOST_AUTO_TEST_CASE(term_product_falls_back_on_a_capacity_overflow) {
     constexpr size_t kNumModes = 64;
     std::vector<Bitset> terms;
     for (size_t t = 0; t < 40; ++t) {
-        terms.push_back(random_term(rng, kNumModes, 3));
+        terms.push_back(test_utils::random_monomial(rng, kNumModes, 3));
         // 12 modes: inside the 20-slot store rows below, past a capacity of 4 + |G|.
         terms.push_back(paired_term(kNumModes, 12));
     }
-    std::vector<Bitset> gens{random_term(rng, kNumModes, 2)};
+    std::vector<Bitset> gens{test_utils::random_monomial(rng, kNumModes, 2)};
 
     Seen seen;
     sweep<MajoranaAlgebra>(terms, gens, cutoff_function(CutoffType::Length, 4, kNumModes, 2 * kNumModes), 20, seen);
@@ -359,9 +345,10 @@ BOOST_AUTO_TEST_CASE(term_product_sparse_kernel_matches_dense_in_a_narrow_active
     constexpr size_t kLogicalModes = 50; // an inactive prefix of 14 modes
     std::vector<Bitset> terms;
     for (size_t t = 0; t < 120; ++t) {
-        terms.push_back(random_term(rng, kStorageModes, 6));
+        terms.push_back(test_utils::random_monomial(rng, kStorageModes, 6));
     }
-    std::vector<Bitset> gens{random_term(rng, kStorageModes, 3), random_term(rng, kStorageModes, 2)};
+    std::vector<Bitset> gens{test_utils::random_monomial(rng, kStorageModes, 3),
+                             test_utils::random_monomial(rng, kStorageModes, 2)};
 
     Seen seen;
     sweep<MajoranaAlgebra>(terms,
@@ -387,9 +374,9 @@ BOOST_AUTO_TEST_CASE(term_product_falls_back_when_the_cutoff_has_no_codes_form) 
     constexpr size_t kNumModes = 32;
     std::vector<Bitset> terms;
     for (size_t t = 0; t < 80; ++t) {
-        terms.push_back(random_term(rng, kNumModes, 5));
+        terms.push_back(test_utils::random_monomial(rng, kNumModes, 5));
     }
-    std::vector<Bitset> gens{random_term(rng, kNumModes, 3)};
+    std::vector<Bitset> gens{test_utils::random_monomial(rng, kNumModes, 3)};
 
     // The identity basis, so the predicate is an ordinary length cutoff wrapped in a lambda: the answers
     // must still match, and every term must have gone the dense way to produce them.
@@ -416,7 +403,7 @@ BOOST_AUTO_TEST_CASE(term_product_falls_back_on_a_generator_past_one_codes_word)
     constexpr size_t kNumModes = 128;
     std::vector<Bitset> terms;
     for (size_t t = 0; t < 40; ++t) {
-        terms.push_back(random_term(rng, kNumModes, 4));
+        terms.push_back(test_utils::random_monomial(rng, kNumModes, 4));
     }
     std::vector<Bitset> gens{paired_term(kNumModes, SparseRowStore::kMaxSlots + 5)};
 
@@ -525,7 +512,7 @@ auto bound_kernel_width(size_t num_words) -> size_t {
 auto narrow_kernel_terms(std::mt19937_64 &rng, size_t num_modes) -> std::vector<Bitset> {
     std::vector<Bitset> terms;
     for (size_t t = 0; t < 60; ++t) {
-        terms.push_back(random_term(rng, num_modes, 7));
+        terms.push_back(test_utils::random_monomial(rng, num_modes, 7));
     }
     for (const size_t paired : {1U, 3U, 8U}) {
         terms.push_back(paired_term(num_modes, paired));
@@ -544,8 +531,8 @@ BOOST_AUTO_TEST_CASE(narrow_kernel_matches_dense_under_a_whole_register_length_c
     test_utils::for_each_inline_width([&]<size_t W>(std::integral_constant<size_t, W>) {
         const size_t num_modes = (W * Bitset::word_width) / 2;
         const auto terms = narrow_kernel_terms(rng, num_modes);
-        const std::vector<Bitset> gens{random_term(rng, num_modes, 2),
-                                       random_term(rng, num_modes, 4),
+        const std::vector<Bitset> gens{test_utils::random_monomial(rng, num_modes, 2),
+                                       test_utils::random_monomial(rng, num_modes, 4),
                                        paired_term(num_modes, 2)};
         for (const unsigned int cutoff : {4U, 8U}) {
             const auto length = cutoff_function(CutoffType::Length, cutoff, num_modes, 2 * num_modes);
@@ -577,7 +564,8 @@ BOOST_AUTO_TEST_CASE(narrow_kernel_defers_to_the_evaluator_off_the_whole_registe
         const size_t num_modes = (W * Bitset::word_width) / 2;
         const size_t logical_modes = num_modes - 5; // an inactive prefix of 5 modes
         const auto terms = narrow_kernel_terms(rng, num_modes);
-        const std::vector<Bitset> gens{random_term(rng, num_modes, 3), random_term(rng, num_modes, 2)};
+        const std::vector<Bitset> gens{test_utils::random_monomial(rng, num_modes, 3),
+                                       test_utils::random_monomial(rng, num_modes, 2)};
         for (const unsigned int cutoff : {4U, 6U}) {
             const auto support = cutoff_function(CutoffType::Support, cutoff, num_modes, 2 * num_modes);
             const auto narrow = cutoff_function(CutoffType::Length, cutoff, logical_modes, 2 * num_modes);
@@ -600,7 +588,7 @@ BOOST_AUTO_TEST_CASE(narrow_kernel_defers_when_the_cutoff_has_no_concrete_functo
     constexpr size_t kWords = 2;
     constexpr size_t kNumModes = (kWords * Bitset::word_width) / 2;
     const auto terms = narrow_kernel_terms(rng, kNumModes);
-    const std::vector<Bitset> gens{random_term(rng, kNumModes, 3)};
+    const std::vector<Bitset> gens{test_utils::random_monomial(rng, kNumModes, 3)};
 
     MonomialList basis;
     for (size_t b = 0; b < 2 * kNumModes; ++b) {

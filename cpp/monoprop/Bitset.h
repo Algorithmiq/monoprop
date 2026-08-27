@@ -65,14 +65,18 @@ struct FusedWordCounts {
 // through its bound W, and the two must not be able to drift -- one of them decides emitted term signs
 // and the other feeds a cutoff.
 //
-// W is the exact word count of every operand. Correct at W == 0 (an empty fold), which is the arm
-// with_nwords hands a zero-width bitset.
-template <size_t W>
-[[gnu::always_inline]] inline auto fused_xor_words(const uint64_t *a, const uint64_t *b, uint64_t *out) noexcept
-    -> FusedWordCounts {
+// `nwords` is the exact word count of every operand, passed either as a std::integral_constant (the
+// inline regime, where the trip count is then a compile-time one) or as a plain size_t (a spilled
+// width). One definition serves both so the two cannot drift. Correct at 0 (an empty fold), which is
+// the arm with_nwords hands a zero-width bitset.
+template <typename N>
+[[gnu::always_inline]] inline auto fused_xor_words(const uint64_t *a,
+                                                   const uint64_t *b,
+                                                   uint64_t *out,
+                                                   N nwords) noexcept -> FusedWordCounts {
     size_t overlap = 0;
     size_t result_count = 0;
-    for (size_t i = 0; i < W; ++i) {
+    for (size_t i = 0; i < nwords; ++i) {
         const uint64_t n = a[i] ^ b[i];
         out[i] = n;
         overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
@@ -83,10 +87,10 @@ template <size_t W>
 
 // XOR-fold of a & b into one word. Folding first and popcounting once is what makes the caller's
 // parity that of the whole AND rather than of any per-word rounding.
-template <size_t W>
-[[gnu::always_inline]] inline auto and_fold_words(const uint64_t *a, const uint64_t *b) noexcept -> uint64_t {
+template <typename N>
+[[gnu::always_inline]] inline auto and_fold_words(const uint64_t *a, const uint64_t *b, N nwords) noexcept -> uint64_t {
     uint64_t folded = 0;
-    for (size_t i = 0; i < W; ++i) {
+    for (size_t i = 0; i < nwords; ++i) {
         folded ^= a[i] & b[i];
     }
     return folded;
@@ -102,8 +106,8 @@ namespace monoprop {
 // removed and is still where the interesting models sit); above that a bitset spills the *entire* word
 // array to the heap, keeping data()/word(i) a single contiguous view regardless of which storage is
 // active -- so wider systems are correct, but pay an allocation per by-value monomial. Every
-// per-word loop routes through detail::with_nwords for n <= kInlineWords (the hot regime) and a plain
-// loop above it.
+// per-word loop routes through with_words_, which binds the count as a compile-time W for
+// n <= kInlineWords (the hot regime) and hands it over as a runtime count above that.
 //
 // Unlike the Bitset<NumBits> template this replaces, one object is sized for the *widest* supported
 // bitset rather than exactly for its own width (72 bytes vs the old 8/16/32/64 for 32/64/128/250
@@ -120,6 +124,13 @@ public:
     using word_type = uint64_t;
     static constexpr auto word_width = sizeof(word_type) * 8;
     static constexpr size_t kInlineWords = 8;
+
+    // The word count a bitset of `num_bits` occupies. Public because callers that size a per-monomial
+    // buffer need it without holding a monomial; it is the constructor's own arithmetic, so the 64 in
+    // it stays spelled once.
+    [[nodiscard]] static constexpr auto words_for(size_t num_bits) noexcept -> size_t {
+        return (num_bits + word_width - 1) / word_width;
+    }
 
 private:
     // The inline words and the heap pointer are never both live -- nwords_ alone selects which -- so
@@ -171,6 +182,31 @@ private:
         });
     }
 
+    // The regime split every word loop below shares: bind the count as a compile-time W while the
+    // words are inline (the hot regime), hand it over as a runtime count once they have spilled. `f`
+    // takes it as `auto n`, so one body serves both arms -- writing the loop once per arm is how the
+    // two drift, and one of them (parity_and) decides emitted term signs.
+    template <typename F>
+    [[gnu::always_inline]] auto with_words_(F &&f) const noexcept -> decltype(auto) {
+        if (nwords_ <= kInlineWords) {
+            return detail::with_nwords(nwords_, f);
+        }
+        return f(static_cast<size_t>(nwords_));
+    }
+
+    // The three compound bitwise ops differ only in the word operation, so they share one loop. Width
+    // is asserted by the callers, which name the operator in the message.
+    template <typename Op>
+    auto apply_words_(const Bitset &rhs, Op op) noexcept -> Bitset & {
+        word_type *a = data();
+        const word_type *b = rhs.data();
+        with_words_([a, b, op](auto n) {
+            for (size_t i = 0; i < n; ++i)
+                a[i] = op(a[i], b[i]);
+        });
+        return *this;
+    }
+
     // Selects the active union member. Must be consulted *before* nwords_ is overwritten by an
     // assignment, and *after* it is set by a constructor.
     [[nodiscard]] auto spilled() const noexcept -> bool { return nwords_ > kInlineWords; }
@@ -190,7 +226,7 @@ public:
 
     // num_bits: the logical width, zeroed.
     explicit Bitset(size_t num_bits) noexcept
-        : nwords_(static_cast<uint32_t>((num_bits + word_width - 1) / word_width)),
+        : nwords_(static_cast<uint32_t>(words_for(num_bits))),
           top_bits_(static_cast<uint32_t>(num_bits % word_width)) {
         if (spilled()) {
             s_.heap_ = new word_type[nwords_]{};
@@ -312,18 +348,12 @@ public:
 
     [[nodiscard]] auto count() const noexcept -> size_t {
         const word_type *w = data();
-        if (nwords_ <= kInlineWords) {
-            return detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
-                size_t c = 0;
-                for (size_t i = 0; i < W; ++i)
-                    c += static_cast<size_t>(std::popcount(w[i]));
-                return c;
-            });
-        }
-        size_t c = 0;
-        for (size_t i = 0; i < nwords_; ++i)
-            c += static_cast<size_t>(std::popcount(w[i]));
-        return c;
+        return with_words_([w](auto n) {
+            size_t c = 0;
+            for (size_t i = 0; i < n; ++i)
+                c += static_cast<size_t>(std::popcount(w[i]));
+            return c;
+        });
     }
 
     [[nodiscard]] auto test(size_t pos) const noexcept -> bool {
@@ -332,18 +362,12 @@ public:
 
     [[nodiscard]] auto any() const noexcept -> bool {
         const word_type *w = data();
-        if (nwords_ <= kInlineWords) {
-            return detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i)
-                    if (w[i])
-                        return true;
-                return false;
-            });
-        }
-        for (size_t i = 0; i < nwords_; ++i)
-            if (w[i])
-                return true;
-        return false;
+        return with_words_([w](auto n) {
+            for (size_t i = 0; i < n; ++i)
+                if (w[i])
+                    return true;
+            return false;
+        });
     }
 
     [[nodiscard]] auto none() const noexcept -> bool { return !any(); }
@@ -359,34 +383,19 @@ public:
         assert(nwords_ == o.nwords_ && "Bitset::count_and width mismatch");
         const word_type *a = data();
         const word_type *b = o.data();
-        if (nwords_ <= kInlineWords) {
-            return detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                size_t c = 0;
-                for (size_t i = 0; i < W; ++i)
-                    c += static_cast<size_t>(std::popcount(a[i] & b[i]));
-                return c;
-            });
-        }
-        size_t c = 0;
-        for (size_t i = 0; i < nwords_; ++i)
-            c += static_cast<size_t>(std::popcount(a[i] & b[i]));
-        return c;
+        return with_words_([a, b](auto n) {
+            size_t c = 0;
+            for (size_t i = 0; i < n; ++i)
+                c += static_cast<size_t>(std::popcount(a[i] & b[i]));
+            return c;
+        });
     }
 
     [[nodiscard]] auto parity_and(const Bitset &o) const noexcept -> bool {
         assert(nwords_ == o.nwords_ && "Bitset::parity_and width mismatch");
         const word_type *a = data();
         const word_type *b = o.data();
-        word_type parity_word = 0;
-        if (nwords_ <= kInlineWords) {
-            parity_word = detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                return detail::and_fold_words<W>(a, b);
-            });
-        }
-        else {
-            for (size_t i = 0; i < nwords_; ++i)
-                parity_word ^= a[i] & b[i];
-        }
+        const word_type parity_word = with_words_([a, b](auto n) { return detail::and_fold_words(a, b, n); });
         return (std::popcount(parity_word) & 1U) != 0;
     }
 
@@ -431,68 +440,26 @@ public:
 
     auto operator&=(const Bitset &rhs) noexcept -> Bitset & {
         assert(nwords_ == rhs.nwords_ && "Bitset::operator&= width mismatch");
-        word_type *a = data();
-        const word_type *b = rhs.data();
-        if (nwords_ <= kInlineWords) {
-            detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i)
-                    a[i] &= b[i];
-            });
-        }
-        else {
-            for (size_t i = 0; i < nwords_; ++i)
-                a[i] &= b[i];
-        }
-        return *this;
+        return apply_words_(rhs, [](word_type x, word_type y) noexcept { return x & y; });
     }
 
     auto operator|=(const Bitset &rhs) noexcept -> Bitset & {
         assert(nwords_ == rhs.nwords_ && "Bitset::operator|= width mismatch");
-        word_type *a = data();
-        const word_type *b = rhs.data();
-        if (nwords_ <= kInlineWords) {
-            detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i)
-                    a[i] |= b[i];
-            });
-        }
-        else {
-            for (size_t i = 0; i < nwords_; ++i)
-                a[i] |= b[i];
-        }
-        return *this;
+        return apply_words_(rhs, [](word_type x, word_type y) noexcept { return x | y; });
     }
 
     auto operator^=(const Bitset &rhs) noexcept -> Bitset & {
         assert(nwords_ == rhs.nwords_ && "Bitset::operator^= width mismatch");
-        word_type *a = data();
-        const word_type *b = rhs.data();
-        if (nwords_ <= kInlineWords) {
-            detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i)
-                    a[i] ^= b[i];
-            });
-        }
-        else {
-            for (size_t i = 0; i < nwords_; ++i)
-                a[i] ^= b[i];
-        }
-        return *this;
+        return apply_words_(rhs, [](word_type x, word_type y) noexcept { return x ^ y; });
     }
 
     [[nodiscard]] auto operator~() const noexcept -> Bitset {
         Bitset r = *this;
         word_type *w = r.data();
-        if (nwords_ <= kInlineWords) {
-            detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i)
-                    w[i] = ~w[i];
-            });
-        }
-        else {
-            for (size_t i = 0; i < nwords_; ++i)
+        with_words_([w](auto n) {
+            for (size_t i = 0; i < n; ++i)
                 w[i] = ~w[i];
-        }
+        });
         r.sanitize_top();
         return r;
     }
@@ -565,37 +532,24 @@ public:
         }
         const word_type *a = data();
         const word_type *b = o.data();
-        if (nwords_ <= kInlineWords) {
-            return detail::with_nwords(nwords_, [a, b]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i)
-                    if (a[i] != b[i])
-                        return false;
-                return true;
-            });
-        }
-        for (size_t i = 0; i < nwords_; ++i)
-            if (a[i] != b[i])
-                return false;
-        return true;
+        return with_words_([a, b](auto n) {
+            for (size_t i = 0; i < n; ++i)
+                if (a[i] != b[i])
+                    return false;
+            return true;
+        });
     }
 
     [[nodiscard]] auto find_first() const noexcept -> size_t { // size() if none
         const word_type *w = data();
-        if (nwords_ <= kInlineWords) {
-            const size_t hit = detail::with_nwords(nwords_, [w]<size_t W>(std::integral_constant<size_t, W>) {
-                for (size_t i = 0; i < W; ++i) {
-                    if (w[i])
-                        return (i * word_width) + static_cast<size_t>(std::countr_zero(w[i]));
-                }
-                return static_cast<size_t>(-1);
-            });
-            return hit == static_cast<size_t>(-1) ? size() : hit;
-        }
-        for (size_t i = 0; i < nwords_; ++i) {
-            if (w[i])
-                return (i * word_width) + static_cast<size_t>(std::countr_zero(w[i]));
-        }
-        return size();
+        const size_t hit = with_words_([w](auto n) {
+            for (size_t i = 0; i < n; ++i) {
+                if (w[i])
+                    return (i * word_width) + static_cast<size_t>(std::countr_zero(w[i]));
+            }
+            return static_cast<size_t>(-1);
+        });
+        return hit == static_cast<size_t>(-1) ? size() : hit;
     }
 
     [[nodiscard]] auto find_next(size_t pos) const noexcept -> size_t { // size() if none
@@ -639,21 +593,7 @@ inline auto Bitset::fused_xor_into(const Bitset &gen, Bitset &dst) const noexcep
     const word_type *a = data();
     const word_type *b = gen.data();
     word_type *out = dst.data();
-    if (nwords_ <= kInlineWords) {
-        return detail::with_nwords(nwords_, [a, b, out]<size_t W>(std::integral_constant<size_t, W>) {
-            return detail::fused_xor_words<W>(a, b, out);
-        });
-    }
-    // Spilled: no compile-time trip count to bind, so the plain loop.
-    size_t overlap = 0;
-    size_t result_count = 0;
-    for (size_t i = 0; i < nwords_; ++i) {
-        const word_type n = a[i] ^ b[i];
-        out[i] = n;
-        overlap += static_cast<size_t>(std::popcount(a[i] & b[i]));
-        result_count += static_cast<size_t>(std::popcount(n));
-    }
-    return {overlap, result_count};
+    return with_words_([a, b, out](auto n) { return detail::fused_xor_words(a, b, out, n); });
 }
 
 inline auto Bitset::fused_xor(const Bitset &gen) const noexcept -> FusedXor {
@@ -723,12 +663,12 @@ struct WordKernel {
     // Bitset::fused_xor_into with W fixed -- the same pass, reached without the nwords_ load and
     // storage-pointer select the method does per call.
     static auto fused_xor_into(const word_type *a, const word_type *b, word_type *out) noexcept -> Bitset::FusedCounts {
-        return fused_xor_words<W>(a, b, out);
+        return fused_xor_words(a, b, out, std::integral_constant<size_t, W>{});
     }
 
     // Bitset::parity_and with W fixed, likewise.
     [[nodiscard]] static auto parity_and(const word_type *a, const word_type *b) noexcept -> bool {
-        return (std::popcount(and_fold_words<W>(a, b)) & 1U) != 0;
+        return (std::popcount(and_fold_words(a, b, std::integral_constant<size_t, W>{})) & 1U) != 0;
     }
 
     // SplitmixHash with W fixed. Must stay bit-identical to it: this value routes MPI ownership, so a

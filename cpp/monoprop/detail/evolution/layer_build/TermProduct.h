@@ -62,7 +62,7 @@ template <Algebra A>
     // for_each_position only sets bits, so the scratch has to start clear; reset() keeps the width,
     // unlike assigning a default-constructed Bitset.
     mono.reset();
-    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
+    for_each_row_position(ham, i, [&](size_t pos) { mono.set(pos); });
     // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
     // fused_xor_into() computes them together, straight into new_mono (see Bitset::fused_xor_into).
     // Its result_count (popcount of the XOR) goes unused -- the caller already has new_pop for free
@@ -102,6 +102,9 @@ public:
     [[nodiscard]] auto passes(size_t new_pop) const -> bool {
         return cutoff_->passes_with_popcount(new_mono_, new_pop);
     }
+    // find_rank's expression, minus its n_ranks == 0 guard, which the scan's rank_count > 1
+    // short-circuit already covers. Owner routing is monomial_hash everywhere, including that initial
+    // distribution, so this must not become anything else.
     [[nodiscard]] auto owner(size_t rank_count) const -> size_t { return monomial_hash(new_mono_) % rank_count; }
     auto push(QueryOut out, int phase) const -> void { query_push(out.records, new_mono_, phase); }
 
@@ -180,7 +183,7 @@ public:
         WordKernel<W>::clear(mono_words_);
         // Straight to the words: Bitset::set would re-select the storage pointer for every set bit,
         // and a row carries one per surviving slot.
-        store.for_each_position(i, [this](size_t pos) {
+        for_each_row_position(store, i, [this](size_t pos) {
             mono_words_[pos / Bitset::word_width] |= uint64_t{1} << (pos % Bitset::word_width);
         });
         const auto counts = WordKernel<W>::fused_xor_into(mono_words_, gen_words_, new_words_);
@@ -222,11 +225,6 @@ private:
     std::optional<unsigned int> length_cutoff_ = std::nullopt;
 };
 
-// Modes the generator occupies: the slot count of its support form. Per gate, never per term.
-[[nodiscard]] inline auto generator_mode_count(const Bitset &gen) -> size_t {
-    return occupied_mode_count(gen);
-}
-
 // The slot capacity a support-form query record is cut to, which is also the scan's scratch product
 // capacity -- a query carries exactly such a product, so one number has to serve both or a product that
 // fits the scratch would not fit the record. A product occupies at most the cutoff's mode bound plus the
@@ -237,7 +235,7 @@ private:
 // communication -- the same agreement find_rank already needs for the hash width.
 [[nodiscard]] inline auto sparse_record_capacity(const Bitset &gen, const CutoffEvaluator &cutoff_eval) -> size_t {
     return SparseRowStore::scratch_slots_for(cutoff_eval.max_mode_bound().value_or(SparseRowStore::kMaxSlots),
-                                             generator_mode_count(gen));
+                                             occupied_mode_count(gen));
 }
 
 // Support-form rows. The five answers split three ways: product, overlap and rotation sign come off the

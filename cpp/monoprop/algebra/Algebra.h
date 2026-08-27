@@ -76,16 +76,6 @@ struct MajoranaAlgebra {
     // Anticommutation fold columns = G itself; odd |G| needs the per-row parity(|M|) correction.
     static auto fold_generator(const Bitset &gen) -> Bitset { return gen; }
     static auto fold_needs_odd_correction(const Bitset &gen) -> bool { return gen.count() % 2 != 0; }
-
-    static auto encode_coeff(const std::complex<double> &coeff, const Bitset &mono) -> double {
-        return monoprop::encode_coeff(coeff, mono);
-    }
-    static auto decode_coeff(const std::complex<double> &coeff, const Bitset &mono) -> std::complex<double> {
-        return monoprop::decode_coeff(coeff, mono);
-    }
-    static auto state_phase(const Bitset &mono, const Bitset &state_mask) -> double {
-        return monoprop::majorana_state_phase(mono, state_mask);
-    }
 };
 
 struct PauliAlgebra {
@@ -125,16 +115,6 @@ struct PauliAlgebra {
     // Anticommutation fold columns = J(G) = pair_swap(G); Pauli needs no odd-|G| row-parity correction.
     static auto fold_generator(const Bitset &gen) -> Bitset { return pair_swap(gen); }
     static auto fold_needs_odd_correction(const Bitset & /*gen*/) -> bool { return false; }
-
-    static auto encode_coeff(const std::complex<double> &coeff, const Bitset & /*mono*/) -> double {
-        return encode_pauli_coeff(coeff);
-    }
-    static auto decode_coeff(const std::complex<double> &coeff, const Bitset & /*mono*/) -> std::complex<double> {
-        return decode_pauli_coeff(coeff.real());
-    }
-    static auto state_phase(const Bitset &mono, const Bitset &state_mask) -> double {
-        return pauli_state_phase(mono, state_mask);
-    }
 };
 
 // Shape check only: the members the backbone actually calls are enforced by use, not by this concept.
@@ -167,11 +147,11 @@ auto algebra_fold_generator(Basis basis, const MonomialLike auto &gen) -> std::r
 auto algebra_fold_needs_odd_correction(Basis basis, const MonomialLike auto &gen) -> bool {
     return with_algebra(basis, [&]<typename A>() { return A::fold_needs_odd_correction(gen); });
 }
-// These three branch on Basis directly instead of going through with_algebra. Both algebras'
-// encode_coeff/decode_coeff/state_phase are width-agnostic passthroughs to the free functions called
-// here, so selecting an algebra *class* bought nothing and cost a compile-time width the caller may not
-// have: since Stage 2c the operator store hands out plain Bitsets, whose size() is a runtime member, so
-// the `decltype(mono)::size()` these used to compute is ill-formed for that caller.
+// These three branch on Basis directly instead of going through with_algebra, and the policy classes
+// carry no encode_coeff/decode_coeff/state_phase member as a result -- both would have been a
+// width-agnostic passthrough to the free function called here, so an algebra *class* bought nothing and
+// left the mapping written twice, with only one of the two reachable. The branch below is the whole
+// mapping; see the note on state_phase_rows for why a per-scored-row branch is the right altitude here.
 auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono) -> double {
     return basis == Basis::Pauli ? encode_pauli_coeff(coeff) : monoprop::encode_coeff(coeff, mono);
 }

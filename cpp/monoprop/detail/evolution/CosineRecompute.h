@@ -136,7 +136,7 @@ auto make_fold_cache(const auto &sc, const MonomialLike auto &gen, uint64_t scal
     return bits;
 }
 
-[[gnu::always_inline]] inline auto fold_word(const auto &p, size_t wi) -> uint64_t {
+[[gnu::always_inline]] inline auto fold_word(const FoldCache &p, size_t wi) -> uint64_t {
     return apply_fold_mask(p.combined[wi], wi, p.fold, p.row_parity);
 }
 
@@ -169,7 +169,7 @@ auto make_lazy_fold(const auto &sc, const MonomialLike auto &gen, uint64_t scale
 }
 
 // The recompute analogue of fold_word, over a freshly-built block word (bb = the block's first fold word).
-[[gnu::always_inline]] inline auto recipe_fold_word(const auto &r,
+[[gnu::always_inline]] inline auto recipe_fold_word(const LazyFold &r,
                                                     const uint64_t *blk,
                                                     size_t bb,
                                                     size_t wi,
@@ -179,7 +179,7 @@ auto make_lazy_fold(const auto &sc, const MonomialLike auto &gen, uint64_t scale
 
 // Append a layer's cosine-set indices to `out`, walking the same blocks as scale_cos_* rather than sharing
 // a visitor with them, so the scaling kernels stay verbatim.
-auto cos_indices_lazy(const auto &sc, const auto &r, std::vector<TermIndex> &out) -> void {
+auto cos_indices_lazy(const auto &sc, const LazyFold &r, std::vector<TermIndex> &out) -> void {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity(sc, r.fold);
     std::vector<uint64_t> &blk = column_block_scratch();
@@ -200,7 +200,7 @@ inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) ->
     }
 }
 
-auto scale_cos_lazy(const auto &sc, const auto &r, double *coeff, double cos_val) -> void {
+auto scale_cos_lazy(const auto &sc, const LazyFold &r, double *coeff, double cos_val) -> void {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity(sc, r.fold);
     std::vector<uint64_t> &blk = column_block_scratch();
@@ -215,7 +215,7 @@ auto scale_cos_lazy(const auto &sc, const auto &r, double *coeff, double cos_val
     }
 }
 
-auto accumulate_cos_lazy(const auto &sc, const auto &r, double *state, double *ham, double cos_val, double sec_val)
+auto accumulate_cos_lazy(const auto &sc, const LazyFold &r, double *state, double *ham, double cos_val, double sec_val)
     -> double {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity(sc, r.fold);
@@ -257,7 +257,7 @@ inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, 
     return loc;
 }
 
-inline auto fold_to_cos_mask(const auto &p) -> CosMask {
+inline auto fold_to_cos_mask(const FoldCache &p) -> CosMask {
     CosMask c;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
         const uint64_t b = fold_word(p, wi);
@@ -269,7 +269,7 @@ inline auto fold_to_cos_mask(const auto &p) -> CosMask {
     return c;
 }
 // Cos-index count without materialising the blocks; for diagnostics (graph_size).
-inline auto fold_popcount(const auto &p) -> size_t {
+inline auto fold_popcount(const FoldCache &p) -> size_t {
     size_t total = 0;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
         total += static_cast<size_t>(std::popcount(fold_word(p, wi)));
@@ -277,7 +277,7 @@ inline auto fold_popcount(const auto &p) -> size_t {
     return total;
 }
 
-inline auto fold_to_indices(const auto &p) -> VecZ {
+inline auto fold_to_indices(const FoldCache &p) -> VecZ {
     VecZ inds;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
         for_each_cos_index(wi * 64, fold_word(p, wi), [&](size_t i) { inds.push_back(i); });

@@ -211,11 +211,13 @@ auto is_fully_paired(const VecZ &inds, const Rows &op, size_t num_bits) -> VecZ 
 // qubit (Pauli) that starts in state 1. Both algebras read the same mask and differ only in the phase
 // they score against it (majorana_state_phase / pauli_state_phase).
 inline auto initial_state_mask(const VecZ &initial_state, size_t num_bits) -> Bitset {
-    VecZ bits;
-    bits.reserve(initial_state.size());
+    // Set straight into the result rather than through indices_to_bitset: the index vector that would
+    // build costs an allocation and a second walk, for a mapping that is one multiply per mode. Same
+    // MSb0 convention indices_to_bitset applies.
+    Bitset mask(num_bits);
     for (const auto &mode : initial_state) {
-        bits.push_back(2 * mode);
+        mask.set(num_bits - 1 - (2 * mode));
     }
-    return indices_to_bitset(bits, num_bits);
+    return mask;
 }
 } // namespace monoprop

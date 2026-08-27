@@ -31,6 +31,7 @@
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
+#include "TestOperator.h"
 #include "TestPropagator.h"
 
 using namespace monoprop;
@@ -43,8 +44,6 @@ namespace {
 // argument.
 constexpr size_t kNumBits = 2 * 8;
 
-// Build an MPOperator whose store rows are also indexed (findable). append_term writes a row only;
-// find() needs the hash index, which only the insert_absent_terms path populates.
 // Every monomial here is built at kNumBits; bs() is the one spelling of that, so the term literals
 // below stay index lists.
 auto bs(const VecZ &inds) -> Bitset {
@@ -52,17 +51,7 @@ auto bs(const VecZ &inds) -> Bitset {
 }
 
 auto build_indexed_op(const MonomialList &terms, Basis basis = Basis::Majorana) -> detail::MPOperator {
-    detail::MPOperator op(kNumBits);
-    op.basis = basis;
-    op.with_store([&](auto &rows) {
-        detail::insert_absent_terms(
-            op,
-            rows,
-            terms.size(),
-            [&](size_t k) -> const Bitset & { return terms[k]; },
-            [&](size_t k, size_t base) { assign_row(rows, base + k, terms[k]); });
-    });
-    return op;
+    return test_utils::indexed_operator(kNumBits, terms, basis);
 }
 
 // Independent expected state vector: score paired rows with the basis' state phase, 0 otherwise.
