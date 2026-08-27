@@ -315,5 +315,5 @@ BOOST_AUTO_TEST_CASE(overflow_spills_at_both_row_widths) {
 // truncating a position into a plausible-looking row.
 BOOST_AUTO_TEST_CASE(a_width_past_the_row_payload_bound_throws) {
     BOOST_CHECK_THROW(Store(Store::kMaxPositions + 2), OperatorIndexWidthUnsupported);
-    BOOST_CHECK_NO_THROW(Store(Store::kMaxPositions));
+    BOOST_CHECK_NO_THROW(Store{Store::kMaxPositions});
 }

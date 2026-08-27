@@ -32,20 +32,23 @@ namespace monoprop {
 
 // materialize_row() returns a const ref (dense backend, zero-copy) or a fresh value (packed/sparse
 // backend), so callers must bind with `const auto&` to extend the temporary's lifetime.
-[[nodiscard]] inline auto materialize_row(const std::vector<MonomialLike auto> &op, size_t i) -> decltype(auto) {
+template <MonomialLike M>
+[[nodiscard]] inline auto materialize_row(const std::vector<M> &op, size_t i) -> decltype(auto) {
     return op[i];
 }
-inline auto assign_row(std::vector<MonomialLike auto> &op, size_t i, const auto &mono) -> void {
+template <MonomialLike M>
+inline auto assign_row(std::vector<M> &op, size_t i, const M &mono) -> void {
     op[i] = mono;
 }
-[[nodiscard]] inline auto row_popcount(const std::vector<MonomialLike auto> &op, size_t i) -> size_t {
+template <MonomialLike M>
+[[nodiscard]] inline auto row_popcount(const std::vector<M> &op, size_t i) -> size_t {
     return op[i].count();
 }
 
 // Visits row i's set-bit positions ascending, without materializing a dense bitset when the backend can
 // avoid it. Hot: the even-parity inverted index is the heaviest per-row op reader.
-template <typename Fn>
-inline auto for_each_row_position(const std::vector<MonomialLike auto> &op, size_t i, Fn &&fn) -> void {
+template <MonomialLike M, typename Fn>
+inline auto for_each_row_position(const std::vector<M> &op, size_t i, Fn &&fn) -> void {
     const auto &m = op[i];
     const size_t n = m.size();
     for (size_t b = m.find_first(); b < n; b = m.find_next(b)) {
