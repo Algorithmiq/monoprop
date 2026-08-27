@@ -5,14 +5,8 @@ on:
   push:
     branches:
       - main
-  # PRs trigger for the "opened", "reopened", "synchronize" events (default) and
-  # "ready_for_review"
+  # PRs trigger for all the default events
   pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize # when new commits are pushed to the PR
-      - ready_for_review # when the PR is un-drafted
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,10 +19,6 @@ env:
 
 jobs:
   package-tests:
-    # in combination with the PR types selection, this top-level if statement
-    # skips running the workflow for Draft PRs
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'test-in-draft') }}
-
     name: Check project ${{ matrix.runner }}/Python ${{ matrix.python-version }}/Compiler ${{ matrix.compiler}}/Wide term index ${{ matrix.wide}}
 
     strategy:
