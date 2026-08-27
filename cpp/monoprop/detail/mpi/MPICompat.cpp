@@ -19,6 +19,10 @@
 #include <print>
 #include <stdexcept>
 
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/Pairwise.h"
+#endif
+
 namespace monoprop::mpi {
 
 #ifdef monoprop_ENABLE_MPI
@@ -131,21 +135,20 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm,
         int me = 0;
         MPI_Comm_rank(comm.mpi, &me);
         std::fill(recv_counts, recv_counts + n, 0);
-        const int f = plan.count(n);
+        const PeerLayout one{.block = 1};
         std::vector<MPI_Request> reqs;
-        reqs.reserve(static_cast<size_t>(2 * f));
-        for (int k = 0; k < f; ++k) {
-            const int b = plan.peer(me, k);
-            if (b == me) {
-                recv_counts[b] = send_counts[b];
-                continue;
-            }
-            reqs.emplace_back();
-            MPI_Irecv(&recv_counts[b], 1, MPI_INT, b, 0x6D73, comm.mpi, &reqs.back());
-            reqs.emplace_back();
-            MPI_Isend(&send_counts[b], 1, MPI_INT, b, 0x6D73, comm.mpi, &reqs.back());
-        }
-        MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+        sparse_pairwise(plan,
+                        me,
+                        n,
+                        comm.mpi,
+                        kFlatCountTag,
+                        MPI_INT,
+                        sizeof(int),
+                        reinterpret_cast<const std::byte *>(send_counts),
+                        one,
+                        reinterpret_cast<std::byte *>(recv_counts),
+                        one,
+                        reqs);
         return;
     }
     (void)n;

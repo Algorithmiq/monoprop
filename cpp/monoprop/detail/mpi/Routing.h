@@ -28,29 +28,17 @@
 // (Scan.h emits queries by it, MonomialPropagator seeds the operator by it), and a disagreement splits
 // ownership silently rather than crashing -- so both go through Router::dest and nothing else.
 //
-// WHY there is a choice to make here at all
-// ----------------------------------------
-// A gate turns a term M into M^G (symmetric difference of Majorana support). With today's splitmix
-// destination -- full avalanche -- the owner of M^G is unrelated to the owner of M, so a rank's queries
-// for ONE generator spray across all R ranks and the exchange is a dense all-to-all whose message count
-// grows as R*(R-1). If instead the RANK index is a GF(2)-LINEAR function of the support,
-//
-//     h(M) = XOR of v_i over i in support(M)   =>   h(M ^ G) = h(M) ^ h(G)
-//
-// then, since I own M, every query I emit for G goes to exactly one rank: my_rank ^ h(G). XOR is an
-// involution, so that peer sends to me in the same round: the exchange becomes a pairwise Sendrecv.
-//
-// The routing is TWO-LEVEL, because the two levels have different costs: across MPI ranks the cost is
-// the message COUNT (make it structured), within a rank partitions talk through shared memory where
-// fanout is free and only balance matters (keep full avalanche).
+// Two-level, because the levels cost differently: across MPI ranks the message COUNT is what hurts, so
+// the rank index is GF(2)-linear in the support and a generator maps every query to one peer; within a
+// rank partitions talk through shared memory, where fanout is free and only balance matters.
 //
 //     part = q % S                       q = monomial_hash(M) (splitmix, unchanged)
 //     hi   = (q / S) % (R >> d)          the R>>d splitmix-chosen high rank bits
 //     rank = (a & (2^d - 1)) | (hi << d) a = linear_hash(M); d = linear_bits
 //     flat = rank * S + part
 //
-// d is a dial, not a cliff: fanout is R >> d, so d = 0 is EXACTLY today's `q % (R*S)` (see dest()) and
-// d = log2(R) is fanout 1. Non-power-of-two R has no XOR structure at all and falls back to d = 0.
+// The derivation, what d buys and what it costs: docs/content/docs/features/parallelism.mdx, under
+// "Rank routing".
 //
 // Knobs, parsed and validated in EnvConfig.h:
 //   monoprop_ROUTING            linear (default) | splitmix   -- linear defaults d to log2(R)
@@ -102,9 +90,9 @@ template <size_t NumBits>
 
 // GF(2) rank of a set of 64-bit vectors, by Gaussian elimination over the bit columns. The per-generator
 // rank shifts must span at least log2(R) dimensions or the reachable destination ranks form a strict
-// subspace and some ranks stay empty -- a load-balance failure, not a correctness one, which is why this
-// is a diagnostic (measured: rank 32 for the 60-site Hubbard's 416 distinct shifts, against the 7 bits
-// R = 128 needs) rather than a runtime gate.
+// subspace and 2^d - 2^rank ranks stay empty. A balance failure, not a correctness one, so its caller
+// (MonomialPropagator::report_routing_coverage_) warns on stderr rather than gating.
+// Measured: rank 32 for the 60-site Hubbard's 416 distinct shifts, against the 7 bits R = 128 needs.
 [[nodiscard]] inline auto gf2_rank(std::vector<uint64_t> vectors) noexcept -> size_t {
     size_t rank = 0;
     for (size_t bit = 0; bit < 64 && rank < vectors.size(); ++bit) {
@@ -130,8 +118,6 @@ template <size_t NumBits>
     return rank;
 }
 
-enum class Mode : uint8_t { Splitmix, Linear };
-
 // Trivially copyable and cheap to build; hold one per build_layer call rather than per term.
 class Router final {
 public:
@@ -154,7 +140,6 @@ public:
     [[nodiscard]] constexpr auto linear_bits() const noexcept -> size_t { return bits_; }
     // Distinct destination RANKS one rank's queries for a single generator reach. 1 == pairwise.
     [[nodiscard]] constexpr auto fanout() const noexcept -> size_t { return ranks_ >> bits_; }
-    [[nodiscard]] constexpr auto mode() const noexcept -> Mode { return bits_ == 0 ? Mode::Splitmix : Mode::Linear; }
 
     // Flat destination slot in [0, flat_world). Branch is on a member, so it is perfectly predicted.
     template <size_t NumModes>
@@ -181,7 +166,7 @@ private:
         if (!std::has_single_bit(ranks)) {
             return 0; // no XOR structure without a power-of-two rank count
         }
-        const size_t max_bits = static_cast<size_t>(std::countr_zero(ranks));
+        const auto max_bits = static_cast<size_t>(std::countr_zero(ranks));
         return requested < max_bits ? requested : max_bits;
     }
 
