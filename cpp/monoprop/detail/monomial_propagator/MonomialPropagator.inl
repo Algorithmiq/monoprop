@@ -207,6 +207,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
+      routing_coverage_reported_(other.routing_coverage_reported_),
       logical_num_modes_(other.logical_num_modes_),
       cutoff_type_(other.cutoff_type_),
       basis_change_(other.basis_change_),
@@ -721,10 +722,50 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void {
+    // One report per rank, so only its partition 0 speaks, and only once whatever the outcome.
+    if (routing_coverage_reported_ || comm_.shm_rank != 0) {
+        return;
+    }
+    routing_coverage_reported_ = true;
+    const auto router = router_for(comm_);
+    if (router.linear_bits() == 0) {
+        return; // splitmix: no subspace to fall short of
+    }
+    std::vector<uint64_t> shifts;
+    shifts.reserve(majoranas.size());
+    for (const auto &gate : majoranas) {
+        // An out-of-range index is build_evolve_result_'s to reject, gate by gate: converting the whole
+        // list up front would pre-empt that throw.
+        if (std::ranges::any_of(gate, [this](size_t i) { return i >= 2 * logical_num_modes_; })) {
+            return;
+        }
+        shifts.push_back(static_cast<uint64_t>(router.rank_shift<NumModes>(indices_to_bitset<NumModes>(gate))));
+    }
+    std::ranges::sort(shifts);
+    shifts.erase(std::ranges::unique(shifts).begin(), shifts.end());
+    const size_t span = routing::gf2_rank(shifts);
+    if (span >= router.linear_bits()) {
+        return;
+    }
+    // A warning, not a throw: every term still lands on one owner, they just do not cover the ranks.
+    // COMMPLACE's shape -- greppable prefix, rank-identified, one line.
+    const auto line = std::format("COMMROUTE rank={} linear_bits={} shift_rank={} shifts={} idle_ranks={}\n",
+                                  static_cast<size_t>(mpi::rank(comm_)) / router.partitions(),
+                                  router.linear_bits(),
+                                  span,
+                                  shifts.size(),
+                                  router.ranks() - (router.fanout() << span));
+    std::fputs(line.c_str(), stderr);
+    std::fflush(stderr);
+}
+
+template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
+    report_routing_coverage_(majoranas);
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
