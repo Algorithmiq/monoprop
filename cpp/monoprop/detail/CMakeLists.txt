@@ -5,6 +5,7 @@ target_sources(
       TYPE HEADERS
       FILES
         "EnvConfig.h"
+        "MemoryBytes.h"
         "ProcessMemory.h"
 )
 

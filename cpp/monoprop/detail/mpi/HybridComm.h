@@ -30,6 +30,7 @@
 
 #include <mpi.h>
 
+#include "monoprop/detail/MemoryBytes.h"
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
@@ -100,14 +101,24 @@ public:
 
     // Per PROCESS, not per partition; capacities, so staging reads at the largest exchange's high-water mark.
     [[nodiscard]] auto staging_bytes() const -> size_t {
-        return stage_send_.capacity() + stage_recv_.capacity() + (red_vec_.capacity() * sizeof(double));
+        return monoprop::detail::capacity_bytes(stage_send_, stage_recv_, red_vec_);
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        return sizeof(HybridComm) + staging_bytes() + cap_bytes_(slots_) + cap_bytes_(counts_send_)
-               + cap_bytes_(counts_recv_) + cap_bytes_(mpi_send_counts_) + cap_bytes_(mpi_send_displs_)
-               + cap_bytes_(mpi_recv_counts_) + cap_bytes_(mpi_recv_displs_) + cap_bytes_(pack_off_)
-               + cap_bytes_(base_send_) + cap_bytes_(base_recv_) + cap_bytes_(col_sum_) + cap_bytes_(recv_col_)
-               + cap_bytes_(counts_matrix_store_) + cap_bytes_(rows_store_);
+        return sizeof(HybridComm) + staging_bytes()
+               + monoprop::detail::capacity_bytes(slots_,
+                                                  counts_send_,
+                                                  counts_recv_,
+                                                  mpi_send_counts_,
+                                                  mpi_send_displs_,
+                                                  mpi_recv_counts_,
+                                                  mpi_recv_displs_,
+                                                  pack_off_,
+                                                  base_send_,
+                                                  base_recv_,
+                                                  col_sum_,
+                                                  recv_col_,
+                                                  counts_matrix_store_,
+                                                  rows_store_);
     }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
@@ -599,11 +610,6 @@ private:
     }
 
     auto sync() -> void { barrier_.sync(); }
-
-    template <typename T>
-    static auto cap_bytes_(const std::vector<T> &v) -> size_t {
-        return v.capacity() * sizeof(T);
-    }
 
     MPI_Comm parent_;
     int s_;

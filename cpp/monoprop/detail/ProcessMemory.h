@@ -32,6 +32,6 @@ struct ProcessMemory {
 };
 
 /// Zero-filled where the platform cannot answer, and never throws: a diagnostic must not fail its caller.
-auto process_memory() -> ProcessMemory;
+auto process_memory() noexcept -> ProcessMemory;
 
 } // namespace monoprop::detail

@@ -20,6 +20,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <complex>
 #include <optional>
 #include <utility>
@@ -85,7 +86,7 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
 // A distinct Monomial<8> per `bits`, so a caller can mint hundreds without enumerating index sets.
 auto monomial_from_bits(size_t bits) -> Monomial<8> {
     Monomial<8> mono;
-    for (size_t b = 0; b < 16; ++b) {
+    for (size_t b = 0; b < 2 * 8; ++b) { // 2 * NumModes
         if (((bits >> b) & 1UZ) != 0UZ) {
             mono.set(b);
         }
@@ -96,13 +97,12 @@ auto monomial_from_bits(size_t bits) -> Monomial<8> {
 // One insert_absent_terms call per batch: a single bulk call reserves once from empty, duplicating nothing.
 auto grow_in_batches(detail::MPOperator<8> &op, size_t batches, size_t per_batch) -> void {
     for (size_t batch = 0; batch < batches; ++batch) {
+        const size_t first = (batch * per_batch) + 1;
         detail::insert_absent_terms<8>(
             op,
             per_batch,
-            [&](size_t k) { return monomial_from_bits((batch * per_batch) + k + 1); },
-            [&](size_t k, size_t base) {
-                assign_row<8>(*op.store, base + k, monomial_from_bits((batch * per_batch) + k + 1));
-            });
+            [&](size_t k) { return monomial_from_bits(first + k); },
+            [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, monomial_from_bits(first + k)); });
     }
 }
 
@@ -445,14 +445,13 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_counts_transport_in_total_and_sum) {
     BOOST_CHECK_GT(bare.total_bytes(), 0U);
 }
 
-// All six are accumulated by operator+= and NONE reaches total_bytes(): summing them would double-count.
+// All five are accumulated by operator+= and NONE reaches total_bytes(): summing them would double-count.
 BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_new_diagnostics_out_of_total) {
     detail::MPOperatorMemoryBreakdown<8> acc;
     acc.op_coeffs_bytes = 100;
     acc.transport_staging_bytes = 1;
     acc.inverted_index_slack_bytes = 2;
     acc.coeff_slack_bytes = 3;
-    acc.reserved_bytes = 4;
     acc.operator_terms_peak_bytes = 5;
     acc.indexing_peak_bytes = 6;
     BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
@@ -462,7 +461,6 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_new_diagnostics_out_of_total) {
     other.transport_staging_bytes = 10;
     other.inverted_index_slack_bytes = 20;
     other.coeff_slack_bytes = 30;
-    other.reserved_bytes = 40;
     other.operator_terms_peak_bytes = 50;
     other.indexing_peak_bytes = 60;
 
@@ -471,7 +469,6 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_new_diagnostics_out_of_total) {
     BOOST_CHECK_EQUAL(acc.transport_staging_bytes, 11U);
     BOOST_CHECK_EQUAL(acc.inverted_index_slack_bytes, 22U);
     BOOST_CHECK_EQUAL(acc.coeff_slack_bytes, 33U);
-    BOOST_CHECK_EQUAL(acc.reserved_bytes, 44U);
     BOOST_CHECK_EQUAL(acc.operator_terms_peak_bytes, 55U);
     BOOST_CHECK_EQUAL(acc.indexing_peak_bytes, 66U);
 }
@@ -494,6 +491,37 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_growth_peaks_exceed_resting_capacity)
     BOOST_CHECK_LT(grown.indexing_peak_bytes, 3U * grown.indexing_bytes);
 }
 
+// A peak must be a peak OF the resting field. Rows whose popcount exceeds the inline width spill to the
+// overflow map, which operator_terms_bytes counts -- so a peak that omitted them could read BELOW resting
+// and make the growth duplicate (peak - resting) negative. grow_in_batches cannot reach this: its keys
+// come from bits <= 600, whose popcount is at most 9, so every row it makes stays inline.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_peak_covers_overflow_rows) {
+    constexpr size_t kBatches = 10;
+    constexpr size_t kPerBatch = 20;
+    // The default inline width is 11 of the 16 positions, so every key below spills losslessly.
+    std::vector<size_t> wide;
+    for (size_t bits = 0; bits < (1UZ << 16) && wide.size() < kBatches * kPerBatch; ++bits) {
+        if (std::popcount(bits) > detail::OperatorIndex<8>::kDefaultInlinePositions) {
+            wide.push_back(bits);
+        }
+    }
+    BOOST_REQUIRE_EQUAL(wide.size(), kBatches * kPerBatch);
+
+    detail::MPOperator<8> op;
+    for (size_t batch = 0; batch < kBatches; ++batch) {
+        const size_t first = batch * kPerBatch;
+        detail::insert_absent_terms<8>(
+            op,
+            kPerBatch,
+            [&](size_t k) { return monomial_from_bits(wide[first + k]); },
+            [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, monomial_from_bits(wide[first + k])); });
+    }
+
+    const auto b = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_GT(b.operator_terms_peak_bytes, b.operator_terms_bytes);
+    BOOST_CHECK_GT(b.indexing_peak_bytes, b.indexing_bytes);
+}
+
 // reserved_bytes rolls up the three slacks: reserved and unwritten, which is not the same as costing nothing.
 BOOST_AUTO_TEST_CASE(mp_operator_breakdown_reserved_bytes_rolls_up_the_slacks) {
     detail::MPOperator<8> op;
@@ -502,12 +530,12 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_reserved_bytes_rolls_up_the_slacks) {
     (void)op.inverted_index();
 
     const auto b = detail::estimate_memory_usage<8>(op);
-    BOOST_CHECK_EQUAL(b.reserved_bytes,
+    BOOST_CHECK_EQUAL(b.reserved_bytes(),
                       b.operator_terms_slack_bytes + b.inverted_index_slack_bytes + b.coeff_slack_bytes);
     BOOST_CHECK_GT(b.operator_terms_slack_bytes, 0U); // geometric growth always overshoots
     BOOST_CHECK_GT(b.coeff_slack_bytes, 0U);          // the reserve above
     BOOST_CHECK_LE(b.inverted_index_slack_bytes, b.inverted_index_bytes);
-    BOOST_CHECK_LT(b.reserved_bytes, b.total_bytes());
+    BOOST_CHECK_LT(b.reserved_bytes(), b.total_bytes());
 }
 
 // ASan and TSan replace malloc, so glibc's arenas stay empty and malloc_info(3) reports zero bytes.

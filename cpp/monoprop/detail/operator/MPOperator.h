@@ -29,6 +29,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/MemoryBytes.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -64,9 +65,10 @@ struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr. Always non-null.
     std::unique_ptr<OperatorIndex<NumModes>> store{std::make_unique<OperatorIndex<NumModes>>()};
     VecD op_coeffs;
-    std::vector<TermIndex> state_rows_; // sparse state
-    VecD state_vals_;                   // parallel to state_rows_; every entry is a unit phase (+-1), never 0
-    size_t state_scored_rows_{0uz};     // cache of the state values (its super sparse so this is useful)
+    // Sparse: only fully-paired terms score nonzero, ~0.07% of rows on production models. Strictly ascending.
+    std::vector<TermIndex> state_rows_;
+    VecD state_vals_;               // parallel to state_rows_; every entry is a unit phase (+-1), never 0
+    size_t state_scored_rows_{0uz}; // rows [0, state_scored_rows_) have been scored into state_rows_/state_vals_
     VecD state_coeffs;
     MonomialMap<NumModes> init_op_map{};
     VecZ initial_state;
@@ -254,7 +256,8 @@ struct MPOperator {
     }
 };
 
-// Callers must pass pairwise-distinct
+// Keys must be pairwise-distinct AND currently absent: bulk_insert then skips duplicate probes, so slot k
+// lands at base+k. per_slot must write row base+k before returning; op.size() must equal the returned base.
 template <size_t NumModes, typename KeyAt, typename PerSlot>
 inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
@@ -264,12 +267,6 @@ inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_
     op.store->bulk_insert(n, base, std::forward<KeyAt>(key_at));
     op.reindex_after_growth(base, n);
     return base;
-}
-
-// Reserved-but-never-written capacity. Unfaulted -- but not free: see reserved_bytes.
-template <typename Vec>
-inline auto capacity_slack_bytes(const Vec &v, size_t elem) -> size_t {
-    return (v.capacity() - v.size()) * elem;
 }
 
 template <typename FlatMap>
@@ -286,9 +283,11 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes{0uz};
     size_t initial_state_bytes{0uz};
     size_t inverted_index_bytes{0uz};
-    size_t matched_scratch_bytes{0uz};
+    size_t matched_scratch_bytes{0uz}; // MatchedEpochSet stamps; propagator-owned, so 0 unless it fills them
+    // Group-owned, so the partitioned facade ASSIGNS it after sum_partitions_; the += below is for
+    // hand-built breakdowns only, and summing two already-partitioned breakdowns would double it.
     size_t transport_bytes{0uz};
-    // Diagnostics: breakdowns of the fields above
+    // Diagnostics: breakdowns of the fields above, outside total_bytes() so they can never double-count.
     size_t inverted_index_dense_bytes{0uz};  // full-height bitmap columns
     size_t inverted_index_sparse_bytes{0uz}; // ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
@@ -298,9 +297,15 @@ struct MPOperatorMemoryBreakdown final {
     size_t transport_staging_bytes{0uz};    // of transport_bytes: the payload funnel, at its high-water mark
     size_t inverted_index_slack_bytes{0uz}; // of inverted_index_bytes: capacity no resize ever wrote
     size_t coeff_slack_bytes{0uz};          // of op_coeffs_bytes + state_coeffs_bytes: likewise
-    size_t reserved_bytes{0uz};
-    size_t operator_terms_peak_bytes{0uz};
-    size_t indexing_peak_bytes{0uz};
+    size_t operator_terms_peak_bytes{0uz};  // peak over TIME, so a sum over partitions is an upper bound
+    size_t indexing_peak_bytes{0uz};        // likewise
+
+    // Derived, not stored: reserved and never written, but NOT free. Peak RSS tracks capacity rather than
+    // used bytes, because each growth holds the old fully-written buffer and the new one at once -- so
+    // shrink_to_fit cannot recover this and must cost another copy. Only fewer or earlier growths help.
+    auto reserved_bytes() const -> size_t {
+        return operator_terms_slack_bytes + inverted_index_slack_bytes + coeff_slack_bytes;
+    }
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
@@ -326,7 +331,6 @@ struct MPOperatorMemoryBreakdown final {
         transport_staging_bytes += o.transport_staging_bytes;
         inverted_index_slack_bytes += o.inverted_index_slack_bytes;
         coeff_slack_bytes += o.coeff_slack_bytes;
-        reserved_bytes += o.reserved_bytes;
         operator_terms_peak_bytes += o.operator_terms_peak_bytes;
         indexing_peak_bytes += o.indexing_peak_bytes;
         return *this;
@@ -357,12 +361,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
     breakdown.operator_terms_peak_bytes = op.store->rows_peak_bytes();
     breakdown.indexing_peak_bytes = op.store->index_peak_bytes();
-    breakdown.coeff_slack_bytes = capacity_slack_bytes(op.op_coeffs, sizeof(double))
-                                  + capacity_slack_bytes(op.state_coeffs, sizeof(double))
-                                  + capacity_slack_bytes(op.state_rows_, sizeof(TermIndex))
-                                  + capacity_slack_bytes(op.state_vals_, sizeof(double));
-    breakdown.reserved_bytes =
-        breakdown.operator_terms_slack_bytes + breakdown.inverted_index_slack_bytes + breakdown.coeff_slack_bytes;
+    breakdown.coeff_slack_bytes = capacity_slack_bytes(op.op_coeffs, op.state_coeffs, op.state_rows_, op.state_vals_);
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

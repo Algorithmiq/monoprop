@@ -280,7 +280,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_transport_staging_bytes", b.transport_staging_bytes},
                                              {"d_invidx_slack_bytes", b.inverted_index_slack_bytes},
                                              {"d_coeff_slack_bytes", b.coeff_slack_bytes},
-                                             {"d_reserved_bytes", b.reserved_bytes},
+                                             {"d_reserved_bytes", b.reserved_bytes()},
                                              {"d_terms_peak_bytes", b.operator_terms_peak_bytes},
                                              {"d_indexing_peak_bytes", b.indexing_peak_bytes},
                                              // Per PROCESS, not per partition. See the note above.

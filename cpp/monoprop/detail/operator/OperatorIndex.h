@@ -29,6 +29,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/MemoryBytes.h"
 
 namespace monoprop::detail {
 
@@ -170,11 +171,7 @@ public:
         }
         return overflow_.at(i).count();
     }
-    [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
-        total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
-        return total;
-    }
+    [[nodiscard]] auto memory_bytes() const -> size_t { return capacity_bytes(rows_) + overflow_bytes_(); }
 
     auto find(const key_type &key) const -> std::optional<size_t> {
         const uint32_t h = fold_hash(key);
@@ -276,12 +273,14 @@ public:
         return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
 
-    // Diagnostics: peak over TIME. A growth holds old+new at once; no capacity field can show that.
+    // Diagnostics: peak over TIME of memory_bytes() / index_estimated_memory_bytes(). A growth holds
+    // old+new at once; no capacity field can show that. Each carries its resting field's other terms
+    // (the overflow map, the fixed header) so a peak can never read below the resting bytes.
     [[nodiscard]] auto rows_peak_bytes() const -> size_t {
-        return std::max(rows_peak_bytes_, rows_.capacity() * sizeof(PosT));
+        return overflow_bytes_() + (std::max(rows_peak_elems_, rows_.capacity()) * sizeof(PosT));
     }
     [[nodiscard]] auto index_peak_bytes() const -> size_t {
-        return std::max(table_.peak_bytes, index_estimated_memory_bytes());
+        return sizeof(OperatorIndex) + (std::max(table_.peak_slots, table_.slots.capacity()) * sizeof(Slot));
     }
 
 private:
@@ -329,7 +328,7 @@ private:
         std::vector<Slot> slots = std::vector<Slot>(kMinSlots, Slot{});
         size_t mask = kMinSlots - 1;
         size_t count = 0;
-        size_t peak_bytes = 0; // see index_peak_bytes()
+        size_t peak_slots = 0; // see index_peak_bytes()
 
         auto rehash_if_needed() -> void {
             if ((count + 1) * 10 >= slots.size() * 7) {
@@ -342,7 +341,7 @@ private:
                 return;
             }
             // assign() allocates before `old` dies, so both tables are live for the whole re-probe loop.
-            peak_bytes = std::max(peak_bytes, (slots.size() + new_cap) * sizeof(Slot));
+            peak_slots = std::max(peak_slots, slots.size() + new_cap);
             std::vector<Slot> old = std::move(slots);
             slots.assign(new_cap, Slot{});
             mask = new_cap - 1;
@@ -362,13 +361,21 @@ private:
     // Slot count for `n` entries at ≤0.7 load.
     static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
+    // Node + key + value + the bucket pointer, for the rows whose popcount exceeded inline_width_.
+    [[nodiscard]] auto overflow_bytes_() const -> size_t {
+        return overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
+    }
+
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     auto reserve_rows(size_t n) -> void {
         const size_t want = n * stride_;
-        if (want > rows_.capacity()) {
-            rows_peak_bytes_ = std::max(rows_peak_bytes_, (rows_.capacity() + want) * sizeof(PosT));
+        if (want <= rows_.capacity()) {
+            return; // no realloc, so nothing is ever doubled
         }
+        // reserve() may hand back more than asked, so the duplicate is read off the post-growth capacity.
+        const size_t old_cap = rows_.capacity();
         rows_.reserve(want);
+        rows_peak_elems_ = std::max(rows_peak_elems_, old_cap + rows_.capacity());
     }
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
@@ -417,7 +424,7 @@ private:
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
     Table table_ = {};
-    size_t rows_peak_bytes_ = 0; // see rows_peak_bytes()
+    size_t rows_peak_elems_ = 0; // PosT count, matching table_.peak_slots; see rows_peak_bytes()
 };
 
 } // namespace monoprop::detail
