@@ -27,6 +27,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/SparseRowStore.h"
 
 namespace monoprop::detail {
