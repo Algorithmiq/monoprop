@@ -178,15 +178,23 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                    std::nullopt,
                                                                    std::optional<double>{0.3});
 
-    size_t checked = 0;
-    size_t self_checked = 0;
+    // The partner count is a property of the operator and the gate, not of where the partners live, so
+    // it is the same for every router; routing only moves a partner between the encoded (cross-rank)
+    // and staged (self-owned) side. Pinning that invariance is stronger than a floor: a routing bug
+    // that drops partners moves the total, and one that misroutes them moves the split.
+    size_t routers = 0;
+    std::optional<size_t> first_total;
     for (const size_t ranks : {2U, 4U, 8U}) {
         // BOTH routers, because the agreement is a property of the pair and not of either hash: the
         // scan calls Router::dest and find_rank calls the same Router, so a divergence introduced by
         // one of them shows up here whichever routing the geometry resolves to. bits=~0 asks for as
         // many linear bits as log2(ranks) allows, i.e. fanout 1.
         for (const size_t bits : {size_t{0}, ~size_t{0}}) {
-            const routing::Router router{ranks, /*partitions=*/1, bits};
+            // Per router, not summed over them: the floors are what stops the loop passing on an empty
+            // scan, and a sum lets one router carry the other.
+            size_t checked = 0;
+            size_t self_checked = 0;
+            const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, bits);
             const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
                                                                                      gen,
                                                                                      eval,
@@ -207,16 +215,25 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
             check_bucket_ownership(res.follower_queries, router, checked);
             check_self_ownership(res.leader_self, router, /*my_rank=*/0, self_checked);
             check_self_ownership(res.follower_self, router, /*my_rank=*/0, self_checked);
+            // Measured, all six routers: total 387 every time, with the split running from 196/191 at
+            // R=2 to 335/52 at R=8 as more partners fall cross-rank. The floors sit below the observed
+            // minimum of each arm and only catch a scan that emitted nothing.
+            BOOST_TEST_MESSAGE("ranks=" << ranks << " bits=" << router.linear_bits() << " encoded=" << checked
+                                        << " staged=" << self_checked);
+            const size_t total = checked + self_checked;
+            if (first_total.has_value()) {
+                BOOST_TEST(total == *first_total); // routing moves partners, it does not create or lose them
+            }
+            else {
+                first_total = total;
+            }
+            BOOST_TEST(total > 300U);
+            BOOST_TEST(checked > 150U);
+            BOOST_TEST(self_checked > 40U);
+            ++routers;
         }
     }
-    // Without this the loop above passes trivially if the scan emitted nothing. The floor is on the total
-    // because that is what is invariant across the split; each arm also keeps its own floor so a routing
-    // bug that sends everything one way still fails. The floors are unchanged although the loop now runs
-    // twice, one router each: they were never tight.
-    BOOST_TEST_MESSAGE("encoded=" << checked << " staged=" << self_checked);
-    BOOST_TEST(checked + self_checked > 1000U);
-    BOOST_TEST(checked > 500U);
-    BOOST_TEST(self_checked > 200U);
+    BOOST_TEST(routers == 6U); // the floors above are per router, so the router count is part of them
 }
 
 // A Schrodinger propagator seeds a slot by walking the whole paired basis and keeping find_rank ==
