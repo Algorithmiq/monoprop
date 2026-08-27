@@ -534,6 +534,19 @@ wheels = [
 ]
 
 [[package]]
+name = "griffecli"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+    { name = "griffelib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/de/75/3cf2fb1ae21fb55a3b917b45d24426a620ee916f4bdbd03f350c69d3d892/griffecli-2.2.0.tar.gz", hash = "sha256:b9e763131218eb19887ed52de20fe944252d811bfb4a3e339874908a588f0044", size = 58066, upload-time = "2026-08-16T14:04:55.984Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/83/04652213d82afeecc8e8a31231eeb87cc484dcc055fd96ecb0bfd9860405/griffecli-2.2.0-py3-none-any.whl", hash = "sha256:8ebb7ae1dcc2617f5d39f00e4c238dd6b5cd0b13157b0ce22c1ea4ca8b4c5d1d", size = 11480, upload-time = "2026-08-16T14:04:53.14Z" },
+]
+
+[[package]]
 name = "griffelib"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1083,6 +1096,7 @@ dev = [
     { name = "ruff" },
 ]
 docs = [
+    { name = "griffecli" },
     { name = "griffelib" },
     { name = "ipykernel" },
     { name = "matplotlib" },
@@ -1146,6 +1160,7 @@ dev = [
     { name = "ruff", specifier = "==0.15.20" },
 ]
 docs = [
+    { name = "griffecli", specifier = ">=2.2,<3" },
     { name = "griffelib", specifier = ">=2.2,<3" },
     { name = "ipykernel" },
     { name = "matplotlib" },

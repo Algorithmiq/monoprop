@@ -199,6 +199,14 @@ gen-api:
     {{ docs_uv }} python {{ site }}/scripts/gen_api_dump.py monoprop -d {{ site }}
     cd {{ site }} && node scripts/generate-api.mjs
 
+# Check the public Python API for breaking changes (griffe 2's `check` command).
+# By default this diffs HEAD (the current checkout) against the latest git tag;
+# pass e.g. `-a v0.7.0 -b some-branch` to compare other refs. Exits non-zero on
+# any detected change, including additive ones -- read the report rather than
+# trusting the exit code alone.
+check-api *ARGS:
+    {{ docs_uv }} python -m griffe check monoprop -s src -f verbose "$@"
+
 # Run the runnable docstring examples (the docstring-level doctest check).
 doctest-py:
     {{ docs_uv }} python -m pytest --doctest-modules src/monoprop
