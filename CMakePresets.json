@@ -23,7 +23,8 @@
             "description": "Build the C++ unit test executable in the scikit-build-core Release tree. Requires the tree to already exist (run 'uv sync --all-extras').",
             "configurePreset": "skbuild-release",
             "targets": [
-                "monoprop_unit_tests.x"
+                "monoprop_unit_tests.x",
+                "monoprop_link_export_probe.x"
             ],
             "jobs": 4
         },
@@ -33,7 +34,8 @@
             "description": "Build the C++ unit test executable in the scikit-build-core Debug tree. Requires the tree to already exist (run the 'Install in Debug mode' task).",
             "configurePreset": "skbuild-debug",
             "targets": [
-                "monoprop_unit_tests.x"
+                "monoprop_unit_tests.x",
+                "monoprop_link_export_probe.x"
             ],
             "jobs": 4
         }
