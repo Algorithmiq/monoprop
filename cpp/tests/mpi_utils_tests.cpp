@@ -112,8 +112,7 @@ auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> 
     return op;
 }
 
-auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked)
-    -> void {
+auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked) -> void {
     // Every offset comes from the record walk: widths vary, so a hardcoded stride would compare a
     // monomial decoded at the wrong offset against the wrong rank.
     using QW = detail::QueryWire<32>;
