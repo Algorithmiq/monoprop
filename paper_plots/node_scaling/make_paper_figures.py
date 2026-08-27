@@ -41,17 +41,19 @@ MARKS = ["o", "s", "^"]
 
 W, H = 3.4, 2.95                  # single column, drawn at final size
 # The 2x2 composite is a page-wide top-of-page float: 7.0 in is the usual two-column textwidth,
-# and 4.9 in keeps it to roughly the top half of the page so body text still follows it.
-W2, H2 = 7.0, 5.2
+# and a 1.8:1 landscape block keeps it to about the top third of the page, so it reads as a banner
+# figure with body text under it rather than as a square that owns half the page.
+W2, H2 = 7.0, 3.9
 CORES_PER_NODE = 128
 
-# STIXGeneral is Times-metric, so the figure text matches the body text of a Times-set paper
-# instead of announcing itself as a default matplotlib plot in DejaVu Sans. mathtext follows it.
+# DejaVu Serif, matching the face the sibling paper_plots figures embed (fig1_absolute_scaling
+# and its siblings are set in DejaVuSerif): the two figure sets appear in the same paper, so they
+# must not differ in type. mathtext follows it.
 # ONE tick size for both major and minor: two sizes down a single axis reads as a mistake, and
 # the log minor labels (500, 200, 50, 20) are ordinary axis numbers, not annotations.
 plt.rcParams.update({
-    "font.family": "serif", "font.serif": ["STIXGeneral", "DejaVu Serif"],
-    "mathtext.fontset": "stix",
+    "font.family": "serif", "font.serif": ["DejaVu Serif"],
+    "mathtext.fontset": "dejavuserif",
     "font.size": 8, "axes.labelsize": 8.5, "legend.fontsize": 7.5,
     "xtick.labelsize": 8, "ytick.labelsize": 8, "axes.edgecolor": "#c9c7c0",
     "axes.labelcolor": INK, "text.color": INK, "xtick.color": INK2, "ytick.color": INK2,
@@ -88,7 +90,9 @@ def curve(rungs, ladder):
 
 
 def fmt_terms(n):
-    return f"{n / 1e9:.2f}e9" if n >= 1e9 else f"{n / 1e6:.0f}M"
+    """Counts in the units a reader says out loud -- 1.6B, 6.1B -- not 1.57e9. One decimal at the
+    B scale and none at the M scale keeps every label the same width to within a digit."""
+    return f"{n / 1e9:.1f}B" if n >= 1e9 else f"{n / 1e6:.0f}M"
 
 
 def plain_log(axis):
@@ -152,6 +156,42 @@ def clip_y(ax, curves, key, lo=0.72, hi=1.4):
     ax.set_ylim(min(vals) * lo, max(vals) * hi)
 
 
+# One set of legend metrics for every panel, so a key reads the same wherever it is drawn.
+LEGEND_KW = {"handlelength": 1.5, "handletextpad": 0.4, "columnspacing": 0.9,
+             "borderaxespad": 0.4}
+
+
+def stacked_legend(ax, loc="lower left"):
+    """The three keys stacked in one corner. The efficiency panels have a large empty corner by
+    construction -- every curve begins at 100% and falls away to the right -- so the keys cost no
+    plotted area there, which is why the composite carries its row legends in those panels."""
+    return ax.legend(loc=loc, ncol=1, **LEGEND_KW)
+
+
+def curve_legend(ax, stacked_loc):
+    """The three keys in ONE row across the top of a wall-time panel, in the headroom clip_y
+    leaves above the curves. Used by the standalone wall-time figures, which have no efficiency
+    panel next to them to carry the keys.
+
+    The row does not always fit: it is MEASURED against the axes and falls back to a stacked block
+    in the corner the caller names. Returns True if it stacked, since the caller reserved headroom
+    for a row it then does not need.
+
+    The comparison is made at the panel's FINAL width -- tight_layout first, since the axes gain
+    width there and a row measured against the default subplot geometry would stack in a panel it
+    comfortably fits -- and at 0.98 of that width, so a row that only just fits does not end up
+    touching the frame.
+    """
+    leg = ax.legend(loc="upper left", ncol=3, **LEGEND_KW)
+    ax.figure.tight_layout()         # the caller lays out again, with its own pads, afterwards
+    ax.figure.canvas.draw()          # a legend has no size until it has been laid out once
+    if leg.get_window_extent().width <= 0.98 * ax.get_window_extent().width:
+        return False
+    leg.remove()
+    stacked_legend(ax, stacked_loc)
+    return True
+
+
 def line(ax, xs, ys, i, label):
     ax.plot(xs, ys, color=RAMP3[i], lw=1.5, marker=MARKS[i], ms=4.0, zorder=3,
             markeredgecolor="white", markeredgewidth=0.6, label=label)
@@ -186,8 +226,8 @@ def weak_curves(rungs):
             continue
         # The size sequence steps by x1.90-2.07, not exactly x2, so a "constant load" curve
         # drifts. Quote the measured mean and range, never the nominal target.
-        pn = [p["terms"] / p["nodes"] / 1e6 for p in pts]
-        out.append((f"{sum(pn) / len(pn):.0f}M/node", pts))
+        pn = [p["terms"] / p["nodes"] for p in pts]
+        out.append((f"{fmt_terms(sum(pn) / len(pn))}/node", pts))
     return out
 
 
@@ -207,9 +247,10 @@ def draw_strong_time(ax, curves, legend=True):
         c0, t0 = pts[0]["cores"], pts[0]["median"]
         ax.plot(xs, [t0 * c0 / x for x in xs], color=RAMP3[i], lw=0.7, ls=":",
                 alpha=0.65, zorder=2)
-    clip_y(ax, curves, lambda p: p["median"])
-    if legend:
-        ax.legend(loc="lower left")
+    # Headroom for the legend row; the curves keep the rest of the panel.
+    clip_y(ax, curves, lambda p: p["median"], hi=3.2 if legend else 1.4)
+    if legend and curve_legend(ax, "lower left"):
+        clip_y(ax, curves, lambda p: p["median"])   # stacked instead: give the strip back
 
 
 def draw_strong_efficiency(ax, curves, legend=True):
@@ -233,7 +274,7 @@ def draw_strong_efficiency(ax, curves, legend=True):
     ax.set_ylim(0, 112)
     ax.yaxis.set_major_locator(FixedLocator([0, 20, 40, 60, 80, 100]))
     if legend:
-        ax.legend(loc="lower left")
+        stacked_legend(ax)
 
 
 def draw_weak_time(ax, curves, legend=True):
@@ -244,10 +285,9 @@ def draw_weak_time(ax, curves, legend=True):
         ax.plot(xs, [pts[0]["median"]] * len(xs), color=RAMP3[i], lw=0.7, ls=":",
                 alpha=0.65, zorder=2)
     # Headroom above the top curve is the one region empty at every x, so the legend goes there.
-    clip_y(ax, curves, lambda p: p["median"], hi=3.4)
-    if legend:
-        ax.legend(loc="upper left", ncol=3, columnspacing=1.1, handlelength=1.6,
-                  handletextpad=0.4)
+    clip_y(ax, curves, lambda p: p["median"], hi=3.4 if legend else 1.4)
+    if legend and curve_legend(ax, "upper left"):
+        clip_y(ax, curves, lambda p: p["median"])
 
 
 def draw_weak_efficiency(ax, curves, legend=True):
@@ -259,7 +299,7 @@ def draw_weak_efficiency(ax, curves, legend=True):
     ax.set_ylim(0, 108)
     ax.yaxis.set_major_locator(FixedLocator([0, 20, 40, 60, 80, 100]))
     if legend:
-        ax.legend(loc="lower left")
+        stacked_legend(ax)
 
 
 # (kind, stem, which curves, drawing body, log y)
@@ -287,8 +327,9 @@ def fig_combined(rungs, outdir):
 
     Both families span the same 128-8192 cores, so the four panels share one x axis exactly and
     only the bottom row needs the cores labels and only the top row the nodes axis -- which buys
-    back the vertical space the second axis costs. The row legend lives in the left panel and
-    serves the right one too, since colour and marker mean the same thing across a row.
+    back the vertical space the second axis costs. The row legend lives in the efficiency panel,
+    stacked in the empty lower-left corner every efficiency curve leaves, and serves the wall-time
+    panel beside it too, since colour and marker mean the same thing across a row.
     """
     strong, weak = strong_curves(rungs), weak_curves(rungs)
     if not (strong and weak):
@@ -301,22 +342,28 @@ def fig_combined(rungs, outdir):
         for c, (draw, logy) in enumerate(zip((draw_t, draw_e), logys)):
             ax = axes[r][c]
             dress(ax, cores, logy=logy, xlabel=(r == 1))
-            # legend in the left panel of each row only; the right panel shares it
-            draw(ax, curves, legend=(c == 0))
-            nodes_axis(ax, cores)
-            letter(ax, "abcd"[2 * r + c], above=True)
-    fig.tight_layout(h_pad=1.6, w_pad=1.4)
+            # One legend per row, in the RIGHT panel: the efficiency panels have an empty
+            # lower-left corner at every core count, whereas in the wall-time panels the keys
+            # have to be paid for with headroom above the curves. Colour and marker mean the same
+            # thing across a row, so the left panel reads off it.
+            draw(ax, curves, legend=(c == 1))
+            # The x axis is shared and the columns are aligned, so ONE nodes axis per column --
+            # on the top row, above the whole column -- says everything four copies of it said,
+            # and buys back the vertical space that let the rows be pushed apart.
+            if r == 0:
+                nodes_axis(ax, cores)
+            letter(ax, "abcd"[2 * r + c])
+    fig.tight_layout(h_pad=0.9, w_pad=1.1)
     save(fig, outdir, "fig-scaling-2x2")
     return {"strong": strong, "weak": weak}
 
 
-def letter(ax, ch, above=False):
-    """Panel label outside the axes' top-left. `above` clears the nodes axis on the top row, so
-    each letter sits just above its own panel's topmost furniture rather than at a shared height
-    that would collide in one row and float in the other."""
-    ax.annotate(f"({ch})", xy=(0.0, 1.0), xycoords="axes fraction",
-                xytext=(-2, 30 if above else 4), textcoords="offset points",
-                ha="left", va="bottom", fontsize=9.5, fontweight="bold", color=INK)
+def letter(ax, ch):
+    """Panel label as a left-aligned TITLE rather than a free annotation. A title is measured by
+    tight_layout and is placed above whatever furniture the axes already carries, so the letter
+    sits the same small distance above its own panel whether or not that panel has a nodes axis,
+    always flush with the left spine -- which a fixed offset in points cannot do in both rows."""
+    ax.set_title(f"({ch})", loc="left", fontsize=9, fontweight="bold", color=INK, pad=3.0)
 
 
 TITLE = "Figure captions -- strong and weak scaling of the Hubbard propagate operator"
@@ -331,10 +378,11 @@ code, so it cannot disagree with them. Use either the four or the one, not both.
 
 Encoding shared by every figure: colour and marker = problem size (strong) or load per node
 (weak), on a light-to-dark single-hue ordinal ramp, since the three curves differ in a MAGNITUDE
-rather than in identity. Each panel carries a cores axis below and a nodes axis above -- the same
-axis in the two units the machine and the reader respectively think in, not a second quantity.
-The figures carry no titles, so the caption is the only place the reference lines and the machine
-configuration are stated."""
+rather than in identity. The x axis is cores, with the same axis repeated in nodes above -- the
+two units the machine and the reader respectively think in, never a second quantity. The four
+panels of the composite share one x axis, so it is drawn once per edge there: cores under the
+bottom row, nodes over the top row. The figures carry no titles, so the caption is the only place
+the reference lines and the machine configuration are stated."""
 
 FIGURES = [
     ("fig-strong-time", "Strong scaling, wall time", captions.strong_time),

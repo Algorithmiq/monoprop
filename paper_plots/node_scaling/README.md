@@ -57,11 +57,13 @@ light-to-dark **single-hue ordinal** ramp — the three curves differ in a *magn
 identity — validated colourblind-safe against a white surface with
 `scripts/palette/validate_palette.js --ordinal`. Marker shape carries the same information so
 identity survives greyscale print. Deliberately minimal, conventional HPC style: no titles, no
-in-plot annotations. Every panel carries **cores below and nodes above** — one axis in the two
+in-plot annotations. The x axis reads **cores below and nodes above** — one axis in the two
 units the machine and the reader respectively think in (they differ by exactly the 128 cores per
-node), never a second quantity on a second scale. Drawn at final size so the type is true in the
-paper: **3.4 × 2.95 in** for the standalone single-column figures, **7.0 × 5.2 in** for the
-page-wide composite. Vector `.pdf` plus a `.png` twin for preview, in `figures/`.
+node), never a second quantity on a second scale; the composite's four panels share that axis, so
+it is drawn once per edge there (cores under the bottom row, nodes over the top row). Type is set
+in **DejaVu Serif**, the face the sibling `paper_plots` figures embed, and drawn at final size so
+it is true in the paper: **3.4 × 2.95 in** for the standalone single-column figures, **7.0 × 3.9
+in** — a landscape banner, not a square — for the page-wide composite. Vector `.pdf` plus a `.png` twin for preview, in `figures/`.
 
 **`fig-strong-time`** — wall time vs cores, log–log, at three fixed problem sizes. The dotted line
 beside each curve is *that curve's own* ideal `1/N`, anchored at its first point. The y-axis is
@@ -82,8 +84,10 @@ the load a node carries, the closer weak scaling stays to ideal.
 **`fig-scaling-2x2`** — the same four panels as one page-wide float for the top of a page,
 lettered **(a)–(d)**: rows are the scaling family (strong above, weak below), columns the quantity
 (time left, efficiency right). Both families span the same 128–8192 cores, so the four panels
-share one x axis exactly; the cores labels appear once per column at the foot of the figure, and
-the legend in each row's left panel serves both panels of that row. It is drawn by the *same*
+share one x axis exactly; the cores labels appear once per column at the foot of the figure, the
+nodes axis once per column at its head, and each row's keys are stacked in the lower-left corner
+of its efficiency panel — empty by construction, since every efficiency curve starts at 100% and
+falls away to the right — and serve the wall-time panel beside it too. It is drawn by the *same*
 per-panel code as the four standalone figures, so it cannot disagree with them — use the four or
 the one, not both.
 

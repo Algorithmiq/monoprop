@@ -113,7 +113,8 @@ def combined(drawn):
         p0, pn = min(pts, key=lambda p: p["cores"]), max(pts, key=lambda p: p["cores"])
         weff.append(f"{100 * p0['median'] / pn['median']:.0f}%")
     return (f"Strong and weak scaling of the Hubbard propagate operator on {lo} to {hi} cores "
-            f"({lo // 128} to {hi // 128} nodes; both axes label the same runs). "
+            f"({lo // 128} to {hi // 128} nodes: the four panels share one x axis, labelled in "
+            f"cores under the bottom row and in nodes over the top row). "
             f"Top row, strong scaling at three fixed problem sizes ({sizes} terms): "
             f"(a) wall time, with each curve’s own ideal 1/N dotted beside it, and "
             f"(b) parallel efficiency t(N0)N0/t(N)N, each curve normalised to the narrowest run "
@@ -123,6 +124,7 @@ def combined(drawn):
             f"(c) wall time, with each curve’s own flat ideal dotted beside it, and "
             f"(d) parallel efficiency t({lo} cores) / t(N), reaching {', '.join(weff)} at {hi} "
             f"cores. Colour and marker encode problem size (top) or load per node (bottom); the "
-            f"legend in each row’s left panel serves both panels of that row. Together the rows "
+            f"legend in each row’s efficiency panel serves both panels of that row. Together the "
+            f"rows "
             f"show one thing: the departure from ideal is set by the load a node carries, not by "
             f"a core count, and it moves to higher core counts as the problem grows. {CONFIG}")
