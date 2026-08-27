@@ -108,7 +108,7 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 #endif
 }
 
-auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
+monoprop_EXPORT auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
 // `n` is the comm size.
 monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
