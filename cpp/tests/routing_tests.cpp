@@ -22,6 +22,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <random>
@@ -38,6 +39,35 @@ using monoprop::routing::Router;
 namespace {
 
 constexpr size_t kN = 64; // 2N = 128 bits -> 2 words, so the multi-word hash path is exercised
+
+// Exactly `weight` distinct bits, so a case can pin the popcount the old bit-walk paid for.
+auto monomials_of_weight(size_t count, size_t weight, uint64_t seed) -> std::vector<Monomial<kN>> {
+    std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<size_t> slot(0, 2 * kN - 1);
+    std::vector<Monomial<kN>> out;
+    out.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        Monomial<kN> m;
+        while (m.count() < weight) {
+            m.set(slot(rng));
+        }
+        out.push_back(m);
+    }
+    return out;
+}
+
+// The map Router::dest computed before the basis was transposed: load one 64-bit vector per SET bit and
+// XOR. Rebuilt from mix64 and the seed rather than read from linear_basis(), so the plane build and this
+// share nothing but the specification.
+template <size_t NumBits>
+auto linear_hash_reference(const monoprop::Bitset<NumBits> &bits) -> uint64_t {
+    const uint64_t seed = routing::seed_from_env();
+    uint64_t h = 0;
+    for (size_t i = bits.find_first(); i < NumBits; i = bits.find_next(i)) {
+        h ^= routing::mix64(routing::mix64(seed) + (static_cast<uint64_t>(i) * 0x9E37'79B9'7F4A'7C15ULL));
+    }
+    return h;
+}
 
 auto random_monomials(size_t count, size_t weight, uint64_t seed) -> std::vector<Monomial<kN>> {
     std::mt19937_64 rng(seed);
@@ -76,7 +106,7 @@ BOOST_AUTO_TEST_CASE(routing_zero_bits_is_bit_identical_to_splitmix) {
 BOOST_AUTO_TEST_CASE(routing_zero_bits_two_level_collapses_to_flat_modulo) {
     const auto monos = random_monomials(300, 6, 0xBEEF01ULL);
     for (const auto [r, s] : {std::pair<size_t, size_t>{8, 14}, {4, 28}, {128, 14}, {64, 28}}) {
-        const Router router{r, s, 0};
+        const auto router = Router::for_modes<kN>(r, s, 0);
         for (const auto &m : monos) {
             BOOST_TEST(router.dest<kN>(m) == monomial_hash<kN>(m) % (r * s));
         }
@@ -100,7 +130,7 @@ BOOST_AUTO_TEST_CASE(routing_linear_hash_is_gf2_linear) {
 BOOST_AUTO_TEST_CASE(routing_shift_identity_holds_at_full_bits) {
     constexpr size_t kRanks = 16;
     constexpr size_t kParts = 14;
-    const Router router{kRanks, kParts, 64}; // clamped to log2(16) == 4
+    const auto router = Router::for_modes<kN>(kRanks, kParts, 64); // clamped to log2(16) == 4
     BOOST_REQUIRE(router.linear_bits() == 4U);
     BOOST_REQUIRE(router.fanout() == 1U);
 
@@ -121,7 +151,7 @@ BOOST_AUTO_TEST_CASE(routing_shift_identity_holds_at_full_bits) {
 BOOST_AUTO_TEST_CASE(routing_fanout_is_one_at_full_bits) {
     constexpr size_t kRanks = 8;
     constexpr size_t kParts = 14;
-    const Router router{kRanks, kParts, 3};
+    const auto router = Router::for_modes<kN>(kRanks, kParts, 3);
     const auto terms = random_monomials(4000, 6, 0xCCCC03ULL);
     const auto gens = random_monomials(12, 4, 0xDDDD04ULL);
 
@@ -153,7 +183,7 @@ BOOST_AUTO_TEST_CASE(routing_partial_bits_give_fanout_ranks_over_two_to_the_d) {
     const auto terms = random_monomials(20000, 6, 0xEEEE05ULL);
     const auto gen = random_monomials(1, 4, 0xFFFF06ULL).front();
     for (size_t d = 0; d <= 5; ++d) {
-        const Router router{kRanks, kParts, d};
+        const auto router = Router::for_modes<kN>(kRanks, kParts, d);
         BOOST_TEST(router.fanout() == (kRanks >> d));
         std::vector<std::set<size_t>> dest_of(kRanks);
         for (const auto &m : terms) {
@@ -170,11 +200,11 @@ BOOST_AUTO_TEST_CASE(routing_partial_bits_give_fanout_ranks_over_two_to_the_d) {
 // to today's routing rather than silently produce a lopsided or out-of-range slot.
 BOOST_AUTO_TEST_CASE(routing_non_power_of_two_ranks_falls_back_to_zero_bits) {
     for (const size_t r : {size_t{3}, size_t{7}, size_t{12}, size_t{112}}) {
-        const Router router{r, 14, 8};
+        const auto router = Router::for_modes<kN>(r, 14, 8);
         BOOST_TEST(router.linear_bits() == 0U);
         BOOST_TEST(router.fanout() == r);
     }
-    const Router pow2{64, 14, 8};
+    const auto pow2 = Router::for_modes<kN>(64, 14, 8);
     BOOST_TEST(pow2.linear_bits() == 6U); // clamped to log2(64), not 8
 }
 
@@ -182,7 +212,7 @@ BOOST_AUTO_TEST_CASE(routing_dest_is_in_range_and_deterministic) {
     const auto monos = random_monomials(1000, 7, 0x9999ULL);
     for (const auto [r, s] : {std::pair<size_t, size_t>{1, 1}, {1, 112}, {8, 14}, {128, 14}, {64, 28}}) {
         for (size_t d = 0; d <= 7; ++d) {
-            const Router router{r, s, d};
+            const auto router = Router::for_modes<kN>(r, s, d);
             for (const auto &m : monos) {
                 const size_t slot = router.dest<kN>(m);
                 BOOST_TEST(slot < r * s);
@@ -190,6 +220,60 @@ BOOST_AUTO_TEST_CASE(routing_dest_is_in_range_and_deterministic) {
             }
         }
     }
+}
+
+// The transposed basis must be the SAME map, not merely a faster one: a divergence is a silently wrong
+// owner. Pin dest() and rank_shift() against the old bit-walk over the geometries the dial spans --
+// d = 0, d < log2(R), d == log2(R) -- and over popcounts from empty to full support.
+BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) {
+    std::vector<Monomial<kN>> monos;
+    for (const size_t w : {size_t{0},
+                           size_t{1},
+                           size_t{2},
+                           size_t{3},
+                           size_t{5},
+                           size_t{8},
+                           size_t{13},
+                           size_t{21},
+                           size_t{34},
+                           size_t{2 * kN}}) {
+        const auto batch = monomials_of_weight(500, w, 0xD15EA5E0ULL + w);
+        monos.insert(monos.end(), batch.begin(), batch.end());
+    }
+    BOOST_REQUIRE_EQUAL(monos.size(), 5000U);
+
+    // (R, S, d). log2(R) is 7, 4, 6, 3, 10, 1, 12, 5 respectively, so both d < log2(R) and d == log2(R)
+    // appear, as does d = 0.
+    const std::vector<std::array<size_t, 3>> geometries{
+        {128, 14, 0},  {128, 14, 1}, {128, 14, 3}, {128, 14, 6},   {128, 14, 7}, {16, 1, 0}, {16, 1, 2}, {16, 1, 4},
+        {64, 28, 1},   {64, 28, 5},  {64, 28, 6},  {8, 14, 0},     {8, 14, 1},   {8, 14, 2}, {8, 14, 3}, {1024, 1, 5},
+        {1024, 1, 10}, {2, 112, 0},  {2, 112, 1},  {4096, 16, 12}, {32, 3, 4},   {32, 3, 5}};
+
+    size_t checked = 0;
+    for (const auto &[r, s, d] : geometries) {
+        const auto router = Router::for_modes<kN>(r, s, d);
+        BOOST_REQUIRE_EQUAL(router.linear_bits(), d); // no clamping in this table
+        const uint64_t lin_mask = d == 0 ? 0ULL : (uint64_t{1} << d) - 1;
+        for (const auto &m : monos) {
+            const uint64_t q = monomial_hash<kN>(m);
+            size_t expected = 0;
+            if (d == 0) {
+                expected = static_cast<size_t>(q % (r * s));
+            }
+            else {
+                const uint64_t part = q % s;
+                const uint64_t hi = (q / s) % (r >> d);
+                const uint64_t lin = linear_hash_reference<2 * kN>(m) & lin_mask;
+                expected = static_cast<size_t>(((lin | (hi << d)) * s) + part);
+            }
+            BOOST_REQUIRE_EQUAL(router.dest<kN>(m), expected);
+            BOOST_REQUIRE_EQUAL(router.rank_shift<kN>(m),
+                                static_cast<size_t>(linear_hash_reference<2 * kN>(m) & lin_mask));
+            ++checked;
+        }
+    }
+    BOOST_TEST_MESSAGE("bit-identity checks: " << checked);
+    BOOST_TEST(checked >= 100000U);
 }
 
 // gf2_rank is the coverage diagnostic: shifts that span fewer than log2(R) dimensions leave ranks empty.
@@ -202,7 +286,7 @@ BOOST_AUTO_TEST_CASE(routing_gf2_rank_detects_a_degenerate_shift_set) {
     // The real generator shifts must span at least log2(R) dimensions or the reachable ranks are a
     // strict subspace of the rank space.
     constexpr size_t kRanks = 128;
-    const Router router{kRanks, 14, 7};
+    const auto router = Router::for_modes<kN>(kRanks, 14, 7);
     std::vector<uint64_t> shifts;
     for (const auto &g : random_monomials(200, 4, 0x7777ULL)) {
         shifts.push_back(static_cast<uint64_t>(router.rank_shift<kN>(g)));
@@ -224,12 +308,12 @@ BOOST_AUTO_TEST_CASE(routing_default_is_linear_where_the_geometry_allows_it) {
         BOOST_TEST_MESSAGE("routing overridden in the environment; default not under test");
         return;
     }
-    BOOST_TEST(routing::make_router(8, 14).fanout() == 1U);
-    BOOST_TEST(routing::make_router(128, 14).fanout() == 1U);
-    BOOST_TEST(routing::make_router(1, 112).fanout() == 1U); // single rank: nothing to route between
+    BOOST_TEST(routing::make_router<kN>(8, 14).fanout() == 1U);
+    BOOST_TEST(routing::make_router<kN>(128, 14).fanout() == 1U);
+    BOOST_TEST(routing::make_router<kN>(1, 112).fanout() == 1U); // single rank: nothing to route between
 
     // 6 and 12 are not powers of two: no XOR structure, so Router clamps to d = 0 and every rank
     // stays reachable through splitmix rather than a subspace of them.
-    BOOST_TEST(routing::make_router(6, 14).fanout() == 6U);
-    BOOST_TEST(routing::make_router(12, 28).fanout() == 12U);
+    BOOST_TEST(routing::make_router<kN>(6, 14).fanout() == 6U);
+    BOOST_TEST(routing::make_router<kN>(12, 28).fanout() == 12U);
 }

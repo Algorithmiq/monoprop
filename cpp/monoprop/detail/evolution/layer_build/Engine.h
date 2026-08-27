@@ -587,7 +587,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
-    const auto router = router_for(comm);
+    const routing::Router router = router_for<NumModes>(comm);
     assert(router.flat_world() == R);
     // Under linear routing every query for THIS generator lands on a rank whose low `linear_bits` are
     // this rank's own XOR rank_shift(gen), so the exchange knows its peers before it starts. Dense

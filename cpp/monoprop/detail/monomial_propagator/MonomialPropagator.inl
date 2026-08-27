@@ -146,8 +146,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-    check_routing_agreement(comm_);        // a disagreement here would hang the first exchange, not corrupt it
-    const auto router = router_for(comm_); // hoisted: geometry() can hit MPI, so never per term
+    check_routing_agreement(comm_); // a disagreement here would hang the first exchange, not corrupt it
+    const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() can hit MPI, so never per term
     MonomialList<NumModes> local_heisenberg_terms;
 
     double core_term = 0.0;
@@ -405,7 +405,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
-    const auto router = router_for(comm_); // hoisted: geometry() can hit MPI, so never per term
+    const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() can hit MPI, so never per term
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
@@ -764,7 +764,7 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
         return;
     }
     routing_coverage_reported_ = true;
-    const auto router = router_for(comm_);
+    const routing::Router router = router_for<NumModes>(comm_);
     if (router.linear_bits() == 0) {
         return; // splitmix: no subspace to fall short of
     }
