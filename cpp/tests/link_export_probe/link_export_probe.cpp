@@ -16,12 +16,12 @@
 // plain OBJECT library), this target links against the installed "monoprop" SHARED target, exactly as
 // an external find_package(monoprop CONFIG) consumer would -- so it crosses the same hidden-visibility
 // boundary. cpp/tests/CMakeLists.txt is compiled with "-Wl,--no-undefined" / "-Wl,-undefined,error" so
-// the link step itself fails, reporting every symbol MonomialPropagator<NumModes>'s public template
-// chain references but that the shared library does not export.
+// the link step itself fails, reporting every symbol MonomialPropagator's public chain references but
+// that the shared library does not export.
 //
-// Explicit class-template instantiation alone is not sufficient: it emits every member function's
-// object code (including their calls into detail/** free functions), which is what the linker checks,
-// but it does not run any of it. main() below actually drives both chains implicated by the bug report:
+// The width is a constructor argument rather than a template parameter, so there is no explicit
+// instantiation to force member emission with -- the reachable set is whatever main() calls. It
+// therefore drives both chains implicated by the bug report end to end:
 //  (a) the graph-building / Schrodinger path (detail/graph_encoding/MPGraphEncodingStorage.h), via
 //      build_graph(), graph_memory_usage(), and expectation_value_and_gradient().
 //  (b) the partition path (detail/partition/CpuTopology.h), via a partitions > 1 construction, which is
