@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 
 #include "monoprop/TypeAliases.h"
@@ -229,11 +230,12 @@ inline auto fill_from_sparse_row(const SparseRow &row, Bitset &mono) -> void {
 // (cpp/tests/row_accessor_tests.cpp).
 //
 // Layout, structure-of-arrays: modes_ is `slots_per_row_` ModeT lanes per row, ascending, padded with
-// kPadLane; codes_ is one CodesT per row. The two live in separate arrays on purpose -- the cutoff and
-// pairing algebra reads only codes_, so evaluating it over a run of rows is a sequential walk that
-// never touches a mode list.
+// kPadLane; the codes array is one word per row, at the narrowest of three widths that holds
+// 2 * slots_per_row_ bits (see CodesWidth). The two live in separate arrays on purpose -- the cutoff and
+// pairing algebra reads only the codes, so evaluating it over a run of rows is a sequential walk that
+// never touches a mode list, and narrowing that array puts proportionally more rows on each line of it.
 //
-// codes_ packs slot j (the j-th occupied mode, ascending) into bits 2j and 2j+1: bit 2j marks physical
+// A codes word packs slot j (the j-th occupied mode, ascending) into bits 2j and 2j+1: bit 2j marks physical
 // position 2*mode, bit 2j+1 marks 2*mode+1. The whole cutoff algebra follows from that one word --
 // with occupied = (codes | codes>>1) & 0x5555..., paired = codes & (codes>>1) & 0x5555...,
 // n = popcount(occupied) and d = popcount(paired) give or_sum = n, popcount_sum = n + d and
@@ -291,7 +293,8 @@ public:
     // any value is correct, since over-long rows spill; size it from CutoffEvaluator::max_mode_bound().
     explicit SparseRowStore(size_t num_bits, size_t slots_per_row = kDefaultSlots)
         : num_bits_(num_bits),
-          slots_per_row_(std::clamp<size_t>(slots_per_row, 1, kMaxSlots)) {
+          slots_per_row_(std::clamp<size_t>(slots_per_row, 1, kMaxSlots)),
+          codes_width_(codes_width_for(slots_per_row_)) {
         if (((num_bits + 1) / 2) > kMaxModes) {
             throw SparseRowStoreUnsupported(
                 std::format("SparseRowStore supports at most {} modes ({} bits); got {} bits ({} modes).",
@@ -307,6 +310,88 @@ public:
     SparseRowStore(SparseRowStore &&) = delete;
     SparseRowStore &operator=(SparseRowStore &&) = delete;
 
+private:
+    // Storage width of the codes array. A codes word carries two bits per slot, so a store sized from a
+    // cutoff bound only ever sets 2 * slots_per_row_ of the 64 bits a CodesT has -- 12 at cutoff 6 and 16
+    // at cutoff 8, the two shipping models. Narrowing the storage recovers the rest, 6 bytes per row at
+    // both, which was this backend's whole per-row gap to OperatorIndex's (1 + inline_width) payloads.
+    //
+    // Only the array narrows. Every reader still sees a CodesT, zero-extended on load, so CodesAlgebra.h,
+    // sparse_row_hash, SparseRow and the cutoff algebra are untouched -- and with them the term set, the
+    // values and the probe order. Rows are payload, never a hash input and never serialized, so nothing
+    // here is visible to a baseline diff; the footprint gate is the memory_bytes() case in
+    // cpp/tests/sparse_row_store_tests.cpp.
+    enum class CodesWidth : uint8_t { Narrow, Medium, Wide };
+
+    [[nodiscard]] static constexpr auto codes_width_for(size_t slots) noexcept -> CodesWidth {
+        if ((2 * slots) <= 16) {
+            return CodesWidth::Narrow;
+        }
+        if ((2 * slots) <= 32) {
+            return CodesWidth::Medium;
+        }
+        return CodesWidth::Wide;
+    }
+
+    // Sits mid-class for the reason OperatorIndex::with_rows does: a deduced return type is not available
+    // to a caller that appears earlier in the class body.
+    //
+    // Binds the codes storage type for one call. codes_width_ is fixed at construction, so the branch is
+    // a load-and-test on a member that never changes -- predicted, and one per row read rather than per
+    // slot. Not hoisted into the store type, for the same reason the row payload is not: the codes width
+    // is not part of the seam the scan is templated on (see with_store in MPOperator), and making it so
+    // would triple every downstream instantiation to save a predicted branch.
+    template <typename Self, typename F>
+    [[gnu::always_inline]] auto with_codes(this Self&& self, F&& f)
+        -> decltype(auto) {
+        switch (self.codes_width_) {
+            case CodesWidth::Narrow:
+                return f(self.codes16_);
+            case CodesWidth::Medium:
+                return f(self.codes32_);
+            default:
+                return f(self.codes64_);
+        }
+    }
+
+    [[nodiscard]] auto load_codes(size_t i) const -> CodesT {
+        return with_codes([i](const auto &codes) -> CodesT { return static_cast<CodesT>(codes[i]); });
+    }
+
+    // The narrowing cast is exact rather than checked: a row reaches here only after it is known to fit
+    // slots_per_row_ slots, and slot j occupies bits 2j and 2j+1, so no bit at or above 2 * slots_per_row_
+    // is ever set. The assert is what holds that when a caller hands over a SparseRow it built itself.
+    auto store_codes(size_t i, CodesT codes) -> void {
+        with_codes([i, codes](auto &store) {
+            using ElemT = typename std::remove_cvref_t<decltype(store)>::value_type;
+            assert(codes == static_cast<CodesT>(static_cast<ElemT>(codes)) && "codes word wider than its storage");
+            store[i] = static_cast<ElemT>(codes);
+        });
+    }
+
+    auto resize_codes(size_t n) -> void {
+        with_codes([n](auto &codes) { codes.resize(n); });
+    }
+    auto reserve_codes(size_t n) -> void {
+        with_codes([n](auto &codes) { codes.reserve(n); });
+    }
+    [[nodiscard]] auto codes_capacity() const -> size_t {
+        return with_codes([](const auto &codes) { return codes.capacity(); });
+    }
+    // The three arrays differ only in element size, so everything that counts bytes rather than reading a
+    // word is plain arithmetic off this and needs no type bound.
+    [[nodiscard]] auto codes_bytes() const noexcept -> size_t {
+        switch (codes_width_) {
+            case CodesWidth::Narrow:
+                return sizeof(uint16_t);
+            case CodesWidth::Medium:
+                return sizeof(uint32_t);
+            default:
+                return sizeof(CodesT);
+        }
+    }
+
+public:
     [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
     [[nodiscard]] auto slots_per_row() const noexcept -> size_t { return slots_per_row_; }
     // The backend-neutral spelling of the line above, so a caller holding either store asks the same
@@ -318,7 +403,10 @@ public:
     [[nodiscard]] auto clone() const -> std::unique_ptr<SparseRowStore> {
         auto out = std::make_unique<SparseRowStore>(num_bits_, slots_per_row_);
         out->modes_ = modes_;
-        out->codes_ = codes_;
+        // Exactly one of the three is non-empty, and out shares slots_per_row_ so it shares codes_width_.
+        out->codes16_ = codes16_;
+        out->codes32_ = codes32_;
+        out->codes64_ = codes64_;
         out->size_ = size_;
         out->overflow_ = overflow_;
         out->table_ = table_; // RowHashTable is rule-of-zero copyable; a plain copy preserves slot order exactly.
@@ -334,7 +422,7 @@ public:
     [[nodiscard]] auto resized(size_t new_slots_per_row) const -> std::unique_ptr<SparseRowStore> {
         auto out = std::make_unique<SparseRowStore>(num_bits_, new_slots_per_row);
         out->modes_.resize(size_ * out->slots_per_row_);
-        out->codes_.resize(size_);
+        out->resize_codes(size_);
         out->size_ = size_;
         // Reflow via view()/overflow_ directly rather than row(i): row() would materialize a fresh
         // Bitset from the slots and set() would immediately re-walk it to rebuild them, a double pass
@@ -367,7 +455,7 @@ public:
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
         modes_.resize((base + n) * slots_per_row_);
-        codes_.resize(base + n);
+        resize_codes(base + n);
         size_ = base + n;
         return base;
     }
@@ -397,7 +485,7 @@ public:
         });
         if (overflows) {
             lanes[0] = kOverflowLane;
-            codes_[i] = 0;
+            store_codes(i, 0);
             overflow_[i] = mono;
             return;
         }
@@ -407,7 +495,7 @@ public:
         for (size_t j = used; j < slots_per_row_; ++j) {
             lanes[j] = kPadLane;
         }
-        codes_[i] = codes;
+        store_codes(i, codes);
     }
 
     // The row form of set(), and the write the support form exists for: the lanes are already ascending
@@ -425,7 +513,7 @@ public:
         ModeT *lanes = &modes_[i * slots_per_row_];
         if (n > slots_per_row_) {
             lanes[0] = kOverflowLane;
-            codes_[i] = 0;
+            store_codes(i, 0);
             overflow_[i] = to_monomial_(row);
             return;
         }
@@ -442,7 +530,7 @@ public:
         for (size_t j = n; j < slots_per_row_; ++j) {
             lanes[j] = kPadLane;
         }
-        codes_[i] = row.codes;
+        store_codes(i, row.codes);
     }
 
     // Whichever shape the key holds. The spilled arm is the dense set(), so a key that arrived too wide
@@ -490,7 +578,7 @@ public:
     auto for_each_slot(size_t i, Fn &&fn) const -> void {
         assert(!spilled(i) && "SparseRowStore::for_each_slot on a spilled row");
         const ModeT *lanes = &modes_[i * slots_per_row_];
-        const CodesT codes = codes_[i];
+        const CodesT codes = load_codes(i);
         for (size_t j = 0; j < slots_per_row_ && lanes[j] != kPadLane; ++j) {
             fn(static_cast<size_t>(lanes[j]), static_cast<unsigned int>((codes >> (2 * j)) & 0b11U));
         }
@@ -498,13 +586,13 @@ public:
 
     // The row's codes word. Meaningless for a spilled row -- ask spilled(i) first; the algebra port
     // will need the same guard, which is why the spill is kept rare rather than made general.
-    [[nodiscard]] auto codes(size_t i) const -> CodesT { return codes_[i]; }
+    [[nodiscard]] auto codes(size_t i) const -> CodesT { return load_codes(i); }
 
     // What the codes algebra reads. Borrows this store's arrays, so it is invalidated by anything that
     // reallocates them (grow_rows_geometric, reserve) or rewrites row i; row i must not be spilled.
     [[nodiscard]] auto view(size_t i) const -> SparseRow {
         assert(!spilled(i) && "SparseRowStore::view on a spilled row");
-        return SparseRow{&modes_[i * slots_per_row_], codes_[i]};
+        return SparseRow{&modes_[i * slots_per_row_], load_codes(i)};
     }
 
     [[nodiscard]] auto spilled(size_t i) const -> bool { return modes_[i * slots_per_row_] == kOverflowLane; }
@@ -514,7 +602,7 @@ public:
         if (spilled(i)) {
             return occupied_modes(overflow_.at(i));
         }
-        return row_slot_count(codes_[i]);
+        return row_slot_count(load_codes(i));
     }
 
     // Set bits -- the length measure, popcount_sum = n + d straight off the codes word.
@@ -522,7 +610,7 @@ public:
         if (spilled(i)) {
             return overflow_.at(i).count();
         }
-        const CodesT codes = codes_[i];
+        const CodesT codes = load_codes(i);
         return row_slot_count(codes) + static_cast<size_t>(std::popcount(row_paired_bits(codes)));
     }
 
@@ -560,7 +648,7 @@ public:
             out,
             [](const Key &key) { return fold_hash(key); },
             [this](size_t i) {
-                __builtin_prefetch(&codes_[i], 0, 0);
+                with_codes([i](const auto &codes) { __builtin_prefetch(&codes[i], 0, 0); });
                 __builtin_prefetch(&modes_[i * slots_per_row_], 0, 0);
             },
             [this](size_t i, const Key &key) { return row_eq_key(i, key); });
@@ -589,15 +677,14 @@ public:
     }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        return (modes_.capacity() * sizeof(ModeT)) + (codes_.capacity() * sizeof(CodesT))
-               + spilled_rows_bytes(overflow_);
+        return (modes_.capacity() * sizeof(ModeT)) + (codes_capacity() * codes_bytes()) + spilled_rows_bytes(overflow_);
     }
 
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
         const size_t lanes = modes_.capacity() - std::min(modes_.capacity(), size_ * slots_per_row_);
-        const size_t words = codes_.capacity() - std::min(codes_.capacity(), size_);
-        return (lanes * sizeof(ModeT)) + (words * sizeof(CodesT));
+        const size_t words = codes_capacity() - std::min(codes_capacity(), size_);
+        return (lanes * sizeof(ModeT)) + (words * codes_bytes());
     }
 
     // Slot count for a cutoff bound in modes (CutoffEvaluator::max_mode_bound()), clamped to what one
@@ -638,7 +725,7 @@ private:
         if (spilled(i)) {
             return dense_row_equals(overflow_.at(i), key);
         }
-        if (codes_[i] != key.codes) {
+        if (load_codes(i) != key.codes) {
             return false;
         }
         const size_t k = row_slot_count(key.codes);
@@ -664,16 +751,22 @@ private:
 
     auto reserve_rows_(size_t n) -> void {
         modes_.reserve(n * slots_per_row_);
-        codes_.reserve(n);
+        reserve_codes(n);
     }
 
-    [[nodiscard]] auto capacity() const -> size_t { return codes_.capacity(); }
+    [[nodiscard]] auto capacity() const -> size_t { return codes_capacity(); }
 
     DefaultInitVector<ModeT> modes_ = {};
-    DefaultInitVector<CodesT> codes_ = {};
+    // Exactly one is ever non-empty, selected by codes_width_ -- the same one-live-arm shape
+    // OperatorIndex uses for its row payload.
+    DefaultInitVector<uint16_t> codes16_ = {};
+    DefaultInitVector<uint32_t> codes32_ = {};
+    DefaultInitVector<CodesT> codes64_ = {};
     size_t num_bits_ = 0;
     size_t size_ = 0;
     size_t slots_per_row_ = kDefaultSlots;
+    // Declared after slots_per_row_: the constructor derives it from the clamped value.
+    CodesWidth codes_width_ = codes_width_for(kDefaultSlots);
     // Lossless side-map for rows occupying more than slots_per_row_ modes.
     std::unordered_map<size_t, value_type> overflow_ = {};
     RowHashTable table_ = {};

@@ -19,11 +19,13 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <optional>
 #include <random>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -454,4 +456,71 @@ BOOST_AUTO_TEST_CASE(sparse_row_key_batch_resolves_both_shapes) {
     const RowBuffer absent_row = row_of(absent);
     BOOST_TEST(!store.find(SparseRowKey{.row = absent_row.view()}).has_value());
     BOOST_TEST(!store.find(SparseRowKey{.spilled = &absent}).has_value());
+}
+
+// The codes array's element width follows slots_per_row_, since a codes word only ever sets bits below
+// 2 * slots_per_row_. The row array is the operator's largest, and rows are payload -- never a hash
+// input, never serialized -- so a narrowing here changes no term and no energy and a baseline diff
+// cannot see it. This is the footprint gate, the support-form counterpart to
+// row_slot_width_follows_the_position_count in operator_index_tests.cpp.
+// memory_bytes() - slack_bytes() is the *used* part of the arrays, which makes the figure exact rather
+// than allocator-dependent.
+BOOST_AUTO_TEST_CASE(codes_width_follows_the_slot_count) {
+    constexpr size_t kNumBits = 256;
+    constexpr size_t kRows = 500;
+    // 2 bytes of codes at up to 8 slots, 4 up to 16, 8 above -- with the mode lanes constant per slot.
+    const std::array<std::pair<size_t, size_t>, 3> kCases{{{8, 2}, {16, 4}, {17, 8}}};
+
+    for (const auto &[slots, codes_bytes] : kCases) {
+        SparseRowStore store(kNumBits, slots);
+        for (size_t i = 0; i < kRows; ++i) {
+            // One occupied mode per row: any slot count <= slots works, but staying at one keeps every
+            // row off the overflow side-map, whose bytes are counted separately and would blur this.
+            Bitset mono(kNumBits);
+            mono.set(2 * (i % (kNumBits / 2)));
+            store.push_back(mono);
+        }
+        const size_t expected = kRows * ((slots * sizeof(RowMode)) + codes_bytes);
+        BOOST_TEST(store.memory_bytes() - store.slack_bytes() == expected);
+    }
+}
+
+// The narrowed storage must be invisible above the seam: a store at each codes width has to hold and
+// return the same rows, hash them the same way and find them the same way.
+BOOST_AUTO_TEST_CASE(a_narrowed_codes_word_reads_back_unchanged) {
+    constexpr size_t kNumBits = 256;
+    std::mt19937_64 rng(20260828);
+
+    std::vector<Bitset> monos;
+    for (size_t i = 0; i < 200; ++i) {
+        // At most 8 occupied modes, so every row fits the narrowest store's slots and none spills.
+        Bitset mono(kNumBits);
+        for (size_t k = 0; k < 8; ++k) {
+            mono.set(rng() % kNumBits);
+        }
+        if (std::find(monos.begin(), monos.end(), mono) == monos.end()) {
+            monos.push_back(mono);
+        }
+    }
+
+    SparseRowStore narrow(kNumBits, 8);
+    SparseRowStore wide(kNumBits, SparseRowStore::kMaxSlots);
+    for (const auto &mono : monos) {
+        narrow.push_back(mono);
+        wide.push_back(mono);
+        narrow.emplace(mono, narrow.size() - 1);
+        wide.emplace(mono, wide.size() - 1);
+    }
+    BOOST_REQUIRE(narrow.memory_bytes() < wide.memory_bytes());
+
+    for (size_t i = 0; i < monos.size(); ++i) {
+        BOOST_REQUIRE(!narrow.spilled(i));
+        BOOST_TEST(narrow.codes(i) == wide.codes(i));
+        BOOST_TEST(narrow.row(i) == monos[i]);
+        BOOST_TEST(narrow.popcount(i) == wide.popcount(i));
+        BOOST_TEST(narrow.slot_count(i) == wide.slot_count(i));
+        BOOST_TEST(sparse_row_hash(narrow.view(i)) == sparse_row_hash(wide.view(i)));
+        BOOST_TEST(narrow.find(monos[i]).value() == i);
+        BOOST_TEST(narrow.find(narrow.view(i)).value() == i);
+    }
 }

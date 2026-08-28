@@ -135,6 +135,27 @@ Key files:
   so a widening there changes no term and no energy: `just diff-baseline` cannot see it, and the gate is
   instead the `operator_terms_bytes` assertions in `cpp/tests/operator_index_tests.cpp` and
   `tests/test_mode_width.py`.
+  `SparseRowStore` sizes its *codes* array the same way and for the same reason, over three arrays
+  (`with_codes`): a codes word is two bits per slot, so a store sized from a cutoff bound only ever sets
+  12 of 64 bits at cutoff 6 and 16 at cutoff 8 — the two shipping models. Storing 2 bytes there instead of
+  8 is worth **-30% and -25% of `operator_terms_bytes`** on the benchmark Hubbard model (20 → 14 and
+  24 → 18 live bytes per row), which is the whole per-row gap to `OperatorIndex`'s `(1 + inline_width)`
+  payloads: at the 256-mode crossover the two backends' row arrays are now byte-for-byte equal. Only the
+  array narrows — every reader still sees a `CodesT`, zero-extended on load — so `CodesAlgebra.h`,
+  `sparse_row_hash` and `SparseRow` are untouched and both baselines stay byte-identical. Its own gate is
+  `codes_width_follows_the_slot_count` in `cpp/tests/sparse_row_store_tests.cpp`, since the Python one is
+  a dense-row property and skips under `monoprop_ROW_STORE=sparse`.
+  It is also not a time cost, and the way it is not is the lesson: the dispatch and the narrowing casts
+  are worth **+2.2% user instructions**, but `cycles:u` falls 1-2% and task-clock with it, because four
+  times as many rows fit each line of the array the cutoff walk reads. Measured paired over alternating
+  builds, `monoprop_ROW_STORE=sparse` forced, pinned single-threaded; instructions reproduce to five
+  significant figures, cycles to about 1%. Peak RSS on that run fell 7.8%, and minor faults rose 5.7% --
+  the codes array reallocates at different sizes, which is a growth-pattern effect, not a footprint one.
+  The mode lanes are the remaining gap and are *not* narrowable the same way: below 160 storage modes
+  `OperatorIndex` puts positions in a `uint8_t` where `RowMode` stays `uint16_t`, so sparse is still 2x
+  dense there — but `kPadLane`/`kOverflowLane` take the top two `RowMode` values, so a byte lane would
+  cap at 254 modes, under the 256 the crossover sits at. Moving those markers into spare codes bits is
+  the only route, and it buys the threshold width and nothing above it.
 - **Which backend, and where it is bound**: a propagator uses one of the two, chosen once from its
   storage width by `SparseRowStore::preferred_for_modes()` — a build-time constant
   (`monoprop_SPARSE_ROW_MIN_MODES`, derived in `CMakeLists.txt` from whether `ARCH_FLAG` is actually
