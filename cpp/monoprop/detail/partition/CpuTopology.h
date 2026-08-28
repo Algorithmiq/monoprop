@@ -33,6 +33,8 @@
 #include <string_view>
 #include <vector>
 
+#include "monoprop/monopropExport.h"
+
 namespace monoprop::detail::partition {
 
 /*!
@@ -71,8 +73,10 @@ namespace topo_detail {
  *          or empty when the request cannot be filled (empty core list, oversubscription,
  *          or computed offset out of range).
  */
-auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t group_index, size_t group_count)
-    -> std::vector<int>;
+monoprop_EXPORT auto placement_order(const std::vector<PhysicalCore> &cores,
+                                     size_t n,
+                                     size_t group_index,
+                                     size_t group_count) -> std::vector<int>;
 } // namespace topo_detail
 
 /*!
@@ -86,7 +90,7 @@ auto placement_order(const std::vector<PhysicalCore> &cores, size_t n, size_t gr
  * @returns Vector of PhysicalCore in hwloc logical-core order, or empty when hwloc cannot load
  *          the topology or when no core passes the affinity filter.
  */
-auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
+monoprop_EXPORT auto enumerate_physical_cores() -> std::vector<PhysicalCore>;
 
 //! Affinity-mask exchange width, in 64-bit words. A mask needing more is "cannot classify", never private.
 inline constexpr size_t kAffinityMaskWords = 64;
@@ -95,12 +99,12 @@ static_assert(kAffinityMaskWords > 0 && kAffinityMaskWords <= static_cast<size_t
               "the affinity-mask width is an MPI_Allgather element count, which is an int");
 
 //! This process's allowed cpuset as @p nwords 64-bit words; false with @p out zeroed when it does not fit.
-auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
+monoprop_EXPORT auto affinity_mask_words(uint64_t *out, size_t nwords) -> bool;
 
 /*! @brief Whether the @p n masks of @p words words laid end to end in @p masks are pairwise disjoint.
  *  False for @p n < 2 and for any empty mask: all-zero is disjoint from everything, and shared is the safe error.
  */
-[[nodiscard]] auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
+[[nodiscard]] monoprop_EXPORT auto masks_are_pairwise_disjoint(const uint64_t *masks, size_t n, size_t words) -> bool;
 
 //! What one host's exchanged affinity masks add up to. The union says what the JOB got, not what one rank got.
 struct MaskSummary {
@@ -113,7 +117,7 @@ struct MaskSummary {
  *  @returns nullopt for a null/empty argument or any all-zero row: a mask that did not fit the exchange
  *           window cannot be summed with the others. Diagnostic only; nothing branches on the result.
  */
-[[nodiscard]] auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
+[[nodiscard]] monoprop_EXPORT auto summarize_masks(const uint64_t *masks, size_t n, size_t words, size_t self)
     -> std::optional<MaskSummary>;
 
 /* COMMPLACE: a rank seeing 16 of a host's 128 CPUs is equally "my own 16" and "eight of us share
@@ -126,18 +130,18 @@ struct MaskSummary {
  *         "unknown" (a mask did not fit the exchanged window, so no verdict is sound).
  *  Returned, not written, so the formatting is testable without a live rank.
  */
-[[nodiscard]] auto format_place_line(int mpi_rank,
-                                     int node_rank,
-                                     int node_size,
-                                     const char *verdict,
-                                     const MaskSummary &summary) -> std::string;
+[[nodiscard]] monoprop_EXPORT auto format_place_line(int mpi_rank,
+                                                     int node_rank,
+                                                     int node_size,
+                                                     const char *verdict,
+                                                     const MaskSummary &summary) -> std::string;
 
 /*! @brief True the first time @p line is seen, and whenever it differs from the previous call.
  *  One process has one placement, so a propagator built 437 times reports it 437 times identically;
  *  the whole line is compared rather than a once-flag set, because a process that builds an `alone`
  *  propagator before an MPI one has two placements and both are worth saying. Process-wide, locked.
  */
-[[nodiscard]] auto place_line_is_new(std::string_view line) -> bool;
+[[nodiscard]] monoprop_EXPORT auto place_line_is_new(std::string_view line) -> bool;
 
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };
@@ -159,8 +163,10 @@ enum class NodeMask { Shared, PerRank };
  *
  * @note Under NodeMask::PerRank the group split is skipped: our share is already this rank's alone.
  */
-auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1, NodeMask mask = NodeMask::Shared)
-    -> std::vector<CpuSet>;
+monoprop_EXPORT auto partition_cpusets(size_t n,
+                                       size_t group_index = 0,
+                                       size_t group_count = 1,
+                                       NodeMask mask = NodeMask::Shared) -> std::vector<CpuSet>;
 
 /*!
  * @brief Bind the calling thread to the PU identified by @p set.
@@ -173,5 +179,5 @@ auto partition_cpusets(size_t n, size_t group_index = 0, size_t group_count = 1,
  * @param set  Placement token as returned by partition_cpusets(). A token with @c pu == -1
  *             is a no-op.
  */
-auto pin_this_thread(const CpuSet &set) -> void;
+monoprop_EXPORT auto pin_this_thread(const CpuSet &set) -> void;
 } // namespace monoprop::detail::partition

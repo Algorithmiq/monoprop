@@ -7,14 +7,8 @@ on:
   push:
     branches:
       - main
-  # PRs trigger for the "opened", "reopened", "synchronize" events (default) and
-  # "ready_for_review"
+  # PRs trigger for all the default events
   pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize # when new commits are pushed to the PR
-      - ready_for_review # when the PR is un-drafted
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:

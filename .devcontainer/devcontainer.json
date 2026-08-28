@@ -10,6 +10,12 @@
   "securityOpt": [
     "seccomp=unconfined"
   ],
+  // Mounts for node_modules and .next to avoid slow host filesystem performance
+  // and other potential issues.
+  "mounts": [
+    "source=monoprop-docs-next,target=${containerWorkspaceFolder}/docs/.next,type=volume",
+    "source=monoprop-docs-node-modules,target=${containerWorkspaceFolder}/docs/node_modules,type=volume"
+  ],
   "remoteUser": "vscode",
   "customizations": {
     "vscode": {

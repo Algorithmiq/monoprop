@@ -24,13 +24,14 @@
 #include <vector>
 
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
+#include "monoprop/monopropExport.h"
 
 namespace monoprop::detail {
 
 // The ceiling has to track the TermIndex width, not a fixed 32-bit limit.
-auto checked_term_index(size_t value, const char *what) -> TermIndex;
+monoprop_EXPORT auto checked_term_index(size_t value, const char *what) -> TermIndex;
 
-auto checked_packed_phase(int value, const char *what) -> int8_t;
+monoprop_EXPORT auto checked_packed_phase(int value, const char *what) -> int8_t;
 
 inline constexpr size_t kPackedPhaseWordBits = std::numeric_limits<uint64_t>::digits;
 
@@ -50,9 +51,9 @@ inline auto is_binary_phase(int value) -> bool {
     return value == -1 || value == 1;
 }
 
-auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> PackedPhaseStorage;
+monoprop_EXPORT auto make_packed_phase_storage(size_t count, bool use_binary_phases) -> PackedPhaseStorage;
 
-auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t;
+monoprop_EXPORT auto packed_phase_storage_bytes(const PackedPhaseStorage &storage) -> size_t;
 
 inline auto packed_phase_at(const PackedPhaseStorage &storage, size_t idx) -> int {
     if (storage.uses_binary_phases) {
@@ -78,10 +79,11 @@ public:
     using std::logic_error::logic_error;
 };
 
-auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data) -> PackedCrossRankStorage;
+monoprop_EXPORT auto build_packed_cross_rank_storage(const std::vector<CrossRankPartnerData> &data)
+    -> PackedCrossRankStorage;
 
 // Record where my_rank's own slot sits, so the gradient's self-slot reads are O(1). Once per layer.
-auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void;
+monoprop_EXPORT auto resolve_self_slot(PackedCrossRankStorage &storage, size_t my_rank) -> void;
 
 // One world slot's position in the flat B/D arrays. The accessors below take this rather than a slot
 // id, so walking a slot's endpoints pays the lookup once instead of per endpoint.
@@ -175,25 +177,25 @@ inline auto cross_rank_sin_recv_phase(const PackedCrossRankStorage &storage, siz
     return slot_sin_recv_phase(cross_rank_slot(storage, rank), idx);
 }
 
-auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
+monoprop_EXPORT auto cross_rank_storage_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
 // The slot-proportional slice of cross_rank_storage_bytes: one record per stored world slot.
-auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
+monoprop_EXPORT auto cross_rank_slot_record_bytes(const PackedCrossRankStorage &storage) -> size_t;
 
-auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
+monoprop_EXPORT auto cross_rank_occupied_slots(const PackedCrossRankStorage &storage) -> size_t;
 
 // The B array's length, and an upper bound on the occupied slot count.
-auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t;
+monoprop_EXPORT auto cross_rank_endpoint_count(const PackedCrossRankStorage &storage) -> size_t;
 
 // Derive a layer's send layout into caller-owned scratch; `out` is resized, not reallocated, on reuse.
-auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
-                            size_t my_rank,
-                            int scale,
-                            LayerExchangeLayout &out,
-                            const char *what = "Layer exchange") -> void;
+monoprop_EXPORT auto derive_exchange_layout(const PackedCrossRankStorage &cross_rank,
+                                            size_t my_rank,
+                                            int scale,
+                                            LayerExchangeLayout &out,
+                                            const char *what = "Layer exchange") -> void;
 
 // Local cycles fold into the self-rank slot (my_rank); the exchange layout zeroes counts[my_rank] so
 // MPI_Alltoallv skips it (replay does a local copy).
-auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_partners, size_t my_rank)
+monoprop_EXPORT auto build_layer_storage_unified(const std::vector<CrossRankPartnerData> &all_partners, size_t my_rank)
     -> std::shared_ptr<LayerCore>;
 } // namespace monoprop::detail

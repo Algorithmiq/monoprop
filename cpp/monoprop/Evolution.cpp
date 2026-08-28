@@ -30,8 +30,7 @@
 namespace monoprop {
 namespace {
 
-// Rotation-endpoint accumulators for the gradient identity: cos_terms = Σ s_old·h_old over the
-// endpoints, sin_terms = Σ φ·s_old·h_partner.
+// Endpoint accumulators, in pre-layer units like the sum they are subtracted from.
 struct EndpointContrib {
     double cos_terms = 0.0;
     double sin_terms = 0.0;
@@ -42,7 +41,6 @@ struct TrigValues {
     double sin_val;
     double sec_val;
     double g_val; // 2·gen_coeff
-    double tan_val;
 
     explicit TrigValues(double param, double gen_coeff = 1.0) {
         const double g = 2.0 * gen_coeff;
@@ -50,7 +48,6 @@ struct TrigValues {
         sin_val = std::sin(g * param);
         sec_val = 1.0 / cos_val;
         g_val = g;
-        tan_val = sin_val * sec_val;
     }
 };
 
@@ -171,6 +168,7 @@ struct DerivativeSnapshotScratch {
     std::vector<VecD> sin_send_op;
     std::vector<VecD> sin_recv_state;
     std::vector<VecD> sin_recv_op;
+    VecD self_recv_op; ///< self-slot entry op, kept only where a record overwrites op before it is read
 };
 
 auto derivative_snapshot_scratch() -> DerivativeSnapshotScratch & {
@@ -186,7 +184,7 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
                                              VecD &send_buffer) {
     layer.for_each_occupied_slot(
         [my_rank, &layout, &snap, &send_buffer](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
-            if (static_cast<int>(rank) == my_rank) {
+            if (std::cmp_equal(rank, my_rank)) {
                 return;
             }
             // The send layout stays dense in the world; only the snapshot is indexed by position.
@@ -194,8 +192,8 @@ void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &sn
             const auto &bs = snap.sin_send_state[pos];
             const auto &bh = snap.sin_send_op[pos];
             for (size_t k = 0; k < slot.sin_send_count; ++k) {
-                send_buffer[base + 2 * k] = bs[k];
-                send_buffer[base + 2 * k + 1] = bh[k];
+                send_buffer[base + (2 * k)] = bs[k];
+                send_buffer[base + (2 * k) + 1] = bh[k];
             }
         });
 }
@@ -211,7 +209,7 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
     EndpointContrib local{};
     layer.for_each_occupied_slot(
         [&payload, &snap, &trig, &op, &state, &local](size_t pos, size_t rank, const detail::CrossRankSlotView &slot) {
-            if (static_cast<int>(rank) == payload.my_rank) {
+            if (std::cmp_equal(rank, payload.my_rank)) {
                 return;
             }
             const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
@@ -225,8 +223,8 @@ auto apply_cross_rank_derivative_exchange_impl(VecD &state,
                 const double s_old = ds[k];
                 const double h_old = dh[k];
                 const double s_p = rv[2 * k];
-                const double h_p = rv[2 * k + 1];
-                local.cos_terms += s_old * h_old;
+                const double h_p = rv[(2 * k) + 1];
+                local.cos_terms += s_old * op[i]; // pre-layer, matching what the cos pass added to A
                 local.sin_terms += phi * s_old * h_p;
                 op[i] = (h_old * trig.cos_val) + (ps * h_p);
                 state[i] = (s_old * trig.cos_val) + (ps * s_p);
@@ -272,7 +270,7 @@ void pack_cross_rank_evolution_payload_impl(VecD &op,
                                             VecD &send_buffer) {
     layer.for_each_occupied_slot(
         [my_rank, &layout, &send_buffer, &op](size_t rank, const detail::CrossRankSlotView &slot) {
-            if (static_cast<int>(rank) == my_rank) {
+            if (std::cmp_equal(rank, my_rank)) {
                 return;
             }
             const auto base = static_cast<size_t>(layout.displs[rank]);
@@ -288,7 +286,7 @@ void apply_cross_rank_evolution_exchange_impl(VecD &op,
                                               const ExchangePayload &payload) {
     // op[i] is already cos-scaled, so only the sine term is added; rv[k] is the partner's pre-cos value.
     layer.for_each_occupied_slot([&payload, sin_val, &op](size_t rank, const detail::CrossRankSlotView &slot) {
-        if (static_cast<int>(rank) == payload.my_rank) {
+        if (std::cmp_equal(rank, payload.my_rank)) {
             return;
         }
         const auto *rv = payload.recv_buffer.data() + payload.recv_displs[rank];
@@ -322,11 +320,14 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
     });
 }
 
-// Snapshot-free self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one
-// rotation, so reading both (pre-cos recovered from the post-cos slots) before writing either avoids the
-// read-after-write hazard.
-auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTraversal &layer, const TrigValues &trig)
-    -> EndpointContrib {
+// Self-slot endpoint pass: sin_recv entries k and k+pairs are the two endpoints of one rotation, so reading
+// both before writing either avoids the read-after-write hazard. `h_pre` carries the entry op where a
+// record overwrote it, and is null where op still holds it.
+auto apply_self_slot_derivative_paired(VecD &state,
+                                       VecD &op,
+                                       const LayerTraversal &layer,
+                                       const TrigValues &trig,
+                                       const double *h_pre) -> EndpointContrib {
     const auto slot = layer.cross_rank_self_slot();
     const size_t self_d_count = slot.sin_send_count;
     if (self_d_count == 0) {
@@ -341,10 +342,10 @@ auto apply_self_slot_derivative_paired(VecD &state, VecD &op, const LayerTravers
         const auto phi2 = static_cast<double>(detail::slot_sin_recv_phase(slot, k + pairs));
         // Recover pre-cos values.
         const double s1 = state[i1] * trig.sec_val;
-        const double h1 = op[i1] * trig.cos_val;
         const double s2 = state[i2] * trig.sec_val;
-        const double h2 = op[i2] * trig.cos_val;
-        local.cos_terms += (s1 * h1) + (s2 * h2);
+        const double h1 = h_pre != nullptr ? h_pre[k] : op[i1] * trig.cos_val;
+        const double h2 = h_pre != nullptr ? h_pre[k + pairs] : op[i2] * trig.cos_val;
+        local.cos_terms += (s1 * op[i1]) + (s2 * op[i2]); // pre-layer, as in A
         local.sin_terms += (phi1 * s1 * h2) + (phi2 * s2 * h1);
         // Inverse-rotation write-back (−sin); see apply_cross_rank_derivative_exchange_impl.
         const double ps1 = -trig.sin_val * phi1;
@@ -420,7 +421,8 @@ auto state_operator_derivative_local(VecD &state,
                                      size_t layer_idx,
                                      LayerAngle angle,
                                      mpi::Comm comm,
-                                     const detail::LayerCosAccumulate &cos_acc) -> double {
+                                     const detail::LayerCosAccumulate &cos_acc,
+                                     const detail::CosRecordView &record) -> double {
     const TrigValues trig(angle.param, angle.gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
@@ -429,23 +431,38 @@ auto state_operator_derivative_local(VecD &state,
     auto &snap = derivative_snapshot_scratch();
     snapshot_remote_endpoints(state, op, layer, my_rank, snap);
 
+    // The self slot reads its entry op off the post-cos slots, which a record overwrites first.
+    const bool self_pre = record.count > 0 && my_rank < R;
+    if (self_pre) {
+        const auto slot = layer.cross_rank_self_slot();
+        snap.self_recv_op.resize(slot.sin_send_count);
+        for (size_t k = 0; k < slot.sin_send_count; ++k) {
+            snap.self_recv_op[k] = op[detail::slot_sin_recv_index(slot, k)];
+        }
+    }
+
     // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
     auto in_flight = begin_cross_rank_derivative_exchange(snap, layer, comm);
 
-    // A = Σ s_old·h_old over all anticommuting indices, endpoints included — hence the subtraction below.
-    const double A = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val);
+    // A = Σ s_old·h_pre over all anticommuting indices, endpoints included — hence the subtraction below.
+    // Pre-dividing lets the kernel's own ×sec land back on the recorded value; restore fixes up the rest.
+    detail::predivide_cos_record(op.data(), record, trig.cos_val);
+    const double A = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val) * trig.sec_val;
+    detail::restore_cos_record(op.data(), record);
 
     EndpointContrib ep;
     if (my_rank < R) {
-        ep = apply_self_slot_derivative_paired(state, op, layer, trig);
+        ep = apply_self_slot_derivative_paired(state, op, layer, trig, self_pre ? snap.self_recv_op.data() : nullptr);
     }
     const auto remote = finish_cross_rank_derivative_exchange(state, op, layer, snap, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
 
-    // dE/dθ = −g·(tan·(A − ep.cos_terms) − ep.sin_terms); note the plus sign on ep.sin_terms.
-    return -trig.g_val * (trig.tan_val * (A - ep.cos_terms) - ep.sin_terms);
+    // dE/dθ = −g·(sin·(A − ep.cos_terms) − ep.sin_terms); note the plus sign. Both sums are in pre-layer
+    // units, so the cancellation happens before any ×sec rather than after it.
+    return -trig.g_val * (trig.sin_val * (A - ep.cos_terms) - ep.sin_terms);
 }
 
+namespace {
 auto evolve_step_traversal_impl(VecD &op,
                                 const LayerTraversal &layer,
                                 double param,
@@ -478,13 +495,14 @@ auto evolve_step_traversal_impl(VecD &op,
         op[i] += sin_val * static_cast<double>(detail::slot_sin_recv_phase(self_slot, k)) * self_b_snapshot[k];
     }
 }
+} // namespace
 
-auto evolve_step_impl(VecD &op,
-                      const MPGraphView &graph,
-                      double param,
-                      size_t layer_idx,
-                      const mpi::Comm &comm,
-                      const detail::LayerCosScale &cos_scale) -> void {
+auto evolve_step(VecD &op,
+                 const MPGraphView &graph,
+                 double param,
+                 size_t layer_idx,
+                 mpi::Comm comm,
+                 const detail::LayerCosScale &cos_scale) -> void {
     evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale);
 }
 
@@ -502,7 +520,7 @@ auto evolve_operator(VecD &&coeffs,
     // Evolved in place in the caller's moved-from vector, then handed back: no per-layer copy.
     VecD evolved = std::move(coeffs);
     for (size_t i = 0; i < graph.layers(); ++i) {
-        evolve_step_impl(evolved, graph, params[i], i, comm, cos_scale);
+        evolve_step(evolved, graph, params[i], i, comm, cos_scale);
     }
     return evolved;
 }
