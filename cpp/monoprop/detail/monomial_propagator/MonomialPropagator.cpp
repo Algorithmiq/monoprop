@@ -803,8 +803,9 @@ auto build_cos_callbacks(const detail::InvertedIndex &inverted_index,
                          Basis basis = Basis::Majorana) -> detail::CosCallbacks;
 } // namespace
 
-auto MonomialPropagator::evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params)
-    -> VecD {
+auto MonomialPropagator::evolve_operator_with_recompute_(VecD &&coeffs,
+                                                         const MPGraphView &graph,
+                                                         const VecD &params) const -> VecD {
     const auto &inverted_index = mp_op_.inverted_index();
     // Only the scale side is consumed; build both through the shared builder for consistency.
     auto cos_scale = build_cos_callbacks(inverted_index, graph, mp_op_.num_bits(), basis_).scale;

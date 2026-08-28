@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -95,7 +96,7 @@ auto check_product(const Bitset &mono, const Bitset &gen, size_t capacity, Seen 
     const auto fused = mono.fused_xor_into(gen, dense_product);
 
     std::vector<RowMode> out_lanes(capacity, 0);
-    const auto product = sparse_toggle(mono_row.view(), gen_row.view(), out_lanes.data(), capacity);
+    const auto product = sparse_toggle(mono_row.view(), gen_row.view(), std::span<RowMode>(out_lanes));
     BOOST_REQUIRE(!product.overflowed);
 
     const SparseRow product_row{out_lanes.data(), product.codes};
@@ -234,13 +235,13 @@ BOOST_AUTO_TEST_CASE(codes_product_reports_capacity_overflow) {
     // Six modes in the product, so five lanes is one short and six is exactly enough.
     for (const size_t capacity : {1U, 3U, 5U}) {
         std::vector<RowMode> lanes(capacity, 0);
-        const auto product = sparse_toggle(mono_row.view(), gen_row.view(), lanes.data(), capacity);
+        const auto product = sparse_toggle(mono_row.view(), gen_row.view(), std::span<RowMode>(lanes));
         BOOST_TEST(product.overflowed);
         BOOST_TEST(product.codes == 0U);
         BOOST_TEST(product.num_slots == 0U);
     }
     std::vector<RowMode> lanes(6, 0);
-    const auto product = sparse_toggle(mono_row.view(), gen_row.view(), lanes.data(), 6);
+    const auto product = sparse_toggle(mono_row.view(), gen_row.view(), std::span<RowMode>(lanes));
     BOOST_TEST(!product.overflowed);
     BOOST_TEST(product.num_slots == 6U);
     BOOST_TEST(product.overlap == 0U);
@@ -248,7 +249,7 @@ BOOST_AUTO_TEST_CASE(codes_product_reports_capacity_overflow) {
     // A cancelling term needs *fewer* lanes than the union, so capacity is about the product and not
     // about the inputs: gen against itself is empty.
     std::vector<RowMode> same(1, 0);
-    const auto cancelled = sparse_toggle(gen_row.view(), gen_row.view(), same.data(), 1);
+    const auto cancelled = sparse_toggle(gen_row.view(), gen_row.view(), std::span<RowMode>(same));
     BOOST_TEST(!cancelled.overflowed);
     BOOST_TEST(cancelled.num_slots == 0U);
     BOOST_TEST(cancelled.codes == 0U);

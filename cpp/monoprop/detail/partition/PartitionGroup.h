@@ -207,7 +207,7 @@ private:
      * nullptr means no peers, so measure our own mask; the verdict is then "alone", which is NOT
      * evidence that a multi-rank launcher did the right thing. Reached only from the primary ctor, so
      * a clone does not re-emit -- the mask belongs to the process, not the object. */
-    auto report_placement_(const uint64_t *masks, size_t peers, const char *verdict) -> void {
+    auto report_placement_(const uint64_t *masks, size_t peers, const char *verdict) const -> void {
         constexpr size_t kWords = monoprop::detail::partition::kAffinityMaskWords;
         std::array<uint64_t, kWords> own{};
         if (masks == nullptr && affinity_mask_words(own.data(), kWords)) {
@@ -236,7 +236,7 @@ private:
 #endif
         shm_ = std::make_unique<mpi::ShmComm>(n_);
     }
-    auto comm_for_(int r) -> mpi::Comm {
+    auto comm_for_(int r) const -> mpi::Comm {
 #ifdef monoprop_ENABLE_MPI
         if (hyb_) {
             return mpi::Comm::make_hybrid(hyb_.get(), r);

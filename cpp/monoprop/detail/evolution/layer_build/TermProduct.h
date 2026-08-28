@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <format>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -191,7 +192,7 @@ public:
     }
 
     [[nodiscard]] auto passes(size_t new_pop) const -> bool {
-        if (length_cutoff_) {
+        if (length_cutoff_.has_value()) {
             // Same two clauses as CutoffEvaluator::passes_with_popcount for a length cutoff, in the
             // same order: the popcount test proves keep without reading the monomial, and the paired
             // test is the xor_sum == 0 clause that rescues a fully paired term of any length.
@@ -290,7 +291,7 @@ public:
         dense_valid_ = false;
         if (sparse_usable_ && !store.spilled(i)) {
             const SparseRow mono = store.view(i);
-            const auto toggled = sparse_toggle(mono, generator(), out_lanes_.data(), capacity_);
+            const auto toggled = sparse_toggle(mono, generator(), std::span<RowMode>(out_lanes_.data(), capacity_));
             if (!toggled.overflowed) {
                 fallback_used_ = false;
                 product_ = toggled;

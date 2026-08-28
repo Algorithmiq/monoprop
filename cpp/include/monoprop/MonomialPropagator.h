@@ -588,7 +588,7 @@ private:
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
 
-    auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
+    auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) const -> VecD;
 };
 
 } // namespace monoprop

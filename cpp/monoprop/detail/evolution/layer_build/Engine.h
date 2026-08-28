@@ -132,7 +132,7 @@ struct GraphSink {
     }
     auto process_reserve(const std::vector<std::vector<Response>> & /*inc_r*/,
                          size_t /*rank_count*/,
-                         size_t /*my_rank*/) -> void {}
+                         size_t /*my_rank*/) const -> void {}
     auto on_response_block(size_t r,
                            const std::vector<Response> &resp,
                            const std::vector<size_t> &srcs,
@@ -292,7 +292,7 @@ struct ContractSink {
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
     // endpoints so the immediate cos scale covers them; the fused cos sweep covers them in-place instead.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, const MPOperator &op)
+    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, const MPOperator &op) const
         -> std::shared_ptr<LayerCore> {
         if (out_cos != nullptr && !fused_scale) {
             append_inserted_endpoints(cos_all, combined_size, op);

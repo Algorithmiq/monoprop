@@ -39,6 +39,7 @@
 #include <bit>
 #include <cassert>
 #include <cstddef>
+#include <span>
 
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/algebra/PauliAlgebra.h"
@@ -247,8 +248,8 @@ struct SparseProduct {
 // operation the whole representation exists for -- one merge over two ascending lane arrays, O(slots),
 // against a pass over every storage word.
 //
-// out_lanes must hold `capacity` lanes and capacity must not exceed kRowMaxSlots (a codes word's worth).
-// The product can occupy more modes than either input: up to mono's slots plus the generator's, so a
+// out_lanes.size() lanes are available and must not exceed kRowMaxSlots (a codes word's worth). The
+// product can occupy more modes than either input: up to mono's slots plus the generator's, so a
 // scratch row needs CutoffEvaluator::max_mode_bound() + the generator's locality, not just the bound.
 // When even that is not enough the result is reported as overflowed rather than truncated -- a truncated
 // mode list keeps a plausible-looking codes word, which is exactly how the Stage 3 bench measured a
@@ -256,9 +257,8 @@ struct SparseProduct {
 // `overlap` is partial and is deliberately not returned.
 [[nodiscard]] inline auto sparse_toggle(const SparseRow &mono,
                                         const SparseRow &gen,
-                                        RowMode *out_lanes,
-                                        size_t capacity) noexcept -> SparseProduct {
-    assert(capacity <= kRowMaxSlots && "sparse_toggle capacity exceeds one codes word");
+                                        std::span<RowMode> out_lanes) noexcept -> SparseProduct {
+    assert(out_lanes.size() <= kRowMaxSlots && "sparse_toggle capacity exceeds one codes word");
     const size_t nm = mono.num_slots();
     const size_t ng = gen.num_slots();
     SparseProduct result;
@@ -266,7 +266,7 @@ struct SparseProduct {
     bool over = false;
 
     const auto emit = [&](size_t mode, unsigned int code) {
-        if (used == capacity) {
+        if (used == out_lanes.size()) {
             over = true;
             return;
         }

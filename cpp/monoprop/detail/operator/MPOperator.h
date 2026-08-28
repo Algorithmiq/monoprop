@@ -195,7 +195,7 @@ struct MPOperator {
     // This rank's terms as fn(monomial, row), in the index's slot order. Materializes each row.
     template <typename Fn>
     auto for_each_term(Fn &&fn) const -> void {
-        with_store([&fn](const auto &rows) { rows.for_each(fn); });
+        with_store([&fn](const auto &rows) { rows.for_each(std::forward<Fn>(fn)); });
     }
 
     // Resync the inverted index after a bulk growth of the store, preserving has_value() ⟹ rows()==size().
@@ -309,7 +309,7 @@ struct MPOperator {
                 if (rank_init_op != init_op_map.end()) {
                     new_op_map[mono] = coeff;
                 }
-                else if (rank_evolved_op) {
+                else if (rank_evolved_op.has_value()) {
                     new_op_coeffs[*rank_evolved_op] = coeff;
                 }
                 else {
@@ -318,7 +318,7 @@ struct MPOperator {
                 }
             }
             else {
-                if (rank_evolved_op) {
+                if (rank_evolved_op.has_value()) {
                     new_op_coeffs[*rank_evolved_op] = coeff;
                 }
                 else {
