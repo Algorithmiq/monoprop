@@ -245,7 +245,7 @@ public:
                             new_lower_atol.value(),
                             upper_atol_.value()));
         }
-        update_setting_([&](MonomialPropagator &p) { p.lower_atol_ = new_lower_atol; });
+        update_setting_([&new_lower_atol](MonomialPropagator &p) { p.lower_atol_ = new_lower_atol; });
     }
 
     auto update_upper_atol(std::optional<double> new_upper_atol) -> void {
@@ -255,7 +255,7 @@ public:
                             new_upper_atol.value(),
                             lower_atol_.value()));
         }
-        update_setting_([&](MonomialPropagator &p) { p.upper_atol_ = new_upper_atol; });
+        update_setting_([&new_upper_atol](MonomialPropagator &p) { p.upper_atol_ = new_upper_atol; });
     }
 
     /// Existing terms are not re-truncated by the cutoff function itself; the row store that holds them
@@ -263,7 +263,7 @@ public:
     /// cutoff keeps its row (same index, same content) rather than paying the overflow-map cost for the
     /// rest of the propagator's life.
     auto update_cutoff(unsigned int new_cutoff) -> void {
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([&new_cutoff](MonomialPropagator &p) {
             p.cutoff_ = new_cutoff;
             p.regenerate_cutoff_fn_();
             p.resize_row_store_if_needed_();
@@ -272,7 +272,7 @@ public:
 
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
         validate_cutoff_config_(new_cutoff_type, basis_change_);
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([&new_cutoff_type](MonomialPropagator &p) {
             p.cutoff_type_ = new_cutoff_type;
             p.regenerate_cutoff_fn_();
             p.resize_row_store_if_needed_();
@@ -282,7 +282,7 @@ public:
     /// The basis the cutoff is measured in; nullopt ⇒ the native basis.
     auto update_basis_change(std::optional<std::vector<VecZ>> new_basis_change) -> void {
         validate_cutoff_config_(cutoff_type_, new_basis_change);
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([&new_basis_change](MonomialPropagator &p) {
             p.basis_change_ = new_basis_change;
             p.regenerate_cutoff_fn_();
             p.resize_row_store_if_needed_();
@@ -360,14 +360,14 @@ protected:
         return std::make_unique<MonomialPropagator>(*this);
     }
 
-    static inline const auto ev_fn = [](const EvalRequest &request,
-                                        mpi::Comm comm,
-                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
+    static inline const auto ev_fn = [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+        return ev(request, comm, cos);
+    };
 
     static inline const auto ev_and_grad_fn =
-        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-        return ev_and_grad(request, comm, cos);
-    };
+        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+            return ev_and_grad(request, comm, cos);
+        };
 
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
@@ -422,15 +422,15 @@ protected:
     // One result per partition, in partition order.
     template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
     auto map_partitions_(Fn fn) -> std::vector<R> {
-        return map_partitions_indexed_([&](int, MonomialPropagator &p) -> R { return fn(p); });
+        return map_partitions_indexed_([&fn](int, MonomialPropagator &p) -> R { return fn(p); });
     }
 
     // The slots are written from the owning master, so `fn` must not touch the vector itself -- see
     // detail::staged_collect for what that rules out.
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R> {
-        return detail::staged_collect<R>(partition_count_(), [&](auto &&emit) {
-            for_each_partition_indexed_([&](int r, MonomialPropagator &p) { emit(r, fn(r, p)); });
+        return detail::staged_collect<R>(partition_count_(), [this, &fn](auto &&emit) {
+            for_each_partition_indexed_([&emit, &fn](int r, MonomialPropagator &p) { emit(r, fn(r, p)); });
         });
     }
 

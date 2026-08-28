@@ -148,14 +148,14 @@ private:
 
     // Row i's address, for the prefetch hint, which discards the element type anyway.
     [[nodiscard]] auto row_addr(size_t i) const noexcept -> const void * {
-        return with_rows([&](const auto &rows) -> const void * { return rows.data() + (i * stride_); });
+        return with_rows([this, &i](const auto &rows) -> const void * { return rows.data() + (i * stride_); });
     }
 
     // The two row arrays differ only in element size, so everything that counts bytes rather than
     // reading a slot is plain arithmetic off this and needs no type bound.
     [[nodiscard]] auto slot_bytes() const noexcept -> size_t { return narrow_ ? sizeof(uint8_t) : sizeof(uint16_t); }
     [[nodiscard]] auto row_slots_capacity() const -> size_t {
-        return with_rows([&](const auto &rows) { return rows.capacity(); });
+        return with_rows([](const auto &rows) { return rows.capacity(); });
     }
     [[nodiscard]] auto row_bytes_capacity() const -> size_t { return row_slots_capacity() * slot_bytes(); }
 
@@ -188,7 +188,7 @@ public:
         // dense form. Same argument SparseRowStore::resized already makes for its own reflow.
         //
         // out shares num_bits_, so it shares narrow_ and therefore the payload type P.
-        with_rows([&]<typename P>(const DefaultInitVector<P> &src) {
+        with_rows([this, &out]<typename P>(const DefaultInitVector<P> &src) {
             auto &dst = out->rows_ref<P>();
             dst.resize(size_ * out->stride_);
             for (size_t i = 0; i < size_; ++i) {
@@ -222,7 +222,7 @@ public:
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
-        with_rows([&](auto &rows) { rows.resize((base + n) * stride_); });
+        with_rows([this, &base, &n](auto &rows) { rows.resize((base + n) * stride_); });
         size_ = base + n;
         return base;
     }
@@ -232,7 +232,7 @@ public:
     // Row i may be grown-but-uninitialized or hold a prior value, so the row header is never pre-read
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
-        with_rows([&]<typename P>(DefaultInitVector<P> &rows) {
+        with_rows([this, &i, &mono]<typename P>(DefaultInitVector<P> &rows) {
             const size_t c = mono.count();
             P *row = &rows[i * stride_];
             if (c > inline_width_) {
@@ -252,7 +252,7 @@ public:
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
-        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) -> value_type {
+        return with_rows([this, &i]<typename P>(const DefaultInitVector<P> &rows) {
             const P c = rows[i * stride_];
             if (c == kOverflowMarker<P>) {
                 return overflow_.at(i);
@@ -267,7 +267,7 @@ public:
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
+        with_rows([this, &i, &fn]<typename P>(const DefaultInitVector<P> &rows) {
             const P c = rows[i * stride_];
             if (c == kOverflowMarker<P>) {
                 const auto &m = overflow_.at(i);
@@ -283,7 +283,7 @@ public:
         });
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) -> size_t {
+        return with_rows([this, &i]<typename P>(const DefaultInitVector<P> &rows) {
             if (const P c = rows[i * stride_]; c != kOverflowMarker<P>) {
                 return static_cast<size_t>(c);
             }
@@ -293,7 +293,7 @@ public:
     [[nodiscard]] auto memory_bytes() const -> size_t { return row_bytes_capacity() + spilled_rows_bytes(overflow_); }
 
     auto find(const key_type &key) const -> std::optional<size_t> {
-        return table_.find(fold_hash(key), [&](size_t i) { return row_eq_key(i, key); });
+        return table_.find(fold_hash(key), [this, &key](size_t i) { return row_eq_key(i, key); });
     }
 
     // Group-prefetch batch find: out[i] = row index of keys[i], or kNotFound. Same result as n
@@ -308,24 +308,24 @@ public:
             keys,
             n,
             out,
-            [this](const Key &key) { return fold_hash(key); },
+            [](const Key &key) { return fold_hash(key); },
             [this](size_t i) { __builtin_prefetch(row_addr(i), 0, 0); },
             [this](size_t i, const Key &key) { return row_eq_key(i, key); });
     }
 
     // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
     auto emplace(const key_type &key, mapped_type value) -> void {
-        table_.emplace(fold_hash(key), value, [&](size_t i) { return row_eq_key(i, key); });
+        table_.emplace(fold_hash(key), value, [this, &key](size_t i) { return row_eq_key(i, key); });
     }
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
     auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
-        table_.insert_distinct_range(base, n, [&](size_t k) { return fold_hash(key_at(k)); });
+        table_.insert_distinct_range(base, n, [&key_at](size_t k) { return fold_hash(key_at(k)); });
     }
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
         table_.for_each_slot(
-            [&](TermIndex idx, uint32_t) { fn(row(static_cast<size_t>(idx)), static_cast<size_t>(idx)); });
+            [this, &fn](TermIndex idx, uint32_t) { fn(row(static_cast<size_t>(idx)), static_cast<size_t>(idx)); });
     }
     // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
     [[nodiscard]] auto slack_bytes() const -> size_t {
@@ -355,14 +355,14 @@ private:
 
     [[nodiscard]] auto capacity() const -> size_t { return row_slots_capacity() / stride_; }
     auto reserve_rows(size_t n) -> void {
-        with_rows([&](auto &rows) { rows.reserve(n * stride_); });
+        with_rows([this, &n](auto &rows) { rows.reserve(n * stride_); });
     }
     auto reserve_index(size_t n) -> void { table_.reserve(n); }
 
     // Compare row i against key q without materializing the row (the find confirm). Reads the
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
-        return with_rows([&]<typename P>(const DefaultInitVector<P> &rows) {
+        return with_rows([this, &i, &q]<typename P>(const DefaultInitVector<P> &rows) {
             const P c = rows[i * stride_];
             if (c == kOverflowMarker<P>) {
                 return overflow_.at(i) == q;

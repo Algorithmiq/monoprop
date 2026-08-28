@@ -25,6 +25,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <vector>
 
@@ -55,7 +56,8 @@ struct PauliUv {
 // decltype(p)::size() other functions in this file use: p is only constrained MonomialLike, and a
 // caller may hand this a plain Bitset (e.g. from a ^ b), whose width is data and so has no static
 // size() to qualify-call.
-[[nodiscard]] auto pair_swap(const MonomialLike auto &p) -> std::remove_cvref_t<decltype(p)> {
+template <MonomialLike T>
+[[nodiscard]] auto pair_swap(const T &p) -> T {
     const auto &e_mask = cached_even_bits<LSb0>(p.size());
     Bitset result(p.size());
     const size_t nw = p.num_words();
@@ -87,7 +89,7 @@ struct PauliUv {
 
 namespace detail {
 // Reduce a (possibly negative) i-power exponent to [0, 4).
-[[nodiscard]] inline constexpr auto mod4(long e) -> int {
+[[nodiscard]] constexpr auto mod4(long e) -> int {
     return static_cast<int>(((e % 4) + 4) % 4);
 }
 } // namespace detail
@@ -134,7 +136,7 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
         }
         const uint64_t e = e_mask.word(w);
         const auto [v_g, u_g] = detail::pauli_uv(word, e);
-        ctx.words.push_back({w, e, u_g ^ v_g});
+        ctx.words.emplace_back(w, e, u_g ^ v_g);
     }
     return ctx;
 }
@@ -151,7 +153,7 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
 [[gnu::always_inline]] inline auto pauli_rotation_sign_words(const PauliGenContext &ctx,
                                                              const uint64_t *mono,
                                                              const uint64_t *new_mono) -> int {
-    long delta = static_cast<long>(ctx.g_y);
+    auto delta = static_cast<long>(ctx.g_y);
     long cross = 0;
     const size_t n = ctx.words.size();
     for (size_t k = 0; k < n; ++k) {
@@ -170,7 +172,7 @@ auto make_pauli_gen_context(const MonomialLike auto &gen) -> PauliGenContext {
 [[gnu::always_inline]] inline auto pauli_rotation_sign(const auto &ctx,
                                                        const MonomialLike auto &mono,
                                                        const auto &new_mono) -> int {
-    return pauli_rotation_sign_words(ctx, mono.data(), new_mono.data());
+    return pauli_rotation_sign_words(ctx, std::data(mono), std::data(new_mono));
 }
 
 // Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial product

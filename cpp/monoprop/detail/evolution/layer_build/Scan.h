@@ -128,7 +128,7 @@ inline auto even_parity_scan_pass1(const auto &sc,
                 foll = overlap & pivot_dense_ptr[wi];
                 n_foll += static_cast<size_t>(std::popcount(foll));
             }
-            nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+            nz.emplace_back(wi * 64, overlap, foll);
         }
         if (pivot_dense || nz.size() == nz_block_start) {
             return; // dense pivot already folded in, or no anticommuting term — nothing to expand
@@ -195,9 +195,9 @@ struct FusedScanResult {
 // template parameter of the scan rather than something the kernel is handed, so that the per-term code
 // below stays an ordinary function body: wrapping it in a generic lambda instead measured 2-3% slower
 // even on the unspecialized arm, which does no different work.
-template <Algebra A, size_t W>
+template <Algebra A, size_t W, typename Store>
 auto fused_find_and_collect(const auto &op,
-                            const auto &store,
+                            const Store &store,
                             const MonomialLike auto &gen,
                             const auto &cutoff_eval,
                             const CutoffContext &cut_st,
@@ -287,7 +287,6 @@ auto fused_find_and_collect(const auto &op,
         // which is the operator's storage width, so every word op inside stays on Bitset's matched-width
         // path. Which kernel this is follows from the store (TermProductsFor); the scan below names no
         // representation.
-        using Store = std::remove_cvref_t<decltype(store)>;
         typename TermProductsFor<Store, A, W>::type products(gen, cutoff_eval);
 
         // The dynamic gate runs before the product, so a gate-rejected term computes none.
@@ -299,8 +298,7 @@ auto fused_find_and_collect(const auto &op,
             const auto [overlap, phase_factor] = products.product(store, i);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            const bool struct_pass = products.passes(new_pop);
-            if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
+            if (const bool struct_pass = products.passes(new_pop); !struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
@@ -367,8 +365,8 @@ auto fused_find_and_collect(const auto &op,
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
                 // Fused cos sweep: scaling in place here is what replaces building a cosine set.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
+                    const auto tz = static_cast<size_t>(std::countr_zero(m));
+                    const auto i = w.base + tz;
                     const double v_src = fused_scale_coeffs[i];
                     fused_scale_coeffs[i] = v_src * fused_scale_cos;
                     const double abs_c = std::abs(v_src);
@@ -385,8 +383,8 @@ auto fused_find_and_collect(const auto &op,
                 // gate before the popcount row read — deferring popcount saves random packed-row loads.
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
+                    const auto tz = static_cast<size_t>(std::countr_zero(m));
+                    const auto i = w.base + tz;
                     const auto [v_src, abs_c] = derive_coeff(i);
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
@@ -400,8 +398,8 @@ auto fused_find_and_collect(const auto &op,
                 // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
                 // orbital-passing terms, so the popcount row read must precede both.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
+                    const auto tz = static_cast<size_t>(std::countr_zero(m));
+                    const auto i = w.base + tz;
                     const size_t mono_pop = row_popcount(store, i);
                     if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
                         continue;

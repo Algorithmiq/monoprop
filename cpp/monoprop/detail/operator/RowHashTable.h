@@ -196,7 +196,7 @@ public:
                     out[base + j] = static_cast<size_t>(cand[j]);
                 }
                 else if (cand[j] != kEmptySlot) {
-                    const auto v = find(hh[j], [&](size_t i) { return eq(i, keys[base + j]); });
+                    const auto v = find(hh[j], [&eq, &keys, &base, &j](size_t i) { return eq(i, keys[base + j]); });
                     out[base + j] = v ? *v : kNotFound;
                 }
                 else {

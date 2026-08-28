@@ -62,7 +62,7 @@ template <Algebra A>
     // for_each_position only sets bits, so the scratch has to start clear; reset() keeps the width,
     // unlike assigning a default-constructed Bitset.
     mono.reset();
-    for_each_row_position(ham, i, [&](size_t pos) { mono.set(pos); });
+    for_each_row_position(ham, i, [&mono](size_t pos) { mono.set(pos); });
     // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
     // fused_xor_into() computes them together, straight into new_mono (see Bitset::fused_xor_into).
     // Its result_count (popcount of the XOR) goes unused -- the caller already has new_pop for free
@@ -257,7 +257,7 @@ public:
           dense_(gen.size()) {
         gen_lanes_.reserve(SparseRowStore::kMaxSlots);
         bool gen_fits = true;
-        for_each_mode_slot(gen, [&](size_t mode, unsigned int code) {
+        for_each_mode_slot(gen, [this, &gen_fits](size_t mode, unsigned int code) {
             if (gen_lanes_.size() == SparseRowStore::kMaxSlots) {
                 gen_fits = false;
                 return;
@@ -431,7 +431,7 @@ template <typename Store, typename F>
     // the kernel's precondition is that every operand is inline.
     if constexpr (kBindsKernelWidth<Store>) {
         if (num_words >= 1 && num_words <= Bitset::kInlineWords) {
-            return with_nwords(num_words, [&]<size_t W>(std::integral_constant<size_t, W>) -> decltype(auto) {
+            return with_nwords(num_words, [&f]<size_t W>(std::integral_constant<size_t, W>) -> decltype(auto) {
                 return f(std::integral_constant<size_t, kCappedKernelWidth<W>>{});
             });
         }

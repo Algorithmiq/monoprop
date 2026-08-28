@@ -63,7 +63,7 @@ using IncomingProbeFor = IncomingProbeT<typename QueryKeysFor<Store>::type::key_
 // includes this emits its own definition and the link fails.
 template <typename Store>
 inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
-                                   MPOperator &op,
+                                   const MPOperator &op,
                                    Store &store,
                                    size_t rank_count,
                                    size_t query_stride,
@@ -156,8 +156,8 @@ auto insert_incoming_misses(auto &op, auto &store, const auto &pr) -> void {
         op,
         store,
         n_miss,
-        [&](size_t j) -> decltype(auto) { return pr.mono[pr.miss_g[j]]; },
-        [&](size_t j, size_t base) { assign_row(store, base + j, pr.mono[pr.miss_g[j]]); });
+        [&pr](size_t j) -> decltype(auto) { return pr.mono[pr.miss_g[j]]; },
+        [&store, &pr](size_t j, size_t base) { assign_row(store, base + j, pr.mono[pr.miss_g[j]]); });
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons; what

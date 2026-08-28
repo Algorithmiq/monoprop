@@ -44,7 +44,7 @@ namespace monoprop::detail {
 // seam word can carry both — bitwise-or that one, append the rest, keeping blocks ascending/disjoint.
 inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, const auto &op) -> void {
     const size_t cos_lo = combined_size;
-    const size_t cos_hi = op.size();
+    const size_t cos_hi = std::size(op);
     CosineWordBuilder end_b;
     for (size_t idx = cos_lo; idx < cos_hi; ++idx) {
         end_b.push_index(idx);
@@ -150,7 +150,7 @@ struct GraphSink {
     // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
     // see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints included, since the
     // sin_recv apply only adds the sine term.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator &op)
+    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, const MPOperator &op)
         -> std::shared_ptr<LayerCore> {
         std::vector<CrossRankPartnerData> partners(R);
         for (size_t r = 0; r < R; ++r) {
@@ -218,7 +218,7 @@ struct ContractSink {
     // R=1 hot loop, where a real call is a measurable regression on the Pauli benches.
     [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
         const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
-        fc.hits.push_back(RotationRec{src, found, v_src, v_tgt, static_cast<int32_t>(phase)});
+        fc.hits.emplace_back(src, found, v_src, v_tgt, static_cast<int32_t>(phase));
     }
     // Deferred self-miss insert: v_tgt filled later (after op_coeffs is extended by the apply).
     auto prepare_deferred(size_t n_miss) -> void {
@@ -241,7 +241,7 @@ struct ContractSink {
     }
     auto prepare(const auto &pr,
                  size_t /*rank_count*/,
-                 MPOperator &op,
+                 const MPOperator &op,
                  const std::vector<std::vector<Response>> & /*responses*/) -> void {
         num_bits_ = op.num_bits();
         state_mask_ = schrodinger ? initial_state_mask(op.initial_state, op.num_bits()) : Bitset(op.num_bits());
@@ -286,13 +286,13 @@ struct ContractSink {
         const size_t nq = rval.size();
         for (size_t q = 0; q < nq; ++q) {
             const auto nphase = static_cast<int32_t>(-query_phase(qbuf, q, num_words));
-            fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
+            fc.cross_half.emplace_back(srcs[q], rval[q], nphase, /*is_insert=*/false);
         }
     }
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
     // endpoints so the immediate cos scale covers them; the fused cos sweep covers them in-place instead.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator &op)
+    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, const MPOperator &op)
         -> std::shared_ptr<LayerCore> {
         if (out_cos != nullptr && !fused_scale) {
             append_inserted_endpoints(cos_all, combined_size, op);
@@ -407,7 +407,7 @@ struct LayerBuildEngine {
         if (R <= 1) {
             return;
         }
-        std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
+        const std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         std::vector<std::vector<size_t>> inc_q;
         mpi::begin_alltoallv(send, comm).wait_into(inc_q);
         auto resp = resolve_incoming(inc_q, local_op, store, R, is_leader_pass, matched, combined_size, sink);
@@ -479,9 +479,9 @@ struct LayerBuildEngine {
         }
         // decltype(auto): the dense batch hands back a reference to its own storage, the support form a
         // small value view over its lane arena.
-        auto key_at = [&](size_t k) -> decltype(auto) { return keys_.retained(deferred_self_misses[k].key); };
+        auto key_at = [this](size_t k) -> decltype(auto) { return keys_.retained(deferred_self_misses[k].key); };
         sink.prepare_deferred(n_miss);
-        insert_absent_terms(local_op, store, n_miss, key_at, [&](size_t k, size_t base) {
+        insert_absent_terms(local_op, store, n_miss, key_at, [this](size_t k, size_t base) {
             const auto &m = deferred_self_misses[k];
             assign_row(store, base + k, keys_.retained(m.key));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
@@ -591,8 +591,8 @@ auto build_layer(auto &local_op,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k(only_rotate_len_k, 2 * logical_num_modes);
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
-    const size_t R = static_cast<size_t>(mpi::size(comm));
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm));
+    const auto R = static_cast<size_t>(mpi::size(comm));
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
@@ -616,88 +616,135 @@ auto build_layer(auto &local_op,
     // it (the per-term kernel, the key batch, the row writes), and binding it here means the choice costs
     // one branch per layer instead of one per term. Both arms are instantiated, so this doubles the
     // scan/engine template instantiations -- the same trade with_algebra already makes for Basis.
-    std::shared_ptr<LayerCore> storage = local_op.with_store([&]<typename S>(S &store) -> std::shared_ptr<LayerCore> {
-        // The record shape, derived once per layer and passed to everything that reads a record: the scan's
-        // kernel, the engine's key batch and the sink's strides. Both numbers are functions of the store, the
-        // generator and the cutoff, so every rank computes the same pair without communication.
-        const size_t record_capacity = sparse_record_capacity(gen, cut_eval);
-        const size_t record_payload_words = query_payload_words_for(store, record_capacity);
+    std::shared_ptr<LayerCore> storage =
+        local_op.with_store([&gen,
+                             &cut_eval,
+                             &fused_scale,
+                             &fused_scale_coeffs,
+                             &basis,
+                             &local_op,
+                             &cut_st,
+                             &coeffs,
+                             &only_rotate_len_k,
+                             &R,
+                             &my_rank,
+                             &logical_num_modes,
+                             &use_fused,
+                             &cos_build,
+                             &comm,
+                             &matched_scratch,
+                             &out_cos,
+                             &fused_contract,
+                             &schrodinger]<typename S>(S &store) -> std::shared_ptr<LayerCore> {
+            // The record shape, derived once per layer and passed to everything that reads a record: the scan's
+            // kernel, the engine's key batch and the sink's strides. Both numbers are functions of the store, the
+            // generator and the cutoff, so every rank computes the same pair without communication.
+            const size_t record_capacity = sparse_record_capacity(gen, cut_eval);
+            const size_t record_payload_words = query_payload_words_for(store, record_capacity);
 
-        FusedScanResult fused = [&] {
-            double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-            return with_algebra(basis, [&]<typename A>() {
-                // Third and last thing bound once per layer, beside the algebra and the backend: the
-                // storage word count, so the scan's per-term word loops have a compile-time trip count.
-                return with_kernel_width<S>(gen.num_words(), [&]<size_t W>(std::integral_constant<size_t, W>) {
-                    return fused_find_and_collect<A, W>(local_op,
-                                                        store,
-                                                        gen,
-                                                        cut_eval,
-                                                        cut_st,
-                                                        coeffs,
-                                                        only_rotate_len_k,
-                                                        R,
-                                                        my_rank,
-                                                        logical_num_modes,
-                                                        /*capture_values=*/use_fused,
-                                                        sweep_ptr,
-                                                        cos_build);
-                });
-            });
-        }();
+            FusedScanResult fused = [&] {
+                double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
+                return with_algebra(basis,
+                                    [&local_op,
+                                     &store,
+                                     &gen,
+                                     &cut_eval,
+                                     &cut_st,
+                                     &coeffs,
+                                     &only_rotate_len_k,
+                                     &R,
+                                     &my_rank,
+                                     &logical_num_modes,
+                                     &use_fused,
+                                     &sweep_ptr,
+                                     &cos_build]<typename A>() {
+                                        // Third and last thing bound once per layer, beside the algebra and the
+                                        // backend: the storage word count, so the scan's per-term word loops have a
+                                        // compile-time trip count.
+                                        return with_kernel_width<S>(
+                                            gen.num_words(),
+                                            [&local_op,
+                                             &store,
+                                             &gen,
+                                             &cut_eval,
+                                             &cut_st,
+                                             &coeffs,
+                                             &only_rotate_len_k,
+                                             &R,
+                                             &my_rank,
+                                             &logical_num_modes,
+                                             &use_fused,
+                                             &sweep_ptr,
+                                             &cos_build]<size_t W>(std::integral_constant<size_t, W>) {
+                                                return fused_find_and_collect<A, W>(local_op,
+                                                                                    store,
+                                                                                    gen,
+                                                                                    cut_eval,
+                                                                                    cut_st,
+                                                                                    coeffs,
+                                                                                    only_rotate_len_k,
+                                                                                    R,
+                                                                                    my_rank,
+                                                                                    logical_num_modes,
+                                                                                    /*capture_values=*/use_fused,
+                                                                                    sweep_ptr,
+                                                                                    cos_build);
+                                            });
+                                    });
+            }();
 
-        CosMask cos_all;
-        if (fused.cos_blocks.size() == 1) {
-            // The serial scan produces a single cosine block set — take it wholesale.
-            cos_all = std::move(fused.cos_blocks[0]);
-        }
-        else {
-            // Cosine block sets are disjoint and ascending; concatenate in order.
-            for (const auto &block : fused.cos_blocks) {
-                cos_all.total_count += block.total_count;
-                cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+            CosMask cos_all;
+            if (fused.cos_blocks.size() == 1) {
+                // The serial scan produces a single cosine block set — take it wholesale.
+                cos_all = std::move(fused.cos_blocks[0]);
             }
-        }
-        fused.cos_blocks = std::vector<CosMask>{};
+            else {
+                // Cosine block sets are disjoint and ascending; concatenate in order.
+                for (const auto &block : fused.cos_blocks) {
+                    cos_all.total_count += block.total_count;
+                    cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+                }
+            }
+            fused.cos_blocks = std::vector<CosMask>{};
 
-        auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
-            LayerBuildEngine<Sink, S> eng(local_op,
-                                          store,
-                                          comm,
-                                          R,
-                                          my_rank,
-                                          matched_scratch,
-                                          /*combined_size=*/store.size(),
-                                          record_payload_words,
-                                          record_capacity,
-                                          std::move(sink));
-            eng.run_exchange(/*is_leader_pass=*/true,
-                             std::move(fused.leader_queries),
-                             std::move(fused.leader_src),
-                             std::move(fused.leader_val));
-            eng.run_exchange(/*is_leader_pass=*/false,
-                             std::move(fused.follower_queries),
-                             std::move(fused.follower_src),
-                             std::move(fused.follower_val));
+            auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
+                LayerBuildEngine<Sink, S> eng(local_op,
+                                              store,
+                                              comm,
+                                              R,
+                                              my_rank,
+                                              matched_scratch,
+                                              /*combined_size=*/store.size(),
+                                              record_payload_words,
+                                              record_capacity,
+                                              std::move(sink));
+                eng.run_exchange(/*is_leader_pass=*/true,
+                                 std::move(fused.leader_queries),
+                                 std::move(fused.leader_src),
+                                 std::move(fused.leader_val));
+                eng.run_exchange(/*is_leader_pass=*/false,
+                                 std::move(fused.follower_queries),
+                                 std::move(fused.follower_src),
+                                 std::move(fused.follower_val));
 
-            return eng.finish(std::move(cos_all), out_cos);
-        };
+                return eng.finish(std::move(cos_all), out_cos);
+            };
 
-        if (use_fused) {
-            const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-            return run(ContractSink{.num_words = record_payload_words,
-                                    .record_capacity = record_capacity,
-                                    .R = R,
-                                    .my_rank = my_rank,
-                                    .fc = *fused_contract,
-                                    .op_coeffs = coeffs,
-                                    .fused_scale = fused_scale,
-                                    .inv_cos = inv_cos,
-                                    .schrodinger = schrodinger,
-                                    .basis = basis});
-        }
-        return run(GraphSink{record_payload_words, record_capacity, R, my_rank});
-    });
+            if (use_fused) {
+                const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
+                return run(ContractSink{.num_words = record_payload_words,
+                                        .record_capacity = record_capacity,
+                                        .R = R,
+                                        .my_rank = my_rank,
+                                        .fc = *fused_contract,
+                                        .op_coeffs = coeffs,
+                                        .fused_scale = fused_scale,
+                                        .inv_cos = inv_cos,
+                                        .schrodinger = schrodinger,
+                                        .basis = basis});
+            }
+            return run(GraphSink{record_payload_words, record_capacity, R, my_rank});
+        });
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
     // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos

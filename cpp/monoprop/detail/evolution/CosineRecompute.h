@@ -208,9 +208,9 @@ auto scale_cos_lazy(const auto &sc, const LazyFold &r, double *coeff, double cos
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
         combine_columns_block(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
-                coeff[i] *= cos_val;
-            });
+            for_each_cos_index(wi * 64,
+                               recipe_fold_word(r, blk.data(), bb, wi, row_parity),
+                               [&coeff, &cos_val](size_t i) { coeff[i] *= cos_val; });
         }
     }
 }
@@ -225,11 +225,13 @@ auto accumulate_cos_lazy(const auto &sc, const LazyFold &r, double *state, doubl
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
         combine_columns_block(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
-                loc += state[i] * ham[i];
-                ham[i] *= sec_val;
-                state[i] *= cos_val;
-            });
+            for_each_cos_index(wi * 64,
+                               recipe_fold_word(r, blk.data(), bb, wi, row_parity),
+                               [&loc, &state, &ham, &sec_val, &cos_val](size_t i) {
+                                   loc += state[i] * ham[i];
+                                   ham[i] *= sec_val;
+                                   state[i] *= cos_val;
+                               });
         }
     }
     return loc;
@@ -239,7 +241,7 @@ inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) ->
     const size_t n = cos.blocks.size();
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
-        for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
+        for_each_cos_index(base, bits, [&coeff, &cos_val](size_t i) { coeff[i] *= cos_val; });
     }
 }
 inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
@@ -248,7 +250,7 @@ inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, 
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
-        for_each_cos_index(base, bits, [&](size_t i) {
+        for_each_cos_index(base, bits, [&loc, &state, &ham, &sec_val, &cos_val](size_t i) {
             loc += state[i] * ham[i];
             ham[i] *= sec_val;
             state[i] *= cos_val;
@@ -280,7 +282,7 @@ inline auto fold_popcount(const FoldCache &p) -> size_t {
 inline auto fold_to_indices(const FoldCache &p) -> VecZ {
     VecZ inds;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
-        for_each_cos_index(wi * 64, fold_word(p, wi), [&](size_t i) { inds.push_back(i); });
+        for_each_cos_index(wi * 64, fold_word(p, wi), [&inds](size_t i) { inds.push_back(i); });
     }
     return inds;
 }

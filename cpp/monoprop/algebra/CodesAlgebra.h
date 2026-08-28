@@ -137,7 +137,7 @@ namespace monoprop::detail {
 // The pair-swap involution J: swap the two physical bits of every mode (u <-> v). Occupancy is
 // preserved -- 0b01 <-> 0b10 and 0b11 is fixed -- so the mode lanes are untouched and the row's whole
 // transform is this one word operation, against a per-word masked shift-and-or on the dense side.
-[[nodiscard]] inline constexpr auto codes_pair_swap(RowCodes codes) noexcept -> RowCodes {
+[[nodiscard]] constexpr auto codes_pair_swap(RowCodes codes) noexcept -> RowCodes {
     return ((codes & kRowLoBits) << 1) | ((codes >> 1) & kRowLoBits);
 }
 
@@ -214,7 +214,7 @@ namespace monoprop::detail {
 // kills the cross term. So this walks the generator's slots and reads mono's field at each, which also
 // means new_mono never has to exist -- the sign comes out of the same merge the toggle does.
 [[nodiscard]] inline auto codes_pauli_rotation_sign(const SparseRow &mono, const SparseRow &gen) noexcept -> int {
-    long delta = static_cast<long>(codes_pauli_y_count(gen.codes));
+    auto delta = static_cast<long>(codes_pauli_y_count(gen.codes));
     long cross = 0;
     const size_t nm = mono.num_slots();
     const size_t ng = gen.num_slots();

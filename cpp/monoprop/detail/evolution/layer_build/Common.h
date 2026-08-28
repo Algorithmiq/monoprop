@@ -48,7 +48,7 @@ struct MatchedEpochSet {
     // Wraps once per 65535 gates; without the fill a stale stamp on a row reused after a truncation aliases.
     auto begin_gate(size_t n) -> void {
         if (cur_ == std::numeric_limits<Stamp>::max()) {
-            std::fill(epoch_.begin(), epoch_.end(), Stamp{0});
+            std::ranges::fill(epoch_, Stamp{0});
             cur_ = 0;
         }
         ++cur_;
@@ -115,7 +115,7 @@ struct FusedContract {
 //
 // Functions of the word count rather than width-derived constants: every caller either has a monomial
 // to ask (`mono.num_words()`) or the operator (`op.num_bits()`).
-inline constexpr auto query_words(size_t num_words) -> size_t {
+constexpr auto query_words(size_t num_words) -> size_t {
     return num_words + 1;
 }
 
@@ -134,7 +134,7 @@ inline constexpr size_t kQueryHeaderWords = 1;
 [[nodiscard]] inline auto query_record_count(const VecZ &buf) -> size_t {
     return buf.size() < kQueryHeaderWords ? 0 : buf[0];
 }
-[[nodiscard]] inline constexpr auto query_record_offset(size_t q, size_t stride) -> size_t {
+[[nodiscard]] constexpr auto query_record_offset(size_t q, size_t stride) -> size_t {
     return kQueryHeaderWords + (q * stride);
 }
 // Where the escape tail starts: right after the last record. Both sides derive it from the header and the
@@ -146,7 +146,7 @@ inline constexpr size_t kQueryHeaderWords = 1;
 
 // Fused query+value record width (R>1): the plain query record plus one trailing word holding the source's
 // pre-cos coeff (v_src, bit-cast from double), so query + value ride a single alltoallv instead of two.
-inline constexpr auto query_words_fused(size_t num_words) -> size_t {
+constexpr auto query_words_fused(size_t num_words) -> size_t {
     return query_words(num_words) + 1;
 }
 
@@ -218,10 +218,10 @@ inline auto query_read(const VecZ &buf, size_t q, size_t stride, Bitset &mono_ou
 //
 // A row past that capacity has no sparse record: the caller must fall back to the dense one, and the
 // push below asserts rather than truncating.
-inline constexpr auto sparse_lane_words(size_t capacity) -> size_t {
+constexpr auto sparse_lane_words(size_t capacity) -> size_t {
     return (capacity + 3) / 4;
 }
-inline constexpr auto sparse_payload_words(size_t capacity) -> size_t {
+constexpr auto sparse_payload_words(size_t capacity) -> size_t {
     return sparse_lane_words(capacity) + 1;
 }
 

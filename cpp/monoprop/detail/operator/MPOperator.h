@@ -178,30 +178,30 @@ struct MPOperator {
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
     auto append_term(const Bitset &mono) -> void {
-        with_store([&](auto &rows) { rows.push_back(mono); });
+        with_store([&mono](auto &rows) { rows.push_back(mono); });
     }
 
     // Both are setup-path forwards, kept here rather than exposing a store, so nothing outside has to
     // know which backend is live.
     auto reserve_terms(size_t n) -> void {
-        with_store([&](auto &rows) { rows.reserve(n); });
+        with_store([&n](auto &rows) { rows.reserve(n); });
     }
     auto index_term(const Bitset &mono, size_t row) -> void {
-        with_store([&](auto &rows) { rows.emplace(mono, row); });
+        with_store([&mono, &row](auto &rows) { rows.emplace(mono, row); });
     }
     [[nodiscard]] auto find(const Bitset &mono) const -> std::optional<size_t> {
-        return with_store([&](const auto &rows) { return rows.find(mono); });
+        return with_store([&mono](const auto &rows) { return rows.find(mono); });
     }
     // This rank's terms as fn(monomial, row), in the index's slot order. Materializes each row.
     template <typename Fn>
     auto for_each_term(Fn &&fn) const -> void {
-        with_store([&](const auto &rows) { rows.for_each(fn); });
+        with_store([&fn](const auto &rows) { rows.for_each(fn); });
     }
 
     // Resync the inverted index after a bulk growth of the store, preserving has_value() ⟹ rows()==size().
     auto reindex_after_growth(size_t base, size_t n) -> void {
         if (inverted_index_.has_value()) {
-            with_store([&](const auto &rows) { inverted_index_->append_rows(rows, base, n); });
+            with_store([this, &base, &n](const auto &rows) { inverted_index_->append_rows(rows, base, n); });
         }
     }
 
@@ -210,7 +210,7 @@ struct MPOperator {
             // Column count is the storage bit width, taken off the store so it cannot drift from the
             // monomials whose positions rebuild() scatters.
             inverted_index_.emplace(num_bits());
-            with_store([&](const auto &rows) { inverted_index_->rebuild(rows); });
+            with_store([this](const auto &rows) { inverted_index_->rebuild(rows); });
         }
         return *inverted_index_;
     }
@@ -295,7 +295,7 @@ struct MPOperator {
     // coefficients, in order.
     auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger) -> std::pair<MonomialList, VecD> {
         MonomialMap new_op_map;
-        std::pair<MonomialList, VecD> new_grad_op;
+        auto [new_grad_terms, new_grad_coeffs] = std::pair<MonomialList, VecD>{};
         VecD new_op_coeffs(size(), 0.0);
 
         for (const auto &[k, v] : op_dict) {
@@ -325,13 +325,13 @@ struct MPOperator {
                     new_op_map[mono] = coeff;
                 }
             }
-            new_grad_op.first.push_back(mono);
-            new_grad_op.second.push_back(coeff);
+            new_grad_terms.push_back(mono);
+            new_grad_coeffs.push_back(coeff);
         }
 
         init_op_map = std::move(new_op_map);
         op_coeffs = std::move(new_op_coeffs);
-        return new_grad_op;
+        return {std::move(new_grad_terms), std::move(new_grad_coeffs)};
     }
 
     auto score_new_state_rows_() -> void {
@@ -341,7 +341,7 @@ struct MPOperator {
 
         VecZ new_inds(size() - state_scored_rows_);
         std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_); // NOLINT(modernize-use-ranges)
-        with_store([&](const auto &rows) {
+        with_store([this, &new_inds](const auto &rows) {
             const auto paired_inds = is_fully_paired(new_inds, rows, num_bits());
             state_rows_.reserve(state_rows_.size() + paired_inds.size());
             state_vals_.reserve(state_vals_.size() + paired_inds.size());
@@ -373,12 +373,13 @@ struct MPOperator {
 // `store` is passed alongside `op` rather than taken off it: every caller is inside build_layer, which
 // has already bound the concrete backend, and re-entering with_store() here would bind it a second time
 // per insert batch for nothing.
-inline auto insert_absent_terms(auto &op, auto &store, size_t n, auto &&key_at, auto &&per_slot) -> size_t {
+template <typename KeyAt>
+inline auto insert_absent_terms(auto &op, auto &store, size_t n, KeyAt &&key_at, auto &&per_slot) -> size_t {
     const size_t base = store.grow_rows_geometric(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
-    store.bulk_insert(n, base, std::forward<decltype(key_at)>(key_at));
+    store.bulk_insert(n, base, std::forward<KeyAt>(key_at));
     op.reindex_after_growth(base, n);
     return base;
 }
@@ -453,7 +454,7 @@ struct MPOperatorMemoryBreakdown final {
 
 inline auto estimate_memory_usage(const MPOperator &op) -> MPOperatorMemoryBreakdown {
     MPOperatorMemoryBreakdown breakdown;
-    op.with_store([&](const auto &rows) {
+    op.with_store([&breakdown](const auto &rows) {
         breakdown.operator_terms_bytes = rows.memory_bytes();
         breakdown.indexing_bytes = rows.index_estimated_memory_bytes();
         breakdown.operator_terms_slack_bytes = rows.slack_bytes();

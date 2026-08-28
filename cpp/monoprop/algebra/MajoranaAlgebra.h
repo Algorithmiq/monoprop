@@ -99,11 +99,12 @@ auto interleave_phase(const MonomialLike auto &maj_bs, const auto &gen_bs) -> in
 // Per-generator mask W collapsing the per-term interleave sign to one masked parity.
 // Identity: interleave_phase(M,G) = (−1)^{parity(M ∩ W)} with W = {c : #{g∈G : g>c} odd}, fixed for
 // the layer; the per-term sign is then one maj.parity_and(W) instead of the prefix-XOR scan.
-auto interleave_phase_mask(const MonomialLike auto &gen) -> std::remove_cvref_t<decltype(gen)> {
+template <MonomialLike T>
+auto interleave_phase_mask(const T &gen) -> T {
     // Copy-then-reset for the same reason as change_basis: this needs a zero bitset at gen's width, and
     // MonomialLike constrains operations, not constructors, so there is no width-argument construction
     // to call on a deduced type.
-    std::remove_cvref_t<decltype(gen)> w = gen;
+    T w = gen;
     w.reset();
     size_t above = 0; // #{g∈G : g>c}, maintained as c descends
     for (size_t c = gen.size(); c-- > 0;) {
@@ -209,15 +210,15 @@ auto decode_coeff(const std::complex<double> &coeff, const MonomialLike auto &ma
 // `basis` stays a plain (unconstrained) auto: it is a MonomialList, a container of monomials rather
 // than a monomial, so it is not itself MonomialLike. Its elements' width always matches maj's at
 // every call site -- required, since the XOR below asserts matching widths.
-auto change_basis(const MonomialLike auto &maj, const auto &basis) -> std::remove_cvref_t<decltype(maj)> {
-    using Mono = std::remove_cvref_t<decltype(maj)>;
+template <MonomialLike T>
+auto change_basis(const T &maj, const auto &basis) -> T {
     const size_t width = maj.size();
     const size_t num_modes = width / 2;
     // Copy-then-reset, rather than `Mono new_maj;` (width 0) or a width-argument constructor:
     // MonomialLike constrains operations, not constructors, so a deduced Mono is not known to have
     // one. The copied words are immediately overwritten; this path only runs when a basis change is
     // configured.
-    Mono new_maj = maj;
+    T new_maj = maj;
     new_maj.reset();
 
     size_t pos = maj.find_first();

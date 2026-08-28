@@ -52,14 +52,15 @@ inline auto parse_positive_int(const char *text) -> std::optional<int> {
 }
 
 inline auto parse_row_store(const char *text) -> std::optional<RowStore> {
+    using enum RowStore;
     if (text == nullptr || text[0] == '\0' || std::strcmp(text, "auto") == 0) {
-        return RowStore::Auto;
+        return Auto;
     }
     if (std::strcmp(text, "dense") == 0) {
-        return RowStore::Dense;
+        return Dense;
     }
     if (std::strcmp(text, "sparse") == 0) {
-        return RowStore::Sparse;
+        return Sparse;
     }
     return std::nullopt;
 }

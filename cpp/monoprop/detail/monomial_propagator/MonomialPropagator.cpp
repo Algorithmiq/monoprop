@@ -93,28 +93,38 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     if (n_partitions > 1) {
         // The partitions hash-partition one operator between them, so they must store at the same width
         // as the facade -- which they do by construction, the width being a pure function of num_modes.
-        PartitionChildFactory factory =
-            child_factory ? std::move(child_factory) : PartitionChildFactory{[=](mpi::Comm partition_comm) {
-                return std::make_unique<MonomialPropagator>(initial_operator,
-                                                            cutoff,
-                                                            initial_state,
-                                                            num_modes,
-                                                            schrodinger_cutoff,
-                                                            partition_comm,
-                                                            lower_atol,
-                                                            upper_atol,
-                                                            cutoff_type,
-                                                            basis_change,
-                                                            basis,
-                                                            /*partitions=*/1);
-            }};
+        PartitionChildFactory factory = child_factory
+                                            ? std::move(child_factory)
+                                            : PartitionChildFactory{[initial_operator,
+                                                                     cutoff,
+                                                                     initial_state,
+                                                                     num_modes,
+                                                                     schrodinger_cutoff,
+                                                                     lower_atol,
+                                                                     upper_atol,
+                                                                     cutoff_type,
+                                                                     basis_change,
+                                                                     basis](mpi::Comm partition_comm) {
+                                                  return std::make_unique<MonomialPropagator>(initial_operator,
+                                                                                              cutoff,
+                                                                                              initial_state,
+                                                                                              num_modes,
+                                                                                              schrodinger_cutoff,
+                                                                                              partition_comm,
+                                                                                              lower_atol,
+                                                                                              upper_atol,
+                                                                                              cutoff_type,
+                                                                                              basis_change,
+                                                                                              basis,
+                                                                                              /*partitions=*/1);
+                                              }};
         partition_group_ =
             std::make_unique<detail::partition::PartitionGroup>(static_cast<int>(n_partitions), factory, comm);
         return;
     }
 
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+    const auto num_ranks = static_cast<size_t>(mpi::size(comm_));
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm_));
     MonomialList local_heisenberg_terms;
 
     double core_term = 0.0;
@@ -154,8 +164,7 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
     //
     // Which backend: the crossover is on the *storage* width, not the logical one, because what the dense
     // representation costs is one pass per storage word.
-    const bool sparse = use_sparse_rows_();
-    if (sparse) {
+    if (const bool sparse = use_sparse_rows_(); sparse) {
         mp_op_.set_store(std::make_unique<detail::SparseRowStore>(mp_op_.num_bits(), target_row_width_(sparse)));
     }
     else {
@@ -165,7 +174,7 @@ MonomialPropagator::MonomialPropagator(const OperatorDict &initial_operator,
 
     size_t i = 0;
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
-    const auto insert_if_owned = [&](const auto &mono) {
+    const auto insert_if_owned = [this, &my_rank, &num_ranks, &i](const auto &mono) {
         if (my_rank == find_rank(mono, num_ranks)) {
             mp_op_.append_term(mono);
             mp_op_.index_term(mono, i++);
@@ -214,7 +223,7 @@ auto MonomialPropagator::resolve_partition_count_(size_t requested, mpi::Comm co
     }
     // One serial partition per physical core, capped by monoprop_NUM_THREADS. On a multi-rank comm this
     // engages only when threads were explicitly requested, so a pure-MPI run is not oversubscribed.
-    const auto compute_auto = [&]() -> size_t {
+    const auto compute_auto = [&]() {
         const int ranks = mpi::size(comm);
         size_t cores = detail::partition::enumerate_physical_cores().size();
         if (cores == 0) {
@@ -246,11 +255,11 @@ auto MonomialPropagator::resolve_partition_count_(size_t requested, mpi::Comm co
 // Partition fan-out vocabulary; the declarations record which helper is legal where.
 
 auto MonomialPropagator::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
-    for_each_partition_indexed_([&](int, MonomialPropagator &p) { fn(p); });
+    for_each_partition_indexed_([&fn](int, MonomialPropagator &p) { fn(p); });
 }
 
 auto MonomialPropagator::for_each_partition_indexed_(const std::function<void(int, MonomialPropagator &)> &fn) -> void {
-    partition_group_->run_on_all([&](int r) { fn(r, partition_group_->partition(r)); });
+    partition_group_->run_on_all([this, &fn](int r) { fn(r, partition_group_->partition(r)); });
 }
 
 auto MonomialPropagator::partition_count_() const -> size_t {
@@ -339,12 +348,13 @@ auto MonomialPropagator::use_sparse_rows_() const -> bool {
         throw PropagatorConfigError(
             R"(monoprop_ROW_STORE must be "auto", "dense" or "sparse". Unset it to pick by system size.)");
     }
+    using enum monoprop::config::RowStore;
     switch (*settings.row_store) {
-        case config::RowStore::Dense:
+        case Dense:
             return false;
-        case config::RowStore::Sparse:
+        case Sparse:
             return true;
-        case config::RowStore::Auto:
+        case Auto:
             break;
     }
     return detail::SparseRowStore::preferred_for_modes(storage_num_modes());
@@ -377,11 +387,11 @@ auto MonomialPropagator::apply_initial_operator_(const OperatorDict &op_dict) ->
     ++initial_operator_epoch_;
     if (partition_group_) {
         // The facade holds no local terms of its own, so the return is empty.
-        for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
+        for_each_partition_([&op_dict](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+    const auto num_ranks = static_cast<size_t>(mpi::size(comm_));
+    const auto my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
     const size_t storage_bits = mp_op_.num_bits(); // invariant across this loop
@@ -415,8 +425,9 @@ auto MonomialPropagator::graph_data() const -> std::vector<LayerData> {
 
         // The exported shape stays dense (callers index by rank), but it is filled by scattering the
         // occupied slots rather than by asking every possible slot how much it holds.
-        std::vector<CrossRankData> b_data(rank_count), d_data(rank_count);
-        traversal.for_each_occupied_slot([&](size_t rank, const detail::CrossRankSlotView &slot) {
+        std::vector<CrossRankData> b_data(rank_count);
+        std::vector<CrossRankData> d_data(rank_count);
+        traversal.for_each_occupied_slot([&b_data, &d_data](size_t rank, const detail::CrossRankSlotView &slot) {
             const size_t count = slot.sin_send_count;
             VecZ sin_send_indices(count);
             VecI b_phases(count, 0);
@@ -436,7 +447,7 @@ auto MonomialPropagator::graph_data() const -> std::vector<LayerData> {
         if (const CosMask *stored = traversal.stored_cos(); stored != nullptr) {
             cos_inds.reserve(stored->total_count);
             for (const auto &[base, bits] : stored->blocks) {
-                detail::for_each_cos_index(base, bits, [&](size_t idx) { cos_inds.push_back(idx); });
+                detail::for_each_cos_index(base, bits, [&cos_inds](size_t idx) { cos_inds.push_back(idx); });
             }
         }
         else if (const auto &gw = traversal.generator_words(); !gw.empty()) {
@@ -474,7 +485,7 @@ auto MonomialPropagator::cos_index_count_() const -> size_t {
 
 auto MonomialPropagator::validate_cutoff_config_(CutoffType cutoff_type,
                                                  const std::optional<std::vector<VecZ>> &basis_change) const -> void {
-    with_algebra(basis_, [&]<typename A>() {
+    with_algebra(basis_, [&cutoff_type, &basis_change]<typename A>() {
         if (A::requires_support_cutoff && cutoff_type != CutoffType::Support) {
             throw CutoffConfigError("Pauli basis requires cutoff_type == Support "
                                     "(Length has no Pauli-weight meaning under the Pauli encoding).");
@@ -632,9 +643,11 @@ auto MonomialPropagator::build_graph(const std::vector<VecZ> &majoranas,
                                      std::optional<size_t> only_rotate_len_k) -> void {
     validate_only_rotate_len_k(only_rotate_len_k, 2 * num_modes_);
     if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) {
-            s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
-        });
+        for_each_partition_(
+            [&majoranas, &parameter_mapping, &gen_coeffs, &gate_indices, &parameters, &only_rotate_len_k](
+                MonomialPropagator &s) {
+                s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
+            });
         return;
     }
     if (majoranas.empty()) {
@@ -666,8 +679,8 @@ auto MonomialPropagator::build_graph(const std::vector<VecZ> &majoranas,
         // realistic coefficients. That graph covers the parameter prefix [0, m).
         VecD seed;
         if (graph_layers() > 0) {
-            const auto existing = graph_gate_arrays_();
-            const size_t m = expected_num_params(existing.first);
+            const auto [existing_mapping, existing_gen_coeffs] = graph_gate_arrays_();
+            const size_t m = expected_num_params(existing_mapping);
             // The per-mapping check above only covers this call's indices, which may all sit above the
             // prefix the stored graph needs. Truncating instead would replay the existing graph at a silently
             // different point on the axis, and map_params would fail one layer down on the sliced vector.
@@ -702,9 +715,10 @@ auto MonomialPropagator::propagate(const std::vector<VecZ> &majoranas,
                                    std::optional<size_t> only_rotate_len_k) -> void {
     validate_only_rotate_len_k(only_rotate_len_k, 2 * num_modes_);
     if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) {
-            s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
-        });
+        for_each_partition_(
+            [&majoranas, &parameter_mapping, &gen_coeffs, &parameters, &only_rotate_len_k](MonomialPropagator &s) {
+                s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+            });
         return;
     }
     if (majoranas.empty()) {
@@ -814,7 +828,8 @@ auto MonomialPropagator::n_gates() const -> size_t {
 
 auto MonomialPropagator::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
     if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) { s.set_parameter_mapping(parameter_mapping); });
+        for_each_partition_(
+            [&parameter_mapping](MonomialPropagator &s) { s.set_parameter_mapping(parameter_mapping); });
         return;
     }
     const size_t count = graph_.layers();
@@ -931,9 +946,7 @@ auto build_cos_callbacks(const detail::InvertedIndex &inverted_index,
 template <typename Fn, typename R>
 auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_threshold)
     -> std::function<R(const VecD &)> {
-    auto gate_arrays = graph_gate_arrays_();
-    auto parameter_mapping = std::move(gate_arrays.first);
-    auto gen_coeffs = std::move(gate_arrays.second);
+    auto [parameter_mapping, gen_coeffs] = graph_gate_arrays_();
     const auto num_params = expected_num_params(parameter_mapping);
 
     // Nothing here needs a dense state: energy only dots it against the evolved operator, and the gradient
@@ -964,7 +977,7 @@ auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_
     std::shared_ptr<const MPGraph> graph;
     if (pare_threshold.has_value()) {
         const size_t storage_bits = mp_op_.num_bits(); // invariant across every layer this lambda is called for
-        auto full_cos_of_layer = [this, &inverted_index, storage_bits](size_t i) -> CosMask {
+        auto full_cos_of_layer = [this, &inverted_index, storage_bits](size_t i) {
             const auto layer = graph_.get_layer_traversal(i);
             const auto gen = detail::generator_from_words(layer.generator_words(), storage_bits);
             const auto combined = detail::make_fold_cache(inverted_index, gen, layer.scaled_count(), basis_);
@@ -1017,12 +1030,13 @@ auto MonomialPropagator::expectation_value_functional(std::optional<double> pare
     if (partition_group_) {
         // Each partition allreduces internally, so partition 0 is the global value. The group is captured by
         // raw pointer, so the returned callable must not outlive this propagator.
-        auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
-            map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
+        auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(map_partitions_(
+            [&pare_threshold](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
         auto *grp = partition_group_.get();
-        return [grp, fns](const VecD &params) -> double {
-            return detail::partition::collect_on_all(*grp,
-                                                     [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
+        return [grp, fns](const VecD &params) {
+            return detail::partition::collect_on_all(*grp, [&fns, &params](int r) {
+                return (*fns)[static_cast<size_t>(r)](params);
+            })[0];
         };
     }
     return make_functional_(ev_fn, pare_threshold);
@@ -1031,12 +1045,15 @@ auto MonomialPropagator::expectation_value_functional(std::optional<double> pare
 auto MonomialPropagator::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
     -> std::function<std::pair<double, VecD>(const VecD &)> {
     if (partition_group_) {
-        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(map_partitions_(
-            [&](MonomialPropagator &s) { return s.expectation_value_and_gradient_functional(pare_threshold); }));
+        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(
+            map_partitions_([&pare_threshold](MonomialPropagator &s) {
+                return s.expectation_value_and_gradient_functional(pare_threshold);
+            }));
         auto *grp = partition_group_.get();
-        return [grp, fns](const VecD &params) -> std::pair<double, VecD> {
-            return detail::partition::collect_on_all(*grp,
-                                                     [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
+        return [grp, fns](const VecD &params) {
+            return detail::partition::collect_on_all(*grp, [&fns, &params](int r) {
+                return (*fns)[static_cast<size_t>(r)](params);
+            })[0];
         };
     }
     return make_functional_(ev_and_grad_fn, pare_threshold);
@@ -1045,7 +1062,7 @@ auto MonomialPropagator::expectation_value_and_gradient_functional(std::optional
 auto MonomialPropagator::expectation_value(const VecD &parameters) -> double {
     if (partition_group_) {
         // Each partition allreduces internally, so every partition returns the global value; take partition 0.
-        return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value(parameters); })[0];
+        return map_partitions_([&parameters](MonomialPropagator &s) { return s.expectation_value(parameters); })[0];
     }
     return expectation_value_functional(std::nullopt)(parameters);
 }
@@ -1053,18 +1070,18 @@ auto MonomialPropagator::expectation_value(const VecD &parameters) -> double {
 auto MonomialPropagator::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
     if (partition_group_) {
         // As in expectation_value(): the gradient is allreduced inside each partition.
-        return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_and_gradient(parameters); })[0];
+        return map_partitions_(
+            [&parameters](MonomialPropagator &s) { return s.expectation_value_and_gradient(parameters); })[0];
     }
     return expectation_value_and_gradient_functional(std::nullopt)(parameters);
 }
 
 auto MonomialPropagator::contract_partially(const VecD &parameters, bool inplace) -> VecD {
     if (partition_group_) {
-        return concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
+        return concat_partitions_(
+            [&parameters, &inplace](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
     }
-    const auto gate_arrays = graph_gate_arrays_();
-    const auto &parameter_mapping = gate_arrays.first;
-    const auto &gen_coeffs = gate_arrays.second;
+    const auto [parameter_mapping, gen_coeffs] = graph_gate_arrays_();
     validate_parameters_length(parameters, parameter_mapping);
 
     if (parameters.empty()) {
@@ -1108,10 +1125,10 @@ auto MonomialPropagator::evolved_operator_terms(const VecD &parameters, double a
     -> std::vector<std::pair<VecZ, std::complex<double>>> {
     using Term = std::pair<VecZ, std::complex<double>>;
     // `p` is always unpartitioned here (a partition, or *this), so for_each_term() is available.
-    const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
+    const auto collect = [this, &parameters, &atol](MonomialPropagator &p) {
         std::vector<Term> terms;
         const VecD evolved = p.contract_partially(parameters, false);
-        p.for_each_term([&](const auto &mono, size_t idx) {
+        p.for_each_term([this, &evolved, &atol, &terms](const auto &mono, size_t idx) {
             if (idx >= evolved.size()) {
                 return;
             }

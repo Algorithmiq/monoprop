@@ -71,7 +71,7 @@ public:
         // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
         // and destroying joinable threads during unwinding calls std::terminate.
         try {
-            run_on_all([&](int r) { partitions_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
+            run_on_all([this, &factory](int r) { partitions_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
         }
         catch (...) {
             stop_and_join_();
@@ -93,7 +93,7 @@ public:
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
-            run_on_all([&](int r) {
+            run_on_all([this, &src](int r) {
                 auto p = src.partitions_[static_cast<size_t>(r)]->clone_(); // virtual: keeps the derived type
                 p->comm_ = comm_for_(r); // PartitionGroup is a friend of MonomialPropagator
                 partitions_[static_cast<size_t>(r)] = std::move(p);
@@ -128,9 +128,9 @@ public:
         cv_start_.notify_all();
         {
             std::unique_lock lk(m_);
-            cv_done_.wait(lk, [&] { return done_count_ == n_; });
+            cv_done_.wait(lk, [this] { return done_count_ == n_; });
         }
-        for (auto &e : errs_) {
+        for (const auto &e : errs_) {
             if (e) {
                 std::rethrow_exception(e);
             }
@@ -167,7 +167,7 @@ private:
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
-            MPI_Comm node = MPI_COMM_NULL;
+            auto node = MPI_COMM_NULL;
             MPI_Comm_split_type(parent_.mpi, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
             MPI_Comm_rank(node, &node_rank_);
             MPI_Comm_size(node, &node_size_);
@@ -182,7 +182,8 @@ private:
 #ifdef monoprop_ENABLE_MPI
     // A rank seeing 16 of 128 CPUs is equally "my own 16" and "eight of us share these 16": only the masks tell.
     auto classify_node_masks_(MPI_Comm node) -> void {
-        node_mask_ = NodeMask::Shared;
+        using enum monoprop::detail::partition::NodeMask;
+        node_mask_ = Shared;
         if (node_size_ <= 1) {
             report_placement_(nullptr, 0, "alone");
             return; // nobody to collide with; the normal split already handles group_count == 1
@@ -196,7 +197,7 @@ private:
         const bool disjoint = monoprop::detail::partition::masks_are_pairwise_disjoint(all.data(),
                                                                                        static_cast<size_t>(node_size_),
                                                                                        kMaskWords);
-        node_mask_ = disjoint ? NodeMask::PerRank : NodeMask::Shared;
+        node_mask_ = disjoint ? PerRank : Shared;
         report_placement_(all.data(), static_cast<size_t>(node_size_), disjoint ? "private" : "shared");
     }
 #endif
@@ -286,7 +287,7 @@ private:
             const std::function<void(int)> *job = nullptr;
             {
                 std::unique_lock lk(m_);
-                cv_start_.wait(lk, [&] { return stop_ || job_gen_ != seen; });
+                cv_start_.wait(lk, [this, &seen] { return stop_ || job_gen_ != seen; });
                 if (stop_) {
                     return;
                 }
@@ -320,11 +321,12 @@ private:
     std::vector<std::unique_ptr<MonomialPropagator>> partitions_;
     std::vector<std::exception_ptr> errs_;
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
-    std::vector<std::thread> masters_;
+    std::vector<std::jthread> masters_;
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
     std::mutex m_;
-    std::condition_variable cv_start_, cv_done_;
+    std::condition_variable cv_start_;
+    std::condition_variable cv_done_;
     const std::function<void(int)> *job_ = nullptr;
     unsigned job_gen_ = 0;
     int done_count_ = 0;
@@ -335,8 +337,9 @@ private:
 // `body` must not touch the vector itself -- see detail::staged_collect for what that rules out.
 template <typename Body, typename R = std::invoke_result_t<Body &, int>>
 auto collect_on_all(PartitionGroup &group, Body body) -> std::vector<R> {
-    return detail::staged_collect<R>(static_cast<size_t>(group.partition_count()),
-                                     [&](auto &&emit) { group.run_on_all([&](int r) { emit(r, body(r)); }); });
+    return detail::staged_collect<R>(static_cast<size_t>(group.partition_count()), [&group, &body](auto &&emit) {
+        group.run_on_all([&emit, &body](int r) { emit(r, body(r)); });
+    });
 }
 
 } // namespace detail::partition

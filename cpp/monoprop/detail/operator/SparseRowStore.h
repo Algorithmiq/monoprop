@@ -67,14 +67,14 @@ inline constexpr size_t kRowMaxSlots = 32;
 inline constexpr RowCodes kRowLoBits = 0x5555555555555555ULL; // bit 2j of every slot
 
 // Bit 2j of each slot: set iff slot j is occupied at all. popcount is n, the support measure.
-[[nodiscard]] inline constexpr auto row_occupied_bits(RowCodes codes) noexcept -> RowCodes {
+[[nodiscard]] constexpr auto row_occupied_bits(RowCodes codes) noexcept -> RowCodes {
     return (codes | (codes >> 1)) & kRowLoBits;
 }
 // Bit 2j of each slot: set iff slot j holds both of its positions. popcount is d.
-[[nodiscard]] inline constexpr auto row_paired_bits(RowCodes codes) noexcept -> RowCodes {
+[[nodiscard]] constexpr auto row_paired_bits(RowCodes codes) noexcept -> RowCodes {
     return codes & (codes >> 1) & kRowLoBits;
 }
-[[nodiscard]] inline constexpr auto row_slot_count(RowCodes codes) noexcept -> size_t {
+[[nodiscard]] constexpr auto row_slot_count(RowCodes codes) noexcept -> size_t {
     return static_cast<size_t>(std::popcount(row_occupied_bits(codes)));
 }
 
@@ -133,7 +133,7 @@ inline auto for_each_mode_slot(const Bitset &mono, Fn &&fn) -> void {
 // (see sparse_record_capacity in layer_build/TermProduct.h).
 [[nodiscard]] inline auto occupied_mode_count(const Bitset &mono) -> size_t {
     size_t n = 0;
-    for_each_mode_slot(mono, [&](size_t, unsigned int) { ++n; });
+    for_each_mode_slot(mono, [&n](size_t, unsigned int) { ++n; });
     return n;
 }
 
@@ -170,7 +170,7 @@ private:
 
 [[nodiscard]] inline auto sparse_row_hash(const Bitset &mono) noexcept -> size_t {
     SparseRowHasher hasher;
-    for_each_mode_slot(mono, [&](size_t mode, unsigned int code) { hasher.add(mode, code); });
+    for_each_mode_slot(mono, [&hasher](size_t mode, unsigned int code) { hasher.add(mode, code); });
     return hasher.value();
 }
 
@@ -187,7 +187,7 @@ private:
     const size_t n = row.num_slots();
     size_t j = 0;
     bool equal = true;
-    for_each_mode_slot(mono, [&](size_t mode, unsigned int code) {
+    for_each_mode_slot(mono, [&equal, &j, &n, &row](size_t mode, unsigned int code) {
         if (!equal) {
             return;
         }
@@ -383,7 +383,7 @@ public:
         bool overflows = false;
         // The slot walk is shared with the hash, so the two cannot disagree about what a row's slots are.
         // Lanes come out ascending because the walk is.
-        for_each_mode_slot(mono, [&](size_t mode, unsigned int code) {
+        for_each_mode_slot(mono, [&overflows, &used, &lanes, &codes, this](size_t mode, unsigned int code) {
             if (overflows) {
                 return;
             }
@@ -473,7 +473,7 @@ public:
             }
             return;
         }
-        for_each_slot(i, [&](size_t mode, unsigned int code) {
+        for_each_slot(i, [&fn](size_t mode, unsigned int code) {
             if ((code & 1U) != 0U) {
                 fn(2 * mode);
             }
@@ -539,13 +539,13 @@ public:
     // Insert-or-no-op. The row at `value` must already be written -- the confirm reads it.
     template <typename Key>
     auto emplace(const Key &key, mapped_type value) -> void {
-        table_.emplace(fold_hash(key), value, [&](size_t i) { return row_eq_key(i, key); });
+        table_.emplace(fold_hash(key), value, [&key, this](size_t i) { return row_eq_key(i, key); });
     }
 
     // Insert n distinct rows with consecutive indices [base, base+n). Rows must already be written.
     template <typename KeyFn>
     auto bulk_insert(size_t n, mapped_type base, KeyFn &&key_at) -> void {
-        table_.insert_distinct_range(base, n, [&](size_t k) { return fold_hash(key_at(k)); });
+        table_.insert_distinct_range(base, n, [&key_at](size_t k) { return fold_hash(key_at(k)); });
     }
 
     // out[i] = row index of keys[i], or kNotFound. Same result as n find() calls; see
@@ -558,7 +558,7 @@ public:
             keys,
             n,
             out,
-            [this](const Key &key) { return fold_hash(key); },
+            [](const Key &key) { return fold_hash(key); },
             [this](size_t i) {
                 __builtin_prefetch(&codes_[i], 0, 0);
                 __builtin_prefetch(&modes_[i * slots_per_row_], 0, 0);
@@ -571,7 +571,7 @@ public:
     // view, so what a caller wants off the index is the index.
     template <typename Fn>
     auto for_each_index(Fn &&fn) const -> void {
-        table_.for_each_slot([&](TermIndex idx, uint32_t) { fn(static_cast<size_t>(idx)); });
+        table_.for_each_slot([&fn](TermIndex idx, uint32_t) { fn(static_cast<size_t>(idx)); });
     }
 
     // OperatorIndex's signature, fn(monomial, row_index), so the two stores are interchangeable at the
@@ -579,7 +579,7 @@ public:
     // where the index alone will do.
     template <typename Fn>
     auto for_each(Fn &&fn) const -> void {
-        for_each_index([&](size_t i) { fn(row(i), i); });
+        for_each_index([&fn, this](size_t i) { fn(row(i), i); });
     }
 
     [[nodiscard]] auto indexed_count() const noexcept -> size_t { return table_.count(); }
@@ -626,7 +626,7 @@ private:
 
     template <typename Key>
     auto find_hashed_(const Key &key) const -> std::optional<size_t> {
-        return table_.find(fold_hash(key), [&](size_t i) { return row_eq_key(i, key); });
+        return table_.find(fold_hash(key), [&key, this](size_t i) { return row_eq_key(i, key); });
     }
 
     // The find confirm, against a row query. Codes first: one word compare rejects nearly every

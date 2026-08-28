@@ -141,11 +141,13 @@ auto with_algebra(Basis basis, F &&f) {
 
 // Point-dispatch helpers for cold sites (per-layer / per-materialization) that carry a runtime Basis.
 
-auto algebra_fold_generator(Basis basis, const MonomialLike auto &gen) -> std::remove_cvref_t<decltype(gen)> {
-    return with_algebra(basis, [&]<typename A>() { return A::fold_generator(gen); });
+template <MonomialLike T>
+auto algebra_fold_generator(Basis basis, const T &gen) -> T {
+    return with_algebra(basis, [&gen]<typename A>() { return A::fold_generator(gen); });
 }
-auto algebra_fold_needs_odd_correction(Basis basis, const MonomialLike auto &gen) -> bool {
-    return with_algebra(basis, [&]<typename A>() { return A::fold_needs_odd_correction(gen); });
+template <MonomialLike T>
+auto algebra_fold_needs_odd_correction(Basis basis, const T &gen) -> bool {
+    return with_algebra(basis, [&gen]<typename A>() { return A::fold_needs_odd_correction(gen); });
 }
 // These three branch on Basis directly instead of going through with_algebra, and the policy classes
 // carry no encode_coeff/decode_coeff/state_phase member as a result -- both would have been a
@@ -181,9 +183,9 @@ auto algebra_score_state(Basis basis,
                          size_t num_bits,
                          Sink &&sink) -> void {
     const auto state_mask = initial_state_mask(initial_state, num_bits);
-    for (size_t i = 0; i < paired_inds.size(); ++i) {
-        const auto &row = materialize_row(store, paired_inds[i]);
-        sink(paired_inds[i], algebra_state_phase(basis, row, state_mask));
+    for (const auto &idx : paired_inds) {
+        const auto &row = materialize_row(store, idx);
+        sink(idx, algebra_state_phase(basis, row, state_mask));
     }
 }
 

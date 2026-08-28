@@ -34,7 +34,7 @@ template <typename R, typename FanOut>
 auto staged_collect(size_t n, FanOut &&fan_out) -> std::vector<R> {
     using Slot = std::conditional_t<std::is_same_v<R, bool>, std::uint8_t, R>;
     std::vector<Slot> staging(n);
-    fan_out([&](int r, R value) { staging[static_cast<size_t>(r)] = static_cast<Slot>(value); });
+    fan_out([&staging](int r, R value) { staging[static_cast<size_t>(r)] = static_cast<Slot>(value); });
     if constexpr (std::is_same_v<R, bool>) {
         return std::vector<R>(staging.begin(), staging.end());
     }
