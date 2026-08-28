@@ -284,8 +284,6 @@ struct MPOperatorMemoryBreakdown final {
     size_t initial_state_bytes{0uz};
     size_t inverted_index_bytes{0uz};
     size_t matched_scratch_bytes{0uz}; // MatchedEpochSet stamps; propagator-owned, so 0 unless it fills them
-    // Group-owned, so the partitioned facade ASSIGNS it after sum_partitions_; the += below is for
-    // hand-built breakdowns only, and summing two already-partitioned breakdowns would double it.
     size_t transport_bytes{0uz};
     // Diagnostics: breakdowns of the fields above, outside total_bytes() so they can never double-count.
     size_t inverted_index_dense_bytes{0uz};  // full-height bitmap columns
