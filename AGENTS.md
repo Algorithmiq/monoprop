@@ -245,6 +245,26 @@ Key files:
   the buffer, which is what lets the fused sink widen every record without renumbering anything. Push
   records through `TermProducts::push(QueryOut{records, escapes}, phase)` and finish a stream with
   `append_escape_tail`; never append a record after the tail has started.
+  A batch's *retained* keys — the ones the deferred self-miss list reads after the slots have been
+  refilled — are a flat word arena at the batch's own width in both forms, never a container of
+  monomials: a `Bitset` is sized for the widest inline width whatever its own is, and one key is
+  retained per term a layer inserts, so a `MonomialList` there carried 72 bytes where a 128-bit
+  monomial needs 16. It is worth -1.2% user instructions and cycles on the
+  benchmark Hubbard model, pinned single-threaded; the gain roughly triples at a looser `lower_atol`,
+  which inserts fewer terms per layer. `retained()` hands back a scratch view, so at most one retained
+  key may be read at a time. Two neighbouring changes were tried and both measured *worse* than the
+  arena alone, so do not re-derive them: lowering `Bitset::kInlineWords` to 4 on top of it (wider
+  by-value monomials then spill, once the bulk site is already packed), and keeping the batch across
+  layers so its arena retains capacity (the resting footprint costs more than the reallocation saves).
+  Force-inlining the leaves the runtime-width build calls out of line — `OperatorIndex::popcount`, 4.4%
+  of samples — measured at nothing, and that is the general lesson here: the per-term instruction count
+  runs ~26% above the compile-time-width engine but only about a fifth of that reaches cycles, so this
+  path is not instruction-bound. Object size is the lever, not instruction count.
+  Two things to know before measuring any of this again. `benches/bench_models.py` cannot resolve a
+  change below ~3%: rounds within one run agree to under 1%, but the same binary re-run drifts up to
+  8%, and across sessions -4% to +10% — so a real 1% shows up there as nothing. And a multi-threaded
+  reading inverts: the partition pool spins, so `cycles:u` *rises* on a change that lowers wall time.
+  Pin `monoprop_NUM_THREADS=1` and count instructions.
   `owner()` is still the dense `monomial_hash` on both sides, because owner routing is that hash
   everywhere including `find_rank` — so a multi-rank run still materializes one monomial per surviving
   term, and moving that means changing `find_rank` too.

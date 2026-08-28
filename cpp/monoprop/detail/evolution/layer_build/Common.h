@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <limits>
 #include <utility>
@@ -319,8 +320,10 @@ public:
     auto configure(size_t num_bits, size_t /*capacity*/) -> void {
         if (extent_ != num_bits) {
             keys_.clear();
-            retained_.clear();
+            retained_words_.clear();
+            retained_count_ = 0;
             extent_ = num_bits;
+            view_ = Bitset(extent_);
         }
     }
     auto ensure(size_t n) -> void {
@@ -343,15 +346,34 @@ public:
     // Copies slot's key into storage that lives as long as this batch, and returns its handle. The
     // deferred self-miss list is what needs it: it is read after the batch has been refilled several times
     // over, once both resolve passes are done.
+    //
+    // The retained keys are a flat word arena at the batch's own width rather than a second MonomialList:
+    // a Bitset is sized for the widest inline width whatever its own is, so a vector of them carried 72
+    // bytes per key where a 128-bit monomial needs 16, and one is retained per term the layer inserts.
+    // The support-form batch below already keeps its retained rows in an arena, for the same reason.
     [[nodiscard]] auto retain(size_t slot) -> size_t {
-        retained_.push_back(keys_[slot]);
-        return retained_.size() - 1;
+        const size_t words = Bitset::words_for(extent_);
+        const auto *src = keys_[slot].data();
+        retained_words_.insert(retained_words_.end(), src, src + words);
+        return retained_count_++;
     }
-    [[nodiscard]] auto retained(size_t handle) const -> const key_type & { return retained_[handle]; }
+    // Returns a reference to a scratch monomial refilled per call, so at most one retained key may be
+    // read at a time. Both readers satisfy that: insert_absent_terms writes slot k's row and is done with
+    // the key before asking for k+1, and its bulk_insert hashes one key per slot. The support form's
+    // retained() has the same one-at-a-time contract -- its view points into an arena that must not have
+    // grown since.
+    [[nodiscard]] auto retained(size_t handle) const -> const key_type & {
+        const size_t words = Bitset::words_for(extent_);
+        std::memcpy(view_.data(), retained_words_.data() + (handle * words), words * sizeof(Bitset::word_type));
+        return view_;
+    }
 
 private:
     MonomialList keys_ = {};
-    MonomialList retained_ = {};
+    // Handle h occupies words [h * words_for(extent_), (h+1) * words_for(extent_)).
+    DefaultInitVector<Bitset::word_type> retained_words_ = {};
+    size_t retained_count_ = 0;
+    mutable Bitset view_{0};
     size_t extent_ = 0;
 };
 
