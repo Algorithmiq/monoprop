@@ -321,7 +321,7 @@ private:
     std::vector<std::unique_ptr<MonomialPropagator>> partitions_;
     std::vector<std::exception_ptr> errs_;
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
-    std::vector<std::jthread> masters_;
+    std::vector<std::thread> masters_;
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
     std::mutex m_;
