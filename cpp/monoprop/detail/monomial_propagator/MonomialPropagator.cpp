@@ -997,7 +997,7 @@ auto MonomialPropagator::make_functional_(Fn &&func, std::optional<double> pare_
     // must not outlive the propagator.
     auto cos = build_cos_callbacks(inverted_index, graph->replay_view(), mp_op_.num_bits(), basis_);
 
-    return [func = std::move(func),
+    return [func = std::forward<Fn>(func),
             core_term,
             state = std::move(state),
             op = std::move(op),
