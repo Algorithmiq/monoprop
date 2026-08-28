@@ -273,7 +273,7 @@ public:
         return sizeof(OperatorIndex) + (table_.slots.capacity() * sizeof(Slot));
     }
 
-    // Diagnostics: peak over TIME of memory_bytes() / index_estimated_memory_bytes(). A growth holds
+    // Diagnostics:  over time of memory_bytes() / index_estimated_memory_bytes(). A growth holds
     // old+new at once; no capacity field can show that. Each carries its resting field's other terms
     // (the overflow map, the fixed header) so a peak can never read below the resting bytes.
     [[nodiscard]] auto rows_peak_bytes() const -> size_t {
@@ -375,7 +375,7 @@ private:
         // reserve() may hand back more than asked, so the duplicate is read off the post-growth capacity.
         const size_t old_cap = rows_.capacity();
         rows_.reserve(want);
-        rows_peak_elems_ = std::max(rows_peak_elems_, old_cap + rows_.capacity());
+        rows__elems_ = std::max(rows__elems_, old_cap + rows_.capacity());
     }
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
@@ -424,7 +424,7 @@ private:
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
     Table table_ = {};
-    size_t rows_peak_elems_ = 0; // PosT count, matching table_.peak_slots; see rows_peak_bytes()
+    size_t rows__elems_ = 0; // PosT count, matching table_._slots; see rows__bytes()
 };
 
 } // namespace monoprop::detail
