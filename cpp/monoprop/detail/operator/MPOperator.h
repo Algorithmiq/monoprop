@@ -298,7 +298,7 @@ struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_peak_bytes{0uz};  // peak over TIME, so a sum over partitions is an upper bound
     size_t indexing_peak_bytes{0uz};        // likewise
 
-    // Derived, not stored: reserved and never written, but NOT free. Peak RSS tracks capacity rather than
+    // Derived, not stored: reserved and never written, but not free. Peak RSS tracks capacity rather than
     // used bytes, because each growth holds the old fully-written buffer and the new one at once -- so
     // shrink_to_fit cannot recover this and must cost another copy. Only fewer or earlier growths help.
     auto reserved_bytes() const -> size_t {
