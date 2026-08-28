@@ -434,7 +434,9 @@ public:
         if (!overflow_.empty()) {
             overflow_.erase(i);
         }
-        std::memcpy(lanes, row.modes, n * sizeof(ModeT));
+        if (n != 0) {
+            std::memcpy(lanes, row.modes, n * sizeof(ModeT));
+        }
         // Padding is load-bearing for the empty row and only for it: with n == 0 nothing above writes a
         // lane, so lane 0 would keep a previous occupant's kOverflowLane and the row would read as spilled.
         for (size_t j = n; j < slots_per_row_; ++j) {
@@ -639,7 +641,8 @@ private:
         if (codes_[i] != key.codes) {
             return false;
         }
-        return std::memcmp(&modes_[i * slots_per_row_], key.modes, row_slot_count(key.codes) * sizeof(ModeT)) == 0;
+        const size_t k = row_slot_count(key.codes);
+        return k == 0 || std::memcmp(&modes_[i * slots_per_row_], key.modes, k * sizeof(ModeT)) == 0;
     }
 
     // The same against a monomial query, which is the only form that can match a spilled row exactly.
