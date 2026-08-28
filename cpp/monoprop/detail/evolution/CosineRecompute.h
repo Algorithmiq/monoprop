@@ -187,9 +187,9 @@ auto cos_indices_lazy(const auto &sc, const LazyFold &r, std::vector<TermIndex> 
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
         combine_columns_block(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
         for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64,
-                               recipe_fold_word(r, blk.data(), bb, wi, row_parity),
-                               [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
+            for_each_cos_index(wi * 64, recipe_fold_word(r, blk.data(), bb, wi, row_parity), [&out](size_t i) {
+                out.push_back(static_cast<TermIndex>(i));
+            });
         }
     }
 }
