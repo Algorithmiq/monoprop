@@ -241,8 +241,13 @@ private:
     }
 
     // Fused count-resolve + payload alltoallv: folds the standalone count exchange into this verb's
-    // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are outputs.
-    // Bit-identical to alltoall_counts + alltoallv.
+    // barriered windows (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are
+    // outputs. Bit-identical to alltoall_counts + alltoallv.
+    //
+    // The count round is POSTED in B1→B2 and only waited on in B3→B4, so the whole B2→B3 packing runs
+    // underneath it. Split, not fused, because nothing before fill_recv_col_ reads counts_recv_: the
+    // send side sizes from the locally published rows, and pack_send_ from that sizing. The dense arm
+    // is MPI_Alltoall, blocking, and completes inside post_count_blocks_ regardless.
     template <typename T>
     auto alltoallv_resolve_impl_(int local_partition,
                                  const AlltoallvResolveArgs<T> &args,
@@ -256,20 +261,34 @@ private:
         // never reconstructs T, so the slot stays type-erased for the untyped alltoallv_impl_ above.
         me.ptr = reinterpret_cast<const std::byte *>(args.send);
         me.send_displs = args.send_displs;
-        // Count row only: the recv counts do not exist until the count Alltoall in B1→B2.
+        // Count row only: the recv counts do not exist until the count round is drained in B3→B4.
         publish_counts_row_(local_partition, args.send_counts);
         sync(); // B1
 
         if (local_partition == 0) {
             fill_peers_(plan);
             pack_count_matrix_(plan);
-            exchange_count_blocks_(plan);
+            post_count_blocks_(plan);
             size_staging_send_(elem);
-            fill_recv_col_([this](int a, int t) { return block_sum_(a, t); });
-            size_staging_recv_(elem);
         }
         sync(); // B2
 
+        // B3: each partition packs its own cross-rank blocks into stage_send_, the count round in flight.
+        pack_send_(local_partition, elem);
+        sync(); // B3
+
+        // B4: the counts land here -- fill_recv_col_ is their first reader -- then the payload moves.
+        if (local_partition == 0) {
+            wait_count_blocks_();
+            fill_recv_col_([this](int a, int t) { return block_sum_(a, t); });
+            size_staging_recv_(elem);
+            exchange_payload_(dt, elem, plan);
+        }
+        sync(); // B4
+
+        // Past B4 now, not before B3: counts_recv_ does not exist until the wait above. Partition 0
+        // cannot rewrite it before a later verb's B1→B2 window, unreachable until every reader here
+        // has arrived at that verb's B1.
         const int t = local_partition;
         long long total = 0;
         const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
@@ -285,14 +304,6 @@ private:
             }
         }
         args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
-
-        pack_send_(local_partition, elem);
-        sync(); // B3
-
-        if (local_partition == 0) {
-            exchange_payload_(dt, elem, plan);
-        }
-        sync(); // B4
 
         scatter_recv_(local_partition,
                       reinterpret_cast<std::byte *>(args.recv.data()), // after the resize: it may reallocate
@@ -473,26 +484,45 @@ private:
 
     // The count blocks: one S*S-int MPI_Alltoall when dense, else a pair per peer (with the full linear
     // bits a zero rank shift keeps the whole round on-rank). Partition 0 only, in a barriered window.
-    auto exchange_count_blocks_(PeerPlan plan) -> void {
+    //
+    // Sparse arm POSTS ONLY, so counts_recv_ and counts_send_ must stay put until wait_count_blocks_;
+    // the dense MPI_Alltoall is blocking and has completed on return, which is why plan.dense() leaves
+    // nothing live. The requests go in count_reqs_, never reqs_: see the member declaration.
+    auto post_count_blocks_(PeerPlan plan) -> void {
+        assert(count_posted_ == 0); // an un-drained round would be waited on twice
         const int block = s_ * s_;
         if (plan.dense()) {
             MPI_Alltoall(counts_send_.data(), block, MPI_INT, counts_recv_.data(), block, MPI_INT, parent_);
             return;
         }
         const PeerLayout blocks{.block = block};
-        const int posted = sparse_pairwise(plan,
-                                           mpi_rank_,
-                                           r_,
-                                           parent_,
-                                           kHybridCountTag,
-                                           MPI_INT,
-                                           sizeof(int),
-                                           reinterpret_cast<const std::byte *>(counts_send_.data()),
-                                           blocks,
-                                           reinterpret_cast<std::byte *>(counts_recv_.data()),
-                                           blocks,
-                                           reqs_);
-        MPI_Waitall(posted, reqs_.data(), MPI_STATUSES_IGNORE);
+        count_posted_ = sparse_pairwise(plan,
+                                        mpi_rank_,
+                                        r_,
+                                        parent_,
+                                        kHybridCountTag,
+                                        MPI_INT,
+                                        sizeof(int),
+                                        reinterpret_cast<const std::byte *>(counts_send_.data()),
+                                        blocks,
+                                        reinterpret_cast<std::byte *>(counts_recv_.data()),
+                                        blocks,
+                                        count_reqs_);
+    }
+
+    // Drains post_count_blocks_. A no-op on the dense arm, and on a plan whose only peer is this rank
+    // itself -- a count block is a fixed S*S ints, so no other peer can be skipped for a zero count.
+    auto wait_count_blocks_() -> void {
+        if (count_posted_ != 0) {
+            MPI_Waitall(count_posted_, count_reqs_.data(), MPI_STATUSES_IGNORE);
+            count_posted_ = 0;
+        }
+    }
+
+    // Post and drain in one step, for callers with no work to overlap.
+    auto exchange_count_blocks_(PeerPlan plan) -> void {
+        post_count_blocks_(plan);
+        wait_count_blocks_();
     }
 
     // The staged payload: one MPI_Alltoallv when dense, else a pair per peer over the same per-rank
@@ -727,8 +757,13 @@ private:
     double red_f64_ = 0.0;
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
-    // Point-to-point request scratch for the sparse paths; grown on demand, partition 0 only.
+    // Point-to-point request scratch for the sparse payload round; grown on demand, partition 0 only.
     std::vector<MPI_Request> reqs_;
+    // The count round's own scratch, separate from reqs_ by construction and not merely by the current
+    // ordering: it stays live across B2 and B3, and Pairwise.h's resize would move the buffer MPI holds
+    // pointers into the moment a payload post ever preceded the count wait.
+    std::vector<MPI_Request> count_reqs_;
+    int count_posted_ = 0; // live requests in count_reqs_; always 0 on the dense (blocking) arm
     // This verb's peer ranks; see fill_peers_.
     std::vector<int> peers_;
 
