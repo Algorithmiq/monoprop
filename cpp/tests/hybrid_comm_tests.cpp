@@ -1087,4 +1087,69 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer) {
     }
 }
 
+// derived_wire_plan_ is what lets alltoallv narrow its own wire when the caller cannot: only partition 0
+// reaches MPI, and ITS row may be the empty one while a sibling partition holds the rank's only traffic.
+// Reading the peer set off partition 0's row alone resolves to the SELF peer, whose legs are all zero --
+// every block is then dropped with no hang to show for it. So this case puts the traffic where partition
+// 0 cannot see it, and checks the payload arrives carrying its source's global id.
+//
+// alltoallv's derive_wire_bits has no library caller today, so this is its only exercise.
+BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return; // the XOR pairing needs a power-of-two rank count
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    const int peer = me ^ 1; // shift 1, so every rank derives the same pairing
+    constexpr int kLen = 5;
+
+    for (const int S : {2, 4}) {
+        const int P = R * S;
+        const int carrier = S - 1; // never partition 0 -- that is the whole point of the case
+        std::vector<std::vector<int>> got(static_cast<size_t>(S));
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            const int g = (me * S) + u;
+            std::vector<int> counts(static_cast<size_t>(P), 0);
+            const std::vector<int> displs(static_cast<size_t>(P), 0);
+            std::vector<int> send;
+            if (u == carrier) {
+                counts[static_cast<size_t>((peer * S) + carrier)] = kLen;
+                for (int j = 0; j < kLen; ++j) {
+                    send.push_back((g * 1000) + j);
+                }
+            }
+            // Symmetric layout: my peer's carrier partition sends me exactly what I send it, which is
+            // what derive_wire_bits requires and what lets the recv rows name the peer set. One block, so
+            // both displacements are zero.
+            std::vector<int> recv(static_cast<size_t>(u == carrier ? kLen : 0), -1);
+            const monoprop::mpi::AlltoallvArgs args{.send = reinterpret_cast<const std::byte *>(send.data()),
+                                                    .send_counts = counts.data(),
+                                                    .send_displs = displs.data(),
+                                                    .recv = reinterpret_cast<std::byte *>(recv.data()),
+                                                    .recv_counts = counts.data(),
+                                                    .recv_displs = displs.data(),
+                                                    .elem = sizeof(int)};
+            hyb.alltoallv(u, args, MPI_INT, monoprop::mpi::PeerPlan{}, /*derive_wire_bits=*/bits);
+            got[static_cast<size_t>(u)] = recv;
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        for (int u = 0; u < S; ++u) {
+            if (u != carrier) {
+                BOOST_CHECK(got[static_cast<size_t>(u)].empty());
+                continue;
+            }
+            // The values name their sender, so this fails on a plan that named the wrong peer as well as
+            // on one that named none.
+            const int src = (peer * S) + carrier;
+            BOOST_REQUIRE_EQUAL(static_cast<int>(got[static_cast<size_t>(u)].size()), kLen);
+            for (int j = 0; j < kLen; ++j) {
+                BOOST_CHECK_EQUAL(got[static_cast<size_t>(u)][static_cast<size_t>(j)], (src * 1000) + j);
+            }
+        }
+    }
+}
+
 #endif // monoprop_ENABLE_MPI
