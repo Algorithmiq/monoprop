@@ -729,7 +729,7 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
     }
     routing_coverage_reported_ = true;
     const routing::Router router = router_for<NumModes>(comm_);
-    if (router.linear_bits() == 0) {
+    if (!router.is_linear()) {
         return; // splitmix: no subspace to fall short of
     }
     std::vector<uint64_t> shifts;
@@ -755,7 +755,7 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
                                   router.linear_bits(),
                                   span,
                                   shifts.size(),
-                                  router.ranks() - (router.fanout() << span));
+                                  router.ranks() - (size_t{1} << span));
     std::fputs(line.c_str(), stderr);
     std::fflush(stderr);
 }
