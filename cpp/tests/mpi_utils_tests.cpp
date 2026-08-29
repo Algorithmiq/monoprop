@@ -167,58 +167,70 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     for (size_t i = 0; i < 2000; ++i) {
         terms.push_back(draw_well_formed<kN>(rng, kLogical, 1 + (rng() % 6)));
     }
-    auto op = build_op(terms);
     const Monomial<kN> gen = draw_well_formed<kN>(rng, kLogical, 4);
-    VecD coeffs(op.store->size(), 1.0);
 
     const CutoffFn<kN> fn = detail::LengthCutoff<kN>{10, kLogical};
     const detail::CutoffEvaluator<kN> eval(fn);
-    const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt,
-                                                                   std::cref(coeffs),
-                                                                   std::nullopt,
-                                                                   std::optional<double>{0.3});
 
+    // Each rank is handed exactly the terms it owns, as MonomialPropagator seeds it: the emit path routes
+    // by rank(M) ^ rank_shift(G), which is only the owner of M^G when M really is local.
+    //
     // The partner count is a property of the operator and the gate, not of where the partners live, so
-    // it is the same for every router; routing only moves a partner between the encoded (cross-rank)
-    // and staged (self-owned) side. Pinning that invariance is stronger than a floor: a routing bug
-    // that drops partners moves the total, and one that misroutes them moves the split.
+    // the sum over the ranks is the same for every router; routing only moves a partner between ranks and
+    // between the encoded (cross-rank) and staged (self-owned) sides. Pinning that invariance is stronger
+    // than a floor: a routing bug that drops partners moves the total, and one that misroutes them moves
+    // the split.
     size_t routers = 0;
     std::optional<size_t> first_total;
     for (const size_t ranks : {2U, 4U, 8U}) {
-        // BOTH routers, because the agreement is a property of the pair and not of either hash: the
-        // scan calls Router::dest and find_rank calls the same Router, so a divergence introduced by
+        // BOTH routers, because the agreement is a property of the pair and not of either hash: the scan
+        // calls Router::dest_from_shift and find_rank calls Router::dest, so a divergence introduced by
         // one of them shows up here whichever routing the geometry resolves to.
         for (const bool linear : {false, true}) {
+            const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, linear);
+            const size_t shift = router.rank_shift<kN>(gen);
             // Per router, not summed over them: the floors are what stops the loop passing on an empty
             // scan, and a sum lets one router carry the other.
             size_t checked = 0;
             size_t self_checked = 0;
-            const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, linear);
-            const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
-                                                                                     gen,
-                                                                                     eval,
-                                                                                     cut,
-                                                                                     coeffs,
-                                                                                     std::nullopt,
-                                                                                     ranks,
-                                                                                     0,
-                                                                                     router,
-                                                                                     false,
-                                                                                     nullptr,
-                                                                                     1.0);
-            BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
-            // The scan routes a self-owned partner to the stage, so bucket 0 must be empty here.
-            BOOST_REQUIRE(res.leader_queries[0].empty());
-            BOOST_REQUIRE(res.follower_queries[0].empty());
-            check_bucket_ownership(res.leader_queries, router, checked);
-            check_bucket_ownership(res.follower_queries, router, checked);
-            check_self_ownership(res.leader_self, router, /*my_rank=*/0, self_checked);
-            check_self_ownership(res.follower_self, router, /*my_rank=*/0, self_checked);
-            // Measured, all six routers: total 387 every time, with the split running from 196/191 at
-            // R=2 to 335/52 at R=8 as more partners fall cross-rank. The floors sit below the observed
-            // minimum of each arm and only catch a scan that emitted nothing.
-            BOOST_TEST_MESSAGE("ranks=" << ranks << " linear=" << router.is_linear() << " encoded=" << checked
-                                        << " staged=" << self_checked);
+            for (size_t my_rank = 0; my_rank < ranks; ++my_rank) {
+                std::vector<Monomial<kN>> owned;
+                for (const auto &t : terms) {
+                    if (find_rank<kN>(t, router) == my_rank) {
+                        owned.push_back(t);
+                    }
+                }
+                BOOST_REQUIRE(!owned.empty());
+                auto op = build_op(owned);
+                VecD coeffs(op.store->size(), 1.0);
+                const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt,
+                                                                               std::cref(coeffs),
+                                                                               std::nullopt,
+                                                                               std::optional<double>{0.3});
+                const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
+                                                                                         gen,
+                                                                                         eval,
+                                                                                         cut,
+                                                                                         coeffs,
+                                                                                         std::nullopt,
+                                                                                         ranks,
+                                                                                         my_rank,
+                                                                                         router,
+                                                                                         shift,
+                                                                                         false,
+                                                                                         nullptr,
+                                                                                         1.0);
+                BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
+                // The scan routes a self-owned partner to the stage, so my own bucket must be empty here.
+                BOOST_REQUIRE(res.leader_queries[my_rank].empty());
+                BOOST_REQUIRE(res.follower_queries[my_rank].empty());
+                check_bucket_ownership(res.leader_queries, router, checked);
+                check_bucket_ownership(res.follower_queries, router, checked);
+                check_self_ownership(res.leader_self, router, my_rank, self_checked);
+                check_self_ownership(res.follower_self, router, my_rank, self_checked);
+            }
+            BOOST_TEST_MESSAGE("ranks=" << ranks << " linear=" << router.is_linear() << " shift=" << shift
+                                        << " encoded=" << checked << " staged=" << self_checked);
             const size_t total = checked + self_checked;
             if (first_total.has_value()) {
                 BOOST_TEST(total == *first_total); // routing moves partners, it does not create or lose them
@@ -226,9 +238,23 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
             else {
                 first_total = total;
             }
+            // Measured, all six routers: total 387 every time, with the splitmix split running from
+            // 212/175 at R=2 to 343/44 at R=8 as more partners fall cross-rank, and the linear arm all
+            // encoded (shift 1, 3, 7). The floors sit below the observed minimum of each arm and only
+            // catch a scan that emitted nothing.
             BOOST_TEST(total > 300U);
-            BOOST_TEST(checked > 150U);
-            BOOST_TEST(self_checked > 40U);
+            if (!router.is_linear()) {
+                // Splitmix re-hashes the partner, so both sides are populated at every rank count.
+                BOOST_TEST(checked > 150U);
+                BOOST_TEST(self_checked > 40U);
+            }
+            else if (shift != 0) {
+                // Fanout 1: every partner leaves for my_rank ^ shift, so nothing stays self-owned.
+                BOOST_TEST(self_checked == 0U);
+            }
+            else {
+                BOOST_TEST(checked == 0U); // a shift of zero keeps every partner on its own rank
+            }
             ++routers;
         }
     }
