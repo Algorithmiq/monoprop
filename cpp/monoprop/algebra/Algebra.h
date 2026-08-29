@@ -31,7 +31,6 @@
 
 namespace monoprop {
 
-template <size_t NumModes>
 struct MajoranaAlgebra {
     static constexpr Basis basis = Basis::Majorana;
     static constexpr bool requires_support_cutoff = false; // length OR support cutoff both valid
@@ -40,19 +39,19 @@ struct MajoranaAlgebra {
     // Built once per layer: the generator G and its fixed interleave mask W (see interleave_phase_mask).
     // G is stored by value so the context can outlive a caller's temporary; the cost is one bitset copy
     // per layer, cheaper than a lifetime contract on every call site.
+    // Both members are assigned by make_gen_context, so they carry the generator's width; a
+    // default-constructed GenContext would hold width-0 bitsets.
     struct GenContext {
-        Monomial<NumModes> gen;
-        Monomial<NumModes> interleave_mask;
+        Bitset gen;
+        Bitset interleave_mask;
     };
-    static auto make_gen_context(const Monomial<NumModes> &gen) -> GenContext {
-        return GenContext{gen, interleave_phase_mask<NumModes>(gen)};
+    static auto make_gen_context(const Bitset &gen) -> GenContext {
+        return GenContext{gen, interleave_phase_mask(gen)};
     }
-    static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.gen; }
+    static auto generator(const GenContext &ctx) -> const Bitset & { return ctx.gen; }
 
     // Ordering sign of mono·G via the per-layer mask (branch/scan-free).
-    static auto rotation_sign(const GenContext &ctx,
-                              const Monomial<NumModes> &mono,
-                              const Monomial<NumModes> & /*new_mono*/) -> int {
+    static auto rotation_sign(const GenContext &ctx, const Bitset &mono, const Bitset & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
     static auto emit_phase(int rotation_sign, size_t mono_pop, size_t gen_pop, size_t overlap) -> int {
@@ -60,39 +59,24 @@ struct MajoranaAlgebra {
     }
 
     // Anticommutation fold columns = G itself; odd |G| needs the per-row parity(|M|) correction.
-    static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return gen; }
-    static auto fold_needs_odd_correction(const Monomial<NumModes> &gen) -> bool { return gen.count() % 2 != 0; }
-
-    static auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &mono) -> double {
-        return monoprop::encode_coeff<NumModes>(coeff, mono);
-    }
-    static auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> &mono)
-        -> std::complex<double> {
-        return monoprop::decode_coeff<NumModes>(coeff, mono);
-    }
-    static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
-        return monoprop::majorana_state_phase<NumModes>(mono, state_mask);
-    }
+    static auto fold_generator(const Bitset &gen) -> Bitset { return gen; }
+    static auto fold_needs_odd_correction(const Bitset &gen) -> bool { return gen.count() % 2 != 0; }
 };
 
-template <size_t NumModes>
 struct PauliAlgebra {
     static constexpr Basis basis = Basis::Pauli;
     static constexpr bool requires_support_cutoff = true; // the support cutoff measures Pauli weight
     static constexpr bool allows_basis_change = false;    // the native encoding has no basis change
 
     struct GenContext {
-        PauliGenContext<NumModes> pauli_ctx;
+        PauliGenContext pauli_ctx;
     };
-    static auto make_gen_context(const Monomial<NumModes> &gen) -> GenContext {
-        return GenContext{make_pauli_gen_context<NumModes>(gen)};
-    }
-    static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.pauli_ctx.gen; }
+    static auto make_gen_context(const Bitset &gen) -> GenContext { return GenContext{make_pauli_gen_context(gen)}; }
+    static auto generator(const GenContext &ctx) -> const Bitset & { return ctx.pauli_ctx.gen; }
 
     // Rotation-ready sign: already the negated raw product sign (see pauli_rotation_sign).
-    static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &mono, const Monomial<NumModes> &new_mono)
-        -> int {
-        return pauli_rotation_sign<NumModes>(ctx.pauli_ctx, mono, new_mono);
+    static auto rotation_sign(const GenContext &ctx, const Bitset &mono, const Bitset &new_mono) -> int {
+        return pauli_rotation_sign(ctx.pauli_ctx, mono, new_mono);
     }
     // Pauli's rotation sign is already the emitted sine phase -- no Hermitian fold.
     static auto emit_phase(int rotation_sign, size_t /*mono_pop*/, size_t /*gen_pop*/, size_t /*overlap*/) -> int {
@@ -100,19 +84,8 @@ struct PauliAlgebra {
     }
 
     // Anticommutation fold columns = J(G) = pair_swap(G); Pauli needs no odd-|G| row-parity correction.
-    static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return pair_swap<NumModes>(gen); }
-    static auto fold_needs_odd_correction(const Monomial<NumModes> & /*gen*/) -> bool { return false; }
-
-    static auto encode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> & /*mono*/) -> double {
-        return encode_pauli_coeff(coeff);
-    }
-    static auto decode_coeff(const std::complex<double> &coeff, const Monomial<NumModes> & /*mono*/)
-        -> std::complex<double> {
-        return decode_pauli_coeff(coeff.real());
-    }
-    static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
-        return pauli_state_phase<NumModes>(mono, state_mask);
-    }
+    static auto fold_generator(const Bitset &gen) -> Bitset { return pair_swap(gen); }
+    static auto fold_needs_odd_correction(const Bitset & /*gen*/) -> bool { return false; }
 };
 
 // Shape check only: the members the backbone actually calls are enforced by use, not by this concept.
@@ -124,59 +97,67 @@ concept Algebra = requires {
     { A::allows_basis_change } -> std::convertible_to<bool>;
 };
 
-static_assert(Algebra<MajoranaAlgebra<1>>);
-static_assert(Algebra<PauliAlgebra<1>>);
+static_assert(Algebra<MajoranaAlgebra>);
+static_assert(Algebra<PauliAlgebra>);
 
 // The single runtime->policy branch: the hot backbone passes a generic lambda and is then fully
 // specialized on the chosen algebra. Both arms must return the same type.
-template <size_t NumModes, typename F>
+template <typename F>
 auto with_algebra(Basis basis, F &&f) {
     if (basis == Basis::Pauli) {
-        return std::forward<F>(f).template operator()<PauliAlgebra<NumModes>>();
+        return std::forward<F>(f).template operator()<PauliAlgebra>();
     }
-    return std::forward<F>(f).template operator()<MajoranaAlgebra<NumModes>>();
+    return std::forward<F>(f).template operator()<MajoranaAlgebra>();
 }
 
 // Point-dispatch helpers for cold sites (per-layer / per-materialization) that carry a runtime Basis.
 
-template <size_t NumModes>
-auto algebra_fold_generator(Basis basis, const Monomial<NumModes> &gen) -> Monomial<NumModes> {
-    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::fold_generator(gen); });
+template <MonomialLike T>
+auto algebra_fold_generator(Basis basis, const T &gen) -> T {
+    return with_algebra(basis, [&gen]<typename A>() { return A::fold_generator(gen); });
 }
-template <size_t NumModes>
-auto algebra_fold_needs_odd_correction(Basis basis, const Monomial<NumModes> &gen) -> bool {
-    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::fold_needs_odd_correction(gen); });
+template <MonomialLike T>
+auto algebra_fold_needs_odd_correction(Basis basis, const T &gen) -> bool {
+    return with_algebra(basis, [&gen]<typename A>() { return A::fold_needs_odd_correction(gen); });
 }
-template <size_t NumModes>
-auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono) -> double {
-    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::encode_coeff(coeff, mono); });
+// These three branch on Basis directly instead of going through with_algebra, and the policy classes
+// carry no encode_coeff/decode_coeff/state_phase member as a result -- both would have been a
+// width-agnostic passthrough to the free function called here, so an algebra *class* bought nothing and
+// left the mapping written twice, with only one of the two reachable. The branch below is the whole
+// mapping; see the note on state_phase_rows for why a per-scored-row branch is the right altitude here.
+auto algebra_encode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono) -> double {
+    return basis == Basis::Pauli ? encode_pauli_coeff(coeff) : monoprop::encode_coeff(coeff, mono);
 }
-template <size_t NumModes>
-auto algebra_decode_coeff(Basis basis, const std::complex<double> &coeff, const Monomial<NumModes> &mono)
+auto algebra_decode_coeff(Basis basis, const std::complex<double> &coeff, const MonomialLike auto &mono)
     -> std::complex<double> {
-    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::decode_coeff(coeff, mono); });
+    return basis == Basis::Pauli ? decode_pauli_coeff(coeff.real()) : monoprop::decode_coeff(coeff, mono);
 }
-template <size_t NumModes>
-auto algebra_state_phase(Basis basis, const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
-    return with_algebra<NumModes>(basis, [&]<typename A>() { return A::state_phase(mono, state_mask); });
+auto algebra_state_phase(Basis basis, const MonomialLike auto &mono, const auto &state_mask) -> double {
+    return basis == Basis::Pauli ? pauli_state_phase(mono, state_mask) : majorana_state_phase(mono, state_mask);
 }
 
 // Score each fully-paired term's diagonal element against the initial product state, emitting
 // sink(row, phase). A sink rather than a dense out[row] because the scored set is a vanishing
 // fraction of the rows.
-template <size_t NumModes, typename Rows, typename Sink>
+//
+// num_bits is the width of the rows in `store`, which the state mask must match. No width template
+// parameter and no with_algebra: the only thing the algebra policy supplied here was A::state_phase,
+// and algebra_state_phase above is the same branch without a compile-time width. The branch does move
+// inside the loop, which is why this is spelled out rather than left implicit -- it is a per-*scored*-row
+// branch on a value fixed for the propagator's lifetime, on a path that runs over the fully-paired
+// terms only (~0.07% of rows) and not per term in the scan.
+template <typename Rows, typename Sink>
 auto algebra_score_state(Basis basis,
                          const VecZ &paired_inds,
                          const VecZ &initial_state,
                          const Rows &store,
+                         size_t num_bits,
                          Sink &&sink) -> void {
-    with_algebra<NumModes>(basis, [&]<typename A>() {
-        const auto state_mask = initial_state_mask<NumModes>(initial_state);
-        for (size_t i = 0; i < paired_inds.size(); ++i) {
-            const auto &row = materialize_row<NumModes>(store, paired_inds[i]);
-            sink(paired_inds[i], A::state_phase(row, state_mask));
-        }
-    });
+    const auto state_mask = initial_state_mask(initial_state, num_bits);
+    for (const auto &idx : paired_inds) {
+        const auto &row = materialize_row(store, idx);
+        sink(idx, algebra_state_phase(basis, row, state_mask));
+    }
 }
 
 } // namespace monoprop

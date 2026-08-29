@@ -17,11 +17,11 @@
 #include <cstddef>
 #include <random>
 
-#include "monoprop/core/Monomial.h"
+#include "monoprop/Bitset.h"
 
 namespace test_utils {
 
-// A random monomial over `NumModes` modes occupying at most `max_slots` of them, each with a uniformly
+// A random monomial over `num_modes` modes occupying at most `max_slots` of them, each with a uniformly
 // random non-empty code (one Majorana of the mode, the other, or the pair).
 //
 // One definition, deliberately: this is the input distribution of the whole randomized sparse/codes test
@@ -29,12 +29,11 @@ namespace test_utils {
 // product overflow -- decides what those tests actually cover. A per-file copy would let one of them be
 // tuned and the rest silently left behind. Kept out of TestUtilities.h, which pulls in Boost.Test,
 // MonomialPropagator and MPI; the files that want this want nothing else.
-template <size_t NumModes>
-inline auto random_monomial(std::mt19937_64 &rng, size_t max_slots) -> monoprop::Monomial<NumModes> {
-    monoprop::Monomial<NumModes> mono;
+inline auto random_monomial(std::mt19937_64 &rng, size_t num_modes, size_t max_slots) -> monoprop::Bitset {
+    monoprop::Bitset mono(2 * num_modes);
     const size_t occupied = rng() % (max_slots + 1);
     for (size_t k = 0; k < occupied; ++k) {
-        const size_t mode = rng() % NumModes;
+        const size_t mode = rng() % num_modes;
         const auto code = 1U + static_cast<unsigned int>(rng() % 3U);
         if ((code & 1U) != 0U) {
             mono.set(2 * mode);

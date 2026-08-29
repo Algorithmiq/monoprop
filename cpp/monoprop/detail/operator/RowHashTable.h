@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -37,12 +36,17 @@ namespace monoprop::detail {
 }
 
 // What a row store's spilled rows cost outside its own arrays: the map node per entry (key, mapped
-// value and ~24 bytes of std::unordered_map node and bucket overhead). Shared for the same reason as
-// the capacity rule above -- the node-overhead estimate is a single number that must not be corrected
-// in one store and not the other, which would skew operator_memory_breakdown() for one backend only.
+// value and ~24 bytes of std::unordered_map node and bucket overhead) plus whatever each spilled
+// monomial owns past its inline words. Shared for the same reason as the capacity rule above -- the
+// node-overhead estimate is a single number that must not be corrected in one store and not the other,
+// which would skew operator_memory_breakdown() for one backend only.
 template <typename OverflowMap>
 [[nodiscard]] inline auto spilled_rows_bytes(const OverflowMap &overflow) -> size_t {
-    return overflow.size() * (sizeof(typename OverflowMap::mapped_type) + sizeof(size_t) + 24);
+    size_t total = overflow.size() * (sizeof(typename OverflowMap::mapped_type) + sizeof(size_t) + 24);
+    for (const auto &[key, value] : overflow) {
+        total += value.heap_bytes();
+    }
+    return total;
 }
 
 class TermIndexCeilingReached : public std::runtime_error {
@@ -59,11 +63,10 @@ public:
 // point is that the caller owns the row representation. `eq(row_index)` confirms a pre-filter hit
 // against the caller's rows, and no operation here reads a row.
 //
-// The layout this produces is load-bearing, not an implementation detail: it fixes the iteration order
-// of for_each_slot(), which sets the order of a propagator's user-visible evolved-term list and
-// therefore its floating-point accumulation order. A store that keyed rows through its own copy of this
-// logic could diverge on that while still looking correct, which is the reason the index lives apart
-// from the row representation rather than inside one.
+// Shared by every row store, and that is load-bearing rather than tidiness: the layout this produces
+// fixes the iteration order of for_each_slot(), which sets the order of a propagator's user-visible
+// evolved-term list and therefore its floating-point accumulation order. Two stores that keyed rows
+// through separate copies of this logic could diverge on that while both looking correct.
 //
 // Single-writer, matching its owners: one partition, one thread; parallelism is cross-partition.
 class RowHashTable {

@@ -42,17 +42,20 @@
 
 namespace monoprop {
 
-template <size_t NumModes>
-class MonomialPropagator; // completed before any PartitionGroup member body is instantiated (Impl.h)
+// Only detail/monomial_propagator/MonomialPropagator.cpp includes this header, and it does so *after*
+// MonomialPropagator's definition -- which this file now requires rather than merely prefers. The
+// member bodies below are ordinary functions, not templates, so they are parsed where they are written
+// instead of at instantiation, and make_unique<MonomialPropagator> needs the complete type right there.
+// A future include from anywhere earlier fails loudly on the incomplete type; it cannot go wrong quietly.
+class MonomialPropagator;
 
 namespace detail::partition {
 
-template <size_t NumModes>
 class PartitionGroup {
 public:
     // Builds each partition's propagator via `factory(partition_comm)` ON its master thread, so heap allocations
     // are first-touched on the owning core. `factory` must build a partitions=1 propagator.
-    using Factory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
+    using Factory = std::function<std::unique_ptr<MonomialPropagator>(mpi::Comm)>;
 
     // `parent` is the enclosing communicator (size R): R == 1 ⇒ an in-process ShmComm; R > 1 ⇒ a
     // HybridComm folding R ranks x S partitions into one flat P=R*S world.
@@ -68,7 +71,7 @@ public:
         // The masters are already running, so a ctor throw must not escape: ~PartitionGroup would never run,
         // and destroying joinable threads during unwinding calls std::terminate.
         try {
-            run_on_all([&](int r) { partitions_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
+            run_on_all([this, &factory](int r) { partitions_[static_cast<size_t>(r)] = factory(comm_for_(r)); });
         }
         catch (...) {
             stop_and_join_();
@@ -90,7 +93,7 @@ public:
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
         try { // see the primary ctor: a throw past live masters would std::terminate
-            run_on_all([&](int r) {
+            run_on_all([this, &src](int r) {
                 auto p = src.partitions_[static_cast<size_t>(r)]->clone_(); // virtual: keeps the derived type
                 p->comm_ = comm_for_(r); // PartitionGroup is a friend of MonomialPropagator
                 partitions_[static_cast<size_t>(r)] = std::move(p);
@@ -106,8 +109,8 @@ public:
     ~PartitionGroup() { stop_and_join_(); }
 
     auto partition_count() const -> int { return n_; }
-    auto partition(int s) -> MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
-    auto partition(int s) const -> const MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
+    auto partition(int s) -> MonomialPropagator & { return *partitions_[static_cast<size_t>(s)]; }
+    auto partition(int s) const -> const MonomialPropagator & { return *partitions_[static_cast<size_t>(s)]; }
 
     // Run `body(partition_rank)` on all masters, block until every one finishes, then rethrow the first
     // exception raised (peers were released via poison, so a throw on one master never hangs the rest).
@@ -125,9 +128,9 @@ public:
         cv_start_.notify_all();
         {
             std::unique_lock lk(m_);
-            cv_done_.wait(lk, [&] { return done_count_ == n_; });
+            cv_done_.wait(lk, [this] { return done_count_ == n_; });
         }
-        for (auto &e : errs_) {
+        for (const auto &e : errs_) {
             if (e) {
                 std::rethrow_exception(e);
             }
@@ -164,7 +167,7 @@ private:
     auto discover_node_peers_() -> void {
 #ifdef monoprop_ENABLE_MPI
         if (parent_.kind == mpi::Comm::Kind::Mpi && mpi::size(parent_) > 1) {
-            MPI_Comm node = MPI_COMM_NULL;
+            auto node = MPI_COMM_NULL;
             MPI_Comm_split_type(parent_.mpi, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
             MPI_Comm_rank(node, &node_rank_);
             MPI_Comm_size(node, &node_size_);
@@ -179,7 +182,8 @@ private:
 #ifdef monoprop_ENABLE_MPI
     // A rank seeing 16 of 128 CPUs is equally "my own 16" and "eight of us share these 16": only the masks tell.
     auto classify_node_masks_(MPI_Comm node) -> void {
-        node_mask_ = NodeMask::Shared;
+        using enum monoprop::detail::partition::NodeMask;
+        node_mask_ = Shared;
         if (node_size_ <= 1) {
             report_placement_(nullptr, 0, "alone");
             return; // nobody to collide with; the normal split already handles group_count == 1
@@ -193,7 +197,7 @@ private:
         const bool disjoint = monoprop::detail::partition::masks_are_pairwise_disjoint(all.data(),
                                                                                        static_cast<size_t>(node_size_),
                                                                                        kMaskWords);
-        node_mask_ = disjoint ? NodeMask::PerRank : NodeMask::Shared;
+        node_mask_ = disjoint ? PerRank : Shared;
         report_placement_(all.data(), static_cast<size_t>(node_size_), disjoint ? "private" : "shared");
     }
 #endif
@@ -203,7 +207,7 @@ private:
      * nullptr means no peers, so measure our own mask; the verdict is then "alone", which is NOT
      * evidence that a multi-rank launcher did the right thing. Reached only from the primary ctor, so
      * a clone does not re-emit -- the mask belongs to the process, not the object. */
-    auto report_placement_(const uint64_t *masks, size_t peers, const char *verdict) -> void {
+    auto report_placement_(const uint64_t *masks, size_t peers, const char *verdict) const -> void {
         constexpr size_t kWords = monoprop::detail::partition::kAffinityMaskWords;
         std::array<uint64_t, kWords> own{};
         if (masks == nullptr && affinity_mask_words(own.data(), kWords)) {
@@ -232,7 +236,7 @@ private:
 #endif
         shm_ = std::make_unique<mpi::ShmComm>(n_);
     }
-    auto comm_for_(int r) -> mpi::Comm {
+    auto comm_for_(int r) const -> mpi::Comm {
 #ifdef monoprop_ENABLE_MPI
         if (hyb_) {
             return mpi::Comm::make_hybrid(hyb_.get(), r);
@@ -283,7 +287,7 @@ private:
             const std::function<void(int)> *job = nullptr;
             {
                 std::unique_lock lk(m_);
-                cv_start_.wait(lk, [&] { return stop_ || job_gen_ != seen; });
+                cv_start_.wait(lk, [this, &seen] { return stop_ || job_gen_ != seen; });
                 if (stop_) {
                     return;
                 }
@@ -314,14 +318,15 @@ private:
 #ifdef monoprop_ENABLE_MPI
     std::unique_ptr<mpi::HybridComm> hyb_; // set iff R > 1
 #endif
-    std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> partitions_;
+    std::vector<std::unique_ptr<MonomialPropagator>> partitions_;
     std::vector<std::exception_ptr> errs_;
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
 
     // Job dispatch: the facade thread publishes one job and waits for all masters to complete it.
     std::mutex m_;
-    std::condition_variable cv_start_, cv_done_;
+    std::condition_variable cv_start_;
+    std::condition_variable cv_done_;
     const std::function<void(int)> *job_ = nullptr;
     unsigned job_gen_ = 0;
     int done_count_ = 0;
@@ -329,26 +334,12 @@ private:
 };
 
 // One result per partition, indexed by partition rank. The slots are written from the owning master, so
-// `body` must not touch the vector itself. Staged into a non-bit-packed `Slot` type: std::vector<bool> is
-// the bit-packed specialization, so concurrent partition-master writes to different logical elements can
-// tear the same underlying word (a data race) even though their indices are disjoint.
-template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, int>>
-auto collect_on_all(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
-    using Slot = std::conditional_t<std::is_same_v<R, bool>, std::uint8_t, R>;
-    std::vector<Slot> staging(static_cast<size_t>(group.partition_count()));
-    group.run_on_all([&](int r) { staging[static_cast<size_t>(r)] = static_cast<Slot>(body(r)); });
-    if constexpr (std::is_same_v<R, bool>) {
-        return std::vector<R>(staging.begin(), staging.end());
-    }
-    else {
-        return staging;
-    }
-}
-
-// collect_on_all over the partition propagators themselves: `body(partition)` on each partition's master.
-template <size_t NumModes, typename Body, typename R = std::invoke_result_t<Body &, MonomialPropagator<NumModes> &>>
-auto map_partitions(PartitionGroup<NumModes> &group, Body body) -> std::vector<R> {
-    return collect_on_all(group, [&](int r) -> R { return body(group.partition(r)); });
+// `body` must not touch the vector itself -- see detail::staged_collect for what that rules out.
+template <typename Body, typename R = std::invoke_result_t<Body &, int>>
+auto collect_on_all(PartitionGroup &group, Body body) -> std::vector<R> {
+    return detail::staged_collect<R>(static_cast<size_t>(group.partition_count()), [&group, &body](auto &&emit) {
+        group.run_on_all([&emit, &body](int r) { emit(r, body(r)); });
+    });
 }
 
 } // namespace detail::partition

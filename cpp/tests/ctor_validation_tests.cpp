@@ -32,7 +32,7 @@ using test_utils::SimulatorConfig;
 
 namespace {
 constexpr size_t N = 8;
-using MP = MonomialPropagator<N>;
+using MP = MonomialPropagator;
 
 // Construct with the full argument list; individual cases vary just the field(s) under test.
 auto make(const OperatorDict &op,
@@ -41,19 +41,19 @@ auto make(const OperatorDict &op,
           std::optional<double> upper_atol = std::nullopt,
           CutoffType cutoff_type = CutoffType::Length,
           std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-          size_t logical_num_modes = N,
+          std::optional<size_t> num_modes = std::nullopt,
           Basis basis = Basis::Majorana) -> MP {
-    return MP(op,
-              cutoff,
-              VecZ{},
-              std::nullopt,
-              MPI_COMM_SELF,
-              lower_atol,
-              upper_atol,
-              cutoff_type,
-              basis_change,
-              logical_num_modes,
-              basis);
+    return test_utils::make_propagator(num_modes.value_or(N),
+                                       op,
+                                       cutoff,
+                                       VecZ{},
+                                       std::nullopt,
+                                       MPI_COMM_SELF,
+                                       lower_atol,
+                                       upper_atol,
+                                       cutoff_type,
+                                       basis_change,
+                                       basis);
 }
 } // namespace
 
@@ -61,7 +61,7 @@ BOOST_AUTO_TEST_CASE(ctor_accepts_valid_config) {
     BOOST_CHECK_NO_THROW(make(OperatorDict{}));
 }
 
-BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
+BOOST_AUTO_TEST_CASE(ctor_zero_num_modes_throws) {
     BOOST_CHECK_THROW(make(OperatorDict{},
                            2 * N,
                            std::nullopt,
@@ -70,14 +70,34 @@ BOOST_AUTO_TEST_CASE(ctor_logical_num_modes_out_of_range_throws) {
                            std::nullopt,
                            /*logical=*/0),
                       std::runtime_error);
-    BOOST_CHECK_THROW(make(OperatorDict{},
-                           2 * N,
-                           std::nullopt,
-                           std::nullopt,
-                           CutoffType::Length,
-                           std::nullopt,
-                           /*logical=*/N + 1),
-                      std::runtime_error);
+}
+
+// The storage-width rule. Rounding keeps the hash index's probe
+// layout aligned across nearby system sizes; the one-block floor keeps a small system off a partly
+// populated word. Both are observable, since the width is part of every monomial's hash.
+BOOST_AUTO_TEST_CASE(storage_modes_for_rounds_up_to_a_whole_block_with_a_floor) {
+    BOOST_TEST(monoprop::detail::storage_modes_for(1) == 32U);
+    BOOST_TEST(monoprop::detail::storage_modes_for(31) == 32U);
+    BOOST_TEST(monoprop::detail::storage_modes_for(32) == 32U);
+    BOOST_TEST(monoprop::detail::storage_modes_for(33) == 64U);
+    BOOST_TEST(monoprop::detail::storage_modes_for(250) == 256U);
+    // No ceiling: this used to be a compile-time template argument bounded by monoprop_MAX_NUM_MODES.
+    BOOST_TEST(monoprop::detail::storage_modes_for(4096) == 4096U);
+    BOOST_TEST(monoprop::detail::storage_modes_for(4097) == 4128U);
+}
+
+BOOST_AUTO_TEST_CASE(ctor_storage_width_is_the_rounding_of_the_logical_width) {
+    // The storage width is not settable: it is whatever storage_modes_for() makes of num_modes, so two
+    // propagators over the same system cannot end up hashing monomials at different widths. N == 8
+    // rounds to one 32-mode block.
+    const MonomialPropagator rounded(OperatorDict{}, 2 * N, VecZ{}, /*num_modes=*/N, std::nullopt, MPI_COMM_SELF);
+    BOOST_TEST(rounded.num_modes() == N);
+    BOOST_TEST(rounded.storage_num_modes() == 32U);
+
+    // A narrower logical width still stores at the same block; it only narrows what the system means.
+    auto narrow = make(OperatorDict{}, 2 * N, std::nullopt, std::nullopt, CutoffType::Length, std::nullopt, 4);
+    BOOST_TEST(narrow.num_modes() == 4U);
+    BOOST_TEST(narrow.storage_num_modes() == 32U);
 }
 
 BOOST_AUTO_TEST_CASE(ctor_pauli_requires_support_cutoff_throws) {
@@ -107,13 +127,13 @@ BOOST_AUTO_TEST_CASE(ctor_operator_index_out_of_range_throws) {
     BOOST_CHECK_THROW(make(op), std::runtime_error);
 }
 
-// A gate generator index outside the system must throw, not underflow 2*NumModes-1-index into an
+// A gate generator index outside the system must throw, not underflow 2*num_modes-1-index into an
 // out-of-bounds Bitset::set.
 BOOST_AUTO_TEST_CASE(build_graph_generator_index_out_of_range_throws) {
     OperatorDict op;
     op[VecZ{0, 1}] = std::complex<double>(0.0, 1.0);
     auto sim = make(op);
-    // 2*logical_num_modes == 16, so slot 20 is outside this system.
+    // 2*num_modes == 16, so slot 20 is outside this system.
     BOOST_CHECK_THROW(sim.build_graph({VecZ{20, 21}}, VecZ{0}, VecD{1.0}), std::runtime_error);
     BOOST_CHECK_NO_THROW(sim.build_graph({VecZ{0, 3}}, VecZ{0}, VecD{1.0}));
 }
@@ -158,7 +178,7 @@ BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
     BOOST_CHECK_THROW(pauli.update_basis_change(std::vector<VecZ>(2 * N, VecZ{0})), std::invalid_argument);
 
     auto majorana = make(OperatorDict{});
-    // Too few rows: regenerate_cutoff_fn_ indexes [0, 2*logical_num_modes) unconditionally.
+    // Too few rows: regenerate_cutoff_fn_ indexes [0, 2*num_modes) unconditionally.
     BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>{VecZ{0}}), std::invalid_argument);
     BOOST_CHECK_THROW(majorana.update_basis_change(std::vector<VecZ>(2 * N, VecZ{2 * N})), std::runtime_error);
     std::vector<VecZ> identity(2 * N);
@@ -169,7 +189,7 @@ BOOST_AUTO_TEST_CASE(setters_enforce_the_constructor_invariants) {
 }
 
 BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
-    auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
+    auto sim = build_simulator(n_modes, data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_REQUIRE(sim.graph_layers() > 0);
     BOOST_CHECK_THROW(sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters),
@@ -178,7 +198,7 @@ BOOST_FIXTURE_TEST_CASE(propagate_on_nonempty_graph_throws, ExampleDataFix) {
 
 // Pins MPGraph::get_layer's checked_layer_offset throw site.
 BOOST_FIXTURE_TEST_CASE(graph_get_layer_out_of_range_throws, ExampleDataFix) {
-    auto sim = build_simulator<n_modes>(data, SimulatorConfig{});
+    auto sim = build_simulator(n_modes, data, SimulatorConfig{});
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const auto &graph = sim.graph();
     const size_t n_layers = graph.layers();

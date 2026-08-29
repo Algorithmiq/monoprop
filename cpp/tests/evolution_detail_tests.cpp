@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/Utilities.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -38,6 +39,8 @@ using monoprop::detail::MatchedEpochSet;
 
 namespace {
 
+constexpr size_t kNumBits = 2 * 8;
+
 // resolve_range_ touches only wants_values and self_hit, so the engine drives without the cross-rank sink surface.
 struct RecordingSink {
     static constexpr bool wants_values = false;
@@ -45,8 +48,8 @@ struct RecordingSink {
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
 
-auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
-    return test_utils::indexed_operator<8>(terms);
+auto indexed_op(const MonomialList &terms) -> detail::MPOperator {
+    return test_utils::indexed_operator(kNumBits, terms);
 }
 
 } // namespace
@@ -130,11 +133,11 @@ BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_reached_by_gate_count) {
 // A self-resolve hit whose index the store only grew into after construction is a real hit -- it must reach
 // the sink -- but it is outside the matched set, whose array is sized to combined_size.
 BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
-    std::vector<Monomial<8>> terms;
+    MonomialList terms;
     for (size_t i = 0; i < 6; ++i) {
-        terms.push_back(indices_to_bitset<8>({i, i + 8}));
+        terms.push_back(indices_to_bitset({i, i + 8}, kNumBits));
     }
-    detail::MPOperator<8> op = indexed_op(terms);
+    detail::MPOperator op = indexed_op(terms);
     const size_t combined_size = 4; // rows 4 and 5 stand for terms this layer inserted after construction
 
     MatchedEpochSet matched;
@@ -142,28 +145,33 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     // than past the end of epoch_, where it would be silent undefined behaviour.
     matched.begin_gate(op.size());
 
-    detail::LayerBuildEngine<8, RecordingSink, detail::OperatorIndex<8>> eng(op,
-                                                                             *op.dense_rows,
-                                                                             mpi::Comm{},
-                                                                             /*R_=*/1,
-                                                                             /*my_rank_=*/0,
-                                                                             matched,
-                                                                             combined_size,
-                                                                             RecordingSink{});
-    detail::query_push<8>(eng.queries_r[0], terms[1], 1);
-    detail::query_push<8>(eng.queries_r[0], terms[5], -1);
-    eng.src_idx_r[0] = {0, 2};
+    op.with_store([&](auto &store) {
+        detail::LayerBuildEngine<RecordingSink, std::remove_reference_t<decltype(store)>> eng(
+            op,
+            store,
+            mpi::Comm{},
+            /*R_=*/1,
+            /*my_rank_=*/0,
+            matched,
+            combined_size,
+            detail::query_payload_words_for(store),
+            RecordingSink{});
+        eng.queries_r[0] = detail::query_buffer();
+        detail::query_push(eng.queries_r[0], terms[1], 1);
+        detail::query_push(eng.queries_r[0], terms[5], -1);
+        eng.src_idx_r[0] = {0, 2};
 
-    eng.resolve_self_queries(/*is_leader_pass=*/true);
+        eng.resolve_self_queries(/*is_leader_pass=*/true);
 
-    // Both keys are in the store, so both resolve as hits and neither may be deferred as a miss.
-    BOOST_TEST(eng.deferred_self_misses.empty());
-    BOOST_TEST_REQUIRE(eng.sink.hits.size() == 2U);
-    BOOST_TEST(eng.sink.hits[0].second == 1U);
-    BOOST_TEST(eng.sink.hits[1].second == 5U);
-    BOOST_TEST(matched.is_marked(1));
-    BOOST_TEST(!matched.is_marked(4));
-    BOOST_TEST(!matched.is_marked(5));
+        // Both keys are in the store, so both resolve as hits and neither may be deferred as a miss.
+        BOOST_TEST(eng.deferred_self_misses.empty());
+        BOOST_TEST_REQUIRE(eng.sink.hits.size() == 2U);
+        BOOST_TEST(eng.sink.hits[0].second == 1U);
+        BOOST_TEST(eng.sink.hits[1].second == 5U);
+        BOOST_TEST(matched.is_marked(1));
+        BOOST_TEST(!matched.is_marked(4));
+        BOOST_TEST(!matched.is_marked(5));
+    });
 }
 
 BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {

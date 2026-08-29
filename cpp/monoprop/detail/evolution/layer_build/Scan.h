@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -53,16 +54,19 @@ inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &a
                          .use_coeff_checks = check_atol || check_upper_atol};
 }
 
-template <size_t NumModes>
+// indices is a vector, not the std::array<size_t, 2*NumModes> it was: with no compile-time width there is
+// no bound to size an array by, and the array was sized for the whole register while only |G| entries
+// (typically 2-4) are ever used. `count` stays alongside it so the existing
+// {indices.data(), count} spans keep working unchanged.
 struct EvenParityGeneratorColumns {
-    std::array<size_t, Monomial<NumModes>::size()> indices{};
+    std::vector<size_t> indices{};
     size_t count = 0;
 };
 
-// Set columns in ascending bit order.
-template <size_t NumModes>
-auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_mono) -> EvenParityGeneratorColumns<NumModes> {
-    EvenParityGeneratorColumns<NumModes> columns;
+// Set columns in ascending bit order. Called once per layer, not per term.
+auto build_even_parity_generator_columns(const MonomialLike auto &gen_mono) -> EvenParityGeneratorColumns {
+    EvenParityGeneratorColumns columns;
+    columns.indices.resize(gen_mono.count());
     for (size_t bit_idx = gen_mono.find_first(); bit_idx < gen_mono.size(); bit_idx = gen_mono.find_next(bit_idx)) {
         columns.indices[columns.count++] = bit_idx;
     }
@@ -81,8 +85,9 @@ struct EvenParityNzWord {
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
 // in before followers are derived.
-template <size_t NumModes>
-inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
+// `sc` stays a deduced `auto`: InvertedIndex is no longer a template, but the fold-cache tests also
+// bind this to a stand-in exposing the same column accessors.
+inline auto even_parity_scan_pass1(const auto &sc,
                                    std::span<const size_t> gen_cols,
                                    size_t pivot_col,
                                    size_t wlo,
@@ -104,7 +109,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
     // to eager expansion.
     auto fold_range = [&](size_t bb, size_t be) {
-        combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        combine_columns_block(sc, gen_cols, blk.data(), bb, be);
         const size_t nz_block_start = nz.size();
         for (size_t wi = bb; wi < be; ++wi) {
             uint64_t overlap = blk[wi - bb];
@@ -123,13 +128,13 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                 foll = overlap & pivot_dense_ptr[wi];
                 n_foll += static_cast<size_t>(std::popcount(foll));
             }
-            nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+            nz.emplace_back(wi * 64, overlap, foll);
         }
         if (pivot_dense || nz.size() == nz_block_start) {
             return; // dense pivot already folded in, or no anticommuting term — nothing to expand
         }
         std::vector<uint64_t> &pblk = pivot_column_block_scratch();
-        combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
+        combine_columns_block(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
         const uint64_t *pw = pblk.data();
         for (size_t k = nz_block_start; k < nz.size(); ++k) {
             EvenParityNzWord &e = nz[k];
@@ -160,18 +165,30 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
 
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
 // hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-template <size_t NumModes, Algebra A, typename Store>
-[[gnu::always_inline]] inline auto emit_term_products(const Store &ham,
+//
+// `mono` and `new_mono` are scratch owned by the caller for the whole gate, not locals: both are
+// overwritten whole here, and a term must not pay for constructing them. Constructing a Bitset means
+// deriving the word count from a runtime width, testing it against the inline capacity and -- above
+// that capacity -- allocating; with a compile-time width all of that used to fold away to nothing, so
+// the scratch is what keeps it off the per-term path.
+template <Algebra A>
+[[gnu::always_inline]] inline auto emit_term_products(const auto &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
-                                                      Monomial<NumModes> &new_mono,
+                                                      MonomialLike auto &mono,
+                                                      MonomialLike auto &new_mono,
                                                       size_t &overlap,
                                                       int &phase_factor) -> void {
-    Monomial<NumModes> mono;
-    for_each_row_position<NumModes>(ham, i, [&](size_t pos) { mono.set(pos); });
-    const Monomial<NumModes> &gen = A::generator(ctx);
-    new_mono = mono ^ gen;
-    overlap = mono.count_and(gen);
+    const auto &gen = A::generator(ctx);
+    // for_each_row_position only sets bits, so the scratch has to start clear; reset() keeps the width,
+    // unlike assigning a default-constructed Bitset.
+    mono.reset();
+    for_each_row_position(ham, i, [&mono](size_t pos) { mono.set(pos); });
+    // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
+    // fused_xor_into() computes them together, straight into new_mono (see Bitset::fused_xor_into).
+    // Its result_count (popcount of the XOR) goes unused -- the caller already has new_pop for free
+    // via mono_pop + gen_pop - 2*overlap -- so it is not threaded through here.
+    overlap = mono.fused_xor_into(gen, new_mono).overlap;
     phase_factor = A::rotation_sign(ctx, mono, new_mono);
 }
 
@@ -192,30 +209,35 @@ struct FusedScanResult {
 // deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
-// Templated on the row backend rather than reading it off `op`: build_layer binds the concrete store
-// once per layer (MPOperator::with_store) and hands it down, so a scan that touches one row per
-// anticommuting term pays no branch for the choice.
-template <size_t NumModes, Algebra A, typename Store>
-auto fused_find_and_collect(const MPOperator<NumModes> &op,
+// op, store, gen and cutoff_eval are deduced from their argument types; no width is named anywhere below
+// any more -- the monomials this builds take theirs from `gen`, which is the operator's storage width.
+//
+// `store` is a separate argument rather than reached through `op`: build_layer has already bound the
+// backend, and re-entering that dispatch here would put a branch on the per-term path, which is the one
+// place it cannot go. Rows are read through the accessors, so both backends answer the same scan.
+template <Algebra A, typename Store>
+auto fused_find_and_collect(const auto &op,
                             const Store &store,
-                            const Monomial<NumModes> &gen,
-                            const CutoffEvaluator<NumModes> &cutoff_eval,
+                            const MonomialLike auto &gen,
+                            const auto &cutoff_eval,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
                             std::optional<size_t> only_rotate_len_k,
                             size_t rank_count,
                             size_t my_rank,
+                            size_t logical_num_modes,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult {
-    validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
+    validate_only_rotate_len_k(only_rotate_len_k, 2 * logical_num_modes);
     const size_t gen_pop = gen.count();
-    const auto ectx = A::make_gen_context(gen);
 
     FusedScanResult res;
-    res.leader_queries.assign(rank_count, VecZ{});
+    // Header-initialized, not empty: a record push bumps the count in place, so the header has to be there
+    // before the first one -- including on the per-rank streams nothing is ever pushed to.
+    res.leader_queries.assign(rank_count, query_buffer());
     res.leader_src.assign(rank_count, std::vector<size_t>{});
-    res.follower_queries.assign(rank_count, VecZ{});
+    res.follower_queries.assign(rank_count, query_buffer());
     res.follower_src.assign(rank_count, std::vector<size_t>{});
     // Sized to R even on the early-return paths below so the fused engine's per-rank src_val_r access
     // is always in bounds (parallel to leader_src / follower_src).
@@ -229,9 +251,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // pair_swap(G), so pauli_anticommutes = parity(|M ∩ J(G)|), and Pauli never needs the odd-|G|
         // correction since parity(|G ∩ J(G)|)=0). The pivot splitting each pair is a set bit of the real G
         // (gen.find_first()), not J(G) — A and A⊕G differ exactly on G's bits.
-        const Monomial<NumModes> fold_gen = A::fold_generator(gen);
+        const auto fold_gen = A::fold_generator(gen);
         const bool g_odd = A::fold_needs_odd_correction(gen);
-        const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
+        const auto gen_columns = build_even_parity_generator_columns(fold_gen);
         if (gen_columns.count == 0) {
             return res;
         }
@@ -273,35 +295,42 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
-        // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
+        // Per-gate, not per-term: the product scratch is overwritten whole per term, so constructing it
+        // per term would buy nothing and cost a width derivation, an inline-capacity test and -- above
+        // that capacity -- a heap allocation, every term. Both take the generator's width, which is the
+        // operator's storage width, so every word op below stays on Bitset's matched-width path.
+        const auto gen_ctx = A::make_gen_context(gen);
+        Bitset mono(gen.size());
+        Bitset new_mono(gen.size());
+
+        // The dynamic gate runs before the product, so a gate-rejected term computes none.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            Monomial<NumModes> new_mono;
             size_t overlap = 0;
             int phase_factor = 0;
-            emit_term_products<NumModes, A>(store, i, ectx, new_mono, overlap, phase_factor);
+            emit_term_products<A>(store, i, gen_ctx, mono, new_mono, overlap, phase_factor);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
-            if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
+            if (const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
+                !struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
+            const size_t r_prime = (rank_count == 1) ? my_rank : monomial_hash(new_mono) % rank_count;
             const size_t source = i;
             if (is_follower) {
-                query_push<NumModes>(fq[r_prime], new_mono, phase);
+                query_push(fq[r_prime], new_mono, phase);
                 fs[r_prime].push_back(source);
                 if (capture_values) {
                     fv[r_prime].push_back(v_src);
                 }
             }
             else {
-                query_push<NumModes>(lq[r_prime], new_mono, phase);
+                query_push(lq[r_prime], new_mono, phase);
                 ls[r_prime].push_back(source);
                 if (capture_values) {
                     lv[r_prime].push_back(v_src);
@@ -318,23 +347,24 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             nz.clear(); // pass 1 clears it on entry; the skip must too (thread_local reuse)
         }
         else {
-            even_parity_scan_pass1<NumModes>(inverted_index,
-                                             gen_cols,
-                                             gen.find_first(),
-                                             /*wlo=*/0,
-                                             /*whi=*/word_count,
-                                             last_word,
-                                             last_word_mask,
-                                             g_odd,
-                                             row_parity_ptr,
-                                             nz,
-                                             n_anti,
-                                             n_foll);
+            even_parity_scan_pass1(inverted_index,
+                                   gen_cols,
+                                   gen.find_first(),
+                                   /*wlo=*/0,
+                                   /*whi=*/word_count,
+                                   last_word,
+                                   last_word_mask,
+                                   g_odd,
+                                   row_parity_ptr,
+                                   nz,
+                                   n_anti,
+                                   n_foll);
         }
         if (rank_count == 1) {
-            lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
+            const size_t record_words = query_words(new_mono.num_words());
+            lq[my_rank].reserve(kQueryHeaderWords + ((n_anti - n_foll) * record_words));
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
+            fq[my_rank].reserve(kQueryHeaderWords + (n_foll * record_words));
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
@@ -350,15 +380,15 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
                 // Fused cos sweep: scaling in place here is what replaces building a cosine set.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
+                    const auto tz = static_cast<size_t>(std::countr_zero(m));
+                    const auto i = w.base + tz;
                     const double v_src = fused_scale_coeffs[i];
                     fused_scale_coeffs[i] = v_src * fused_scale_cos;
                     const double abs_c = std::abs(v_src);
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = row_popcount<NumModes>(store, i);
+                    const size_t mono_pop = row_popcount(store, i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -368,13 +398,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 // gate before the popcount row read — deferring popcount saves random packed-row loads.
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
+                    const auto tz = static_cast<size_t>(std::countr_zero(m));
+                    const auto i = w.base + tz;
                     const auto [v_src, abs_c] = derive_coeff(i);
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = row_popcount<NumModes>(store, i);
+                    const size_t mono_pop = row_popcount(store, i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -383,9 +413,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
                 // orbital-passing terms, so the popcount row read must precede both.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const size_t mono_pop = row_popcount<NumModes>(store, i);
+                    const auto tz = static_cast<size_t>(std::countr_zero(m));
+                    const auto i = w.base + tz;
+                    const size_t mono_pop = row_popcount(store, i);
                     if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
                         continue;
                     }

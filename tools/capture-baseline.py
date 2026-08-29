@@ -21,6 +21,9 @@ types, and for a small set of hand-written qubit smoke problems through
 :class:`~monoprop.PauliPropagator` (``Basis::Pauli``). For each run this dumps: the term count, the
 full ``(monomial indices, coefficient)`` set (in the engine's own iteration order -- ordering is
 itself a regression signal, see the module docstring on diffing below), and the expectation value.
+``_EMBEDDED_CASES`` adds one more Majorana case that is not a file: a fixture relabelled into a system
+wide enough to store its monomials in nine words rather than one, past the eight that fit inline.
+
 Dual-basis note: the msgpack fixtures are all fermionic (Majorana). The public API only converts
 Pauli -> Majorana (``PauliOperator.get_majorana_operator()``, the Jordan-Wigner image); there is no
 Majorana -> Pauli operator converter to press a fixture into a qubit circuit, and hand-rolling that
@@ -37,9 +40,10 @@ exists to catch, and ``just diff-baseline`` stays a byte-wise diff.
 
 ``--compare REF CAND [--tol]`` is the other mode, for a change that reorders terms *on purpose*: it
 holds term membership and the term count exactly and compares coefficients and energies only to a
-relative tolerance. It exists for a change that reorders on purpose -- a second row backend that
-hashes rows differently, say, and so accumulates in a different order. Do not use it to wave through
-a diff whose ordering was supposed to be stable.
+relative tolerance. The support-form row backend is the case it exists for -- it hashes rows
+differently, so it accumulates in a different order (see ``monoprop_ROW_STORE`` and the plan's
+Stage 6). Use it to check one backend against the other; do not use it to wave through a diff whose
+ordering was supposed to be stable.
 
 Usage (needs the `test` dependency group synced -- this reuses tests/cases.py, which imports
 pytest-cases):
@@ -96,6 +100,19 @@ _PROBE_CUTOFFS = (2, 4)
 _EXACT_FIXTURES = frozenset(
     {"rx_rz_ry_rz_exact", "random_exact", "lih_fermionic_spin_exact"}
 )
+
+# Cases that are a fixture relabelled into a wider system (``tests/cases.py``'s ``WIDE_EMBEDDING``),
+# captured under a name of their own. Every fixture on disk is one 32-mode storage block, i.e. below
+# every sparse-row crossover -- so without this the support-form backend's own regime would never appear
+# in a baseline, and that regime is what the remaining stages change. Probe cutoffs only: the untruncated
+# run is the same half-million terms the narrow case already dumps, at nine times the width.
+#
+# This is the one case whose *backend* depends on the build: 288 storage modes is above the crossover a
+# wheel build uses and below the one an arch-flags build uses, so it runs sparse rows in the first and
+# dense in the second. The two agree on term sets and values but not on order, so a golden captured in
+# one configuration is not byte-comparable against a capture from the other -- use ``--compare``
+# (``just diff-baseline-sparse``) across that boundary, and re-seed the golden if you switch.
+_EMBEDDED_CASES = (("lih_fermionic_spin_wide", "lih_fermionic_spin_exact.msgpack"),)
 
 
 def _load_cases_module() -> Any:  # noqa: ANN401
@@ -172,11 +189,17 @@ def _capture_majorana_case(
     cases_mod: Any,  # noqa: ANN401
     path: Path,
     comm: Any,  # noqa: ANN401
+    case: str | None = None,
+    embedding: Any = None,  # noqa: ANN401
 ) -> list[dict[str, Any]]:
-    """Capture every (cutoff_type, cutoff) combo for one msgpack fixture."""
-    problem = cases_mod.load_problem(path)
+    """Capture every (cutoff_type, cutoff) combo for one msgpack fixture.
+
+    ``embedding`` relabels the fixture into a wider system, and ``case`` then names the result; see
+    ``_EMBEDDED_CASES``.
+    """
+    problem = cases_mod.load_problem(path, embedding)
     circuit = problem.monomial_circuit.to_circuit()
-    case = path.stem
+    case = case or path.stem
     cutoffs = _cutoffs_for(problem.n_modes, case)
 
     records = []
@@ -399,6 +422,16 @@ def main() -> int:
     all_records: list[dict[str, Any]] = []
     for path in sorted(DATA_DIR.glob("*.msgpack")):
         all_records.extend(_capture_majorana_case(cases_mod, path, comm))
+    for case, fixture in _EMBEDDED_CASES:
+        all_records.extend(
+            _capture_majorana_case(
+                cases_mod,
+                DATA_DIR / fixture,
+                comm,
+                case=case,
+                embedding=cases_mod.WIDE_EMBEDDING,
+            )
+        )
     all_records.extend(_capture_pauli_smoke(comm))
 
     out_dir = args.out

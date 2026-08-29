@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <cstring>
 #include <format>
 #include <functional>
@@ -45,19 +46,35 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/partition/StagedCollect.h"
+#include "monoprop/monopropExport.h"
 
 namespace monoprop {
 namespace detail {
 struct FusedContract;
 namespace partition {
-template <size_t NumModes>
 class PartitionGroup;
 } // namespace partition
+
+/*! \brief Compute the storage width for a given system width.
+ *
+ * Rounds \a num_modes up to the next whole 32-mode block and returns at least
+ * one full block.
+ *
+ * This keeps the hash index probe layout aligned across nearby system sizes
+ * while avoiding partially populated words for small systems.
+ *
+ * \param num_modes Number of modes in the system.
+ * \return Storage width rounded up to a whole 32-mode block.
+ */
+[[nodiscard]] inline auto storage_modes_for(size_t num_modes) -> size_t {
+    constexpr size_t kModesPerBlock = 32;
+    return std::max(kModesPerBlock, ((num_modes + kModesPerBlock - 1) / kModesPerBlock) * kModesPerBlock);
+}
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
-// Covers a crossed atol pair and a logical width outside [1, NumModes]; also thrown from
-// MonomialPropagatorImpl.h
+// Covers a crossed atol pair and a zero mode count; also thrown from MonomialPropagator.cpp
 class PropagatorConfigError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -69,21 +86,51 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-template <size_t NumModes>
-class MonomialPropagator {
+/// The MPI ranks resolved different partition counts.
+// The count comes from partitions= or the environment on every rank independently, so the fix is to the
+// launch, and it may belong to a different rank.
+class PartitionCountMismatch : public std::runtime_error {
 public:
-    using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
+    using std::runtime_error::runtime_error;
+};
+
+/// The requested operation does not agree with the graph this propagator currently holds.
+// Either it requires no stored graph, or its parameter_mapping matches neither the stored layer nor gate
+// count. The caller recovers by contracting or rebuilding the graph, not by fixing an isolated argument.
+class GraphStateConflict : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+/// The (basis, cutoff_type, basis_change) triple is inconsistent.
+// A Pauli basis with a Length cutoff or a basis change, or a basis-change table that is not
+// 2*num_modes rows.
+class CutoffConfigError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+/// A coefficient-informed build_graph() was given fewer parameter values than replaying the stored graph
+/// as a seed needs.
+class SeedParametersTooShort : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+class monoprop_EXPORT MonomialPropagator {
+public:
+    using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator>(mpi::Comm)>;
 
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
+                       size_t num_modes,
                        std::optional<unsigned int> schrodinger_cutoff,
                        mpi::Comm comm,
                        std::optional<double> lower_atol = std::nullopt,
                        std::optional<double> upper_atol = std::nullopt,
                        CutoffType cutoff_type = CutoffType::Length,
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                       size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0,
                        PartitionChildFactory child_factory = nullptr);
@@ -96,10 +143,22 @@ public:
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
-    static constexpr auto num_modes{NumModes};
-    static constexpr auto storage_num_modes{NumModes};
+    /// The system's width, as passed to the constructor.
+    auto num_modes() const -> size_t { return num_modes_; }
+    /// Monomials are stored at this width; >= num_modes(). See detail::storage_modes_for.
+    /// Read off the operator rather than kept as a member: it is the width that actually runs, and a
+    /// second copy of a derived value is a second thing the copy constructor has to keep in step.
+    auto storage_num_modes() const -> size_t { return mp_op_.num_bits() / 2; }
 
-    auto logical_num_modes() const -> size_t { return logical_num_modes_; }
+    /// Whether this propagator stores its terms as sparse rows rather than dense monomials — the choice
+    /// made from storage_num_modes() and `monoprop_ROW_STORE`. Both backends compute the same terms and
+    /// the same expectation value; they hash rows differently, so they differ in term order and hence in
+    /// floating-point accumulation order. Not partitioned: every partition decides from the same storage
+    /// width, and the facade's own operator holds no terms — so a facade answers from partition 0, whose
+    /// store is the one that runs.
+    [[nodiscard]] auto rows_are_sparse() const -> bool {
+        return partition_group_ ? first_partition_().rows_are_sparse() : mp_op_.rows_are_sparse();
+    }
 
     /// Term count on this rank (allreduce for global).
     auto size() const -> size_t { return partition_group_ ? partitioned_size_() : mp_op_.size(); }
@@ -116,11 +175,11 @@ public:
     }
 
     /// This rank's operator storage. Single-partition only — see require_single_partition_.
-    auto mp_op() -> detail::MPOperator<NumModes> & {
+    auto mp_op() -> detail::MPOperator & {
         require_single_partition_("mp_op()");
         return mp_op_;
     }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & {
+    auto mp_op() const -> const detail::MPOperator & {
         require_single_partition_("mp_op()");
         return mp_op_;
     }
@@ -133,7 +192,7 @@ public:
         return graph_.storage_memory_usage();
     }
 
-    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown {
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
@@ -171,17 +230,6 @@ public:
         return mp_op_.size();
     }
 
-    /// Whether this propagator's rows live in the support-form backend. Which one it is is decided once
-    /// at construction (see use_sparse_rows_); this reports the answer rather than re-deriving it.
-    /// Partition-transparent: every partition of a facade makes the same choice from the same width and
-    /// the same environment, so partition 0 speaks for all of them.
-    auto rows_are_sparse() const -> bool {
-        if (is_partition_facade()) {
-            return first_partition_().rows_are_sparse();
-        }
-        return mp_op_.rows_are_sparse();
-    }
-
     /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
     /// rank/partition. local_cycles is always empty: local cycles are folded into cross_rank[my_rank].
     using LocalCycleData = std::tuple<size_t, size_t, int>;
@@ -197,7 +245,7 @@ public:
                             new_lower_atol.value(),
                             upper_atol_.value()));
         }
-        update_setting_([&](MonomialPropagator &p) { p.lower_atol_ = new_lower_atol; });
+        update_setting_([&new_lower_atol](MonomialPropagator &p) { p.lower_atol_ = new_lower_atol; });
     }
 
     auto update_upper_atol(std::optional<double> new_upper_atol) -> void {
@@ -207,31 +255,37 @@ public:
                             new_upper_atol.value(),
                             lower_atol_.value()));
         }
-        update_setting_([&](MonomialPropagator &p) { p.upper_atol_ = new_upper_atol; });
+        update_setting_([&new_upper_atol](MonomialPropagator &p) { p.upper_atol_ = new_upper_atol; });
     }
 
-    /// Existing terms are not re-truncated.
+    /// Existing terms are not re-truncated by the cutoff function itself; the row store that holds them
+    /// is resized in place when the new cutoff moves its width bound, so a term admitted under the old
+    /// cutoff keeps its row (same index, same content) rather than paying the overflow-map cost for the
+    /// rest of the propagator's life.
     auto update_cutoff(unsigned int new_cutoff) -> void {
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([&new_cutoff](MonomialPropagator &p) {
             p.cutoff_ = new_cutoff;
             p.regenerate_cutoff_fn_();
+            p.resize_row_store_if_needed_();
         });
     }
 
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
         validate_cutoff_config_(new_cutoff_type, basis_change_);
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([&new_cutoff_type](MonomialPropagator &p) {
             p.cutoff_type_ = new_cutoff_type;
             p.regenerate_cutoff_fn_();
+            p.resize_row_store_if_needed_();
         });
     }
 
     /// The basis the cutoff is measured in; nullopt ⇒ the native basis.
     auto update_basis_change(std::optional<std::vector<VecZ>> new_basis_change) -> void {
         validate_cutoff_config_(cutoff_type_, new_basis_change);
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([&new_basis_change](MonomialPropagator &p) {
             p.basis_change_ = new_basis_change;
             p.regenerate_cutoff_fn_();
+            p.resize_row_store_if_needed_();
         });
     }
 
@@ -288,7 +342,7 @@ public:
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
-    /// Coefficients are positioned by the owning partition's row index, so on a facade the result is
+    /// Coefficients are positioned by the owning partition's own index, so on a facade the result is
     /// the per-partition blocks concatenated in partition order: the same multiset as an unpartitioned
     /// run, but not positionally stable across partition counts — and the count is auto-picked from the
     /// host's core count unless pinned. Use evolved_operator_terms() when positions must mean something.
@@ -302,39 +356,48 @@ public:
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
-    virtual auto clone_() const -> std::unique_ptr<MonomialPropagator<NumModes>> {
-        return std::make_unique<MonomialPropagator<NumModes>>(*this);
+    virtual auto clone_() const -> std::unique_ptr<MonomialPropagator> {
+        return std::make_unique<MonomialPropagator>(*this);
     }
 
-    static inline const auto ev_fn = [](const EvalRequest &request,
-                                        mpi::Comm comm,
-                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
+    static inline const auto ev_fn = [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+        return ev(request, comm, cos);
+    };
 
     static inline const auto ev_and_grad_fn =
-        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-        return ev_and_grad(request, comm, cos);
-    };
+        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+            return ev_and_grad(request, comm, cos);
+        };
 
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
-    auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
+    auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList, VecD>;
 
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
-    CutoffFn<NumModes> cutoff_fn_;
-    detail::MPOperator<NumModes> mp_op_;
+    CutoffFn cutoff_fn_;
+    detail::MPOperator mp_op_;
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
     detail::MatchedEpochSet matched_scratch_;
 
-    // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
-    // structural position bound when it has one. Shared by both backends -- the bound is in physical
-    // slots, which is what an OperatorIndex inline width and a SparseRowStore slot count both count.
+    // Row width bound in modes, shared by both row-store backends so a construction-time choice (in
+    // particular, Schrödinger's initial term set being wider than the post-first-layer cutoff would
+    // suggest) is made once rather than risking the two backends disagreeing on it.
     auto row_width_bound_() const -> size_t;
 
-    // Which row backend to build on, decided once per propagator. See config::Settings::row_store for
-    // why an unrecognized monoprop_ROW_STORE is a throw rather than a silent fall back to auto.
-    auto use_sparse_rows_() const -> bool;
+    // The named backend's ideal row width for the current cutoff/basis-change configuration: one
+    // function for the branch the constructor's store setup and resize_row_store_if_needed_() would
+    // otherwise duplicate. A perf hint, never a correctness constraint -- an over-long row spills
+    // losslessly. The caller names the backend, since the constructor picks one before there is a store
+    // to read it off and every later caller has one.
+    auto target_row_width_(bool sparse) const -> size_t;
+
+    // Resizes the live backend to its target row width when it has moved, migrating existing rows rather
+    // than dropping them. Must run after any setting change that can move the cutoff-derived bound
+    // (update_cutoff, update_cutoff_type, update_basis_change) -- see the row-width discussion on
+    // update_cutoff().
+    auto resize_row_store_if_needed_() -> void;
 
     // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
     static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;
@@ -349,9 +412,27 @@ protected:
 
     auto for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void;
 
+    // for_each_partition_ with the partition rank. The two map_ helpers below are defined here rather
+    // than in the .cpp because a derived class in another translation unit instantiates them, and this
+    // type-erased primitive is what lets them see the partitions without seeing PartitionGroup.
+    auto for_each_partition_indexed_(const std::function<void(int, MonomialPropagator &)> &fn) -> void;
+
+    auto partition_count_() const -> size_t;
+
     // One result per partition, in partition order.
     template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto map_partitions_(Fn fn) -> std::vector<R>;
+    auto map_partitions_(Fn fn) -> std::vector<R> {
+        return map_partitions_indexed_([&fn](int, MonomialPropagator &p) -> R { return fn(p); });
+    }
+
+    // The slots are written from the owning master, so `fn` must not touch the vector itself -- see
+    // detail::staged_collect for what that rules out.
+    template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
+    auto map_partitions_indexed_(Fn fn) -> std::vector<R> {
+        return detail::staged_collect<R>(partition_count_(), [this, &fn](auto &&emit) {
+            for_each_partition_indexed_([&emit, &fn](int r, MonomialPropagator &p) { emit(r, fn(r, p)); });
+        });
+    }
 
     // Concatenated in partition order. The partitions are disjoint, so the result enumerates the whole
     // operator (deterministic for a fixed partition count).
@@ -373,32 +454,38 @@ protected:
 
     auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
 
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
-    auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
+    // The backend decision, in one place: monoprop_ROW_STORE if it forces one, else the measured
+    // crossover on the storage width. Throws if the variable holds something unrecognized -- see
+    // config::Settings::row_store for why an unrecognized value is not silently ignored.
+    auto use_sparse_rows_() const -> bool;
 
 private:
+    CutoffType cutoff_type_;
+
+    // Immutable after construction.
+    Basis basis_{Basis::Majorana};
+
     unsigned int cutoff_;
 
-    std::optional<double> lower_atol_, upper_atol_;
     double core_term_{0.0};
 
     // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
 
-    size_t logical_num_modes_{NumModes};
-
-    CutoffType cutoff_type_;
-    std::optional<std::vector<VecZ>> basis_change_;
-
-    // Immutable after construction.
-    Basis basis_{Basis::Majorana};
+    // The system's width
+    size_t num_modes_;
 
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
-    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
+    std::unique_ptr<detail::partition::PartitionGroup> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
-    friend class detail::partition::PartitionGroup<NumModes>;
+    friend class detail::partition::PartitionGroup;
+
+    std::optional<double> lower_atol_;
+    std::optional<double> upper_atol_;
+
+    std::optional<std::vector<VecZ>> basis_change_;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
@@ -417,7 +504,7 @@ private:
     auto partitioned_graph_size_() const -> std::pair<size_t, size_t>;
     auto partitioned_graph_layers_() const -> size_t;
     auto partitioned_core_term_() const -> double;
-    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
+    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown;
     auto partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown;
 
     auto cos_index_count_() const -> size_t;
@@ -501,10 +588,7 @@ private:
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
 
-    auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
+    auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) const -> VecD;
 };
 
 } // namespace monoprop
-
-// inline implementation
-#include "monoprop/detail/monomial_propagator/MonomialPropagator.inl"

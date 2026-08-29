@@ -68,8 +68,8 @@ def test_basis_change(serial_comm) -> None:
 @pytest.mark.parametrize(
     ("basis_change", "match"),
     [
-        ([[0]], "exactly 2\\*logical_num_modes"),
-        ([[0]] * (2 * N_MODES - 1), "exactly 2\\*logical_num_modes"),
+        ([[0]], "exactly 2\\*num_modes"),
+        ([[0]] * (2 * N_MODES - 1), "exactly 2\\*num_modes"),
         ([[2 * N_MODES]] * (2 * N_MODES), "out of range"),
     ],
 )

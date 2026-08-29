@@ -42,12 +42,6 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-set(
-  monoprop_MAX_NUM_MODES
-  "250"
-  CACHE STRING
-  "Maximum number of simulable Fermionic modes with Python bindings"
-)
 option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
 option(
   monoprop_WIDE_TERM_INDEX
@@ -77,14 +71,17 @@ endif()
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/Sanitizers.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 
-# The storage width at or above which a propagator picks the support-form row store over the dense one.
-# Derived from whether ARCH_FLAG is actually emitted rather than from the option that asks for it, and
-# deliberately not a cache entry: what moves the crossover is the target ISA, so a stale cached value
-# would silently pick the wrong backend after a flag change.
+# Sparse/dense crossover depends on vector popcount support.
+# Dense scales with storage-word passes, while sparse is mostly width-flat.
+# Without vector popcount, dense degrades earlier.
 #
-# Thresholds are the first full 32-mode block where sparse is clearly faster than dense beyond
-# run-to-run noise. Expect about +/-1 block variation across machines due to cache and popcount
-# throughput.
+# This is intentionally not a cache variable: it should track the flags actually used
+# for compilation. monoprop_ROW_STORE=dense|sparse already lets users force a backend
+# at runtime without rebuilding.
+#
+# Thresholds are the first full 32-mode block where sparse is clearly faster than dense
+# beyond run-to-run noise, measured end-to-end in the propagator. Expect about +/-1 block
+# variation across machines due to cache and popcount throughput.
 if(ARCH_FLAG)
   set(monoprop_SPARSE_ROW_MIN_MODES 768)
 else()
@@ -108,10 +105,6 @@ message(
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
 message(
   STATUS
-  "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes"
-)
-message(
-  STATUS
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
 )
 message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
@@ -119,8 +112,11 @@ message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
-message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
+message(
+  STATUS
+  "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes"
+)
 
 include(GNUInstallDirs)
 
@@ -130,8 +126,13 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 add_library(monoprop-objs OBJECT "")
 add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
 
-# must run before add_subdirectory(cpp): CTest's enabled-ness does not propagate
-# back up to a parent directory that has already been added as a subdirectory.
+# Testing is enabled from the *top-level* list file, and must run before add_subdirectory(cpp), on
+# purpose: CTest's root is wherever enable_testing() was called, so called from cpp/ it wrote no
+# top-level CTestTestfile.cmake and every documented entry point (the CMakePresets test presets,
+# `just test-mpi`, `just test-wide`) pointed ctest at a directory with no tests -- ctest reports "No
+# tests were found" and exits 0 for that, so those commands were silently running nothing. And
+# CTest's enabled-ness does not propagate back up to a parent directory that has already been added
+# as a subdirectory, so this must precede add_subdirectory(cpp) below rather than follow it.
 if(monoprop_ENABLE_CXX_UNIT_TESTS)
   enable_testing()
   include(CTest)

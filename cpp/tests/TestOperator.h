@@ -17,9 +17,7 @@
 #include <cstddef>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/MPOperator.h"
-#include "monoprop/detail/operator/RowAccess.h"
 
 namespace test_utils {
 
@@ -27,19 +25,18 @@ namespace test_utils {
 // else, so find()/find_batch see nothing until the hash index is populated, which only the
 // insert_absent_terms path does. That sequence is the one correct incantation for "an operator a resolve
 // can look terms up in", so it lives here rather than being copied into each test that needs one.
-template <size_t NumModes>
-inline auto indexed_operator(const monoprop::MonomialList<NumModes> &terms,
-                             monoprop::Basis basis = monoprop::Basis::Majorana)
-    -> monoprop::detail::MPOperator<NumModes> {
-    monoprop::detail::MPOperator<NumModes> op;
+inline auto indexed_operator(size_t num_bits,
+                             const monoprop::MonomialList &terms,
+                             monoprop::Basis basis = monoprop::Basis::Majorana) -> monoprop::detail::MPOperator {
+    monoprop::detail::MPOperator op(num_bits);
     op.basis = basis;
     op.with_store([&](auto &rows) {
-        monoprop::detail::insert_absent_terms<NumModes>(
+        monoprop::detail::insert_absent_terms(
             op,
             rows,
             terms.size(),
-            [&](size_t k) -> const monoprop::Monomial<NumModes> & { return terms[k]; },
-            [&](size_t k, size_t base) { monoprop::assign_row<NumModes>(rows, base + k, terms[k]); });
+            [&](size_t k) -> const monoprop::Bitset & { return terms[k]; },
+            [&](size_t k, size_t base) { assign_row(rows, base + k, terms[k]); });
     });
     return op;
 }

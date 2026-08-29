@@ -295,11 +295,11 @@ if(TEST_ENABLE_MPI_VARIANTS AND MPIEXEC_EXECUTABLE)
     )
   endforeach()
 
-  # MPI counterpart of the "_sparse_rows" serial variant above. The cross-rank resolve inserts absent
-  # terms into whichever backend is live, and the sparse one is what wide (MPI-scale) systems actually
-  # resolve to -- so it needs its own multi-rank coverage, not just the single-rank one above. Runs over
-  # _mpi_sparse_ranks, not _mpi_ranks, so it stays cheap by default regardless of how wide the dense rank
-  # list grows.
+  # MPI counterpart of the "_sparse_rows" serial variant above: the sparse backend keys its rows
+  # differently, so it reaches the resolve path with a different row set and a different insert
+  # order, and it is the backend wide (MPI-scale) systems actually resolve to -- so it needs its
+  # own multi-rank coverage, not just the single-rank one above. Runs over _mpi_sparse_ranks, not
+  # _mpi_ranks, so it stays cheap by default regardless of how wide the dense rank list grows.
   foreach(_mpi_rank IN LISTS _mpi_sparse_ranks)
     set(mpi_cmd "${MPIEXEC_EXECUTABLE}")
     list(

@@ -99,6 +99,26 @@ one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Select either group with
 `ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
 
+Both groups also get a `sparse-rows` counterpart (`monoprop_ROW_STORE=sparse`
+forced) — the sparse backend has its own wire format with no dense equivalent,
+so it needs its own coverage rather than riding along with the dense runs. The
+MPI `sparse-rows` variants use a separate rank list,
+`monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`), so growing
+`monoprop_MPI_TEST_PROCS` for dense coverage does not also multiply how many
+sparse-row `mpiexec` launches run.
+
+CTest's `-j` is safe for both, including MPI-enabled builds: the harness ignores
+`SIGPIPE` before `MPI_Init`. Each per-case process initialises MPI as a *singleton*
+(no launcher), so PMIx opens a socket to a daemon that is not running, and under
+concurrency a write to it would otherwise kill the process mid-init. If you embed
+monoprop in a C++ program that initialises MPI the same way, do the same — a library
+cannot set a process-wide signal disposition on its caller's behalf. Python callers
+need nothing: CPython already ignores `SIGPIPE`.
+
+You may still see OpenMPI warn that `/dev/shm` is too small for its shared-memory
+segment. That one is about performance, not correctness; raise the container's
+`--shm-size` (Docker defaults to 64 MB) to silence it.
+
 ### The sparse-rows variants
 
 Every case is also registered a second time with `monoprop_ROW_STORE=sparse`,
@@ -106,57 +126,29 @@ labelled `sparse-rows`, so the whole suite runs against both row backends. This 
 not redundancy: every fixture and oracle here is well below the automatic crossover
 (`monoprop_SPARSE_ROW_MIN_MODES`), so without forcing it the support-form backend
 would be compiled and never executed — and it is the one that ships for wide systems.
-`cpp/tests/row_store_selection_tests.cpp` asserts the variable actually reached the
-propagator, so the extra pass cannot silently be a second dense run. Run just that
-configuration with `-L sparse-rows`, and its Python counterpart with
+Run just that configuration with `-L sparse-rows`, and its Python counterpart with
 `just test-sparse-rows`.
-
-The MPI `sparse-rows` variants use a separate rank list,
-`monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`), so growing
-`monoprop_MPI_TEST_PROCS` for dense coverage does not also multiply how many
-sparse-row `mpiexec` launches run.
 
 Expect it to be *slower*: at fixture widths a monomial is one word, which is where
 dense rows win. That is the crossover working, not a regression.
+
+Forcing the backend covers the *code*; it does not cover the *width* the backend
+exists for. That is what the wide case is for: `tests/test_wide_system.py` and
+`cpp/tests/wide_system_tests.cpp` relabel the 12-mode LiH fixture into a 260-mode
+system, which stores at 288 modes — nine words per monomial, an active window 28
+modes short of its storage, and mode lanes past the first codes word. Nine words is
+also past the eight that fit inline in a `Bitset`, so this is the only case in either
+suite that propagates monomials whose words live on the heap. A released wheel
+selects sparse rows at that width on its own; a build with
+`monoprop_ENABLE_ARCH_FLAGS` on gets there through `monoprop_ROW_STORE=sparse`, and
+both suites assert they did, so the sparse variant cannot silently be a second dense
+run. See `tests/data/README.md` on why a wide case is derived rather than checked
+in.
 
 The two backends agree on term sets and expectation values but not on term *order*,
 so cross-backend checks use `tools/capture-baseline.py --compare` with a tolerance
 (`just diff-baseline-sparse`), never the byte diff that `just diff-baseline` applies
 within one backend.
-
-### Golden baselines
-
-A refactor that is meant to change no result is checked against a captured
-baseline rather than by reading the diff. `tools/capture-baseline.py` propagates
-every `tests/data/*.msgpack` fixture at a spread of cutoffs and cutoff types,
-plus a few hand-written qubit problems, and dumps each run's term count, its
-full `(monomial indices, coefficient)` set and its expectation value:
-
-```bash
-just capture-baseline golden   # seed, once, on an unmodified tree
-just diff-baseline             # rebuild, re-capture, diff against the golden
-```
-
-Terms are dumped in the engine's own returned order, not sorted, and
-`diff-baseline` is a byte-wise `diff`. That is deliberate: the order runs from
-`SplitmixHash` through probe order, MPI owner routing and insertion order into
-floating-point accumulation order, so a silent reorder is a regression, not an
-implementation detail.
-
-For a change that reorders terms *on purpose*, `--compare REF CAND --tol` holds
-the term set and the term count exactly and compares coefficients and energies to
-a relative tolerance instead. Reach for it only when the reordering is the point;
-it is not a way to wave through a diff that was supposed to be stable.
-
-The capture is rank-local, so under `mpiexec` each rank writes its own
-`manifest-rank<r>.json`. Output lands in `.baseline-capture/`, which is
-gitignored.
-
-`just diff-baseline-sparse` is that tolerant comparison applied to the row
-backends: it captures with `monoprop_ROW_STORE=sparse` and checks the result
-against the golden capture as term sets plus a relative tolerance. The sparse rows
-hash differently, so they accumulate in a different order by design — a byte diff
-there would fail on every run.
 
 
 ## Adding tests

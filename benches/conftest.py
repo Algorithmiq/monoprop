@@ -178,6 +178,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         group.addoption(f"--{name}", type=int, default=default, help=help_text)
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
+    # One round is enough for the memory and term-count stats, which are deterministic, but it yields
+    # no spread for the timing -- and these models are expensive enough that a single sample can sit
+    # well off the median. Raise this when a timing difference is the point of the run.
+    models.addoption(
+        "--model-rounds",
+        type=int,
+        default=1,
+        help="Rounds per fixed model; each rebuilds the model first. >1 gives a median and stddev "
+        "(default: 1).",
+    )
     for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
             models.addoption(
@@ -225,7 +235,6 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         "python_version": platform.python_version(),
         "nanobind_version": monoprop.__nanobind_version__,
         "nanobind_backend_version": nanobind_backend_version,
-        "monoprop_max_num_modes": monoprop.MAX_NUM_MODES,
         "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX", "default"),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "default"),
         # Filled by _record_placement: the threads exist only once a propagator does.
@@ -242,11 +251,11 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
 def _record_row_store(propagator: Any) -> None:
     """Fold one propagator's resolved row backend into this run's metadata.
 
-    ``monoprop_ROW_STORE`` says what was asked for, not what ran: unset lets the mode width pick, and
-    the crossover it picks against is a build-time constant. The two backends accumulate a term sum in
-    different orders and have different footprints, so a report has to name the one that ran. Widths
-    differ within a run, hence so can the backend: a disagreement records as ``"mixed"`` rather than
-    letting the last propagator speak for the others.
+    ``monoprop_ROW_STORE`` says what was asked for, not what ran: unset lets the storage width pick,
+    and the crossover it picks against is a build-time constant. The two backends accumulate a term
+    sum in different orders and have different footprints, so a report has to name the one that ran.
+    Widths differ within a run, hence so can the backend: a disagreement records as ``"mixed"``
+    rather than letting the last propagator speak for the others.
     """
     if _rank() != 0:
         return
@@ -315,6 +324,12 @@ def bench_comm() -> Any:
 def bench_rounds(request: pytest.FixtureRequest) -> int:
     """Return the fixed round count for the random benchmarks."""
     return int(request.config.getoption("--bench-rounds"))
+
+
+@pytest.fixture(scope="session")
+def model_rounds(request: pytest.FixtureRequest) -> int:
+    """Return the round count for the fixed-model benchmarks."""
+    return int(request.config.getoption("--model-rounds"))
 
 
 @pytest.fixture(scope="session")

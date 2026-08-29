@@ -17,26 +17,30 @@
 // Majorana helpers the shipped library no longer calls, kept alive for tests/cpp/mpfunctions.cpp.
 
 #include <algorithm>
+#include <iterator>
 #include <vector>
 
 #include "monoprop/algebra/MajoranaAlgebra.h"
 
 namespace monoprop {
 
-template <size_t NumModes>
-auto fermionic_to_binary_operator(const std::vector<VecZ> &op) -> MonomialList<NumModes> {
-    auto majorana_operator = MonomialList<NumModes>(op.size());
-    std::transform(op.cbegin(), op.cend(), majorana_operator.begin(), indices_to_bitset<NumModes>);
+inline auto fermionic_to_binary_operator(size_t num_modes, const std::vector<VecZ> &op) -> MonomialList {
+    MonomialList majorana_operator;
+    majorana_operator.reserve(op.size());
+    // push_back, not a sized construction plus transform: sizing up front would fill with width-0
+    // bitsets, and every slot is written here anyway.
+    std::ranges::transform(op, std::back_inserter(majorana_operator), [num_modes](const VecZ &term) {
+        return indices_to_bitset(term, 2 * num_modes);
+    });
     return majorana_operator;
 }
 
-template <size_t NumModes>
-auto get_multiplicative_phase(const Monomial<NumModes> &mono,
-                              const Monomial<NumModes> &gen_mono,
+auto get_multiplicative_phase(const MonomialLike auto &mono,
+                              const MonomialLike auto &gen_mono,
                               size_t mono_count,
                               size_t gen_count,
                               size_t overlap) -> int {
-    return interleave_phase<NumModes>(mono, gen_mono) * hermitian_phase(mono_count, gen_count, overlap);
+    return interleave_phase(mono, gen_mono) * hermitian_phase(mono_count, gen_count, overlap);
 }
 
 } // namespace monoprop

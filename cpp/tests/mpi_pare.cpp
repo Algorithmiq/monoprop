@@ -27,18 +27,18 @@ BOOST_AUTO_TEST_CASE(multi_rank_pare_expval_is_finite) {
         return;
     }
 
-    constexpr size_t NumModes = 8;
+    constexpr size_t kNumModes = 8;
     constexpr double kExpvalAtol = 1e-9;
 
-    const auto data = load_case_data<NumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
 
     SimulatorConfig cfg{.comm = MPI_COMM_WORLD};
 
-    auto baseline_sim = build_simulator<NumModes>(data, cfg);
+    auto baseline_sim = build_simulator(kNumModes, data, cfg);
     const double baseline_expval = evaluate_expval(baseline_sim, data, false);
     BOOST_CHECK_SMALL(std::abs(baseline_expval - data.actual_expval), kExpvalAtol);
 
-    auto pared_sim = build_simulator<NumModes>(data, cfg);
+    auto pared_sim = build_simulator(kNumModes, data, cfg);
     const double pared_expval = evaluate_expval(pared_sim, data, true);
 
     BOOST_TEST_CONTEXT("world_size=" << world_size) {
