@@ -189,7 +189,7 @@ public:
         assert(std::adjacent_find(pos, pos + count, std::greater_equal<PosT>{}) == pos + count
                && "row positions must be strictly ascending");
         assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
-        PosT *row = &rows_[i * stride_];
+        PosT *row = row_ptr_mut_(i);
         if (count > inline_width_) {
             // The spill path has no position array, so build the dense form -- only here.
             row[0] = kOverflowMarker;
@@ -249,11 +249,11 @@ public:
         [[nodiscard]] auto inlined() const -> bool { return pos != nullptr; }
     };
     [[nodiscard]] auto row_positions(size_t i) const -> RowPositions {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const PosT *r = row_ptr_(i);
+        if (r[0] == kOverflowMarker) {
             return {nullptr, 0};
         }
-        return {&rows_[(i * stride_) + 1], static_cast<size_t>(c)};
+        return {r + 1, static_cast<size_t>(r[0])};
     }
     // Where a row's packed storage lives. A row is never moved once written -- that is the whole reason
     // the store is chunked rather than one growing vector -- and reading rows back through row(i) cannot
@@ -363,7 +363,7 @@ public:
                 }
                 cand[j] = probe_fp_match_(fingerprint(sp[j]), sp[j] & table_.mask);
                 if (cand[j] != kNoSlot) {
-                    __builtin_prefetch(&rows_[slot_idx_(cand[j]) * stride_], 0, 0);
+                    __builtin_prefetch(row_ptr_(slot_idx_(cand[j])), 0, 0);
                 }
             }
             for (size_t j = 0; j < g; ++j) {
@@ -755,7 +755,8 @@ private:
 
     // Compare row i against an ascending position list; a spilled row falls back to a dense compare.
     [[nodiscard]] auto row_eq_positions(size_t i, const PosT *q, size_t qk) const -> bool {
-        const PosT c = rows_[i * stride_];
+        const PosT *r = row_ptr_(i);
+        const PosT c = r[0];
         if (c == kOverflowMarker) {
             key_type mono;
             for (size_t j = 0; j < qk; ++j) {
@@ -769,7 +770,7 @@ private:
         // std::equal, i.e. a memcmp CALL, and MEASURED to be the right choice: replacing it with the
         // obvious scalar loop cost 54.6M instructions on the pauli cell, because glibc's AVX2 memcmp
         // beats a byte loop even at the ~5 PosT this compares. Do not "optimise" the call away again.
-        return std::equal(q, q + qk, &rows_[(i * stride_) + 1]);
+        return std::equal(q, q + qk, r + 1);
     }
 
     // find()'s chain walk for a position-list key, hash already spread; only the collision arm reaches it.

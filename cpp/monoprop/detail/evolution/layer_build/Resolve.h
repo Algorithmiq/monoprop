@@ -162,7 +162,7 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
     }
     // insert_absent_terms' three steps without its two dense round-trips, and on the same ordering
     // contract, which is what matters: slot j lands at base+j, in miss order = (sender, record) order.
-    const size_t base = op.store->grow_rows_geometric(n_miss);
+    const size_t base = op.store->grow_rows(n_miss);
     for (size_t j = 0; j < n_miss; ++j) {
         const size_t g = pr.miss_g[j];
         op.store->set_positions(base + j, pr.pos_flat.data() + pr.pos_off[g], pr.k_of[g]);

@@ -286,8 +286,8 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_set_positions_matches_set) {
 
     detail::OperatorIndex<kN> from_mono(kInlineWidth);
     detail::OperatorIndex<kN> from_pos(kInlineWidth);
-    from_mono.grow_rows_geometric(terms.size());
-    from_pos.grow_rows_geometric(terms.size());
+    from_mono.grow_rows(terms.size());
+    from_pos.grow_rows(terms.size());
 
     size_t spilled = 0;
     for (size_t i = 0; i < terms.size(); ++i) {

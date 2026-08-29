@@ -64,7 +64,7 @@ auto draw_distinct(std::mt19937_64 &rng, size_t n) -> std::vector<Monomial<kN>> 
 // addresses point into, the interesting case for a prefetch.
 auto build(const std::vector<Monomial<kN>> &terms) -> std::unique_ptr<Index> {
     auto idx = std::make_unique<Index>();
-    const size_t base = idx->grow_rows_geometric(terms.size());
+    const size_t base = idx->grow_rows(terms.size());
     for (size_t k = 0; k < terms.size(); ++k) {
         idx->set(base + k, terms[k]);
     }
@@ -76,7 +76,7 @@ auto build(const std::vector<Monomial<kN>> &terms) -> std::unique_ptr<Index> {
 // arithmetic runs. It shares insert_slot_ but not the GROUPING, which is the thing under test.
 auto build_reference(const std::vector<Monomial<kN>> &terms) -> std::unique_ptr<Index> {
     auto idx = std::make_unique<Index>();
-    const size_t base = idx->grow_rows_geometric(terms.size());
+    const size_t base = idx->grow_rows(terms.size());
     for (size_t k = 0; k < terms.size(); ++k) {
         idx->set(base + k, terms[k]);
         idx->bulk_insert(1, base + k, [&](size_t) -> const Monomial<kN> & { return terms[k]; });

@@ -483,7 +483,7 @@ struct LayerBuildEngine {
         // miss k lands at base+k, in leader-then-follower order.
         // insert_absent_terms is the dense reference this path is differentially tested against
         // (sparse_resolve_tests.cpp), so it must not be deleted for having no library caller.
-        const size_t base = local_op.store->grow_rows_geometric(n_miss);
+        const size_t base = local_op.store->grow_rows(n_miss);
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
             local_op.store->set_positions(base + k, deferred_pos_flat_.data() + m.pos_at, m.k);
