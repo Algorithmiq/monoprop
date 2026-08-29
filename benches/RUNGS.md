@@ -394,17 +394,69 @@ that machine's; the failure modes are not.
 Peak resident memory over the 38 scaling rungs fits
 
 ```
-GiB/node = 3.39 + 0.0634 × Mterms/node
+GiB/node = 3.40 + 0.0634 × Mterms/node        (marginal cost 68.0 B/term)
 ```
 
-within −2.9/+4.5 GiB/node of the line. Use it to pick a node count, not to predict a rung: it is
-a fit over one campaign on one machine, and `cost_gib_per_node` on the row itself is the better
-number where a row has one.
+within −2.9/+4.5 GiB/node of the line. Two cautions before you use it. The constant dominates at
+small loads, so the *apparent* bytes per term is about 180 at 25 Mterms/node and only settles to
+68–71 above roughly 1000 Mterms/node — a per-term figure read off a small rung overestimates a
+large one badly. And it is a fit over one campaign on one machine: where a row carries
+`cost_gib_per_node`, that number is better than the line.
 
-`build_graph` does not obey it. It *extends* the graph rather than replacing it, retaining one
-layer-set per gate, while `propagate` releases each layer as it contracts. Hubbard reaches 97M
-terms through `propagate` in well under 2 GiB, yet four successive `build_graph` calls on the same
-model exceed a 242 GiB node. That is why the graph-holding rungs stop at a single node.
+`build_graph` does not obey it at all, and the gap is not subtle. Measured at identical model
+parameters (`hubbard`, cutoff 6, `lower_atol` 1e-4):
+
+| operation | Trotter steps | terms | peak RSS |
+| --- | ---: | ---: | ---: |
+| `propagate` | 29 | 1,169,024 | 0.38 GiB |
+| `build_graph` | 2 | — | **exceeded a 20 GiB cap** |
+
+`build_graph` *extends* the graph rather than replacing it, retaining one layer-set per gate,
+while `propagate` releases each layer as it contracts. So it was killed at more than 20 GiB while
+running one fourteenth of the Trotter steps — at least a fiftyfold separation on the same problem.
+That is why the graph rungs are the ones whose fit is an open question, and why a graph rung that
+does not fit is a result worth recording rather than a failure.
+
+## What each configuration costs
+
+### `hubbard` / `propagate` on compute nodes
+
+The measured map from the size knob to everything else. Cutoff 10, 8 ranks/node × 16 partitions,
+AMD EPYC 7742 with 242 GiB per node, five reps per row (ten on the smallest). `nodes` is the
+smallest allocation the row was measured on, so `GiB/node` and `median s` are that machine's.
+
+| `--hubbard-lower-atol` | terms | nodes | GiB/node | median s | Mterms/s/node |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `1.25e-05` | 96,981,051 | 1 | 10.8 | 10.8 | 9.02 |
+| `8.8e-06` | 184,124,520 | 2 | 9.6 | 10.6 | 8.70 |
+| `5.9e-06` | 377,482,074 | 1 | 26.6 | 47.7 | 7.91 |
+| `3.9e-06` | 781,669,404 | 2 | 28.0 | 50.9 | 7.68 |
+| `2.6e-06` | 1,569,152,761 | 1 | 99.9 | 215.6 | 7.28 |
+| `1.73e-06` | 3,104,527,573 | 2 | 100.2 | 222.3 | 6.98 |
+| `1.14e-06` | 6,125,805,627 | 2 | 200.2 | 450.2 | 6.80 |
+| `7.35e-07` | 12,255,330,837 | 8 | 99.9 | 227.3 | 6.74 |
+| `4.68e-07` | 24,419,998,198 | 8 | 201.3 | 471.0 | 6.48 |
+| `2.94e-07` | 48,317,129,677 | 32 | 101.3 | 249.6 | 6.05 |
+| `1.82e-07` | 94,684,031,363 | 64 | 84.3 | 257.1 | 5.76 |
+
+Two things to read off it. The knob is **steep** — halving `lower_atol` roughly doubles the term
+count, so it is the only axis that reaches these sizes and a small typo in it is a large change in
+problem. And throughput is nearly flat in problem size at about **7 Mterms/s/node**, drifting from
+9.0 down to 5.8 across three orders of magnitude, which is what makes it a usable planning number:
+
+```
+nodes   ≈ Mterms / 1500      (~100 GiB/node, half of a 242 GiB node)
+nodes   ≈ Mterms / 3000      (~200 GiB/node, filling it)
+seconds ≈ Mterms / nodes / 7
+```
+
+Checked against the rows above: 1569 Mterms gives 1.0 nodes at 100 GiB (measured: 1 node,
+99.9 GiB), 24420 gives 8.1 nodes at 200 GiB (measured: 8 nodes, 201.3 GiB), and 48317 gives
+32.2 at 100 GiB (measured: 32 nodes, 101.3 GiB). The time rule lands within about 15% —
+predicting 224 s, 436 s and 216 s against 215.6, 471.0 and 249.6 measured.
+
+The `1.82e-07` row is the one exception to the memory law in the whole campaign: 84.3 GiB/node
+against 97.1 predicted, identically on all five reps. Reproducible and unexplained.
 
 ## Reporting the result
 
