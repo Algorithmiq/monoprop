@@ -615,6 +615,11 @@ struct InvertedIndex {
         size_t bitmap_chunks = 0;
     };
 
+    // The arena's allocation, which Stats::arena_slack_bytes is the unused part of. Exposed so a test
+    // can bound slack as a FRACTION of it -- the projection at the first seal is only worth anything if
+    // it leaves less dead capacity than the 12.5% growth fallback would have.
+    [[nodiscard]] auto arena_bytes() const -> size_t { return arena_.capacity(); }
+
     auto stats() const -> Stats {
         Stats s;
         s.bitmap_bytes = bitmap_bytes_;
