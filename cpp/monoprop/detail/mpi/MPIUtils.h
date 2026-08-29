@@ -60,7 +60,7 @@ auto find_rank(const Monomial<NumModes> &mono, const routing::Router &router) ->
     return router.dest<NumModes>(mono);
 }
 
-// The router this communicator's geometry implies, honouring monoprop_ROUTING / _ROUTE_LINEAR_BITS.
+// The router this communicator's geometry implies, honouring monoprop_ROUTING.
 // Templated because the router binds the transposed basis for this monomial width.
 template <size_t NumModes>
 inline auto router_for(const mpi::Comm &comm) -> routing::Router {
@@ -81,7 +81,7 @@ public:
 // TWO independent digests, not one: allreduce_sum is the only collective in the tree, and a sum is not
 // an equality test -- differing values can add up to mine*world. Both must agree, so a disagreement
 // survives at ~2^-128 rather than ~2^-64. Partitions are in the digest because S enters Router::dest:
-// two ranks differing only in S agree on linear_bits and the seed and still route apart.
+// two ranks differing only in S agree on the mode and the seed and still route apart.
 inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
     const auto world = static_cast<size_t>(mpi::size(comm));
     if (world <= 1) {
@@ -89,10 +89,10 @@ inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
     }
     const auto geom = mpi::geometry(comm);
     const auto parts = static_cast<uint64_t>(geom.partitions);
-    const auto bits = static_cast<uint64_t>(routing::linear_bits_for(static_cast<size_t>(geom.ranks)));
+    const auto linear = static_cast<uint64_t>(routing::linear_requested());
     const uint64_t seed = routing::seed_from_env();
     const auto digest = [&](uint64_t salt) {
-        return routing::mix64(routing::mix64(routing::mix64(salt ^ bits) ^ parts) ^ seed);
+        return routing::mix64(routing::mix64(routing::mix64(salt ^ linear) ^ parts) ^ seed);
     };
     const uint64_t first = digest(0x9E37'79B9'7F4A'7C15ULL);
     const uint64_t second = digest(0xC2B2'AE3D'27D4'EB4FULL);
@@ -104,12 +104,12 @@ inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
     const bool ok_second = agrees(second);
     if (!ok_first || !ok_second) {
         throw RoutingDisagreement(
-            std::format("routing configuration differs across the {} participants (this one: linear_bits={}, "
-                        "partitions={}, seed={}). monoprop_ROUTING / monoprop_ROUTE_LINEAR_BITS / "
-                        "monoprop_ROUTE_SEED must reach every rank identically -- under linear routing a "
-                        "disagreement deadlocks the exchange rather than corrupting it.",
+            std::format("routing configuration differs across the {} participants (this one: linear={}, "
+                        "partitions={}, seed={}). monoprop_ROUTING / monoprop_ROUTE_SEED must reach every rank "
+                        "identically -- under linear routing a disagreement deadlocks the exchange rather than "
+                        "corrupting it.",
                         world,
-                        bits,
+                        linear,
                         parts,
                         seed));
     }

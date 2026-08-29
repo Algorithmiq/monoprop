@@ -187,14 +187,13 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     for (const size_t ranks : {2U, 4U, 8U}) {
         // BOTH routers, because the agreement is a property of the pair and not of either hash: the
         // scan calls Router::dest and find_rank calls the same Router, so a divergence introduced by
-        // one of them shows up here whichever routing the geometry resolves to. bits=~0 asks for as
-        // many linear bits as log2(ranks) allows, i.e. fanout 1.
-        for (const size_t bits : {size_t{0}, ~size_t{0}}) {
+        // one of them shows up here whichever routing the geometry resolves to.
+        for (const bool linear : {false, true}) {
             // Per router, not summed over them: the floors are what stops the loop passing on an empty
             // scan, and a sum lets one router carry the other.
             size_t checked = 0;
             size_t self_checked = 0;
-            const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, bits);
+            const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, linear);
             const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
                                                                                      gen,
                                                                                      eval,
@@ -218,7 +217,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
             // Measured, all six routers: total 387 every time, with the split running from 196/191 at
             // R=2 to 335/52 at R=8 as more partners fall cross-rank. The floors sit below the observed
             // minimum of each arm and only catch a scan that emitted nothing.
-            BOOST_TEST_MESSAGE("ranks=" << ranks << " bits=" << router.linear_bits() << " encoded=" << checked
+            BOOST_TEST_MESSAGE("ranks=" << ranks << " linear=" << router.is_linear() << " encoded=" << checked
                                         << " staged=" << self_checked);
             const size_t total = checked + self_checked;
             if (first_total.has_value()) {

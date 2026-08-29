@@ -451,7 +451,7 @@ private:
                                            const VecD &parameters,
                                            std::optional<size_t> only_rotate_len_k) -> void;
 
-    // Do this call's generator shifts span linear_bits? If not, ranks receive nothing (routing::gf2_rank).
+    // Do this call's generator shifts span log2(R)? If not, ranks receive nothing (routing::gf2_rank).
     // Not beside check_routing_agreement: at construction the gate list does not exist yet.
     auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
 

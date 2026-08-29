@@ -589,11 +589,11 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
     const routing::Router router = router_for<NumModes>(comm);
     assert(router.flat_world() == R);
-    // Under linear routing every query for THIS generator lands on a rank whose low `linear_bits` are
-    // this rank's own XOR rank_shift(gen), so the exchange knows its peers before it starts. Dense
-    // (bits == 0) otherwise, which is today's collective.
-    const auto plan = mpi::PeerPlan{.bits = static_cast<int>(router.linear_bits()),
-                                    .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
+    // Under linear routing every query for THIS generator lands on the rank this rank's own index XOR
+    // rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise, which is
+    // today's collective.
+    const auto plan =
+        mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
