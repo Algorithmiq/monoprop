@@ -74,10 +74,9 @@ set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 set(CMAKE_VISIBILITY_INLINES_HIDDEN TRUE)
 
 # The single place an architecture is chosen. Everything downstream reads monoprop_ARCH_MARCH rather
-# than re-deciding, because the three sites that used to decide independently disagreed: ARCH_FLAG was
-# additionally suppressed in Debug, while the provenance query and the sparse-row crossover were gated
-# on the option alone. A Debug build therefore compiled portable code, advertised the native ISA and
-# took the native-tuned crossover.
+# than deciding again from monoprop_ENABLE_ARCH_FLAGS, so that what is compiled and what is reported
+# cannot disagree -- a build that advertises an ISA it did not compile for makes every benchmark
+# artifact and every monoprop.__compiler_flags__ a guess.
 #
 # monoprop_ARCH_MARCH is the variant *id* a single-ISA build reports as monoprop.__variant__:
 # "native", or "default" for a build with no -march flag. The flags themselves are ARCH_FLAG, which is

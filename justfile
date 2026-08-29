@@ -64,23 +64,6 @@ test-variants:
     monoprop_VARIANT="$v" uv run --no-sync python -m pytest -m "not mpi" -q; \
     done
 
-# Capture a baseline per ISA variant and diff them byte-wise against each other. The bar is
-# byte-identical: the tiers exist to change instruction selection, not answers, which is what
-# -ffp-contract=off buys and what this recipe is the gate on.
-
-diff-baseline-variants:
-    variants=$(uv run --no-sync python -c 'import monoprop; print(" ".join(monoprop.available_variants()))'); \
-    if [ -z "$variants" ]; then echo "not a fat binary; run 'just build-fat' first" >&2; exit 1; fi; \
-    rm -rf "{{ baseline_dir }}/variants"; \
-    for v in $variants; do \
-    monoprop_VARIANT="$v" uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/variants/$v"; \
-    done; \
-    reference=$(echo $variants | cut -d' ' -f1); \
-    for v in $variants; do \
-    echo "=== $v vs $reference"; \
-    diff -rq "{{ baseline_dir }}/variants/$reference" "{{ baseline_dir }}/variants/$v"; \
-    done
-
 # Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
 # This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
 # branches (operator_index_tests, large_cosine_storage_tests, graph_encoding_tests), so it

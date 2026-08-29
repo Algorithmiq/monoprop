@@ -119,26 +119,27 @@ re-include the kernels inside a per-tier namespace with every standard header ho
 emit the same four copies of the same code, built serially in one compiler process instead of four in
 parallel.
 
-**And `flatten` does not survive this call tree.** `build_layer` fans out over
-`with_algebra` × `with_store` × `with_kernel_width` — 2 × 2 × 5 instantiations of the layer engine — so
-flattening inlines that whole fan-out into one function body and `target_clones` then makes four copies
-of it to optimize. Compiling that one translation unit went from **16.7 s** to *killed at 21 minutes
-having peaked around 100 GB of compiler memory*. Not a slow build; an unbuildable one, against 16 GB CI
-runners.
+**And `flatten` does not survive this call tree.** Flattening inlines the layer engine's whole
+instantiation fan-out into one function body, and `target_clones` then makes one copy of that body per
+tier to optimize. Measured on the runtime-width engine, where the fan-out is a single translation unit:
+compiling it went from **16.7 s** to *killed at 21 minutes having peaked around 100 GB of compiler
+memory*. Not a slow build; an unbuildable one, against 16 GB CI runners. Collapsing the widest axis of
+the fan-out did not rescue it either — still out of memory at **24.5 GB after 11 minutes**, against
+**14.75 s in 740 MB** for the same code without clones.
 
-Collapsing the widest axis does not rescue it. With `monoprop_NARROW_KERNEL_MAX_WORDS=0` the fan-out
-drops 5×, and the same compile still ran out of memory at **24.5 GB after 11 minutes** — while without
-clones that collapsed code builds in **14.75 s in 740 MB**. The cost is not the fan-out, it is that
-`flatten` concentrates it into one function where GCC's per-function passes go superlinear, and then
-multiplies by the clone count. Which is the whole argument for tiering by library: the emitted code is
-the same either way, but as separate translation units the multiplication is linear and parallel rather
-than superlinear in one process. `target_clones` with `flatten` is the right tool when a small
-self-contained kernel sits behind one call; here the kernel is the entire scan.
+The cost is not the fan-out, it is that `flatten` concentrates it into one function where GCC's
+per-function passes go superlinear, and then multiplies by the clone count. Which is the whole argument
+for tiering by library: the emitted code is the same either way, but as separate translation units the
+multiplication is linear and parallel rather than superlinear in one process. `target_clones` with
+`flatten` is the right tool when a small self-contained kernel sits behind one call; here the kernel is
+the entire scan. On this branch the fan-out is wider still — the engine is templated on the mode count,
+so the scan is instantiated once per width across the generated binder translation units.
 
-The duplication *is* reducible, though not that way: 91% of the vectorized loops and 51% of the
-engine's `.text` are in `MonomialPropagator.cpp` alone, so tiering that one translation unit and
-sharing a single baseline copy of the other nine would cut the shipped payload by roughly 40%. The
-price is a real dispatch seam at `build_evolve_result_` rather than at the module boundary.
+The duplication *is* reducible in principle, by tiering only the translation unit the vectorized loops
+land in and sharing a single baseline copy of the rest. That needs the propagation kernel to *have* one:
+here it is header-resident and instantiated per mode width in the binding translation units, so the
+narrowest seam available is the module boundary. Narrowing it is a follow-up to moving the engine
+out of the headers, not something this build shape can do.
 
 So the unit of tiering is the whole engine. Each tier is a separate compile of every library
 translation unit *plus* the binding translation unit — the latter matters, because
@@ -201,17 +202,7 @@ coefficient accumulation. Measured across ISA levels: every evolved term stays b
 the energy moves, by one or two units in the last place. Small — and exactly the wrong shape for a fat
 binary, where it would mean the same wheel answering differently depending on which CPU it landed on.
 So `-ffp-contract=off` is set project-wide, not only in the tiers, which keeps a source build, a wheel
-and every tier bit-comparable. All four tiers produce byte-identical output; `just diff-baseline-variants`
-is the gate on that.
-
-For the same reason the sparse/dense row crossover
-(`monoprop_SPARSE_ROW_MIN_MODES`, see [Building from Source](/building)) is pinned to one value across
-all four tiers rather than following each tier's capability. The two row backends agree on term sets
-and values but not on term *order*, so a per-tier threshold would make a wide run's accumulation order
-depend on the host CPU. The pinned value is `256`, which is what three of the four tiers want and what
-today's wheels already use. One consequence to be aware of: a capture from a fat build differs from one
-taken with `monoprop_ENABLE_ARCH_FLAGS=ON` (crossover `768`) on any case at or above 256 storage modes,
-so compare fat against fat.
+and every tier bit-comparable. All four tiers produce byte-identical output.
 
 ## Using it
 
@@ -256,11 +247,9 @@ uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_FAT_BINAR
 Note that a plain `uv run` afterwards re-syncs without that setting and silently replaces the fat
 build with a single-ISA one; use `uv run --no-sync`.
 
-Two recipes exist because the dispatch always picks the *best* tier, which means the lower tiers would
-otherwise ship untested from every developer machine and every CI runner:
-
-- `just test-variants` — the Python suite once per installed variant;
-- `just diff-baseline-variants` — a baseline capture per variant, diffed byte-wise against each other.
+`just test-variants` runs the Python suite once per installed variant. It exists because the dispatch
+always picks the *best* tier, which means the lower tiers would otherwise ship untested from every
+developer machine and every CI runner.
 
 `monoprop_ENABLE_FAT_BINARY` is x86-64 only and needs GCC or Clang; requesting it elsewhere is a
 configure error rather than a silently untiered build. The tier list and the flags live in

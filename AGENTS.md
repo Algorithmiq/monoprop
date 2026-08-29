@@ -53,7 +53,8 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
   tiers cannot drift apart in anything but arch flags. Consequence for numerics: `-ffp-contract=off`
   is project-wide and is a **contract**, not a tuning knob -- without it `-march=x86-64-v3` and up
   contract `a*b+c` into an FMA and the energy moves by 1-2 ULP, which in a fat binary means the same
-  wheel answering differently per host CPU. `just diff-baseline-variants` is the byte-wise gate.
+  wheel answering differently per host CPU. The byte-wise gate on it is a golden-baseline capture per
+  variant, which arrives with the baseline tooling.
 
 ### Workspace layout
 

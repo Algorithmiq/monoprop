@@ -12,11 +12,13 @@
 # ``#pragma GCC target`` does not capture a template that was defined outside its region. Header-resident
 # code is widened by its TU's command line or not at all.
 #
-# And ``flatten`` plus ``target_clones`` is not affordable here even so: ``build_layer`` fans out over
-# ``with_algebra`` x ``with_store`` x ``with_kernel_width``, and four flattened clones of that took one
-# TU from 16.7 s to >20 min at ~100 GB of compiler memory -- 24.5 GB even with the width axis collapsed,
-# against 740 MB for the same code as an ordinary compile. As separate TUs the multiplication is linear
-# and parallel; inside one function it is not. See ``docs/content/docs/fat-binary.mdx``.
+# And ``flatten`` plus ``target_clones`` is not affordable here even so. Flattening pulls the layer
+# engine's whole instantiation fan-out into one function body and the clones then multiply it: measured
+# on the runtime-width engine, where that fan-out is one TU, four clones took it from 16.7 s to >20 min
+# at ~100 GB of compiler memory -- 24.5 GB even with the widest axis collapsed, against 740 MB for the
+# same code as an ordinary compile. As separate TUs the multiplication is linear and parallel; inside
+# one function it is not. Here the fan-out is wider still, the engine being templated on the mode
+# count. See ``docs/content/docs/fat-binary.mdx``.
 #
 # Why not glibc-hwcaps, which would need no code at all: its subdirectory names are the four psABI
 # levels, and the top tier here is ``x86-64-v4`` *plus* ``avx512vpopcntdq``. Installing it as

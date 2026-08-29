@@ -222,11 +222,16 @@ if(monoprop_ENABLE_FAT_BINARY)
   # extension that must execute on every machine the wheel installs on: baseline ISA, appended last so
   # a CXXFLAGS from the environment cannot widen it, and linked against no engine object library so it
   # cannot inherit a tier's flags either.
+  #
+  # Split mode like every other module here, and not by preference: wheel.py-api = "cp311" sets
+  # SKBUILD_SABI_VERSION, and nanobind 3 refuses a linked (NB_STATIC) module under any py-api below
+  # cp312. It costs the probe nothing -- the shared backend is not an engine object library, so the
+  # probe still inherits no tier's arch flags, and the fat binary's baseline floor in CMAKE_CXX_FLAGS
+  # is what keeps the backend itself at x86-64.
   nanobind_add_module(_isa
-   STABLE_ABI
     NB_SUPPRESS_WARNINGS
-    NB_STATIC
     NOMINSIZE
+    BACKEND_MODULE nanobind_backend
     ${CMAKE_CURRENT_SOURCE_DIR}/isa.cpp
   )
   target_include_directories(_isa PRIVATE ${PROJECT_BINARY_DIR}/include)
