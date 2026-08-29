@@ -263,6 +263,115 @@ done
 monoprop-bench-ladder benches/rungs.toml runs --family strong
 ```
 
+### Running everything
+
+A whole family needs one allocation per node count, so the job list is the table grouped by
+`nodes`. Generate it rather than typing it — the table is the only place that knows:
+
+```bash
+# jobs.txt: one line per allocation, "<nodes> <rung> <rung> ..."
+python - <<'EOF' > jobs.txt
+import collections, pathlib
+from monoprop_bench_tools import rungs
+
+FAMILY = "strong"          # or "weak", or "size", or None for the lot
+table = rungs.load_rungs(pathlib.Path("benches/rungs.toml"))
+jobs = collections.defaultdict(list)
+for r in table.values():
+    if not r.calibrated:
+        continue           # uncalibrated rows refuse to run; calibrate them first
+    if FAMILY and r.family != FAMILY:
+        continue
+    jobs[r.nodes].append(r.id)
+for nodes, ids in sorted(jobs.items()):
+    print(nodes, *ids)
+EOF
+cat jobs.txt
+```
+
+```
+1 strong-1569m-n1
+2 strong-1569m-n2 strong-6126m-n2
+4 strong-1569m-n4 strong-6126m-n4
+8 strong-1569m-n8 strong-6126m-n8 strong-24420m-n8
+16 strong-1569m-n16 strong-6126m-n16 strong-24420m-n16
+32 strong-1569m-n32 strong-6126m-n32 strong-24420m-n32
+64 strong-1569m-n64 strong-6126m-n64 strong-24420m-n64
+```
+
+Submit one job per line. `run_rungs.sh` takes the node count and the rung ids as its arguments:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=monoprop-ladder
+#SBATCH --ntasks-per-node=8
+#SBATCH --cpus-per-task=16
+#SBATCH --exclusive
+
+set -uo pipefail                  # not -e: a refused rep must not kill the job
+
+cd "$SLURM_SUBMIT_DIR"
+module load foss/2025b
+source .venv/bin/activate
+
+for rung in "$@"; do
+  reps=$(python -c "
+import pathlib, sys
+from monoprop_bench_tools import rungs
+print(rungs.load_rungs(pathlib.Path('benches/rungs.toml'))['$rung'].reps)")
+  for rep in $(seq 1 "$reps"); do
+    srun --cpu-bind=cores --distribution=block:block \
+      monoprop-bench-rung benches/rungs.toml "$rung" --rep "$rep" --results runs
+  done
+done
+```
+
+```bash
+while read -r nodes rungs_on_this_node; do
+  sbatch --nodes="$nodes" --time=2:00:00 run_rungs.sh $rungs_on_this_node
+done < jobs.txt
+```
+
+Then collate once, over every job's artifacts:
+
+```bash
+monoprop-bench-ladder benches/rungs.toml runs --family strong
+```
+
+### What you get out
+
+One table per family plus the resolved parameters. The `strong` table from the campaign whose
+numbers this repository ships looks like this — 8 ranks/node × 16 partitions on 242 GiB EPYC 7742
+nodes, five reps per rung:
+
+```
+## strong
+
+| rung | nodes | R | P | terms | Mterms/node | reps | median s | min s | Mterms/s/node | GiB/node | declared s | vs declared |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| strong-1569m-n1 | 1 | 8 | 128 | 1,569,152,761 | 1569 | 5 | 215.60 | ... | 7.28 | 99.9 | 215.60 | 1.000x |
+| strong-1569m-n2 | 2 | 16 | 256 | 1,569,152,761 | 785 | 5 | 105.90 | ... | 7.41 | 51.5 | 105.90 | 1.000x |
+| strong-1569m-n4 | 4 | 32 | 512 | 1,569,152,761 | 392 | 5 | 53.30 | ... | 7.35 | 28.0 | 53.30 | 1.000x |
+| strong-1569m-n8 | 8 | 64 | 1024 | 1,569,152,761 | 196 | 5 | 28.60 | ... | 6.86 | 15.9 | 28.60 | 1.000x |
+| strong-1569m-n16 | 16 | 128 | 2048 | 1,569,152,761 | 98 | 5 | 18.10 | ... | 5.41 | 11.0 | 18.10 | 1.000x |
+| strong-1569m-n32 | 32 | 256 | 4096 | 1,569,152,761 | 49 | 5 | 16.10 | ... | 3.04 | 6.6 | 16.10 | 1.000x |
+| strong-1569m-n64 | 64 | 512 | 8192 | 1,569,152,761 | 25 | 5 | 24.00 | ... | 1.02 | 4.1 | 24.00 | 1.000x |
+
+## Problems measured
+
+- **strong-1569m-n8** — hubbard / heisenberg, propagate, 8 x 8 x 16 (nodes x ranks/node x partitions)
+  - chemical_potential=0.0, cutoff=10, hopping=1.0, interaction=-2.0, lower_atol=1.25e-05,
+    neel_start_spin=down, num_sites=60, observable_site=46, observable_spin=up,
+    trotter_dt=0.2, trotter_steps=29
+```
+
+Those medians are the campaign's, replayed through the collator, so `vs declared` is `1.000x` by
+construction and `min s` is elided — a real run fills both. The **shape** is what to expect, and
+the shape is the answer: this ladder halves cleanly to 8 nodes, gains almost nothing from 16 to
+32, and is *slower* at 64 than at 32. `Mterms/s/node` is where you read that — 7.28 at one node,
+6.86 at eight, 1.02 at sixty-four. A strong-scaling curve that turns over is the result, not a
+failed run.
+
 ### Things that quietly cost you
 
 Measured on Deucalion (AMD EPYC 7742, 128 physical cores per node, SMT off). The numbers are
