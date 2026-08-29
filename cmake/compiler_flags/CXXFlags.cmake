@@ -81,19 +81,13 @@ if(monoprop_ENABLE_ARCH_FLAGS)
   endif()
 endif()
 
-# Query the machine-dependent flags for a given -march value and store the
-# cleaned, space-separated string in the variable named by OUTPUT_VARIABLE. A
-# MARCH of "default" queries the default target (no -march flag).
+# Query the machine-dependent flags the compiler applies under a given architecture selection and
+# store the cleaned, space-separated string in the variable named by OUTPUT_VARIABLE.
 #
 # Usage:
-#   _monoprop_query_machine_flags(MARCH <arch> OUTPUT_VARIABLE <var>)
+#   _monoprop_query_machine_flags(ARCH_FLAGS <flags...> OUTPUT_VARIABLE <var>)
 function(_monoprop_query_machine_flags)
-  set(
-    _one_value_args
-    MARCH
-    OUTPUT_VARIABLE
-  )
-  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "${_one_value_args}" "")
+  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "OUTPUT_VARIABLE" "ARCH_FLAGS")
 
   if(NOT _arg_OUTPUT_VARIABLE)
     message(
@@ -101,21 +95,19 @@ function(_monoprop_query_machine_flags)
       "_monoprop_query_machine_flags: OUTPUT_VARIABLE is required"
     )
   endif()
-  if(NOT _arg_MARCH)
-    message(FATAL_ERROR "_monoprop_query_machine_flags: MARCH is required")
-  endif()
 
-  if(_arg_MARCH STREQUAL "default")
-    set(_march_args "")
+  set(_arch_args ${_arg_ARCH_FLAGS})
+  if(_arch_args)
+    string(JOIN " " _arch_label ${_arch_args})
   else()
-    set(_march_args "-march=${_arg_MARCH}")
+    set(_arch_label "the default target")
   endif()
 
   if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
     execute_process(
       COMMAND
         # gersemi: off
-        ${CMAKE_CXX_COMPILER} ${_march_args} -\#\#\# -x c++ -c /dev/null
+        ${CMAKE_CXX_COMPILER} ${_arch_args} -\#\#\# -x c++ -c /dev/null
       # gersemi: on
       ERROR_VARIABLE _query_output
       ERROR_STRIP_TRAILING_WHITESPACE
@@ -124,7 +116,7 @@ function(_monoprop_query_machine_flags)
     if(NOT _query_result EQUAL 0)
       message(
         WARNING
-        "Failed to query machine-dependent flags for '${_arg_MARCH}' with AppleClang (exit code ${_query_result}). Continuing with empty machine flags."
+        "Failed to query machine-dependent flags for ${_arch_label} with AppleClang (exit code ${_query_result}). Continuing with empty machine flags."
       )
       set(_flags "")
     else()
@@ -141,7 +133,7 @@ function(_monoprop_query_machine_flags)
       if(NOT _parse_result EQUAL 0)
         message(
           WARNING
-          "Failed to parse AppleClang machine-dependent flags for '${_arg_MARCH}' (exit code ${_parse_result}). Continuing with empty machine flags."
+          "Failed to parse AppleClang machine-dependent flags for ${_arch_label} (exit code ${_parse_result}). Continuing with empty machine flags."
         )
         set(_flags "")
       endif()
@@ -149,7 +141,7 @@ function(_monoprop_query_machine_flags)
   else()
     execute_process(
       COMMAND
-        ${CMAKE_CXX_COMPILER} ${_march_args} -Q --help=target
+        ${CMAKE_CXX_COMPILER} ${_arch_args} -Q --help=target
       COMMAND
         ${Python_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/target-help-clean.py"
         --mode gcc
@@ -160,19 +152,19 @@ function(_monoprop_query_machine_flags)
     if(NOT _result EQUAL 0)
       message(
         FATAL_ERROR
-        "Failed to query machine-dependent flags for '${_arg_MARCH}' (exit code ${_result})"
+        "Failed to query machine-dependent flags for ${_arch_label} (exit code ${_result})"
       )
     endif()
   endif()
   set(${_arg_OUTPUT_VARIABLE} "${_flags}" PARENT_SCOPE)
 endfunction()
 
+# Empty is the no-arch-flag build and queries the default target.
 set(monoprop_DEFAULT_VARIANT_FLAGS "")
-if(monoprop_ENABLE_ARCH_FLAGS)
-  _monoprop_query_machine_flags(MARCH native OUTPUT_VARIABLE monoprop_DEFAULT_VARIANT_FLAGS)
-else()
-  _monoprop_query_machine_flags(MARCH default OUTPUT_VARIABLE monoprop_DEFAULT_VARIANT_FLAGS)
-endif()
+_monoprop_query_machine_flags(
+  ARCH_FLAGS ${ARCH_FLAG}
+  OUTPUT_VARIABLE monoprop_DEFAULT_VARIANT_FLAGS
+)
 
 set(monoprop_VARIANTS "")
 set(monoprop_VARIANT_FLAGS "")
