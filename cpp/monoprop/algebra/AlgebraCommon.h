@@ -170,6 +170,34 @@ auto support_cutoff(const MonomialLike auto &mono, unsigned int cutoff) -> bool 
 
 namespace detail {
 
+// The xor_sum == 0 clause above -- "every occupied mode has both its Majoranas" -- with the storage
+// word count bound at compile time, for the per-gate scan kernel that has W and the words already (see
+// DenseTermProductsW). It lives here and not beside the other bound-width word ops in Bitset.h because
+// "paired" is a fact about the algebra and not about the storage, and because the mask literal it shares
+// with CutoffMasks::make above is easier to keep honest in one file than in two.
+//
+// Folded with OR and tested against zero rather than summing popcounts: the caller only ever compares
+// the sum to zero, and the two agree because each per-word term is non-negative.
+//
+// The even-bit mask is the literal rather than an argument, which is what makes this W loads instead of
+// 2W: a storage width is a whole number of words, so even_bits<LSb0> is this pattern in every one of
+// them. Its top-word trim at a non-word-multiple width is unobservable here -- bits above the logical
+// width are never set, so they pair with themselves either way. (word >> 1) & mask cannot cross a word
+// because a mode's two bits are 2m and 2m+1.
+//
+// Whole register only: a narrower active window would need the shift cutoff_sums applies, and getting
+// it wrong would silently change which terms survive.
+template <size_t W>
+[[nodiscard]] [[gnu::always_inline]] inline auto fully_paired_words(const Bitset::word_type *a) noexcept -> bool {
+    constexpr Bitset::word_type kEven = 0x5555555555555555ULL;
+    Bitset::word_type unpaired = 0;
+    for (size_t i = 0; i < W; ++i) {
+        const Bitset::word_type word = a[i];
+        unpaired |= (word & kEven) ^ ((word >> 1) & kEven);
+    }
+    return unpaired == 0;
+}
+
 // Both hold their masks, so the per-term call does no width arithmetic. Real constructors rather than
 // aggregate initialization, deliberately: the width used to arrive free from NumModes, and both
 // remaining ways to get it wrong are silent. A logical width of 0 makes cutoff_sums' active window

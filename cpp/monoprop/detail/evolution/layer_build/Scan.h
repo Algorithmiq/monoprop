@@ -30,11 +30,11 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/TermProduct.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
-#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
 
@@ -163,37 +163,11 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
-// phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
-// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-//
-// `mono` and `new_mono` are scratch owned by the caller for the whole gate, not locals: both are
-// overwritten whole here, and a term must not pay for constructing them. Constructing a Bitset means
-// deriving the word count from a runtime width, testing it against the inline capacity and -- above
-// that capacity -- allocating; with a compile-time width all of that used to fold away to nothing, so
-// the scratch is what keeps it off the per-term path.
-template <Algebra A>
-[[gnu::always_inline]] inline auto emit_term_products(const auto &ham,
-                                                      size_t i,
-                                                      const typename A::GenContext &ctx,
-                                                      MonomialLike auto &mono,
-                                                      MonomialLike auto &new_mono,
-                                                      size_t &overlap,
-                                                      int &phase_factor) -> void {
-    const auto &gen = A::generator(ctx);
-    // for_each_row_position only sets bits, so the scratch has to start clear; reset() keeps the width,
-    // unlike assigning a default-constructed Bitset.
-    mono.reset();
-    for_each_row_position(ham, i, [&mono](size_t pos) { mono.set(pos); });
-    // One pass instead of two: mono ^ gen and popcount(mono & gen) are both always needed here, so
-    // fused_xor_into() computes them together, straight into new_mono (see Bitset::fused_xor_into).
-    // Its result_count (popcount of the XOR) goes unused -- the caller already has new_pop for free
-    // via mono_pop + gen_pop - 2*overlap -- so it is not threaded through here.
-    overlap = mono.fused_xor_into(gen, new_mono).overlap;
-    phase_factor = A::rotation_sign(ctx, mono, new_mono);
-}
-
 struct FusedScanResult {
-    std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
+    std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
+    // No escape tails here: they are folded into the query buffers before this is returned, so a
+    // consumer only ever sees the finished streams. They live as locals of the scan for exactly as long
+    // as they are pushed to.
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
     std::vector<std::vector<size_t>> leader_src;   // size R: parallel to leader_queries (source op idx)
     std::vector<VecZ> follower_queries;            // size R: serialized follower queries per owner rank
@@ -212,10 +186,16 @@ struct FusedScanResult {
 // op, store, gen and cutoff_eval are deduced from their argument types; no width is named anywhere below
 // any more -- the monomials this builds take theirs from `gen`, which is the operator's storage width.
 //
-// `store` is a separate argument rather than reached through `op`: build_layer has already bound the
-// backend, and re-entering that dispatch here would put a branch on the per-term path, which is the one
-// place it cannot go. Rows are read through the accessors, so both backends answer the same scan.
-template <Algebra A, typename Store>
+// `store` is a separate argument rather than reached through `op`, and its concrete type is what selects
+// the per-term kernel: build_layer has already bound the backend, and re-entering that dispatch here
+// would put a branch on the per-term path, which is the one place it cannot go.
+//
+// W is the storage word count, bound by build_layer through with_kernel_width for the same reason and at
+// the same seam as the backend and the algebra; 0 means "not specialized" (see TermProductsFor). It is a
+// template parameter of the scan rather than something the kernel is handed, so that the per-term code
+// below stays an ordinary function body: wrapping it in a generic lambda instead measured 2-3% slower
+// even on the unspecialized arm, which does no different work.
+template <Algebra A, size_t W, typename Store>
 auto fused_find_and_collect(const auto &op,
                             const Store &store,
                             const MonomialLike auto &gen,
@@ -239,6 +219,10 @@ auto fused_find_and_collect(const auto &op,
     res.leader_src.assign(rank_count, std::vector<size_t>{});
     res.follower_queries.assign(rank_count, query_buffer());
     res.follower_src.assign(rank_count, std::vector<size_t>{});
+    // Drained into the query buffers by append_escape_tail before this function returns, so they are
+    // locals; nothing outside this scan ever sees an unfinished stream.
+    std::vector<VecZ> leader_escapes(rank_count);
+    std::vector<VecZ> follower_escapes(rank_count);
     // Sized to R even on the early-return paths below so the fused engine's per-rank src_val_r access
     // is always in bounds (parallel to leader_src / follower_src).
     if (capture_values) {
@@ -294,14 +278,16 @@ auto fused_find_and_collect(const auto &op,
         auto &fq = res.follower_queries;
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
+        auto &lesc = leader_escapes;
+        auto &fesc = follower_escapes;
 
-        // Per-gate, not per-term: the product scratch is overwritten whole per term, so constructing it
-        // per term would buy nothing and cost a width derivation, an inline-capacity test and -- above
-        // that capacity -- a heap allocation, every term. Both take the generator's width, which is the
-        // operator's storage width, so every word op below stays on Bitset's matched-width path.
-        const auto gen_ctx = A::make_gen_context(gen);
-        Bitset mono(gen.size());
-        Bitset new_mono(gen.size());
+        // Per-gate, not per-term: the kernel's product scratch is overwritten whole per term, so
+        // constructing it per term would buy nothing and cost a width derivation, an inline-capacity test
+        // and -- above that capacity -- a heap allocation, every term. It takes the generator's width,
+        // which is the operator's storage width, so every word op inside stays on Bitset's matched-width
+        // path. Which kernel this is follows from the store (TermProductsFor); the scan below names no
+        // representation.
+        typename TermProductsFor<Store, A, W>::type products(gen, cutoff_eval);
 
         // The dynamic gate runs before the product, so a gate-rejected term computes none.
         // abs_c/v_src come from the caller's coeff read, not re-read.
@@ -309,28 +295,25 @@ auto fused_find_and_collect(const auto &op,
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            size_t overlap = 0;
-            int phase_factor = 0;
-            emit_term_products<A>(store, i, gen_ctx, mono, new_mono, overlap, phase_factor);
+            const auto [overlap, phase_factor] = products.product(store, i);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            if (const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
-                !struct_pass && !cut_st.is_above_upper(abs_c)) {
+            if (const bool struct_pass = products.passes(new_pop); !struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
             const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : monomial_hash(new_mono) % rank_count;
+            const size_t r_prime = (rank_count == 1) ? my_rank : products.owner(rank_count);
             const size_t source = i;
             if (is_follower) {
-                query_push(fq[r_prime], new_mono, phase);
+                products.push(QueryOut{fq[r_prime], fesc[r_prime]}, phase);
                 fs[r_prime].push_back(source);
                 if (capture_values) {
                     fv[r_prime].push_back(v_src);
                 }
             }
             else {
-                query_push(lq[r_prime], new_mono, phase);
+                products.push(QueryOut{lq[r_prime], lesc[r_prime]}, phase);
                 ls[r_prime].push_back(source);
                 if (capture_values) {
                     lv[r_prime].push_back(v_src);
@@ -361,7 +344,9 @@ auto fused_find_and_collect(const auto &op,
                                    n_foll);
         }
         if (rank_count == 1) {
-            const size_t record_words = query_words(new_mono.num_words());
+            // The record width comes off the kernel, not off the generator: it is a property of the form
+            // a query is pushed in, which is the kernel's business and not the monomial's.
+            const size_t record_words = products.record_words();
             lq[my_rank].reserve(kQueryHeaderWords + ((n_anti - n_foll) * record_words));
             ls[my_rank].reserve(n_anti - n_foll);
             fq[my_rank].reserve(kQueryHeaderWords + (n_foll * record_words));
@@ -427,6 +412,12 @@ auto fused_find_and_collect(const auto &op,
             }
         }
         res.cos_blocks.push_back(cos_b.finish());
+    }
+    // The one place a stream is finished. The early returns above are all before the first push, so their
+    // escape buffers are empty and skipping this is a no-op for them.
+    for (size_t r = 0; r < rank_count; ++r) {
+        append_escape_tail(res.leader_queries[r], leader_escapes[r]);
+        append_escape_tail(res.follower_queries[r], follower_escapes[r]);
     }
     return res;
 }

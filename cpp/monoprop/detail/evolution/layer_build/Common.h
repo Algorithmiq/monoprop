@@ -138,6 +138,12 @@ inline constexpr size_t kQueryHeaderWords = 1;
 [[nodiscard]] constexpr auto query_record_offset(size_t q, size_t stride) -> size_t {
     return kQueryHeaderWords + (q * stride);
 }
+// Where the escape tail starts: right after the last record. Both sides derive it from the header and the
+// stride, so an escape's own index into the tail is independent of either -- which is what lets the fused
+// re-layout below move the records without touching the tail.
+[[nodiscard]] inline auto query_tail_offset(const VecZ &buf, size_t stride) -> size_t {
+    return query_record_offset(query_record_count(buf), stride);
+}
 
 // Fused query+value record width (R>1): the plain query record plus one trailing word holding the source's
 // pre-cos coeff (v_src, bit-cast from double), so query + value ride a single alltoallv instead of two.
@@ -163,8 +169,25 @@ inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
 }
 
-// Appends one record and bumps the header, so the count is always the buffer's own rather than
-// something a reader has to derive from size and stride.
+// The two buffers a scan pushes a query into. A record cannot be appended once the tail has started, so
+// the tail accumulates separately and is concatenated when the scan is done -- an escape's index names a
+// position within the tail, so the concatenation moves nothing it refers to.
+struct QueryOut {
+    VecZ &records;
+    VecZ &escapes;
+};
+
+// The scan's single exit: fold each stream's escapes in behind its records.
+inline auto append_escape_tail(VecZ &records, VecZ &escapes) -> void {
+    if (escapes.empty()) {
+        return;
+    }
+    records.insert(records.end(), escapes.begin(), escapes.end());
+    escapes.clear();
+}
+
+// Appends one record and bumps the header. Every push must precede the escape tail, which the scan
+// guarantees by collecting escapes in a buffer of their own and concatenating once the scan is done.
 inline auto query_push(VecZ &buf, const Bitset &mono, int phase) -> void {
     assert(buf.size() >= kQueryHeaderWords && "a query buffer must be created with query_buffer()");
     mpi_detail::append_monomial_words(mono, buf);
@@ -180,6 +203,94 @@ inline auto query_read(const VecZ &buf, size_t q, size_t stride, Bitset &mono_ou
     const size_t base = query_record_offset(q, stride);
     mpi_detail::read_monomial_from_words(buf, base, mono_out);
     phase_out = decode_phase(buf[base + mono_out.num_words()]);
+}
+
+// A query record in support form. Deliberately the same *shape* as the dense one -- a fixed-stride
+// payload followed by the phase word -- so every stride computation, alltoallv count and reader offset
+// above holds with `num_words` reinterpreted as the payload word count. Only the payload differs:
+// `sparse_lane_words` words of four uint16 mode lanes each plus one codes word, against the monomial's
+// full word count. That is what the format is for: a 1024-mode monomial is 32 words, where a 12-slot row
+// is 3 lane words plus 1.
+//
+// The stride needs a capacity, and it must be one every rank derives identically without communication --
+// SparseRowStore::scratch_slots_for(cutoff mode bound, widest generator), the same value the scan's
+// scratch row uses, since a query carries exactly such a product. Ranks already owe each other this kind
+// of agreement for the hash width (see find_rank).
+//
+// A row past that capacity has no sparse record: the caller must fall back to the dense one, and the
+// push below asserts rather than truncating.
+constexpr auto sparse_lane_words(size_t capacity) -> size_t {
+    return (capacity + 3) / 4;
+}
+constexpr auto sparse_payload_words(size_t capacity) -> size_t {
+    return sparse_lane_words(capacity) + 1;
+}
+
+inline auto sparse_query_push(VecZ &buf, const SparseRow &row, size_t capacity, int phase) -> void {
+    assert(buf.size() >= kQueryHeaderWords && "a query buffer must be created with query_buffer()");
+    const size_t lane_words = sparse_lane_words(capacity);
+    const size_t n = row.num_slots();
+    assert(n <= capacity && "sparse_query_push row exceeds the record capacity");
+    const size_t base = buf.size();
+    // Zero-filled, so the lanes past the row's own are deterministic; the reader ignores them, taking the
+    // slot count off the codes word.
+    buf.resize(base + lane_words + 2, 0);
+    for (size_t j = 0; j < n; ++j) {
+        buf[base + (j / 4)] |= static_cast<size_t>(row.modes[j]) << (16 * (j % 4));
+    }
+    buf[base + lane_words] = static_cast<size_t>(row.codes);
+    buf[base + lane_words + 1] = encode_phase(phase);
+    ++buf[0];
+}
+
+// The record left behind by a query no sparse record can hold, and it is not a corner case to be sized
+// away: a query is M ⊕ G and a fully paired product escapes the cutoff, so nothing bounds its support.
+//
+// The record keeps its place and its stride -- which is what leaves every offset, alltoallv count and
+// compaction in the engine as plain arithmetic -- and says where to find the monomial instead: lane 0
+// carries the store's own overflow marker and the codes slot carries the escape's index into the buffer's
+// tail. Both conventions are SparseRowStore's for a spilled row, deliberately: one representation of "too
+// wide for a codes word", not two.
+//
+// `escapes` accumulates the tail separately during the scan, because a record cannot be appended after
+// the tail has started; the scan concatenates the two once it is done. An escape's index is its position
+// in that tail, so it survives the concatenation and the fused re-layout alike.
+inline auto sparse_query_push_escape(VecZ &buf, VecZ &escapes, const Bitset &mono, size_t capacity, int phase) -> void {
+    assert(buf.size() >= kQueryHeaderWords && "a query buffer must be created with query_buffer()");
+    const size_t lane_words = sparse_lane_words(capacity);
+    const size_t base = buf.size();
+    buf.resize(base + lane_words + 2, 0);
+    buf[base] = static_cast<size_t>(SparseRowStore::kOverflowLane);
+    buf[base + lane_words] = escapes.size() / mono.num_words();
+    buf[base + lane_words + 1] = encode_phase(phase);
+    ++buf[0];
+    mpi_detail::append_monomial_words(mono, escapes);
+}
+
+// Reading a record's shape needs the lane word count, which the reader has from the capacity; taking the
+// record base as an argument keeps this usable from both the plain and the fused stride.
+[[nodiscard]] inline auto sparse_record_is_escape(const VecZ &buf, size_t base) -> bool {
+    return buf[base] == static_cast<size_t>(SparseRowStore::kOverflowLane);
+}
+
+// lanes_out must hold `capacity` lanes. Writes only the row's own, for the same reason
+// read_monomial_from_words overwrites whole words: what a previous record left beyond them cannot be read.
+inline auto sparse_query_read(const VecZ &buf,
+                              size_t q,
+                              size_t stride,
+                              size_t capacity,
+                              RowMode *lanes_out,
+                              RowCodes &codes_out,
+                              int &phase_out) -> void {
+    const size_t base = query_record_offset(q, stride);
+    const size_t lane_words = sparse_lane_words(capacity);
+    assert(!sparse_record_is_escape(buf, base) && "an escaped record has no row to read");
+    codes_out = static_cast<RowCodes>(buf[base + lane_words]);
+    const size_t n = row_slot_count(codes_out);
+    for (size_t j = 0; j < n; ++j) {
+        lanes_out[j] = static_cast<RowMode>((buf[base + (j / 4)] >> (16 * (j % 4))) & 0xFFFFU);
+    }
+    phase_out = decode_phase(buf[base + lane_words + 1]);
 }
 
 // Owned storage for a batch of query keys in whichever form a store keys its rows by, plus the record
@@ -204,8 +315,9 @@ public:
     using key_type = Bitset;
 
     // num_bits is the monomial storage width: query_read memcpys the destination's full word count, so the
-    // destination is what fixes the record width.
-    auto configure(size_t num_bits) -> void {
+    // destination is what fixes the record width. capacity is the support form's row capacity, which a
+    // dense record has no use for -- both batches take both so the call sites need no branch.
+    auto configure(size_t num_bits, size_t /*capacity*/) -> void {
         if (extent_ != num_bits) {
             keys_.clear();
             retained_words_.clear();
@@ -265,12 +377,159 @@ private:
     size_t extent_ = 0;
 };
 
-// The payload width of one query record, in VecZ words -- the quantity every stride, alltoallv count and
-// record offset in Engine.h derives from. Both backends are queried with dense monomials, so the width is
-// the store's own: a support-form row still has to be materialized before it goes on the wire.
-[[nodiscard]] inline auto query_payload_words_for(const auto &store) -> size_t {
+// The support-form counterpart: one lane array for the whole batch plus a parallel array of keys viewing
+// into it, since find_batch wants the keys contiguous and a SparseRow is only a pointer and a word.
+//
+// The escaped records are why the key is a SparseRowKey rather than a SparseRow: one of those queries has
+// no row, so its key points at a monomial materialized out of the buffer's tail. That storage is a deque
+// on purpose -- push_back must not invalidate a key handed out for an earlier slot, and a vector's would.
+class SparseQueryKeys {
+public:
+    using key_type = SparseRowKey;
+
+    // capacity is the row capacity in slots -- the same value that fixes the record stride, since a record
+    // holds exactly that many lanes. num_bits sizes the escape monomials.
+    auto configure(size_t num_bits, size_t capacity) -> void {
+        if (capacity_ != capacity || num_bits_ != num_bits) {
+            lanes_.clear();
+            keys_.clear();
+            escapes_.clear();
+            retained_lanes_.clear();
+            retained_bases_.clear();
+            retained_escapes_.clear();
+            retained_.clear();
+            capacity_ = capacity;
+            num_bits_ = num_bits;
+        }
+    }
+    auto ensure(size_t n) -> void {
+        if (keys_.size() >= n) {
+            return;
+        }
+        lanes_.resize(n * capacity_);
+        keys_.resize(n);
+        // Every view is rebuilt, not just the new tail: the resize above may have moved lanes_, which
+        // would leave the existing views pointing into freed storage.
+        for (size_t i = 0; i < n; ++i) {
+            keys_[i] = SparseRowKey{.row = SparseRow{&lanes_[i * capacity_], 0}};
+        }
+    }
+    // Hygiene rather than correctness: a key always points at the entry read for it, so stale entries are
+    // unreachable -- they would just accumulate for the whole resolve. Dropped per batch because that is
+    // the granularity at which slots are refilled anyway.
+    auto begin_batch() -> void { escapes_.clear(); }
+    [[nodiscard]] auto read_record(const VecZ &buf, size_t q, size_t stride, size_t slot) -> int {
+        const size_t base = query_record_offset(q, stride);
+        const size_t lane_words = sparse_lane_words(capacity_);
+        if (sparse_record_is_escape(buf, base)) {
+            // The tail entry this record named. Its offset needs the record count and the stride, both of
+            // which the buffer and the caller already carry.
+            const size_t tail = query_tail_offset(buf, stride);
+            const size_t words = Bitset::words_for(num_bits_);
+            escapes_.emplace_back(num_bits_);
+            mpi_detail::read_monomial_from_words(buf, tail + (buf[base + lane_words] * words), escapes_.back());
+            keys_[slot].spilled = &escapes_.back();
+            return decode_phase(buf[base + lane_words + 1]);
+        }
+        int phase = 0;
+        keys_[slot].spilled = nullptr;
+        // The lane pointer stays the one ensure() set: a record's lanes are read into this slot's own run.
+        sparse_query_read(buf, q, stride, capacity_, &lanes_[slot * capacity_], keys_[slot].row.codes, phase);
+        return phase;
+    }
+    [[nodiscard]] auto data() const -> const key_type * { return keys_.data(); }
+    [[nodiscard]] auto operator[](size_t slot) const -> const key_type & { return keys_[slot]; }
+
+    // See DenseQueryKeys::retain. A retained key owns its lanes here too, in a second arena, and an escaped
+    // one owns its monomial -- the batch's own escape storage is dropped every batch.
+    [[nodiscard]] auto retain(size_t slot) -> size_t {
+        const size_t handle = retained_.size();
+        // A base is recorded for every handle, escaped or not, so retained_bases_ stays indexable by
+        // handle; an escaped key's is simply never read.
+        retained_bases_.push_back(retained_lanes_.size());
+        if (keys_[slot].is_spilled()) {
+            retained_escapes_.push_back(*keys_[slot].spilled);
+            // .row left empty: is_spilled() sends every read to .spilled instead.
+            retained_.push_back(SparseRowKey{.row = {}, .spilled = &retained_escapes_.back()});
+            return handle;
+        }
+        retained_lanes_.resize(retained_bases_.back() + capacity_);
+        const size_t n = keys_[slot].row.num_slots();
+        std::copy_n(keys_[slot].row.modes,
+                    n,
+                    retained_lanes_.begin() + static_cast<std::ptrdiff_t>(retained_bases_.back()));
+        // The lane array grows, so a key cannot hold a pointer into it; retained() rebuilds the view.
+        retained_.push_back(SparseRowKey{.row = SparseRow{nullptr, keys_[slot].row.codes}});
+        return handle;
+    }
+    [[nodiscard]] auto retained(size_t handle) const -> key_type {
+        const key_type &key = retained_[handle];
+        if (key.is_spilled()) {
+            return key;
+        }
+        return SparseRowKey{.row = SparseRow{&retained_lanes_[retained_bases_[handle]], key.row.codes}};
+    }
+
+private:
+    DefaultInitVector<RowMode> lanes_ = {};
+    std::vector<SparseRowKey> keys_ = {};
+    std::deque<Bitset> escapes_ = {};
+    // Retained keys, whose storage must outlive the batch's own (see retain). retained_bases_ is parallel
+    // to retained_ but indexed only for the non-escaped ones -- an escaped key's entry is unread.
+    DefaultInitVector<RowMode> retained_lanes_ = {};
+    std::vector<size_t> retained_bases_ = {};
+    std::deque<Bitset> retained_escapes_ = {};
+    std::vector<SparseRowKey> retained_ = {};
+    size_t capacity_ = 0;
+    size_t num_bits_ = 0;
+};
+
+// A query key as a dense monomial, for the handful of places that need one -- the Schrodinger fresh-insert
+// scoring, which has no codes form. Returns a reference when the key already is one and a value otherwise,
+// so callers bind with `const auto &` to extend the temporary, exactly as materialize_row documents.
+[[nodiscard]] inline auto key_monomial(const Bitset &key, size_t /*num_bits*/) -> const Bitset & {
+    return key;
+}
+[[nodiscard]] inline auto key_monomial(const SparseRowKey &key, size_t num_bits) -> Bitset {
+    if (key.is_spilled()) {
+        return *key.spilled;
+    }
+    return sparse_row_to_bitset(key.row, num_bits);
+}
+
+// The payload width of one query record for a store, in VecZ words -- the quantity every stride, alltoallv
+// count and record offset in Engine.h derives from. An overload per store rather than one accessor on
+// MPOperator, because it is a property of the wire format the store is queried through, not of the store.
+//
+// Dense rows put the monomial's own words on the wire. The support form will put lane words plus the codes
+// word: 5 words for a 12-slot row against 33 for a 1024-mode monomial, but slightly *wider* just above the
+// store's own crossover -- 5 against 4 at 96 modes, break-even near 128 modes. That band is why the record
+// form is tied to the store rather than chosen per layer: a runtime record form would double the engine's
+// template instantiations again, to save a word in a narrow range.
+[[nodiscard]] inline auto query_payload_words_for(const OperatorIndex &store, size_t /*capacity*/) -> size_t {
     return Bitset::words_for(store.num_bits());
 }
+[[nodiscard]] inline auto query_payload_words_for(const SparseRowStore & /*store*/, size_t capacity) -> size_t {
+    return sparse_payload_words(capacity);
+}
+
+// Which key batch a store's query records arrive in. Explicit specializations rather than a member
+// typedef on the stores: the record codec lives here, and a store must not depend on the wire format it
+// is queried through.
+//
+// Each store is queried in the form it keys its rows by, so a resolve never converts: the dense store
+// receives monomials, the support form receives rows (and, for the queries no row can hold, the escape
+// monomials its tail carries).
+template <typename Store>
+struct QueryKeysFor;
+template <>
+struct QueryKeysFor<OperatorIndex> {
+    using type = DenseQueryKeys;
+};
+template <>
+struct QueryKeysFor<SparseRowStore> {
+    using type = SparseQueryKeys;
+};
 
 // No monomial reconstruction: process_responses needs only the phase.
 inline auto query_phase(const VecZ &buf, size_t q, size_t num_words) -> int {
@@ -282,6 +541,10 @@ inline auto query_value(const VecZ &buf, size_t q, size_t num_words) -> double {
 }
 
 // Requires v.size() == query_record_count(q): exactly one value per query record.
+//
+// The escape tail rides along unchanged. It can, because an escape's index names its position *within the
+// tail* rather than an offset into the buffer -- so widening every record by a value word moves the tail
+// without renumbering anything in it.
 inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out, size_t num_words) -> void {
     out.clear();
     if (q.size() < kQueryHeaderWords) {
@@ -291,7 +554,8 @@ inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v,
     }
     const size_t W = query_words(num_words);
     const size_t nq = query_record_count(q);
-    out.reserve(kQueryHeaderWords + (nq * query_words_fused(num_words)));
+    const size_t tail = query_tail_offset(q, W);
+    out.reserve(kQueryHeaderWords + (nq * query_words_fused(num_words)) + (q.size() - tail));
     out.push_back(nq);
     for (size_t i = 0; i < nq; ++i) {
         out.insert(out.end(),
@@ -299,6 +563,7 @@ inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v,
                    q.begin() + static_cast<std::ptrdiff_t>(query_record_offset(i + 1, W)));
         out.push_back(encode_value(v[i]));
     }
+    out.insert(out.end(), q.begin() + static_cast<std::ptrdiff_t>(tail), q.end());
 }
 
 } // namespace monoprop::detail

@@ -184,13 +184,69 @@ Key files:
   `CutoffEvaluator::max_mode_bound()` **plus the generator's locality**; past its capacity
   `sparse_toggle` reports `overflowed` and the caller must fall back to the dense product — never
   truncate, because a truncated mode list still carries a plausible-looking `codes` word.
-- **The query record**: a query goes on the wire as a dense monomial whichever backend holds the rows, so
-  a support-form row is materialized before it is pushed — `query_payload_words_for(store)`
-  (`layer_build/Common.h`) is the one width, and `DenseQueryKeys` the one batch. A buffer is
-  `[nq][record 0]…[record nq-1]`, and the record count comes off that header rather than `size/stride`,
-  so a record form that appends anything past the last record stays readable without changing a reader.
+- **The per-term kernel seam**: everything the scan asks about one anticommuting term — the product,
+  the overlap, the rotation sign, the structural cutoff, the owner rank and the query record — goes
+  through the per-gate object `TermProductsFor<Store, A, W>` selects (`layer_build/TermProduct.h`), so the
+  scan itself names no representation. `SparseTermProducts` answers the first four off the `codes` word
+  and falls back to `DenseTermProducts` per term when there is no row to read (a spilled store row, a
+  product past the scratch capacity) or no codes form of the cutoff (`CutoffEvaluator` recovered neither
+  concrete functor, e.g. under a basis change). `cpp/tests/term_product_tests.cpp` compares the two
+  kernels answer for answer: extend it with any new answer, or that answer ships untested.
+- **The third thing bound once per layer**: the storage word count, beside the algebra and the backend.
+  `with_kernel_width<Store>` (`layer_build/TermProduct.h`, over `detail::with_nwords`) turns
+  `gen.num_words()` into a template parameter `W` at the same seam in `build_layer`, and
+  `fused_find_and_collect<A, W>` and the `TermProductsFor<Store, A, W>` specialization
+  `DenseTermProductsW<A, W>` are templated on it, so every per-term word loop has a compile-time trip
+  count and every operand's storage pointer is resolved once per gate — which is what a `Bitset<NumBits>`
+  used to give for free. Measured worth ~10% at two and four storage words and nothing at seven or eight,
+  so `kNarrowKernelWords` (`TermProduct.h`, 4) caps which widths get an instantiation; the cost is ~11%
+  of `.text`. Not a build option, unlike `monoprop_SPARSE_ROW_MIN_MODES`: the cap is a *storage word*
+  count, so it names the same width regime on every machine, where the sparse crossover has to follow
+  the target ISA. Two conditions on that number, both measured. It is the **Majorana** path:
+  the Pauli rotation sign already loops over the generator's non-zero words only, so `W` binds no trip
+  count there and the 127-qubit kicked-Ising model gains ~1%. And it scales with how much of a run is in
+  the per-term product at all, so a loose `lower_atol` — which rejects a term on its coefficient before
+  the product is computed — sees about a third of it. Three consequences for the code.
+  `DenseTermProductsW` specializes the cutoff only for a **length** cutoff over the **whole register**; a
+  support cutoff or a narrower active window keeps going through `CutoffEvaluator`, and
+  `uses_word_cutoff()` is how a test tells those apart. (A support arm was tried and measured: ~1% worse
+  everywhere, and no gain even on the Pauli models that use it, because their per-term time is not in the
+  cutoff.) `WordKernel<W>` (`Bitset.h`) is the four word ops with `W` fixed that stand in for a `Bitset`
+  *method* — standing in for one is the membership rule, which is why the scan's fifth bound-width pass,
+  `fully_paired_words<W>`, lives in `algebra/AlgebraCommon.h` beside the `cutoff_sums` it answers for and
+  the even-bit literal it shares with `CutoffMasks::make`. Two of the four — the fused XOR and the
+  AND-fold behind `parity_and` — are the *same* definitions `Bitset`'s own inline arms use
+  (`detail::fused_xor_words` / `and_fold_words`, declared ahead of both), because one of them decides
+  emitted term signs and neither may drift from the method it stands in for. `splitmix` is deliberately
+  a second implementation instead: that value is `monomial_hash`, so it routes MPI ownership and must
+  stay bit-identical, and `cpp/tests/word_kernel_tests.cpp` asserts it equal to `SplitmixHash` at every
+  `W` rather than by construction. `term_product_tests.cpp` compares the whole kernel against
+  `DenseTermProducts` over the whole inline regime, not just the capped widths — both files sweep the
+  regime through the one `test_utils::for_each_inline_width` in `cpp/tests/InlineWidths.h`, so the range
+  cannot be narrowed in one of them alone. And the kernel's precondition is that every operand is
+  inline, so `W` is never bound above `Bitset::kInlineWords` — which `kNarrowKernelWords` is
+  `static_assert`ed against in the same header, so lowering `kInlineWords` fails the compile rather than
+  silently specializing a spilled width. `DenseTermProductsW` is non-copyable because its three word
+  pointers point into its own bitsets; a copy would read and write the original's storage.
+  Two further bindings were tried past this seam and both measured at nothing — under 0.05% of the
+  instruction count on either shipping model, pinned single-threaded — because the optimizer already
+  hoists them out of the inlined scan loop: resolving the algebra's per-term sign inputs into a
+  per-gate struct the kernel holds (`A::SignContext`), and writing the query record with the word count
+  bound (`query_push_words<W>`, one capacity check instead of one per word). Measure any third one the
+  same way before adding it; wall clock cannot see this range, and neither can an instruction count taken
+  with the thread pool live, which spins hard enough to inflate the total ~14x.
+- **The query record**: a store is queried in the form it keys its rows by, so a resolve never converts —
+  `QueryKeysFor<Store>` (`layer_build/Common.h`) picks the batch, and `query_payload_words_for(store,
+  capacity)` the width. A buffer is `[nq][record 0]…[record nq-1][dense escape tail]`: the header,
+  because a tail means `size/stride` is no longer the record count; the tail, because a query is `M ⊕ G`
+  and a fully paired product escapes the cutoff, so no fixed-stride sparse record can hold every one. An
+  escaped record keeps its place and its stride, marks lane 0 with `SparseRowStore::kOverflowLane` and
+  carries its tail *index* where the codes word would go — an index into the tail, never an offset into
+  the buffer, which is what lets the fused sink widen every record without renumbering anything. Push
+  records through `TermProducts::push(QueryOut{records, escapes}, phase)` and finish a stream with
+  `append_escape_tail`; never append a record after the tail has started.
   A batch's *retained* keys — the ones the deferred self-miss list reads after the slots have been
-  refilled — are a flat word arena at the batch's own width, never a container of
+  refilled — are a flat word arena at the batch's own width in both forms, never a container of
   monomials: a `Bitset` is sized for the widest inline width whatever its own is, and one key is
   retained per term a layer inserts, so a `MonomialList` there carried 72 bytes where a 128-bit
   monomial needs 16. It is worth -1.2% user instructions and cycles on the
@@ -209,8 +265,9 @@ Key files:
   8%, and across sessions -4% to +10% — so a real 1% shows up there as nothing. And a multi-threaded
   reading inverts: the partition pool spins, so `cycles:u` *rises* on a change that lowers wall time.
   Pin `monoprop_NUM_THREADS=1` and count instructions.
-  Owner routing is `monomial_hash` everywhere, including `find_rank`, so a multi-rank run materializes
-  one monomial per surviving term; moving that means changing `find_rank` too.
+  `owner()` is still the dense `monomial_hash` on both sides, because owner routing is that hash
+  everywhere including `find_rank` — so a multi-rank run still materializes one monomial per surviving
+  term, and moving that means changing `find_rank` too.
 - **The anticommutation fold** (`detail::InvertedIndex`): the transpose of the row store, one column per
   *bit position* — not per mode. That keying is settled and measured: a mode-keyed column cannot answer
   a generator slot that names one Majorana of a mode, which is 66% of the Hubbard generators' slots and

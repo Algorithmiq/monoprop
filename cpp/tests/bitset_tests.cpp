@@ -84,7 +84,7 @@ BOOST_AUTO_TEST_CASE(bitset_count_and_parity_and_cross_word) {
 }
 
 // fused_xor must agree with the composed operator^ / count_and it replaces in the hot path
-// (Scan.h's emit_term_products) -- same operands, same three quantities, one pass instead of two.
+// (TermProduct.h's emit_term_products) -- same operands, same three quantities, one pass instead of two.
 BOOST_AUTO_TEST_CASE(bitset_fused_xor_matches_composed_ops) {
     auto [a, ra] = make_pair<192>({1, 63, 64, 130, 191});
     auto [b, rb] = make_pair<192>({63, 64, 65, 130});
