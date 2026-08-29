@@ -323,47 +323,56 @@ def fig_single(rungs, outdir, kind, stem, draw, logy):
 
 
 def fig_combined(rungs, outdir):
-    """The 2x2 page-wide composite: rows are the scaling family, columns are the quantity.
+    """The 2x2 page-wide composite: COLUMNS are the scaling family, ROWS are the quantity.
 
-    Both families span the same 128-8192 cores, so the four panels share one x axis exactly and
-    only the bottom row needs the cores labels and only the top row the nodes axis -- which buys
-    back the vertical space the second axis costs. The row legend lives in the efficiency panel,
-    stacked in the empty lower-left corner every efficiency curve leaves, and serves the wall-time
-    panel beside it too, since colour and marker mean the same thing across a row.
+    Laid out this way every axis is shared with a neighbour that means the same thing. Both
+    families span the same 128-8192 cores, so all four panels share one x axis and only the
+    bottom row carries the cores labels, only the top row the nodes axis.
+
+    The EFFICIENCY row shares y as well: it is one quantity on one natural 0-100% scale, so the
+    right panel's tick labels would be a verbatim copy of the left's. The WALL-TIME row does not.
+    Strong spans 6.9-454 s and weak 10-217 s, and clip_y sizes each panel to its own data, so
+    forcing one range on both would push the tallest strong curves off the top of the frame --
+    a figure that hides two of its own measurements. Different data, different axis.
+
+    The family is named in a column header rather than by an (a)-(d) letter the caption then has
+    to decode: a reader looking at the lower-right panel should not have to count panels to learn
+    it is weak-scaling efficiency. Each column carries its own legend, in the efficiency panel,
+    stacked in the empty lower-left corner every efficiency curve leaves; the wall-time panel
+    above reads off it, since colour and marker mean the same thing down a column.
     """
     strong, weak = strong_curves(rungs), weak_curves(rungs)
     if not (strong and weak):
         return None
     cores = sorted(set(all_cores(strong)) | set(all_cores(weak)))
     fig, axes = plt.subplots(2, 2, figsize=(W2, H2), sharex=True)
-    rows = [(strong, draw_strong_time, draw_strong_efficiency, (True, False)),
-            (weak, draw_weak_time, draw_weak_efficiency, (True, False))]
-    for r, (curves, draw_t, draw_e, logys) in enumerate(rows):
-        for c, (draw, logy) in enumerate(zip((draw_t, draw_e), logys)):
+    cols = [("Strong scaling", strong, draw_strong_time, draw_strong_efficiency),
+            ("Weak scaling", weak, draw_weak_time, draw_weak_efficiency)]
+    for c, (header, curves, draw_t, draw_e) in enumerate(cols):
+        for r, (draw, logy) in enumerate(zip((draw_t, draw_e), (True, False))):
             ax = axes[r][c]
             dress(ax, cores, logy=logy, xlabel=(r == 1))
-            # One legend per row, in the RIGHT panel: the efficiency panels have an empty
-            # lower-left corner at every core count, whereas in the wall-time panels the keys
-            # have to be paid for with headroom above the curves. Colour and marker mean the same
-            # thing across a row, so the left panel reads off it.
-            draw(ax, curves, legend=(c == 1))
-            # The x axis is shared and the columns are aligned, so ONE nodes axis per column --
-            # on the top row, above the whole column -- says everything four copies of it said,
-            # and buys back the vertical space that let the rows be pushed apart.
+            # The legend goes in the efficiency panel, whose lower-left corner is empty at every
+            # core count -- in the wall-time panel a key has to be paid for with headroom.
+            draw(ax, curves, legend=(r == 1))
+            # The units are identical across a row, so the row is labelled once, on the left.
+            if c == 1:
+                ax.set_ylabel("")
+            # One nodes axis per column, above the whole column: the x axis is shared and the
+            # columns are aligned, so four copies of it said nothing three of them did not.
             if r == 0:
                 nodes_axis(ax, cores)
-            letter(ax, "abcd"[2 * r + c])
+                ax.set_title(header, loc="center", fontsize=9.5, color=INK, pad=16.0)
+    # Share the efficiency row explicitly, AFTER drawing: both panels are percent on the same
+    # scale, so give them the union of their limits and let the left one carry the ticks.
+    lo = min(axes[1][0].get_ylim()[0], axes[1][1].get_ylim()[0])
+    hi = max(axes[1][0].get_ylim()[1], axes[1][1].get_ylim()[1])
+    for ax in axes[1]:
+        ax.set_ylim(lo, hi)
+    axes[1][1].tick_params(labelleft=False)
     fig.tight_layout(h_pad=0.9, w_pad=1.1)
     save(fig, outdir, "fig-scaling-2x2")
     return {"strong": strong, "weak": weak}
-
-
-def letter(ax, ch):
-    """Panel label as a left-aligned TITLE rather than a free annotation. A title is measured by
-    tight_layout and is placed above whatever furniture the axes already carries, so the letter
-    sits the same small distance above its own panel whether or not that panel has a nodes axis,
-    always flush with the left spine -- which a fixed offset in points cannot do in both rows."""
-    ax.set_title(f"({ch})", loc="left", fontsize=9, fontweight="bold", color=INK, pad=3.0)
 
 
 TITLE = "Figure captions -- strong and weak scaling of the Hubbard propagate operator"
@@ -373,8 +382,9 @@ caption definition in ../captions.py -- edit that file, not this one, and re-run
 make_paper_figures.py. Ranges and percentages are computed from the plotted rows, never typed.
 
 Figs. 1-4 are the standalone single-column figures. Fig. 5 is the page-wide 2x2 composite of the
-same four panels, lettered (a)-(d), for use as a single top-of-page float; it draws from the same
-code, so it cannot disagree with them. Use either the four or the one, not both.
+same four panels -- columns headed by scaling family, rows by quantity -- for use as a single
+top-of-page float; it draws from the same code, so it cannot disagree with them. Use either the
+four or the one, not both.
 
 Encoding shared by every figure: colour and marker = problem size (strong) or load per node
 (weak), on a light-to-dark single-hue ordinal ramp, since the three curves differ in a MAGNITUDE
