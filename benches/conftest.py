@@ -84,6 +84,15 @@ def _size() -> int:
     return 1 if MPI is None else MPI.COMM_WORLD.Get_size()
 
 
+def _nodes() -> tuple[int, int]:
+    """Return (distinct hosts, ranks per host). Collective; serial returns ``(1, 1)``."""
+    if MPI is None or MPI.COMM_WORLD.Get_size() == 1:
+        return 1, 1
+    hosts = MPI.COMM_WORLD.allgather(socket.gethostname())
+    n = len(set(hosts))
+    return n, _size() // n
+
+
 def _reduce_sum(comm: Any, value: int) -> int:
     """Sum ``value`` across ranks. Collective; a serial run returns ``value``."""
     if comm is not None and comm.Get_size() > 1:
@@ -132,6 +141,7 @@ _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
     "memhwm": {},  # node id -> summed peak RSS, whole test, setup() included
+    "memhwm_max": {},  # node id -> worst-rank peak RSS, whole test, setup() included
     "opsize": {},  # picture / model / node id -> {"terms": n}
     "memrest": {},  # picture / model -> resting RSS bytes
     "membase": {},  # fixed model -> resting RSS bytes before the model is built
@@ -191,16 +201,18 @@ def _core_md5() -> str:
         return "unavailable"
 
 
-def _meta() -> dict[str, Any]:
+def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
     """Return this run's configuration metadata for the report."""
     try:
         nanobind_backend_version = version("nanobind-backend")
     except PackageNotFoundError:
         nanobind_backend_version = "not installed"
 
-    return {
+    meta = {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
+        "nodes": nodes,
+        "ranks_per_node": ranks_per_node,
         "monoprop_threads": os.environ.get("monoprop_NUM_THREADS", "default"),  # noqa: SIM112
         "cpu_count_logical": psutil.cpu_count(logical=True),
         "cpu_count_physical": psutil.cpu_count(logical=False),
@@ -218,6 +230,12 @@ def _meta() -> dict[str, Any]:
         # Filled by _record_placement: the threads exist only once a propagator does.
         "pinning": {},
     }
+    # No nanobind property exposes the engine's resolved partition count (see bindings/binder.h),
+    # so record the requested env var under its own name rather than claim it is the effective value.
+    partitions_env = os.environ.get("monoprop_PARTITIONS")  # noqa: SIM112
+    if partitions_env is not None:
+        meta["partitions_env"] = partitions_env
+    return meta
 
 
 def _params(config: pytest.Config) -> dict[str, Any]:
@@ -235,8 +253,9 @@ def pytest_configure(config: pytest.Config) -> None:
     Every rank runs the whole session, so rank 0 alone prints, writes and records.
     ``trylast`` so the terminal reporter exists before non-root ranks unregister it.
     """
+    nodes, ranks_per_node = _nodes()  # collective; every rank must call this
     if _rank() == 0:
-        _RESULTS["meta"] = _meta()
+        _RESULTS["meta"] = _meta(nodes, ranks_per_node)
         _RESULTS["params"] = _params(config)
         return
 
@@ -450,17 +469,22 @@ def record_opsize(
 
 @pytest.fixture(autouse=True)
 def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[None]:
-    """Record ``memhwm``: peak RSS over the whole test, summed over ranks.
+    """Record ``memhwm`` (summed peak RSS) and ``memhwm_max`` (the worst rank's peak RSS).
 
     It spans ``setup``, so it predicts an OOM kill but is the wrong number for comparing
-    operations -- ``opmemdelta`` is that. The reduce is collective; only rank 0 records.
+    operations -- ``opmemdelta`` is that. The sum alone has inverted per-rank readings here
+    before, so ``memhwm_max`` is recorded alongside it, never in place of it. Both reduces
+    are collective; only rank 0 records.
     """
     with HighWaterMark() as window:
         yield
     key = request.node.nodeid.split("/")[-1]
     hwm = _reduce_sum(bench_comm, window.peak_bytes)
+    hwm_max = _reduce_max(bench_comm, window.peak_bytes)
     if hwm:
         _record("memhwm", key, hwm)
+    if hwm_max:
+        _record("memhwm_max", key, hwm_max)
 
 
 @pytest.fixture(scope="session", params=["heisenberg", "schrodinger"])

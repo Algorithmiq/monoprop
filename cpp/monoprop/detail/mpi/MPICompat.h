@@ -36,6 +36,7 @@
 
 // These includes are here on purpose and should not be moved to the top
 #include "monoprop/TypeAliases.h"
+#include "monoprop/monopropExport.h"
 
 namespace monoprop::mpi {
 
@@ -50,7 +51,7 @@ inline constexpr bool unsupported_mpi_datatype_v = false;
 
 template <typename T>
 struct datatype {
-    static inline auto get() -> MPI_Datatype {
+    static auto get() -> MPI_Datatype {
         if constexpr (std::is_same_v<T, int>) {
             return MPI_INT;
         }
@@ -87,8 +88,8 @@ inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void 
 inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
 
-auto rank(const Comm &comm) -> int;
-auto size(const Comm &comm) -> int;
+monoprop_EXPORT auto rank(const Comm &comm) -> int;
+monoprop_EXPORT auto size(const Comm &comm) -> int;
 
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
@@ -107,10 +108,10 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 #endif
 }
 
-auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
+monoprop_EXPORT auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
 // `n` is the comm size.
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
+monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
 
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a

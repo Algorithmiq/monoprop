@@ -83,3 +83,5 @@ discover_tests(
   SERIAL_ENVIRONMENT
   ${_monoprop_serial_env_entries}
 )
+
+add_subdirectory(link_export_probe)
