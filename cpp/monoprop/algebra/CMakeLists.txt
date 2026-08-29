@@ -6,6 +6,7 @@ target_sources(
       FILES
         "Algebra.h"
         "AlgebraCommon.h"
+        "CodesAlgebra.h"
         "MajoranaAlgebra.h"
         "PauliAlgebra.h"
 )

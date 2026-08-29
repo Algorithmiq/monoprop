@@ -9,4 +9,5 @@ target_sources(
         "OperatorIndex.h"
         "RowAccess.h"
         "RowHashTable.h"
+        "SparseRowStore.h"
 )

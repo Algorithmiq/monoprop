@@ -216,6 +216,17 @@ public:
         return os;
     }
 };
+
+// The splitmix64 finalizer. Every hash in the engine ends here, and the value routes MPI ownership, so
+// this must stay bit-identical wherever it is reached from.
+[[nodiscard]] constexpr auto splitmix_finalize(uint64_t x) noexcept -> uint64_t {
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x;
+}
 } // namespace monoprop
 
 template <typename T>
@@ -223,14 +234,7 @@ struct SplitmixHash;
 
 template <size_t NumBits>
 struct SplitmixHash<monoprop::Bitset<NumBits>> {
-    static constexpr auto mix(uint64_t x) noexcept -> uint64_t {
-        x ^= x >> 30;
-        x *= 0xbf58476d1ce4e5b9ULL;
-        x ^= x >> 27;
-        x *= 0x94d049bb133111ebULL;
-        x ^= x >> 31;
-        return x;
-    }
+    static constexpr auto mix(uint64_t x) noexcept -> uint64_t { return monoprop::splitmix_finalize(x); }
 
     auto operator()(const monoprop::Bitset<NumBits> &bs) const noexcept -> size_t {
         constexpr size_t W = monoprop::Bitset<NumBits>::num_words();
