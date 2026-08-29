@@ -165,7 +165,7 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     };
     stage_self(terms[1], 1);
     stage_self(terms[5], -1);
-    eng.src_idx_r[0] = {0, 2};
+    eng.src_idx_r.at_slot(0) = {0, 2};
 
     eng.resolve_self_queries(/*is_leader_pass=*/true);
 
