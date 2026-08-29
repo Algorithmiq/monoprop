@@ -23,6 +23,8 @@
 #ifdef monoprop_ENABLE_MPI
 
 #include <atomic>
+#include <bit>
+#include <cstddef>
 #include <exception>
 #include <numeric>
 #include <thread>
@@ -204,8 +206,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
     BOOST_CHECK_EQUAL(failures.load(), 0);
 }
 
-// alltoallv_resolve driven directly: it folds the count MPI_Alltoall into the payload verb's B1→B2
-// window and sizes recv itself.
+// alltoallv_resolve driven directly: it folds the count round into the payload verb's barriered
+// windows and sizes recv itself.
 BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
     if (world_size() < 2) {
         return;
@@ -861,6 +863,226 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds) {
         for (int src = 0; src < R; ++src) {
             if (src != peer) {
                 BOOST_CHECK(r_out[static_cast<size_t>(src)].empty());
+            }
+        }
+    }
+}
+
+namespace {
+
+// One fused-resolve round under `plan`: flattens send_blocks, runs the verb, and re-splits the payload
+// by global source using the resolved counts, so a case compares delivered BLOCKS rather than offsets.
+auto resolve_round(HybridComm &hyb,
+                   int u,
+                   int P,
+                   const std::vector<std::vector<int>> &send_blocks,
+                   monoprop::mpi::PeerPlan plan) -> std::vector<std::vector<int>> {
+    std::vector<int> send;
+    std::vector<int> sc(static_cast<size_t>(P)), sd(static_cast<size_t>(P));
+    for (int d = 0; d < P; ++d) {
+        const auto &blk = send_blocks[static_cast<size_t>(d)];
+        sc[static_cast<size_t>(d)] = static_cast<int>(blk.size());
+        sd[static_cast<size_t>(d)] = static_cast<int>(send.size());
+        send.insert(send.end(), blk.begin(), blk.end());
+    }
+    std::vector<int> recv;
+    std::vector<int> rc(static_cast<size_t>(P)), rd(static_cast<size_t>(P));
+    hyb.alltoallv_resolve<int>(u,
+                               {.send = send.data(),
+                                .send_counts = sc.data(),
+                                .send_displs = sd.data(),
+                                .recv = recv,
+                                .recv_counts = rc.data(),
+                                .recv_displs = rd.data()},
+                               monoprop::mpi::datatype<int>::get(),
+                               plan);
+    std::vector<std::vector<int>> out(static_cast<size_t>(P));
+    for (int src = 0; src < P; ++src) {
+        const auto off = static_cast<size_t>(rd[static_cast<size_t>(src)]);
+        const auto n = static_cast<size_t>(rc[static_cast<size_t>(src)]);
+        out[static_cast<size_t>(src)].assign(recv.begin() + static_cast<std::ptrdiff_t>(off),
+                                             recv.begin() + static_cast<std::ptrdiff_t>(off + n));
+    }
+    return out;
+}
+
+// Every leg INTO an odd rank is empty, so a multi-peer plan always has a peer whose payload legs are
+// skipped entirely while its S*S-int count block still travels. Both ends read the same function of
+// (src, dst), which is what keeps the skip symmetric.
+auto muted_count(int src, int dst, int S) -> int {
+    return (dst / S) % 2 == 1 ? 0 : sparse_count(src, dst);
+}
+
+} // namespace
+
+// The fused resolve POSTS its count round in B1→B2 and drains it in B3→B4, with every partition's
+// pack_send_ running underneath. Only the sparse arm splits -- plan.dense() is a blocking MPI_Alltoall
+// -- so drive the SAME peer-masked layout through both arms and require the delivered blocks to agree
+// element for element. A dropped or torn count block changes a length here, not just a value.
+BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_matches_the_dense_arm) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return; // the XOR pairing needs a power-of-two rank count
+    }
+    const int full = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    int cases = 0;
+    for (const int f : {1, 2}) {
+        const int bits = full - std::countr_zero(static_cast<unsigned>(f));
+        if (bits < 1) {
+            continue; // bits == 0 IS the dense arm, which is the reference here
+        }
+        for (int shift = 0; shift < (1 << bits); ++shift) {
+            const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+            BOOST_REQUIRE_EQUAL(plan.count(R), f);
+            ++cases;
+            for (const int S : {1, 2, 3}) {
+                const int P = R * S;
+                // Peer-masked, so the dense plan carries the identical bytes: its non-peer blocks are
+                // empty rather than absent, and a dense count of zero and a sparse absence must agree.
+                const auto fill = [&](int g) {
+                    std::vector<std::vector<int>> send(static_cast<size_t>(P));
+                    for (int k = 0; k < f; ++k) {
+                        const int b = plan.peer(me, k);
+                        for (int t = 0; t < S; ++t) {
+                            const int d = (b * S) + t;
+                            for (int j = 0; j < muted_count(g, d, S); ++j) {
+                                send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                            }
+                        }
+                    }
+                    return send;
+                };
+                std::vector<std::vector<std::vector<int>>> dense(static_cast<size_t>(S));
+                std::vector<std::vector<std::vector<int>>> sparse(static_cast<size_t>(S));
+                auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+                    const int g = (me * S) + u;
+                    dense[static_cast<size_t>(u)] = resolve_round(hyb, u, P, fill(g), {});
+                    sparse[static_cast<size_t>(u)] = resolve_round(hyb, u, P, fill(g), plan);
+                });
+                for (const auto &e : errs) {
+                    BOOST_CHECK(e == nullptr);
+                }
+                for (int t = 0; t < S; ++t) {
+                    const int g = (me * S) + t;
+                    const auto &got = sparse[static_cast<size_t>(t)];
+                    const auto &want_dense = dense[static_cast<size_t>(t)];
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), P);
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(want_dense.size()), P);
+                    for (int src = 0; src < P; ++src) {
+                        const int want = plan.contains(me, src / S) ? muted_count(src, g, S) : 0;
+                        const auto &blk = got[static_cast<size_t>(src)];
+                        BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), want);
+                        BOOST_REQUIRE_EQUAL(static_cast<int>(want_dense[static_cast<size_t>(src)].size()), want);
+                        for (int j = 0; j < want; ++j) {
+                            BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], sparse_tag(src, g, j));
+                            BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)],
+                                              want_dense[static_cast<size_t>(src)][static_cast<size_t>(j)]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    BOOST_TEST(cases > 0); // at R < 2 the case is a no-op and must not read as coverage
+}
+
+// shift == 0 at full bits makes this rank its own and only peer, so the count round posts NOTHING:
+// sparse_pairwise memcpys the S*S-int block in place and the B3→B4 wait must be a no-op rather than a
+// wait on stale requests. The S^2 in-rank payload legs still have to arrive.
+BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_self_peer_only) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = 0};
+    BOOST_REQUIRE_EQUAL(plan.peer(me, 0), me);
+    for (const int S : {1, 2, 3}) {
+        const int P = R * S;
+        std::vector<std::vector<std::vector<int>>> recv(static_cast<size_t>(S));
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            const int g = (me * S) + u;
+            std::vector<std::vector<int>> send(static_cast<size_t>(P));
+            for (int t = 0; t < S; ++t) {
+                const int d = (me * S) + t;
+                for (int j = 0; j <= t; ++j) {
+                    send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                }
+            }
+            recv[static_cast<size_t>(u)] = resolve_round(hyb, u, P, send, plan);
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        for (int t = 0; t < S; ++t) {
+            const int g = (me * S) + t;
+            const auto &out = recv[static_cast<size_t>(t)];
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+            for (int src = 0; src < P; ++src) {
+                const int want = (src / S) == me ? t + 1 : 0; // block (su -> t) has t+1 entries
+                const auto &blk = out[static_cast<size_t>(src)];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), want);
+                for (int j = 0; j < want; ++j) {
+                    BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], sparse_tag(src, g, j));
+                }
+            }
+        }
+    }
+}
+
+// A peer with nothing to send is where the split can hang: pack_send_ copies zero bytes in B2→B3 while
+// the count round is still live, and the payload round posts no leg for it at all. Back-to-back rounds,
+// the second silent, so the second also runs over the first's staging high-water bytes.
+BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int bits = std::countr_zero(static_cast<unsigned>(R));
+    const int me = world_rank();
+    for (int shift = 1; shift < R; ++shift) { // shift 0 is the self peer, covered above
+        const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+        const int peer = plan.peer(me, 0);
+        BOOST_REQUIRE(peer != me);
+        const int my_len = me < peer ? 0 : 4; // exactly one end of the pair is silent
+        const int peer_len = peer < me ? 0 : 4;
+        for (const int S : {1, 2}) {
+            const int P = R * S;
+            std::vector<std::vector<std::vector<int>>> loud(static_cast<size_t>(S));
+            std::vector<std::vector<std::vector<int>>> quiet(static_cast<size_t>(S));
+            auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+                const int g = (me * S) + u;
+                std::vector<std::vector<int>> send(static_cast<size_t>(P));
+                for (int t = 0; t < S; ++t) {
+                    const int d = (peer * S) + t;
+                    for (int j = 0; j < my_len; ++j) {
+                        send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                    }
+                }
+                loud[static_cast<size_t>(u)] = resolve_round(hyb, u, P, send, plan);
+                quiet[static_cast<size_t>(u)] =
+                    resolve_round(hyb, u, P, std::vector<std::vector<int>>(static_cast<size_t>(P)), plan);
+            });
+            for (const auto &e : errs) {
+                BOOST_CHECK(e == nullptr);
+            }
+            for (int t = 0; t < S; ++t) {
+                const int g = (me * S) + t;
+                const auto &out = loud[static_cast<size_t>(t)];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), P);
+                for (int su = 0; su < S; ++su) {
+                    const auto &blk = out[static_cast<size_t>((peer * S) + su)];
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), peer_len);
+                    for (int j = 0; j < peer_len; ++j) {
+                        BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], sparse_tag((peer * S) + su, g, j));
+                    }
+                }
+                // The all-silent round: every resolved count is zero, so a stale staged byte cannot hide.
+                for (const auto &blk : quiet[static_cast<size_t>(t)]) {
+                    BOOST_CHECK(blk.empty());
+                }
             }
         }
     }
