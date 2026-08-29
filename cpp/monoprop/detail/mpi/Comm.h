@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -65,6 +66,68 @@ struct Comm {
     }
 };
 
+// A window-relative index. Distinct from a flat slot on purpose: the two are the same number only when
+// the window starts at 0, so a swap addresses the wrong peer while staying in bounds.
+struct WindowIndex {
+    size_t value = 0;
+
+    constexpr WindowIndex() = default;
+    explicit constexpr WindowIndex(size_t v) noexcept : value(v) {}
+};
+
+// The contiguous run of flat destination slots a round can reach. Slots are rank-major
+// (slot = rank * S + partition), so one rank's S partitions are contiguous and the single peer sparse
+// routing leaves is exactly one such run; dense is the count == P value of the same run, not a second
+// shape. See PeerPlan::window.
+struct SlotWindow {
+    size_t base = 0;  // first reachable flat slot
+    size_t count = 0; // slots in the run
+
+    [[nodiscard]] constexpr auto stop() const -> size_t { return base + count; }
+    [[nodiscard]] constexpr auto contains(size_t slot) const -> bool { return slot >= base && slot < stop(); }
+    // The one flat-slot door: it asserts membership, so a slot from outside cannot become another's entry.
+    [[nodiscard]] constexpr auto index(size_t slot) const -> WindowIndex {
+        assert(contains(slot) && "flat slot outside the window it is being re-based into");
+        return WindowIndex{slot - base};
+    }
+    [[nodiscard]] constexpr auto slot(WindowIndex i) const -> size_t {
+        assert(i.value < count);
+        return base + i.value;
+    }
+};
+
+// A vector over a SlotWindow, addressed by flat slot through at_slot(); operator[] takes a WindowIndex,
+// so a flat slot used as a raw index does not compile. Re-basing an array is only safe if every index
+// site shifts together, and these two accessors are the only sites.
+template <typename T>
+class WindowVec {
+public:
+    WindowVec() = default;
+    explicit WindowVec(SlotWindow w) : win_(w), v_(w.count) {}
+
+    auto reset(SlotWindow w) -> void {
+        win_ = w;
+        v_.assign(w.count, T{});
+    }
+
+    [[nodiscard]] auto window() const -> SlotWindow { return win_; }
+    [[nodiscard]] auto size() const -> size_t { return v_.size(); }
+
+    [[nodiscard]] auto operator[](WindowIndex i) -> T & { return v_[i.value]; }
+    [[nodiscard]] auto operator[](WindowIndex i) const -> const T & { return v_[i.value]; }
+    [[nodiscard]] auto at_slot(size_t slot) -> T & { return v_[win_.index(slot).value]; }
+    [[nodiscard]] auto at_slot(size_t slot) const -> const T & { return v_[win_.index(slot).value]; }
+
+    [[nodiscard]] auto begin() { return v_.begin(); }
+    [[nodiscard]] auto end() { return v_.end(); }
+    [[nodiscard]] auto begin() const { return v_.begin(); }
+    [[nodiscard]] auto end() const { return v_.end(); }
+
+private:
+    SlotWindow win_{};
+    std::vector<T> v_;
+};
+
 // Which destination RANKS a round can touch, when the caller knows. Two states, matching
 // routing::Router: dense, or sparse over the single peer GF(2)-linear routing implies.
 //
@@ -96,6 +159,14 @@ struct PeerPlan {
     // `k` indexes the peer set, which is a singleton when sparse.
     [[nodiscard]] constexpr auto peer(int me, int k) const -> int { return sparse ? (me ^ shift) : k; }
     [[nodiscard]] constexpr auto contains(int me, int b) const -> bool { return !sparse || b == (me ^ shift); }
+    // The flat slots reachable from `me_flat` over a `ranks` x `parts` world. One expression per field:
+    // sparse names the peer rank's `parts` slots, dense is the same with peer rank 0 and count(ranks)
+    // == ranks, i.e. the whole world.
+    [[nodiscard]] constexpr auto window(size_t me_flat, size_t ranks, size_t parts) const -> SlotWindow {
+        const size_t peer_rank = sparse ? ((me_flat / parts) ^ static_cast<size_t>(shift)) : 0;
+        return SlotWindow{.base = peer_rank * parts,
+                          .count = static_cast<size_t>(count(static_cast<int>(ranks))) * parts};
+    }
 };
 
 // Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:
