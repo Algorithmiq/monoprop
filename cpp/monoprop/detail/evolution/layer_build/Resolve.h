@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <limits>
 #include <span>
@@ -24,6 +25,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -38,10 +40,12 @@ struct IncomingProbe {
     // The operator store's position width, not the wire's: these positions exist to become rows.
     using PosT = typename OperatorIndex<NumModes>::PosT;
 
-    std::vector<size_t> goff;              // rank_count+1 flat offsets: g = goff[s] + q
-    DefaultInitVector<uint32_t> sender_of; // g → sender rank
+    // The slots `incoming` covers; senders are named by their index into it, never by a flat slot.
+    mpi::SlotWindow window;
+    std::vector<size_t> goff;              // window.count+1 flat offsets: g = goff[k] + q
+    DefaultInitVector<uint32_t> sender_wi; // g → sender's WINDOW index (see sender_index/sender_slot)
     DefaultInitVector<int> phase_of;       // g → query phase
-    // g → word offset of that query inside incoming[sender_of[g]]; a query ordinal names no position.
+    // g → word offset of that query inside its sender's buffer; a query ordinal names no position.
     DefaultInitVector<size_t> off_of;
     DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j)
     std::vector<TermIndex> miss_g;    // j → the g that became miss j (Phase 4 reads the key of miss_g[j])
@@ -59,6 +63,10 @@ struct IncomingProbe {
     [[nodiscard]] auto positions_at(size_t g) const -> std::span<const PosT> {
         return std::span<const PosT>(pos_flat).subspan(pos_off[g], k_of[g]);
     }
+
+    //! The two ways to name query g's sender. sender_wi is re-based, so nothing else reads it.
+    [[nodiscard]] auto sender_index(size_t g) const -> mpi::WindowIndex { return mpi::WindowIndex{sender_wi[g]}; }
+    [[nodiscard]] auto sender_slot(size_t g) const -> size_t { return window.slot(sender_index(g)); }
 
     //! Builds a dense bitset; only the fully paired minority of callers needs one.
     [[nodiscard]] auto mono_at(size_t g) const -> Monomial<NumModes> {
@@ -79,29 +87,30 @@ struct IncomingProbe {
 // Read-only phases 1-2 of the exchange: `form` says whether the incoming records are fused
 // (ContractSink) or plain (GraphSink). The caller runs phase 3, then insert_incoming_misses.
 template <size_t NumModes>
-auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
+auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
                             MPOperator<NumModes> &op,
-                            size_t rank_count,
                             QueryForm form) -> IncomingProbe<NumModes> {
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingProbe<NumModes>::PosT;
     IncomingProbe<NumModes> pr;
+    pr.window = incoming.window();
+    const size_t senders = pr.window.count;
 
-    pr.goff.assign(rank_count + 1, 0);
-    for (size_t s = 0; s < rank_count; ++s) {
-        const size_t nq = QW::count_queries(incoming[s], form);
-        pr.goff[s + 1] = pr.goff[s] + nq;
+    pr.goff.assign(senders + 1, 0);
+    for (size_t k = 0; k < senders; ++k) {
+        const size_t nq = QW::count_queries(incoming[mpi::WindowIndex{k}], form);
+        pr.goff[k + 1] = pr.goff[k] + nq;
     }
-    pr.nq_total = pr.goff[rank_count];
+    pr.nq_total = pr.goff[senders];
     if (pr.nq_total == 0) {
         return pr;
     }
 
-    pr.sender_of.resize(pr.nq_total);
-    for (size_t s = 0; s < rank_count; ++s) {
-        std::fill(pr.sender_of.begin() + static_cast<std::ptrdiff_t>(pr.goff[s]),
-                  pr.sender_of.begin() + static_cast<std::ptrdiff_t>(pr.goff[s + 1]),
-                  static_cast<uint32_t>(s));
+    pr.sender_wi.resize(pr.nq_total);
+    for (size_t k = 0; k < senders; ++k) {
+        std::fill(pr.sender_wi.begin() + static_cast<std::ptrdiff_t>(pr.goff[k]),
+                  pr.sender_wi.begin() + static_cast<std::ptrdiff_t>(pr.goff[k + 1]),
+                  static_cast<uint32_t>(k));
     }
 
     // Phase 1 (read-only): deserialize, then probe with the group-prefetch batch find. One walk per sender.
@@ -114,16 +123,17 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     pr.pos_flat.clear();
     // A hint only, so this stays one allocation for the common case.
     pr.pos_flat.reserve(pr.nq_total * QW::kReservePositionsPerQuery);
-    for (size_t s = 0; s < rank_count; ++s) {
+    for (size_t si = 0; si < senders; ++si) {
+        const VecZ &buf = incoming[mpi::WindowIndex{si}];
         size_t off = 0;
-        for (size_t g = pr.goff[s]; g < pr.goff[s + 1]; ++g) {
-            const size_t k = QW::k_at(incoming[s], off);
+        for (size_t g = pr.goff[si]; g < pr.goff[si + 1]; ++g) {
+            const size_t k = QW::k_at(buf, off);
             const size_t at = pr.pos_flat.size();
             pr.pos_flat.resize(at + k); // default-init grow: read_query writes every element
             pr.pos_off[g] = at;
             pr.k_of[g] = static_cast<uint32_t>(k);
             pr.off_of[g] = off;
-            const auto d = QW::read_query(incoming[s], form, off, std::span<PosT>(pr.pos_flat).subspan(at, k));
+            const auto d = QW::read_query(buf, form, off, std::span<PosT>(pr.pos_flat).subspan(at, k));
             pr.phase_of[g] = d.phase;
             off = d.next;
         }
@@ -181,18 +191,19 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
 template <size_t NumModes, typename Sink>
-auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
+auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
                       MPOperator<NumModes> &op,
-                      size_t rank_count,
                       bool is_leader_pass,
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
-                      Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
+                      Sink &sink) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, rank_count, sink.incoming_form());
-    std::vector<std::vector<Resp>> responses(rank_count);
-    for (size_t s = 0; s < rank_count; ++s) {
-        responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());
+    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form());
+    // The response window is the query window: the pairing is an XOR involution, so a rank answers
+    // exactly the slots it queried.
+    mpi::WindowVec<std::vector<Resp>> responses(pr.window);
+    for (size_t k = 0; k < pr.window.count; ++k) {
+        responses[mpi::WindowIndex{k}].assign(pr.goff[k + 1] - pr.goff[k], Sink::init_response());
     }
     if (pr.nq_total == 0) {
         return responses;
@@ -200,10 +211,10 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
 
     // Phase 3 (scatter): responses + sink records + matched-follower marks. Freshly inserted partners
     // (ip ≥ combined_size) skip the mark.
-    sink.prepare(pr, rank_count, op, responses);
+    sink.prepare(pr, op, responses);
     for (size_t g = 0; g < pr.nq_total; ++g) {
-        const size_t s = pr.sender_of[g];
-        const size_t q = g - pr.goff[s];
+        const mpi::WindowIndex s = pr.sender_index(g);
+        const size_t q = g - pr.goff[s.value];
         const size_t ip = pr.idx_of[g];
         responses[s][q] = sink.on_resolved(g, s, q, ip, pr, incoming);
         if (is_leader_pass && ip < combined_size) {
@@ -216,20 +227,25 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
 }
 
 // Querier rank (any cross-rank sink): fold each resolver response into a querier-side record. The self/
-// local rank was already resolved inline, so it is skipped here. inc_r[r][q] answers query q from rank r.
+// local slot was already resolved inline, so it is skipped here (and is in the window only when this
+// generator's rank shift is zero). inc_r[k][q] answers query q sent to the window's k-th slot.
 template <size_t NumModes, typename Sink>
-auto process_responses(const std::vector<std::vector<typename Sink::Response>> &inc_r,
-                       const std::vector<std::vector<size_t>> &src_idx,
-                       const std::vector<VecZ> &queries, // serialized query buffers (for phase recovery)
-                       size_t rank_count,
+auto process_responses(const mpi::WindowVec<std::vector<typename Sink::Response>> &inc_r,
+                       const mpi::WindowVec<std::vector<size_t>> &src_idx,
+                       const mpi::WindowVec<VecZ> &queries, // serialized query buffers (for phase recovery)
                        size_t my_rank,
                        Sink &sink) -> void {
-    sink.process_reserve(inc_r, rank_count, my_rank);
-    for (size_t r = 0; r < rank_count; ++r) {
+    const mpi::SlotWindow w = inc_r.window();
+    assert(src_idx.window().base == w.base && src_idx.window().count == w.count);
+    assert(queries.window().base == w.base && queries.window().count == w.count);
+    sink.process_reserve(inc_r, my_rank);
+    for (size_t k = 0; k < w.count; ++k) {
+        const mpi::WindowIndex wi{k};
+        const size_t r = w.slot(wi);
         if (r == my_rank) {
             continue;
         }
-        sink.on_response_block(r, inc_r[r], src_idx[r], queries[r]);
+        sink.on_response_block(r, inc_r[wi], src_idx[wi], queries[wi]);
     }
 }
 
