@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -66,18 +65,22 @@ struct Comm {
     }
 };
 
-// Which destination RANKS a round can touch, when the caller knows. Under GF(2)-linear routing
-// (routing::Router) the low `bits` of the destination rank are determined by the generator: they are
-// this rank's own low bits XOR `shift`, so the peers are
+// Which destination RANKS a round can touch, when the caller knows. Two states, matching
+// routing::Router: dense, or sparse over the single peer GF(2)-linear routing implies.
 //
-//     peer(k) = ((me & (2^bits - 1)) ^ shift) | (k << bits),   k in [0, ranks >> bits)
+// Sparse means the destination rank of every block is determined by the generator: it is this rank's
+// own index XOR `shift`, so
 //
-// -- `ranks >> bits` of them instead of all `ranks`, and the relation is symmetric (XOR is an
-// involution), so every rank derives the same pairing with no communication. That is what lets a verb
-// replace a dense collective with point-to-point over the peers it can actually reach.
+//     peer = me ^ shift,   count == 1
 //
-// bits == 0 is the dense default: peer(k) == k and count == ranks, so the same loops walk every rank
-// and the verbs take their collective path.
+// -- one peer instead of all `ranks`, and the relation is symmetric (XOR is an involution), so every
+// rank derives the same pairing with no communication. That is what lets a verb replace a dense
+// collective with point-to-point. Linear routing takes ALL log2(ranks) rank bits, so there is no
+// intermediate fanout to express here.
+//
+// Dense is the default: peer(k) == k and count == ranks, so the same loops walk every rank and the
+// verbs take their collective path. Every single-rank run is dense (Router::is_linear is false at
+// R == 1), so the collectives are not a fallback but the common case.
 //
 // Two distinct failure modes if `shift` is wrong, which is why the plan is derived in one place. Ranks
 // that DISAGREE deadlock: the pairing stops being symmetric and someone waits on a send never posted.
@@ -85,36 +88,14 @@ struct Comm {
 // blocks outside the peer set, because pack_count_matrix_ / size_staging_send_ / pack_send_ only ever
 // touch peers. pack_count_matrix_ asserts the non-peer remainder is empty to catch that one.
 struct PeerPlan {
-    int bits = 0;
+    bool sparse = false;
     int shift = 0;
 
-    [[nodiscard]] constexpr auto dense() const -> bool { return bits == 0; }
-    // A plan too narrow for the world would yield 0 peers and turn the exchange into a silent no-op.
-    [[nodiscard]] constexpr auto count(int ranks) const -> int {
-        if (bits == 0) {
-            return ranks;
-        }
-        assert(bits > 0 && bits < 31 && (ranks >> static_cast<unsigned>(bits)) > 0);
-        return ranks >> static_cast<unsigned>(bits);
-    }
-    // Unsigned shifts: `bits` is a public field, and 1 << 31 on a signed int is UB.
-    [[nodiscard]] constexpr auto peer(int me, int k) const -> int {
-        if (bits == 0) {
-            return k;
-        }
-        assert(bits > 0 && bits < 31);
-        const auto ubits = static_cast<unsigned>(bits);
-        const auto mask = static_cast<int>((1U << ubits) - 1U);
-        return ((me & mask) ^ shift) | static_cast<int>(static_cast<unsigned>(k) << ubits);
-    }
-    // Membership without a search: by the XOR structure every peer shares the same low `bits`.
-    [[nodiscard]] constexpr auto contains(int me, int b) const -> bool {
-        if (bits == 0) {
-            return true;
-        }
-        const auto mask = static_cast<int>((1U << static_cast<unsigned>(bits)) - 1U);
-        return (b & mask) == ((me & mask) ^ shift);
-    }
+    [[nodiscard]] constexpr auto dense() const -> bool { return !sparse; }
+    [[nodiscard]] constexpr auto count(int ranks) const -> int { return sparse ? 1 : ranks; }
+    // `k` indexes the peer set, which is a singleton when sparse.
+    [[nodiscard]] constexpr auto peer(int me, int k) const -> int { return sparse ? (me ^ shift) : k; }
+    [[nodiscard]] constexpr auto contains(int me, int b) const -> bool { return !sparse || b == (me ^ shift); }
 };
 
 // Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:

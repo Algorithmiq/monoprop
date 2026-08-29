@@ -102,17 +102,18 @@ distinct shifts, against the $d = 7$ that $R = 128$ needs.
 
 Within a rank, partitions keep the full-avalanche `splitmix` hash: fanout across shared
 memory is free, so only balance matters there. Routing is therefore two-level. Writing $q$
-for the `splitmix` hash of $M$, the partition is $q \bmod S$, the low $d$ bits of the rank
-are $h_d(M)$, and the remaining $\log_2 R - d$ rank bits come from $q$:
+for the `splitmix` hash of $M$, the partition is $q \bmod S$ and the rank is $h_d(M)$ with
+$d = \log_2 R$ — every rank bit, so the fanout is 1:
 
 $$
-\mathrm{flat}(M) = \bigl[\,h_d(M) + 2^{d}\bigl(\lfloor q/S \rfloor \bmod (R/2^{d})\bigr)\,\bigr]\,S + (q \bmod S).
+\mathrm{flat}(M) = h_d(M)\,S + (q \bmod S).
 $$
 
-$d$ is a dial and not a switch: the fanout is $R/2^{d}$, so $d = 0$ reproduces the dense
-`hash % (R × S)` bit for bit, and $d = \log_2 R$ — the default — gives fanout 1 and
-$\mathrm{flat}(M) = h_d(M)\,S + (q \bmod S)$. A rank count that is not a power of two has
-no XOR structure and falls back to $d = 0$.
+Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
+none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`
+bit for bit. It therefore requires $R$ to be a power of two; any other rank count has no
+XOR structure to route by and is raised at propagator construction rather than silently
+routed. $R = 1$ is a power of two, takes no rank bit, and so is the dense case already.
 
 A related distributed scheme maps an index by summing its $k$-bit blocks modulo the rank
 count [@Broers2025-or]. That sum is additive modulo that count while the gate acts by XOR,
@@ -123,9 +124,8 @@ that bound into an identity.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `monoprop_ROUTING` | `linear` | `splitmix` forces $d = 0$, the dense all-to-all; `linear`, or unset, takes $d$ as large as the geometry allows. Any other value is rejected at startup rather than silently defaulting. |
-| `monoprop_ROUTE_LINEAR_BITS` | unset | An explicit $d$, clamped to $[0, \log_2 R]$. Takes precedence over `monoprop_ROUTING`. `0` selects the dense path; a negative, out-of-range or unparseable value is rejected at startup. |
-| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in any of these three variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
+| `monoprop_ROUTING` | `linear` | `splitmix` selects the dense all-to-all; `linear`, or unset, takes every rank bit from $h$ and requires a power-of-two $R$. Any other value is rejected at startup rather than silently defaulting. |
+| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
 
 ### Single-node (`MPI.COMM_SELF`)
 
