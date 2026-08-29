@@ -114,9 +114,19 @@ public:
     // See AlltoallvArgs for the send-buffer lifetime and the element-vs-byte convention; `dt` is the MPI
     // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
     // with the non-MPI-capable transport.
-    auto alltoallv(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt, PeerPlan plan = {}) -> void {
-        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt, plan] {
-            alltoallv_impl_(local_partition, args, dt, plan);
+    //
+    // `derive_wire_bits` > 0 asks partition 0 to narrow the WIRE itself, to that many linear bits, from
+    // the destination ranks the whole rank actually uses. A caller cannot supply that plan: only
+    // partition 0 reaches MPI, and its own row may be the empty one while a sibling partition has the
+    // rank's only traffic. Legal only for a SYMMETRIC layout (recv counts are the send counts), which is
+    // what lets the peer set be read off the published recv rows; asserted against the send rows.
+    auto alltoallv(int local_partition,
+                   const AlltoallvArgs &args,
+                   MPI_Datatype dt,
+                   PeerPlan plan = {},
+                   int derive_wire_bits = 0) -> void {
+        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt, plan, derive_wire_bits] {
+            alltoallv_impl_(local_partition, args, dt, plan, derive_wire_bits);
         });
     }
 
@@ -208,7 +218,11 @@ private:
     }
 
     // Flat variable all-to-all over caller-owned buffers; see AlltoallvArgs for the conventions.
-    auto alltoallv_impl_(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt, PeerPlan plan) -> void {
+    auto alltoallv_impl_(int local_partition,
+                         const AlltoallvArgs &args,
+                         MPI_Datatype dt,
+                         PeerPlan plan,
+                         int derive_wire_bits = 0) -> void {
         const size_t u = static_cast<size_t>(local_partition);
         Slot &me = slots_[u];
         me.ptr = args.send;
@@ -219,7 +233,14 @@ private:
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
         if (local_partition == 0) {
-            fill_peers_(plan);
+            // Written here, read again in the B3->B4 window: partition 0 is this member's only toucher.
+            wire_plan_ = plan;
+            if (derive_wire_bits > 0) {
+                wire_plan_ = derived_wire_plan_(derive_wire_bits);
+                // The recv rows it was read off against the send rows: the symmetry the parameter needs.
+                assert(narrowing_is_lossless_(wire_plan_));
+            }
+            fill_peers_(wire_plan_);
             size_staging_send_(args.elem);
             fill_recv_col_([this](int a, int t) { return row_recv_(t)[a]; });
             size_staging_recv_(args.elem);
@@ -232,7 +253,7 @@ private:
 
         // B4: partition 0 moves the payload while peers park at the barrier.
         if (local_partition == 0) {
-            exchange_payload_(dt, args.elem, plan);
+            exchange_payload_(dt, args.elem, wire_plan_);
         }
         sync(); // B4
 
@@ -467,6 +488,30 @@ private:
                 }
             }
         }
+    }
+
+    // The rank-level peer set, read off the recv rows every partition published before B1 -- the first
+    // point with a view wider than one partition's row. Under fanout-1 routing a layer's traffic is all
+    // on ONE rank, so this resolves to a shift; with nothing occupied it resolves to the self peer, whose
+    // legs are then all zero, and that keeps the collective-vs-pairwise branch a function of
+    // `derive_wire_bits` alone rather than of a rank's data (a data-dependent branch straddles and hangs).
+    // A set wider than one rank contradicts the caller's fanout claim: dense, so nothing is dropped.
+    auto derived_wire_plan_(int bits) -> PeerPlan {
+        int found = -1;
+        for (int u = 0; u < s_; ++u) {
+            const long long *rr = row_recv_(u);
+            for (int a = 0; a < r_; ++a) {
+                if (rr[a] != 0 && a != found) {
+                    if (found >= 0) {
+                        assert(false && "fanout claimed 1, but this rank's layer spans several peer ranks");
+                        return PeerPlan{};
+                    }
+                    found = a;
+                }
+            }
+        }
+        const auto mask = static_cast<int>((1U << static_cast<unsigned>(bits)) - 1U);
+        return PeerPlan{.bits = bits, .shift = found < 0 ? 0 : ((mpi_rank_ & mask) ^ (found & mask))};
     }
 
     // Do the published rows put anything outside the plan's peers? If so the narrowing silently drops it.
@@ -766,6 +811,8 @@ private:
     int count_posted_ = 0; // live requests in count_reqs_; always 0 on the dense (blocking) arm
     // This verb's peer ranks; see fill_peers_.
     std::vector<int> peers_;
+    // alltoallv's wire plan, partition 0 only: written in B1->B2, read in B3->B4. See derived_wire_plan_.
+    PeerPlan wire_plan_;
 
     PartitionBarrier barrier_;
 };
