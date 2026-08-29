@@ -18,6 +18,14 @@ from __future__ import annotations
 
 import importlib.util
 
+# Must precede ._core: on a fat-binary wheel there is no monoprop/_core to import until this module
+# has bound one of the shipped ISA variants to that name. The module name sorts ahead of _core so
+# alphabetical import ordering keeps it there.
+from ._bootstrap import (
+    available_variants,
+    runnable_variants,
+    supported_variants,
+)
 from ._core import (
     MAX_NUM_MODES,
     __build_type__,
@@ -63,11 +71,14 @@ __all__ = [
     "__variant__",
     "__version__",
     "antihermitian_generator_correction",
+    "available_variants",
     "expand_monomials",
     "has_mpi",
     "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",
+    "runnable_variants",
+    "supported_variants",
     "validate_parameter_mapping",
 ]
 

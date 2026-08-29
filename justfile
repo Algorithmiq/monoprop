@@ -42,6 +42,28 @@ test-mpi RANKS='':
     ctest --test-dir build/editable/Release --output-on-failure; \
     done
 
+# Build the fat binary: the engine compiled once per x86-64 ISA tier, with one selected when
+# monoprop is imported. This is what published wheels are, and it is *not* what a source build wants
+# -- -march=native beats every tier -- so it is a separate recipe rather than the default. Note
+# `uv run --no-sync` for everything afterwards: a plain `uv run` re-syncs without the config setting
+# and silently replaces the fat build with a single-ISA one.
+
+build-fat:
+    uv sync --all-extras --group test --reinstall-package monoprop --no-cache -v --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_FAT_BINARY=ON"
+    uv run --no-sync python -c 'import monoprop; print("loaded", monoprop.__variant__, "of", monoprop.available_variants())'
+
+# Run the Python suite once per installed ISA variant, not just the one this CPU selects. Without
+# this the lower tiers ship untested on every developer machine and every CI runner, since the
+# dispatch always picks the best one available.
+
+test-variants:
+    variants=$(uv run --no-sync python -c 'import monoprop; print(" ".join(monoprop.available_variants()))'); \
+    if [ -z "$variants" ]; then echo "not a fat binary; run 'just build-fat' first" >&2; exit 1; fi; \
+    for v in $variants; do \
+    echo "=== monoprop_VARIANT=$v"; \
+    monoprop_VARIANT="$v" uv run --no-sync python -m pytest -m "not mpi" -q; \
+    done
+
 # Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
 # This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
 # branches (operator_index_tests, large_cosine_storage_tests, graph_encoding_tests), so it

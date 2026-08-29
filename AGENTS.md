@@ -40,6 +40,21 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 - **uv workspace**: the repository root is the `monoprop` package; `packages/*` holds the sibling
   distributions. See "Workspace layout" below.
+- **Tiered, not multiversioned**: the ISA is chosen per *whole library*, never per function.
+  An attribute cannot do this job: GCC will not inline across an `arch` mismatch (so a `target`-attributed
+  wrapper around the engine is a `jmp`, `flatten` notwithstanding) and `#pragma GCC target` does not
+  capture templates defined outside its region -- header-resident code is widened by its TU's command
+  line or not at all. And `flatten` + `target_clones` is unaffordable regardless: four flattened clones
+  of `build_layer`'s `with_algebra` x `with_store` x `with_kernel_width` fan-out took one TU from 16.7 s
+  to >20 min at ~100 GB of compiler memory. Consequences for the build: every engine
+  source goes through the `monoprop_engine_sources(...)` macro rather than
+  `target_sources(monoprop-objs ...)`, or it is missing from three of the four tiers; every per-target
+  setting goes through `_monoprop_configure_engine_objs` in `cpp/monoprop/CMakeLists.txt`, so the
+  tiers cannot drift apart in anything but arch flags. Consequence for numerics: `-ffp-contract=off`
+  is project-wide and is a **contract**, not a tuning knob -- without it `-march=x86-64-v3` and up
+  contract `a*b+c` into an FMA and the energy moves by 1-2 ULP, which in a fat binary means the same
+  wheel answering differently per host CPU. The byte-wise gate on it is a golden-baseline capture per
+  variant, which arrives with the baseline tooling.
 
 ### Workspace layout
 
@@ -90,6 +105,26 @@ Key files:
 - **Peak memory is the kernel's `VmHWM` high-water mark** — exact, with no sampling. Under
   MPI the ranks' peaks are summed, which errs high (disjoint transients, and shared pages
   charged to every rank): an upper bound, good for regressions, not for provisioning.
+- `cmake/compiler_flags/FatBinary.cmake`: the **only** place an ISA tier or a narrow-vector core is
+  declared, and it generates the loader's predicate table (`FatVariants.h`) so a tier cannot be built
+  without being selectable or selectable without being built. Five tiers, all `-mtune=skylake`:
+  `x86-64`, `-v2`, `-v3`, and `-v4 -mavx512vpopcntdq` at each of `-mprefer-vector-width=256` and `512`.
+  A published x86-64 wheel compiles the whole engine once per tier and `src/monoprop/_bootstrap.py`
+  loads one as `monoprop._core` at import, choosing with the tiny baseline-ISA probe
+  `src/monoprop/bindings/isa.cpp`. Off by default in source builds, where `-march=native` beats every
+  tier. See `docs/content/docs/fat-binary.mdx`.
+- **Two of the tiers are one ISA at two vector widths** (`...-vw256`, `...-vw512`): identical `-march`
+  and identical `__builtin_cpu_supports` requirements, differing only in `-mprefer-vector-width`. They
+  exist because GCC otherwise takes that from the `-mtune` tables, i.e. from `monoprop_FAT_MTUNE`, and
+  because no feature bit reports what the question actually turns on -- how wide the datapath behind the
+  registers is and what the core charges in clock for using it. So the discriminator is a core-name
+  table, `monoprop_FAT_NARROW_VECTOR_CORES`, read through `__builtin_cpu_is`; `znver4` is on it because
+  it is measured (1.1% to the narrow tier on the kicked-Ising model, disjoint ranges, *against* GCC's own
+  znver4 tuning). One consequence: each tier now carries **two** predicates -- `runnable` (features only,
+  what gates a `monoprop_VARIANT` pin) and `preferred` (plus the table, what the automatic selection and
+  `supported_variants()` read) -- and conflating them makes the wide tier unpinnable on exactly the
+  machines worth comparing it on. Nothing but a disassembly can tell the pair apart, so
+  `tests/test_variants.py` asserts that the width *setting* differs while the feature set does not.
 
 ### Core abstractions (the propagation backbone)
 
@@ -172,7 +207,9 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 4. Use trailing return type syntax in function declarations.
 5. Add a one-line `///` summary if the declaration is in `cpp/include/monoprop/`; elsewhere add a plain
    `//` note only where the code does not already say it.
-6. Implement in the corresponding `.cpp` under `cpp/monoprop/`.
+6. Implement in the corresponding `.cpp` under `cpp/monoprop/`, and register a *new* `.cpp` with
+   `monoprop_engine_sources(...)` -- never `target_sources(monoprop-objs ...)`, which reaches only
+   the baseline fat-binary tier.
 7. Add Python bindings in `src/monoprop/bindings/binder.h`
 8. Regenerate bindings with `tools/generate-binders.py`
 9. Test with both C++ and Python tests

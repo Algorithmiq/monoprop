@@ -46,6 +46,12 @@ pip install monoprop      # or: uv add monoprop
 The prebuilt PyPI wheels are single-process (built **without** MPI). For multi-rank
 runs, or to build the C++ library and executables, build from source (see below).
 
+The `x86-64` wheels are **fat binaries**: they carry the engine compiled for four
+instruction-set levels (`x86-64`, `x86-64-v2`, `x86-64-v3`, and `x86-64-v4` with
+`avx512vpopcntdq`), and pick the best one the CPU can execute when `monoprop` is
+imported. `monoprop.__variant__` says which one loaded; `monoprop_VARIANT` pins one.
+See the [fat-binary guide](https://docs.monoprop.algorithmiq.tech/fat-binary).
+
 ## Quick example
 
 Back-propagate a Majorana observable through a one-gate circuit:
@@ -98,6 +104,10 @@ uv sync --all-extras -v
 uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
 ```
 
+A source build compiles with `-march=native`, which is faster than any wheel and not
+portable off the build machine. The multi-ISA build the wheels use is off by default;
+`just build-fat` turns it on.
+
 C++ unit-test build:
 
 ```bash
@@ -117,6 +127,7 @@ uv sync --all-groups --all-extras -v    # installs the workspace, incl. the benc
 uv run python -m pytest -m "not mpi"   # Python tests (serial)
 just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
+just test-variants                     # Python tests once per ISA variant (fat builds)
 ```
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)

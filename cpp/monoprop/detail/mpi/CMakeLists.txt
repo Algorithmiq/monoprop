@@ -15,4 +15,4 @@ target_sources(
         "ShmComm.h"
 )
 
-target_sources(monoprop-objs PRIVATE MPICompat.cpp)
+monoprop_engine_sources(MPICompat.cpp)

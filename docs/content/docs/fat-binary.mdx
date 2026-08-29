@@ -1,0 +1,349 @@
+---
+title: The Fat Binary
+description: Why the published x86-64 wheels carry the engine five times over, how the right copy gets loaded, and how to pin one.
+---
+
+Every published `x86-64` wheel contains the propagation engine **five times**: once for each of four
+instruction-set levels, and the top level twice at two vector widths. Importing `monoprop` picks the
+one the CPU should be given. This page covers why, how, and what it costs.
+
+If you are on `aarch64` — Apple silicon, or an Arm server — none of this applies: those wheels carry
+one copy, because there is one relevant ISA and nothing to choose between.
+
+## The problem it solves
+
+A source build compiles with `-march=native`, which lets the compiler use every instruction the build
+machine has. That is the fastest thing available and it is also unshippable: the resulting binary
+crashes with `SIGILL` on any older CPU.
+
+So the published wheels turned architecture flags **off** entirely. The consequence was easy to miss
+and expensive: developers building from source got a fully vectorized library, while everyone
+installing from PyPI got one compiled for the 2003 `x86-64` baseline. Not merely "less vectorized" —
+at that baseline `std::popcount` has no instruction and compiles to `call __popcountdi2@PLT`, a
+function call, in a library whose inner loops are made of population counts.
+
+A fat binary is the way out: ship several ISA levels and choose at run time. The alternative — one
+wheel per microarchitecture, and users picking — moves the problem onto the user.
+
+## Why five tiers, and which five
+
+The tiers come from a compile-time study of what each ISA level actually buys this codebase, using
+GCC's own `-fopt-info-vec-loop-all` reports across the psABI levels. Counting only project code, and
+counting each vectorized site once per instantiation (a "raw" count — most of these loops live in
+headers that are instantiated many times):
+
+| ISA level | loop-vectorized | SLP | total |
+| --- | --- | --- | --- |
+| `x86-64` (v1) | 37 | 204 | 241 |
+| `x86-64-v2` | 67 | 204 | 271 |
+| `x86-64-v3` | 98 | 224 | 322 |
+| `x86-64-v4` | 124 | 228 | 352 |
+| `x86-64-v4` + `avx512vpopcntdq` | 192 | 228 | 420 |
+
+Three things in that table decided the tier list.
+
+**SLP barely moves; loop vectorization is the whole story.** Basic-block vectorization goes 204 → 228
+across the entire range, because the fixed-trip word loops the scan is built from already vectorize
+under plain SSE2. What the ISA buys is the *runtime*-trip loops: the wide-bitset paths, the
+anticommutation fold, and the cutoff accumulation.
+
+**`v4` alone is not worth a tier; `v4` plus a vector popcount is.** Ablating the AVX-512 extensions one
+at a time on top of `v4`, `-mavx512vpopcntdq` accounts for the entire `v4 → v4x` gain of +68 loops and
+each of `avx512ifma`, `avx512vbmi`, `avx512vbmi2`, `avx512bitalg`, `gfni`, `vaes` and `vpclmulqdq`
+accounts for exactly **zero**. That is this codebase's shape: `std::popcount` word-loop reductions from
+top to bottom, and no intrinsics anywhere. So the top tier is `-march=x86-64-v4 -mavx512vpopcntdq`, and
+plain `v4` is not shipped — it would be three quarters of a megabyte for nothing.
+
+**That top tier cannot be a psABI level, which rules out one implementation.** More on that below.
+
+**And the top tier ships twice.** Nothing about `-march` says how wide the vectors behind the AVX-512
+registers should be; `-mprefer-vector-width` does, and left unset GCC takes it from the `-mtune`
+tables — so the width was being decided by a core chosen for its *schedule*. The two tiers pin it
+instead, at 256 and 512, and the run time chooses. See
+[Why the top tier ships at two vector widths](#why-the-top-tier-ships-at-two-vector-widths).
+
+The `v1` tier is shipped despite being the slowest, because it is the floor: it is what runs on a CPU
+that predates SSE4.2, and without it such a machine has nothing to load.
+
+## Why `-mtune=skylake` everywhere
+
+`-march` and `-mtune` are separate decisions. `-march` sets which instructions may be used; `-mtune`
+only changes the cost model and the instruction schedule, and never widens the ISA. So every tier can
+tune for the same core without affecting which machines it runs on.
+
+The tuning choice turned out to matter *more* than any single ISA step. At a fixed
+`-march=x86-64-v3`, sweeping ten `-mtune` values:
+
+| `-mtune` | distinct vectorized sites | loops rejected as `not profitable` |
+| --- | --- | --- |
+| `generic` | 89 | 849 |
+| `skylake` | 126 | 148 |
+| `haswell` | 128 | 148 |
+| `sapphirerapids` | 129 | 148 |
+| `znver3` | 127 | 148 |
+| `znver4` / `znver5` | 119 | 237 |
+
+`-mtune=generic` deliberately optimizes for no particular core, and its cost model rejects loops at
+roughly five times the rate of any concrete one. Almost any real core is better, and the differences
+*between* real cores are small.
+
+There is no vendor-neutral option: GCC rejects `-mtune=x86-64-v3`. It is `generic` or a named core.
+`skylake` is the choice because it sits in the top cluster on every counter, has the smallest `.text`
+of those that get there, and is the oldest core in that cluster — so it is the least likely to schedule
+badly on anything from 2015 onwards. The AMD penalty is negligible (`znver3` scores 127 against
+`skylake`'s 126). Notably, tuning for the newest AMD core is a small *regression* here.
+
+Set `monoprop_FAT_MTUNE` at configure time to try another.
+
+## Why the top tier ships at two vector widths
+
+`x86-64-v4-vpopcntdq-vw256` and `x86-64-v4-vpopcntdq-vw512` are the same instruction set. Identical
+`-march`, identical `__builtin_cpu_supports` requirements, identical everything a feature bit can
+express. They differ in one flag: `-mprefer-vector-width`.
+
+The pair exists because that flag has a default and the default is wrong somewhere. Left unset, GCC
+takes the AVX-512 vector width from the `-mtune` tables — so it was being decided by
+`monoprop_FAT_MTUNE`, a core picked for its *schedule* on the reasoning that `-mtune` never changes
+which instructions come out. For AVX-512 widths it does, and differently per core: `-mtune=skylake`
+and `-mtune=znver4` resolve to 512, `-mtune=icelake-server` and `-mtune=sapphirerapids` to 256. A
+build that fixes the width has guessed on the user's behalf. Carrying both and choosing at run time is
+the only way the answer is right on more than one machine.
+
+**No feature bit answers this**, which is why the discriminator is a table of core names read through
+`__builtin_cpu_is` rather than a `__builtin_cpu_supports` query. The question is not what the CPU can
+execute — both tiers need exactly the same instructions — but how wide the datapath behind the
+registers really is and what the core charges in clock frequency for lighting all of it up. CPUID
+reports neither.
+
+A core is on the narrow list when it has either of the two reasons to keep 512-bit code out:
+
+- **a split datapath** — 512-bit operations run on 256-bit hardware, so the width halves the
+  instruction count and buys no throughput. AMD Zen 4 is the case, and the one entry that is measured
+  rather than reasoned: pinning the two tiers on an EPYC 9R14, the 256-bit tier wins the 127-qubit
+  kicked-Ising model by **1.1%** with the two three-sample ranges disjoint (358.9–361.3 ms against
+  363.5–365.7) and ties on the 120-mode Hubbard one (2058.7 against 2063.2, spreads overlapping). GCC
+  tunes `znver4` the other way, so this is a correction to it, not an application of it.
+- **a frequency penalty** — the core drops its clock while 512-bit code is in flight. Ice Lake
+  through Rocket Lake pay a measured ~175 MHz of peak, which is what put `-mprefer-vector-width=256`
+  in both compilers' Intel tuning to begin with.
+
+Not on the list: Zen 5, which has the full-width datapath Zen 4 lacks, and Sapphire Rapids onwards,
+where the frequency penalty went away. Both are decisions against GCC's own `-mtune` tables, which
+still say 256 for every Intel AVX-512 core; neither could be measured here, so both are the mechanism
+argument rather than a number — and both are falsifiable with `monoprop_VARIANT`.
+
+Also not on the list, and not by choice: Skylake-SP, Cascade Lake and Cooper Lake, the parts the
+256-bit default was introduced for. They are `x86-64-v4` with no vector popcount, so they never reach
+this tier at all and their names would be dead entries.
+
+A core name GCC does not recognise is dropped with a warning rather than failing the build. That core
+then gets the 512-bit tier, which costs a percent or so; the alternative is a build that fails on an
+older toolchain over a tuning hint.
+
+Two consequences worth keeping in mind. Each tier now carries **two** predicates — `runnable` and
+`preferred` — and conflating them makes the wide tier unpinnable on exactly the machines worth
+comparing it on. And nothing but a disassembly tells the pair apart: every test, every number and
+every symbol table agrees even if the flag stops arriving, which is why
+`test_reported_machine_flags_widen_with_the_tier` asserts that the width *setting* differs while the
+feature set does not.
+
+## Why whole libraries, not individual functions
+
+The obvious implementation is GCC's function multiversioning — `target_clones` on the hot kernels, with
+an ifunc resolver picking a clone per call. The natural worry is that a dispatch boundary is an
+inlining boundary, and the vectorization above lands overwhelmingly in *headers* inlined into their
+callers. That worry is answerable: `__attribute__((flatten))` on the cloned function inlines the whole
+call tree into each clone first, and it measurably works — clones built that way come out with `ymm` at
+`arch=x86-64-v3` and `zmm` at `arch=x86-64-v4`, header templates and all. The location is favourable
+too: 91% of the project's vectorized loops are in a single translation unit, and
+`MonomialPropagator::build_evolve_result_` is a non-template function that is the sole caller of
+`detail::build_layer`.
+
+It was rejected for two other reasons, both measured.
+
+**An attribute cannot widen code defined outside it.** The tier itself is expressible: in a plain
+`target` attribute a comma separates *options*, so `target("arch=x86-64-v4,avx512vpopcntdq")` is valid
+(only `target_clones`, where a comma separates *clones*, rejects it). What does not work is getting the
+engine compiled under it. GCC's `ix86_can_inline_p` refuses to inline across an `arch` mismatch, so a
+targeted wrapper around an untargeted body compiles to a four-instruction `jmp` — `flatten` does not
+override that, and `always_inline` on the immediate callee buys exactly one level. Nor does
+`#pragma GCC target`: a template defined outside the region and first instantiated inside it is emitted
+at the command-line target, with zero `vpopcnt` or `zmm` in the object.
+
+So for header-resident code there is exactly one input that widens it: the translation unit's command
+line. The pattern that gets there through a pragma is Highway's `foreach_target.h` — physically
+re-include the kernels inside a per-tier namespace with every standard header hoisted above the region
+— which would make the engine's `namespace monoprop` a macro-named inline namespace per tier, and would
+emit the same four copies of the same code, built serially in one compiler process instead of four in
+parallel.
+
+**And `flatten` does not survive this call tree.** Flattening inlines the layer engine's whole
+instantiation fan-out into one function body, and `target_clones` then makes one copy of that body per
+tier to optimize. Measured on the runtime-width engine, where the fan-out is a single translation unit:
+compiling it went from **16.7 s** to *killed at 21 minutes having peaked around 100 GB of compiler
+memory*. Not a slow build; an unbuildable one, against 16 GB CI runners. Collapsing the widest axis of
+the fan-out did not rescue it either — still out of memory at **24.5 GB after 11 minutes**, against
+**14.75 s in 740 MB** for the same code without clones.
+
+The cost is not the fan-out, it is that `flatten` concentrates it into one function where GCC's
+per-function passes go superlinear, and then multiplies by the clone count. Which is the whole argument
+for tiering by library: the emitted code is the same either way, but as separate translation units the
+multiplication is linear and parallel rather than superlinear in one process. `target_clones` with
+`flatten` is the right tool when a small self-contained kernel sits behind one call; here the kernel is
+the entire scan. On this branch the fan-out is wider still — the engine is templated on the mode count,
+so the scan is instantiated once per width across the generated binder translation units.
+
+The duplication *is* reducible in principle, by tiering only the translation unit the vectorized loops
+land in and sharing a single baseline copy of the rest. That needs the propagation kernel to *have* one:
+here it is header-resident and instantiated per mode width in the binding translation units, so the
+narrowest seam available is the module boundary. Narrowing it is a follow-up to moving the engine
+out of the headers, not something this build shape can do.
+
+So the unit of tiering is the whole engine. Each tier is a separate compile of every library
+translation unit *plus* the binding translation unit — the latter matters, because
+`MonomialPropagator`'s inline methods and every template it instantiates are compiled there too.
+
+The second obvious implementation is `glibc-hwcaps`: drop `libmonoprop.so` into
+`glibc-hwcaps/x86-64-v{2,3,4}/` and let `ld.so` pick, with no code at all. That fails on the top tier.
+The hwcaps directory names are the four psABI levels, and `x86-64-v4` **does not include**
+`avx512vpopcntdq` — Skylake-X and Cascade Lake are `v4` and have no vector popcount. Installing the top
+tier as `x86-64-v4` would hand it to those machines and they would fault. The selection predicate has
+to be ours, so the dispatch has to be ours.
+
+## What actually happens on import
+
+The wheel looks like this:
+
+```text
+monoprop/
+├── _isa.abi3.so                 # the CPU probe: baseline ISA, ~100 KB
+├── _bootstrap.py                # the selection
+└── _variants/
+    ├── x86-64-v1/_core.abi3.so
+    ├── x86-64-v2/_core.abi3.so
+    ├── x86-64-v3/_core.abi3.so
+    ├── x86-64-v4-vpopcntdq-vw256/_core.abi3.so
+    └── x86-64-v4-vpopcntdq-vw512/_core.abi3.so
+```
+
+There is no `monoprop/_core` of its own. `monoprop/_bootstrap.py` is imported first — its name sorts
+ahead of `_core` so that alphabetical import ordering keeps it there — and it:
+
+1. asks `monoprop._isa` which variants this CPU should be *given*, best first;
+2. takes the best one that is also installed;
+3. loads it under the name `monoprop._core`.
+
+Every module in the package then imports `monoprop._core` as usual and is unaware that a choice was
+made. Each variant is named `_core` on disk whatever tier it belongs to, because CPython derives the
+initialization symbol it looks for from the last component of the module name being loaded.
+
+`_isa` exists as a separate, deliberately tiny extension because the question "what can this CPU do"
+has to be answered *before* any tiered code is loaded. It is built for the baseline ISA and links no
+engine code, so it is the one module guaranteed to load everywhere. It answers with
+`__builtin_cpu_supports`, which consults `CPUID` **and** `XGETBV` — so an AVX-512-capable CPU under a
+kernel or hypervisor that has not enabled the ZMM register state correctly reports the feature as
+absent, which is what keeps the dispatch off machines that would fault.
+
+The probe answers two questions, not one, and the difference matters. `runnable_variants()` is the
+capability answer — the CPU has the instructions — and is what a `monoprop_VARIANT` pin is checked
+against. `supported_variants()` is what the CPU should be handed unasked, and is what the automatic
+selection reads. They differ for exactly one variant, the 512-bit one: every AVX-512 CPU can run it
+and only some should have it. Conflating the two would make it unpinnable on precisely the machines
+worth comparing it on.
+
+One subtlety worth knowing if you work on the build: the baseline ISA is also applied globally, not
+just to the baseline tier's objects. A wheel contains code from targets nobody tiered — nanobind's
+static library, for one — and those compile with whatever `-march` the toolchain defaults to, which is
+*not* necessarily the psABI baseline. GCC as shipped by recent Ubuntu is configured
+`--with-arch-64=x86-64-v3`. Without a global floor, the `v1` and `v2` variants would carry AVX2 in
+their glue code and `_isa` itself would fault on the machines it exists to detect.
+
+## The same answers on every tier
+
+The tiers change instruction selection. They must not change results, and that takes one deliberate
+flag.
+
+Without it, `-march=x86-64-v3` and up fuse `a*b+c` into an FMA, which changes the rounding of the
+coefficient accumulation. Measured across ISA levels: every evolved term stays bit-identical and only
+the energy moves, by one or two units in the last place. Small — and exactly the wrong shape for a fat
+binary, where it would mean the same wheel answering differently depending on which CPU it landed on.
+So `-ffp-contract=off` is set project-wide, not only in the tiers, which keeps a source build, a wheel
+and every tier bit-comparable. All four tiers produce byte-identical output.
+
+## Using it
+
+Which variant loaded:
+
+```python
+import monoprop
+
+print(monoprop.__variant__)            # e.g. "x86-64-v3", or "native" for a source build
+print(monoprop.available_variants())   # every variant in this install, best first
+print(monoprop.supported_variants())   # every variant this CPU could run, best first
+```
+
+`monoprop.__compiler_flags__["machine-flags"]` reports the flags the compiler resolved *for the loaded
+variant*, so it is the authoritative answer to "what was this actually built with".
+
+To pin a variant — benchmarking a tier, reproducing a report, bisecting a codegen difference — set
+`monoprop_VARIANT`:
+
+```bash
+monoprop_VARIANT=x86-64-v2 python your_script.py
+```
+
+Naming a variant that is not installed, or one this CPU cannot execute, is an error rather than a
+silent fallback: the point of pinning one is to know which one ran. A variant this CPU merely would
+not have *chosen* is honoured, though — that is how the 512-bit tier gets measured on a Zen 4.
+
+## Building one
+
+The fat binary is **off** by default in source builds, because a source build has `-march=native`,
+which beats every tier:
+
+```bash
+just build-fat
+```
+
+or, directly:
+
+```bash
+uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_FAT_BINARY=ON
+```
+
+Note that a plain `uv run` afterwards re-syncs without that setting and silently replaces the fat
+build with a single-ISA one; use `uv run --no-sync`.
+
+`just test-variants` runs the Python suite once per installed variant. It exists because the dispatch
+always picks the *best* tier, which means the lower tiers would otherwise ship untested from every
+developer machine and every CI runner.
+
+`monoprop_ENABLE_FAT_BINARY` is x86-64 only and needs GCC or Clang; requesting it elsewhere is a
+configure error rather than a silently untiered build. The tier list and the flags live in
+`cmake/compiler_flags/FatBinary.cmake`, which is the only place a tier is declared — the loader's
+predicate table is generated from it, so a tier cannot be built without being selectable or selectable
+without being built.
+
+## What it costs
+
+About **3.8 MB** of extension modules instead of 1 MB, plus the `~100 KB` probe. Four tiers are also
+roughly four times the compile work of one, which lands on the `manylinux_x86_64` leg of the wheel
+matrix.
+
+## What is still open
+
+- **None of the above is a measurement of speed.** It is a measurement of what the compiler emitted.
+  The tier list is chosen from codegen, and the timing round is what would settle whether `v2` earns
+  its place and whether the top tier's AVX-512 is a win in wall-clock as well as in instruction count.
+- **`-mprefer-vector-width=256`** costs 25 vectorized loops statically, but AMD's Zen 4 implements
+  AVX-512 on a double-pumped 256-bit datapath while Intel's server parts do not. Which way that trade
+  goes cannot be counted, only timed, and it needs an Intel data point.
+- **The `v1` floor's real audience.** Today's `ARCH_FLAGS=OFF` wheels get whatever the manylinux
+  image's GCC defaults to, which may already be above the baseline. If it is, the `v1` tier is
+  insurance rather than an improvement — worth knowing, since it is the one tier with a pathological
+  `std::popcount`.
+
+## See also
+
+- [Building from Source](/building) — the other build-time options, and the row-store crossover.
+- [Benchmarks](/benchmarks) — the timing harness the open questions above need.
