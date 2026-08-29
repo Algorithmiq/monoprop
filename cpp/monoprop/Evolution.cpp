@@ -70,6 +70,8 @@ auto &acquire_flat_exchange_buffers() {
 }
 
 // A property of the communicator, not the layer: all ranks participate even at local total_count 0.
+// Still true with the pairwise arm: the transport branch is rank-local, so a collective may still be the
+// one chosen and a rank that skipped the round strands it.
 auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
 }
