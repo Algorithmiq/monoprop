@@ -686,6 +686,11 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan) 
 
 namespace {
 
+// Varies along BOTH ends and hits 0, so a block landing on the wrong peer or the wrong partition
+// changes a length, not just a value.
+auto sparse_count(int src, int dst) -> int {
+    return ((src * 3) + (dst * 5)) % 4;
+}
 auto sparse_tag(int src, int dst, int j) -> int {
     return (((src * 128) + dst) * 1000) + j;
 }
@@ -924,16 +929,12 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_matches_the_dense_arm
     if (R < 2 || (R & (R - 1)) != 0) {
         return; // the XOR pairing needs a power-of-two rank count
     }
-    const int full = std::countr_zero(static_cast<unsigned>(R));
     const int me = world_rank();
     int cases = 0;
-    for (const int f : {1, 2}) {
-        const int bits = full - std::countr_zero(static_cast<unsigned>(f));
-        if (bits < 1) {
-            continue; // bits == 0 IS the dense arm, which is the reference here
-        }
-        for (int shift = 0; shift < (1 << bits); ++shift) {
-            const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+    {
+        constexpr int f = 1; // a sparse plan is fanout 1 by construction; f > 1 is no longer expressible
+        for (int shift = 0; shift < R; ++shift) {
+            const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
             BOOST_REQUIRE_EQUAL(plan.count(R), f);
             ++cases;
             for (const int S : {1, 2, 3}) {
@@ -995,9 +996,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_self_peer_only) {
     if (R < 2 || (R & (R - 1)) != 0) {
         return;
     }
-    const int bits = std::countr_zero(static_cast<unsigned>(R));
     const int me = world_rank();
-    const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = 0};
+    const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = 0};
     BOOST_REQUIRE_EQUAL(plan.peer(me, 0), me);
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
@@ -1040,10 +1040,9 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer) {
     if (R < 2 || (R & (R - 1)) != 0) {
         return;
     }
-    const int bits = std::countr_zero(static_cast<unsigned>(R));
     const int me = world_rank();
     for (int shift = 1; shift < R; ++shift) { // shift 0 is the self peer, covered above
-        const monoprop::mpi::PeerPlan plan{.bits = bits, .shift = shift};
+        const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
         const int peer = plan.peer(me, 0);
         BOOST_REQUIRE(peer != me);
         const int my_len = me < peer ? 0 : 4; // exactly one end of the pair is silent
