@@ -39,7 +39,10 @@ def test_picture_of_routes_by_tag() -> None:
     key = "bench_random.py::test_random_energy"
     assert report._picture_of(f"{key}[schrodinger]") == "schrodinger"
     assert report._picture_of(f"{key}[heisenberg]") == "heisenberg"
-    assert report._picture_of("bench_models.py::test_model[hubbard]") == "heisenberg"
+    assert (
+        report._picture_of("bench_models.py::test_model_propagate[hubbard]")
+        == "heisenberg"
+    )
 
 
 def test_display_op_strips_picture_and_names_model() -> None:
@@ -52,7 +55,8 @@ def test_display_op_strips_picture_and_names_model() -> None:
         == "random / build_graph"
     )
     assert (
-        report._display_op("bench_models.py::test_model[hubbard]") == "model / hubbard"
+        report._display_op("bench_models.py::test_model_propagate[hubbard]")
+        == "hubbard / propagate"
     )
 
 
@@ -68,7 +72,7 @@ def _write_timings(results_dir: Path, label: str = "np1") -> None:
                 "stats": {"mean": 0.002},
             },
             {
-                "fullname": "benches/bench_models.py::test_model[hubbard]",
+                "fullname": "benches/bench_models.py::test_model_propagate[hubbard]",
                 "stats": {"mean": 1.5},
             },
         ]
@@ -91,8 +95,8 @@ def test_build_report_has_two_sections(tmp_path: Path) -> None:
     heis = md[md.index("## Heisenberg") : md.index("## Schrödinger")]
     schr = md[md.index("## Schrödinger") :]
 
-    assert "model / hubbard" in heis
-    assert "model / hubbard" not in schr
+    assert "hubbard / propagate" in heis
+    assert "hubbard / propagate" not in schr
     assert "random / energy" in heis
     assert "random / energy" in schr
 
@@ -229,18 +233,6 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     assert "40.00 MiB" in md
 
 
-def test_build_report_includes_resting(tmp_path: Path) -> None:
-    _write_timings(tmp_path)
-    _write_results(
-        tmp_path,
-        memrest={"heisenberg": 52428800},
-    )
-    md = _collapse(report.build_report(tmp_path))
-
-    assert "## Operator resting footprint (RSS)" in md
-    assert "| Heisenberg | 50.00 MiB |" in md
-
-
 def test_build_report_sorts_labels_numerically(tmp_path: Path) -> None:
     for label in ("np1", "np2", "np10"):
         _write_timings(tmp_path, label)
@@ -253,7 +245,7 @@ def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
     data = {
         "benchmarks": [
             {
-                "fullname": "benches/bench_models.py::test_model[pauli]",
+                "fullname": "benches/bench_models.py::test_model_propagate[pauli]",
                 "stats": {"mean": 2.0},
             }
         ]
@@ -262,3 +254,16 @@ def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
     md = _collapse(report.build_report(tmp_path))
     assert "## Heisenberg" in md
     assert "## Schrödinger" not in md
+
+
+def test_two_models_do_not_share_a_row_label() -> None:
+    # Every fixed-model test is named test_model_*, so the model lives only in the
+    # parameter. Dropping it labels the hubbard and the pauli row identically and the
+    # report shows two rows nobody can tell apart.
+    keys = [
+        f"bench_models.py::test_model_{op}[{model}]"
+        for op in ("build_graph", "propagate", "energy", "gradient")
+        for model in ("hubbard", "pauli")
+    ]
+    labels = [report._display_op(k) for k in keys]
+    assert len(set(labels)) == len(keys)

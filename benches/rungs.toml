@@ -1,0 +1,1048 @@
+# THE RUNG LADDER. One row per cell of monoprop's benchmark set.
+#
+# This table, not a loop and not a shell script, is what "the benchmark" means. Putting it
+# here is the point: a campaign cannot quietly run a different grid, two campaigns' numbers
+# are comparable row for row, and a reader outside the machine that ran it can see exactly
+# what was measured.
+#
+# Run one rep of one rung with:
+#
+#     monoprop-bench-rung benches/rungs.toml <id> --rep N --results <dir>
+#
+# and collate a directory of them with `monoprop-bench-ladder`. Repetition is repeated
+# invocations, never `--bench-rounds`: pedantic builds round k+1's arguments before
+# releasing round k's, so a second round holds two propagators and doubles peak RSS.
+#
+# FIELDS
+#   id             unique; names the artifacts, so it is stable once a rung has been run
+#   family         size | strong | weak
+#   picture        heisenberg | schrodinger  (only the random model has this axis)
+#   model          random | hubbard | pauli
+#   ops            subset of build_graph, propagate, energy, gradient
+#   nodes          compute nodes; ranks = nodes x ranks_per_node, world P = ranks x partitions
+#   ranks_per_node MPI ranks per node
+#   partitions     engine partitions per rank
+#   args           `--<option>=<value>` passed to pytest verbatim; the size knobs live here.
+#                  A knob whose value is `TBD` is one nobody has measured yet, and it forces
+#                  the rung uncalibrated. It is spelled `TBD` rather than left at 0 because
+#                  0 is not neutral -- `lower_atol = 0` prunes nothing and is the LARGEST
+#                  problem the model can pose, so a placeholder 0 invites exactly the
+#                  allocation-burning run the gate exists to prevent.
+#   expect_terms   THE GATE. The exact term count this configuration produces. A result that
+#                  misses it by more than 0.1% is refused, so a mistyped tolerance fails the
+#                  cell instead of silently measuring a different problem. **0 means the row
+#                  has never been calibrated and refuses to run.**
+#   reps           reps to run. 10 is the floor where a sign test over a family of this size
+#                  can resolve a single cell; 5 is what the scaling ladders below were run at.
+#   cost_seconds       WHAT ONE REP COSTS: median wall seconds, last time it was measured.
+#   cost_gib_per_node  and peak resident GiB per node. Both are 0 where nobody has measured
+#                  them yet. They are documentation, not a gate -- a timing is noisy and a
+#                  machine is not the machine these were taken on. They are here so you can
+#                  see what a rung costs before you spend it, and so `monoprop-bench-ladder`
+#                  can print measured-against-declared without a second file to keep in sync.
+#   walltime       Slurm allowance for one rung, reps included
+#
+# SIZING
+#   The size knob is the coefficient tolerance, not the cutoff or the system size: at the
+#   default `lower_atol = 1e-4` both fixed models are saturated in cutoff and in size, so a
+#   sweep over either measures nothing. See benches/README.md.
+#
+#   The random model's knob is `--obs-terms`. Its multiplier to propagated terms was
+#   measured at ~4.1 for cutoff 6 with 100 generators; at 1000 generators it is not that,
+#   which is why every random row below starts uncalibrated.
+#
+# WHY THE GRAPH ROWS STOP WHERE THEY DO
+#   `build_graph` extends the graph rather than replacing it, so it retains one layer-set
+#   per gate while `propagate` releases each layer as it contracts. Measured on Hubbard:
+#   propagate reaches 97M terms in well under 2 GiB, while four successive build_graph
+#   calls exceed a 242 GiB node. So `propagate` carries the full 10M/100M/1B ladder and the
+#   graph-holding operations stop at what fits one node -- and that cap is a measurement to
+#   be taken, not a number to be assumed.
+
+
+# WHERE THE DECLARED COSTS COME FROM
+#   Deucalion x86, 2026-08-27; perf/linear-routing-on-wire tip c2554554, _core.so md5 1157a5e2b421fb8bd18fc6d16fa39778
+#   AMD EPYC 7742, 128 physical cores and 242.0 GiB usable per node, SMT off
+#   8 MPI ranks per node x 16 partitions per rank, --cpu-bind=cores --distribution=block:block, MALLOC_ARENA_MAX unset
+#
+#   Memory over that campaign fits GiB/node = 3.39 + 0.0634 * Mterms_per_node, over
+#   38 rungs, every rung within -2.9/+4.5 GiB/node of the line.
+#   One exception: weak-1529m-n64 measures 84.3 against 97.1 predicted, identically on all five reps, so it is reproducible and unexplained.
+#
+#   The size rungs below carry no declared cost: they have never been run.
+
+
+# ---------------------------------------------------------------- size: Heisenberg propagate
+#
+# 10M single thread, 100M and 1B on one node, 1B across eight. Three models, because they
+# differ in propagate call count: Hubbard calls it once per Trotter step (29) and kicked
+# Ising once, so a cost paid per call shows up on one and is invisible on the other.
+
+[[rung]]
+id = "st-10m-hubbard-propagate"
+family = "size"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+note = "calibrate lower_atol between 5e-5 (7.16M) and 2.5e-5 (26.6M) at cutoff 10"
+
+[[rung]]
+id = "st-10m-pauli-propagate"
+family = "size"
+picture = "heisenberg"
+model = "pauli"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--pauli-cutoff=12", "--pauli-lower-atol=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+note = "calibrate; cutoff 12 at 1e-4 gives 12.7M, so the tolerance moves a little up"
+
+[[rung]]
+id = "st-10m-random-propagate"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n1-100m-hubbard-propagate"
+family = "size"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.25e-05"]
+expect_terms = 96981051
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:20:00"
+
+[[rung]]
+id = "n1-100m-pauli-propagate"
+family = "size"
+picture = "heisenberg"
+model = "pauli"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--pauli-cutoff=14", "--pauli-lower-atol=5e-05"]
+expect_terms = 91273861
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:20:00"
+
+[[rung]]
+id = "n1-100m-random-propagate"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:30:00"
+
+[[rung]]
+id = "n1-1b-hubbard-propagate"
+family = "size"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=TBD"]
+expect_terms = 0
+reps = 5
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+note = "calibrate between 3.9e-06 (782M) and 2.6e-06 (1569M)"
+
+[[rung]]
+id = "n1-1b-pauli-propagate"
+family = "size"
+picture = "heisenberg"
+model = "pauli"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--pauli-cutoff=14", "--pauli-lower-atol=TBD"]
+expect_terms = 0
+reps = 5
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n1-1b-random-propagate"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 5
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n8-1b-hubbard-propagate"
+family = "size"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=TBD"]
+expect_terms = 0
+reps = 5
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:25:00"
+note = "same tolerance as n1-1b-hubbard-propagate; the two share a strong-scaling pair"
+
+[[rung]]
+id = "n8-1b-pauli-propagate"
+family = "size"
+picture = "heisenberg"
+model = "pauli"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--pauli-cutoff=14", "--pauli-lower-atol=TBD"]
+expect_terms = 0
+reps = 5
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:25:00"
+
+[[rung]]
+id = "n8-1b-random-propagate"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 5
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:25:00"
+
+
+# ------------------------------------------------------- size: graph, gradient and energy
+#
+# Random model, 1000 gates, both pictures. build_graph runs on its own: it and the
+# energy/gradient pair each hold their own operator, and running all three in one process
+# holds two per rank.
+#
+# There is no 1B row here, single- or multi-node, and that is deliberate. The single-node
+# cap is the largest `--obs-terms` whose retained graph fits 242 GiB, and it is calibrated
+# per picture: Schrodinger runs at `cutoff + 2`, so its cap is lower than Heisenberg's and
+# must be measured rather than copied.
+
+[[rung]]
+id = "st-10m-random-graph-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["build_graph"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "st-10m-random-eval-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "st-10m-random-graph-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["build_graph"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "st-10m-random-eval-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 1
+partitions = 1
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n1-cap-random-graph-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["build_graph"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:40:00"
+note = "cap = the largest obs-terms whose retained graph fits 242 GiB; measure it"
+
+[[rung]]
+id = "n1-cap-random-eval-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:40:00"
+
+[[rung]]
+id = "n1-cap-random-graph-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["build_graph"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:40:00"
+
+[[rung]]
+id = "n1-cap-random-eval-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "0:40:00"
+
+
+# ----------------------------------------------------- strong and weak scaling, Hubbard propagate
+#
+# The August 2026 scaling campaign, verbatim: same model, same layout, same tolerances and
+# the same expected term counts, so a re-run and the committed baseline share an axis. 38
+# rungs over 1 to 64 nodes (128 to 8192 cores) at 8 ranks/node x 16 partitions, so R = 8N
+# and P = 128N, one core per partition.
+#
+# Problem size is `--hubbard-lower-atol` at a fixed cutoff of 10, which is saturated there
+# (cutoffs 10/12/14 give 96.98M/105.79M/106.82M at 1.25e-05), so all growth comes from the
+# tolerance and every rung stays inside the same operator family. The eleven sizes form a
+# doubling sequence and both families are built from it, so a cell reached by two ladders is
+# exactly the same problem -- nine such cells agreed to within 1.24%, most within 0.2%,
+# which is a free check on the whole apparatus and the reason the sequence is shared.
+#
+# EXCLUSIONS ARE MEASUREMENTS. `strong-6126m` has no 1-node rung and `strong-24420m` none
+# below 8, because at 8 ranks/node the problem does not fit in that many nodes' memory:
+# GiB/node = 3.39 + 0.0634 x Mterms/node against a 242.0 GiB grant. That is why the rung
+# count is not simply six ladders times seven nodes.
+#
+# `MALLOC_ARENA_MAX` is deliberately left unset for these rungs. Pinning it costs about 16%
+# of wall when the arena count is below the partition count, so a ladder that exports it
+# measures the allocator rather than the engine.
+
+[[rung]]
+id = "weak-97m-n1"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.25e-05"]
+expect_terms = 96981051
+reps = 10
+cost_seconds = 10.75
+cost_gib_per_node = 10.8
+walltime = "0:20:00"
+
+[[rung]]
+id = "weak-97m-n2"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 2
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=8.8e-06"]
+expect_terms = 184124520
+reps = 10
+cost_seconds = 10.58
+cost_gib_per_node = 9.6
+walltime = "0:20:00"
+
+[[rung]]
+id = "weak-97m-n4"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 4
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=5.9e-06"]
+expect_terms = 377482074
+reps = 10
+cost_seconds = 13.13
+cost_gib_per_node = 11.5
+walltime = "0:20:00"
+
+[[rung]]
+id = "weak-97m-n8"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=3.9e-06"]
+expect_terms = 781669404
+reps = 10
+cost_seconds = 14.54
+cost_gib_per_node = 10.9
+walltime = "0:20:00"
+
+[[rung]]
+id = "weak-97m-n16"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 16
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 10
+cost_seconds = 18.11
+cost_gib_per_node = 11.0
+walltime = "0:20:00"
+
+[[rung]]
+id = "weak-97m-n32"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 32
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.73e-06"]
+expect_terms = 3104527573
+reps = 10
+cost_seconds = 24.39
+cost_gib_per_node = 11.0
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-97m-n64"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 64
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 10
+cost_seconds = 36.59
+cost_gib_per_node = 11.4
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n1"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=5.9e-06"]
+expect_terms = 377482074
+reps = 5
+cost_seconds = 47.71
+cost_gib_per_node = 26.6
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n2"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 2
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=3.9e-06"]
+expect_terms = 781669404
+reps = 5
+cost_seconds = 50.9
+cost_gib_per_node = 28.0
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n4"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 4
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 53.29
+cost_gib_per_node = 27.9
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n8"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.73e-06"]
+expect_terms = 3104527573
+reps = 5
+cost_seconds = 54.73
+cost_gib_per_node = 27.5
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n16"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 16
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 58.03
+cost_gib_per_node = 27.4
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n32"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 32
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=7.35e-07"]
+expect_terms = 12255330837
+reps = 5
+cost_seconds = 64.64
+cost_gib_per_node = 26.3
+walltime = "0:25:00"
+
+[[rung]]
+id = "weak-385m-n64"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 64
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=4.68e-07"]
+expect_terms = 24419998198
+reps = 5
+cost_seconds = 79.89
+cost_gib_per_node = 26.9
+walltime = "0:30:00"
+
+[[rung]]
+id = "weak-1529m-n1"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 215.61
+cost_gib_per_node = 99.9
+walltime = "0:45:00"
+
+[[rung]]
+id = "weak-1529m-n2"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 2
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.73e-06"]
+expect_terms = 3104527573
+reps = 5
+cost_seconds = 222.27
+cost_gib_per_node = 100.2
+walltime = "0:45:00"
+
+[[rung]]
+id = "weak-1529m-n4"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 4
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 224.04
+cost_gib_per_node = 101.2
+walltime = "0:45:00"
+
+[[rung]]
+id = "weak-1529m-n8"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=7.35e-07"]
+expect_terms = 12255330837
+reps = 5
+cost_seconds = 227.33
+cost_gib_per_node = 99.9
+walltime = "0:45:00"
+
+[[rung]]
+id = "weak-1529m-n16"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 16
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=4.68e-07"]
+expect_terms = 24419998198
+reps = 5
+cost_seconds = 235.55
+cost_gib_per_node = 101.8
+walltime = "0:45:00"
+
+[[rung]]
+id = "weak-1529m-n32"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 32
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.94e-07"]
+expect_terms = 48317129677
+reps = 5
+cost_seconds = 249.62
+cost_gib_per_node = 101.3
+walltime = "0:50:00"
+
+[[rung]]
+id = "weak-1529m-n64"
+family = "weak"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 64
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.82e-07"]
+expect_terms = 94684031363
+reps = 5
+cost_seconds = 257.05
+cost_gib_per_node = 84.3
+walltime = "0:55:00"
+
+[[rung]]
+id = "strong-1569m-n1"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 215.61
+cost_gib_per_node = 99.9
+walltime = "0:45:00"
+
+[[rung]]
+id = "strong-1569m-n2"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 2
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 105.91
+cost_gib_per_node = 51.5
+walltime = "0:30:00"
+
+[[rung]]
+id = "strong-1569m-n4"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 4
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 53.34
+cost_gib_per_node = 28.0
+walltime = "0:25:00"
+
+[[rung]]
+id = "strong-1569m-n8"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 28.58
+cost_gib_per_node = 15.9
+walltime = "0:20:00"
+
+[[rung]]
+id = "strong-1569m-n16"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 16
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 18.12
+cost_gib_per_node = 11.0
+walltime = "0:20:00"
+
+[[rung]]
+id = "strong-1569m-n32"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 32
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 16.13
+cost_gib_per_node = 6.6
+walltime = "0:20:00"
+
+[[rung]]
+id = "strong-1569m-n64"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 64
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=2.6e-06"]
+expect_terms = 1569152761
+reps = 5
+cost_seconds = 23.99
+cost_gib_per_node = 4.1
+walltime = "0:20:00"
+
+[[rung]]
+id = "strong-6126m-n2"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 2
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 450.19
+cost_gib_per_node = 200.2
+walltime = "1:15:00"
+
+[[rung]]
+id = "strong-6126m-n4"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 4
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 224.45
+cost_gib_per_node = 101.3
+walltime = "0:45:00"
+
+[[rung]]
+id = "strong-6126m-n8"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 109.53
+cost_gib_per_node = 51.3
+walltime = "0:30:00"
+
+[[rung]]
+id = "strong-6126m-n16"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 16
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 58.75
+cost_gib_per_node = 27.4
+walltime = "0:25:00"
+
+[[rung]]
+id = "strong-6126m-n32"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 32
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 38.09
+cost_gib_per_node = 16.1
+walltime = "0:25:00"
+
+[[rung]]
+id = "strong-6126m-n64"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 64
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=1.14e-06"]
+expect_terms = 6125805627
+reps = 5
+cost_seconds = 36.95
+cost_gib_per_node = 11.4
+walltime = "0:20:00"
+
+[[rung]]
+id = "strong-24420m-n8"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=4.68e-07"]
+expect_terms = 24419998198
+reps = 5
+cost_seconds = 471.03
+cost_gib_per_node = 201.3
+walltime = "1:15:00"
+
+[[rung]]
+id = "strong-24420m-n16"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 16
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=4.68e-07"]
+expect_terms = 24419998198
+reps = 5
+cost_seconds = 235.19
+cost_gib_per_node = 101.8
+walltime = "0:45:00"
+
+[[rung]]
+id = "strong-24420m-n32"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 32
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=4.68e-07"]
+expect_terms = 24419998198
+reps = 5
+cost_seconds = 127.1
+cost_gib_per_node = 52.2
+walltime = "0:35:00"
+
+[[rung]]
+id = "strong-24420m-n64"
+family = "strong"
+picture = "heisenberg"
+model = "hubbard"
+ops = ["propagate"]
+nodes = 64
+ranks_per_node = 8
+partitions = 16
+args = ["--hubbard-cutoff=10", "--hubbard-lower-atol=4.68e-07"]
+expect_terms = 24419998198
+reps = 5
+cost_seconds = 79.58
+cost_gib_per_node = 26.9
+walltime = "0:30:00"

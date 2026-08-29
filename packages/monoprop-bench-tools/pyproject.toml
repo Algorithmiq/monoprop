@@ -49,6 +49,8 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.scripts]
 monoprop-bench-report = "monoprop_bench_tools.report:main"
 monoprop-bench-bmf = "monoprop_bench_tools.bmf:main"
+monoprop-bench-rung = "monoprop_bench_tools.rungs:run_main"
+monoprop-bench-ladder = "monoprop_bench_tools.rungs:ladder_main"
 
 
 [dependency-groups]

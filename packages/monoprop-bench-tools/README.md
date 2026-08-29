@@ -12,6 +12,7 @@ vendoring the repository's `benches/` directory.
 | `monoprop_bench_tools.models` | Builders for the benchmarked problems: a configurable random problem, a 120-mode Fermi-Hubbard model, and a 127-qubit kicked-Ising model. |
 | `monoprop_bench_tools.report` | Renders a run's artifacts into a side-by-side Markdown report. |
 | `monoprop_bench_tools.bmf` | Renders a run's artifacts into [Bencher](https://bencher.dev/) Metric Format JSON. |
+| `monoprop_bench_tools.rungs` | Reads the rung table, runs one rung, gates the result on its term count, and collates a ladder. |
 
 ## Install
 
@@ -56,6 +57,8 @@ Render the artifacts of a run:
 ```bash
 monoprop-bench-report benches/results             # writes REPORT.md
 monoprop-bench-bmf benches/results ci-linux       # BMF JSON on stdout
+monoprop-bench-rung benches/rungs.toml list      # the benchmark set
+monoprop-bench-ladder benches/rungs.toml runs/   # scaling tables from rung artifacts
 ```
 
 Both read the two files a run leaves in the results directory:
@@ -65,9 +68,11 @@ operator sizes, configuration). The schema is documented in the repository's
 
 ## Scope
 
-This package deliberately holds no benchmarks. monoprop's own suite lives in the
-repository's `benches/` directory, because its benchmark names are the key
-Bencher's history is stored under and must not move with a library release.
+This package deliberately holds no benchmarks, and no rung table. monoprop's own
+suite and its `rungs.toml` live in the repository's `benches/` directory, because
+benchmark names are the key Bencher's history is stored under and a rung id names
+the artifacts a campaign has already written -- neither may move with a library
+release. What lives here is the machinery that reads them.
 
 ## License
 

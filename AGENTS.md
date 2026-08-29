@@ -48,16 +48,19 @@ The root `pyproject.toml` declares a `[tool.uv.workspace]`, so one `uv.lock` cov
 - `monoprop` (repository root, `src/monoprop/`) — the library, built by scikit-build-core.
 - `packages/monoprop-bench-tools/` (`monoprop_bench_tools`) — the reusable half of the benchmark
   harness, published to PyPI: `memory.cpu` / `memory.gpu` (peak-footprint measurement), `models`
-  (the benchmarked problem builders), `report` and `bmf` (the artifact renderers). Pure Python,
-  built by hatchling, versioned off the same git tags as `monoprop`. It ships the console scripts
-  `monoprop-bench-report` and `monoprop-bench-bmf`. It contains **no benchmarks**.
+  (the benchmarked problem builders), `report` and `bmf` (the artifact renderers), and `rungs`
+  (the rung-table loader, runner and ladder collator). Pure Python, built by hatchling, versioned
+  off the same git tags as `monoprop`. It ships the console scripts `monoprop-bench-report`,
+  `monoprop-bench-bmf`, `monoprop-bench-rung` and `monoprop-bench-ladder`. It contains **no
+  benchmarks and no rung table** — those are data whose names campaigns already depend on.
 - `packages/bench-third-party/` — cross-engine comparison scripts. Listed in the workspace
   `exclude`: it pins a narrower `requires-python`, a git dependency and linux-x86_64-only CUDA
   wheels, so it is a standalone uv project with its own `uv.lock`. Run it with
   `cd packages/bench-third-party && uv sync`, never from the root environment.
-- `benches/` — monoprop's own benchmark suite (`conftest.py`, `bench_*.py`, `results/`). It stays in
-  the repository and imports the tools package. Benchmark names are Bencher's history key, so they
-  must not move with a library release; that is why the suite is not in `monoprop-bench-tools`.
+- `benches/` — monoprop's own benchmark suite (`conftest.py`, `bench_*.py`, `rungs.toml`,
+  `results/`). It stays in the repository and imports the tools package. Benchmark
+  names are Bencher's history key and rung ids name artifacts already written, so neither may move
+  with a library release; that is why the suite is not in `monoprop-bench-tools`.
 
 Dependency groups follow from that split: `test` is monoprop's own suite only (cibuildwheel installs
 it against a built wheel, so it must not reference a workspace member), `workspace-test` adds
@@ -83,7 +86,14 @@ Key files:
   continuous-benchmarking workflow. Both read the schema written by `benches/conftest.py`, so a
   change to the recorded sections has to land on both sides of the package boundary. Benchmark
   names are Bencher's history key, so renaming or moving a `bench_*` test orphans its tracked
-  series.
+  series. Both bench modules measure the same four operations — `build_graph`, `propagate`,
+  `energy`, `gradient`.
+- `benches/rungs.toml` and `monoprop_bench_tools.rungs`: the benchmark set at the sizes the
+  library is used at, as a table rather than a loop, so a campaign cannot quietly run a different
+  grid. Every row carries `expect_terms`, and a result missing it by >0.1% is refused: at a fixed
+  seed and tolerance the term count is reproducible to the digit, so the gate catches a mistyped
+  knob rather than tolerating noise. A row with `expect_terms = 0` has never been calibrated and
+  refuses to run. The scheduler that submits a rung is deliberately not in this repository.
 - **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
   teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
   not per-op cost (use `op_memory`).

@@ -78,6 +78,16 @@ jobs:
         run: |
           just bench-bmf "$BENCHER_LABEL" > bmf.json
 
+      - name: Upload the raw measurement
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ inputs.label }}
+          path: |
+            bmf.json
+            benches/results/*.json
+          if-no-files-found: warn
+
       - uses: bencherdev/bencher@v0.6.12
 
       # The project slug and API key go through the environment rather than the
@@ -101,11 +111,6 @@ jobs:
             --threshold-lower-boundary _ \
             --threshold-upper-boundary 0.99 \
             --threshold-measure peak-memory \
-            --threshold-test percentage \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.10 \
-            --threshold-measure resting-memory \
             --threshold-test percentage \
             --threshold-max-sample-size 64 \
             --threshold-lower-boundary _ \

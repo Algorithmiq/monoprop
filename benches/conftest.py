@@ -45,11 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 import pytest
-from monoprop_bench_tools.memory.cpu import (
-    HighWaterMark,
-    pinned_thread_summary,
-    resting_rss_bytes,
-)
+from monoprop_bench_tools.memory.cpu import HighWaterMark, pinned_thread_summary
 from monoprop_bench_tools.models import (
     MODELS,
     RandomProblem,
@@ -143,8 +139,6 @@ _RESULTS: dict[str, Any] = {
     "memhwm": {},  # node id -> summed peak RSS, whole test, setup() included
     "memhwm_max": {},  # node id -> worst-rank peak RSS, whole test, setup() included
     "opsize": {},  # picture / model / node id -> {"terms": n}
-    "memrest": {},  # picture / model -> resting RSS bytes
-    "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
     "opmem": {},  # fixed model -> per-field operator memory split (bytes)
     # Timed call only (see ``OpMemory``), each {"sum", "max"}.
@@ -348,10 +342,8 @@ def record_model_config() -> Callable[[str, Any], None]:
     return _do
 
 
-def _record_model_stats(
-    comm: Any, key: str, propagator: Any, baseline_rss: int | None = None
-) -> None:
-    """Record term count, operator memory breakdown and footprint under ``key``."""
+def _record_model_stats(comm: Any, key: str, propagator: Any) -> None:
+    """Record term count and operator memory breakdown under ``key``."""
     _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
 
     # Placement is only observable while the propagator's threads are alive.
@@ -365,25 +357,6 @@ def _record_model_stats(
             key,
             {k: _reduce_sum(comm, v) for k, v in breakdown().items()},
         )
-
-    resting = _reduce_sum(comm, resting_rss_bytes())
-    if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
-        _record("memrest", key, resting)
-
-    if baseline_rss is not None:
-        baseline = _reduce_sum(comm, baseline_rss)
-        if baseline:
-            _record("membase", key, baseline)
-
-
-@pytest.fixture
-def record_model_stats(bench_comm: Any) -> Callable[..., None]:
-    """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs."""
-
-    def _do(model: str, propagator: Any, baseline_rss: int) -> None:
-        _record_model_stats(bench_comm, model, propagator, baseline_rss)
-
-    return _do
 
 
 class OpMemory:
@@ -541,10 +514,8 @@ def built_graph(
     """Return a propagator whose graph has been built (no coefficients contracted).
 
     Session-scoped per picture so the graph is built once and shared across the
-    read-only graph benchmarks (``pare``, ``energy``, ``gradient``).
-
-    Also records the operator size and resting footprint for this picture while the
-    graph is resident.
+    read-only graph benchmarks (``energy``, ``gradient``), and records the operator
+    size for this picture while the graph is resident.
     """
     mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
@@ -553,12 +524,6 @@ def built_graph(
 
     # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
-
-    # Settled RSS once the build's transients are released -- the persistent
-    # footprint the per-operation peak cannot see.
-    resting = _reduce_sum(bench_comm, resting_rss_bytes())
-    if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
-        _record("memrest", picture, resting)
 
     return mp
 
