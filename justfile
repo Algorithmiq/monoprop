@@ -37,6 +37,26 @@ default: build-docs
 build *ARGS:
     {{ uv_sync }} {{ mpi_extra }} "$@"
 
+# Output directory for `capture-baseline` / `diff-baseline` (gitignored).
+
+baseline_dir := ".baseline-capture"
+
+# Capture a golden baseline snapshot into `.baseline-capture/LABEL` (default "golden") via
+# tools/capture-baseline.py. Run once on an unmodified tree to seed the golden baseline, then
+# `just diff-baseline` after any change that must not move a term or a coefficient.
+
+capture-baseline LABEL='golden':
+    uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/{{ LABEL }}"
+
+# Rebuild monoprop and diff a fresh capture against a stored one (default "golden"). Byte-identical
+# is the bar: term order is a regression signal, not an implementation detail.
+
+diff-baseline AGAINST='golden':
+    just build --reinstall-package monoprop --no-cache
+    rm -rf "{{ baseline_dir }}/candidate"
+    just capture-baseline candidate
+    diff -rq "{{ baseline_dir }}/{{ AGAINST }}" "{{ baseline_dir }}/candidate"
+
 # Report what the installed extension was actually built as.
 
 info:
