@@ -432,6 +432,15 @@ private:
         }
     }
 
+    // Zero only the peer ranks' slots of a [P] table. Every sweep that writes one of these tables and
+    // every sweep that reads it walks the same peer set, so the rest of the row is never looked at --
+    // and these run SERIALLY on partition 0 while S-1 partitions park, so the width is the cost.
+    auto zero_peer_slots_(std::vector<long long> &table) -> void {
+        for (const int b : peers_) {
+            std::fill_n(table.begin() + (static_cast<std::ptrdiff_t>(b) * s_), s_, 0LL);
+        }
+    }
+
     // What rank a's block of the count message holds for partition t, summed over source partitions.
     auto block_sum_(int a, int t) const -> long long {
         const int *blk = counts_recv_.data() + counts_idx_(a, t, 0);
@@ -464,12 +473,14 @@ private:
     // staging for a block no receive is posted for.
     auto publish_recv_rows_(int local_partition, const int *recv_counts, PeerPlan plan) -> void {
         long long *rr = row_recv_(local_partition);
-        for (int a = 0; a < r_; ++a) {
+        // Every entry is written, not just the peers': derived_wire_plan_ reads the whole row.
+        std::fill_n(rr, r_, 0LL);
+        const int f = plan.count(r_);
+        for (int k = 0; k < f; ++k) {
+            const int a = plan.peer(mpi_rank_, k);
             long long sum = 0;
-            if (plan.contains(mpi_rank_, a)) {
-                for (int su = 0; su < s_; ++su) {
-                    sum += recv_counts[a * s_ + su];
-                }
+            for (int su = 0; su < s_; ++su) {
+                sum += recv_counts[a * s_ + su];
             }
             rr[a] = sum;
         }
@@ -615,7 +626,7 @@ private:
     // much as the message count does.
     auto size_staging_send_(size_t elem) -> void {
         // Pass A: the column sums W over source partitions, u outer so both sides sweep in address order.
-        std::ranges::fill(col_sum_, 0LL);
+        zero_peer_slots_(col_sum_);
         for (int u = 0; u < s_; ++u) {
             const int *row = counts_row_(u);
             for (const int b : peers_) {
@@ -625,7 +636,10 @@ private:
                 }
             }
         }
+        // The [R] arrays stay fully zeroed -- MPI_Alltoallv reads every entry on the dense arm, and the
+        // zeros are what make the prefix below equal the full 0..R one at the peers' positions.
         std::ranges::fill(mpi_send_counts_, 0);
+        std::ranges::fill(mpi_send_displs_, 0);
         for (const int b : peers_) {
             const long long *col = col_sum_.data() + static_cast<size_t>(b) * static_cast<size_t>(s_);
             long long send_sum = 0;
@@ -634,8 +648,10 @@ private:
             }
             mpi_send_counts_[static_cast<size_t>(b)] = checked_mpi_count(send_sum, "Per-rank send count");
         }
+        // peers_ is ascending (dense is 0..R-1, sparse is a singleton), so a prefix over it takes the
+        // same value at every peer as a prefix over all R: a non-peer contributes zero.
         long long send_running = 0;
-        for (int b = 0; b < r_; ++b) {
+        for (const int b : peers_) {
             mpi_send_displs_[static_cast<size_t>(b)] = checked_mpi_count(send_running, "Send displacement");
             send_running += mpi_send_counts_[static_cast<size_t>(b)];
         }
@@ -649,7 +665,7 @@ private:
             }
         }
         // Pass B: the exclusive prefix over source partitions; col_sum_ is free to be reused for it here.
-        std::ranges::fill(col_sum_, 0LL);
+        zero_peer_slots_(col_sum_);
         for (int u = 0; u < s_; ++u) {
             const int *row = counts_row_(u);
             size_t *off = pack_off_.data() + pack_idx_(u, 0);
@@ -670,7 +686,7 @@ private:
     // published in Phase P0 (alltoallv) or from the count blocks just exchanged (the fused resolve).
     template <typename Value>
     auto fill_recv_col_(Value &&value) -> void {
-        std::ranges::fill(recv_col_, 0LL);
+        zero_peer_slots_(recv_col_);
         for (const int a : peers_) {
             for (int t = 0; t < s_; ++t) {
                 recv_col_[static_cast<size_t>(a) * static_cast<size_t>(s_) + static_cast<size_t>(t)] = value(a, t);
@@ -682,6 +698,7 @@ private:
     // post-B4 scatter re-derives the per-source offsets as it walks (a, su).
     auto size_staging_recv_(size_t elem) -> void {
         std::ranges::fill(mpi_recv_counts_, 0);
+        std::ranges::fill(mpi_recv_displs_, 0);
         for (const int a : peers_) {
             long long recv_sum = 0;
             for (int t = 0; t < s_; ++t) {
@@ -689,8 +706,9 @@ private:
             }
             mpi_recv_counts_[static_cast<size_t>(a)] = checked_mpi_count(recv_sum, "Per-rank recv count");
         }
+        // Same ascending-peers prefix as the send side.
         long long recv_running = 0;
-        for (int a = 0; a < r_; ++a) {
+        for (const int a : peers_) {
             mpi_recv_displs_[static_cast<size_t>(a)] = checked_mpi_count(recv_running, "Recv displacement");
             recv_running += mpi_recv_counts_[static_cast<size_t>(a)];
         }
