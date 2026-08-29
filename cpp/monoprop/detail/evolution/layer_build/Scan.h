@@ -210,18 +210,35 @@ struct PartnerProduct {
 // dependence chain through find_next where the merge streams two ascending arrays. The intuition that
 // the merge is redundant work on top of a bitset that exists anyway is wrong: it is cheaper than
 // reading that bitset back out. Do not replace it with the walk again.
+//
+// `need_dense` is the caller stating whether it will read `out.new_mono`. Only two things want it --
+// the router's owner hash at R > 1, and an opaque cutoff with no (k, d) form -- and on the Majorana
+// path with an inlined source row NEITHER the partner NOR the source has to be a bitset otherwise:
+// the merge already produced the partner's positions and the sign comes off the source's. When it is
+// false the whole dense half of this function disappears; when it is true the partner is built from
+// the merged positions directly, which still skips materialising M and the O(W) xor.
 template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 [[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
                                                       const GenT *gen_pos,
                                                       size_t gen_pop,
-                                                      PosT *out_pos) -> PartnerProduct<NumModes> {
+                                                      PosT *out_pos,
+                                                      bool need_dense = true) -> PartnerProduct<NumModes> {
     const Monomial<NumModes> &gen = A::generator(ctx);
     PartnerProduct<NumModes> out;
     Monomial<NumModes> mono;
     if (const auto src = ham.row_positions(i); src.inlined()) {
         out.k = merge_partner_positions(src.pos, src.count, gen_pos, gen_pop, out_pos, out.overlap, out.d);
+        if constexpr (A::sign_from_positions) {
+            out.phase_factor = A::rotation_sign_positions(ctx, src.pos, src.count);
+            if (need_dense) {
+                for (size_t j = 0; j < out.k; ++j) {
+                    out.new_mono.set(static_cast<size_t>(out_pos[j]));
+                }
+            }
+            return out;
+        }
         for (size_t j = 0; j < src.count; ++j) {
             mono.set(static_cast<size_t>(src.pos[j]));
         }
@@ -385,13 +402,19 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         };
 
+        // Who still needs the dense partner: the router's owner hash (R > 1 only -- push() short-circuits
+        // to my_rank at R == 1) and an opaque cutoff, which has no (k, d) form and must be handed a
+        // bitset. Loop-invariant, so the branch inside emit_term_products predicts perfectly.
+        const bool need_dense = rank_count != 1 || !cutoff_eval.has_digest_form();
+
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            const auto p = emit_term_products<NumModes, A>(ham, i, ectx, gen_pos.data(), gen_pop, pbuf.data());
+            const auto p =
+                emit_term_products<NumModes, A>(ham, i, ectx, gen_pos.data(), gen_pop, pbuf.data(), need_dense);
             assert(p.k == mono_pop + gen_pop - 2 * p.overlap && "the merge disagrees with the popcount identity");
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             // nullopt only for an opaque cutoff_fn_, which has no (k, d) form and must be invoked.

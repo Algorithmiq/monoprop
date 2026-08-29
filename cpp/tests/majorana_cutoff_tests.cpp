@@ -20,8 +20,10 @@
 #include <complex>
 #include <cstdint>
 #include <random>
+#include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/core/Monomial.h"
 
@@ -169,6 +171,46 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_interleave_phase_mask_cross_check) {
             const int masked = m.parity_and(w) ? -1 : 1;
             BOOST_TEST(reference == masked);
         }
+    };
+    check(std::integral_constant<size_t, 32>{}); // single word
+    check(std::integral_constant<size_t, 96>{}); // multi word
+}
+
+// rotation_sign_positions must equal rotation_sign for every M, so a source row that carries its
+// ascending positions never has to be expanded into a bitset to be signed. Uses the SAME masked-parity
+// form as the hot path, and drives both from one random M so a disagreement is the position walk's.
+BOOST_AUTO_TEST_CASE(majorana_rotation_sign_positions_matches_dense) {
+    auto check = [](auto tag) {
+        constexpr size_t N = decltype(tag)::value;
+        static_assert(MajoranaAlgebra<N>::sign_from_positions, "the position form must be declared");
+        std::mt19937_64 rng(0x5EED1234ULL + N);
+        std::uniform_int_distribution<size_t> bit(0, 2 * N - 1);
+        std::uniform_int_distribution<int> width(0, 12);
+        int saw_minus = 0;
+        int saw_plus = 0;
+        for (int trial = 0; trial < 500; ++trial) {
+            Monomial<N> m;
+            Monomial<N> g;
+            for (int k = 0, kn = width(rng); k < kn; ++k) {
+                m.set(bit(rng));
+            }
+            for (int k = 0; k < 4; ++k) {
+                g.set(bit(rng));
+            }
+            // Ascending, deduplicated -- exactly the shape a row's inline position array has.
+            std::vector<uint16_t> pos;
+            for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+                pos.push_back(static_cast<uint16_t>(b));
+            }
+            const auto ctx = MajoranaAlgebra<N>::make_gen_context(g);
+            const int dense = MajoranaAlgebra<N>::rotation_sign(ctx, m, m ^ g);
+            const int from_pos = MajoranaAlgebra<N>::rotation_sign_positions(ctx, pos.data(), pos.size());
+            BOOST_TEST(dense == from_pos);
+            (dense < 0 ? saw_minus : saw_plus)++;
+        }
+        // Both signs must actually occur, or 500 agreements prove only that one branch was taken.
+        BOOST_TEST(saw_minus > 0);
+        BOOST_TEST(saw_plus > 0);
     };
     check(std::integral_constant<size_t, 32>{}); // single word
     check(std::integral_constant<size_t, 96>{}); // multi word

@@ -55,6 +55,22 @@ struct MajoranaAlgebra {
                               const Monomial<NumModes> & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
+
+    // The same sign from M's ascending positions instead of its bitset. parity_and(W) is the parity of
+    // |M ∩ W|, which over a position list is the XOR of W's bits AT those positions -- so a source row
+    // that already carries its positions never has to be expanded into a dense monomial to be signed.
+    // Pauli has no such form (pauli_rotation_sign reads whole words of mono, new_mono and gen), hence
+    // the sign_from_positions flag rather than an unconditional swap.
+    static constexpr bool sign_from_positions = true;
+    template <typename PosT>
+    [[gnu::always_inline]] static auto rotation_sign_positions(const GenContext &ctx, const PosT *pos, size_t count)
+        -> int {
+        bool parity = false;
+        for (size_t j = 0; j < count; ++j) {
+            parity ^= ctx.interleave_mask.test(static_cast<size_t>(pos[j]));
+        }
+        return parity ? -1 : 1;
+    }
     static auto emit_phase(int rotation_sign, size_t mono_pop, size_t gen_pop, size_t overlap) -> int {
         return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
     }
@@ -90,6 +106,7 @@ struct PauliAlgebra {
     static auto generator(const GenContext &ctx) -> const Monomial<NumModes> & { return ctx.pauli_ctx.gen; }
 
     // Rotation-ready sign: already the negated raw product sign (see pauli_rotation_sign).
+    static constexpr bool sign_from_positions = false;
     static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &mono, const Monomial<NumModes> &new_mono)
         -> int {
         return pauli_rotation_sign<NumModes>(ctx.pauli_ctx, mono, new_mono);

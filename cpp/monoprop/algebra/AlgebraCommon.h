@@ -281,6 +281,12 @@ public:
     // The decision from the (k, d) digest alone. The emit site gets both out of the partner merge, so
     // nothing here reads a bitset. Same precondition as cutoff_sums(k, d): d must have been folded
     // without an active mask, which holds for a well-formed monomial. nullopt if opaque.
+    // True when the cutoff has a (k, d) form, i.e. passes_from_digest never returns nullopt. The emit
+    // site uses it to decide whether the dense partner has to be materialised at all.
+    [[nodiscard]] auto has_digest_form() const -> bool {
+        return length_cutoff_ != nullptr || support_cutoff_ != nullptr;
+    }
+
     auto passes_from_digest(size_t k, size_t d) const -> std::optional<bool> {
         if (length_cutoff_ != nullptr) {
             return length_keeps(k, d, length_cutoff_->cutoff);
