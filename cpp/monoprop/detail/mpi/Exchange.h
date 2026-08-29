@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
 #include <span>
 #include <utility>
@@ -33,33 +32,13 @@ namespace monoprop::mpi {
 // whatever the span holds, so a layout built for a differently sized communicator reads out of bounds.
 auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void;
 
-// Legs carrying a payload in either direction, which is what the pairwise path would post.
+// Legs carrying a payload in either direction, i.e. an upper bound on what the pairwise path posts.
 [[nodiscard]] inline auto active_leg_count(const int *send_counts, const int *recv_counts, int num_ranks) -> int {
     int legs = 0;
     for (int i = 0; i < num_ranks; ++i) {
         legs += static_cast<int>(send_counts[i] != 0 || recv_counts[i] != 0);
     }
     return legs;
-}
-
-// A quarter of the fan-out: past that the pairwise post is >= N/2 requests against the collective's one
-// tuned schedule, which wins there (a 54-peer sparse round measured 1.87x the collective).
-inline constexpr int kSparseLegDivisor = 4;
-
-// Floored at 1, so an empty row and a one-peer row -- the two shapes linear routing produces -- land on
-// the same side at every N; at N < 4 the bare quotient is 0 and would split them.
-[[nodiscard]] inline auto sparse_leg_budget(int num_ranks) -> int {
-    return std::max(1, num_ranks / kSparseLegDivisor);
-}
-
-// Which transport the Kind::Mpi arm takes. RANK-LOCAL, so it is a PRECONDITION that every rank lands on
-// the same side: a rank choosing MPI_Ialltoallv waits forever on ranks that chose point-to-point. Linear
-// routing (routing::Router, d >= 2 bits) gives that -- a generator reaches at most `ranks >> d` peers,
-// so no row can exceed the budget -- while splitmix routing does not, and a layer where one rank has no
-// cross-rank partners at all can then split the branch.
-[[nodiscard]] inline auto flat_exchange_prefers_pairwise(const int *send_counts, const int *recv_counts, int num_ranks)
-    -> bool {
-    return active_leg_count(send_counts, recv_counts, num_ranks) <= sparse_leg_budget(num_ranks);
 }
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
@@ -124,10 +103,17 @@ private:
 };
 
 // Never skipped on zero total: the collective arm needs all ranks or it deadlocks. Non-blocking in an
-// MPI build -- MPI_Ialltoallv, or Isend/Irecv over the active legs when the layout is sparse enough (the
-// Ticket completes either); non-MPI build does a per-rank self-copy (recv layout == send layout).
+// MPI build -- MPI_Ialltoallv, or Isend/Irecv over the legs that carry a payload (the Ticket completes
+// either); non-MPI build does a per-rank self-copy (recv layout == send layout).
+//
+// `wire_bits` picks the transport and MUST be RANK-UNIFORM: a rank choosing MPI_Ialltoallv waits forever
+// on ranks that chose point-to-point, and no predicate over a rank's OWN row can promise that (rows vary,
+// so any threshold on one straddles). It is the resolved linear-routing bit count when that routing gives
+// fanout 1 -- one destination rank per generator, which is what empties the other legs -- and 0, today's
+// collective, for every other geometry. The caller owns that derivation; see Evolution.cpp.
 template <typename T>
-inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm) -> Ticket {
+inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm, int wire_bits = 0)
+    -> Ticket {
     // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
     // typed pointers plus a datatype. Offsets stay in elements on both paths.
     if (comm.kind == Comm::Kind::Shm) {
@@ -145,13 +131,18 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get());
+        // The wire is narrowed inside the verb, not here: only partition 0 reaches MPI, and it cannot
+        // name the rank's peer from its own row alone (its row may be the empty one). See HybridComm.
+        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get(), PeerPlan{}, wire_bits);
         return Ticket{};
     }
-    if (flat_exchange_prefers_pairwise(args.send_counts, args.recv_counts, num_ranks)) {
-        // No plan and no count round: the count matrix is symmetric, so what this rank sends a peer IS
-        // that peer's recv count and both ends drop the same legs. A dense plan walks all N and posts
-        // only the non-zero ones, which is exactly that.
+    if (wire_bits > 0) {
+        // Which legs to drop needs no plan and no count round: the count matrix is symmetric, so what
+        // this rank sends a peer IS that peer's recv count and both ends drop the same legs on the same
+        // value. The plan stays DENSE -- it walks all N and posts only the non-zero legs, which is
+        // exactly that -- so a mis-derived shift cannot drop a block here; `wire_bits` only chooses the
+        // transport. `legs` sizes the request vector, which a dense plan would otherwise take to 2N.
+        const int legs = active_leg_count(args.send_counts, args.recv_counts, num_ranks);
         std::vector<MPI_Request> requests;
         const int posted = sparse_pairwise(PeerPlan{},
                                            rank(comm),
@@ -164,7 +155,8 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
                                            PeerLayout{.counts = args.send_counts, .displs = args.send_displs},
                                            reinterpret_cast<std::byte *>(args.recv),
                                            PeerLayout{.counts = args.recv_counts, .displs = args.recv_displs},
-                                           requests);
+                                           requests,
+                                           legs);
         return Ticket(std::move(requests), posted);
     }
     MPI_Request request = MPI_REQUEST_NULL;

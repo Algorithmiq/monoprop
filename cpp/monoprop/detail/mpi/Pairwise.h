@@ -61,6 +61,10 @@ struct PeerLayout {
 // POSTS ONLY, and returns how many of `reqs` are live. The caller waits, so `send`, `recv` and `reqs`
 // must all outlive that wait -- which is what lets a caller hold the round open (PendingAlltoallv) the
 // same way the dense branch holds an MPI_Ialltoallv.
+//
+// `active_legs` is an UPPER BOUND on the peers that will post, for a caller that already knows it (a
+// dense plan over a mostly-empty layout sizes `reqs` at 2 * n_ranks otherwise); negative means "assume
+// every peer posts". Too small an upper bound is caught by the assert below, not silently.
 [[nodiscard]] inline auto sparse_pairwise(PeerPlan plan,
                                           int me,
                                           int n_ranks,
@@ -72,10 +76,12 @@ struct PeerLayout {
                                           PeerLayout send_lay,
                                           std::byte *recv,
                                           PeerLayout recv_lay,
-                                          std::vector<MPI_Request> &reqs) -> int {
+                                          std::vector<MPI_Request> &reqs,
+                                          int active_legs = -1) -> int {
     const int f = plan.count(n_ranks);
-    if (reqs.size() < static_cast<size_t>(2 * f)) {
-        reqs.resize(static_cast<size_t>(2 * f));
+    const auto cap = static_cast<size_t>(2 * (active_legs < 0 || active_legs > f ? f : active_legs));
+    if (reqs.size() < cap) {
+        reqs.resize(cap);
     }
     int n_req = 0;
     for (int k = 0; k < f; ++k) {
@@ -92,6 +98,7 @@ struct PeerLayout {
             }
             continue;
         }
+        assert(static_cast<size_t>(n_req) + 2 <= reqs.size() || (rc == 0 && sc == 0)); // active_legs too small
         if (rc != 0) {
             MPI_Irecv(rbuf, rc, dt, b, tag, comm, &reqs[static_cast<size_t>(n_req++)]);
         }
