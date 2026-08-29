@@ -31,6 +31,7 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/SparseRowStore.h"
 
 // Forward-declared to break an include cycle with algebra/Algebra.h.
 namespace monoprop {
@@ -61,9 +62,20 @@ public:
 
 template <size_t NumModes>
 struct MPOperator {
-    // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
-    // itself cheaply movable). Always non-null.
-    std::unique_ptr<OperatorIndex<NumModes>> store{std::make_unique<OperatorIndex<NumModes>>()};
+    // The row store is one of two backends, chosen per propagator from its mode count
+    // (SparseRowStore::preferred_for_modes) and then fixed for the propagator's lifetime. Exactly one
+    // of these is non-null.
+    //
+    // Two pointers rather than one, and not a virtual interface, because the scan asks the store for a
+    // row per anticommuting term: a branch or an indirect call on that path is not affordable.
+    // with_store() binds the concrete type once per layer instead -- the same shape as with_algebra()
+    // for a runtime Basis, and the reason build_layer is a template. Everything off that path goes
+    // through the forwarding accessors below, which pay one well-predicted branch.
+    //
+    // Heap-owned because neither store is copyable or movable (single-writer, and their views borrow
+    // their arrays), which keeps MPOperator itself cheaply movable.
+    std::unique_ptr<OperatorIndex<NumModes>> dense_rows{std::make_unique<OperatorIndex<NumModes>>()};
+    std::unique_ptr<SparseRowStore<NumModes>> sparse_rows = nullptr;
     VecD op_coeffs;
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
@@ -85,7 +97,8 @@ struct MPOperator {
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
     MPOperator(const MPOperator &other)
-        : store(other.store->clone()),
+        : dense_rows(other.dense_rows ? other.dense_rows->clone() : nullptr),
+          sparse_rows(other.sparse_rows ? other.sparse_rows->clone() : nullptr),
           op_coeffs(other.op_coeffs),
           state_rows_(other.state_rows_),
           state_vals_(other.state_vals_),
@@ -96,23 +109,76 @@ struct MPOperator {
           basis(other.basis),
           inverted_index_(other.inverted_index_) {}
 
-    auto size() const -> size_t { return store->size(); }
+    // Binds the live store to a concrete type for the duration of the call. Both arms are instantiated,
+    // so `f` must be a generic lambda and must return the same type from each.
+    template <typename F>
+    [[gnu::always_inline]] auto with_store(F &&f) -> decltype(auto) {
+        if (sparse_rows) {
+            return f(*sparse_rows);
+        }
+        return f(*dense_rows);
+    }
+    template <typename F>
+    [[gnu::always_inline]] auto with_store(F &&f) const -> decltype(auto) {
+        if (sparse_rows) {
+            return f(*sparse_rows);
+        }
+        return f(*dense_rows);
+    }
+
+    // Installs a backend, dropping the lazy inverted index with it: the index addresses the old rows,
+    // and leaving it would let a stale one answer for the new store until its row count happened to
+    // disagree. One overload per backend rather than a tag, so a call site names the choice.
+    auto set_store(std::unique_ptr<OperatorIndex<NumModes>> rows) -> void {
+        dense_rows = std::move(rows);
+        sparse_rows.reset();
+        inverted_index_.reset();
+    }
+    auto set_store(std::unique_ptr<SparseRowStore<NumModes>> rows) -> void {
+        sparse_rows = std::move(rows);
+        dense_rows.reset();
+        inverted_index_.reset();
+    }
+    [[nodiscard]] auto rows_are_sparse() const -> bool { return sparse_rows != nullptr; }
+
+    auto size() const -> size_t {
+        return with_store([](const auto &rows) { return rows.size(); });
+    }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
-    auto append_term(const Monomial<NumModes> &mono) -> void { store->push_back(mono); }
+    auto append_term(const Monomial<NumModes> &mono) -> void {
+        with_store([&mono](auto &rows) { rows.push_back(mono); });
+    }
 
-    // Resync the inverted index after a bulk growth of `store`, preserving has_value() ⟹ rows()==store.size().
+    // Setup-path forwards, kept here rather than exposing a store, so nothing outside has to know which
+    // backend is live.
+    auto reserve_terms(size_t n) -> void {
+        with_store([n](auto &rows) { rows.reserve(n); });
+    }
+    auto index_term(const Monomial<NumModes> &mono, size_t row) -> void {
+        with_store([&mono, row](auto &rows) { rows.emplace(mono, row); });
+    }
+    [[nodiscard]] auto find(const Monomial<NumModes> &mono) const -> std::optional<size_t> {
+        return with_store([&mono](const auto &rows) { return rows.find(mono); });
+    }
+    // This rank's terms as fn(monomial, row), in the index's slot order. Materializes each row.
+    template <typename Fn>
+    auto for_each_term(Fn &&fn) const -> void {
+        with_store([&fn](const auto &rows) { rows.for_each(std::forward<Fn>(fn)); });
+    }
+
+    // Resync the inverted index after a bulk growth of the store, preserving has_value() ⟹ rows()==size().
     auto reindex_after_growth(size_t base, size_t n) -> void {
         if (inverted_index_.has_value()) {
-            inverted_index_->append_rows(*store, base, n);
+            with_store([this, base, n](const auto &rows) { inverted_index_->append_rows(rows, base, n); });
         }
     }
 
     auto inverted_index() const -> const InvertedIndex<NumModes> & {
-        if (!inverted_index_.has_value() || inverted_index_->rows() != store->size()) {
+        if (!inverted_index_.has_value() || inverted_index_->rows() != size()) {
             inverted_index_.emplace();
-            inverted_index_->rebuild(*store);
+            with_store([this](const auto &rows) { inverted_index_->rebuild(rows); });
         }
         return *inverted_index_;
     }
@@ -131,7 +197,7 @@ struct MPOperator {
 
         const auto before = init_op_map.size();
         erase_if(init_op_map, [this](const auto &kv) {
-            const auto found = store->find(kv.first);
+            const auto found = find(kv.first);
             if (found) {
                 op_coeffs[*found] = kv.second;
             }
@@ -197,7 +263,7 @@ struct MPOperator {
         for (const auto &[k, v] : op_dict) {
             // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
             const auto mono = indices_to_bitset<NumModes>(k);
-            const auto rank_evolved_op = store->find(mono);
+            const auto rank_evolved_op = find(mono);
             const auto rank_init_op = init_op_map.find(mono);
             const auto coeff = algebra_encode_coeff<NumModes>(basis, v, mono);
 
@@ -237,14 +303,16 @@ struct MPOperator {
 
         VecZ new_inds(size() - state_scored_rows_);
         std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_); // NOLINT(modernize-use-ranges)
-        const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
-        state_rows_.reserve(state_rows_.size() + paired_inds.size());
-        state_vals_.reserve(state_vals_.size() + paired_inds.size());
+        with_store([this, &new_inds](const auto &rows) {
+            const auto paired_inds = is_fully_paired<NumModes>(new_inds, rows);
+            state_rows_.reserve(state_rows_.size() + paired_inds.size());
+            state_vals_.reserve(state_vals_.size() + paired_inds.size());
 
-        // The algebra picks the diagonal ⟨b|·|b⟩ phase of each fully-paired term.
-        algebra_score_state<NumModes>(basis, paired_inds, initial_state, *store, [this](size_t row, double phase) {
-            state_rows_.push_back(static_cast<TermIndex>(row));
-            state_vals_.push_back(phase);
+            // The algebra picks the diagonal ⟨b|·|b⟩ phase of each fully-paired term.
+            algebra_score_state<NumModes>(basis, paired_inds, initial_state, rows, [this](size_t row, double phase) {
+                state_rows_.push_back(static_cast<TermIndex>(row));
+                state_vals_.push_back(phase);
+            });
         });
 
         state_scored_rows_ = size();
@@ -263,13 +331,14 @@ struct MPOperator {
 // Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
 // slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
 // (op.size() must equal the returned base).
-template <size_t NumModes, typename KeyAt, typename PerSlot>
-inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
-    const size_t base = op.store->grow_rows_geometric(n);
+template <size_t NumModes, typename Store, typename KeyAt, typename PerSlot>
+inline auto insert_absent_terms(MPOperator<NumModes> &op, Store &store, size_t n, KeyAt &&key_at, PerSlot &&per_slot)
+    -> size_t {
+    const size_t base = store.grow_rows_geometric(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
-    op.store->bulk_insert(n, base, std::forward<KeyAt>(key_at));
+    store.bulk_insert(n, base, std::forward<KeyAt>(key_at));
     op.reindex_after_growth(base, n);
     return base;
 }
@@ -329,13 +398,16 @@ struct MPOperatorMemoryBreakdown final {
 template <size_t NumModes>
 inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
     MPOperatorMemoryBreakdown<NumModes> breakdown;
-    breakdown.operator_terms_bytes = op.store->memory_bytes();
+    op.with_store([&breakdown](const auto &rows) {
+        breakdown.operator_terms_bytes = rows.memory_bytes();
+        breakdown.indexing_bytes = rows.index_estimated_memory_bytes();
+        breakdown.operator_terms_slack_bytes = rows.slack_bytes();
+    });
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)
                                    + op.state_vals_.capacity() * sizeof(double);
-    breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.init_operator_entries = op.init_op_map.size();
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
@@ -346,7 +418,6 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_sparse_bytes = tiers[1];
         breakdown.inverted_index_dense_columns = tiers[2];
     }
-    breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

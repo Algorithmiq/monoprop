@@ -87,8 +87,9 @@ just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then r
 
 CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
-(default) skips that probe for the single-process `serial` variants only; multi-rank variants
-keep the full component set, since they exchange real messages. Turn it off by adding
+(default) skips that probe for the single-process `serial` variants only — including the
+`sparse-rows` half of them, which is a second world-size-1 launch of the same case; multi-rank
+variants keep the full component set, since they exchange real messages. Turn it off by adding
 `-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
 
 CTest registers every Boost case individually as a `serial` variant. When the
@@ -97,6 +98,31 @@ once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` �
 one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Select either group with
 `ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
+
+### The sparse-rows variants
+
+Every case is also registered a second time with `monoprop_ROW_STORE=sparse`,
+labelled `sparse-rows`, so the whole suite runs against both row backends. This is
+not redundancy: every fixture and oracle here is well below the automatic crossover
+(`monoprop_SPARSE_ROW_MIN_MODES`), so without forcing it the support-form backend
+would be compiled and never executed — and it is the one that ships for wide systems.
+`cpp/tests/row_store_selection_tests.cpp` asserts the variable actually reached the
+propagator, so the extra pass cannot silently be a second dense run. Run just that
+configuration with `-L sparse-rows`, and its Python counterpart with
+`just test-sparse-rows`.
+
+The MPI `sparse-rows` variants use a separate rank list,
+`monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`), so growing
+`monoprop_MPI_TEST_PROCS` for dense coverage does not also multiply how many
+sparse-row `mpiexec` launches run.
+
+Expect it to be *slower*: at fixture widths a monomial is one word, which is where
+dense rows win. That is the crossover working, not a regression.
+
+The two backends agree on term sets and expectation values but not on term *order*,
+so cross-backend checks use `tools/capture-baseline.py --compare` with a tolerance
+(`just diff-baseline-sparse`), never the byte diff that `just diff-baseline` applies
+within one backend.
 
 ### Golden baselines
 
@@ -125,6 +151,12 @@ it is not a way to wave through a diff that was supposed to be stable.
 The capture is rank-local, so under `mpiexec` each rank writes its own
 `manifest-rank<r>.json`. Output lands in `.baseline-capture/`, which is
 gitignored.
+
+`just diff-baseline-sparse` is that tolerant comparison applied to the row
+backends: it captures with `monoprop_ROW_STORE=sparse` and checks the result
+against the golden capture as term sets plus a relative tolerance. The sparse rows
+hash differently, so they accumulate in a different order by design — a byte diff
+there would fail on every run.
 
 
 ## Adding tests

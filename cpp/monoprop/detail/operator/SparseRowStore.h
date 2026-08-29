@@ -334,8 +334,7 @@ private:
     // is not part of the seam the scan is templated on (see with_store in MPOperator), and making it so
     // would triple every downstream instantiation to save a predicted branch.
     template <typename Self, typename F>
-    [[gnu::always_inline]] auto with_codes(this Self&& self, F&& f)
-        -> decltype(auto) {
+    [[gnu::always_inline]] auto with_codes(this Self &&self, F &&f) -> decltype(auto) {
         switch (self.codes_width_) {
             case CodesWidth::Narrow:
                 return f(self.codes16_);

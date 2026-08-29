@@ -223,6 +223,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator<NumModes>::logical_num_modes,
                     "Number of modes the operator actually uses");
 
+    cls.def_prop_ro("rows_are_sparse",
+                    &MonomialPropagator<NumModes>::rows_are_sparse,
+                    "Whether this rank's rows live in the support-form backend (see monoprop_ROW_STORE)");
+
     cls.def_prop_ro_static(
         "storage_num_modes",
         [](nb::handle /*unused*/) { return MonomialPropagator<NumModes>::storage_num_modes; },

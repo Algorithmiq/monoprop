@@ -45,9 +45,12 @@ struct IncomingProbe {
 
 // Phases 1-2, read-only w.r.t. operator contents. QW = per-record stride: the plain query width, or
 // kQueryWordsFused for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
+// `store` is passed alongside `op` rather than taken off it: the caller is inside build_layer, which has
+// already bound the concrete backend, and re-entering with_store() here would bind it a second time.
+template <size_t NumModes, typename Store, size_t QW = kQueryWords<NumModes>>
 auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                             MPOperator<NumModes> &op,
+                            Store &store,
                             size_t rank_count) -> IncomingProbe<NumModes> {
     constexpr size_t W = QW;
     IncomingProbe<NumModes> pr;
@@ -83,8 +86,8 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
         pr.phase_of[g] = ph;
     }
     {
-        const size_t op_size = op.store->size();
-        op.store->find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
+        const size_t op_size = store.size();
+        store.find_batch(pr.mono.data(), pr.nq_total, pr.idx_of.data());
         for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
@@ -93,7 +96,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     }
 
     // Phase 2 ((sender,query) prefix order): each miss takes the next index base+j.
-    pr.base = op.store->size();
+    pr.base = store.size();
     for (size_t g = 0; g < pr.nq_total; ++g) {
         if (pr.idx_of[g] == kMissingIndex) {
             pr.idx_of[g] = pr.base + pr.miss_g.size();
@@ -105,17 +108,18 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
 
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
-template <size_t NumModes>
-auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr) -> void {
+template <size_t NumModes, typename Store>
+auto insert_incoming_misses(MPOperator<NumModes> &op, Store &store, const IncomingProbe<NumModes> &pr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
     }
     insert_absent_terms<NumModes>(
         op,
+        store,
         n_miss,
         [&](size_t j) -> const Monomial<NumModes> & { return pr.mono[pr.miss_g[j]]; },
-        [&](size_t j, size_t base) { assign_row<NumModes>(*op.store, base + j, pr.mono[pr.miss_g[j]]); });
+        [&](size_t j, size_t base) { assign_row<NumModes>(store, base + j, pr.mono[pr.miss_g[j]]); });
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons; what
@@ -125,16 +129,18 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
 // Resolver rank (any cross-rank sink): for each query from sender s, look up M' locally; found → answer
 // with its index/value, absent → insert it in the same round (the resolver is the sole inserter of
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
-template <size_t NumModes, typename Sink>
+template <size_t NumModes, typename Sink, typename Store>
 auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                       MPOperator<NumModes> &op,
+                      Store &store,
                       size_t rank_count,
                       bool is_leader_pass,
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes, Sink::kStride>(incoming, op, rank_count);
+    const IncomingProbe<NumModes> pr =
+        probe_incoming_queries<NumModes, Store, Sink::kStride>(incoming, op, store, rank_count);
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());
@@ -156,7 +162,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
         }
     }
 
-    insert_incoming_misses<NumModes>(op, pr);
+    insert_incoming_misses<NumModes>(op, store, pr);
     return responses;
 }
 
