@@ -31,6 +31,8 @@
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
+#include "TestOperator.h"
+
 using namespace monoprop;
 
 namespace {
@@ -72,17 +74,12 @@ const std::vector<size_t> kPopcounts = {0, 1, 2, 4, 5, 6, 7, 8, 11, 12, 14, 20};
 
 template <size_t NumModes>
 auto make_op(const std::vector<Monomial<NumModes>> &terms) -> detail::MPOperator<NumModes> {
-    detail::MPOperator<NumModes> op;
-    op.basis = Basis::Majorana;
     if (terms.empty()) {
+        detail::MPOperator<NumModes> op;
+        op.basis = Basis::Majorana;
         return op;
     }
-    detail::insert_absent_terms<NumModes>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<NumModes> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<NumModes>(*op.store, base + k, terms[k]); });
-    return op;
+    return test_utils::indexed_operator<NumModes>(terms);
 }
 
 template <size_t NumModes>
@@ -176,7 +173,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, rank_count, form);
+    // The store is passed alongside op now that it is a template parameter; this test is the dense
+    // reference, and a default-constructed MPOperator holds exactly those rows.
+    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, *op.dense_rows, rank_count, form);
 
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
     BOOST_REQUIRE(pr.nq_total > 0);
@@ -230,33 +229,34 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         BOOST_TEST(pr.idx_of[pr.miss_g[j]] == pr.base + j);
     }
 
-    detail::insert_incoming_misses<NumModes>(op, pr);
+    detail::insert_incoming_misses<NumModes>(op, *op.dense_rows, pr);
 
     // The second implementation: the dense Monomial-keyed path, sharing no code with set_positions.
     auto ref = make_op<NumModes>(seed_terms);
     detail::insert_absent_terms<NumModes>(
         ref,
+        *ref.dense_rows,
         expected_misses.size(),
         [&](size_t j) -> const Monomial<NumModes> & { return expected_misses[j]; },
-        [&](size_t j, size_t base) { assign_row<NumModes>(*ref.store, base + j, expected_misses[j]); });
+        [&](size_t j, size_t base) { assign_row<NumModes>(*ref.dense_rows, base + j, expected_misses[j]); });
 
-    BOOST_REQUIRE_EQUAL(op.store->size(), ref.store->size());
-    BOOST_TEST(op.store->size() > pr.base);
+    BOOST_REQUIRE_EQUAL(op.dense_rows->size(), ref.dense_rows->size());
+    BOOST_TEST(op.dense_rows->size() > pr.base);
     size_t overflow_seen = 0;
-    for (size_t i = 0; i < ref.store->size(); ++i) {
-        BOOST_TEST((op.store->row(i) == ref.store->row(i)));
-        BOOST_TEST(op.store->popcount(i) == ref.store->popcount(i));
-        if (!ref.store->row_positions(i).inlined()) {
+    for (size_t i = 0; i < ref.dense_rows->size(); ++i) {
+        BOOST_TEST((op.dense_rows->row(i) == ref.dense_rows->row(i)));
+        BOOST_TEST(op.dense_rows->popcount(i) == ref.dense_rows->popcount(i));
+        if (!ref.dense_rows->row_positions(i).inlined()) {
             ++overflow_seen;
         }
     }
     BOOST_TEST(overflow_seen > 0);
 
     // The index, not just the rows: a wrong hash leaves the row correct and unfindable.
-    for (size_t i = 0; i < ref.store->size(); ++i) {
-        const auto key = ref.store->row(i);
-        const auto in_op = op.store->find(key);
-        const auto in_ref = ref.store->find(key);
+    for (size_t i = 0; i < ref.dense_rows->size(); ++i) {
+        const auto key = ref.dense_rows->row(i);
+        const auto in_op = op.dense_rows->find(key);
+        const auto in_ref = ref.dense_rows->find(key);
         BOOST_REQUIRE(in_ref.has_value());
         BOOST_REQUIRE(in_op.has_value());
         BOOST_TEST(*in_op == *in_ref);
@@ -346,10 +346,10 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
     }
     std::vector<size_t> out(terms.size(), 0);
     std::vector<uint32_t> hashes(terms.size(), 0);
-    op.store->find_batch_positions(flat, off, kk, out, hashes);
+    op.dense_rows->find_batch_positions(flat, off, kk, out, hashes);
 
     std::vector<size_t> out_dense(terms.size(), 0);
-    op.store->find_batch(terms.data(), terms.size(), out_dense.data());
+    op.dense_rows->find_batch(terms.data(), terms.size(), out_dense.data());
     for (size_t i = 0; i < terms.size(); ++i) {
         BOOST_REQUIRE(out[i] != detail::OperatorIndex<kN>::kNotFound);
         BOOST_TEST(out[i] == i);
@@ -373,11 +373,11 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
         akk.push_back(static_cast<uint32_t>(k));
     }
     std::vector<size_t> aout(absent.size(), 0);
-    op.store->find_batch_positions(aflat, aoff, akk, aout);
+    op.dense_rows->find_batch_positions(aflat, aoff, akk, aout);
     size_t genuinely_absent = 0;
     for (size_t i = 0; i < absent.size(); ++i) {
         // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.
-        if (!op.store->find(absent[i]).has_value()) {
+        if (!op.dense_rows->find(absent[i]).has_value()) {
             BOOST_TEST(aout[i] == detail::OperatorIndex<kN>::kNotFound);
             ++genuinely_absent;
         }

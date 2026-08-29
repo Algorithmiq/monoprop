@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 
@@ -121,6 +122,29 @@ inline auto for_each_mode_slot(const Bitset<NumBits> &mono, Fn &&fn) -> void {
     }
 }
 
+// The same walk over a row's ascending *position* list -- the third form a row arrives in, alongside a
+// sparse row and a dense monomial: the staged self leg and the incoming cross-rank records both carry
+// positions. It yields the identical slot sequence, which is what lets a position query hash and compare
+// against a stored row without materializing either.
+//
+// Precondition: `pos` strictly ascending (so a mode's two positions are adjacent). A violation is silent
+// -- an unsorted list simply never matches a stored row.
+template <typename PosT, typename Fn>
+inline auto for_each_mode_slot(std::span<const PosT> pos, Fn &&fn) -> void {
+    size_t j = 0;
+    while (j < pos.size()) {
+        const size_t p = static_cast<size_t>(pos[j]);
+        const size_t mode = p >> 1;
+        unsigned int code = 1U << (p & 1U);
+        ++j;
+        if (j < pos.size() && (static_cast<size_t>(pos[j]) >> 1) == mode) {
+            code |= 1U << (static_cast<size_t>(pos[j]) & 1U);
+            ++j;
+        }
+        fn(mode, code);
+    }
+}
+
 // Occupied modes in a dense monomial, via the same slot walk as sparse_row_hash/dense_row_equals below --
 // what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs
 // (see sparse_record_capacity in layer_build/TermProduct.h).
@@ -169,6 +193,13 @@ template <size_t NumBits>
     return hasher.value();
 }
 
+template <typename PosT>
+[[nodiscard]] inline auto sparse_row_hash(std::span<const PosT> pos) noexcept -> size_t {
+    SparseRowHasher hasher;
+    for_each_mode_slot(pos, [&hasher](size_t mode, unsigned int code) { hasher.add(mode, code); });
+    return hasher.value();
+}
+
 // Dispatches to whichever shape the key holds, so a batch of keys hashes identically whether or not any
 // of them spilled. The two arms must agree with the store's own row hash, which is what makes a spilled
 // row findable by either form.
@@ -195,6 +226,41 @@ template <size_t NumBits>
         ++j;
     });
     return equal && j == n;
+}
+
+// Whether an ascending position list and a sparse row hold the same slots -- the position-form find's
+// confirm, the position counterpart of dense_row_equals.
+template <typename PosT>
+[[nodiscard]] inline auto positions_equal_row(std::span<const PosT> pos, const SparseRow &row) -> bool {
+    const size_t n = row.num_slots();
+    size_t j = 0;
+    bool equal = true;
+    for_each_mode_slot(pos, [&equal, &j, &n, &row](size_t mode, unsigned int code) {
+        if (!equal) {
+            return;
+        }
+        if (j >= n || row.mode(j) != mode || row.code(j) != code) {
+            equal = false;
+            return;
+        }
+        ++j;
+    });
+    return equal && j == n;
+}
+
+// The same against a spilled row, which has no codes word to compare. The positions are distinct, so an
+// equal popcount plus every position set is equality.
+template <size_t NumBits, typename PosT>
+[[nodiscard]] inline auto positions_equal_dense(std::span<const PosT> pos, const Bitset<NumBits> &mono) -> bool {
+    if (mono.count() != pos.size()) {
+        return false;
+    }
+    for (const PosT p : pos) {
+        if (!mono.test(static_cast<size_t>(p))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Writes a sparse row's occupied slots into `mono`, which must already be cleared -- a fresh
@@ -334,8 +400,7 @@ private:
     // is not part of the seam the scan is templated on (see with_store in MPOperator), and making it so
     // would triple every downstream instantiation to save a predicted branch.
     template <typename Self, typename F>
-    [[gnu::always_inline]] auto with_codes(this Self&& self, F&& f)
-        -> decltype(auto) {
+    [[gnu::always_inline]] auto with_codes(this Self &&self, F &&f) -> decltype(auto) {
         switch (self.codes_width_) {
             case CodesWidth::Narrow:
                 return f(self.codes16_);
@@ -535,6 +600,52 @@ public:
         set(i, key.row);
     }
 
+    // set() from the row's position form: ascending physical positions, which is what the staged self leg
+    // and the incoming cross-rank records carry. Same postcondition as the other overloads, spill included.
+    //
+    // Precondition: `pos` strictly ascending, every entry < 2*NumModes. A violation is silent in release
+    // -- an unsorted row never matches, and an out-of-range one decodes to a different term.
+    template <typename PosT>
+    auto set_positions(size_t i, std::span<const PosT> pos) -> void {
+        assert((pos.empty() || static_cast<size_t>(pos.back()) < 2 * NumModes) && "row position out of range");
+        ModeT *lanes = &modes_[i * slots_per_row_];
+        CodesT codes = 0;
+        size_t used = 0;
+        bool overflows = false;
+        // The slot walk is the one the hash uses, so a row written from positions cannot disagree with
+        // the hash that was folded from those same positions.
+        for_each_mode_slot(pos, [&overflows, &used, &lanes, &codes, this](size_t mode, unsigned int code) {
+            if (overflows) {
+                return;
+            }
+            if (used == slots_per_row_) {
+                overflows = true;
+                return;
+            }
+            lanes[used] = static_cast<ModeT>(mode);
+            codes |= static_cast<CodesT>(code) << (2 * used);
+            ++used;
+        });
+        if (overflows) {
+            // The only place the position form needs a dense row: the side map holds monomials.
+            lanes[0] = kOverflowLane;
+            store_codes(i, 0);
+            value_type mono;
+            for (const PosT q : pos) {
+                mono.set(static_cast<size_t>(q));
+            }
+            overflow_[i] = mono;
+            return;
+        }
+        if (!overflow_.empty()) {
+            overflow_.erase(i);
+        }
+        for (size_t j = used; j < slots_per_row_; ++j) {
+            lanes[j] = kPadLane;
+        }
+        store_codes(i, codes);
+    }
+
     [[nodiscard]] auto row(size_t i) const -> value_type {
         if (spilled(i)) {
             return overflow_.at(i);
@@ -646,6 +757,36 @@ public:
             [this](size_t i, const Key &key) { return row_eq_key(i, key); });
     }
 
+    // find_batch over ascending position lists: query q is pos_flat[pos_off[q] .. pos_off[q] + k_of[q]).
+    // Identical results to find_batch on the rows those positions describe -- the position walk feeds the
+    // same slot sequence to the same hash. `hash_out`, when non-empty, receives every query's folded
+    // hash, which is what bulk_insert_hashed takes back for the misses.
+    template <typename PosT>
+    auto find_batch_positions(std::span<const PosT> pos_flat,
+                              std::span<const size_t> pos_off,
+                              std::span<const uint32_t> k_of,
+                              std::span<size_t> out,
+                              std::span<uint32_t> hash_out = {}) const -> void {
+        table_.find_batch_at(
+            pos_off.size(),
+            out.data(),
+            [pos_flat, pos_off, k_of](size_t q) { return pos_flat.subspan(pos_off[q], k_of[q]); },
+            [](std::span<const PosT> q) { return RowHashTable::fold(sparse_row_hash(q)); },
+            [this](size_t i) {
+                with_codes([i](const auto &codes) { __builtin_prefetch(&codes[i], 0, 0); });
+                __builtin_prefetch(&modes_[i * slots_per_row_], 0, 0);
+            },
+            [this](size_t i, std::span<const PosT> q) { return row_eq_positions_(i, q); },
+            hash_out);
+    }
+
+    // bulk_insert with the hashes already in hand, as find_batch_positions hands them back: same
+    // precondition -- n distinct rows, already written, at consecutive indices -- and the same slots.
+    template <typename HashFn>
+    auto bulk_insert_hashed(size_t n, mapped_type base, HashFn &&hash_at) -> void {
+        table_.insert_distinct_range(base, n, std::forward<HashFn>(hash_at));
+    }
+
     // Rows in table order (for_each_slot walks the slot array, i.e. hash/probe order, not ascending row
     // index -- see the class comment above), as fn(row_index). Not the row itself: a spilled row has no
     // view, so what a caller wants off the index is the index.
@@ -734,6 +875,16 @@ private:
 
     [[nodiscard]] auto row_eq_key(size_t i, const SparseRowKey<2 * NumModes> &key) const -> bool {
         return key.is_spilled() ? row_eq_key(i, *key.spilled) : row_eq_key(i, key.row);
+    }
+
+    // The find confirm against a position-list query. A spilled row has no codes word to compare, so it
+    // compares densely; every other row compares slot-wise through the shared walk.
+    template <typename PosT>
+    [[nodiscard]] auto row_eq_positions_(size_t i, std::span<const PosT> q) const -> bool {
+        if (spilled(i)) {
+            return positions_equal_dense(q, overflow_.at(i));
+        }
+        return positions_equal_row(q, view(i));
     }
 
     // A row at this store's width. Only the spill arms need it: everything else reads slots in place.

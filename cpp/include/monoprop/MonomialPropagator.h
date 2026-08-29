@@ -156,14 +156,30 @@ public:
     /// graph_layers(), optimizer order) or a per-gate one (length n_gates()); on a tie, per-layer wins.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
-    /// This rank's monomial → coefficient index. Single-partition only — see require_single_partition_.
-    auto indexing() -> detail::OperatorIndex<NumModes> & {
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
+    /// This rank's terms as fn(monomial, coefficient index), in the index's own slot order.
+    /// Single-partition only — see require_single_partition_. No accessor for the store itself: which
+    /// backend holds the rows is a runtime choice (see MPOperator::with_store), so there is no one type
+    /// to hand out.
+    template <typename Fn>
+    auto for_each_term(Fn &&fn) const -> void {
+        require_single_partition_("for_each_term()");
+        mp_op_.for_each_term(std::forward<Fn>(fn));
     }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
+    /// This rank's term count. Single-partition only.
+    auto num_local_terms() const -> size_t {
+        require_single_partition_("num_local_terms()");
+        return mp_op_.size();
+    }
+
+    /// Whether this propagator's rows live in the support-form backend. Which one it is is decided once
+    /// at construction (see use_sparse_rows_); this reports the answer rather than re-deriving it.
+    /// Partition-transparent: every partition of a facade makes the same choice from the same width and
+    /// the same environment, so partition 0 speaks for all of them.
+    auto rows_are_sparse() const -> bool {
+        if (is_partition_facade()) {
+            return first_partition_().rows_are_sparse();
+        }
+        return mp_op_.rows_are_sparse();
     }
 
     /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
@@ -272,7 +288,7 @@ public:
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
-    /// Coefficients are positioned by the owning partition's indexing(), so on a facade the result is
+    /// Coefficients are positioned by the owning partition's row index, so on a facade the result is
     /// the per-partition blocks concatenated in partition order: the same multiset as an unpartitioned
     /// run, but not positionally stable across partition counts — and the count is auto-picked from the
     /// host's core count unless pinned. Use evolved_operator_terms() when positions must mean something.
@@ -312,8 +328,13 @@ protected:
     detail::MatchedEpochSet matched_scratch_;
 
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
-    // structural position bound when it has one.
-    auto packed_inline_width_() const -> size_t;
+    // structural position bound when it has one. Shared by both backends -- the bound is in physical
+    // slots, which is what an OperatorIndex inline width and a SparseRowStore slot count both count.
+    auto row_width_bound_() const -> size_t;
+
+    // Which row backend to build on, decided once per propagator. See config::Settings::row_store for
+    // why an unrecognized monoprop_ROW_STORE is a throw rather than a silent fall back to auto.
+    auto use_sparse_rows_() const -> bool;
 
     // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
     static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;

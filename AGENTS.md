@@ -53,6 +53,23 @@ just build-docs
 
 ## Notes
 
+- Reach a stored row only through `RowAccess.h`'s four accessors (`materialize_row`, `assign_row`,
+  `row_popcount`, `for_each_row_position`), never a backend's own API; three backends answer them
+  (`MonomialList<N>`, `detail::OperatorIndex<N>`, `detail::SparseRowStore<N>`) and
+  `cpp/tests/row_accessor_tests.cpp` asserts they agree. A store-generic template must include that
+  header -- the overloads live in `monoprop::`, so ADL cannot find them from a `monoprop::detail`
+  argument.
+- `algebra/CodesAlgebra.h` is the sparse-row twin of the dense structural algebra, one function per
+  counterpart: change one side and you change the other. Past its scratch capacity `sparse_toggle`
+  reports `overflowed` and the caller must fall back to the dense product -- a truncated mode list
+  still carries a plausible `codes` word.
+- A propagator picks its row backend once from its mode count against the build-time
+  `monoprop_SPARSE_ROW_MIN_MODES` (the crossover moves with the target ISA), binds it per layer via
+  `MPOperator::with_store`, and `monoprop_ROW_STORE=dense|sparse` forces it process-wide -- an
+  unrecognized value throws, because the point of setting it is to know which backend ran. The
+  `sparse-rows` ctest label reruns every case under `sparse`, since every fixture is below the
+  crossover. The backends agree on term sets and values but not term order, so compare them with
+  `just diff-baseline-sparse` (tolerance), never `just diff-baseline` (byte-wise).
 - Python cases live in `tests/cases.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
   `test_utils::load_case()` from `cpp/tests/TestData.h`.
 - Pytest's fd capture hides C++ stderr such as `COMMPROF`; rerun with `-s`.

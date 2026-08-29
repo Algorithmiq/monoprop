@@ -48,7 +48,7 @@ namespace monoprop::detail {
 template <size_t NumModes>
 inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, const MPOperator<NumModes> &op) -> void {
     const size_t cos_lo = combined_size;
-    const size_t cos_hi = op.store->size();
+    const size_t cos_hi = op.size();
     CosineWordBuilder end_b;
     for (size_t idx = cos_lo; idx < cos_hi; ++idx) {
         end_b.push_index(idx);
@@ -306,7 +306,7 @@ struct ContractSink {
 };
 
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
-template <size_t NumModes, typename Sink>
+template <size_t NumModes, typename Sink, typename Store>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
@@ -320,6 +320,9 @@ struct LayerBuildEngine {
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
     };
     MPOperator<NumModes> &local_op; // scanned, looked up, and grown by the inserts
+    // The row backend, bound once per layer by build_layer (MPOperator::with_store) and held by
+    // reference here so nothing on the per-term path re-derives it.
+    Store &store;
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
@@ -342,6 +345,7 @@ struct LayerBuildEngine {
     Sink sink;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
+                     Store &store_,
                      mpi::Comm comm_,
                      size_t R_,
                      size_t my_rank_,
@@ -349,6 +353,7 @@ struct LayerBuildEngine {
                      size_t combined_size_,
                      Sink &&sink_)
         : local_op(local_op_),
+          store(store_),
           comm(comm_),
           R(R_),
           my_rank(my_rank_),
@@ -402,7 +407,8 @@ struct LayerBuildEngine {
         std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         std::vector<std::vector<size_t>> inc_q;
         mpi::begin_alltoallv(send, comm).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
+        auto resp =
+            resolve_incoming<NumModes, Sink>(inc_q, local_op, store, R, is_leader_pass, matched, combined_size, sink);
         std::vector<int> resp_recv = response_recv_counts();
         std::vector<std::vector<typename Sink::Response>> inc_r;
         mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv).wait_into(inc_r);
@@ -460,14 +466,13 @@ struct LayerBuildEngine {
         sink.prepare_deferred(n_miss);
         // Grow the rows, write each miss's positions, insert; same base+k ordering as insert_absent_terms.
         // Kept as the dense reference sparse_resolve_tests.cpp differentially tests this path against.
-        const size_t base = local_op.store->grow_rows_geometric(n_miss);
+        const size_t base = store.grow_rows_geometric(n_miss);
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
-            local_op.store->set_positions(base + k,
-                                          std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
+            store.set_positions(base + k, std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         }
-        local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
+        store.bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
         local_op.reindex_after_growth(base, n_miss);
     }
 
@@ -493,7 +498,7 @@ private:
     static constexpr size_t kResolveBatch = 64;
     auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
         -> void {
-        const size_t op_size = local_op.store->size();
+        const size_t op_size = store.size();
         // Gathered per batch because a matched follower is skipped; offsets stay absolute into pos_flat.
         std::array<size_t, kResolveBatch> pos_off;
         std::array<uint32_t, kResolveBatch> k_of;
@@ -524,11 +529,11 @@ private:
                 break;
             }
             // The hashes come back because a miss needs one at insert, folded from these same positions.
-            local_op.store->find_batch_positions(std::span<const RowPosT>(self_stage_.pos_flat),
-                                                 std::span<const size_t>(pos_off).first(m),
-                                                 std::span<const uint32_t>(k_of).first(m),
-                                                 std::span<size_t>(found).first(m),
-                                                 std::span<uint32_t>(hashes).first(m));
+            store.find_batch_positions(std::span<const RowPosT>(self_stage_.pos_flat),
+                                       std::span<const size_t>(pos_off).first(m),
+                                       std::span<const uint32_t>(k_of).first(m),
+                                       std::span<size_t>(found).first(m),
+                                       std::span<uint32_t>(hashes).first(m));
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {
@@ -599,81 +604,90 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
-    FusedScanResult<NumModes> fused = [&] {
-        double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        return with_algebra<NumModes>(basis, [&]<typename A>() {
-            return fused_find_and_collect<NumModes, A>(local_op,
-                                                       gen,
-                                                       cut_eval,
-                                                       cut_st,
-                                                       coeffs,
-                                                       only_rotate_len_k,
-                                                       R,
-                                                       my_rank,
-                                                       /*capture_values=*/use_fused,
-                                                       sweep_ptr,
-                                                       cos_build);
-        });
-    }();
+    // The single place the row backend is bound: everything from the scan to the inserts is templated on
+    // it (the position batch, the row writes, the resolve), and binding it here means the choice costs one
+    // branch per layer instead of one per term. Both arms are instantiated, so this doubles the
+    // scan/engine template instantiations -- the same trade with_algebra already makes for Basis.
+    std::shared_ptr<LayerCore> storage = local_op.with_store([&]<typename S>(S &store) -> std::shared_ptr<LayerCore> {
+        FusedScanResult<NumModes> fused = [&] {
+            double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
+            return with_algebra<NumModes>(basis, [&]<typename A>() {
+                return fused_find_and_collect<NumModes, A>(local_op,
+                                                           store,
+                                                           gen,
+                                                           cut_eval,
+                                                           cut_st,
+                                                           coeffs,
+                                                           only_rotate_len_k,
+                                                           R,
+                                                           my_rank,
+                                                           /*capture_values=*/use_fused,
+                                                           sweep_ptr,
+                                                           cos_build);
+            });
+        }();
 
-    CosMask cos_all;
-    if (fused.cos_blocks.size() == 1) {
-        // The serial scan produces a single cosine block set — take it wholesale.
-        cos_all = std::move(fused.cos_blocks[0]);
-    }
-    else {
-        // Cosine block sets are disjoint and ascending; concatenate in order.
-        for (const auto &block : fused.cos_blocks) {
-            cos_all.total_count += block.total_count;
-            cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+        CosMask cos_all;
+        if (fused.cos_blocks.size() == 1) {
+            // The serial scan produces a single cosine block set — take it wholesale.
+            cos_all = std::move(fused.cos_blocks[0]);
         }
-    }
-    fused.cos_blocks = std::vector<CosMask>{};
+        else {
+            // Cosine block sets are disjoint and ascending; concatenate in order.
+            for (const auto &block : fused.cos_blocks) {
+                cos_all.total_count += block.total_count;
+                cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+            }
+        }
+        fused.cos_blocks = std::vector<CosMask>{};
 
-    auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
-        LayerBuildEngine<NumModes, Sink> eng(local_op,
-                                             comm,
-                                             R,
-                                             my_rank,
-                                             matched_scratch,
-                                             /*combined_size=*/local_op.store->size(),
-                                             std::move(sink));
-        eng.run_exchange(/*is_leader_pass=*/true,
-                         std::move(fused.leader_queries),
-                         std::move(fused.leader_src),
-                         std::move(fused.leader_val),
-                         std::move(fused.leader_self));
-        eng.run_exchange(/*is_leader_pass=*/false,
-                         std::move(fused.follower_queries),
-                         std::move(fused.follower_src),
-                         std::move(fused.follower_val),
-                         std::move(fused.follower_self));
+        auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
+            LayerBuildEngine<NumModes, Sink, S> eng(local_op,
+                                                    store,
+                                                    comm,
+                                                    R,
+                                                    my_rank,
+                                                    matched_scratch,
+                                                    /*combined_size=*/store.size(),
+                                                    std::move(sink));
+            eng.run_exchange(/*is_leader_pass=*/true,
+                             std::move(fused.leader_queries),
+                             std::move(fused.leader_src),
+                             std::move(fused.leader_val),
+                             std::move(fused.leader_self));
+            eng.run_exchange(/*is_leader_pass=*/false,
+                             std::move(fused.follower_queries),
+                             std::move(fused.follower_src),
+                             std::move(fused.follower_val),
+                             std::move(fused.follower_self));
 
-        return eng.finish(std::move(cos_all), out_cos);
-    };
+            return eng.finish(std::move(cos_all), out_cos);
+        };
 
-    std::shared_ptr<LayerCore> storage;
-    if (use_fused) {
-        const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink<NumModes>{.R = R,
-                                             .my_rank = my_rank,
-                                             .fc = *fused_contract,
-                                             .op_coeffs = coeffs,
-                                             .fused_scale = fused_scale,
-                                             .inv_cos = inv_cos,
-                                             .schrodinger = schrodinger,
-                                             .basis = basis});
-    }
-    else {
-        storage = run(GraphSink<NumModes>{R, my_rank});
-    }
+        std::shared_ptr<LayerCore> layer;
+        if (use_fused) {
+            const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
+            layer = run(ContractSink<NumModes>{.R = R,
+                                               .my_rank = my_rank,
+                                               .fc = *fused_contract,
+                                               .op_coeffs = coeffs,
+                                               .fused_scale = fused_scale,
+                                               .inv_cos = inv_cos,
+                                               .schrodinger = schrodinger,
+                                               .basis = basis});
+        }
+        else {
+            layer = run(GraphSink<NumModes>{R, my_rank});
+        }
+        return layer;
+    });
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
     // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
     // bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.
     if (storage != nullptr) {
         storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
-        storage->scaled_count = static_cast<uint64_t>(local_op.store->size());
+        storage->scaled_count = static_cast<uint64_t>(local_op.size());
     }
 
     return storage;

@@ -31,6 +31,8 @@
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
+#include "TestOperator.h"
+
 using namespace monoprop;
 
 // find_rank is splitmix over the dense words modulo the rank count, and nothing else, so the oracle
@@ -101,14 +103,7 @@ auto draw_well_formed(std::mt19937_64 &rng, size_t logical, size_t weight) -> Mo
 }
 
 auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> {
-    detail::MPOperator<32> op;
-    op.basis = Basis::Majorana;
-    detail::insert_absent_terms<32>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<32> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<32>(*op.store, base + k, terms[k]); });
-    return op;
+    return test_utils::indexed_operator<32>(terms);
 }
 
 auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size_t &checked) -> void {
@@ -163,7 +158,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     }
     auto op = build_op(terms);
     const Monomial<kN> gen = draw_well_formed<kN>(rng, kLogical, 4);
-    VecD coeffs(op.store->size(), 1.0);
+    VecD coeffs(op.size(), 1.0);
 
     const CutoffFn<kN> fn = detail::LengthCutoff<kN>{10, kLogical};
     const detail::CutoffEvaluator<kN> eval(fn);
@@ -176,6 +171,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     size_t self_checked = 0;
     for (const size_t ranks : {2U, 4U, 8U}) {
         const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
+                                                                                 *op.dense_rows,
                                                                                  gen,
                                                                                  eval,
                                                                                  cut,

@@ -101,7 +101,10 @@ message(
   "   Build-type-specific    : ${_cmake_build_type_specific_flags}"
 )
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
-message(STATUS "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes")
+message(
+  STATUS
+  "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes"
+)
 message(
   STATUS
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
