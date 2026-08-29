@@ -1,11 +1,11 @@
 ---
 title: The Fat Binary
-description: Why the published x86-64 wheels carry the engine four times over, how the right copy gets loaded, and how to pin one.
+description: Why the published x86-64 wheels carry the engine five times over, how the right copy gets loaded, and how to pin one.
 ---
 
-Every published `x86-64` wheel contains the propagation engine **four times**, compiled for four
-different instruction-set levels. Importing `monoprop` picks the best one the CPU can execute. This
-page covers why, how, and what it costs.
+Every published `x86-64` wheel contains the propagation engine **five times**: once for each of four
+instruction-set levels, and the top level twice at two vector widths. Importing `monoprop` picks the
+one the CPU should be given. This page covers why, how, and what it costs.
 
 If you are on `aarch64` — Apple silicon, or an Arm server — none of this applies: those wheels carry
 one copy, because there is one relevant ISA and nothing to choose between.
@@ -25,7 +25,7 @@ function call, in a library whose inner loops are made of population counts.
 A fat binary is the way out: ship several ISA levels and choose at run time. The alternative — one
 wheel per microarchitecture, and users picking — moves the problem onto the user.
 
-## Why four tiers, and which four
+## Why five tiers, and which five
 
 The tiers come from a compile-time study of what each ISA level actually buys this codebase, using
 GCC's own `-fopt-info-vec-loop-all` reports across the psABI levels. Counting only project code, and
@@ -55,6 +55,12 @@ top to bottom, and no intrinsics anywhere. So the top tier is `-march=x86-64-v4 
 plain `v4` is not shipped — it would be three quarters of a megabyte for nothing.
 
 **That top tier cannot be a psABI level, which rules out one implementation.** More on that below.
+
+**And the top tier ships twice.** Nothing about `-march` says how wide the vectors behind the AVX-512
+registers should be; `-mprefer-vector-width` does, and left unset GCC takes it from the `-mtune`
+tables — so the width was being decided by a core chosen for its *schedule*. The two tiers pin it
+instead, at 256 and 512, and the run time chooses. See
+[Why the top tier ships at two vector widths](#why-the-top-tier-ships-at-two-vector-widths).
 
 The `v1` tier is shipped despite being the slowest, because it is the floor: it is what runs on a CPU
 that predates SSE4.2, and without it such a machine has nothing to load.
@@ -88,6 +94,58 @@ badly on anything from 2015 onwards. The AMD penalty is negligible (`znver3` sco
 `skylake`'s 126). Notably, tuning for the newest AMD core is a small *regression* here.
 
 Set `monoprop_FAT_MTUNE` at configure time to try another.
+
+## Why the top tier ships at two vector widths
+
+`x86-64-v4-vpopcntdq-vw256` and `x86-64-v4-vpopcntdq-vw512` are the same instruction set. Identical
+`-march`, identical `__builtin_cpu_supports` requirements, identical everything a feature bit can
+express. They differ in one flag: `-mprefer-vector-width`.
+
+The pair exists because that flag has a default and the default is wrong somewhere. Left unset, GCC
+takes the AVX-512 vector width from the `-mtune` tables — so it was being decided by
+`monoprop_FAT_MTUNE`, a core picked for its *schedule* on the reasoning that `-mtune` never changes
+which instructions come out. For AVX-512 widths it does, and differently per core: `-mtune=skylake`
+and `-mtune=znver4` resolve to 512, `-mtune=icelake-server` and `-mtune=sapphirerapids` to 256. A
+build that fixes the width has guessed on the user's behalf. Carrying both and choosing at run time is
+the only way the answer is right on more than one machine.
+
+**No feature bit answers this**, which is why the discriminator is a table of core names read through
+`__builtin_cpu_is` rather than a `__builtin_cpu_supports` query. The question is not what the CPU can
+execute — both tiers need exactly the same instructions — but how wide the datapath behind the
+registers really is and what the core charges in clock frequency for lighting all of it up. CPUID
+reports neither.
+
+A core is on the narrow list when it has either of the two reasons to keep 512-bit code out:
+
+- **a split datapath** — 512-bit operations run on 256-bit hardware, so the width halves the
+  instruction count and buys no throughput. AMD Zen 4 is the case, and the one entry that is measured
+  rather than reasoned: pinning the two tiers on an EPYC 9R14, the 256-bit tier wins the 127-qubit
+  kicked-Ising model by **1.1%** with the two three-sample ranges disjoint (358.9–361.3 ms against
+  363.5–365.7) and ties on the 120-mode Hubbard one (2058.7 against 2063.2, spreads overlapping). GCC
+  tunes `znver4` the other way, so this is a correction to it, not an application of it.
+- **a frequency penalty** — the core drops its clock while 512-bit code is in flight. Ice Lake
+  through Rocket Lake pay a measured ~175 MHz of peak, which is what put `-mprefer-vector-width=256`
+  in both compilers' Intel tuning to begin with.
+
+Not on the list: Zen 5, which has the full-width datapath Zen 4 lacks, and Sapphire Rapids onwards,
+where the frequency penalty went away. Both are decisions against GCC's own `-mtune` tables, which
+still say 256 for every Intel AVX-512 core; neither could be measured here, so both are the mechanism
+argument rather than a number — and both are falsifiable with `monoprop_VARIANT`.
+
+Also not on the list, and not by choice: Skylake-SP, Cascade Lake and Cooper Lake, the parts the
+256-bit default was introduced for. They are `x86-64-v4` with no vector popcount, so they never reach
+this tier at all and their names would be dead entries.
+
+A core name GCC does not recognise is dropped with a warning rather than failing the build. That core
+then gets the 512-bit tier, which costs a percent or so; the alternative is a build that fails on an
+older toolchain over a tuning hint.
+
+Two consequences worth keeping in mind. Each tier now carries **two** predicates — `runnable` and
+`preferred` — and conflating them makes the wide tier unpinnable on exactly the machines worth
+comparing it on. And nothing but a disassembly tells the pair apart: every test, every number and
+every symbol table agrees even if the flag stops arriving, which is why
+`test_reported_machine_flags_widen_with_the_tier` asserts that the width *setting* differs while the
+feature set does not.
 
 ## Why whole libraries, not individual functions
 
@@ -164,13 +222,14 @@ monoprop/
     ├── x86-64-v1/_core.abi3.so
     ├── x86-64-v2/_core.abi3.so
     ├── x86-64-v3/_core.abi3.so
-    └── x86-64-v4-vpopcntdq/_core.abi3.so
+    ├── x86-64-v4-vpopcntdq-vw256/_core.abi3.so
+    └── x86-64-v4-vpopcntdq-vw512/_core.abi3.so
 ```
 
 There is no `monoprop/_core` of its own. `monoprop/_bootstrap.py` is imported first — its name sorts
 ahead of `_core` so that alphabetical import ordering keeps it there — and it:
 
-1. asks `monoprop._isa` which variants this CPU can run, best first;
+1. asks `monoprop._isa` which variants this CPU should be *given*, best first;
 2. takes the best one that is also installed;
 3. loads it under the name `monoprop._core`.
 
@@ -184,6 +243,13 @@ engine code, so it is the one module guaranteed to load everywhere. It answers w
 `__builtin_cpu_supports`, which consults `CPUID` **and** `XGETBV` — so an AVX-512-capable CPU under a
 kernel or hypervisor that has not enabled the ZMM register state correctly reports the feature as
 absent, which is what keeps the dispatch off machines that would fault.
+
+The probe answers two questions, not one, and the difference matters. `runnable_variants()` is the
+capability answer — the CPU has the instructions — and is what a `monoprop_VARIANT` pin is checked
+against. `supported_variants()` is what the CPU should be handed unasked, and is what the automatic
+selection reads. They differ for exactly one variant, the 512-bit one: every AVX-512 CPU can run it
+and only some should have it. Conflating the two would make it unpinnable on precisely the machines
+worth comparing it on.
 
 One subtlety worth knowing if you work on the build: the baseline ISA is also applied globally, not
 just to the baseline tier's objects. A wheel contains code from targets nobody tiered — nanobind's
@@ -227,7 +293,8 @@ monoprop_VARIANT=x86-64-v2 python your_script.py
 ```
 
 Naming a variant that is not installed, or one this CPU cannot execute, is an error rather than a
-silent fallback: the point of pinning one is to know which one ran.
+silent fallback: the point of pinning one is to know which one ran. A variant this CPU merely would
+not have *chosen* is honoured, though — that is how the 512-bit tier gets measured on a Zen 4.
 
 ## Building one
 

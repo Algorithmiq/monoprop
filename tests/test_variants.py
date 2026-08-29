@@ -40,6 +40,9 @@ pytestmark = pytest.mark.skipif(
     not INSTALLED, reason="not a fat binary: only one ISA variant is installed"
 )
 
+# The variants that are one instruction set at two vector widths, told apart by this suffix on the id.
+_WIDTH_SUFFIX = "-vw"
+
 # One rotation on a weight-2 observable inside a wider register, evaluated as bits rather than as a
 # float, so "the tiers agree" means bit-for-bit and not "to some tolerance". The point is not the
 # value: it is that -ffp-contract=off holds the value fixed across ISA levels that would otherwise
@@ -88,8 +91,18 @@ def per_variant() -> dict[str, dict]:
     return {variant: _run_variant(variant) for variant in INSTALLED}
 
 
-def test_the_loaded_variant_is_installed_and_runnable_here():
+def test_the_loaded_variant_is_one_this_build_ships():
     assert monoprop.__variant__ in INSTALLED
+
+
+@pytest.mark.skipif(
+    os.environ.get(VARIANT_ENV_VAR) is not None,
+    reason=f"{VARIANT_ENV_VAR} pins the variant, so there is no automatic choice to check",
+)
+def test_an_unpinned_run_loads_a_variant_this_cpu_is_offered():
+    # supported_variants() is what the selection chooses from, which is *not* the same as what this CPU
+    # can execute: a pinned run can legitimately be on a variant absent from it, which is what makes the
+    # 512-bit tier measurable on a machine that would not have picked it.
     assert monoprop.__variant__ in monoprop.supported_variants()
 
 
@@ -131,20 +144,47 @@ def test_every_variant_returns_bit_identical_numbers(per_variant):
         )
 
 
+def test_the_narrow_vector_variant_is_offered_wherever_the_wide_one_is():
+    # The 256-bit variant asks for strictly less than the 512-bit one -- the same instructions, minus
+    # the claim that this core is worth handing zmm to -- so it is the fallback, and a CPU offered the
+    # wide variant and not the narrow one would mean the pair had been ordered wrong in
+    # monoprop_FAT_TIERS.
+    supported = monoprop.supported_variants()
+    for variant in [v for v in supported if v.endswith(f"{_WIDTH_SUFFIX}512")]:
+        narrow = variant.removesuffix("512") + "256"
+        assert narrow in supported, f"{variant} is supported here but {narrow} is not"
+
+
+def test_a_variant_this_cpu_would_not_choose_is_still_pinnable():
+    # The runnable/supported split exists for exactly this: the two vector-width variants require
+    # identical instructions, so both are always runnable, and refusing to pin the one the tuning table
+    # steers away from would make it unmeasurable on the machines worth measuring it on.
+    runnable = set(monoprop.runnable_variants())
+    for variant in INSTALLED:
+        if variant.endswith((f"{_WIDTH_SUFFIX}512", f"{_WIDTH_SUFFIX}256")):
+            assert variant in runnable
+
+
 def test_reported_machine_flags_widen_with_the_tier(per_variant):
-    def features(variant: str) -> set[str]:
+    def tokens(variant: str, *, settings: bool) -> set[str]:
         return {
             token
             for token in per_variant[variant]["machine_flags"].split()
-            # bare booleans only: "-mfoo=value" is a setting, "-mno-foo" is its own negation
-            if "=" not in token and not token.startswith("-mno-")
+            # "-mfoo=value" is a setting; a bare "-mfoo" is a feature and "-mno-foo" its negation
+            if ("=" in token) == settings and not token.startswith("-mno-")
         }
 
     # INSTALLED is best first, so walking it backwards walks the tiers upwards.
     for lower, higher in itertools.pairwise(reversed(INSTALLED)):
-        assert features(lower) < features(higher), (
-            f"{higher} does not strictly widen {lower}"
-        )
+        if lower.split(_WIDTH_SUFFIX)[0] == higher.split(_WIDTH_SUFFIX)[0]:
+            # The width pair, which is the one step up the ladder that adds no instruction: it must
+            # widen nothing and change the width setting, or the two tiers are the same build twice.
+            assert tokens(lower, settings=False) == tokens(higher, settings=False)
+            assert tokens(lower, settings=True) != tokens(higher, settings=True)
+        else:
+            assert tokens(lower, settings=False) < tokens(higher, settings=False), (
+                f"{higher} does not strictly widen {lower}"
+            )
 
 
 def test_pinning_an_uninstalled_variant_is_refused():

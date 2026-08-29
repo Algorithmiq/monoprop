@@ -109,9 +109,25 @@ def available_variants() -> tuple[str, ...]:
 
 
 def supported_variants() -> tuple[str, ...]:
-    """ISA variants the running CPU can execute, best first, whether installed or not."""
+    """ISA variants this CPU should be given, best first, whether installed or not.
+
+    Not the same as the ones it *can* execute -- see :func:`runnable_variants`. Two variants differ
+    only in vector width, which is a tuning question and not a capability one, so a CPU that can run
+    512-bit code but is measurably better off without it does not offer that variant here.
+    """
     probe = _probe()
     return tuple(probe.supported_variants()) if probe is not None else ()
+
+
+def runnable_variants() -> tuple[str, ...]:
+    """ISA variants the running CPU has the instructions for, best first.
+
+    A superset of :func:`supported_variants`, and the one a ``monoprop_VARIANT`` pin is checked
+    against: pinning a variant this CPU merely would not have chosen is the whole point of pinning,
+    while pinning one it cannot execute is a SIGILL somewhere inside the scan.
+    """
+    probe = _probe()
+    return tuple(probe.runnable_variants()) if probe is not None else ()
 
 
 def _select(available: tuple[str, ...]) -> str:
@@ -124,10 +140,13 @@ def _select(available: tuple[str, ...]) -> str:
                 f"{VARIANT_ENV_VAR}={requested!r} is not installed; "
                 f"available variants: {', '.join(available)}"
             )
-        if supported and requested not in supported:
+        # Runnable, not supported: a pin this CPU merely would not have chosen is honoured, since
+        # comparing it against the one that would have been is the reason for pinning.
+        runnable = runnable_variants()
+        if runnable and requested not in runnable:
             raise RuntimeError(
                 f"{VARIANT_ENV_VAR}={requested!r} needs instructions this CPU does not have; "
-                f"supported variants: {', '.join(supported)}"
+                f"runnable variants: {', '.join(runnable)}"
             )
         return requested
 

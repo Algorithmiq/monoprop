@@ -186,7 +186,13 @@ endfunction()
 # Usage:
 #   _monoprop_generate_variant_header(VARIANT_ID <id> OUTPUT_DIR <dir> [ARCH_FLAGS <flags...>])
 function(_monoprop_generate_variant_header)
-  cmake_parse_arguments(PARSE_ARGV 0 _arg "" "VARIANT_ID;OUTPUT_DIR" "ARCH_FLAGS")
+  cmake_parse_arguments(
+    PARSE_ARGV 0
+    _arg
+    ""
+    "VARIANT_ID;OUTPUT_DIR"
+    "ARCH_FLAGS"
+  )
 
   if(NOT _arg_VARIANT_ID OR NOT _arg_OUTPUT_DIR)
     message(
