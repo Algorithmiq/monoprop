@@ -78,7 +78,7 @@ up here and is nearly invisible on `pauli`.
 
 | `--hubbard-…` | default | what it does |
 | --- | --- | --- |
-| `num-sites` | 60 | lattice sites; 2 spin orbitals each, so 120 modes |
+| `num-sites` | 60 | lattice sites; 2 spin orbitals each, so 120 modes. At most 125 |
 | `hopping` | 1.0 | nearest-neighbour hopping amplitude `t` |
 | `interaction` | -2.0 | on-site interaction `U` |
 | `chemical-potential` | 0.0 | `mu` |
@@ -96,7 +96,7 @@ Heisenberg picture only. One circuit layer per `num-layers`, so all four operati
 
 | `--pauli-…` | default | what it does |
 | --- | --- | --- |
-| `num-qubits` | 127 | heavy-hex lattice size |
+| `num-qubits` | 127 | heavy-hex lattice size — **effectively fixed**, see below |
 | `num-layers` | 20 | kicked-Ising layers |
 | `observable-qubit` | 62 | qubit the measured `Z` sits on |
 | `theta` | π/4 | single-qubit X-rotation angle |
@@ -111,7 +111,7 @@ The only model with both pictures. Its options carry no model prefix.
 | option | default | what it does |
 | --- | --- | --- |
 | `--num-generators` | 100 | random generators, i.e. circuit gates |
-| `--num-modes` | 128 | fermionic modes |
+| `--num-modes` | 128 | fermionic modes — **at most 250**, see below |
 | `--gen-length` | 4 | Majorana operators per generator |
 | `--obs-terms` | 10000 | **the size knob** — terms in the observable |
 | `--cutoff` | 6 | truncation cutoff |
@@ -119,6 +119,27 @@ The only model with both pictures. Its options carry no model prefix.
 
 The Schrödinger rungs set `schrodinger_cutoff = cutoff + 2`. Its cap is lower than the
 Heisenberg one at the same knobs, so calibrate the two separately rather than assuming they match.
+
+### How large can the system be
+
+The system-size axes are not all free, and two of them have hard ceilings that are not obvious
+from the option list.
+
+**Modes are capped at 250 by the build.** `monoprop_MAX_NUM_MODES` is a CMake cache variable
+defaulting to `250`, and the extension ships propagator variants in strides of 32 up to 256. So
+`--num-modes` accepts at most 250 and `--hubbard-num-sites` at most 125 (two spin orbitals per
+site) unless you rebuild with a larger `monoprop_MAX_NUM_MODES`. The random rungs sit at 250,
+which is the ceiling.
+
+**`--pauli-num-qubits` is effectively fixed at 127.** The kicked-Ising circuit is built over
+`HEAVY_HEX_TOPOLOGY`, a hard-coded IBM Eagle coupling map: 144 pairs whose highest index is 126.
+Passing anything below 127 fails with `If a term acts on a qubit index >= num_qubits`, and
+anything above 127 just adds qubits no gate touches. Size the Pauli model with `--pauli-cutoff`,
+`--pauli-num-layers` and `--pauli-lower-atol` instead. Benchmarking a different lattice means
+adding a second topology to `models.py`, not changing a flag.
+
+**Hubbard's lattice is free**, up to the 125-site ceiling above, and `--hubbard-trotter-steps`
+scales the `propagate` call count independently of the term count.
 
 ### Why `lower_atol` is the size knob
 

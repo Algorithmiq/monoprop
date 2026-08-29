@@ -343,11 +343,15 @@ Sizes come from the coefficient tolerance, not from the cutoff or the system siz
 `lower_atol = 1e-4` both fixed models are saturated in both, so a sweep over either measures
 nothing.
 
-`propagate` carries the full ladder to a billion terms; `build_graph`, `energy` and `gradient`
-stop at what fits a single node. That is a measurement, not a convention. `build_graph` extends
-the graph rather than replacing it, so it retains one layer-set per gate while `propagate`
-releases each layer as it contracts -- Hubbard reaches 97M terms in well under 2 GiB through
-`propagate`, while four successive `build_graph` calls on the same model exceed a 242 GiB node.
+Every operation runs the same 10M / 100M / 1B / multinode-1B ladder, and some of the graph rungs
+may not fit. `build_graph` extends the graph rather than replacing it, so it retains one
+layer-set per gate while `propagate` releases each layer as it contracts -- Hubbard reaches 97M
+terms in well under 2 GiB through `propagate`, while four successive `build_graph` calls on the
+same model exceed a 242 GiB node, and at 1000 generators the retained layer count is an order of
+magnitude larger again. Which of the graph rungs fit is therefore a question calibration answers,
+not one the table should pre-empt: a row that does not fit records the node count it needed, or
+that it exceeded the machine, and stays uncalibrated. That is itself a measurement of what the
+graph path costs.
 
 Running a rung needs a machine, a scheduler and an allocation, none of which belong in this
 repository. The table, the runner and the gate are here; the launcher that submits them is not.

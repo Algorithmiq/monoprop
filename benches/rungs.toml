@@ -51,13 +51,19 @@
 #   measured at ~4.1 for cutoff 6 with 100 generators; at 1000 generators it is not that,
 #   which is why every random row below starts uncalibrated.
 #
-# WHY THE GRAPH ROWS STOP WHERE THEY DO
+# THE GRAPH ROWS RUN THE SAME LADDER, AND SOME OF THEM MAY NOT FIT
 #   `build_graph` extends the graph rather than replacing it, so it retains one layer-set
 #   per gate while `propagate` releases each layer as it contracts. Measured on Hubbard:
 #   propagate reaches 97M terms in well under 2 GiB, while four successive build_graph
-#   calls exceed a 242 GiB node. So `propagate` carries the full 10M/100M/1B ladder and the
-#   graph-holding operations stop at what fits one node -- and that cap is a measurement to
-#   be taken, not a number to be assumed.
+#   calls exceed a 242 GiB node. At 1000 generators the retained layer count is an order of
+#   magnitude larger again.
+#
+#   So the graph and eval rows are declared at the same 10M / 100M / 1B / multinode-1B
+#   points as propagate, and calibration finds out which of them fit. A row that does not
+#   fit is a RESULT -- record the node count it needed, or that it exceeded the machine, in
+#   its `note` and leave it uncalibrated. That is a measurement of the graph path's cost.
+#   Replacing those rows with one unnamed "largest that fits" rung hid the question instead
+#   of answering it, and hid it behind an extrapolation from 100 generators at that.
 
 
 # WHERE THE DECLARED COSTS COME FROM
@@ -351,7 +357,7 @@ cost_gib_per_node = 0
 walltime = "1:00:00"
 
 [[rung]]
-id = "n1-cap-random-graph-heisenberg"
+id = "n1-100m-random-graph-heisenberg"
 family = "size"
 picture = "heisenberg"
 model = "random"
@@ -364,27 +370,10 @@ expect_terms = 0
 reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
-walltime = "0:40:00"
-note = "cap = the largest obs-terms whose retained graph fits 242 GiB; measure it"
+walltime = "1:00:00"
 
 [[rung]]
-id = "n1-cap-random-eval-heisenberg"
-family = "size"
-picture = "heisenberg"
-model = "random"
-ops = ["energy", "gradient"]
-nodes = 1
-ranks_per_node = 8
-partitions = 16
-args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
-expect_terms = 0
-reps = 10
-cost_seconds = 0
-cost_gib_per_node = 0
-walltime = "0:40:00"
-
-[[rung]]
-id = "n1-cap-random-graph-schrodinger"
+id = "n1-100m-random-graph-schrodinger"
 family = "size"
 picture = "schrodinger"
 model = "random"
@@ -397,10 +386,26 @@ expect_terms = 0
 reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
-walltime = "0:40:00"
+walltime = "1:00:00"
 
 [[rung]]
-id = "n1-cap-random-eval-schrodinger"
+id = "n1-100m-random-eval-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n1-100m-random-eval-schrodinger"
 family = "size"
 picture = "schrodinger"
 model = "random"
@@ -413,7 +418,135 @@ expect_terms = 0
 reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
-walltime = "0:40:00"
+walltime = "1:00:00"
+
+[[rung]]
+id = "n1-1b-random-graph-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["build_graph"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "2:00:00"
+
+[[rung]]
+id = "n1-1b-random-graph-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["build_graph"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "2:00:00"
+
+[[rung]]
+id = "n1-1b-random-eval-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "2:00:00"
+
+[[rung]]
+id = "n1-1b-random-eval-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 1
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "2:00:00"
+
+[[rung]]
+id = "n8-1b-random-graph-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["build_graph"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n8-1b-random-graph-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["build_graph"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n8-1b-random-eval-heisenberg"
+family = "size"
+picture = "heisenberg"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
+
+[[rung]]
+id = "n8-1b-random-eval-schrodinger"
+family = "size"
+picture = "schrodinger"
+model = "random"
+ops = ["energy", "gradient"]
+nodes = 8
+ranks_per_node = 8
+partitions = 16
+args = ["--num-generators=1000", "--num-modes=250", "--cutoff=6", "--obs-terms=TBD"]
+expect_terms = 0
+reps = 10
+cost_seconds = 0
+cost_gib_per_node = 0
+walltime = "1:00:00"
 
 
 # ----------------------------------------------------- strong and weak scaling, Hubbard propagate
