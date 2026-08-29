@@ -25,7 +25,7 @@
 
 namespace monoprop::mpi {
 
-// One tag per (transport, verb), all four here so no two can collide unseen: one thread per rank calls
+// One tag per (transport, verb), all five here so no two can collide unseen: one thread per rank calls
 // MPI, so the tag is all that keeps a count round in flight from being matched by a payload receive.
 //
 // Why Engine.h's run_exchange may post BOTH its begin_alltoallv rounds under kFlatPayloadTag on one
@@ -37,6 +37,9 @@ inline constexpr int kHybridCountTag = 0x6D70; // 'mp'
 inline constexpr int kHybridPayloadTag = 0x6D71;
 inline constexpr int kFlatPayloadTag = 0x6D72;
 inline constexpr int kFlatCountTag = 0x6D73;
+// Graph REPLAY payload (Exchange.h). Its own value, so a replay leg can match neither the build path's
+// counts nor its payload even though both run over the same communicator.
+inline constexpr int kFlatReplayTag = 0x6D74;
 
 // Per-peer element counts and offsets. Null `counts` is the fixed-block case: `block` each, at b*block.
 struct PeerLayout {
