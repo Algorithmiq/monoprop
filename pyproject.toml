@@ -12,9 +12,9 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "monoprop"
 authors = [
-  { name = "Algorithmiq Development Team", email = "aurora@algorithmiq.fi" },
+  { name = "Algorithmiq Development Team", email = "info@algorithmiq.fi" },
 ]
-description = "Majorana Propagation."
+description = "Quantum circuit simulation with monomial propagation. Both Pauli and Majorana supported."
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"
