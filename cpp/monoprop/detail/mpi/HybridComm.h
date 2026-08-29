@@ -510,8 +510,8 @@ private:
                 }
             }
         }
-        const auto mask = static_cast<int>((1U << static_cast<unsigned>(bits)) - 1U);
-        return PeerPlan{.bits = bits, .shift = found < 0 ? 0 : ((mpi_rank_ & mask) ^ (found & mask))};
+        // The plan is a boolean now, so every rank bit is a linear bit and the mask is the rank index.
+        return PeerPlan{.sparse = bits > 0, .shift = found < 0 ? 0 : (mpi_rank_ ^ found)};
     }
 
     // Do the published rows put anything outside the plan's peers? If so the narrowing silently drops it.

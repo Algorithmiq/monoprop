@@ -192,6 +192,12 @@ public:
         return linear_ ? static_cast<size_t>(std::countr_zero(ranks_)) : 0;
     }
 
+    // The same number for a geometry alone, with no monomial width bound: it IS the constructor, so the
+    // resolution and the non-power-of-two throw cannot drift from the router's.
+    [[nodiscard]] static auto bits_for(size_t ranks, bool linear) -> size_t {
+        return Router{ranks, 1, linear}.linear_bits();
+    }
+
     // Flat destination slot in [0, flat_world). Branch is on a member, so it is perfectly predicted.
     template <size_t NumModes>
     [[nodiscard]] [[gnu::always_inline]] inline auto dest(const Monomial<NumModes> &mono) const noexcept -> size_t {
@@ -306,6 +312,11 @@ private:
 // per rank per layer from 362,712 to 1,397, i.e. from proportional-to-R to flat.
 inline auto linear_requested() -> bool {
     return config::get().routing_mode.value_or(config::RoutingMode::Linear) == config::RoutingMode::Linear;
+}
+
+// Resolved rank bits for a geometry, without a router: the replay transport gates on the number.
+inline auto linear_bits_for(size_t ranks) -> size_t {
+    return Router::bits_for(ranks, linear_requested());
 }
 
 template <size_t NumModes>
