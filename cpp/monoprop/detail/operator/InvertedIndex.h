@@ -500,7 +500,10 @@ struct InvertedIndex {
             tail_count_[c] = 0;
         }
         assert(seg.size() == total);
-        assert(seg.capacity() == total); // the reserve above is what makes this layout slack-free
+        // >= not ==: reserve() is only required to give AT LEAST `total`. Pinning the exact figure
+        // asserts an allocator property, not this layout's invariant, which is that nothing here ever
+        // reallocates -- and that follows from capacity >= total alone.
+        assert(seg.capacity() >= total);
         seg_bytes_ += seg.capacity();
         segs_.push_back(std::move(seg));
         sealed_rows_ += kChunkRows;
