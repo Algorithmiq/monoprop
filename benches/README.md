@@ -12,7 +12,7 @@ documentation for detailed instructions.
 
 This directory holds only monoprop's own benchmarks — `conftest.py` (the fixtures
 and the results schema), `bench_random.py`, `bench_models.py`, `rungs.toml` (the
-benchmark set) and `results/`.
+benchmark set), [`RUNGS.md`](RUNGS.md) (how to run it) and `results/`.
 
 Both bench modules measure the same four operations — `build_graph`, `propagate`,
 `energy` and `gradient` — so a number means the same thing whichever problem
@@ -58,6 +58,10 @@ problem under the right name. A row nobody has calibrated says so twice --
 you can see what a rung takes before you spend it. Documentation, never a gate.
 The machine and scheduler that run a rung are not in this repository; the table,
 the runner and the gate are.
+
+**[`RUNGS.md`](RUNGS.md)** is the guide: every model's parameters and what they do,
+how the geometry maps onto a machine, example Slurm scripts, the pinning and
+allocation-sizing traps, and how to calibrate a `TBD` row.
 
 ## Fixed-model sizing
 

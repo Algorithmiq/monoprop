@@ -352,6 +352,10 @@ releases each layer as it contracts -- Hubbard reaches 97M terms in well under 2
 Running a rung needs a machine, a scheduler and an allocation, none of which belong in this
 repository. The table, the runner and the gate are here; the launcher that submits them is not.
 
+`benches/RUNGS.md` is the operator's guide: every model's parameters and what they do, how the
+geometry maps onto a machine, example Slurm scripts, the pinning and allocation-sizing traps, and
+how to calibrate a row nobody has measured.
+
 ### Scaling
 
 Node scaling of Hubbard `propagate` in the shipped default configuration, 1 to 64 nodes (128 to

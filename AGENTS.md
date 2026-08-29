@@ -58,7 +58,7 @@ The root `pyproject.toml` declares a `[tool.uv.workspace]`, so one `uv.lock` cov
   wheels, so it is a standalone uv project with its own `uv.lock`. Run it with
   `cd packages/bench-third-party && uv sync`, never from the root environment.
 - `benches/` — monoprop's own benchmark suite (`conftest.py`, `bench_*.py`, `rungs.toml`,
-  `results/`). It stays in the repository and imports the tools package. Benchmark
+  `RUNGS.md`, `results/`). It stays in the repository and imports the tools package. Benchmark
   names are Bencher's history key and rung ids name artifacts already written, so neither may move
   with a library release; that is why the suite is not in `monoprop-bench-tools`.
 
