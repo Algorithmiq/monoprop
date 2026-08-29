@@ -126,9 +126,15 @@ struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
     static constexpr size_t kNoColumnSkip = static_cast<size_t>(-1);
 
-    std::vector<uint8_t> arena_;     // sealed payloads, chunk-major then column-major
-    std::vector<size_t> chunk_base_; // arena offset of each sealed chunk's segment; size == sealed chunks
-    std::vector<ChunkDir> dir_;      // flat [chunk][column], kNumColumns entries per sealed chunk
+    // One exactly-sized allocation per sealed chunk, never reallocated once handed out. A single growing
+    // arena was correct and cost peak RSS twice over: `reserve` holds the old fully-written buffer and the
+    // new one at once, and every freed buffer is a large chunk glibc keeps rather than returns. Neither is
+    // visible to an at-rest ledger, which is why the arena read as ~zero slack while peak RSS carried it.
+    // The seal already computes the segment's exact size before writing a byte, so there is nothing to
+    // guess: `reserve(total)` makes capacity == size and the appends below cannot reallocate.
+    std::vector<std::vector<uint8_t>> segs_; // sealed payloads, one segment per chunk, column-major within
+    size_t seg_bytes_ = 0;                   // sum of segment capacities, so memory_bytes() stays O(1)
+    std::vector<ChunkDir> dir_;              // flat [chunk][column], kNumColumns entries per sealed chunk
 
     // The growing chunk, which the smallest-container rule applies to as well. Exactly two containers can
     // still be appended to: a delta stream, which is nothing but appends, and a bitmap, where an append
@@ -156,7 +162,7 @@ struct InvertedIndex {
 
     auto rows() const -> size_t { return row_count; }
     auto words() const -> size_t { return (row_count + 63) / 64; }
-    auto sealed_chunks() const -> size_t { return chunk_base_.size(); }
+    auto sealed_chunks() const -> size_t { return segs_.size(); }
     auto chunk_count() const -> size_t { return (row_count + kChunkRows - 1) / kChunkRows; }
 
     // A column with no postings anywhere: the scan's zero-postings early-out, which must stay O(1)
@@ -179,10 +185,10 @@ struct InvertedIndex {
 
     auto chunk(size_t c, size_t k) const -> ChunkView {
         assert(k < chunk_count());
-        if (k < chunk_base_.size()) {
+        if (k < segs_.size()) {
             const ChunkDir &e = dir_[k * kNumColumns + c];
             const ChunkTag tag = static_cast<ChunkTag>(e.tag);
-            return ChunkView{arena_.data() + chunk_base_[k] + e.offset,
+            return ChunkView{segs_[k].data() + e.offset,
                              e.count,
                              tag == ChunkTag::Bitmap ? kChunkBitmapBytes : 0,
                              tag};
@@ -373,16 +379,6 @@ struct InvertedIndex {
         return bytes;
     }
 
-    // Bounded 12.5% slack with amortised O(1) copies. std::vector's own doubling is what left the shipped
-    // index carrying 1.43x of unused capacity, so the arena never uses it.
-    auto arena_reserve_(size_t needed) -> void {
-        if (needed <= arena_.capacity()) {
-            return;
-        }
-        const size_t cap = arena_.capacity();
-        arena_.reserve(std::max(needed, cap + cap / 8));
-    }
-
     // The whole tiering policy: per (column, chunk), take whichever container is smallest. Ties go to the
     // faster fold (Bitmap over postings), and the delta stream the tail already built is usually the
     // winner, in which case sealing is a memcpy.
@@ -407,8 +403,9 @@ struct InvertedIndex {
 
     static auto align_up_(size_t n) -> size_t { return (n + alignof(uint64_t) - 1) & ~(alignof(uint64_t) - 1); }
 
-    // Move the completed growing chunk into the arena and reset the tail. Sizing runs first so the arena
-    // is reserved once and no payload write can reallocate under a pointer taken into it.
+    // Move the completed growing chunk into its own segment and reset the tail. Sizing runs first so the
+    // segment is allocated at exactly its final size and no payload write can reallocate under a pointer
+    // taken into it.
     auto seal_chunk_() -> void {
         // Costed against what a delta stream WOULD take, not against what the tail happens to hold: a
         // tail that switched to a bitmap mid-chunk must still be able to seal as postings if the column
@@ -426,26 +423,13 @@ struct InvertedIndex {
             total += tag_bytes_(tag, deltas[c]);
         }
 
-        // The segment base is aligned too, so every offset computed against it keeps its alignment.
-        const size_t needed = align_up_(arena_.size()) + total;
-        // A bulk rebuild knows its final row count, so the very first seal projects the finished size from
-        // the chunk it just measured and reserves it in one step. Worth 0.81 B/term at 5M rows: without
-        // it the arena is caught mid-growth carrying 12.3% slack.
-        //
-        // Projecting once, rather than at every seal, is load-bearing. Chunk sizes wobble by ~0.02%, and
-        // re-projecting turns each wobble into a request one byte over capacity -- which arena_reserve_'s
-        // geometric floor then rounds up by the full 12.5%, the exact slack the projection is here to
-        // avoid. The 1/32 margin covers the drift so the floor never fires; if it ever is short, the
-        // geometric fallback below is still correct, just 12.5% fatter.
-        const size_t chunks_total = row_count / kChunkRows; // floor: a partial trailing chunk never seals
-        if (chunk_base_.empty() && chunks_total > 1) {
-            const size_t projected = needed * chunks_total;
-            arena_.reserve(projected + projected / 32);
-        }
-        arena_reserve_(needed);
-        arena_.resize(align_up_(arena_.size()), 0);
-        const size_t base = arena_.size();
-        chunk_base_.push_back(base);
+        // Exactly `total` bytes, so capacity == size and no append below can reallocate. The projection
+        // the growing arena needed (guess the finished size at the first seal, or be caught mid-growth
+        // carrying 12.3% slack) has nothing left to guess at: a segment's size is known before it is made.
+        // std::vector's allocation comes from ::operator new, whose alignment is at least 16, so an offset
+        // aligned to 8 within the segment is 8-aligned absolutely and the bitmap cast below stays valid.
+        std::vector<uint8_t> seg;
+        seg.reserve(total);
         dir_.resize(dir_.size() + kNumColumns);
         ChunkDir *row = dir_.data() + (dir_.size() - kNumColumns);
 
@@ -453,9 +437,9 @@ struct InvertedIndex {
             const size_t m = tail_count_[c];
             const ChunkTag tag = tags[c];
             if (tag == ChunkTag::Bitmap) {
-                arena_.resize(base + align_up_(arena_.size() - base), 0);
+                seg.resize(align_up_(seg.size()), 0);
             }
-            row[c].offset = static_cast<uint32_t>(arena_.size() - base);
+            row[c].offset = static_cast<uint32_t>(seg.size());
             row[c].count = static_cast<uint16_t>(std::min<size_t>(m, 0xFFFFU));
             row[c].tag = static_cast<uint8_t>(tag);
             row[c].pad = 0;
@@ -466,19 +450,19 @@ struct InvertedIndex {
                     // A delta tail seals as a memcpy; a bitmap tail is re-encoded, which is the case the
                     // sizing pass above priced.
                     if (!tail_is_bitmap_[c]) {
-                        arena_.insert(arena_.end(), tail_[c].begin(), tail_[c].end());
+                        seg.insert(seg.end(), tail_[c].begin(), tail_[c].end());
                     }
                     else {
                         uint32_t next = 0;
                         tail_for_each_row_(c, [&](uint32_t local) {
                             const uint32_t gap = local - next;
                             if (gap < 0xFFU) {
-                                arena_.push_back(static_cast<uint8_t>(gap));
+                                seg.push_back(static_cast<uint8_t>(gap));
                             }
                             else {
-                                arena_.push_back(0xFFU);
-                                arena_.push_back(static_cast<uint8_t>(gap & 0xFFU));
-                                arena_.push_back(static_cast<uint8_t>(gap >> 8U));
+                                seg.push_back(0xFFU);
+                                seg.push_back(static_cast<uint8_t>(gap & 0xFFU));
+                                seg.push_back(static_cast<uint8_t>(gap >> 8U));
                             }
                             next = local + 1;
                         });
@@ -487,9 +471,9 @@ struct InvertedIndex {
                     break;
                 }
                 case ChunkTag::Bitmap: {
-                    const size_t at = arena_.size();
-                    arena_.resize(at + kChunkBitmapBytes, 0);
-                    uint64_t *w = reinterpret_cast<uint64_t *>(arena_.data() + at);
+                    const size_t at = seg.size();
+                    seg.resize(at + kChunkBitmapBytes, 0);
+                    uint64_t *w = reinterpret_cast<uint64_t *>(seg.data() + at);
                     tail_for_each_row_(c, [w](uint32_t local) { w[local >> 6U] |= uint64_t{1} << (local & 63U); });
                     bitmap_bytes_ += kChunkBitmapBytes;
                     ++bitmap_chunks_;
@@ -515,7 +499,10 @@ struct InvertedIndex {
             tail_next_[c] = 0;
             tail_count_[c] = 0;
         }
-        assert(arena_.size() - base == total);
+        assert(seg.size() == total);
+        assert(seg.capacity() == total); // the reserve above is what makes this layout slack-free
+        seg_bytes_ += seg.capacity();
+        segs_.push_back(std::move(seg));
         sealed_rows_ += kChunkRows;
     }
 
@@ -544,10 +531,9 @@ struct InvertedIndex {
     template <typename Rows>
     auto rebuild(const Rows &op) -> void {
         const size_t size = op.size();
-        arena_.clear();
-        arena_.shrink_to_fit();
-        chunk_base_.clear();
-        chunk_base_.shrink_to_fit();
+        segs_.clear();
+        segs_.shrink_to_fit();
+        seg_bytes_ = 0;
         dir_.clear();
         dir_.shrink_to_fit();
         for (auto &t : tail_) {
@@ -591,8 +577,8 @@ struct InvertedIndex {
     }
 
     auto memory_bytes() const -> size_t {
-        size_t total = arena_.capacity();
-        total += chunk_base_.capacity() * sizeof(size_t);
+        size_t total = seg_bytes_;
+        total += segs_.capacity() * sizeof(std::vector<uint8_t>);
         total += dir_.capacity() * sizeof(ChunkDir);
         for (const auto &t : tail_) {
             total += t.capacity();
@@ -615,10 +601,11 @@ struct InvertedIndex {
         size_t bitmap_chunks = 0;
     };
 
-    // The arena's allocation, which Stats::arena_slack_bytes is the unused part of. Exposed so a test
+    // The arena's allocation. Stats::arena_slack_bytes is now structurally 0, so a test asserting a
+    // slack BOUND still passes; what it no longer proves is that the projection was any good, because
     // can bound slack as a FRACTION of it -- the projection at the first seal is only worth anything if
     // it leaves less dead capacity than the 12.5% growth fallback would have.
-    [[nodiscard]] auto arena_bytes() const -> size_t { return arena_.capacity(); }
+    [[nodiscard]] auto arena_bytes() const -> size_t { return seg_bytes_; }
 
     auto stats() const -> Stats {
         Stats s;
@@ -636,8 +623,8 @@ struct InvertedIndex {
         s.bitmap_bytes += tail_bitmap;
         s.delta_bytes = delta_bytes_ + (s.tail_bytes - tail_bitmap);
         s.posting_bytes = s.delta_bytes;
-        s.dir_bytes = dir_.capacity() * sizeof(ChunkDir) + chunk_base_.capacity() * sizeof(size_t);
-        s.arena_slack_bytes = arena_.capacity() - arena_.size();
+        s.dir_bytes = dir_.capacity() * sizeof(ChunkDir) + segs_.capacity() * sizeof(std::vector<uint8_t>);
+        s.arena_slack_bytes = 0; // exact segments: there is no unused arena capacity left to report
         return s;
     }
 };

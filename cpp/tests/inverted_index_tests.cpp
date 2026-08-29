@@ -161,7 +161,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_picks_the_smallest_container_per_chunk) {
     // The arena replaced std::vector's doubling precisely so unused capacity stays bounded.
     const auto stats = sc.stats();
     BOOST_TEST(stats.bitmap_chunks == 4U); // modes 0 and 4, once sealed and once in the tail
-    BOOST_TEST(stats.arena_slack_bytes <= sc.arena_.size() / 8 + 8);
+    BOOST_TEST(stats.arena_slack_bytes <= sc.arena_bytes() / 8 + 8);
 }
 
 // The tail's bitmap -> delta give-up path. A column goes dense enough to take a tail bitmap, falls
@@ -274,7 +274,7 @@ BOOST_AUTO_TEST_CASE(inverted_index_seals_a_bitmap_tail_back_to_a_delta_stream) 
     BOOST_TEST(got == expected, boost::test_tools::per_element());
 }
 
-// Three seals, so chunk_base_ and dir_ are indexed at k > 0 and the first-seal arena projection (which
+// Three seals, so segs_ and dir_ are indexed at k > 0 and the first-seal arena projection (which
 // needs more than one whole chunk to fire) is taken. Mode 1 is set in the middle chunk only: a directory
 // read that ignored k, or a chunk base off by one segment, would report its postings against the wrong
 // rows and could not survive the row comparison below.
