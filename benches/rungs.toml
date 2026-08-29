@@ -133,7 +133,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~10M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~300_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n1-100m-hubbard-propagate"
 family = "size"
@@ -181,7 +181,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "0:30:00"
-
+note = "calibrate for ~100M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~3_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n1-1b-hubbard-propagate"
 family = "size"
@@ -230,7 +230,7 @@ reps = 5
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n8-1b-hubbard-propagate"
 family = "size"
@@ -291,7 +291,7 @@ walltime = "0:25:00"
 # cap is the largest `--obs-terms` whose retained graph fits 242 GiB, and it is calibrated
 # per picture: Schrodinger runs at `cutoff + 2`, so its cap is lower than Heisenberg's and
 # must be measured rather than copied.
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "st-10m-random-graph-heisenberg"
 family = "size"
@@ -307,7 +307,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~10M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~300_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "st-10m-random-eval-heisenberg"
 family = "size"
@@ -323,7 +323,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~10M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~300_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "st-10m-random-graph-schrodinger"
 family = "size"
@@ -339,7 +339,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~10M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~300_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "st-10m-random-eval-schrodinger"
 family = "size"
@@ -355,7 +355,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~10M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~300_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "n1-100m-random-graph-heisenberg"
 family = "size"
@@ -371,7 +371,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~100M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~3_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n1-100m-random-graph-schrodinger"
 family = "size"
@@ -387,7 +387,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~100M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~3_000_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "n1-100m-random-eval-heisenberg"
 family = "size"
@@ -403,7 +403,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~100M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~3_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n1-100m-random-eval-schrodinger"
 family = "size"
@@ -419,7 +419,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~100M terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~3_000_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "n1-1b-random-graph-heisenberg"
 family = "size"
@@ -435,7 +435,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "2:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n1-1b-random-graph-schrodinger"
 family = "size"
@@ -451,7 +451,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "2:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "n1-1b-random-eval-heisenberg"
 family = "size"
@@ -467,7 +467,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "2:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n1-1b-random-eval-schrodinger"
 family = "size"
@@ -483,7 +483,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "2:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "n8-1b-random-graph-heisenberg"
 family = "size"
@@ -499,7 +499,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n8-1b-random-graph-schrodinger"
 family = "size"
@@ -515,7 +515,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "n8-1b-random-eval-heisenberg"
 family = "size"
@@ -531,7 +531,7 @@ reps = 10
 cost_seconds = 0
 cost_gib_per_node = 0
 walltime = "1:00:00"
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal"
 [[rung]]
 id = "n8-1b-random-eval-schrodinger"
 family = "size"
@@ -571,7 +571,7 @@ walltime = "1:00:00"
 # `MALLOC_ARENA_MAX` is deliberately left unset for these rungs. Pinning it costs about 16%
 # of wall when the arena count is below the partition count, so a ladder that exports it
 # measures the allocator rather than the engine.
-
+note = "calibrate for ~1B terms: measured x33 obs->propagated at 1000 gates/250 modes/cutoff 6, so start at obs_terms~30_000_000 and read the true count off the gate's refusal; Schrodinger cost is driven by gates and modes, not obs_terms -- expect far more memory"
 [[rung]]
 id = "weak-97m-n1"
 family = "weak"

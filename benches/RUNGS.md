@@ -458,6 +458,108 @@ predicting 224 s, 436 s and 216 s against 215.6, 471.0 and 249.6 measured.
 The `1.82e-07` row is the one exception to the memory law in the whole campaign: 84.3 GiB/node
 against 97.1 predicted, identically on all five reps. Reproducible and unexplained.
 
+### Every model at its defaults
+
+One process, 8 threads, on a shared login node with a **20 GiB** per-user memory cap. Timings
+here are indicative only — they are not a compute node and not pinned. Terms are exact and
+reproducible; peak RSS is a real kernel `VmHWM`; `> 20 GiB` means the cell was killed at that cap,
+which is a lower bound, not the model's requirement. A 242 GiB compute node goes much further.
+
+| model | operation | terms | peak RSS | time |
+| --- | --- | ---: | ---: | ---: |
+| hubbard | `propagate` | 1,169,024 | 465 MiB | 3.5 s |
+| hubbard | `build_graph` | — | **> 20 GiB** | — |
+| hubbard | `energy` | — | **> 20 GiB** | — |
+| hubbard | `gradient` | — | **> 20 GiB** | — |
+| pauli | `propagate` | 223,372 | 400 MiB | 823 ms |
+| pauli | `build_graph` | 223,372 | 429 MiB | 1.0 s |
+| pauli | `energy` | 223,372 | 434 MiB | 191 ms |
+| pauli | `gradient` | 223,372 | 864 MiB | 910 ms |
+| random / heisenberg | `propagate` | 70,336 | 385 MiB | 11 ms |
+| random / heisenberg | `build_graph` | 70,336 | 388 MiB | 13 ms |
+| random / heisenberg | `energy` | 70,336 | 384 MiB | 1 ms |
+| random / heisenberg | `gradient` | 70,336 | 383 MiB | 2 ms |
+| random / schrodinger | `propagate` | 11,167,248 | 1.73 GiB | 5.0 s |
+| random / schrodinger | `build_graph` | 11,167,248 | 1.99 GiB | 4.7 s |
+| random / schrodinger | `energy` | 11,167,248 | 1.72 GiB | 391 ms |
+| random / schrodinger | `gradient` | 11,167,248 | 1.81 GiB | 814 ms |
+
+The defaults are not a ladder — they differ by 160x in size. `random` in the Schrödinger picture
+is 159x its own Heisenberg size at identical knobs, because `schrodinger_cutoff = cutoff + 2`
+admits two more Majorana lengths. And the three hubbard rows that hold a graph all died: at the
+default configuration only `propagate` fits in 20 GiB.
+
+### Size knob against cost
+
+Same login node and caveats. `B/term` is the crude ratio including the ~380 MiB process floor,
+which is why it looks enormous at small sizes; the marginal figures below are the transferable ones.
+
+| model / operation | knobs | terms | peak RSS | time |
+| --- | --- | ---: | ---: | ---: |
+| `hubbard` / `propagate` | `cutoff=10, lower_atol=1e-03` | 20,758 | 377 MiB | 1.6 s |
+| | `lower_atol=3e-04` | 222,705 | 394 MiB | 1.7 s |
+| | `lower_atol=1e-04` | 1,887,255 | 542 MiB | 4.7 s |
+| | `lower_atol=5e-05` | 7,156,480 | 997 MiB | 13.1 s |
+| | `lower_atol=3e-05` | 18,873,340 | 1.47 GiB | 43.2 s |
+| `hubbard` / `build_graph` | `cutoff=10, lower_atol=1e-03, steps=2` | 139,674,993 | 12.68 GiB | 35.0 s |
+| | `lower_atol=3e-04, steps=2` | — | **> 20 GiB** | — |
+| `pauli` / `propagate` | `cutoff=14, lower_atol=1e-03` | 515,102 | 441 MiB | 1.1 s |
+| | `lower_atol=3e-04` | 5,129,772 | 818 MiB | 6.2 s |
+| | `lower_atol=1e-04` | 30,992,523 | 3.06 GiB | 48.4 s |
+| | `lower_atol=5e-05` | 91,273,861 | 7.16 GiB | 157.6 s |
+| `pauli` / `build_graph` | `cutoff=14, lower_atol=1e-03` | 515,102 | 458 MiB | 1.3 s |
+| | `lower_atol=3e-04` | 5,129,772 | 1002 MiB | 7.4 s |
+| | `lower_atol=1e-04` | 30,992,523 | 4.23 GiB | 63.2 s |
+
+That last `pauli` row is the calibrated `n1-100m-pauli-propagate` rung: 91,273,861 terms at
+`cutoff=14, lower_atol=5e-05`, which is where the table's `expect_terms` for it comes from.
+
+### Marginal cost per term
+
+Least-squares slope of peak RSS against term count over each ladder above, which removes the
+process floor and is the number that transfers between machines.
+
+| model / operation | marginal B/term | floor |
+| --- | ---: | ---: |
+| `hubbard` / `propagate` | 63.2 | 424 MiB |
+| `pauli` / `propagate` | 79.4 | 510 MiB |
+| `pauli` / `build_graph` | 134.0 | 371 MiB |
+| `random` / `propagate` (heisenberg) | 134.3 | 375 MiB |
+| `random` / `build_graph` (heisenberg) | 149.6 | 378 MiB |
+| `random` / `energy` (heisenberg) | 141.2 | 379 MiB |
+| `random` / `gradient` (heisenberg) | 144.6 | 379 MiB |
+
+Hubbard's 63.2 B/term here against the 68.0 B/term fitted over 38 compute-node rungs is the one
+independent check available on any of this: two machines, two partition counts, two harnesses,
+7% apart. Take the per-term costs as good to roughly that.
+
+`build_graph` costs about 1.7x `propagate` per term on `pauli` (134.0 against 79.4). On `hubbard`
+the ratio is far worse, because the graph retains a layer-set per Trotter step rather than per
+gate — which is what puts the hubbard graph rows out of reach entirely.
+
+### The random model's observable multiplier
+
+`--obs-terms` sets the observable's size; what gets propagated is larger. At 1000 gates, 250 modes
+and cutoff 6 the ratio is flat across the range measured:
+
+| `--obs-terms` | propagated terms | ratio |
+| ---: | ---: | ---: |
+| 100 | 3,319 | ×33.2 |
+| 1,000 | 33,315 | ×33.3 |
+| 5,000 | 166,367 | ×33.3 |
+| 20,000 | 661,545 | ×33.1 |
+
+So to calibrate a random rung, **start at `obs_terms ≈ target / 33`**: about 300,000 for 10M
+terms, 3,000,000 for 100M, 30,000,000 for 1B. Those are extrapolations from a range topping out at
+0.66M terms — three orders of magnitude below the largest target — and truncation at the cutoff may
+bend the ratio well before then. They are a starting point for the calibration loop, not values to
+put in `expect_terms`.
+
+The Schrödinger picture is a different matter. At 1000 gates and 250 modes it exceeded 20 GiB at
+**every** observable size tried, `obs_terms=100` included, so its cost is driven by the generator
+count and the mode count rather than by the observable. Calibrate it on a compute node and expect
+its ladder to need far more memory than the Heisenberg one at the same knobs.
+
 ## Reporting the result
 
 ```bash
