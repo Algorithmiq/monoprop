@@ -26,6 +26,7 @@
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/Routing.h"
 
 namespace monoprop {
 namespace {
@@ -70,10 +71,21 @@ auto &acquire_flat_exchange_buffers() {
 }
 
 // A property of the communicator, not the layer: all ranks participate even at local total_count 0.
-// Still true with the pairwise arm: the transport branch is rank-local, so a collective may still be the
-// one chosen and a rank that skipped the round strands it.
+// Still true with the pairwise arm: `wire_bits` decides the transport for the whole communicator, so a
+// rank that skipped the round strands the others whichever transport they are on.
 auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
+}
+
+// The transport gate for post_flat_alltoallv, and the ONLY thing allowed to choose it: rank-uniform by
+// construction, because linear_bits_for reads the environment alone and check_routing_agreement
+// allreduces exactly this number at construction and throws rather than proceed on a mismatch. Fanout 1
+// -- every generator's queries land on one destination rank -- is both why a layer's other legs are
+// empty and why no rank can be on the other side of the branch. Any other geometry keeps the collective.
+auto layer_exchange_wire_bits(const mpi::Comm &comm) -> int {
+    const auto ranks = static_cast<size_t>(mpi::geometry(comm).ranks);
+    const size_t bits = routing::linear_bits_for(ranks);
+    return (ranks >> bits) == 1 ? static_cast<int>(bits) : 0;
 }
 
 // Derives both sides at once: the count matrix is symmetric, so the recv layout is the send layout.
@@ -114,7 +126,8 @@ inline auto begin_flat_exchange(FlatExchangeBuffers &buffers, const mpi::Comm &c
                                                       .recv_counts = layout.counts.data(),
                                                       .recv_displs = layout.displs.data()},
                                                      mpi::size(comm),
-                                                     comm);
+                                                     comm,
+                                                     layer_exchange_wire_bits(comm));
     return handle;
 }
 
