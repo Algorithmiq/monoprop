@@ -27,6 +27,7 @@
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -115,26 +116,31 @@ auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> 
     return op;
 }
 
-auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked) -> void {
-    // Every offset comes from the record walk: widths vary, so a hardcoded stride would compare a
-    // monomial decoded at the wrong offset against the wrong rank.
+auto check_bucket_ownership(const mpi::WindowVec<VecZ> &buckets, const routing::Router &router, size_t &checked)
+    -> void {
+    // Every offset comes from the record walk: widths vary, so a hardcoded stride would compare a monomial
+    // decoded at the wrong offset against the wrong rank. The bucket index is re-based, so the rank
+    // compared against is window.slot(k) -- a wrong window base shows up here.
     using QW = detail::QueryWire<32>;
     const detail::QueryForm form = detail::QueryForm::Plain;
-    for (size_t r = 0; r < buckets.size(); ++r) {
+    const mpi::SlotWindow w = buckets.window();
+    for (size_t k = 0; k < w.count; ++k) {
+        const mpi::WindowIndex wi{k};
+        const VecZ &bucket = buckets[wi];
         size_t off = 0;
-        while (off < buckets[r].size()) {
-            const size_t k = QW::k_at(buckets[r], off);
-            std::vector<QW::PosT> pos(k);
-            (void)QW::read_positions(buckets[r], off, pos);
+        while (off < bucket.size()) {
+            const size_t kq = QW::k_at(bucket, off);
+            std::vector<QW::PosT> pos(kq);
+            (void)QW::read_positions(bucket, off, pos);
             Monomial<32> mono;
-            for (size_t j = 0; j < k; ++j) {
+            for (size_t j = 0; j < kq; ++j) {
                 mono.set(static_cast<size_t>(pos[j]));
             }
-            BOOST_REQUIRE_EQUAL(find_rank<32>(mono, router), r);
-            off = QW::next_off(buckets[r], form, off);
+            BOOST_REQUIRE_EQUAL(find_rank<32>(mono, router), w.slot(wi));
+            off = QW::next_off(bucket, form, off);
             ++checked;
         }
-        BOOST_REQUIRE_EQUAL(off, buckets[r].size());
+        BOOST_REQUIRE_EQUAL(off, bucket.size());
     }
 }
 
@@ -189,6 +195,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
         for (const bool linear : {false, true}) {
             const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, linear);
             const size_t shift = router.rank_shift<kN>(gen);
+            const mpi::PeerPlan plan{.sparse = router.is_linear(), .shift = static_cast<int>(shift)};
             // Per router, not summed over them: the floors are what stops the loop passing on an empty
             // scan, and a sum lets one router carry the other.
             size_t checked = 0;
@@ -202,6 +209,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                 }
                 BOOST_REQUIRE(!owned.empty());
                 auto op = build_op(owned);
+                const mpi::SlotWindow window = plan.window(my_rank, ranks, /*parts=*/1);
                 VecD coeffs(op.store->size(), 1.0);
                 const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt,
                                                                                std::cref(coeffs),
@@ -213,17 +221,24 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          cut,
                                                                                          coeffs,
                                                                                          std::nullopt,
-                                                                                         ranks,
+                                                                                         window,
                                                                                          my_rank,
                                                                                          router,
                                                                                          shift,
                                                                                          false,
                                                                                          nullptr,
                                                                                          1.0);
-                BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
-                // The scan routes a self-owned partner to the stage, so my own bucket must be empty here.
-                BOOST_REQUIRE(res.leader_queries[my_rank].empty());
-                BOOST_REQUIRE(res.follower_queries[my_rank].empty());
+                BOOST_REQUIRE_EQUAL(res.leader_queries.size(), window.count);
+                if (window.contains(my_rank)) {
+                    // The scan routes a self-owned partner to the stage, so my own bucket must be empty.
+                    BOOST_REQUIRE(res.leader_queries.at_slot(my_rank).empty());
+                    BOOST_REQUIRE(res.follower_queries.at_slot(my_rank).empty());
+                }
+                else {
+                    // A non-zero shift puts self outside the window entirely, so nothing may be staged.
+                    BOOST_REQUIRE_EQUAL(res.leader_self.size(), 0U);
+                    BOOST_REQUIRE_EQUAL(res.follower_self.size(), 0U);
+                }
                 check_bucket_ownership(res.leader_queries, router, checked);
                 check_bucket_ownership(res.follower_queries, router, checked);
                 check_self_ownership(res.leader_self, router, my_rank, self_checked);

@@ -102,6 +102,8 @@ struct SlotWindow {
 template <typename T>
 class WindowVec {
 public:
+    using value_type = T;
+
     WindowVec() = default;
     explicit WindowVec(SlotWindow w) : win_(w), v_(w.count) {}
 
