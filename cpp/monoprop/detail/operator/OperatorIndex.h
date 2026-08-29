@@ -98,8 +98,7 @@ public:
         const size_t base = size_;
         RowHashTable::check_append_fits(base, n);
         if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
+            reserve_rows(geometric_row_capacity(base, n, capacity()));
         }
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
@@ -203,9 +202,7 @@ public:
         return {std::span<const PosT>(&rows_[(i * stride_) + 1], static_cast<size_t>(c))};
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
-        total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
-        return total;
+        return (rows_.capacity() * sizeof(PosT)) + spilled_rows_bytes(overflow_);
     }
 
     auto find(const key_type &key) const -> std::optional<size_t> {

@@ -72,6 +72,20 @@ endif()
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/Sanitizers.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
 
+# The storage width at or above which a propagator picks the support-form row store over the dense one.
+# Derived from whether ARCH_FLAG is actually emitted rather than from the option that asks for it, and
+# deliberately not a cache entry: what moves the crossover is the target ISA, so a stale cached value
+# would silently pick the wrong backend after a flag change.
+#
+# Thresholds are the first full 32-mode block where sparse is clearly faster than dense beyond
+# run-to-run noise. Expect about +/-1 block variation across machines due to cache and popcount
+# throughput.
+if(ARCH_FLAG)
+  set(monoprop_SPARSE_ROW_MIN_MODES 768)
+else()
+  set(monoprop_SPARSE_ROW_MIN_MODES 256)
+endif()
+
 # report on compiler flags in use
 message(STATUS "Configuring a ${CMAKE_BUILD_TYPE} build")
 string(TOUPPER ${CMAKE_BUILD_TYPE} _cmake_build_type_upper)
@@ -87,6 +101,7 @@ message(
   "   Build-type-specific    : ${_cmake_build_type_specific_flags}"
 )
 message(STATUS "   Vectorization flag     : ${ARCH_FLAG}")
+message(STATUS "   Sparse rows from       : ${monoprop_SPARSE_ROW_MIN_MODES} modes")
 message(
   STATUS
   "   Project defaults       : ${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION} ${monoprop_CXX_FLAGS}"
