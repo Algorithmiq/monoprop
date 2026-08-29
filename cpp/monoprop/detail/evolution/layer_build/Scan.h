@@ -226,6 +226,10 @@ struct FusedScanResult {
 // deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
+//
+// `gen_shift` is router.rank_shift(gen), and `op` must hold only terms `my_rank` owns -- then the owner of
+// M⊕G is rank(M) ^ gen_shift and the linear planes never run per term. Both are what mpi::PeerPlan
+// already assumes; a violation moves ownership silently, so the fast path asserts against dest().
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -236,6 +240,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             size_t rank_count,
                             size_t my_rank,
                             const routing::Router &router,
+                            size_t gen_shift,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
@@ -327,7 +332,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // or a term is placed and queried on different ranks, which duplicates a row silently.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
-                r_prime = router.dest<NumModes>(dense);
+                r_prime = router.dest_from_shift<NumModes>(dense, my_rank, gen_shift);
+                assert(r_prime == router.dest<NumModes>(dense)); // an identity, not an approximation
             }
             if (r_prime == my_rank) {
                 (is_follower ? res.follower_self : res.leader_self).push(pos, phase);

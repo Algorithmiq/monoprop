@@ -29,7 +29,8 @@
 
 // The single home for "which flat slot owns this monomial". Two call sites depend on agreeing exactly
 // (Scan.h emits queries by it, MonomialPropagator seeds the operator by it), and a disagreement splits
-// ownership silently rather than crashing -- so both go through Router::dest and nothing else.
+// ownership silently rather than crashing -- so both go through this Router and nothing else. Scan.h
+// enters at dest_from_shift, which is dest with the per-generator rank bits taken from the shift.
 //
 // Two-level, because the levels cost differently: across MPI ranks the message COUNT is what hurts, so
 // the rank index is GF(2)-linear in the support and a generator maps every query to one peer; within a
@@ -194,11 +195,33 @@ public:
     // Flat destination slot in [0, flat_world). Branch is on a member, so it is perfectly predicted.
     template <size_t NumModes>
     [[nodiscard]] [[gnu::always_inline]] inline auto dest(const Monomial<NumModes> &mono) const noexcept -> size_t {
-        const uint64_t q = monomial_hash<NumModes>(mono);
         if (!linear_) {
-            return static_cast<size_t>(q % flat_); // bit-for-bit today's `hash % P`
+            return static_cast<size_t>(monomial_hash<NumModes>(mono) % flat_); // bit-for-bit today's `hash % P`
         }
-        return static_cast<size_t>((linear_low_<NumModes>(mono) * parts_) + (q % parts_));
+        const size_t rank = static_cast<size_t>(linear_low_<NumModes>(mono));
+        if (parts_ == 1) {
+            return rank; // q % 1 == 0 for every q, so S == 1 owes the hash nothing
+        }
+        return (rank * parts_) + part_of_(monomial_hash<NumModes>(mono));
+    }
+
+    // The emit path's dest, for a query M^G raised on a term M THIS slot owns. rank(M^G) == rank(M) ^
+    // shift(G) is exact under linear routing, so the planes are a per-generator constant already in hand
+    // and only the partition index is per term. `my_flat` must be this slot's own index and `shift` this
+    // generator's rank_shift, or ownership moves silently -- the same precondition mpi::PeerPlan carries.
+    // Splitmix has no such identity and falls back to dest(), bit for bit.
+    template <size_t NumModes>
+    [[nodiscard]] [[gnu::always_inline]] inline auto dest_from_shift(const Monomial<NumModes> &mono,
+                                                                     size_t my_flat,
+                                                                     size_t shift) const noexcept -> size_t {
+        if (!linear_) {
+            return dest<NumModes>(mono);
+        }
+        const size_t rank = rank_of_slot_(my_flat) ^ shift;
+        if (parts_ == 1) {
+            return rank;
+        }
+        return (rank * parts_) + part_of_(monomial_hash<NumModes>(mono));
     }
 
     // The rank-level shift a generator induces: rank(M^G) == rank(M) ^ shift(G). Zero for every G when
@@ -215,13 +238,35 @@ private:
         : ranks_(ranks == 0 ? 1 : ranks),
           parts_(partitions == 0 ? 1 : partitions),
           flat_(ranks_ * parts_),
-          linear_(linear && ranks_ > 1) { // R == 1 takes no rank bit, so it IS the dense case
+          linear_(linear && ranks_ > 1), // R == 1 takes no rank bit, so it IS the dense case
+          parts_pow2_(std::has_single_bit(parts_)),
+          parts_mask_(parts_ - 1),
+          parts_log2_(static_cast<size_t>(std::countr_zero(parts_))) {
         if (linear && !std::has_single_bit(ranks_)) {
             throw UnroutableGeometry(
                 std::format("linear routing needs a power-of-two rank count, got {}. Launch 2^k ranks, or set "
                             "monoprop_ROUTING=splitmix to keep the dense all-to-all.",
                             ranks_));
         }
+    }
+
+    // q % S. Every production layout has S in {1,2,4,8,16}, where the modulo is a mask -- and parts_ is a
+    // runtime member, so the compiler cannot strength-reduce it on our behalf. Identical bit for bit.
+    [[nodiscard]] [[gnu::always_inline]] inline auto part_of_(uint64_t q) const noexcept -> size_t {
+        if (parts_pow2_) {
+            assert(static_cast<size_t>(q & parts_mask_) == static_cast<size_t>(q % parts_));
+            return static_cast<size_t>(q & parts_mask_);
+        }
+        return static_cast<size_t>(q % parts_);
+    }
+
+    // Flat slot -> rank index. Flat slots are rank * S + partition (mpi::rank under the hybrid comm).
+    [[nodiscard]] [[gnu::always_inline]] inline auto rank_of_slot_(size_t flat_slot) const noexcept -> size_t {
+        if (parts_pow2_) {
+            assert((flat_slot >> parts_log2_) == flat_slot / parts_);
+            return flat_slot >> parts_log2_;
+        }
+        return flat_slot / parts_;
     }
 
     // linear_hash(M) & (R - 1), one output bit per plane: parity(popcount(M & plane_j)). Folding the
@@ -249,6 +294,9 @@ private:
     size_t parts_;
     size_t flat_;
     bool linear_;
+    bool parts_pow2_;   // S is 2^k, so `% S` is a mask and `/ S` a shift
+    size_t parts_mask_; // S - 1, and parts_log2_ == log2(S); both meaningless unless parts_pow2_
+    size_t parts_log2_;
     const uint64_t *planes_ = nullptr; // [kLinearPlanes x plane_words_], owned by linear_planes()
     size_t plane_words_ = 0;
 };
