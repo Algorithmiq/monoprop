@@ -147,6 +147,45 @@ BOOST_AUTO_TEST_CASE(routing_shift_identity_holds_under_linear_routing) {
     }
 }
 
+// What the emit path actually calls. rank(M^G) == rank(M) ^ shift(G) is an identity, so the check is
+// exact equality against dest() over every geometry and both modes -- including splitmix, where
+// dest_from_shift is a pass-through and must not move a term either. S == 1 (no partition index at all),
+// S a power of two (the masked modulo) and S = 3, 14 (the division) are all here.
+BOOST_AUTO_TEST_CASE(routing_dest_from_shift_agrees_with_dest) {
+    const auto terms = random_monomials(400, 6, 0x5E1F7A11ULL);
+    const auto gens = random_monomials(25, 4, 0x9110F7E5ULL);
+    const std::vector<std::pair<size_t, size_t>>
+        geometries{{1, 1}, {8, 1}, {16, 1}, {2, 2}, {32, 16}, {64, 8}, {4, 3}, {8, 14}, {1, 14}};
+    size_t checked = 0;
+    for (const auto &[r, s] : geometries) {
+        for (const bool linear : {false, true}) {
+            const auto router = Router::for_modes<kN>(r, s, linear);
+            for (const auto &g : gens) {
+                const size_t shift = router.rank_shift<kN>(g);
+                for (const auto &m : terms) {
+                    // dest(m) stands in for the flat slot the owning rank would pass in.
+                    const auto partner = m ^ g;
+                    BOOST_REQUIRE_EQUAL(router.dest_from_shift<kN>(partner, router.dest<kN>(m), shift),
+                                        router.dest<kN>(partner));
+                    ++checked;
+                }
+            }
+        }
+    }
+    BOOST_TEST_MESSAGE("dest_from_shift checks: " << checked);
+    BOOST_TEST(checked >= 100000U);
+}
+
+// The S == 1 skip: the partition index is 0 for every term, so under linear routing the destination is
+// the rank index alone and monomial_hash is not on the path at all.
+BOOST_AUTO_TEST_CASE(routing_single_partition_destination_is_the_rank_index) {
+    constexpr size_t kRanks = 64;
+    const auto router = Router::for_modes<kN>(kRanks, 1, true);
+    for (const auto &m : random_monomials(500, 5, 0x0FAE7101ULL)) {
+        BOOST_REQUIRE_EQUAL(router.dest<kN>(m), routing::linear_hash<2 * kN>(m) & (kRanks - 1));
+    }
+}
+
 // The consequence that the transport will rely on: every term a rank owns sends its query for one
 // generator to exactly ONE peer rank -- and the partition index within that peer still spreads.
 BOOST_AUTO_TEST_CASE(routing_fanout_is_one_under_linear_routing) {

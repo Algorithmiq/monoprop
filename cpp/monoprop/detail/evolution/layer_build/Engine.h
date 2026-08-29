@@ -592,8 +592,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // Under linear routing every query for THIS generator lands on the rank this rank's own index XOR
     // rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise, which is
     // today's collective.
-    const auto plan =
-        mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
+    const size_t gen_shift = router.rank_shift<NumModes>(gen);
+    const auto plan = mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(gen_shift)};
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
@@ -634,6 +634,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        R,
                                                        my_rank,
                                                        router,
+                                                       gen_shift,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
                                                        cos_build);
