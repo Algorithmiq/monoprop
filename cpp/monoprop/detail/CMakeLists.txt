@@ -5,7 +5,11 @@ target_sources(
       TYPE HEADERS
       FILES
         "EnvConfig.h"
+        "MemoryBytes.h"
+        "ProcessMemory.h"
 )
+
+target_sources(monoprop-objs PRIVATE ProcessMemory.cpp)
 
 add_subdirectory(evolution)
 add_subdirectory(graph)

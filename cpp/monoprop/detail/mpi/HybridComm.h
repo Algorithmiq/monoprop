@@ -30,6 +30,7 @@
 
 #include <mpi.h>
 
+#include "monoprop/detail/MemoryBytes.h"
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
@@ -97,6 +98,28 @@ public:
     auto operator=(const HybridComm &) -> HybridComm & = delete;
 
     auto size() const -> int { return r_ * s_; }
+
+    // Per PROCESS, not per partition; capacities, so staging reads at the largest exchange's high-water mark.
+    [[nodiscard]] auto staging_bytes() const -> size_t {
+        return monoprop::detail::capacity_bytes(stage_send_, stage_recv_, red_vec_);
+    }
+    [[nodiscard]] auto memory_bytes() const -> size_t {
+        return sizeof(HybridComm) + staging_bytes()
+               + monoprop::detail::capacity_bytes(slots_,
+                                                  counts_send_,
+                                                  counts_recv_,
+                                                  mpi_send_counts_,
+                                                  mpi_send_displs_,
+                                                  mpi_recv_counts_,
+                                                  mpi_recv_displs_,
+                                                  pack_off_,
+                                                  base_send_,
+                                                  base_recv_,
+                                                  col_sum_,
+                                                  recv_col_,
+                                                  counts_matrix_store_,
+                                                  rows_store_);
+    }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
     auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {

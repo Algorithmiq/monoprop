@@ -35,6 +35,7 @@
 #include <nanobind/stl/vector.h>
 
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/detail/ProcessMemory.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 namespace nb = nanobind;
@@ -254,8 +255,11 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "Total bytes held by the graph on this rank");
 
     // total_bytes() alone cannot say whether the row store or the transposed inverted index dominates.
+    // The d_proc_* keys are the kernel's and the allocator's own numbers, so coverage needs no harness.
+    // They are PER PROCESS, and the C++ breakdown never carries them so operator+= cannot sum them.
     cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.operator_memory_usage();
+        const auto proc = monoprop::detail::process_memory();
         return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
                                              {"op_coeffs_bytes", b.op_coeffs_bytes},
                                              {"state_coeffs_bytes", b.state_coeffs_bytes},
@@ -264,6 +268,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
                                              {"matched_scratch_bytes", b.matched_scratch_bytes},
+                                             {"transport_bytes", b.transport_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics, outside total_bytes().
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
@@ -271,7 +276,20 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
-                                             {"d_init_operator_entries", b.init_operator_entries}};
+                                             {"d_init_operator_entries", b.init_operator_entries},
+                                             {"d_transport_staging_bytes", b.transport_staging_bytes},
+                                             {"d_invidx_slack_bytes", b.inverted_index_slack_bytes},
+                                             {"d_coeff_slack_bytes", b.coeff_slack_bytes},
+                                             {"d_reserved_bytes", b.reserved_bytes()},
+                                             {"d_terms_peak_bytes", b.operator_terms_peak_bytes},
+                                             {"d_indexing_peak_bytes", b.indexing_peak_bytes},
+                                             // Per PROCESS, not per partition. See the note above.
+                                             {"d_proc_rss_bytes", proc.rss_bytes},
+                                             {"d_proc_peak_rss_bytes", proc.peak_rss_bytes},
+                                             {"d_proc_alloc_in_use_bytes", proc.alloc_in_use_bytes},
+                                             {"d_proc_alloc_retained_bytes", proc.alloc_retained_bytes},
+                                             {"d_proc_alloc_system_bytes", proc.alloc_system_bytes},
+                                             {"d_proc_alloc_arenas", proc.alloc_arenas}};
     });
 
     // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P

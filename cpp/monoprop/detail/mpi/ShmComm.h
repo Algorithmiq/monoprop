@@ -24,6 +24,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "monoprop/detail/MemoryBytes.h"
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
@@ -44,6 +45,12 @@ public:
     auto operator=(const ShmComm &) -> ShmComm & = delete;
 
     auto size() const -> int { return n_; }
+
+    // Per PROCESS, not per partition. R == 1 has no funnel: alltoallv memcpys out of published pointers.
+    [[nodiscard]] auto memory_bytes() const -> size_t {
+        return sizeof(ShmComm) + monoprop::detail::capacity_bytes(slots_);
+    }
+    [[nodiscard]] auto staging_bytes() const -> size_t { return 0uz; }
 
     // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {

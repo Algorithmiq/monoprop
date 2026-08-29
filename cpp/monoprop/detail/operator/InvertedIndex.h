@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/MemoryBytes.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
@@ -200,6 +201,15 @@ struct InvertedIndex {
             total += col.set_rows.capacity() * sizeof(TermIndex);
         }
         total += row_parity_.capacity() * sizeof(uint64_t);
+        return total;
+    }
+
+    // Diagnostic: the part of memory_bytes() no resize ever wrote. Unfaulted, but see reserved_bytes.
+    auto slack_bytes() const -> size_t {
+        size_t total = capacity_slack_bytes(row_parity_);
+        for (const auto &col : cols) {
+            total += capacity_slack_bytes(col.words, col.set_rows);
+        }
         return total;
     }
 

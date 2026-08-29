@@ -334,7 +334,12 @@ auto MonomialPropagator<NumModes>::partitioned_core_term_() const -> double {
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::partitioned_operator_memory_usage_() const
     -> detail::MPOperatorMemoryBreakdown<NumModes> {
-    return sum_partitions_([](const MonomialPropagator &s) { return s.operator_memory_usage(); });
+    auto out = sum_partitions_([](const MonomialPropagator &s) { return s.operator_memory_usage(); });
+    // The transport belongs to the group, not to a partition, so it is added ONCE after the sum.
+    const auto [transport, staging] = partition_group_->transport_memory_bytes();
+    out.transport_bytes = transport;
+    out.transport_staging_bytes = staging;
+    return out;
 }
 
 template <size_t NumModes>
