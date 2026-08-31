@@ -299,6 +299,161 @@ just bench-build-mpi                           # build once (MPI on)
 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
 
+### The ladder
+
+The default sizes above fit a laptop and a CI runner; the sizes the library is used at do not.
+`benches/LADDER.md` is the set at those sizes, run through the ordinary
+`just bench LABEL <flags>` route (or that same pytest line under `srun` for multi-rank): four
+groups, each a table of the exact flags and `-k` selector that produce it. L1 is one thread at
+~10M terms; L2 is one node at ~1B; L3 is the same problems on four nodes at 8 ranks/node x 16
+partitions; L4 is the strong and weak scaling ladders of hubbard `propagate`. The document also
+gives the sbatch shapes for each group and the pinning traps that silently unpin a run.
+
+Nothing runs these for you, and no benchmark gates a pull request. Running the group a change
+could plausibly move, and putting the numbers in the pull request, is the author's job.
+
+### Scaling
+
+Node scaling of Hubbard `propagate`, 1 to 64 nodes (128 to
+8192 cores) at 8 MPI ranks per node × 16 partitions, so `R = 8N` and `P = 128N` with one core per
+partition. Measured 2026-08-27 on AMD EPYC 7742 nodes with 242.0 GiB usable each; 38 points, five
+reps apiece (ten on the smallest weak ladder), every rep gate-checked on binary identity,
+environment and term count before its time was kept. `benches/LADDER.md`'s L4 group reproduces
+these points; the medians below are what a run of it is a diff against.
+
+The measuring binary was `perf/linear-routing-on-wire` @ `c2554554` (`_core.so` md5
+`1157a5e2b421fb8bd18fc6d16fa39778`), whose default is GF(2)-linear on-wire routing. That is the
+branch's default, **not** `main`'s: the figures are internally consistent and traceable, but they
+are not a measurement of `main`.
+
+Problem size is `--hubbard-lower-atol` at a fixed cutoff of 10, which is saturated there, so all
+growth comes from the tolerance and every point stays inside the same operator family. The eleven
+sizes form a doubling sequence and both families are built from it, so a cell reached by two
+ladders is *exactly* the same problem — nine such cells agreed to within 1.24%, most within 0.2%,
+which is a free check on the whole apparatus.
+
+Some points are absent because the problem does not fit in that many nodes' memory, not because
+they were skipped: `strong-6126m` starts at two nodes and `strong-24420m` at eight.
+
+**`strong-1569m`** — 1,569,152,761 terms held fixed.
+
+| nodes | R | P | terms | Mterms/node | median s | Mterms/s/node | GiB/node |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 8 | 128 | 1,569,152,761 | 1569 | 215.61 | 7.28 | 99.9 |
+| 2 | 16 | 256 | 1,569,152,761 | 785 | 105.91 | 7.41 | 51.5 |
+| 4 | 32 | 512 | 1,569,152,761 | 392 | 53.34 | 7.35 | 28.0 |
+| 8 | 64 | 1024 | 1,569,152,761 | 196 | 28.58 | 6.86 | 15.9 |
+| 16 | 128 | 2048 | 1,569,152,761 | 98 | 18.12 | 5.41 | 11.0 |
+| 32 | 256 | 4096 | 1,569,152,761 | 49 | 16.13 | 3.04 | 6.6 |
+| 64 | 512 | 8192 | 1,569,152,761 | 25 | 23.99 | 1.02 | 4.1 |
+
+**`strong-6126m`** — 6,125,805,627 terms held fixed.
+
+| nodes | R | P | terms | Mterms/node | median s | Mterms/s/node | GiB/node |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 16 | 256 | 6,125,805,627 | 3063 | 450.19 | 6.80 | 200.2 |
+| 4 | 32 | 512 | 6,125,805,627 | 1531 | 224.45 | 6.82 | 101.3 |
+| 8 | 64 | 1024 | 6,125,805,627 | 766 | 109.53 | 6.99 | 51.3 |
+| 16 | 128 | 2048 | 6,125,805,627 | 383 | 58.75 | 6.52 | 27.4 |
+| 32 | 256 | 4096 | 6,125,805,627 | 191 | 38.09 | 5.03 | 16.1 |
+| 64 | 512 | 8192 | 6,125,805,627 | 96 | 36.95 | 2.59 | 11.4 |
+
+**`strong-24420m`** — 24,419,998,198 terms held fixed.
+
+| nodes | R | P | terms | Mterms/node | median s | Mterms/s/node | GiB/node |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 64 | 1024 | 24,419,998,198 | 3052 | 471.03 | 6.48 | 201.3 |
+| 16 | 128 | 2048 | 24,419,998,198 | 1526 | 235.19 | 6.49 | 101.8 |
+| 32 | 256 | 4096 | 24,419,998,198 | 763 | 127.10 | 6.00 | 52.2 |
+| 64 | 512 | 8192 | 24,419,998,198 | 382 | 79.58 | 4.79 | 26.9 |
+
+**`weak-97m`** — ~97M terms per node.
+
+| nodes | R | P | terms | Mterms/node | median s | Mterms/s/node | GiB/node |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 8 | 128 | 96,981,051 | 97 | 10.75 | 9.02 | 10.8 |
+| 2 | 16 | 256 | 184,124,520 | 92 | 10.58 | 8.70 | 9.6 |
+| 4 | 32 | 512 | 377,482,074 | 94 | 13.13 | 7.19 | 11.5 |
+| 8 | 64 | 1024 | 781,669,404 | 98 | 14.54 | 6.72 | 10.9 |
+| 16 | 128 | 2048 | 1,569,152,761 | 98 | 18.11 | 5.42 | 11.0 |
+| 32 | 256 | 4096 | 3,104,527,573 | 97 | 24.39 | 3.98 | 11.0 |
+| 64 | 512 | 8192 | 6,125,805,627 | 96 | 36.59 | 2.62 | 11.4 |
+
+**`weak-385m`** — ~385M terms per node.
+
+| nodes | R | P | terms | Mterms/node | median s | Mterms/s/node | GiB/node |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 8 | 128 | 377,482,074 | 377 | 47.71 | 7.91 | 26.6 |
+| 2 | 16 | 256 | 781,669,404 | 391 | 50.90 | 7.68 | 28.0 |
+| 4 | 32 | 512 | 1,569,152,761 | 392 | 53.29 | 7.36 | 27.9 |
+| 8 | 64 | 1024 | 3,104,527,573 | 388 | 54.73 | 7.09 | 27.5 |
+| 16 | 128 | 2048 | 6,125,805,627 | 383 | 58.03 | 6.60 | 27.4 |
+| 32 | 256 | 4096 | 12,255,330,837 | 383 | 64.64 | 5.92 | 26.3 |
+| 64 | 512 | 8192 | 24,419,998,198 | 382 | 79.89 | 4.78 | 26.9 |
+
+**`weak-1529m`** — ~1529M terms per node.
+
+| nodes | R | P | terms | Mterms/node | median s | Mterms/s/node | GiB/node |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 8 | 128 | 1,569,152,761 | 1569 | 215.61 | 7.28 | 99.9 |
+| 2 | 16 | 256 | 3,104,527,573 | 1552 | 222.27 | 6.98 | 100.2 |
+| 4 | 32 | 512 | 6,125,805,627 | 1531 | 224.04 | 6.84 | 101.2 |
+| 8 | 64 | 1024 | 12,255,330,837 | 1532 | 227.33 | 6.74 | 99.9 |
+| 16 | 128 | 2048 | 24,419,998,198 | 1526 | 235.55 | 6.48 | 101.8 |
+| 32 | 256 | 4096 | 48,317,129,677 | 1510 | 249.62 | 6.05 | 101.3 |
+| 64 | 512 | 8192 | 94,684,031,363 | 1479 | 257.05 | 5.76 | 84.3 |
+
+
+Two things follow from the strong curves, and only from having three of them. The reversal in
+`strong-1569m` at 64 nodes is not a property of a core count: the same hardware still improves at
+64 nodes on the two larger problems. What sets the optimum is the load *per node*, and it falls
+below roughly 50–100 Mterms/node at the point each curve turns. Each doubling of the problem buys
+one more useful doubling of nodes.
+
+Weak scaling says the same thing from the other side. At ~97M terms/node, 64 nodes runs at 29% of
+one node's efficiency; at ~385M it is 60%; at ~1529M it is 84% across 64× the hardware. A run that
+can afford about 1.5e9 terms per node weak-scales almost ideally to 8192 cores; one at 100M/node
+does not.
+
+Peak resident memory over all 38 points, spanning 25 to 3063 Mterms per node:
+
+```
+GiB/node = 3.39 + 0.0634 × Mterms/node
+```
+
+The law is **specific to hubbard `propagate` at 8 ranks x 16 partitions** and does not transfer:
+the random model at ~949M terms measures 0.100 GiB/Mterm propagating, 0.115 building the graph
+and 0.115 evaluating energy and gradient, against this slope's 0.063. Both terms of the fit are
+real. The slope is the per-term cost, about 68 bytes per term. The constant is a
+genuine per-node floor that a model through the origin cannot reproduce — the smallest point
+measures 4.1 GiB/node at 25 Mterms/node. Every point falls within −2.9 to +4.5 GiB/node of that
+line except `weak-1529m` at 64 nodes, which measures 84.3 against 97.1 predicted, identically on
+all five reps; it is reproducible and unexplained, and no mechanism is claimed for it on the
+strength of one point. The largest cell measured 201.3 GiB/node against a 242.0 GiB grant.
+
+Memory partitions across nodes for hubbard and pauli and **does not** for the random model, whose
+per-node peak barely moves on any operation. The cause is a per-process floor. For the random
+`build_graph` row of L2 against L3, `opmembase` is the resident floor when the timed call starts
+and `opmemdelta` is the call's own cost:
+
+| per rank | 1 node, R=1 | 4 nodes, R=32 |
+| --- | ---: | ---: |
+| floor (`opmembase`) | 13.04 GiB | 9.45 GiB |
+| the call itself (`opmemdelta`) | 96.25 GiB | 3.59 GiB |
+
+Both columns reconcile to the measured peak exactly: `13.0 + 96.3 = 109.3` GiB/node, and
+`8 x 9.45 + 8 x 3.59 = 104.2`. The operation's own memory partitions almost perfectly -- 27x less
+per rank for 32x the ranks -- while the floor is a **~9.5 GiB per-process constant**, so eight
+ranks on a node pay it eight times and 75.6 of that row's 104.2 GiB/node is floor before the graph
+build allocates anything. It is not per-partition (128 partitions carry 13.04 GiB, 16 carry 9.45)
+and it is not the operator: every field of `opmembreak` partitions cleanly, its rank-summed total
+moving only 88.0 to 86.0 GiB from 1 rank to 32. What the 9.5 GiB consists of is **not attributed**
+by any recorded field; allocator-retained construction memory, fabric buffers and per-process
+thread state are the unmeasured candidates. The consequence is the useful part: **more ranks per
+node buys speed and costs a floor**, paid per process, so it hurts most where the operation's own
+cost is smallest -- worst on the 19M-term Schrodinger rows, where four nodes cost more per node
+than one.
+
 ### Continuous benchmarking
 
 The `bench_main.yml` workflow benchmarks every commit on `main`. [Bencher](https://bencher.dev/)
@@ -338,6 +493,11 @@ series.
 The bare-metal workflow provisions a dedicated node for each run. Its lower measurement variance
 supports tighter timing thresholds and permits execution of the fixed models omitted on the shared
 runner.
+
+**No benchmark workflow gates a pull request.** Both track the main branch, and a threshold
+over a series that spans runners is a report, not a verdict. Measuring a change is the author's
+job -- see "The ladder" above. Every run uploads `bmf.json` and the raw result JSON as an artifact,
+so a failed Bencher upload does not take the measurement with it.
 
 The `bench-markers` and `bench-rounds` inputs of the reusable `bench.yml` workflow select the
 benchmarks and repetition count. These values should remain fixed after establishing a testbed,

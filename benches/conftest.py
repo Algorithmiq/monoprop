@@ -136,8 +136,10 @@ _RANDOM_OPTIONS = (
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "memhwm": {},  # node id -> summed peak RSS, whole test, setup() included
-    "memhwm_max": {},  # node id -> worst-rank peak RSS, whole test, setup() included
+    # Keyed by PYTEST node id, so a two-operation row gets one entry each and the windows
+    # overlap: max over them, never sum (each already contains the resident operator).
+    "memhwm": {},  # pytest node id -> summed-over-ranks peak RSS, whole test, setup() included
+    "memhwm_max": {},  # pytest node id -> worst-rank peak RSS, whole test, setup() included
     "opsize": {},  # picture / model / node id -> {"terms": n}
     "configs": {},  # fixed model -> config dataclass fields
     "opmem": {},  # fixed model -> per-field operator memory split (bytes)
