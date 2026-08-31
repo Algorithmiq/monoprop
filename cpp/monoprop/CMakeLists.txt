@@ -106,10 +106,11 @@ target_compile_features(monoprop INTERFACE cxx_std_23)
 
 target_link_libraries(
   monoprop
+  PUBLIC
+    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
   INTERFACE
     Boost::boost
     Threads::Threads
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
   PRIVATE
     # Keep the non-exported sanitizer target out of monopropTargets.
     $<BUILD_INTERFACE:monoprop-sanitizers>
