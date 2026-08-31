@@ -127,7 +127,9 @@ and each whole-suite MPI run has a 600-second deadlock timeout. Source builds
 select the MPI and 64-bit term-index variants with `monoprop_ENABLE_MPI=ON` and
 `monoprop_WIDE_TERM_INDEX=ON`, respectively; the switches can be combined.
 Standalone MPI-enabled C++ programs must initialize MPI before constructing a
-propagator and finalize it only after all propagators have been destroyed.
+propagator and finalize it only after all propagators have been destroyed. The
+exported CMake target preserves the package's MPI setting independently of any
+`MPI::MPI_CXX` target already present in the consuming project.
 
 ## Repository layout
 
