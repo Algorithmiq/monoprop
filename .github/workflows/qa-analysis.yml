@@ -62,6 +62,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: coverage
           python-version: "3.11"
 
       - name: Install package
@@ -151,6 +152,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: gcc-asan-ubsan
           python-version: "3.11"
 
       - name: Install package
@@ -223,6 +225,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: gcc-tsan
           python-version: "3.11"
 
       - name: Install package
@@ -253,6 +256,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: sonarqube-mpi
           python-version: "3.11"
 
       - name: Install package
@@ -302,6 +306,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: clang-tidy-mpi
           python-version: "3.11"
 
       - name: Build (generates compile_commands.json)

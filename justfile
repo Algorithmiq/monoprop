@@ -32,16 +32,20 @@ test:
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
 
 test-mpi RANKS='':
-    monoprop_ENABLE_MPI=ON \
-        uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache -v
+    requested_ranks={{quote(RANKS)}}; \
+    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
+    monoprop_ENABLE_MPI=ON uv sync --all-extras --group workspace-test \
+        --reinstall-package monoprop --no-cache -v \
+        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"; \
     export OMPI_MCA_rmaps_base_oversubscribe="1"; \
-    ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     for r in ${ranks//;/ }; \
     do echo "Running full Python test suite with ${r} MPI rank(s)"; \
     mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
-    echo "Running C++ unit tests with ${r} MPI rank(s)"; \
-    ctest --test-dir build/editable/Release --output-on-failure; \
-    done
+    done; \
+    echo "Running non-MPI C++ unit tests"; \
+    ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-exclude mpi; \
+    echo "Running configured C++ MPI rank matrix: ${ranks}"; \
+    ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-regex mpi
 
 # Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
 # This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
@@ -49,7 +53,7 @@ test-mpi RANKS='':
 # guards them from bit-rotting. Serial is enough to exercise those branches.
 
 test-wide:
-    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_WIDE_TERM_INDEX=ON"
+    monoprop_WIDE_TERM_INDEX=ON uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache
     uv run --no-sync python -m pytest -m "not mpi"
     ctest --test-dir build/editable/Release --output-on-failure
 

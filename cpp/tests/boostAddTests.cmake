@@ -95,7 +95,13 @@ endfunction()
 
 # `script` and `tests` are written back because add_command's PARENT_SCOPE write lands here.
 function(register_variant NAME)
-  cmake_parse_arguments("" "" "" "COMMAND;LABELS;ENVIRONMENT" ${ARGN})
+  cmake_parse_arguments(
+    ""
+    ""
+    ""
+    "COMMAND;LABELS;ENVIRONMENT;PROPERTIES"
+    ${ARGN}
+  )
 
   set(
     _variant_labels
@@ -110,7 +116,11 @@ function(register_variant NAME)
   )
   list(REMOVE_DUPLICATES _variant_env)
 
-  set(_variant_properties ${common_properties})
+  set(
+    _variant_properties
+    ${common_properties}
+    ${_PROPERTIES}
+  )
   # Bracket-quote the joined values: they hold the `;` separators CTest expects, which would
   # otherwise be re-split when the generated script is included.
   if(_variant_labels)
@@ -245,6 +255,9 @@ if(TEST_ENABLE_MPI_VARIANTS AND MPIEXEC_EXECUTABLE)
       ENVIRONMENT
         "OMPI_ALLOW_RUN_AS_ROOT=1"
         "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+      PROPERTIES
+        TIMEOUT
+        600
     )
   endforeach()
 endif()

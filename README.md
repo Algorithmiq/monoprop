@@ -122,7 +122,10 @@ just test-wide                         # Python + C++ unit tests with a 64-bit T
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
 for the with/without-MPI details and the rank matrix. CI has explicit MPI-enabled
 lanes on Linux x86-64, Linux ARM64, and macOS; installing the `mpi` extra alone
-does not enable the C++ MPI build.
+does not enable the C++ MPI build. CI requires a registered MPI CTest variant,
+and each whole-suite MPI run has a 600-second deadlock timeout. Source builds
+select the MPI and 64-bit term-index variants with `monoprop_ENABLE_MPI=ON` and
+`monoprop_WIDE_TERM_INDEX=ON`, respectively.
 
 ## Repository layout
 

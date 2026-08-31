@@ -35,6 +35,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: copilot
           python-version: "3.11"
 
       - name: Install package
