@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
-#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
@@ -49,7 +49,7 @@ auto random_monomial(std::mt19937_64 &rng, size_t k) -> Monomial<NumModes> {
     return m;
 }
 
-// Fully paired terms are the only source of wide records: 94 in 20.9M in production, so drawn here.
+// Fully paired terms are the only source of wide records in production, so drawn here explicitly.
 template <size_t NumModes>
 auto random_paired_monomial(std::mt19937_64 &rng, size_t d) -> Monomial<NumModes> {
     Monomial<NumModes> m;
@@ -105,15 +105,27 @@ auto draw_distinct(std::mt19937_64 &rng, size_t n) -> std::vector<Monomial<NumMo
     return out;
 }
 
+// Extracts an ascending position vector from a Monomial: the wire record is built from positions, and
+// production never encodes straight from a bitset.
+template <size_t NumModes>
+auto positions_of(const Monomial<NumModes> &m) -> std::vector<uint16_t> {
+    std::vector<uint16_t> pos;
+    for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+        pos.push_back(static_cast<uint16_t>(b));
+    }
+    return pos;
+}
+
 template <size_t NumModes>
 auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused) -> std::vector<VecZ> {
     std::vector<VecZ> incoming(queries.size());
     for (size_t s = 0; s < queries.size(); ++s) {
         for (size_t q = 0; q < queries[s].size(); ++q) {
             const int phase = ((q % 2) == 0) ? 1 : -1;
-            detail::QueryCodec<NumModes>::push(incoming[s], queries[s][q], phase);
+            const auto pos = positions_of<NumModes>(queries[s][q]);
+            detail::QueryWire<NumModes>::push(incoming[s], pos.data(), pos.size(), phase);
             if (fused) {
-                detail::QueryCodec<NumModes>::push_value(incoming[s], 0.5 + static_cast<double>(q));
+                detail::QueryWire<NumModes>::push_value(incoming[s], 0.5 + static_cast<double>(q));
             }
         }
     }
@@ -160,10 +172,10 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     }
 
     const auto incoming = serialize<NumModes>(queries, fused);
-    const detail::QueryLayout layout{fused};
+    const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, rank_count, layout);
+    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, rank_count, form);
 
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
     BOOST_REQUIRE(pr.nq_total > 0);
@@ -202,7 +214,8 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
             expected_misses.push_back(want);
         }
         VecZ scratch;
-        if (detail::QueryCodec<NumModes>::push(scratch, want, expect_phase[g]) > 1U) {
+        const auto want_pos = positions_of<NumModes>(want);
+        if (detail::QueryWire<NumModes>::push(scratch, want_pos.data(), want_pos.size(), expect_phase[g]) > 1U) {
             ++wide_seen;
         }
     }

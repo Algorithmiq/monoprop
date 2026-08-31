@@ -61,9 +61,8 @@ auto check_pair(const Monomial<kN> &mono, const Monomial<kN> &gen) -> size_t {
     const auto gpos = positions_of(gen);
     std::vector<uint16_t> out(kBits);
     size_t overlap = 0;
-    size_t d = 0;
     const size_t k =
-        detail::merge_partner_positions(src.data(), src.size(), gpos.data(), gpos.size(), out.data(), overlap, d);
+        detail::merge_partner_positions(src.data(), src.size(), gpos.data(), gpos.size(), out.data(), overlap);
 
     const auto expect = dense_partner(mono, gen);
     BOOST_REQUIRE_EQUAL(k, expect.size());
@@ -71,8 +70,6 @@ auto check_pair(const Monomial<kN> &mono, const Monomial<kN> &gen) -> size_t {
         BOOST_REQUIRE_EQUAL(static_cast<size_t>(out[j]), expect[j]);
     }
     BOOST_REQUIRE_EQUAL(overlap, mono.count_and(gen));
-    // d must be exactly what the cutoff digest would have folded out of the dense partner.
-    BOOST_REQUIRE_EQUAL(d, paired_mode_count<kN>(mono ^ gen));
     // The popcount identity the emit site asserts on.
     BOOST_REQUIRE_EQUAL(k, mono.count() + gen.count() - (2 * overlap));
     return k;
@@ -124,9 +121,9 @@ BOOST_AUTO_TEST_CASE(partner_merge_matches_dense_at_every_overlap) {
     BOOST_TEST(nonempty > 600U);
 }
 
-// The paired population separately: d is the field the length cutoff's escape hatch rests on, and a
-// uniform draw almost never produces a fully paired monomial.
-BOOST_AUTO_TEST_CASE(partner_merge_d_matches_on_paired_monomials) {
+// The paired population separately: a uniform draw almost never produces a fully paired monomial, so
+// this case is drawn on purpose rather than left to chance in the sweep above.
+BOOST_AUTO_TEST_CASE(partner_merge_matches_dense_on_paired_monomials) {
     std::mt19937_64 rng(0xBEEFU);
     size_t paired_seen = 0;
     for (size_t rep = 0; rep < 400; ++rep) {

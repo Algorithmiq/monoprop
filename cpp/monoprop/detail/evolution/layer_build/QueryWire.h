@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cassert>
 #include <cstddef>
@@ -21,37 +22,33 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 
 namespace monoprop::detail {
 
-// A variable-width query record: one word-aligned record per term holding the term's ascending set-bit
-// positions, gap-coded. Record order is preserved everywhere, because it is the floating-point
-// accumulation order (Resolve.h mints misses in it).
-//
-// Header in the low bits of word 0, then the payload LSB-first, both by explicit shift, never punning:
-//   [0..1] phase+1 (emit_phase is TERNARY)  [2..6] k, 31 escaping to a following kLongKBits-wide k
-//   then [kGwBits] gw  then pos[0] raw at kPosBits, then k-1 gaps of gw bits.
-//
-// ONE form, no mode field and no per-record argmin. Gap coding is never wider than raw lanes, because
-// gw = bit_width(max gap) <= bit_width(kBits - 1) = kPosBits, hence kPosBits + (k-1)*gw <= k*kPosBits. A
-// raw kBits mask is narrower only once k*kPosBits > kBits, i.e. from k = 34 at 128 modes, where this
-// record costs one word more: measured on 0 of 106,368 captured records (max k = 23, at pauli cutoff
-// 12), and that is the price of one code path. Dropping the argmin also dropped the stack array it
-// sized -- gap coding emits bits monotonically, so the encoder streams straight into `buf` and no longer
-// zeroes 48 B per push.
+// One term's wire record for a cross-rank query: its ascending set-bit positions, gap-coded, plus a
+// phase. It replaces a fixed dense stride, which would spend one word per 64 modes no matter how few
+// bits a term actually sets.
+// Layout, LSB-first in word 0 onward: [2b phase][5b k, 31 escapes to a wider k][4b gap width gw]
+// [kPosBits first position][k-1 gaps of gw bits].
+
+// `fused` records carry a trailing value word after the positions; `plain` ones do not. A named enum,
+// not a bare bool, so a form argument cannot read as plausibly correct either way.
+enum class QueryForm { Plain, Fused };
+
 template <size_t NumModes>
-struct SparseQuery {
+struct QueryWire {
     using PosT = uint16_t;
 
     static constexpr size_t kBits = 2 * NumModes;
     static_assert(kBits <= 65535, "a physical bit position and the popcount must both fit a uint16_t");
 
-    //: Bits for one raw position in [0, 2*NumModes); compile-time, so the lane width is free.
+    // Bits for one raw position in [0, 2*NumModes); compile-time, so the lane width is free.
     static constexpr size_t kPosBits = static_cast<size_t>(std::bit_width(kBits - 1));
 
     static constexpr size_t kPhaseBits = 2;
     static constexpr size_t kKBits = 5;
-    //: k is a popcount of a kBits bitset, so the escape can never need more than this.
+    // k is a popcount of a kBits bitset, so the escape field never needs more bits than this.
     static constexpr size_t kLongKBits = static_cast<size_t>(std::bit_width(kBits));
     static constexpr size_t kGwBits = 4;
     static constexpr size_t kKEscape = (1U << kKBits) - 1U;
@@ -59,17 +56,16 @@ struct SparseQuery {
     static_assert(kPosBits <= (1U << kGwBits) - 1U, "gw <= kPosBits must fit the header's gap-width field");
     static_assert(kHeaderBits + kLongKBits <= 64, "the widest header must be readable from word 0 alone");
 
-    //: A popcount cannot exceed the width, which the old 65535 never said.
     static constexpr size_t kMaxPositions = kBits;
 
-    // ---- bit stream -------------------------------------------------------------------------------
+    // Reserve hint only, for a caller batching many records into one flat position buffer.
+    static constexpr size_t kReservePositionsPerQuery = 6;
 
-    // Streams into `buf`: one accumulator, flushed when a word fills, in place of an array sized by the
-    // worst case of three encodings.
+    // Bit-packs fields into `buf`, one word at a time.
     struct Writer {
         VecZ &buf;
         uint64_t cur = 0;
-        size_t nbits = 0; // bits held in cur, always < 64
+        size_t nbits = 0; // bits held in cur, always less than 64
         size_t words = 0;
 
         [[gnu::always_inline]] auto put(uint64_t v, size_t width) noexcept -> void {
@@ -77,11 +73,10 @@ struct SparseQuery {
                 assert(v == 0 && "a zero-width field cannot carry a value");
                 return;
             }
-            // Assert BEFORE masking: masking alone turns an overflow into a different well-formed record.
-            assert((width >= 64 || (v >> width) == 0) && "field value does not fit its width");
-            if (width < 64) {
-                v &= (uint64_t{1} << width) - 1U;
-            }
+            assert(width < 64 && "no field in this record reaches a full word");
+            // Assert before masking: masking alone turns an overflow into a different well-formed record.
+            assert((v >> width) == 0 && "field value does not fit its width");
+            v &= (uint64_t{1} << width) - 1U;
             cur |= v << nbits;
             if (nbits + width < 64) {
                 nbits += width;
@@ -89,8 +84,7 @@ struct SparseQuery {
             }
             buf.push_back(static_cast<size_t>(cur));
             ++words;
-            // nbits == 0 only at width == 64, where every bit is already in cur; `v >> 64` would be UB.
-            cur = (nbits == 0) ? 0 : (v >> (64U - nbits));
+            cur = v >> (64U - nbits);
             nbits = nbits + width - 64U;
         }
 
@@ -104,6 +98,7 @@ struct SparseQuery {
         }
     };
 
+    // Unpacks fields out of `buf`, starting at word `base`.
     struct Reader {
         const VecZ &buf;
         size_t base; // word offset of the record start
@@ -124,8 +119,6 @@ struct SparseQuery {
         }
     };
 
-    // ---- header -----------------------------------------------------------------------------------
-
     struct Header {
         int phase = 0;
         size_t k = 0;
@@ -133,7 +126,6 @@ struct SparseQuery {
         size_t bits = 0; // header width, i.e. where the payload begins
     };
 
-    // One word load and a few masks; deliberately does NOT touch the payload -- the cursor walks call it.
     [[nodiscard]] static auto header_at(const VecZ &buf, size_t off) noexcept -> Header {
         const auto w0 = static_cast<uint64_t>(buf[off]);
         Header h;
@@ -158,7 +150,7 @@ struct SparseQuery {
     }
     [[nodiscard]] static constexpr auto words_of(size_t bits) noexcept -> size_t { return (bits + 63U) / 64U; }
 
-    //: The record's word count, from the header alone: k does not determine it, gw does too.
+    // The record's word count, derived from the header alone: k does not determine it since gw varies too.
     [[nodiscard]] static constexpr auto words_of_header(const Header &h) noexcept -> size_t {
         return words_of(gap_bits(h.k, h.gw));
     }
@@ -172,9 +164,7 @@ struct SparseQuery {
         return header_at(buf, off).phase;
     }
 
-    // ---- encode -----------------------------------------------------------------------------------
-
-    //: gw = bit_width(max gap). Folded into the caller's single pass in push(), never a second walk.
+    // gw = bit_width(max gap), folded into push()'s own pass over the positions.
     template <typename PosU>
     [[nodiscard]] static auto gap_width(const PosU *pos, size_t k) noexcept -> size_t {
         size_t g = 0;
@@ -186,10 +176,9 @@ struct SparseQuery {
         return g;
     }
 
-    // Precondition: k STRICTLY ASCENDING physical bit positions in [0, kBits). A violation is silent in
-    // release -- gap coding is meaningless without it and an out-of-range position decodes to a different
-    // valid-looking monomial. Returns the WORDS written; PosU is generic because the store's position
-    // type is narrower than the wire's below 129 modes, and the encoding does not depend on it.
+    // Precondition: k strictly ascending positions in [0, kBits). A violation is silent in release and
+    // decodes a different, still valid-looking monomial. Returns the words written; PosU is generic
+    // because the store's position type is narrower than the wire's below 129 modes.
     template <typename PosU>
     static auto push(VecZ &buf, const PosU *pos, size_t k, int phase) -> size_t {
         assert(k <= kMaxPositions && "term has more positions than the record's width admits");
@@ -220,9 +209,8 @@ struct SparseQuery {
         return w.words;
     }
 
-    // ---- decode -----------------------------------------------------------------------------------
-
-    // OutT is generic so the resolve path decodes straight into the store's (narrower) position width.
+    // Decodes one record's positions; returns the offset just past them. OutT is generic so the resolve
+    // path decodes straight into the store's (narrower) position width.
     template <typename OutT>
     static auto read_positions(const VecZ &buf, size_t off, OutT *out) -> size_t {
         const Header h = header_at(buf, off);
@@ -240,7 +228,7 @@ struct SparseQuery {
         return next;
     }
 
-    // Debug-only: every wire field must be checkable from the rest of the record, or it rots.
+    // Debug-only: every wire field must be checkable from the rest of the record, or it rots unnoticed.
     template <typename OutT>
     [[nodiscard]] static auto check_header(const VecZ &buf, size_t off, const OutT *pos) -> bool {
         const Header h = header_at(buf, off);
@@ -255,7 +243,7 @@ struct SparseQuery {
         if (h.k != 0 && static_cast<size_t>(pos[h.k - 1]) >= kBits) {
             return false;
         }
-        // gw is the MAXIMUM gap width: too small truncates a gap silently, too large wastes bits.
+        // gw is the maximum gap width: too small truncates a gap silently, too large wastes bits.
         size_t g = 0;
         for (size_t j = 1; j < h.k; ++j) {
             const auto b = static_cast<size_t>(std::bit_width(static_cast<size_t>(pos[j] - pos[j - 1] - 1)));
@@ -264,7 +252,7 @@ struct SparseQuery {
         return g == h.gw;
     }
 
-    // d, recomputed rather than carried: ascending order makes a pair an even position then its successor.
+    // d, recomputed rather than carried: in ascending order a pair is an even position then its successor.
     template <typename OutT>
     [[nodiscard]] static auto pair_count(const OutT *pos, size_t k) noexcept -> size_t {
         size_t d = 0;
@@ -276,49 +264,68 @@ struct SparseQuery {
         return d;
     }
 
-    static constexpr size_t kStackPositions = 64;
-
-    static auto read_mono(const VecZ &buf, size_t off, Monomial<NumModes> &mono_out, int &phase_out) -> size_t {
-        const Header h = header_at(buf, off);
-        phase_out = h.phase;
-        mono_out = Monomial<NumModes>{};
-        if (h.k <= kStackPositions) {
-            PosT scratch[kStackPositions];
-            const size_t next = read_positions(buf, off, scratch);
-            for (size_t j = 0; j < h.k; ++j) {
-                mono_out.set(static_cast<size_t>(scratch[j]));
-            }
-            assert(mono_out.count() == h.k && "decoded popcount disagrees with the record's k");
-            return next;
-        }
-        std::vector<PosT> scratch(h.k);
-        const size_t next = read_positions(buf, off, scratch.data());
-        for (size_t j = 0; j < h.k; ++j) {
-            mono_out.set(static_cast<size_t>(scratch[j]));
-        }
-        assert(mono_out.count() == h.k && "decoded popcount disagrees with the record's k");
-        return next;
+    // Offset of the next record in a stream; `off` always names the start of one.
+    [[nodiscard]] static auto next_off(const VecZ &buf, QueryForm form, size_t off) -> size_t {
+        return off + words_at(buf, off) + (form == QueryForm::Fused ? 1U : 0U);
     }
 
-    // Encode from a dense monomial, for callers that hold only a bitset; the emit path merges positions.
-    static auto push_mono(VecZ &buf, const Monomial<NumModes> &mono, int phase) -> size_t {
-        const size_t k = mono.count();
-        if (k <= kStackPositions) {
-            PosT scratch[kStackPositions];
-            size_t j = 0;
-            for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
-                scratch[j++] = static_cast<PosT>(b);
-            }
-            assert(j == k && "find_first/find_next walk disagrees with count()");
-            return push(buf, scratch, k, phase);
+    // Decodes one record's positions and phase from a query stream, whose form says whether a value
+    // word follows; returns the offset of the next record.
+    template <typename OutT>
+    static auto read_query(const VecZ &buf, QueryForm form, size_t off, OutT *out, int &phase_out) -> size_t {
+        phase_out = phase_at(buf, off);
+        return read_positions(buf, off, out) + (form == QueryForm::Fused ? 1U : 0U);
+    }
+
+    // The fused value word, a bit_cast that follows a record's positions.
+    [[nodiscard]] static auto value_at(const VecZ &buf, [[maybe_unused]] QueryForm form, size_t off) -> double {
+        assert(form == QueryForm::Fused && "there is no value word in a plain query stream");
+        return decode_value(buf[off + words_at(buf, off)]);
+    }
+
+    static auto push_value(VecZ &buf, double v) -> void { buf.push_back(encode_value(v)); }
+
+    // Number of records in the stream: widths vary, so this walks rather than divides.
+    [[nodiscard]] static auto count_queries(const VecZ &buf, QueryForm form) -> size_t {
+        size_t off = 0;
+        size_t n = 0;
+        while (off < buf.size()) {
+            off = next_off(buf, form, off);
+            ++n;
         }
-        std::vector<PosT> scratch(k);
-        size_t j = 0;
-        for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
-            scratch[j++] = static_cast<PosT>(b);
+        assert(off == buf.size() && "a compact query stream ran past the end of the buffer");
+        return n;
+    }
+
+    // Interleaves a plain query stream with its parallel value array into one fused stream.
+    static auto build_fused(const VecZ &queries, const std::vector<double> &vals, VecZ &out) -> void {
+        out.clear();
+        out.reserve(queries.size() + vals.size());
+        size_t off = 0;
+        size_t i = 0;
+        while (off < queries.size()) {
+            const size_t n = words_at(queries, off);
+            out.insert(out.end(),
+                       queries.begin() + static_cast<std::ptrdiff_t>(off),
+                       queries.begin() + static_cast<std::ptrdiff_t>(off + n));
+            assert(i < vals.size() && "fused build needs exactly one value per query");
+            out.push_back(encode_value(vals[i]));
+            off += n;
+            ++i;
         }
-        assert(j == k && "find_first/find_next walk disagrees with count()");
-        return push(buf, scratch.data(), k, phase);
+        assert(i == vals.size() && "fused build needs exactly one value per query");
+    }
+
+    // Copies the record at src_off (and its value word, if fused) to dst_off; returns the words moved.
+    static auto move_query(VecZ &buf, QueryForm form, size_t src_off, size_t dst_off) -> size_t {
+        const size_t n = words_at(buf, src_off) + (form == QueryForm::Fused ? 1U : 0U);
+        if (src_off != dst_off) {
+            assert(dst_off < src_off && "compaction only ever moves a query earlier");
+            std::copy(buf.begin() + static_cast<std::ptrdiff_t>(src_off),
+                      buf.begin() + static_cast<std::ptrdiff_t>(src_off + n),
+                      buf.begin() + static_cast<std::ptrdiff_t>(dst_off));
+        }
+        return n;
     }
 };
 

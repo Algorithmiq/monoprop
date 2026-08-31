@@ -104,9 +104,6 @@ struct FusedContract {
     std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
 };
 
-// Queries ride flat VecZ buffers in one VARIABLE-WIDTH format (SparseQuery): no stride exists, so every
-// offset comes from QueryCodec's walk. The source index is not on the wire; the querier holds src_idx_r.
-
 // bit_cast, not a conversion, so v_src arrives over the wire bit-identical.
 static_assert(sizeof(size_t) == sizeof(double), "fused query value word assumes 64-bit VecZ element");
 inline auto encode_value(double v) -> size_t {

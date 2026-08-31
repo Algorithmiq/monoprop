@@ -23,7 +23,7 @@
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
-#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -35,13 +35,13 @@ namespace monoprop::detail {
 // pairwise distinct ⇒ misses distinct and absent.
 template <size_t NumModes>
 struct IncomingProbe {
-    // The STORE's position width, not the wire's: these positions exist to become rows.
+    // The operator store's position width, not the wire's: these positions exist to become rows.
     using PosT = typename OperatorIndex<NumModes>::PosT;
 
     std::vector<size_t> goff;              // rank_count+1 flat offsets: g = goff[s] + q
     DefaultInitVector<uint32_t> sender_of; // g → sender rank
     DefaultInitVector<int> phase_of;       // g → query phase
-    // g → WORD offset of that query inside incoming[sender_of[g]]; a query ordinal names no position.
+    // g → word offset of that query inside incoming[sender_of[g]]; a query ordinal names no position.
     DefaultInitVector<size_t> off_of;
     DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j)
     std::vector<TermIndex> miss_g;    // j → the g that became miss j (Phase 4 reads the key of miss_g[j])
@@ -55,7 +55,7 @@ struct IncomingProbe {
     // g → fold_hash of the query key, folded by the probe and reused by the insert.
     DefaultInitVector<uint32_t> hash_of;
 
-    // BUILDS a bitset, so cold consumers only -- the fully paired minority, never anything per-term.
+    // Builds a dense bitset; only the fully paired minority of callers needs one.
     [[nodiscard]] auto mono_at(size_t g) const -> Monomial<NumModes> {
         Monomial<NumModes> m;
         const PosT *p = pos_flat.data() + pos_off[g];
@@ -65,28 +65,27 @@ struct IncomingProbe {
         return m;
     }
 
-    // is_paired from the positions' (k, d) digest, no bitset built.
+    // Every mode of query g carries both Majoranas, read off the positions.
     [[nodiscard]] auto is_paired_at(size_t g) const -> bool {
         const PosT *p = pos_flat.data() + pos_off[g];
         const size_t k = k_of[g];
-        return monoprop::is_paired(k, QueryCodec<NumModes>::pair_count(p, k));
+        return k == 2 * QueryWire<NumModes>::pair_count(p, k);
     }
 };
 
-// Phases 1-2, read-only w.r.t. operator contents. `layout` describes the records this rank RECEIVES:
-// fused for the ContractSink resolver, plain for GraphSink. The caller runs Phase 3, then
-// insert_incoming_misses. Counts and offsets come from the decode walk; there is no record stride.
+// Read-only phases 1-2 of the exchange: `form` says whether the incoming records are fused
+// (ContractSink) or plain (GraphSink). The caller runs phase 3, then insert_incoming_misses.
 template <size_t NumModes>
 auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, one VecZ per sender
                             MPOperator<NumModes> &op,
                             size_t rank_count,
-                            QueryLayout layout) -> IncomingProbe<NumModes> {
-    using QC = QueryCodec<NumModes>;
+                            QueryForm form) -> IncomingProbe<NumModes> {
+    using QW = QueryWire<NumModes>;
     IncomingProbe<NumModes> pr;
 
     pr.goff.assign(rank_count + 1, 0);
     for (size_t s = 0; s < rank_count; ++s) {
-        const size_t nq = QC::count_queries(incoming[s], layout);
+        const size_t nq = QW::count_queries(incoming[s], form);
         pr.goff[s + 1] = pr.goff[s] + nq;
     }
     pr.nq_total = pr.goff[rank_count];
@@ -109,19 +108,19 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     pr.k_of.resize(pr.nq_total);
     pr.hash_of.resize(pr.nq_total);
     pr.pos_flat.clear();
-    // A hint only: the measured mean is 5.33 positions, so this is one allocation but for an outlier.
-    pr.pos_flat.reserve(pr.nq_total * QueryCodec<NumModes>::kReservePositionsPerQuery);
+    // A hint only, so this stays one allocation for the common case.
+    pr.pos_flat.reserve(pr.nq_total * QW::kReservePositionsPerQuery);
     for (size_t s = 0; s < rank_count; ++s) {
         size_t off = 0;
         for (size_t g = pr.goff[s]; g < pr.goff[s + 1]; ++g) {
             int ph = 0;
-            const size_t k = QC::k_at(incoming[s], off);
+            const size_t k = QW::k_at(incoming[s], off);
             const size_t at = pr.pos_flat.size();
-            pr.pos_flat.resize(at + k); // default-init grow: read_positions writes every element
+            pr.pos_flat.resize(at + k); // default-init grow: read_query writes every element
             pr.pos_off[g] = at;
             pr.k_of[g] = static_cast<uint32_t>(k);
             pr.off_of[g] = off;
-            off = QC::read_positions(incoming[s], layout, off, pr.pos_flat.data() + at, ph);
+            off = QW::read_query(incoming[s], form, off, pr.pos_flat.data() + at, ph);
             pr.phase_of[g] = ph;
         }
         assert(off == incoming[s].size() && "the query walk did not consume the sender's whole buffer");
@@ -187,8 +186,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr =
-        probe_incoming_queries<NumModes>(incoming, op, rank_count, sink.incoming_layout());
+    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, rank_count, sink.incoming_form());
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());

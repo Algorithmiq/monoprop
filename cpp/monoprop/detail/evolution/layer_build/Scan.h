@@ -31,7 +31,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
-#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -160,30 +160,20 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
-// M⊕G as the emit site needs it. The dense form is unavoidable -- the owner hash folds every word and
-// the basis sign reads the source bitset -- so the merge below runs ALONGSIDE it, not instead of it,
-// and supplies k, d and the positions without a second sweep (paired_mode_count) or a third
-// (push_mono's walk).
+// The dense form is unavoidable: the owner hash folds every word and the basis sign reads the source
+// bitset, so it is built regardless, and the merge below runs beside it.
 template <size_t NumModes>
 struct PartnerProduct {
     Monomial<NumModes> new_mono;
     size_t k = 0;       // popcount(M⊕G)
-    size_t d = 0;       // modes of M⊕G carrying BOTH Majoranas
     size_t overlap = 0; // slots in both M and G, which cancel
     int phase_factor = 0;
 };
 
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
 // hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready. `out_pos` receives the
-// partner's ascending positions and needs capacity 2*NumModes; a spilled source row has no position
-// array, so that case alone walks the dense partner back out.
-//
-// BOTH SHAPES WERE MEASURED, on the pauli cell over 2,455,950 emit calls (callgrind, jobs cg-sym4 and
-// cg-sym5). Walking the dense partner instead -- find_first/find_next for the positions and the same
-// running pairing test -- costs 229.1M MORE instructions than this merge, because the walk is a serial
-// dependence chain through find_next where the merge streams two ascending arrays. The intuition that
-// the merge is redundant work on top of a bitset that exists anyway is wrong: it is cheaper than
-// reading that bitset back out. Do not replace it with the walk again.
+// partner's ascending positions; a spilled source row has no position array, so that case walks the
+// dense partner to fill it instead.
 template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 [[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
@@ -195,7 +185,7 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
     PartnerProduct<NumModes> out;
     Monomial<NumModes> mono;
     if (const auto src = ham.row_positions(i); src.inlined()) {
-        out.k = merge_partner_positions(src.pos, src.count, gen_pos, gen_pop, out_pos, out.overlap, out.d);
+        out.k = merge_partner_positions(src.pos, src.count, gen_pos, gen_pop, out_pos, out.overlap);
         for (size_t j = 0; j < src.count; ++j) {
             mono.set(static_cast<size_t>(src.pos[j]));
         }
@@ -205,13 +195,8 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
         ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
         out.new_mono = mono ^ gen;
         out.overlap = mono.count_and(gen);
-        size_t prev = 0;
         for (size_t b = out.new_mono.find_first(); b < out.new_mono.size(); b = out.new_mono.find_next(b)) {
-            if (out.k != 0 && (prev % 2 == 0) && b == prev + 1) {
-                ++out.d;
-            }
             out_pos[out.k++] = static_cast<PosT>(b);
-            prev = b;
         }
     }
     out.phase_factor = A::rotation_sign(ctx, mono, out.new_mono);
@@ -229,9 +214,8 @@ struct FusedScanResult {
     // leader_src / follower_src. Empty when capture_values is false.
     std::vector<std::vector<double>> leader_val;
     std::vector<std::vector<double>> follower_val;
-    // Self-owned queries, staged as positions instead of encoded into leader_queries[my_rank]: they are
-    // resolved inline and never reach a wire, so the codec is not on this leg. Order matches
-    // leader_src[my_rank] / follower_src[my_rank], which is the accumulation order.
+    // Self-owned queries, staged as positions instead of queued to the wire and resolved inline.
+    // Order must match leader_src[my_rank] / follower_src[my_rank], or resolution attributes the wrong source.
     SelfQueryStage<NumModes> leader_self;
     SelfQueryStage<NumModes> follower_self;
 };
@@ -327,14 +311,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         for (size_t b = gen.find_first(); b < gen.size(); b = gen.find_next(b)) {
             gen_pos.push_back(static_cast<uint16_t>(b));
         }
-        // 2*NumModes is the true bound: the partner's positions are distinct and below it. NOT
-        // thread_local: every access to one from a shared library goes through __tls_get_addr, which
-        // callgrind measured at 54.7M instructions on the pauli cell -- 6% of this port's delta -- to
-        // save one allocation per gate.
+        // pbuf capacity is 2*NumModes: the partner's positions are distinct, so this always suffices.
         std::vector<RowPosT> pbuf(2 * NumModes);
 
-        // Everything after a term survives the structural cutoff. Self-owned partners are staged as
-        // positions; only a remote owner's partner is encoded.
         auto push = [&](const Monomial<NumModes> &dense,
                         const RowPosT *pos,
                         size_t k,
@@ -343,7 +322,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         double v_src,
                         bool is_follower) {
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            // Must be the SAME function find_rank computes (MPIUtils.h) or a term is placed and queried
+            // Must be the same function find_rank computes (MPIUtils.h) or a term is placed and queried
             // on different ranks, which duplicates a row silently; mpi_utils_tests.cpp asserts it.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
@@ -353,7 +332,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 (is_follower ? res.follower_self : res.leader_self).push(pos, k, phase);
             }
             else {
-                QueryCodec<NumModes>::push_positions(is_follower ? fq[r_prime] : lq[r_prime], pos, k, phase);
+                QueryWire<NumModes>::push(is_follower ? fq[r_prime] : lq[r_prime], pos, k, phase);
             }
             (is_follower ? fs[r_prime] : ls[r_prime]).push_back(i);
             if (capture_values) {
@@ -370,9 +349,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             const auto p = emit_term_products<NumModes, A>(ham, i, ectx, gen_pos.data(), gen_pop, pbuf.data());
             assert(p.k == mono_pop + gen_pop - 2 * p.overlap && "the merge disagrees with the popcount identity");
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
-            // nullopt only for an opaque cutoff_fn_, which has no (k, d) form and must be invoked.
-            const auto keep = cutoff_eval.passes_from_digest(p.k, p.d);
-            const bool struct_pass = keep.value_or(false) || (!keep.has_value() && cutoff_eval(p.new_mono));
+            const bool struct_pass = cutoff_eval.passes_with_popcount(p.new_mono, p.k);
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
@@ -403,8 +380,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              n_foll);
         }
         if (rank_count == 1) {
-            // A hint only, off the measured mean of 5.33 positions; wider terms grow the buffer.
-            const size_t pq = QueryCodec<NumModes>::kReservePositionsPerQuery;
+            // A hint only; wider terms grow the buffer as needed.
+            const size_t pq = QueryWire<NumModes>::kReservePositionsPerQuery;
             res.leader_self.reserve(n_anti - n_foll, pq);
             ls[my_rank].reserve(n_anti - n_foll);
             res.follower_self.reserve(n_foll, pq);

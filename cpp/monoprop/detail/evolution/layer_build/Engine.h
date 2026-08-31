@@ -30,7 +30,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
-#include "monoprop/detail/evolution/layer_build/QueryCodec.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
@@ -72,10 +72,8 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
-    // Named apart: incoming_layout is what this rank RECEIVES, querier_layout its OWN send buffer. They
-    // coincide here only because GraphSink never fuses -- see ContractSink::querier_layout.
-    [[nodiscard]] auto incoming_layout() const -> QueryLayout { return {/*fused=*/false}; }
-    [[nodiscard]] auto querier_layout() const -> QueryLayout { return {/*fused=*/false}; }
+    [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
+    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
     using Response = TermIndex;
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
@@ -139,14 +137,13 @@ struct GraphSink {
         auto &out = acc[r].out_entries;
         const size_t base = out.size();
         const size_t nq = resp.size();
-        const QueryLayout layout = querier_layout();
+        const QueryForm form = querier_form();
         out.resize(base + nq);
-        // Forward walk, not indexing by q: a compact query's width depends on its own popcount.
         size_t off = 0;
         for (size_t q = 0; q < nq; ++q) {
             assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
-            out[base + q] = {srcs[q], QueryCodec<NumModes>::phase_at(qbuf, off)};
-            off = QueryCodec<NumModes>::next_off(qbuf, layout, off);
+            out[base + q] = {srcs[q], QueryWire<NumModes>::phase_at(qbuf, off)};
+            off = QueryWire<NumModes>::next_off(qbuf, form, off);
         }
         assert(off == qbuf.size() && "querier buffer does not hold exactly one query per response");
     }
@@ -196,11 +193,10 @@ struct GraphSink {
 template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
-    // This rank RECEIVES fused (query+value) records, but the buffer on_response_block is handed is its
-    // own queries_r, which is PLAIN (build_fused writes the fused form into combined_qv_). Reading the
-    // phase with the wrong layout takes a neighbouring record's, which is a silent coefficient sign flip.
-    [[nodiscard]] auto incoming_layout() const -> QueryLayout { return {/*fused=*/true}; }
-    [[nodiscard]] auto querier_layout() const -> QueryLayout { return {/*fused=*/false}; }
+    // This rank receives fused records, but on_response_block is handed its own plain queries_r;
+    // reading the wrong form there decodes a neighbouring record's phase, i.e. a coefficient sign flip.
+    [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
+    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
     using Response = double;
     static auto init_response() -> Response { return 0.0; }
 
@@ -219,8 +215,7 @@ struct ContractSink {
     // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
     // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
 
-    // Self-resolve hit (both endpoints local). always_inline: called once per surviving rotation in the
-    // R=1 hot loop, where a real call is a measurable regression on the Pauli benches.
+    // Self-resolve hit: both endpoints are local.
     [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
         const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
         fc.hits.push_back(RotationRec{src, found, v_src, v_tgt, static_cast<int32_t>(phase)});
@@ -240,7 +235,7 @@ struct ContractSink {
         -> std::vector<VecZ> & {
         scratch.resize(queries.size());
         for (size_t r = 0; r < queries.size(); ++r) {
-            QueryCodec<NumModes>::build_fused(queries[r], vals[r], scratch[r]);
+            QueryWire<NumModes>::build_fused(queries[r], vals[r], scratch[r]);
         }
         return scratch;
     }
@@ -263,17 +258,14 @@ struct ContractSink {
             v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
         }
         else if (schrodinger) {
-            // Through the probe's accessors: it holds position lists, and mono_at builds a bitset only
-            // for the fully paired minority that is_paired_at admits.
             v_tgt = pr.is_paired_at(g) ? algebra_state_phase<NumModes>(basis, pr.mono_at(g), state_mask_) : 0.0;
         }
         else {
             v_tgt = 0.0; // Heisenberg fresh insert
         }
-        // pr.off_of[g], not q: under the compact record a query ordinal does not name a buffer position.
         fc.cross_half[cross_base_ + g] =
             HalfRotationRec{ip,
-                            QueryCodec<NumModes>::value_at(incoming[s], incoming_layout(), pr.off_of[g]),
+                            QueryWire<NumModes>::value_at(incoming[s], incoming_form(), pr.off_of[g]),
                             static_cast<int32_t>(pr.phase_of[g]),
                             /*is_insert=*/ip >= pr.base};
         return v_tgt;
@@ -293,12 +285,12 @@ struct ContractSink {
                            const std::vector<size_t> &srcs,
                            const VecZ &qbuf) -> void {
         const size_t nq = rval.size();
-        const QueryLayout layout = querier_layout();
+        const QueryForm form = querier_form();
         size_t off = 0;
         for (size_t q = 0; q < nq; ++q) {
-            const auto nphase = static_cast<int32_t>(-QueryCodec<NumModes>::phase_at(qbuf, off));
+            const auto nphase = static_cast<int32_t>(-QueryWire<NumModes>::phase_at(qbuf, off));
             fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
-            off = QueryCodec<NumModes>::next_off(qbuf, layout, off);
+            off = QueryWire<NumModes>::next_off(qbuf, form, off);
         }
         assert(off == qbuf.size() && "querier buffer does not hold exactly one query per response");
     }
@@ -318,7 +310,6 @@ struct ContractSink {
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
 template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
-    // The store's position type, narrower than the wire's below 129 modes; decoded straight into.
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
     // A miss keeps its decoded positions (pos_at indexes deferred_pos_flat_) and the probe's hash.
@@ -424,8 +415,8 @@ struct LayerBuildEngine {
 
     // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
     auto drop_matched_cross_rank_followers() -> void {
-        using QC = QueryCodec<NumModes>;
-        const QueryLayout layout = sink.querier_layout();
+        using QW = QueryWire<NumModes>;
+        const QueryForm form = sink.querier_form();
         for (size_t r = 0; r < R; ++r) {
             if (r == my_rank) {
                 continue;
@@ -443,9 +434,9 @@ struct LayerBuildEngine {
             size_t src_off = 0;
             size_t dst_off = 0;
             for (size_t k = 0; k < nq; ++k) {
-                const size_t next = QC::next_off(q, layout, src_off);
+                const size_t next = QW::next_off(q, form, src_off);
                 if (!matched.is_marked(s[k])) {
-                    dst_off += QC::move_query(q, layout, src_off, dst_off);
+                    dst_off += QW::move_query(q, form, src_off, dst_off);
                     s[kept] = s[k];
                     if (v != nullptr) {
                         (*v)[kept] = (*v)[k];
@@ -463,20 +454,17 @@ struct LayerBuildEngine {
         }
     }
 
-    // Sub-step of finish() — do not call directly. Precondition: call only after both resolve passes
-    // complete, else the base+k ↔ record-slot assignment and per-miss distinctness break. Deferred self
-    // misses are pairwise-distinct (mono = source⊕G, ⊕G injective) and still absent, so miss k gets
-    // base+k in leader-then-follower order. See insert_absent_terms.
+    // Sub-step of finish() — call only after both resolve passes complete, or the base+k assignment and
+    // per-miss distinctness break. Misses are pairwise-distinct (mono = source⊕G, ⊕G injective), so miss
+    // k gets base+k in leader-then-follower order.
     auto insert_deferred_self_misses() -> void {
         const size_t n_miss = deferred_self_misses.size();
         if (n_miss == 0) {
             return;
         }
         sink.prepare_deferred(n_miss);
-        // insert_absent_terms' three steps without its dense round trips, on the same ordering contract:
-        // miss k lands at base+k, in leader-then-follower order.
-        // insert_absent_terms is the dense reference this path is differentially tested against
-        // (sparse_resolve_tests.cpp), so it must not be deleted for having no library caller.
+        // Grow the rows, write each miss's positions, insert; same base+k ordering as insert_absent_terms.
+        // Kept as the dense reference sparse_resolve_tests.cpp differentially tests this path against.
         const size_t base = local_op.store->grow_rows_geometric(n_miss);
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
@@ -498,8 +486,8 @@ private:
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R);
         for (size_t r = 0; r < R; ++r) {
-            // One response per QUERY, and src_idx_r[r] holds one source per query: no walk, no division.
-            assert(src_idx_r[r].size() == QueryCodec<NumModes>::count_queries(queries_r[r], sink.querier_layout())
+            // One response per query, and src_idx_r[r] holds one source per query: no walk, no division.
+            assert(src_idx_r[r].size() == QueryWire<NumModes>::count_queries(queries_r[r], sink.querier_form())
                    && "a querier buffer does not hold exactly one query per source");
             counts[r] = static_cast<int>(src_idx_r[r].size());
         }
@@ -512,8 +500,7 @@ private:
     auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
         -> void {
         const size_t op_size = local_op.store->size();
-        // Gathered per batch because a matched follower is skipped; the offsets stay ABSOLUTE into the
-        // stage's pos_flat, so find_batch_positions reads it in place and nothing is copied.
+        // Gathered per batch because a matched follower is skipped; offsets stay absolute into pos_flat.
         std::array<size_t, kResolveBatch> pos_off;
         std::array<uint32_t, kResolveBatch> k_of;
         std::array<uint32_t, kResolveBatch> hashes;

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// bulk_insert prefetches 16 slot addresses; being a pure hint it must leave the table in EXACTLY the
+// bulk_insert prefetches 16 slot addresses; being a pure hint it must leave the table in exactly the
 // state an unpipelined loop leaves it in, slot order included -- for_each makes it Python-visible.
 
 #include <boost/test/unit_test.hpp>
@@ -60,7 +60,7 @@ auto draw_distinct(std::mt19937_64 &rng, size_t n) -> std::vector<Monomial<kN>> 
     return out;
 }
 
-// Deliberately NOT reserved: rehash_if_needed firing mid-group frees the table already-issued
+// Deliberately not reserved: rehash_if_needed firing mid-group frees the table already-issued
 // addresses point into, the interesting case for a prefetch.
 auto build(const std::vector<Monomial<kN>> &terms) -> std::unique_ptr<Index> {
     auto idx = std::make_unique<Index>();
@@ -73,7 +73,7 @@ auto build(const std::vector<Monomial<kN>> &terms) -> std::unique_ptr<Index> {
 }
 
 // The oracle: N one-key calls, so every group is of size one and none of the grouped loop's boundary
-// arithmetic runs. It shares insert_slot_ but not the GROUPING, which is the thing under test.
+// arithmetic runs. It shares insert_slot_ but not the grouping, which is the thing under test.
 auto build_reference(const std::vector<Monomial<kN>> &terms) -> std::unique_ptr<Index> {
     auto idx = std::make_unique<Index>();
     const size_t base = idx->grow_rows_geometric(terms.size());

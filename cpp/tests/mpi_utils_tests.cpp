@@ -112,18 +112,22 @@ auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> 
 }
 
 auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size_t &checked) -> void {
-    // Every offset comes from the codec's walk: the record is VARIABLE WIDTH, so a hardcoded stride
-    // would compare a monomial decoded at the wrong offset against the wrong rank.
-    using QC = detail::QueryCodec<32>;
-    const detail::QueryLayout layout{/*fused=*/false};
+    // Every offset comes from the record walk: widths vary, so a hardcoded stride would compare a
+    // monomial decoded at the wrong offset against the wrong rank.
+    using QW = detail::QueryWire<32>;
+    const detail::QueryForm form = detail::QueryForm::Plain;
     for (size_t r = 0; r < buckets.size(); ++r) {
         size_t off = 0;
         while (off < buckets[r].size()) {
+            const size_t k = QW::k_at(buckets[r], off);
+            std::vector<QW::PosT> pos(k);
+            QW::read_positions(buckets[r], off, pos.data());
             Monomial<32> mono;
-            int phase = 0;
-            QC::read_mono(buckets[r], off, mono, phase);
+            for (size_t j = 0; j < k; ++j) {
+                mono.set(static_cast<size_t>(pos[j]));
+            }
             BOOST_REQUIRE_EQUAL(find_rank<32>(mono, ranks), r);
-            off = QC::next_off(buckets[r], layout, off);
+            off = QW::next_off(buckets[r], form, off);
             ++checked;
         }
         BOOST_REQUIRE_EQUAL(off, buckets[r].size());
@@ -191,11 +195,9 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
         check_self_ownership(res.leader_self, ranks, /*my_rank=*/0, self_checked);
         check_self_ownership(res.follower_self, ranks, /*my_rank=*/0, self_checked);
     }
-    // Without this the loop above passes trivially if the scan emitted nothing. The floor is on the SUM
-    // because that is what is invariant across the split: the encoded counter alone fell to 797 of 1161
-    // when the self-owned partners moved into the stage, with nothing going unchecked. Each arm still
-    // carries its own floor -- a routing bug sending everything one way leaves the sum intact -- and the
-    // message prints the measured 797/364 so those can be re-grounded rather than guessed.
+    // Without this the loop above passes trivially if the scan emitted nothing. The floor is on the total
+    // because that is what is invariant across the split; each arm also keeps its own floor so a routing
+    // bug that sends everything one way still fails.
     BOOST_TEST_MESSAGE("encoded=" << checked << " staged=" << self_checked);
     BOOST_TEST(checked + self_checked > 1000U);
     BOOST_TEST(checked > 500U);

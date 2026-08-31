@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // The retired dense query record, frozen here as a deliberately independent oracle for
-// sparse_query_tests.cpp's differential: test-only, and it does NOT follow the wire format.
+// sparse_query_tests.cpp's differential: test-only, and it does not follow the wire format.
 
 #pragma once
 

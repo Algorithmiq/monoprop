@@ -142,7 +142,7 @@ public:
         }
     }
 
-    // set() from the row's own form: a row IS an ascending position list. Same postcondition as set(),
+    // set() from the row's own form: a row is an ascending position list. Same postcondition as set(),
     // including the dropped stale overflow entry.
     //
     // Precondition: `pos` strictly ascending, every entry < 2*NumModes. A violation is silent in release
@@ -279,8 +279,7 @@ public:
     }
 
     // find_batch over ascending position lists: query q is pos_flat[pos_off[q] .. pos_off[q] + k_of[q]).
-    // Identical results to find_batch on the monomials those positions describe. Same three-stage
-    // prefetch pipeline, so the positions stay the currency without giving up find_batch's shape.
+    // Identical results to find_batch on the monomials those positions describe.
     auto find_batch_positions(const PosT *pos_flat,
                               const size_t *pos_off,
                               const uint32_t *k_of,
@@ -359,22 +358,18 @@ public:
         if (n == 0) {
             return;
         }
-        // Delegating means both entry points share one insert loop, prefetch pipeline included.
-        bulk_insert_hashed(n, base, [&](size_t k) { return fold_hash(key_at(k)); });
+        bulk_insert_hashed(n, base, [this, &key_at](size_t k) { return fold_hash(key_at(k)); });
     }
     // bulk_insert with the hashes already in hand: same precondition (n distinct rows, already written,
-    // at consecutive indices) and the same slot assignment. `hashes[k]` MUST be fold_hash of the key of
+    // at consecutive indices) and the same slot assignment. `hashes[k]` must be fold_hash of the key of
     // row base+k -- a wrong one leaves the row unfindable, which surfaces later as a duplicate insert.
-    //
-    // Group-prefetched like find_batch: correctness does not depend on it (a prefetch is a hint and the
-    // insert re-reads the slot), but hash_at is called exactly ONCE per element and buffered.
     template <typename HashFn>
     auto bulk_insert_hashed(size_t n, mapped_type base, HashFn &&hash_at) -> void {
         if (n == 0) {
             return;
         }
         check_index_fits(base + n - 1);
-        static constexpr size_t G = 16; // same group width as find_batch, for the same reason
+        static constexpr size_t G = 16;
         std::array<uint32_t, G> hh;
         for (size_t b = 0; b < n; b += G) {
             const size_t g = std::min(G, n - b);
@@ -527,9 +522,6 @@ private:
         if (qk != static_cast<size_t>(c)) {
             return false;
         }
-        // std::equal, i.e. a memcmp CALL, and MEASURED to be the right choice: replacing it with the
-        // obvious scalar loop cost 54.6M instructions on the pauli cell, because glibc's AVX2 memcmp
-        // beats a byte loop even at the ~5 PosT this compares. Do not "optimise" the call away again.
         return std::equal(q, q + qk, &rows_[(i * stride_) + 1]);
     }
 

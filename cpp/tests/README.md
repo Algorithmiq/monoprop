@@ -85,13 +85,12 @@ name and cannot address suite-nested cases, tests use flat
 - **Containers / algebra / utilities**: `bitset_tests.cpp` (the Bitset container
   vs a std::bitset oracle), `mpfunctions.cpp` (MP utilities + bit-flip helpers),
   `pauli_algebra_tests.cpp`, `majorana_cutoff_tests.cpp` (length/support cutoff,
-  CutoffEvaluator, interleave phase, coeff encode/decode), `validation_tests.cpp`
+  CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
+  bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
   scan routing agreement), `evolution_detail_tests.cpp` (MatchedEpochSet +
   CutoffContext),
-  `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors),
-  `sparse_monomial_tests.cpp` (the `(k, d)` cutoff predicates vs their bitset
-  forms).
+  `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
   get_operator init-map drain, update_initial_operator picture branches,
@@ -100,11 +99,10 @@ name and cannot address suite-nested cases, tests use flat
   reference: table state and enumeration order).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
-  `sparse_query_tests.cpp` (the SparseQuery wire record against the frozen dense
+  `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense
   oracle, plus the fused value channel), `sparse_resolve_tests.cpp` (probe and
   insert from wire positions vs the dense Monomial-keyed path),
-  `digest_cutoff_tests.cpp` (paired_mode_count and the digest cutoff predicate
-  vs cutoff_sums), `combined_recompute_equivalence.cpp` (recompute equivalence +
+  `combined_recompute_equivalence.cpp` (recompute equivalence +
   snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
 - **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
