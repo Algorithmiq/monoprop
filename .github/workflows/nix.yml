@@ -27,14 +27,12 @@ jobs:
     name: Flake on ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
 
-    # Darwin is exposed by `flake-utils.lib.eachDefaultSystem` but has never been
-    # validated; it reports without gating until it goes green on its own.
     continue-on-error: ${{ matrix.runner == 'macos-15' }}
 
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-26.04, macos-15]
+        runner: [ubuntu-26.04, macos-15, ubuntu-26.04-arm]
 
     steps:
       - name: Check out repository
