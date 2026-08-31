@@ -294,13 +294,21 @@ across ranks. Memory is the sum of the per-rank peak RSS values. This is an uppe
 job-wide peak: shared pages are counted once per rank, and rank-local peaks are summed even when
 they occur at different times.
 
+Above one rank, `monoprop_PARTITIONS` is mandatory: the engine's own default is
+`ranks == 1 ? cores : 1`, so an unset knob would silently measure one partition per rank, and the
+benchmark session refuses to start without it. The shape it declares is recorded in each run's
+`meta` and shown in the report's configuration table.
+
 ```bash
 just bench-build-mpi                           # build once (MPI on)
-monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
 
-### Benchmarking ladder.
-We include a `LADDER.md` file with information on large-scale MPI benchmarking for development work.
+### Benchmarking ladder
+
+`benches/LADDER.md` holds the ladder used for large-scale MPI benchmarking during development: four
+groups of configurations, the flags and `-k` selector that produce each row, and the shapes to run
+them at.
 
 ### Continuous benchmarking
 
@@ -344,7 +352,7 @@ runner.
 
 **No benchmark workflow gates a pull request.** Both track the main branch, and a threshold
 over a series that spans runners is a report, not a verdict. Measuring a change is the author's
-job -- see "The ladder" above. Every run uploads `bmf.json` and the raw result JSON as an artifact,
+job -- see "Benchmarking ladder" above. Every run uploads `bmf.json` and the raw result JSON as an artifact,
 so a failed Bencher upload does not take the measurement with it.
 
 The `bench-markers` and `bench-rounds` inputs of the reusable `bench.yml` workflow select the

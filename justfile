@@ -349,9 +349,10 @@ bench LABEL *ARGS:
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
-# preflight. Extra args are passed to mpiexec for pinning (and, as root, add
+# preflight. `monoprop_PARTITIONS` is mandatory above one rank (benches/conftest.py refuses
+# the run without it). Extra args are passed to mpiexec for pinning (and, as root, add
 # `--allow-run-as-root`), e.g.
-#   monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+#   monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
@@ -360,7 +361,9 @@ bench-mpi LABEL RANKS *MPIARGS:
     label="$1"; ranks="$2"; shift 2; \
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync mpiexec -n "$ranks" \
-        -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS "$@" \
+        -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS \
+        ${monoprop_PARTITIONS+-x monoprop_PARTITIONS} \
+        ${monoprop_NUM_THREADS+-x monoprop_NUM_THREADS} "$@" \
         python -m pytest benches -o filterwarnings=default \
         --benchmark-json="{{ bench_results }}/time-$label.json"
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"

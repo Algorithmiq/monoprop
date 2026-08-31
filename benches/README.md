@@ -42,7 +42,10 @@ roughly as `lower_atol^-1.9`.
 
 `--hubbard-observable-site` (default 46) is a lattice position, not a
 constant: sweeping `--hubbard-num-sites` without scaling it as 46/60 of the
-lattice slides the observable off-centre and changes the light cone.
+lattice slides the observable off-centre and changes the light cone. Off the
+lattice entirely it raises, as does a mode count above the extension's
+`MAX_NUM_MODES` and any `--pauli-num-qubits` other than the 127 that
+`HEAVY_HEX_TOPOLOGY` couples.
 
 `build_graph` extends the graph, so Hubbard's 29 Trotter steps retain 29
 layer-sets and exceed 229 GiB at 23.9M terms, where `propagate` runs the same

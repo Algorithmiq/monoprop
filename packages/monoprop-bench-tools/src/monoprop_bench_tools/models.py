@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import numpy as np
 
 from monoprop import (
+    MAX_NUM_MODES,
     Circuit,
     ExpGate,
     MajoranaPropagator,
@@ -120,6 +121,16 @@ class RandomProblem:
         return np.asarray(self.circuit.parameters, dtype=float)
 
 
+def _check_modes(num_modes: int, option: str) -> None:
+    """Reject a size above the extension's compile-time mode limit."""
+    if num_modes > MAX_NUM_MODES:
+        msg = (
+            f"{option} gives {num_modes} modes, above this build's MAX_NUM_MODES "
+            f"({MAX_NUM_MODES}). Rebuild with -Dmonoprop_MAX_NUM_MODES to go higher."
+        )
+        raise ValueError(msg)
+
+
 def _random_terms(
     rng: np.random.Generator,
     num_terms: int,
@@ -177,6 +188,7 @@ def make_random_problem(
     Returns:
         A :class:`RandomProblem` bundling the observable, circuit, and cutoff.
     """
+    _check_modes(num_modes, "--num-modes")
     rng = np.random.default_rng(seed)
     num_majorana_indices = 2 * num_modes
 
@@ -321,6 +333,15 @@ def build_hubbard_problem(
         ``(propagator, circuit)`` for one Trotter step, re-applied by the driver.
     """
     config = config or HubbardConfig()
+    _check_modes(config.num_qubits, "--hubbard-num-sites")
+    # A lattice position, not a constant: off the lattice it silently changes the light cone.
+    if not 0 <= config.observable_site < config.num_sites:
+        msg = (
+            f"--hubbard-observable-site {config.observable_site} is outside the "
+            f"{config.num_sites}-site lattice. Scale it with --hubbard-num-sites "
+            "(the default 46 sits 46/60 along the lattice)."
+        )
+        raise ValueError(msg)
     fermi_gates = [ExpGate(term) for term in _hubbard_fermion_terms(config)]
     parameters = [config.trotter_dt] * len(fermi_gates)
     occupied = _neel_occupied_modes(config.num_sites, config.neel_start_spin)
@@ -501,12 +522,15 @@ HEAVY_HEX_TOPOLOGY: list[tuple[int, int]] = [
     (125, 126),
 ]
 
+# The map is fixed, so it also fixes the register: qubit counts are checked against it.
+HEAVY_HEX_NUM_QUBITS: int = 1 + max(j for _, j in HEAVY_HEX_TOPOLOGY)
+
 
 @dataclass(frozen=True, slots=True)
 class KickedIsingConfig:
     """Configuration for the static Pauli-basis (kicked-Ising) benchmark."""
 
-    num_qubits: int = 127
+    num_qubits: int = HEAVY_HEX_NUM_QUBITS
     num_layers: int = 20
     observable_qubit: int = 62
     theta: float = np.pi / 4
@@ -551,6 +575,19 @@ def build_kicked_ising_problem(
         ``(propagator, circuit)`` ready for in-place propagation.
     """
     config = config or KickedIsingConfig()
+    if config.num_qubits != HEAVY_HEX_NUM_QUBITS:
+        msg = (
+            f"--pauli-num-qubits must be {HEAVY_HEX_NUM_QUBITS}: HEAVY_HEX_TOPOLOGY is the "
+            "fixed IBM Eagle coupling map, so any other count either indexes past the "
+            "operator or leaves qubits uncoupled. Size this model with --pauli-lower-atol."
+        )
+        raise ValueError(msg)
+    if not 0 <= config.observable_qubit < config.num_qubits:
+        msg = (
+            f"--pauli-observable-qubit {config.observable_qubit} is outside the "
+            f"{config.num_qubits}-qubit register."
+        )
+        raise ValueError(msg)
     gate_angles: list[tuple[ExpGate, float]] = []
     for _ in range(config.num_layers):
         gate_angles.extend(_xlayer(config.num_qubits, config.theta / 2))

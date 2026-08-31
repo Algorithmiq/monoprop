@@ -130,12 +130,19 @@ def test_model_propagate(
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
 def test_model_energy(
-    benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
+    benchmark,
+    model_graph,
+    model,
+    model_configs,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating a fixed model's expectation-value functional."""
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
-    functional = propagator.expectation_value_functional()
+    functional = propagator.expectation_value_functional(pare_threshold)
     op_memory.open()
     result = benchmark.pedantic(
         barriered(functional, bench_comm),
@@ -151,12 +158,19 @@ def test_model_energy(
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
 def test_model_gradient(
-    benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
+    benchmark,
+    model_graph,
+    model,
+    model_configs,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating a fixed model's expectation-value-and-gradient functional."""
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
-    functional = propagator.expectation_value_and_gradient_functional()
+    functional = propagator.expectation_value_and_gradient_functional(pare_threshold)
     op_memory.open()
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),

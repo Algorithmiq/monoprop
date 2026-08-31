@@ -83,10 +83,16 @@ def test_random_propagate(
 
 
 def test_random_energy(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+    benchmark,
+    built_graph,
+    random_problem,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating the expectation-value functional."""
-    functional = built_graph.expectation_value_functional()
+    functional = built_graph.expectation_value_functional(pare_threshold)
     op_memory.open()
 
     # The entry barrier must stay untimed, so it lives in a setup, and a setup that returns args forbids args=.
@@ -104,10 +110,16 @@ def test_random_energy(
 
 
 def test_random_gradient(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+    benchmark,
+    built_graph,
+    random_problem,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
-    functional = built_graph.expectation_value_and_gradient_functional()
+    functional = built_graph.expectation_value_and_gradient_functional(pare_threshold)
     op_memory.open()
 
     def setup():
