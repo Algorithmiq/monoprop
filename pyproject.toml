@@ -1,6 +1,5 @@
 [build-system]
 requires = [
-  "mpi4py>=4.1.0",
   "nanobind-backend>=1.0.0",
   "nanobind==3.0.0",
   "scikit-build-core>=1.0.3,<2",
@@ -149,11 +148,22 @@ sdist.exclude = [
   ".prettierignore",
   "cspell.json",
 ]
-sdist.include = ["src/monoprop/_version.py", "src/monoprop/_dispatch.py", ".github/license-header.txt"]
+sdist.include = [
+  "src/monoprop/_version.py",
+  "src/monoprop/_dispatch.py",
+  ".github/license-header.txt",
+]
 build.verbose = true
 build.tool-args = ["-j2"]
-# Default to a single build job for Python bindings; CI and one-off builds can
-# still override this via config-settings or environment variables.
+# `monoprop_ENABLE_MPI` in the environment is the single switch: it both provisions the
+# build input and flips the CMake option.
+# NOTE: An override's `if.` clause can only match environment variables, never config-settings, so the
+# `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON` route cannot reach this table
+# and has to carry `--config-settings=build.requires=mpi4py>=4.1.0` alongside it.
+[[tool.scikit-build.overrides]]
+if.env.monoprop_ENABLE_MPI = true
+build.requires = ["mpi4py>=4.1.0"]
+cmake.define.monoprop_ENABLE_MPI = "ON"
 
 
 [tool.setuptools_scm]

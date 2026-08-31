@@ -30,8 +30,8 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
-For an MPI-enabled tree, rerun `uv sync` with
-`--config-settings=cmake.define.monoprop_ENABLE_MPI=ON`.
+For an MPI-enabled tree, rerun `uv sync` with `monoprop_ENABLE_MPI=ON` in the
+environment.
 ## Running Tests
 
 ```bash

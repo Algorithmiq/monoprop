@@ -257,7 +257,8 @@ jobs:
 
       - name: Install package
         env:
-          SKBUILD_CMAKE_DEFINE: "monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
+          SKBUILD_CMAKE_DEFINE: "monoprop_ENABLE_CXX_UNIT_TESTS=OFF"
+          monoprop_ENABLE_MPI: "ON"
         run: |
           uv sync --no-progress --all-extras -v
 
@@ -305,7 +306,8 @@ jobs:
 
       - name: Build (generates compile_commands.json)
         env:
-          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF;monoprop_ENABLE_MPI=ON"
+          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF"
+          monoprop_ENABLE_MPI: "ON"
         run: |
           uv sync --no-progress --all-extras -v
 

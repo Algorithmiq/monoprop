@@ -1,6 +1,22 @@
 if(monoprop_ENABLE_MPI)
   include(${PROJECT_SOURCE_DIR}/cmake/custom/FindPythonModule.cmake)
-  find_python_module(mpi4py REQUIRED)
+  find_python_module(mpi4py QUIET)
+
+  if(NOT mpi4py_FOUND)
+    message(
+      FATAL_ERROR
+      "MPI is enabled but mpi4py is not importable from ${Python_EXECUTABLE}. "
+      "mpi4py is a build-time input of the bindings: its headers hand the MPI "
+      "communicator across the nanobind boundary.\n"
+      "Enable MPI with the environment switch, which provisions it automatically:\n"
+      "    monoprop_ENABLE_MPI=ON uv sync --all-extras\n"
+      "If you drive the build with config-settings, request it explicitly too, as "
+      "config-settings cannot trigger a scikit-build-core override:\n"
+      "    uv sync --all-extras \\\n"
+      "        --config-settings=cmake.define.monoprop_ENABLE_MPI=ON \\\n"
+      "        --config-settings=build.requires=mpi4py>=4.1.0"
+    )
+  endif()
 
   # we also need the include directories for mpi4py
   if(mpi4py_FOUND)
