@@ -178,6 +178,9 @@ benches/results/**
 # devcontainer files
 .devcontainer/devcontainer-lock.json
 
+# `just capture-baseline` / `just diff-baseline` output (tools/capture-baseline.py)
+.baseline-capture/**
+
 # Useful when running in clusters
 logs/
 
