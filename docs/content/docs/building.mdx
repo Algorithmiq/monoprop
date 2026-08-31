@@ -248,7 +248,8 @@ Python API under TSan would require a TSan-instrumented CPython.
 ### Related workflows
 
 - Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration;
-  source builds enable it with `monoprop_WIDE_TERM_INDEX=ON` in the environment.
+  source builds enable it with `monoprop_WIDE_TERM_INDEX=ON` in the environment,
+  and can combine it with `monoprop_ENABLE_MPI=ON`.
 - Use `just code-coverage` for the coverage build.
 - Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to
   filter the discovered C++ test set.

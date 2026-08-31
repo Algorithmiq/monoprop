@@ -153,6 +153,7 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
 - **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
+- The scikit-build MPI and wide-index overrides must merge `cmake.define` when both environment switches match. Standalone MPI-enabled C++ executables must initialize MPI before constructing propagators and destroy them before finalizing MPI.
 - **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration

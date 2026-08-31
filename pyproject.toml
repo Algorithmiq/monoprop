@@ -166,6 +166,8 @@ cmake.define.monoprop_ENABLE_MPI = "ON"
 
 [[tool.scikit-build.overrides]]
 if.env.monoprop_WIDE_TERM_INDEX = true
+# Both source-build switches may match; merge instead of replacing the MPI definition.
+inherit.cmake.define = "append"
 cmake.define.monoprop_WIDE_TERM_INDEX = "ON"
 
 

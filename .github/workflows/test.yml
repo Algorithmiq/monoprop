@@ -169,39 +169,42 @@ jobs:
           using namespace monoprop;
 
           auto main() -> int {
-              constexpr size_t kModes = 2;
-              OperatorDict ham;
-              ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+              mpi::init();
+              {
+                  constexpr size_t kModes = 2;
+                  OperatorDict ham;
+                  ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
 
-              // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
-              MonomialPropagator<kModes> graph_sim(ham,
-                                                   2 * kModes,
-                                                   VecZ{0, 1},
-                                                   std::optional<unsigned int>{4U},
-                                                   MPI_COMM_SELF,
-                                                   std::nullopt,
-                                                   std::nullopt,
-                                                   CutoffType::Length,
-                                                   std::nullopt);
-              const std::vector<VecZ> monos{{0}, {1}, {2}};
-              graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
-              graph_sim.graph_memory_usage();
-              graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
-
-              MonomialPropagator<kModes> partition_sim(ham,
+                  // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
+                  MonomialPropagator<kModes> graph_sim(ham,
                                                        2 * kModes,
                                                        VecZ{0, 1},
-                                                       std::nullopt,
+                                                       std::optional<unsigned int>{4U},
                                                        MPI_COMM_SELF,
                                                        std::nullopt,
                                                        std::nullopt,
                                                        CutoffType::Length,
-                                                       std::nullopt,
-                                                       kModes,
-                                                       Basis::Majorana,
-                                                       2);
-              partition_sim.size();
+                                                       std::nullopt);
+                  const std::vector<VecZ> monos{{0}, {1}, {2}};
+                  graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
+                  graph_sim.graph_memory_usage();
+                  graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
 
+                  MonomialPropagator<kModes> partition_sim(ham,
+                                                           2 * kModes,
+                                                           VecZ{0, 1},
+                                                           std::nullopt,
+                                                           MPI_COMM_SELF,
+                                                           std::nullopt,
+                                                           std::nullopt,
+                                                           CutoffType::Length,
+                                                           std::nullopt,
+                                                           kModes,
+                                                           Basis::Majorana,
+                                                           2);
+                  partition_sim.size();
+              }
+              mpi::finalize();
               return 0;
           }
           EOF
