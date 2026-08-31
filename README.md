@@ -120,7 +120,9 @@ just test-wide                         # Python + C++ unit tests with a 64-bit T
 ```
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
-for the with/without-MPI details and the rank matrix.
+for the with/without-MPI details and the rank matrix. CI has explicit MPI-enabled
+lanes on Linux x86-64, Linux ARM64, and macOS; installing the `mpi` extra alone
+does not enable the C++ MPI build.
 
 ## Repository layout
 

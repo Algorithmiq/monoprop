@@ -51,7 +51,10 @@ mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-
 
 `monoprop_ENABLE_MPI` also provisions mpi4py as a build input; see
 [Building from source](/building#with-mpi) for why, and for the
-config-settings equivalent.
+config-settings equivalent. Installing the `mpi` extra alone only provides
+mpi4py and does not enable C++ MPI support. Accordingly, the CI matrix has
+explicit cache-free MPI build lanes on Linux x86-64, Linux ARM64, and macOS;
+only those lanes run the suite under `mpiexec`.
 
 ### C++ unit tests
 
