@@ -13,6 +13,10 @@ documentation for detailed instructions.
 This directory holds only monoprop's own benchmarks — `conftest.py` (the fixtures
 and the results schema), `bench_random.py`, `bench_models.py`, and `results/`.
 
+Both bench modules measure the same four operations — `build_graph`, `propagate`,
+`energy` and `gradient` — so a number means the same thing whichever problem
+produced it.
+
 Benchmark names are the key [Bencher](https://bencher.dev/) stores history under,
 so they stay here rather than moving with a library release.
 

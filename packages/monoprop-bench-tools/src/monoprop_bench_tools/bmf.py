@@ -24,17 +24,20 @@ Bencher accepts one adapter per report, so timings and memory are merged here an
 uploaded together under ``--adapter json``; the stock ``python_pytest`` adapter
 would keep the timings and drop everything else.
 
-Four measures are emitted:
+Three measures are emitted:
 
 ``latency`` (nanoseconds)
     Per-operation mean, with the interval one standard deviation either side.
+    The mean is Bencher's contract: its t-test threshold consumes a mean and a
+    spread.
 ``peak-memory`` (bytes)
-    Per-operation peak resident footprint, summed across ranks under MPI.
+    Per-operation peak resident footprint, summed across ranks under MPI. The
+    sum bounds the job; ``memhwm_max`` bounds a node, but CI is single-rank,
+    where the two coincide.
 ``terms`` (count)
     Terms in the evolved operator. Deterministic for a fixed seed and problem
-    size, so it can carry a far tighter threshold than the timing measures.
-``resting-memory`` (bytes)
-    Settled footprint of the built operator + graph.
+    size, so it is held to an exact match: it is the only check that a timing
+    win is not an accuracy change.
 
 Usage::
 
@@ -57,8 +60,8 @@ _NS_PER_S = 1e9
 # describe a built operator rather than one timed call.
 _OPERATOR = "operator"
 
-# ``opsize``/``memrest`` are also keyed by pytest node id (``::``, as report.py reads
-# them) for a private A/B harness; those are not operators, so they are skipped here.
+# ``opsize`` is also keyed by pytest node id (``::``, as report.py reads it) for a
+# private A/B harness; those are not operators, so they are skipped here.
 _NODE_ID_SEP = "::"
 
 Metric = dict[str, float]
@@ -129,10 +132,6 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
     for key, size in results.get("opsize", {}).items():
         if _NODE_ID_SEP not in key:
             measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
-
-    for key, resting in results.get("memrest", {}).items():
-        if _NODE_ID_SEP not in key:
-            measure(f"{_OPERATOR}[{key}]", "resting-memory", resting)
 
     return bmf
 
