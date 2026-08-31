@@ -95,7 +95,7 @@ Python bindings (via [uv](https://github.com/astral-sh/uv)):
 ```bash
 uv sync --all-extras -v
 # with MPI:
-uv sync --all-extras -v --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
+monoprop_ENABLE_MPI=ON uv sync --all-extras -v
 ```
 
 C++ unit-test build:

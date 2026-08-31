@@ -41,13 +41,17 @@ just test-mpi-matrix   # MPI-marked tests across a rank matrix
 
 To do it by hand, build with MPI on, then run under `mpiexec` with `--no-sync`
 so each rank reuses that build. `--reinstall-package` and `--no-cache` force a
-genuine rebuild, since uv does not key its build cache on `SKBUILD_CMAKE_ARGS`:
+genuine rebuild, since uv does not key its build cache on the environment:
 
 ```bash
-SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON" \
+monoprop_ENABLE_MPI=ON \
     uv sync --all-extras --reinstall-package monoprop --no-cache
 mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-mpi
 ```
+
+`monoprop_ENABLE_MPI` also provisions mpi4py as a build input; see
+[Building from source](/building#with-mpi) for why, and for the
+config-settings equivalent.
 
 ### C++ unit tests
 
@@ -65,7 +69,7 @@ With MPI, reuse the MPI-enabled `uv sync` from the Python MPI section above,
 then run CTest against the same tree:
 
 ```bash
-SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON" \
+monoprop_ENABLE_MPI=ON \
     uv sync --all-extras --reinstall-package monoprop --no-cache
 ctest --test-dir build/editable/Release --output-on-failure
 ```
@@ -89,7 +93,7 @@ CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` prob
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
 (default) skips that probe for the single-process `serial` variants only; multi-rank variants
 keep the full component set, since they exchange real messages. Turn it off by adding
-`-Dmonoprop_TEST_EXCLUDE_MPI_FABRIC=OFF` to the `SKBUILD_CMAKE_ARGS` MPI build above.
+`SKBUILD_CMAKE_DEFINE="monoprop_TEST_EXCLUDE_MPI_FABRIC=OFF"` to the MPI build above.
 
 CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite

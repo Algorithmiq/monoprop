@@ -32,7 +32,8 @@ test:
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
 
 test-mpi RANKS='':
-    uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
+    monoprop_ENABLE_MPI=ON \
+        uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache -v
     export OMPI_MCA_rmaps_base_oversubscribe="1"; \
     ranks="${1:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     for r in ${ranks//;/ }; \
@@ -149,8 +150,8 @@ bench-mpi LABEL RANKS *MPIARGS:
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench-mpi`.
 bench-build-mpi:
-    uv sync --all-extras --group bench --reinstall-package monoprop --no-cache \
-        --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" -v
+    monoprop_ENABLE_MPI=ON \
+        uv sync --all-extras --group bench --reinstall-package monoprop --no-cache -v
 
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:

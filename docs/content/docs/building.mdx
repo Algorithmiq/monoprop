@@ -14,7 +14,7 @@ mechanism differs by build:
 
 | Build | Enable MPI with |
 | --- | --- |
-| Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON` (or export `SKBUILD_CMAKE_ARGS="-Dmonoprop_ENABLE_MPI=ON"`) |
+| Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `monoprop_ENABLE_MPI=ON` in the environment |
 
 The prebuilt wheels published to PyPI (`pip install monoprop`) are also built
 without MPI, so a from-source build is required for multi-rank runs.
@@ -48,18 +48,58 @@ This produces a single-process build with no MPI dependency.
 
 ### With MPI
 
-Pass a `config-settings` override to enable MPI:
+Set `monoprop_ENABLE_MPI=ON` in the environment:
+
+```bash
+monoprop_ENABLE_MPI=ON uv sync --all-extras -v
+```
+
+It works the same with `pip` when installing from a checkout:
+
+```bash
+monoprop_ENABLE_MPI=ON pip install .
+```
+
+That one variable does two things, matched by the
+`[[tool.scikit-build.overrides]]` block in `pyproject.toml`: it sets the
+`monoprop_ENABLE_MPI` CMake option, and it adds `mpi4py` to the build
+requirements. mpi4py is a build-time input — the bindings need its headers to
+hand an MPI communicator across the nanobind boundary — but only for MPI
+builds, so it is injected per-build through PEP 517's
+`get_requires_for_build_wheel` rather than sitting in `build-system.requires`
+where every build would pay for it.
+
+<Callout type="warn">
+  Because it is an environment variable, it does not participate in uv's build
+  cache key. Add `--reinstall-package monoprop --no-cache` when flipping MPI on
+  or off in an existing environment, or uv may reuse the previous build.
+</Callout>
+
+#### Driving it with config-settings instead
+
+A scikit-build-core override can only match environment variables, never
+config-settings, so `cmake.define` alone will not pull in mpi4py — the build
+would fail at configure time with a message telling you as much. Pass both
+settings to use this route:
 
 ```bash
 uv sync --all-extras -v \
-    --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
+    --config-settings=cmake.define.monoprop_ENABLE_MPI=ON \
+    --config-settings=build.requires=mpi4py>=4.1.0
 ```
 
-The same override works with `pip` when installing from a checkout:
+In a workspace, prefer the per-package form so the settings do not reach the
+sibling distributions in `packages/`:
 
 ```bash
-pip install . --config-settings=cmake.define.monoprop_ENABLE_MPI=ON
+uv sync --all-extras -v \
+    --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" \
+    --config-settings-package="monoprop:build.requires=mpi4py>=4.1.0"
 ```
+
+The cost of this route is that the mpi4py pin is repeated on the command line
+instead of living once in `pyproject.toml`; the environment switch is preferred
+for that reason.
 
 ### Verify the install
 
