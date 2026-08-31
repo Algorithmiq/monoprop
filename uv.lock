@@ -1138,7 +1138,7 @@ bench = [
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
-    { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 dev = [
@@ -1168,7 +1168,7 @@ test = [
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
-    { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 workspace-test = [
@@ -1178,7 +1178,7 @@ workspace-test = [
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
-    { name = "pytest-mpi", specifier = ">=0.6" },
+    { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 
@@ -1915,14 +1915,10 @@ wheels = [
 
 [[package]]
 name = "pytest-mpi"
-version = "0.6"
-source = { registry = "https://pypi.org/simple" }
+version = "0.6+9.g4b9aaba"
+source = { git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero#4b9aabaff9d14ba7d5e7677f7034949c5790064a" }
 dependencies = [
     { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/db/b9d4b23750eb91865787656dce02a2864397aa1ee130df00ec73d3954e7e/pytest-mpi-0.6.tar.gz", hash = "sha256:09b3cd3511f8f3cd4d205f54d4a7223724fed0ab68b872ed1123d312152325a9", size = 35329, upload-time = "2022-01-08T02:19:26.461Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/2b/0ed49de84e96ebf771c86a16d88b48c08d291627cfcdce30973f8538c99e/pytest_mpi-0.6-py2.py3-none-any.whl", hash = "sha256:1b7e193fb3be31d08c8e4dd7435e8e13e14b17ead6a6fc6aa07a6d3c7145590b", size = 5907, upload-time = "2022-01-08T02:19:24.8Z" },
 ]
 
 [[package]]
