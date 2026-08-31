@@ -60,9 +60,10 @@ struct FusedWordCounts {
     size_t result_count; // popcount(a ^ b)
 };
 
-// The word passes behind Bitset's own inline arms, defined once ahead of them and reached through
-// with_nwords. One of them decides emitted term signs and the other feeds a cutoff, so a second
-// definition that could drift from either is not acceptable.
+// The word passes shared by Bitset's own inline arms and by the per-gate WordKernel below. They live
+// here, ahead of both, so each is defined once: Bitset reaches them through with_nwords and the kernel
+// through its bound W, and the two must not be able to drift -- one of them decides emitted term signs
+// and the other feeds a cutoff.
 //
 // `nwords` is the exact word count of every operand, passed either as a std::integral_constant (the
 // inline regime, where the trip count is then a compile-time one) or as a plain size_t (a spilled
@@ -118,7 +119,8 @@ namespace monoprop {
 class Bitset {
 public:
     // The word vocabulary is public because callers reason in words: data() already hands out a
-    // word_type*, and callers that walk words need the same three names to say what they walk.
+    // word_type*, and a per-gate kernel that binds the word count needs the same three names to say
+    // what it binds (see detail::WordKernel).
     using word_type = uint64_t;
     static constexpr auto word_width = sizeof(word_type) * 8;
     static constexpr size_t kInlineWords = 8;
@@ -625,6 +627,68 @@ struct SplitmixHash {
         return static_cast<size_t>(h);
     }
 };
+
+namespace detail {
+
+// The per-term word ops with the word count supplied by the caller instead of read off the operand.
+//
+// The arithmetic is identical to Bitset's own methods; what differs is what the compiler knows. A
+// Bitset method must load nwords_, compare it against the inline capacity and select a storage
+// pointer on every call, and none of those three can be hoisted out of a loop the optimizer cannot
+// see through -- which, on the per-term path, is every call. Handing a kernel a compile-time W and
+// the word pointers the caller resolved once leaves a straight-line unrolled loop, which is what the
+// per-width Bitset<NumBits> got for free.
+//
+// Preconditions, none of them checkable here: every pointer is a Bitset::data() of a bitset of
+// exactly W words, and W <= kInlineWords so no operand is spilled. The only legal caller is one that
+// bound W from a width it owns for the whole loop -- see DenseTermProductsW, which is the seam that
+// binds it once per gate.
+//
+// Standing in for a Bitset method is also what decides membership: the scan's other bound-width word
+// pass, fully_paired_words, answers a question about the algebra rather than the storage, so it lives
+// beside its own oracle in AlgebraCommon.h instead.
+template <size_t W>
+struct WordKernel {
+    static_assert(W >= 1 && W <= Bitset::kInlineWords,
+                  "the kernel covers the inline regime; above it the runtime loop already wins");
+
+    using word_type = Bitset::word_type;
+
+    static auto clear(word_type *a) noexcept -> void {
+        for (size_t i = 0; i < W; ++i) {
+            a[i] = 0;
+        }
+    }
+
+    // Bitset::fused_xor_into with W fixed -- the same pass, reached without the nwords_ load and
+    // storage-pointer select the method does per call.
+    static auto fused_xor_into(const word_type *a, const word_type *b, word_type *out) noexcept -> Bitset::FusedCounts {
+        return fused_xor_words(a, b, out, std::integral_constant<size_t, W>{});
+    }
+
+    // Bitset::parity_and with W fixed, likewise.
+    [[nodiscard]] static auto parity_and(const word_type *a, const word_type *b) noexcept -> bool {
+        return (std::popcount(and_fold_words(a, b, std::integral_constant<size_t, W>{})) & 1U) != 0;
+    }
+
+    // SplitmixHash with W fixed. Must stay bit-identical to it: this value routes MPI ownership, so a
+    // divergence would move terms between ranks rather than merely run slower. Hence the W == 1 arm
+    // reproducing the same special case rather than folding into the loop.
+    [[nodiscard]] static auto splitmix(const word_type *a) noexcept -> size_t {
+        if constexpr (W == 1) {
+            return static_cast<size_t>(SplitmixHash::mix(a[0]));
+        }
+        else {
+            uint64_t h = 0;
+            for (size_t i = 0; i < W; ++i) {
+                h ^= SplitmixHash::mix(a[i] + static_cast<uint64_t>(i));
+            }
+            return static_cast<size_t>(h);
+        }
+    }
+};
+
+} // namespace detail
 
 } // namespace monoprop
 

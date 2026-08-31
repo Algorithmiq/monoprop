@@ -32,9 +32,9 @@ namespace monoprop::detail {
 // the next index base+j in (sender,record) order, so the assignment (and multi-rank bit-exactness) cannot
 // drift between resolvers. Queries are source⊕G over globally-distinct sources, ⊕G injective ⇒ queries
 // pairwise distinct ⇒ misses distinct and absent.
-// Key is the form a query record is read into -- a monomial for both stores, since a query goes on the wire
-// densely. Named `Key` rather than fixed so a record form of the store's own can be added without
-// re-typing every consumer.
+// Key is whichever form the store being probed is keyed by (QueryKeysFor): a monomial for the dense store,
+// a row-or-escape key for the support form. Named `Key` rather than fixed because the whole point of the
+// two record forms is that a resolve never converts one into the other.
 template <typename Key>
 struct IncomingProbeT {
     std::vector<size_t> goff;              // rank_count+1 flat offsets: g = goff[s] + q
@@ -52,7 +52,7 @@ struct IncomingProbeT {
 
 // The probe over a store, spelled once so callers need not name the key form.
 template <typename Store>
-using IncomingProbeFor = IncomingProbeT<DenseQueryKeys::key_type>;
+using IncomingProbeFor = IncomingProbeT<typename QueryKeysFor<Store>::type::key_type>;
 
 // Phases 1-2, read-only w.r.t. operator contents. query_stride is the per-record width: the plain query
 // width, or the fused one for the fused resolver. The caller runs Phase 3, then insert_incoming_misses.
@@ -66,14 +66,15 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
                                    const MPOperator &op,
                                    Store &store,
                                    size_t rank_count,
-                                   size_t query_stride) -> IncomingProbeFor<Store> {
-    using Keys = DenseQueryKeys;
+                                   size_t query_stride,
+                                   size_t record_capacity) -> IncomingProbeFor<Store> {
+    using Keys = typename QueryKeysFor<Store>::type;
     IncomingProbeFor<Store> pr;
 
     pr.goff.assign(rank_count + 1, 0);
     for (size_t s = 0; s < rank_count; ++s) {
-        // Off the buffer's own header rather than size/stride, so a record form that appends anything past
-        // the last record stays readable here unchanged.
+        // Off the buffer's own header, not its size: a support-form buffer carries an escape tail after its
+        // records, so size/stride is not the record count.
         pr.goff[s + 1] = pr.goff[s] + query_record_count(incoming[s]);
     }
     pr.nq_total = pr.goff[rank_count];
@@ -111,7 +112,7 @@ inline auto probe_incoming_queries(const std::vector<VecZ> &incoming, // seriali
     // own `keys_` does not make this trade: it is a plain member of a LayerBuildEngine built fresh per
     // build_layer call, so it starts default-constructed every layer (see DenseQueryKeys's comment).
     thread_local Keys scratch;
-    scratch.configure(op.num_bits());
+    scratch.configure(op.num_bits(), record_capacity);
     scratch.ensure(pr.nq_total);
     scratch.begin_batch();
     pr.mono = std::span<const typename Keys::key_type>(scratch.data(), pr.nq_total);
@@ -179,7 +180,7 @@ auto resolve_incoming(const std::vector<VecZ> &incoming, // serialized, one VecZ
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> std::vector<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const auto pr = probe_incoming_queries(incoming, op, store, rank_count, sink.stride());
+    const auto pr = probe_incoming_queries(incoming, op, store, rank_count, sink.stride(), sink.capacity());
     std::vector<std::vector<Resp>> responses(rank_count);
     for (size_t s = 0; s < rank_count; ++s) {
         responses[s].assign(pr.goff[s + 1] - pr.goff[s], Sink::init_response());

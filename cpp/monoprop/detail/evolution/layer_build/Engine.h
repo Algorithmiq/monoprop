@@ -72,7 +72,11 @@ struct GraphSink {
     // The record stride is not a constant: it is derived from the
     // monomial word count now, which the sink is handed at construction.
     size_t num_words = 0;
+    // The support form's row capacity, which fixes what a record's lanes hold. Zero and unread for a dense
+    // record; carried by both sinks so the resolve path needs no branch to configure its key batch.
+    size_t record_capacity = 0;
     [[nodiscard]] auto stride() const -> size_t { return query_words(num_words); }
+    [[nodiscard]] auto capacity() const -> size_t { return record_capacity; }
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
     size_t R;
@@ -82,8 +86,9 @@ struct GraphSink {
     size_t def_out_base_ = 0;
     std::vector<size_t> in_base_; // cross-rank per-rank base into acc[s].in_entries (set in prepare)
 
-    GraphSink(size_t num_words_, size_t R_, size_t my_rank_)
+    GraphSink(size_t num_words_, size_t record_capacity_, size_t R_, size_t my_rank_)
         : num_words(num_words_),
+          record_capacity(record_capacity_),
           R(R_),
           my_rank(my_rank_),
           acc(R_) {}
@@ -187,8 +192,10 @@ struct GraphSink {
 struct ContractSink {
     static constexpr bool wants_values = true;
     using Response = double;
-    size_t num_words = 0; // see GraphSink::num_words
+    size_t num_words = 0;       // see GraphSink::num_words
+    size_t record_capacity = 0; // see GraphSink::record_capacity
     [[nodiscard]] auto stride() const -> size_t { return query_words_fused(num_words); }
+    [[nodiscard]] auto capacity() const -> size_t { return record_capacity; }
     static auto init_response() -> Response { return 0.0; }
 
     size_t R;
@@ -250,7 +257,7 @@ struct ContractSink {
         else if (schrodinger) {
             // The one arm that needs a dense monomial: this scoring has no codes form, so a support-form
             // key materializes here. It is a fresh cross-rank Schrodinger miss, so per gate it is rare.
-            const auto &mono = pr.mono[g];
+            const auto &mono = key_monomial(pr.mono[g], num_bits_);
             v_tgt = is_paired(mono) ? algebra_state_phase(basis, mono, state_mask_) : 0.0;
         }
         else {
@@ -330,9 +337,11 @@ struct LayerBuildEngine {
     // own field rather than read off sink: Sink is a minimal concept (see RecordingSink in
     // evolution_detail_tests.cpp), and only the two production sinks happen to also carry num_words.
     size_t words_ = 0;
+    // The support form's row capacity (see GraphSink::record_capacity), for the key batch below.
+    size_t record_capacity_ = 0;
     // Self-resolve key batch, configured once off the operator. Separate from the incoming probe's batch:
     // the two are live at the same time on the resolve path.
-    DenseQueryKeys keys_;
+    typename QueryKeysFor<Store>::type keys_;
 
     LayerBuildEngine(MPOperator &local_op_,
                      Store &store_,
@@ -342,6 +351,7 @@ struct LayerBuildEngine {
                      MatchedEpochSet &matched_scratch,
                      size_t combined_size_,
                      size_t payload_words,
+                     size_t record_capacity,
                      Sink &&sink_)
         : local_op(local_op_),
           store(store_),
@@ -353,8 +363,9 @@ struct LayerBuildEngine {
           queries_r(R_),
           src_idx_r(R_),
           sink(std::move(sink_)),
-          words_(payload_words) {
-        keys_.configure(local_op_.num_bits());
+          words_(payload_words),
+          record_capacity_(record_capacity) {
+        keys_.configure(local_op_.num_bits(), record_capacity_);
         matched.begin_gate(combined_size);
     }
 
@@ -438,7 +449,17 @@ struct LayerBuildEngine {
                 }
                 ++kept;
             }
-            q.resize(query_record_offset(kept, W));
+            // The escape tail follows the records down, contents untouched. Its entries keep their
+            // positions relative to each other, so the indices the surviving records carry stay right --
+            // including the entries a dropped record orphaned, which ride along as unread padding rather
+            // than being renumbered.
+            const size_t tail = query_record_offset(nq, W);
+            const size_t tail_words = q.size() - tail;
+            const size_t kept_end = query_record_offset(kept, W);
+            std::copy(q.begin() + static_cast<std::ptrdiff_t>(tail),
+                      q.end(),
+                      q.begin() + static_cast<std::ptrdiff_t>(kept_end));
+            q.resize(kept_end + tail_words);
             q[0] = kept;
             s.resize(kept);
             if (v != nullptr) {
@@ -615,10 +636,11 @@ auto build_layer(auto &local_op,
                              &out_cos,
                              &fused_contract,
                              &schrodinger]<typename S>(S &store) -> std::shared_ptr<LayerCore> {
-            // The record width, derived once per layer and passed to everything that reads a record: the
-            // engine's key batch and the sink's strides. It is a function of the store alone, so every rank
-            // computes the same number without communication.
-            const size_t record_payload_words = query_payload_words_for(store);
+            // The record shape, derived once per layer and passed to everything that reads a record: the scan's
+            // kernel, the engine's key batch and the sink's strides. Both numbers are functions of the store, the
+            // generator and the cutoff, so every rank computes the same pair without communication.
+            const size_t record_capacity = sparse_record_capacity(gen, cut_eval);
+            const size_t record_payload_words = query_payload_words_for(store, record_capacity);
 
             FusedScanResult fused = [&] {
                 double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
@@ -636,19 +658,38 @@ auto build_layer(auto &local_op,
                                      &use_fused,
                                      &sweep_ptr,
                                      &cos_build]<typename A>() {
-                                        return fused_find_and_collect<A>(local_op,
-                                                                         store,
-                                                                         gen,
-                                                                         cut_eval,
-                                                                         cut_st,
-                                                                         coeffs,
-                                                                         only_rotate_len_k,
-                                                                         R,
-                                                                         my_rank,
-                                                                         logical_num_modes,
-                                                                         /*capture_values=*/use_fused,
-                                                                         sweep_ptr,
-                                                                         cos_build);
+                                        // Third and last thing bound once per layer, beside the algebra and the
+                                        // backend: the storage word count, so the scan's per-term word loops have a
+                                        // compile-time trip count.
+                                        return with_kernel_width<S>(
+                                            gen.num_words(),
+                                            [&local_op,
+                                             &store,
+                                             &gen,
+                                             &cut_eval,
+                                             &cut_st,
+                                             &coeffs,
+                                             &only_rotate_len_k,
+                                             &R,
+                                             &my_rank,
+                                             &logical_num_modes,
+                                             &use_fused,
+                                             &sweep_ptr,
+                                             &cos_build]<size_t W>(std::integral_constant<size_t, W>) {
+                                                return fused_find_and_collect<A, W>(local_op,
+                                                                                    store,
+                                                                                    gen,
+                                                                                    cut_eval,
+                                                                                    cut_st,
+                                                                                    coeffs,
+                                                                                    only_rotate_len_k,
+                                                                                    R,
+                                                                                    my_rank,
+                                                                                    logical_num_modes,
+                                                                                    /*capture_values=*/use_fused,
+                                                                                    sweep_ptr,
+                                                                                    cos_build);
+                                            });
                                     });
             }();
 
@@ -675,6 +716,7 @@ auto build_layer(auto &local_op,
                                               matched_scratch,
                                               /*combined_size=*/store.size(),
                                               record_payload_words,
+                                              record_capacity,
                                               std::move(sink));
                 eng.run_exchange(/*is_leader_pass=*/true,
                                  std::move(fused.leader_queries),
@@ -691,6 +733,7 @@ auto build_layer(auto &local_op,
             if (use_fused) {
                 const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
                 return run(ContractSink{.num_words = record_payload_words,
+                                        .record_capacity = record_capacity,
                                         .R = R,
                                         .my_rank = my_rank,
                                         .fc = *fused_contract,
@@ -700,7 +743,7 @@ auto build_layer(auto &local_op,
                                         .schrodinger = schrodinger,
                                         .basis = basis});
             }
-            return run(GraphSink{record_payload_words, R, my_rank});
+            return run(GraphSink{record_payload_words, record_capacity, R, my_rank});
         });
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the

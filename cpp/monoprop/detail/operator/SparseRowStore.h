@@ -130,7 +130,8 @@ inline auto for_each_mode_slot(const Bitset &mono, Fn &&fn) -> void {
 }
 
 // Occupied modes in a dense monomial, via the same slot walk as sparse_row_hash/dense_row_equals below --
-// what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs.
+// what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs
+// (see sparse_record_capacity in layer_build/TermProduct.h).
 [[nodiscard]] inline auto occupied_mode_count(const Bitset &mono) -> size_t {
     size_t n = 0;
     for_each_mode_slot(mono, [&n](size_t, unsigned int) { ++n; });
@@ -202,7 +203,7 @@ private:
 
 // Writes a sparse row's occupied slots into `mono`, which must already be at the row's width and
 // cleared -- a fresh Bitset(num_bits), or one a caller reset itself before refilling it. The shared body
-// behind every dense materialization of a SparseRow below.
+// behind every dense materialization of a SparseRow below and in layer_build/Common.h and TermProduct.h.
 inline auto fill_from_sparse_row(const SparseRow &row, Bitset &mono) -> void {
     const size_t n = row.num_slots();
     for (size_t j = 0; j < n; ++j) {

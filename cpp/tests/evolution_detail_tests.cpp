@@ -146,6 +146,7 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     matched.begin_gate(op.size());
 
     op.with_store([&](auto &store) {
+        const size_t capacity = 0; // no generator here, so no sparse record to size
         detail::LayerBuildEngine<RecordingSink, std::remove_reference_t<decltype(store)>> eng(
             op,
             store,
@@ -154,7 +155,8 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
             /*my_rank_=*/0,
             matched,
             combined_size,
-            detail::query_payload_words_for(store),
+            detail::query_payload_words_for(store, capacity),
+            capacity,
             RecordingSink{});
         eng.queries_r[0] = detail::query_buffer();
         detail::query_push(eng.queries_r[0], terms[1], 1);
