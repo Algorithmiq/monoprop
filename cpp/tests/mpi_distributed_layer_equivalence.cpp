@@ -43,19 +43,20 @@ struct TestInputs {
 };
 
 auto load_inputs() -> TestInputs {
-    return {load_case_data<kNumModes>("random_exact.msgpack")};
+    return {load_case_data("random_exact.msgpack")};
 }
 
 auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
-    MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
-                                      kCutoff,
-                                      inputs.data.initial_state,
-                                      std::nullopt,
-                                      comm,
-                                      std::nullopt,
-                                      std::nullopt,
-                                      CutoffType::Length,
-                                      std::nullopt);
+    auto sim = test_utils::make_propagator(kNumModes,
+                                           inputs.data.hamiltonian,
+                                           kCutoff,
+                                           inputs.data.initial_state,
+                                           std::nullopt,
+                                           comm,
+                                           std::nullopt,
+                                           std::nullopt,
+                                           CutoffType::Length,
+                                           std::nullopt);
     sim.build_graph(inputs.data.majoranas, inputs.data.param_inds, inputs.data.gen_coeffs);
     auto fn = sim.expectation_value_functional();
     return fn(inputs.data.parameters);
@@ -81,15 +82,16 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     const auto& inputs = load_inputs();
 
     auto run_gradient = [&](MPI_Comm comm) -> VecD {
-        MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
-                                          kCutoff,
-                                          inputs.data.initial_state,
-                                          std::nullopt,
-                                          comm,
-                                          std::nullopt,
-                                          std::nullopt,
-                                          CutoffType::Length,
-                                          std::nullopt);
+        auto sim = test_utils::make_propagator(kNumModes,
+                                               inputs.data.hamiltonian,
+                                               kCutoff,
+                                               inputs.data.initial_state,
+                                               std::nullopt,
+                                               comm,
+                                               std::nullopt,
+                                               std::nullopt,
+                                               CutoffType::Length,
+                                               std::nullopt);
         sim.build_graph(inputs.data.majoranas, inputs.data.param_inds, inputs.data.gen_coeffs);
         auto fn = sim.expectation_value_and_gradient_functional();
         return fn(inputs.data.parameters).second;
@@ -115,17 +117,17 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
     OperatorDict init;
     init[slots_of_string("ZIIIII")] = std::complex<double>(1.0, 0.0);
     init[slots_of_string("IIZZII")] = std::complex<double>(0.5, 0.0);
-    MonomialPropagator<kPauliQ> sim(init,
-                                    kPauliQ,
-                                    VecZ{},
-                                    std::nullopt,
-                                    comm,
-                                    1e-12,
-                                    std::nullopt,
-                                    CutoffType::Support,
-                                    std::nullopt,
-                                    kPauliQ,
-                                    Basis::Pauli);
+    auto sim = test_utils::make_propagator(kPauliQ,
+                                           init,
+                                           kPauliQ,
+                                           VecZ{},
+                                           std::nullopt,
+                                           comm,
+                                           1e-12,
+                                           std::nullopt,
+                                           CutoffType::Support,
+                                           std::nullopt,
+                                           Basis::Pauli);
     std::vector<VecZ> gens;
     VecZ pmap;
     VecD gcoeffs;
@@ -166,18 +168,18 @@ BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
 // exercising the hybrid transport end to end.
 
 auto run_energy_partitioned(const TestInputs& inputs, MPI_Comm comm, size_t partitions) -> std::pair<double, size_t> {
-    MonomialPropagator<kNumModes> sim(inputs.data.hamiltonian,
-                                      kCutoff,
-                                      inputs.data.initial_state,
-                                      std::nullopt,
-                                      comm,
-                                      std::nullopt,
-                                      std::nullopt,
-                                      CutoffType::Length,
-                                      std::nullopt,
-                                      kNumModes,
-                                      Basis::Majorana,
-                                      partitions);
+    auto sim = test_utils::make_propagator(kNumModes,
+                                           inputs.data.hamiltonian,
+                                           kCutoff,
+                                           inputs.data.initial_state,
+                                           std::nullopt,
+                                           comm,
+                                           std::nullopt,
+                                           std::nullopt,
+                                           CutoffType::Length,
+                                           std::nullopt,
+                                           Basis::Majorana,
+                                           partitions);
     sim.build_graph(inputs.data.majoranas, inputs.data.param_inds, inputs.data.gen_coeffs);
     auto fn = sim.expectation_value_functional();
     const double e = fn(inputs.data.parameters);

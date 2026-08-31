@@ -16,8 +16,11 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <deque>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -25,6 +28,8 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/SparseRowStore.h"
 
 namespace monoprop::detail {
 
@@ -44,7 +49,7 @@ struct MatchedEpochSet {
     // Wraps once per 65535 gates; without the fill a stale stamp on a row reused after a truncation aliases.
     auto begin_gate(size_t n) -> void {
         if (cur_ == std::numeric_limits<Stamp>::max()) {
-            std::fill(epoch_.begin(), epoch_.end(), Stamp{0});
+            std::ranges::fill(epoch_, Stamp{0});
             cur_ = 0;
         }
         ++cur_;
@@ -104,15 +109,41 @@ struct FusedContract {
     std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
 };
 
-// Queries ride flat VecZ buffers: kQueryWords elements per query (W monomial words + one ±1 phase word).
+// Queries ride flat VecZ buffers: one header word holding the record count, then query_words(nw) elements
+// per query (nw payload words + one ±1 phase word), then -- support form only -- a tail of dense escape
+// monomials for the queries no fixed-stride sparse record can hold.
 // The source index is not in the payload — the resolver answers by position; the querier holds src_idx_r[r][q].
-template <size_t NumModes>
-inline constexpr size_t kQueryWords = mpi_detail::kWords<NumModes> + 1;
+//
+// Functions of the word count rather than width-derived constants: every caller either has a monomial
+// to ask (`mono.num_words()`) or the operator (`op.num_bits()`).
+constexpr auto query_words(size_t num_words) -> size_t {
+    return num_words + 1;
+}
+
+// The record count leads the buffer rather than being divided out of its size, for two reasons: a
+// support-form buffer carries a tail after its records, so size/stride is not the count; and the resolver
+// has nothing but the received buffer to derive it from, where the querier still has its parallel source
+// array. One word per (rank, pass) buffer.
+//
+// A stream nothing was pushed to may be an empty buffer rather than a zero header -- the scan allocates
+// per rank and only some ranks are queried -- so both must read as zero records.
+inline constexpr size_t kQueryHeaderWords = 1;
+
+[[nodiscard]] inline auto query_buffer() -> VecZ {
+    return VecZ(kQueryHeaderWords, 0);
+}
+[[nodiscard]] inline auto query_record_count(const VecZ &buf) -> size_t {
+    return buf.size() < kQueryHeaderWords ? 0 : buf[0];
+}
+[[nodiscard]] constexpr auto query_record_offset(size_t q, size_t stride) -> size_t {
+    return kQueryHeaderWords + (q * stride);
+}
 
 // Fused query+value record width (R>1): the plain query record plus one trailing word holding the source's
 // pre-cos coeff (v_src, bit-cast from double), so query + value ride a single alltoallv instead of two.
-template <size_t NumModes>
-inline constexpr size_t kQueryWordsFused = kQueryWords<NumModes> + 1;
+constexpr auto query_words_fused(size_t num_words) -> size_t {
+    return query_words(num_words) + 1;
+}
 
 // The unsigned-int intermediate normalizes the ±1 sign bit into a fixed 32-bit pattern so the round-trip
 // is exact for any VecZ element width. Edit encode/decode as a pair.
@@ -132,43 +163,140 @@ inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
 }
 
-template <size_t NumModes>
-inline auto query_push(VecZ &buf, const Monomial<NumModes> &mono, int phase) -> void {
-    mpi_detail::append_monomial_words<NumModes>(mono, buf);
+// Appends one record and bumps the header, so the count is always the buffer's own rather than
+// something a reader has to derive from size and stride.
+inline auto query_push(VecZ &buf, const Bitset &mono, int phase) -> void {
+    assert(buf.size() >= kQueryHeaderWords && "a query buffer must be created with query_buffer()");
+    mpi_detail::append_monomial_words(mono, buf);
     buf.push_back(encode_phase(phase));
+    ++buf[0];
 }
 
 // The mono + phase words occupy the same leading offsets in the plain and fused record, so readers differ
-// only in the per-record stride QW (defaulted to the plain width).
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &mono_out, int &phase_out) -> void {
-    const size_t base = q * QW;
-    mono_out = mpi_detail::read_monomial_from_words<NumModes>(buf, base);
-    phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);
+// only in the per-record stride: query_words for a plain record, query_words_fused for a fused one.
+//
+// The word count comes from mono_out, which as the destination already carries the record's width.
+inline auto query_read(const VecZ &buf, size_t q, size_t stride, Bitset &mono_out, int &phase_out) -> void {
+    const size_t base = query_record_offset(q, stride);
+    mpi_detail::read_monomial_from_words(buf, base, mono_out);
+    phase_out = decode_phase(buf[base + mono_out.num_words()]);
+}
+
+// Owned storage for a batch of query keys in whichever form a store keys its rows by, plus the record
+// reader that fills it. Both resolve paths -- the self-resolve batch in Engine.h and the incoming probe in
+// Resolve.h -- want exactly this, and both used to hand-roll it: allocate once, keep the storage across
+// layers, overwrite every element before reading it, and hand the whole run to find_batch contiguously.
+//
+// Grow-only and never cleared by ensure()/read within one object's lifetime: an element is overwritten
+// whole before any read, so a per-batch rebuild bought nothing and cost a construction per query. Whether
+// that lifetime spans layers depends on the call site, not the class. The thread_local batch in Resolve.h
+// keeps its storage across layers on purpose, so its resting footprint is the largest layer's worth until
+// the thread exits (peak RSS is unchanged -- the peak was always reached *during* a layer). Engine.h's
+// keys_ does not: it is a plain member of a LayerBuildEngine built fresh per build_layer call, so it
+// starts default-constructed and pays ensure()'s construction cost every layer -- required, not a missed
+// optimization, because retain()'s handles index into storage that must not survive past the layer that
+// produced them.
+//
+// configure() must be called before any use and re-called if the extent changes -- a thread servicing two
+// propagators of different widths must not reuse elements sized for the other.
+class DenseQueryKeys {
+public:
+    using key_type = Bitset;
+
+    // num_bits is the monomial storage width: query_read memcpys the destination's full word count, so the
+    // destination is what fixes the record width.
+    auto configure(size_t num_bits) -> void {
+        if (extent_ != num_bits) {
+            keys_.clear();
+            retained_words_.clear();
+            retained_count_ = 0;
+            extent_ = num_bits;
+            view_ = Bitset(extent_);
+        }
+    }
+    auto ensure(size_t n) -> void {
+        if (keys_.size() < n) {
+            // resize only constructs the new tail; elements an earlier layer built keep their storage.
+            keys_.resize(n, Bitset(extent_));
+        }
+    }
+    // Slots are refilled for every batch, so anything a caller must still read afterwards has to be
+    // retained first (see retain below). Nothing per-batch to reset on this side.
+    auto begin_batch() -> void {}
+    [[nodiscard]] auto read_record(const VecZ &buf, size_t q, size_t stride, size_t slot) -> int {
+        int phase = 0;
+        query_read(buf, q, stride, keys_[slot], phase);
+        return phase;
+    }
+    [[nodiscard]] auto data() const -> const key_type * { return keys_.data(); }
+    [[nodiscard]] auto operator[](size_t slot) const -> const key_type & { return keys_[slot]; }
+
+    // Copies slot's key into storage that lives as long as this batch, and returns its handle. The
+    // deferred self-miss list is what needs it: it is read after the batch has been refilled several times
+    // over, once both resolve passes are done.
+    //
+    // The retained keys are a flat word arena at the batch's own width rather than a second MonomialList:
+    // a Bitset is sized for the widest inline width whatever its own is, so a vector of them carried 72
+    // bytes per key where a 128-bit monomial needs 16, and one is retained per term the layer inserts.
+    // The support-form batch below already keeps its retained rows in an arena, for the same reason.
+    [[nodiscard]] auto retain(size_t slot) -> size_t {
+        const size_t words = Bitset::words_for(extent_);
+        const auto *src = keys_[slot].data();
+        retained_words_.insert(retained_words_.end(), src, src + words);
+        return retained_count_++;
+    }
+    // Returns a reference to a scratch monomial refilled per call, so at most one retained key may be
+    // read at a time. Both readers satisfy that: insert_absent_terms writes slot k's row and is done with
+    // the key before asking for k+1, and its bulk_insert hashes one key per slot. The support form's
+    // retained() has the same one-at-a-time contract -- its view points into an arena that must not have
+    // grown since.
+    [[nodiscard]] auto retained(size_t handle) const -> const key_type & {
+        const size_t words = Bitset::words_for(extent_);
+        std::memcpy(view_.data(), retained_words_.data() + (handle * words), words * sizeof(Bitset::word_type));
+        return view_;
+    }
+
+private:
+    MonomialList keys_ = {};
+    // Handle h occupies words [h * words_for(extent_), (h+1) * words_for(extent_)).
+    DefaultInitVector<Bitset::word_type> retained_words_ = {};
+    size_t retained_count_ = 0;
+    mutable Bitset view_{0};
+    size_t extent_ = 0;
+};
+
+// The payload width of one query record, in VecZ words -- the quantity every stride, alltoallv count and
+// record offset in Engine.h derives from. Both backends are queried with dense monomials, so the width is
+// the store's own: a support-form row still has to be materialized before it goes on the wire.
+[[nodiscard]] inline auto query_payload_words_for(const auto &store) -> size_t {
+    return Bitset::words_for(store.num_bits());
 }
 
 // No monomial reconstruction: process_responses needs only the phase.
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_phase(const VecZ &buf, size_t q) -> int {
-    return decode_phase(buf[q * QW + mpi_detail::kWords<NumModes>]);
+inline auto query_phase(const VecZ &buf, size_t q, size_t num_words) -> int {
+    return decode_phase(buf[query_record_offset(q, query_words(num_words)) + num_words]);
 }
 
-template <size_t NumModes>
-inline auto query_value(const VecZ &buf, size_t q) -> double {
-    return decode_value(buf[q * kQueryWordsFused<NumModes> + mpi_detail::kWords<NumModes> + 1]);
+inline auto query_value(const VecZ &buf, size_t q, size_t num_words) -> double {
+    return decode_value(buf[query_record_offset(q, query_words_fused(num_words)) + num_words + 1]);
 }
 
-// Requires v.size() == q.size()/kQueryWords: exactly one value per query record.
-template <size_t NumModes>
-inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out) -> void {
-    constexpr size_t W = kQueryWords<NumModes>;
-    const size_t nq = q.empty() ? 0 : q.size() / W;
+// Requires v.size() == query_record_count(q): exactly one value per query record.
+inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out, size_t num_words) -> void {
     out.clear();
-    out.reserve(nq * kQueryWordsFused<NumModes>);
+    if (q.size() < kQueryHeaderWords) {
+        // No stream at all rather than an empty one: the self entry is cleared once resolved inline, and it
+        // must stay empty so the alltoallv sends nothing to self.
+        return;
+    }
+    const size_t W = query_words(num_words);
+    const size_t nq = query_record_count(q);
+    out.reserve(kQueryHeaderWords + (nq * query_words_fused(num_words)));
+    out.push_back(nq);
     for (size_t i = 0; i < nq; ++i) {
         out.insert(out.end(),
-                   q.begin() + static_cast<std::ptrdiff_t>(i * W),
-                   q.begin() + static_cast<std::ptrdiff_t>((i + 1) * W));
+                   q.begin() + static_cast<std::ptrdiff_t>(query_record_offset(i, W)),
+                   q.begin() + static_cast<std::ptrdiff_t>(query_record_offset(i + 1, W)));
         out.push_back(encode_value(v[i]));
     }
 }

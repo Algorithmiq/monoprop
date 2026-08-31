@@ -64,52 +64,14 @@ endif()
 find_package(nanobind CONFIG REQUIRED)
 message(STATUS "Using nanobind: ${nanobind_DIR} (version ${nanobind_VERSION})")
 
-# generate binding
-execute_process(
-  COMMAND
-    "${Python_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/generate-binders.py"
-    "--max-num-modes" "${monoprop_MAX_NUM_MODES}" "--batch-size" "8"
-    "--output-dir" "${CMAKE_CURRENT_BINARY_DIR}/generated" "--binding-kind"
-    "core"
-  WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
-  COMMAND_ERROR_IS_FATAL ANY
-)
-
-file(
-  GLOB _bind_cpps
-  LIST_DIRECTORIES false
-  CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_BINARY_DIR}/generated/bind_up_to_[0-9]*.cpp"
-)
-set(_bind_cpps_print "")
-foreach(_cpp IN LISTS _bind_cpps)
-  file(
-    RELATIVE_PATH
-    _rel_cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/generated"
-    "${_cpp}"
-  )
-  list(APPEND _bind_cpps_print "${_rel_cpp}")
-endforeach()
-message(STATUS "Generated binding source files: ${_bind_cpps_print}")
-
-set(_BINDINGS_BODY_ "")
-file(READ "${CMAKE_CURRENT_BINARY_DIR}/generated/call.txt" _BINDINGS_BODY_)
-string(STRIP "${_BINDINGS_BODY_}" _BINDINGS_BODY_)
-set(_BINDINGS_BODY_ "${_BINDINGS_BODY_}")
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp"
-  @ONLY
-)
-
+# One translation unit: MonomialPropagator is a single class, so there is nothing to generate or to
+# split into per-mode-width batches.
 nanobind_add_module(_core
   NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
   NOMINSIZE  # don’t perform optimizations to minimize binary size
   LTO  # perform link-time optimization
-  BACKEND_MODULE nanobind_backend
-  ${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp
-  ${_bind_cpps}  # List of generated binders
+  BACKEND_MODULE nanobind_backend  # nanobind 3 split mode; rules out STABLE_ABI and NB_STATIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp
 )
 
 target_include_directories(
@@ -118,8 +80,13 @@ target_include_directories(
   PRIVATE
     $<IF:$<BOOL:${mpi4py_FOUND}>,${mpi4py_INCLUDE_DIRS},>
   PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_definitions(
+  _core
+  PRIVATE
+    monoprop_NANOBIND_VERSION="${nanobind_VERSION}"
 )
 
 target_link_libraries(
@@ -133,24 +100,13 @@ if(monoprop_SANITIZER STREQUAL "asan-ubsan")
   # GCC bounds-strict misdiagnoses nanobind's valid access to a tuple's trailing allocation.
   if(CMAKE_CXX_COMPILER_ID MATCHES GNU)
     set_source_files_properties(
-      "${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp"
-      ${_bind_cpps}
+      "${CMAKE_CURRENT_SOURCE_DIR}/bindings.cpp"
       PROPERTIES
         COMPILE_OPTIONS
           "-fno-sanitize=bounds-strict"
     )
   endif()
 endif()
-
-# generate dispatch function module
-install(
-  CODE
-    "execute_process(
-      COMMAND \"${Python_EXECUTABLE}\" \"${PROJECT_SOURCE_DIR}/tools/generate-dispatch.py\" \"--max-num-modes\" \"${monoprop_MAX_NUM_MODES}\" \"--class-name\" \"MonomialPropagator\" \"--module-name\" \"monoprop\"
-WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/..
-COMMAND_ERROR_IS_FATAL ANY
-)"
-)
 
 if(APPLE)
   set(_rpath "@loader_path/${CMAKE_INSTALL_LIBDIR}")

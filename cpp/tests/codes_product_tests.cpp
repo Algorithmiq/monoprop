@@ -29,8 +29,8 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/algebra/CodesAlgebra.h"
-#include "monoprop/core/Monomial.h"
-#include "monoprop/detail/operator/SparseRowStore.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
+#include "monoprop/algebra/PauliAlgebra.h"
 
 #include "RandomMonomial.h"
 #include "TestData.h"
@@ -51,8 +51,7 @@ struct OwnedRow {
 
     [[nodiscard]] auto view() const -> SparseRow { return SparseRow{lanes.data(), codes}; }
 
-    template <size_t NumBits>
-    static auto encode(const Bitset<NumBits> &mono, size_t capacity) -> OwnedRow {
+    static auto encode(const Bitset &mono, size_t capacity) -> OwnedRow {
         OwnedRow row(capacity);
         size_t used = 0;
         for_each_mode_slot(mono, [&](size_t mode, unsigned int code) {
@@ -87,40 +86,39 @@ struct Seen {
 };
 
 // One term against one generator, every quantity emit_term_products would produce.
-template <size_t NumModes>
-auto check_product(const Monomial<NumModes> &mono, const Monomial<NumModes> &gen, size_t capacity, Seen &seen)
-    -> void {
+auto check_product(const Bitset &mono, const Bitset &gen, size_t capacity, Seen &seen) -> void {
+    const size_t num_bits = mono.size();
     const auto mono_row = OwnedRow::encode(mono, capacity);
     const auto gen_row = OwnedRow::encode(gen, capacity);
 
     // The dense reference, exactly as the scan computes it.
-    const Monomial<NumModes> dense_product = mono ^ gen;
-    const size_t dense_overlap = mono.count_and(gen);
+    Bitset dense_product(num_bits);
+    const auto fused = mono.fused_xor_into(gen, dense_product);
 
     std::vector<RowMode> out_lanes(capacity, 0);
     const auto product = sparse_toggle(mono_row.view(), gen_row.view(), std::span<RowMode>(out_lanes));
     BOOST_REQUIRE(!product.overflowed);
 
     const SparseRow product_row{out_lanes.data(), product.codes};
-    BOOST_TEST(product.overlap == dense_overlap);
+    BOOST_TEST(product.overlap == fused.overlap);
     BOOST_TEST(product.num_slots == row_slot_count(product.codes));
-    BOOST_TEST((sparse_row_to_monomial<2 * NumModes>(product_row) == dense_product));
+    BOOST_TEST((sparse_row_to_bitset(product_row, num_bits) == dense_product));
 
     // The two rotation signs. Majorana's dense form goes through the per-layer interleave mask, which is
     // the hot path the sparse walk replaces, so compare against that and not only against
     // interleave_phase.
-    const auto majorana_ctx = MajoranaAlgebra<NumModes>::make_gen_context(gen);
-    const int dense_majorana = MajoranaAlgebra<NumModes>::rotation_sign(majorana_ctx, mono, dense_product);
+    const auto majorana_ctx = MajoranaAlgebra::make_gen_context(gen);
+    const int dense_majorana = MajoranaAlgebra::rotation_sign(majorana_ctx, mono, dense_product);
     const int sparse_majorana = codes_interleave_phase(mono_row.view(), gen_row.view());
     BOOST_TEST(sparse_majorana == dense_majorana);
 
-    const auto pauli_ctx = PauliAlgebra<NumModes>::make_gen_context(gen);
-    const int dense_pauli = PauliAlgebra<NumModes>::rotation_sign(pauli_ctx, mono, dense_product);
+    const auto pauli_ctx = PauliAlgebra::make_gen_context(gen);
+    const int dense_pauli = PauliAlgebra::rotation_sign(pauli_ctx, mono, dense_product);
     const int sparse_pauli = codes_pauli_rotation_sign(mono_row.view(), gen_row.view());
     BOOST_TEST(sparse_pauli == dense_pauli);
 
-    seen.nonzero_overlap |= dense_overlap > 0;
-    seen.zero_overlap |= dense_overlap == 0;
+    seen.nonzero_overlap |= fused.overlap > 0;
+    seen.zero_overlap |= fused.overlap == 0;
     seen.majorana_minus |= dense_majorana < 0;
     seen.majorana_plus |= dense_majorana > 0;
     seen.pauli_minus |= dense_pauli < 0;
@@ -139,48 +137,6 @@ auto check_product(const Monomial<NumModes> &mono, const Monomial<NumModes> &gen
     seen.cancelled_a_mode |= shared_cancelling > 0;
 }
 
-template <size_t NumModes>
-auto check_random_products(std::mt19937_64 &rng, size_t trials, size_t mono_slots, size_t gen_slots, Seen &seen)
-    -> void {
-    for (size_t trial = 0; trial < trials; ++trial) {
-        const auto mono = test_utils::random_monomial<NumModes>(rng, mono_slots);
-        const auto gen = test_utils::random_monomial<NumModes>(rng, gen_slots);
-        check_product<NumModes>(mono, gen, SparseRowStore<NumModes>::kMaxSlots, seen);
-    }
-}
-
-// The fixtures' Majorana generator list against their Hamiltonian keys.
-template <size_t NumModes>
-auto check_fixture_products(const std::string &name, Seen &seen) -> size_t {
-    const auto data = test_utils::load_case_data<NumModes>(name);
-    const size_t max_index = 2 * data.num_modes;
-
-    std::vector<Monomial<NumModes>> terms;
-    for (const auto &[inds, coeff] : data.hamiltonian) {
-        if (inds.size() <= 12) {
-            terms.push_back(indices_to_bitset_checked<NumModes>(inds, max_index));
-        }
-    }
-    std::vector<Monomial<NumModes>> gens;
-    for (const auto &inds : data.majoranas) {
-        if (inds.size() <= 12) {
-            gens.push_back(indices_to_bitset_checked<NumModes>(inds, max_index));
-        }
-    }
-    BOOST_REQUIRE(!terms.empty());
-    BOOST_REQUIRE(!gens.empty());
-
-    size_t pairs = 0;
-    const size_t stride = terms.size() > 40 ? (terms.size() / 40) + 1 : 1;
-    for (size_t i = 0; i < terms.size(); i += stride) {
-        for (const auto &gen : gens) {
-            check_product<NumModes>(terms[i], gen, SparseRowStore<NumModes>::kMaxSlots, seen);
-            ++pairs;
-        }
-    }
-    return pairs;
-}
-
 } // namespace
 
 // Randomized terms against randomized generators. Generators are drawn from the same distribution and
@@ -189,9 +145,13 @@ auto check_fixture_products(const std::string &name, Seen &seen) -> size_t {
 BOOST_AUTO_TEST_CASE(codes_product_matches_dense_on_randomized_rows) {
     std::mt19937_64 rng(20260812U);
     Seen seen;
-    check_random_products<32>(rng, 400, 6, 4, seen);
-    check_random_products<64>(rng, 400, 6, 4, seen);
-    check_random_products<300>(rng, 400, 6, 4, seen);
+    for (const size_t num_modes : {32U, 64U, 300U}) {
+        for (size_t trial = 0; trial < 400; ++trial) {
+            const auto mono = test_utils::random_monomial(rng, num_modes, 6);
+            const auto gen = test_utils::random_monomial(rng, num_modes, 4);
+            check_product(mono, gen, SparseRowStore::kMaxSlots, seen);
+        }
+    }
     BOOST_TEST(seen.cancelled_a_mode);
     BOOST_TEST(seen.nonzero_overlap);
     BOOST_TEST(seen.zero_overlap);
@@ -206,19 +166,49 @@ BOOST_AUTO_TEST_CASE(codes_product_matches_dense_on_randomized_rows) {
 BOOST_AUTO_TEST_CASE(codes_product_matches_dense_under_heavy_overlap) {
     std::mt19937_64 rng(4242U);
     Seen seen;
-    check_random_products<6>(rng, 2000, 6, 6, seen);
+    for (size_t trial = 0; trial < 2000; ++trial) {
+        const auto mono = test_utils::random_monomial(rng, 6, 6);
+        const auto gen = test_utils::random_monomial(rng, 6, 6);
+        check_product(mono, gen, SparseRowStore::kMaxSlots, seen);
+    }
     BOOST_TEST(seen.cancelled_a_mode);
     BOOST_TEST(seen.nonzero_overlap);
     BOOST_TEST(seen.majorana_minus);
     BOOST_TEST(seen.pauli_minus);
 }
 
-// Real generators and real terms.
+// Real generators and real terms: the fixtures' Majorana generator list against their Hamiltonian keys.
 BOOST_AUTO_TEST_CASE(codes_product_matches_dense_on_fixture_generators) {
     Seen seen;
     size_t pairs = 0;
-    pairs += check_fixture_products<8>("random_exact.msgpack", seen);
-    pairs += check_fixture_products<12>("lih_fermionic_spin_exact.msgpack", seen);
+    for (const std::string name : {"random_exact.msgpack", "lih_fermionic_spin_exact.msgpack"}) {
+        const auto data = test_utils::load_case_data(name);
+        const size_t num_bits = 2 * data.num_modes;
+        const size_t max_index = 2 * data.num_modes;
+
+        std::vector<Bitset> terms;
+        for (const auto &[inds, coeff] : data.hamiltonian) {
+            if (inds.size() <= 12) {
+                terms.push_back(indices_to_bitset_checked(inds, max_index, num_bits));
+            }
+        }
+        std::vector<Bitset> gens;
+        for (const auto &inds : data.majoranas) {
+            if (inds.size() <= 12) {
+                gens.push_back(indices_to_bitset_checked(inds, max_index, num_bits));
+            }
+        }
+        BOOST_REQUIRE(!terms.empty());
+        BOOST_REQUIRE(!gens.empty());
+
+        const size_t stride = terms.size() > 40 ? (terms.size() / 40) + 1 : 1;
+        for (size_t i = 0; i < terms.size(); i += stride) {
+            for (const auto &gen : gens) {
+                check_product(terms[i], gen, SparseRowStore::kMaxSlots, seen);
+                ++pairs;
+            }
+        }
+    }
     BOOST_TEST(pairs > 100U);
     BOOST_TEST(seen.nonzero_overlap);
     BOOST_TEST(seen.majorana_plus);
@@ -227,12 +217,12 @@ BOOST_AUTO_TEST_CASE(codes_product_matches_dense_on_fixture_generators) {
 
 // The product occupies up to the term's modes plus the generator's, which is why a scratch row is sized
 // max_mode_bound() + generator locality. Past that the answer must be "overflowed", never a truncated
-// mode list beside a plausible codes word -- that combination is what makes a capacity bug read as a
-// speedup.
+// mode list beside a plausible codes word -- that combination is what made a Stage 3 capacity bug read
+// as a speedup.
 BOOST_AUTO_TEST_CASE(codes_product_reports_capacity_overflow) {
-    constexpr size_t kNumModes = 32;
-    Monomial<kNumModes> mono;
-    Monomial<kNumModes> gen;
+    constexpr size_t kNumBits = 64;
+    Bitset mono(kNumBits);
+    Bitset gen(kNumBits);
     for (const size_t mode : {0U, 1U, 2U}) { // three disjoint modes each
         mono.set(2 * mode);
     }

@@ -36,10 +36,9 @@ constexpr unsigned int kCutoff = 4;
 
 // A toy subclass exercising both extension points: `child_factory` builds more of itself, and
 // `clone_()` overrides the base's default (which would otherwise slice a copy down to Base).
-template <size_t NumModes>
-class DerivedPropagator : public MonomialPropagator<NumModes> {
+class DerivedPropagator : public MonomialPropagator {
 public:
-    using Base = MonomialPropagator<NumModes>;
+    using Base = MonomialPropagator;
 
     DerivedPropagator(const OperatorDict &initial_operator,
                       unsigned int cutoff,
@@ -49,16 +48,16 @@ public:
         : Base(initial_operator,
                cutoff,
                initial_state,
+               kNumModes,
                std::nullopt,
                comm,
                std::nullopt,
                std::nullopt,
                CutoffType::Length,
                std::nullopt,
-               NumModes,
                Basis::Majorana,
                partitions,
-               typename Base::PartitionChildFactory{[=](mpi::Comm partition_comm) -> std::unique_ptr<Base> {
+               Base::PartitionChildFactory{[=](mpi::Comm partition_comm) -> std::unique_ptr<Base> {
                    return std::make_unique<DerivedPropagator>(initial_operator,
                                                               cutoff,
                                                               initial_state,
@@ -90,8 +89,8 @@ protected:
 } // namespace
 
 BOOST_AUTO_TEST_CASE(partition_facade_children_are_derived_type) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    DerivedPropagator<kNumModes> sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/4);
+    const auto data = load_case_data("random_exact.msgpack");
+    DerivedPropagator sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/4);
 
     BOOST_TEST(sim.is_facade());
     BOOST_TEST(sim.children_are_all_derived());
@@ -99,10 +98,10 @@ BOOST_AUTO_TEST_CASE(partition_facade_children_are_derived_type) {
 }
 
 BOOST_AUTO_TEST_CASE(partition_facade_copy_children_are_derived_type) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    DerivedPropagator<kNumModes> sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/4);
+    const auto data = load_case_data("random_exact.msgpack");
+    DerivedPropagator sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/4);
 
-    DerivedPropagator<kNumModes> copy(sim); // exercises PartitionGroup's copy ctor -> clone_()
+    DerivedPropagator copy(sim); // exercises PartitionGroup's copy ctor -> clone_()
     BOOST_TEST(copy.is_facade());
     BOOST_TEST(copy.children_are_all_derived());
 }

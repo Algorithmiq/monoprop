@@ -41,23 +41,23 @@ constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 4;
 
 auto majorana_sim(const CaseData &data, size_t partitions, std::optional<double> lower_atol = std::nullopt)
-    -> MonomialPropagator<kNumModes> {
-    return MonomialPropagator<kNumModes>(data.hamiltonian,
-                                         kCutoff,
-                                         data.initial_state,
-                                         std::nullopt,
-                                         MPI_COMM_SELF,
-                                         lower_atol,
-                                         std::nullopt,
-                                         CutoffType::Length,
-                                         std::nullopt,
-                                         kNumModes,
-                                         Basis::Majorana,
-                                         partitions);
+    -> MonomialPropagator {
+    return test_utils::make_propagator(kNumModes,
+                                       data.hamiltonian,
+                                       kCutoff,
+                                       data.initial_state,
+                                       std::nullopt,
+                                       MPI_COMM_SELF,
+                                       lower_atol,
+                                       std::nullopt,
+                                       CutoffType::Length,
+                                       std::nullopt,
+                                       Basis::Majorana,
+                                       partitions);
 }
 
 BOOST_AUTO_TEST_CASE(partition_majorana_energy_matches_across_partition_counts) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto ref = majorana_sim(data, 1);
     ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double e1 = ref.expectation_value(data.parameters);
@@ -75,7 +75,7 @@ BOOST_AUTO_TEST_CASE(partition_majorana_energy_matches_across_partition_counts) 
 }
 
 BOOST_AUTO_TEST_CASE(partition_majorana_gradient_matches_across_partition_counts) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto ref = majorana_sim(data, 1);
     ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const auto g1 = ref.expectation_value_and_gradient(data.parameters).second;
@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE(partition_majorana_gradient_matches_across_partition_counts
 }
 
 BOOST_AUTO_TEST_CASE(partition_majorana_propagate_then_expectation_matches) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto run = [&](size_t S) {
         auto sim = majorana_sim(data, S);
         sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
@@ -113,7 +113,7 @@ BOOST_AUTO_TEST_CASE(partition_majorana_propagate_then_expectation_matches) {
 // Two independent S=4 runs are bit-identical: ShmComm sums in ascending rank order and each partition is
 // deterministic, so a given partition count has no run-to-run jitter.
 BOOST_AUTO_TEST_CASE(partition_energy_is_deterministic) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto energy_s4 = [&] {
         auto sim = majorana_sim(data, 4);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -127,7 +127,7 @@ BOOST_AUTO_TEST_CASE(partition_energy_is_deterministic) {
 // the multiset: the partitions are disjoint and cover every term. Sorting both sides is the only
 // comparison the API's contract supports — see the note on contract_partially().
 BOOST_AUTO_TEST_CASE(partition_contract_partially_matches_as_a_multiset) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto sorted_coeffs = [&](size_t S) {
         auto sim = majorana_sim(data, S);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
@@ -150,7 +150,7 @@ BOOST_AUTO_TEST_CASE(partition_contract_partially_matches_as_a_multiset) {
 // The raw per-partition accessors have no facade reading: the facade's own graph_/mp_op_ are never
 // populated, so returning them would hand a C++ consumer empty state that looks valid.
 BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto sim = majorana_sim(data, 4);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     BOOST_CHECK_THROW(static_cast<void>(sim.graph()), std::runtime_error);
@@ -171,21 +171,21 @@ BOOST_AUTO_TEST_CASE(partition_raw_accessors_reject_a_facade) {
 // oracle must itself differ from the wide run, else the last assertion would hold vacuously.
 BOOST_AUTO_TEST_CASE(partition_setters_reach_every_partition) {
     constexpr size_t kLihModes = LihFixture::n_modes;
-    const auto data = load_case_data<kLihModes>("lih_fermionic_spin_exact.msgpack");
+    const auto data = load_case_data("lih_fermionic_spin_exact.msgpack");
 
     auto build = [&](unsigned int cutoff, unsigned int updated_cutoff) {
-        MonomialPropagator<kLihModes> sim(data.hamiltonian,
-                                          cutoff,
-                                          data.initial_state,
-                                          std::nullopt,
-                                          MPI_COMM_SELF,
-                                          std::nullopt,
-                                          std::nullopt,
-                                          CutoffType::Length,
-                                          std::nullopt,
-                                          kLihModes,
-                                          Basis::Majorana,
-                                          /*partitions=*/4);
+        auto sim = test_utils::make_propagator(kLihModes,
+                                               data.hamiltonian,
+                                               cutoff,
+                                               data.initial_state,
+                                               std::nullopt,
+                                               MPI_COMM_SELF,
+                                               std::nullopt,
+                                               std::nullopt,
+                                               CutoffType::Length,
+                                               std::nullopt,
+                                               Basis::Majorana,
+                                               /*partitions=*/4);
         if (cutoff != updated_cutoff) {
             sim.update_cutoff(updated_cutoff);
             BOOST_CHECK_EQUAL(sim.cutoff(), updated_cutoff);
@@ -201,13 +201,48 @@ BOOST_AUTO_TEST_CASE(partition_setters_reach_every_partition) {
     BOOST_CHECK_EQUAL(n_tight, build(2 * kLihModes, 4));
 }
 
+// update_cutoff() resizes the live row store in place (MPOperator::resize_store) rather than dropping
+// it, so the initial fill's rows -- inserted before the setter runs -- must migrate to the new width
+// with their content and index intact. Both propagators below end up at the same cutoff before
+// build_graph, so the row-store width at construction time (single-partition single-rank data, no width
+// past kMaxInlinePositions the migration could disagree over the encoding of) is the only difference:
+// if migration ever corrupted a row or its index, the initial fill's coefficients would be wrong for
+// every layer built from them, not just the resized one.
+BOOST_AUTO_TEST_CASE(update_cutoff_after_initial_fill_matches_direct_construction) {
+    const auto data = load_case_data("random_exact.msgpack");
+
+    auto ref = majorana_sim(data, 1);
+    ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const double e_ref = ref.expectation_value(data.parameters);
+
+    // Constructed at cutoff 1 -- the narrowest row-store width available -- so every initial term with
+    // more than one occupied mode starts in the dense backend's overflow map, then widened to kCutoff
+    // before the graph is built at all.
+    auto sim = test_utils::make_propagator(kNumModes,
+                                           data.hamiltonian,
+                                           /*cutoff=*/1U,
+                                           data.initial_state,
+                                           std::nullopt,
+                                           MPI_COMM_SELF);
+    sim.update_cutoff(kCutoff);
+    BOOST_REQUIRE_EQUAL(sim.cutoff(), kCutoff);
+    BOOST_REQUIRE_EQUAL(sim.size(), ref.size()); // the initial fill survived the resize term-for-term
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const double e_sim = sim.expectation_value(data.parameters);
+
+    BOOST_TEST_CONTEXT("e_ref=" << e_ref << " e_sim=" << e_sim) {
+        BOOST_TEST(near(e_ref, e_sim));
+    }
+    BOOST_CHECK_EQUAL(ref.size(), sim.size());
+}
+
 BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data("random_exact.msgpack");
     auto sim = majorana_sim(data, 4);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double e = sim.expectation_value(data.parameters);
 
-    MonomialPropagator<kNumModes> copy(sim); // clones the partition group (fresh threads + ShmComm)
+    MonomialPropagator copy(sim); // clones the partition group (fresh threads + ShmComm)
     const double e_copy = copy.expectation_value(data.parameters);
     BOOST_CHECK_EQUAL(e, e_copy);
     BOOST_CHECK_EQUAL(sim.size(), copy.size());
@@ -215,23 +250,23 @@ BOOST_AUTO_TEST_CASE(partition_deep_copy_matches) {
 
 constexpr size_t kNq = 6;
 
-auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> MonomialPropagator<kNq> {
+auto pauli_sim(const std::map<std::string, double> &obs, size_t partitions) -> MonomialPropagator {
     OperatorDict init;
     for (const auto &[p, c] : obs) {
         init[slots_of_string(p)] = std::complex<double>(c, 0.0);
     }
-    return MonomialPropagator<kNq>(init,
-                                   /*cutoff=*/kNq,
-                                   /*initial_state=*/{},
-                                   std::nullopt,
-                                   MPI_COMM_SELF,
-                                   /*lower_atol=*/1e-12,
-                                   std::nullopt,
-                                   CutoffType::Support,
-                                   std::nullopt,
-                                   kNq,
-                                   Basis::Pauli,
-                                   partitions);
+    return test_utils::make_propagator(kNq,
+                                       init,
+                                       /*cutoff=*/kNq,
+                                       /*initial_state=*/{},
+                                       std::nullopt,
+                                       MPI_COMM_SELF,
+                                       /*lower_atol=*/1e-12,
+                                       std::nullopt,
+                                       CutoffType::Support,
+                                       std::nullopt,
+                                       Basis::Pauli,
+                                       partitions);
 }
 
 auto run_pauli_energy(size_t partitions) -> std::pair<double, size_t> {
@@ -281,37 +316,37 @@ BOOST_AUTO_TEST_CASE(partition_pauli_energy_matches_across_partition_counts) {
 // master threads before building the partitions on them (first-touch locality), so the unwind has to join
 // already-started threads. Every MonomialPropagator ctor validation reaches this path.
 BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    // logical_num_modes = 0 is rejected by each partition's own constructor, on its own master thread.
-    BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(data.hamiltonian,
-                                                    kCutoff,
-                                                    data.initial_state,
-                                                    std::nullopt,
-                                                    MPI_COMM_SELF,
-                                                    std::nullopt,
-                                                    std::nullopt,
-                                                    CutoffType::Length,
-                                                    std::nullopt,
-                                                    /*logical_num_modes=*/0,
-                                                    Basis::Majorana,
-                                                    /*partitions=*/4),
+    const auto data = load_case_data("random_exact.msgpack");
+    // num_modes = 0 is rejected by each partition's own constructor, on its own master thread.
+    BOOST_CHECK_THROW(test_utils::make_propagator(/*num_modes=*/0,
+                                                  data.hamiltonian,
+                                                  kCutoff,
+                                                  data.initial_state,
+                                                  std::nullopt,
+                                                  MPI_COMM_SELF,
+                                                  std::nullopt,
+                                                  std::nullopt,
+                                                  CutoffType::Length,
+                                                  std::nullopt,
+                                                  Basis::Majorana,
+                                                  /*partitions=*/4),
                       std::runtime_error);
 
     // An out-of-range operator index takes the same path, and the group stays usable afterwards.
     auto bad_op = data.hamiltonian;
     bad_op[VecZ{2 * kNumModes}] = std::complex<double>(1.0, 0.0);
-    BOOST_CHECK_THROW(MonomialPropagator<kNumModes>(bad_op,
-                                                    kCutoff,
-                                                    data.initial_state,
-                                                    std::nullopt,
-                                                    MPI_COMM_SELF,
-                                                    std::nullopt,
-                                                    std::nullopt,
-                                                    CutoffType::Length,
-                                                    std::nullopt,
-                                                    kNumModes,
-                                                    Basis::Majorana,
-                                                    /*partitions=*/4),
+    BOOST_CHECK_THROW(test_utils::make_propagator(kNumModes,
+                                                  bad_op,
+                                                  kCutoff,
+                                                  data.initial_state,
+                                                  std::nullopt,
+                                                  MPI_COMM_SELF,
+                                                  std::nullopt,
+                                                  std::nullopt,
+                                                  CutoffType::Length,
+                                                  std::nullopt,
+                                                  Basis::Majorana,
+                                                  /*partitions=*/4),
                       std::runtime_error);
     BOOST_CHECK_NO_THROW(majorana_sim(data, 4));
 }

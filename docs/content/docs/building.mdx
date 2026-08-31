@@ -28,26 +28,28 @@ without MPI, so a from-source build is required for multi-rank runs.
 | `monoprop_ENABLE_MPI` | `OFF` | Multi-rank support, as above. |
 
 `monoprop_ENABLE_ARCH_FLAGS` also moves the sparse-row crossover, which is derived
-from it rather than being an option of its own: `768` modes when the build actually
-emits architecture flags, `256` when it does not — which covers the published wheels
-and any `Debug` build, where the flags are suppressed. Dense monomials cost one pass
-per storage word while sparse rows are flat in the width, so a target without a vector
-`popcount` reaches the crossover sooner. The number is build-time because the ISA is,
-and there is no crossover you could pin that would be right independently of the flags
-you compiled with.
+from it rather than being an option of its own: `768` storage modes when the build
+actually emits architecture flags, `256` when it does not — which covers the published
+wheels and any `Debug` build, where the flags are suppressed. Dense monomials cost one
+pass per storage word while sparse rows are flat in the width, so a target without a
+vector `popcount` reaches the crossover sooner. The number is build-time because the
+ISA is, and there is no crossover you could pin that would be right independently of
+the flags you compiled with.
 
-Expect about one 32-mode block of machine dependence either way — near the crossing the
-two backends are within a few percent of each other, so a threshold that is one block
-off costs very little. If you are running a width close to it and care, measure your own
+Both values are measured end to end through the propagator, at the first whole
+32-mode storage block where sparse rows win by more than the run-to-run spread.
+Expect about one block of machine dependence either way — near the crossing the two
+backends are within a few percent of each other, so a threshold that is one block off
+costs very little. If you are running a width close to it and care, measure your own
 workload both ways with `monoprop_ROW_STORE`, which forces a backend per run and needs
 no rebuild.
 
 ### Choosing the row backend at run time
 
 A propagator stores its terms either as dense monomials or as sparse rows (a list of
-the modes it occupies plus two bits per mode). The choice is made once, from the mode
-count against the crossover above. Set `monoprop_ROW_STORE` to override it for every
-propagator in the process:
+the modes it occupies plus two bits per mode). The choice is made once, from the
+storage width against the crossover above. Set `monoprop_ROW_STORE` to override it
+for every propagator in the process:
 
 | Value | Effect |
 | --- | --- |

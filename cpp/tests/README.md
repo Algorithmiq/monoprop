@@ -13,6 +13,14 @@ discovers every Boost.Test case and registers it twice:
   `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2`),
   registered when an MPI launcher is detected.
 
+Both `serial` and `mpi` also get a `sparse-rows` variant per case/rank count
+(`monoprop_ROW_STORE=sparse` forced), because the sparse backend keys its rows
+differently -- so it reaches the resolve path with a different insert order --
+and it is the backend wide systems resolve to. The MPI sparse-rows
+ranks are a separate list, `monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`),
+kept independent of `monoprop_MPI_TEST_PROCS` so widening dense rank coverage
+does not silently multiply how many sparse-row `mpiexec` launches CI pays for.
+
 Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
 skip (with a message) when run with too few.
 
@@ -60,7 +68,7 @@ name and cannot address suite-nested cases, tests use flat
   `LihFixture` = LiH/n=12), the `build_simulator`/`SimulatorConfig` helpers,
   expectation-value helpers, and the `near()` float comparison used by the
   equivalence suites.
-- **`PauliTestOracle.h`**: independent Pauli reference oracle — native/JW
+- **`PauliTestOracle.{h,cpp}`**: independent Pauli reference oracle — native/JW
   encoding (`slots_of_string`, `native_bitset`, `jw_basis`), dense Pauli-matrix
   brute force (`matrix_from_string`, `matmul`, ...), and string helpers. Shared
   by the Pauli algebra/build-layer tests and the equivalence suites.
@@ -124,6 +132,10 @@ per case, because the ranks have to reach the same collectives. For exhaustive
 rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
 MPI while debugging, invoke the binary directly:
 `mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
+
+The sparse-rows MPI variants (`monoprop_ROW_STORE=sparse`, label `sparse-rows`)
+use their own rank list, `monoprop_MPI_SPARSE_ROWS_TEST_PROCS` (default `2`),
+independent of `monoprop_MPI_TEST_PROCS`.
 
 ## Adding New Tests
 

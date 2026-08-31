@@ -20,14 +20,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 
 #include "monoprop/TypeAliases.h"
-#include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/RowHashTable.h"
 
 // Logical mode count at or above which the sparse rows are the cheaper backend. Build-time and not a
@@ -47,6 +48,14 @@
 #endif
 
 namespace monoprop::detail {
+
+// The requested width needs mode indices wider than ModeT can hold, or more slots than a codes word
+// has room for. Thrown rather than asserted, for the same reason OperatorIndexWidthUnsupported is:
+// with the compile-time mode ceiling gone, the width is user data.
+class SparseRowStoreUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 // A sparse row's two storage types, at namespace scope rather than inside the store: the algebra that
 // reads rows (CodesAlgebra.h) must not depend on the container that owns them.
@@ -95,10 +104,9 @@ struct SparseRow {
 // Deliberately not folded into SparseRow, which is what the per-term algebra reads: that one is a view
 // of something that fits, and a branch on every read of it is the cost the support form exists to
 // avoid. The branch belongs here, on the probe path, where it runs once per query.
-template <size_t NumBits>
 struct SparseRowKey {
     SparseRow row;
-    const Bitset<NumBits> *spilled = nullptr;
+    const Bitset *spilled = nullptr;
 
     [[nodiscard]] auto is_spilled() const noexcept -> bool { return spilled != nullptr; }
 };
@@ -106,8 +114,8 @@ struct SparseRowKey {
 // Visits a *dense* monomial as (mode, code) slots, ascending: the same sequence a SparseRow over the
 // same monomial yields. Positions arrive ascending, so a mode's two positions are adjacent and one pass
 // closes each slot before opening the next.
-template <size_t NumBits, typename Fn>
-inline auto for_each_mode_slot(const Bitset<NumBits> &mono, Fn &&fn) -> void {
+template <typename Fn>
+inline auto for_each_mode_slot(const Bitset &mono, Fn &&fn) -> void {
     size_t pos = mono.find_first();
     while (pos < mono.size()) {
         const size_t mode = pos >> 1;
@@ -122,10 +130,8 @@ inline auto for_each_mode_slot(const Bitset<NumBits> &mono, Fn &&fn) -> void {
 }
 
 // Occupied modes in a dense monomial, via the same slot walk as sparse_row_hash/dense_row_equals below --
-// what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs
-// (see sparse_record_capacity in layer_build/TermProduct.h).
-template <size_t NumBits>
-[[nodiscard]] inline auto occupied_mode_count(const Bitset<NumBits> &mono) -> size_t {
+// what a spilled row's occupied_modes() reports, and what a per-gate generator's mode count also needs.
+[[nodiscard]] inline auto occupied_mode_count(const Bitset &mono) -> size_t {
     size_t n = 0;
     for_each_mode_slot(mono, [&n](size_t, unsigned int) { ++n; });
     return n;
@@ -144,7 +150,7 @@ template <size_t NumBits>
 class SparseRowHasher {
 public:
     auto add(size_t mode, unsigned int code) noexcept -> void {
-        h_ = monoprop::splitmix_finalize(h_ ^ ((static_cast<uint64_t>(mode) << 2) | code));
+        h_ = SplitmixHash::mix(h_ ^ ((static_cast<uint64_t>(mode) << 2) | code));
     }
     [[nodiscard]] auto value() const noexcept -> size_t { return static_cast<size_t>(h_); }
 
@@ -162,8 +168,7 @@ private:
     return hasher.value();
 }
 
-template <size_t NumBits>
-[[nodiscard]] inline auto sparse_row_hash(const Bitset<NumBits> &mono) noexcept -> size_t {
+[[nodiscard]] inline auto sparse_row_hash(const Bitset &mono) noexcept -> size_t {
     SparseRowHasher hasher;
     for_each_mode_slot(mono, [&hasher](size_t mode, unsigned int code) { hasher.add(mode, code); });
     return hasher.value();
@@ -172,15 +177,13 @@ template <size_t NumBits>
 // Dispatches to whichever shape the key holds, so a batch of keys hashes identically whether or not any
 // of them spilled. The two arms must agree with the store's own row hash, which is what makes a spilled
 // row findable by either form.
-template <size_t NumBits>
-[[nodiscard]] inline auto sparse_row_hash(const SparseRowKey<NumBits> &key) noexcept -> size_t {
+[[nodiscard]] inline auto sparse_row_hash(const SparseRowKey &key) noexcept -> size_t {
     return key.is_spilled() ? sparse_row_hash(*key.spilled) : sparse_row_hash(key.row);
 }
 
 // Whether a dense monomial and a sparse row hold the same slots, without materializing either. Used
 // where one side is a spilled row (no codes word) and the other is a query.
-template <size_t NumBits>
-[[nodiscard]] inline auto dense_row_equals(const Bitset<NumBits> &mono, const SparseRow &row) -> bool {
+[[nodiscard]] inline auto dense_row_equals(const Bitset &mono, const SparseRow &row) -> bool {
     const size_t n = row.num_slots();
     size_t j = 0;
     bool equal = true;
@@ -197,11 +200,10 @@ template <size_t NumBits>
     return equal && j == n;
 }
 
-// Writes a sparse row's occupied slots into `mono`, which must already be cleared -- a fresh
-// Monomial<NumModes>, or one a caller reset itself before refilling it. The shared body behind every
-// dense materialization of a SparseRow.
-template <size_t NumBits>
-inline auto fill_from_sparse_row(const SparseRow &row, Bitset<NumBits> &mono) -> void {
+// Writes a sparse row's occupied slots into `mono`, which must already be at the row's width and
+// cleared -- a fresh Bitset(num_bits), or one a caller reset itself before refilling it. The shared body
+// behind every dense materialization of a SparseRow below.
+inline auto fill_from_sparse_row(const SparseRow &row, Bitset &mono) -> void {
     const size_t n = row.num_slots();
     for (size_t j = 0; j < n; ++j) {
         const unsigned int code = row.code(j);
@@ -214,10 +216,9 @@ inline auto fill_from_sparse_row(const SparseRow &row, Bitset<NumBits> &mono) ->
     }
 }
 
-// Materializes a sparse row as a fresh dense monomial.
-template <size_t NumBits>
-[[nodiscard]] inline auto sparse_row_to_monomial(const SparseRow &row) -> Bitset<NumBits> {
-    Bitset<NumBits> mono;
+// Materializes a sparse row as a fresh dense monomial at the given width.
+[[nodiscard]] inline auto sparse_row_to_bitset(const SparseRow &row, size_t num_bits) -> Bitset {
+    Bitset mono(num_bits);
     fill_from_sparse_row(row, mono);
     return mono;
 }
@@ -258,11 +259,10 @@ template <size_t NumBits>
 // that. It is not a subclass of anything and nothing dispatches on it.
 //
 // Single-writer, like OperatorIndex: one partition, one thread; parallelism is cross-partition.
-template <size_t NumModes>
 class SparseRowStore {
 public:
-    using value_type = Monomial<NumModes>;
-    using key_type = Monomial<NumModes>;
+    using value_type = Bitset;
+    using key_type = Bitset;
     using mapped_type = size_t;
     using ModeT = RowMode;
     using CodesT = RowCodes;
@@ -286,16 +286,23 @@ public:
         return num_modes >= kMinModes;
     }
 
-    // kPadLane and kOverflowLane take the top two ModeT values, so the widest system this backend can
-    // represent stops two modes short of ModeT's range -- a static_assert rather than a throw, since the
-    // width is a template argument.
-    static_assert(NumModes <= kMaxModes, "SparseRowStore: NumModes exceeds what a mode lane can address");
-
-    // slots_per_row is the per-row mode capacity -- any value is correct, since over-long rows spill;
-    // size it from CutoffEvaluator::max_mode_bound().
-    explicit SparseRowStore(size_t slots_per_row = kDefaultSlots)
-        : slots_per_row_(std::clamp<size_t>(slots_per_row, 1, kMaxSlots)),
-          codes_width_(codes_width_for(slots_per_row_)) {}
+    // num_bits is the storage bit width of every monomial this store will hold, exactly as for
+    // OperatorIndex: row() reconstructs at that width, and a wrong one changes num_words() and with it
+    // the hash, the probe order and MPI owner routing. slots_per_row is the per-row mode capacity --
+    // any value is correct, since over-long rows spill; size it from CutoffEvaluator::max_mode_bound().
+    explicit SparseRowStore(size_t num_bits, size_t slots_per_row = kDefaultSlots)
+        : num_bits_(num_bits),
+          slots_per_row_(std::clamp<size_t>(slots_per_row, 1, kMaxSlots)),
+          codes_width_(codes_width_for(slots_per_row_)) {
+        if (((num_bits + 1) / 2) > kMaxModes) {
+            throw SparseRowStoreUnsupported(
+                std::format("SparseRowStore supports at most {} modes ({} bits); got {} bits ({} modes).",
+                            kMaxModes,
+                            2 * kMaxModes,
+                            num_bits,
+                            (num_bits + 1) / 2));
+        }
+    }
 
     SparseRowStore(const SparseRowStore &) = delete;
     SparseRowStore &operator=(const SparseRowStore &) = delete;
@@ -383,7 +390,7 @@ private:
     }
 
 public:
-    [[nodiscard]] static constexpr auto num_bits() noexcept -> size_t { return 2 * NumModes; }
+    [[nodiscard]] auto num_bits() const noexcept -> size_t { return num_bits_; }
     [[nodiscard]] auto slots_per_row() const noexcept -> size_t { return slots_per_row_; }
     // The backend-neutral spelling of the line above, so a caller holding either store asks the same
     // question of both (see MPOperator::row_width).
@@ -392,7 +399,7 @@ public:
 
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<SparseRowStore> {
-        auto out = std::make_unique<SparseRowStore>(slots_per_row_);
+        auto out = std::make_unique<SparseRowStore>(num_bits_, slots_per_row_);
         out->modes_ = modes_;
         // Exactly one of the three is non-empty, and out shares slots_per_row_ so it shares codes_width_.
         out->codes16_ = codes16_;
@@ -411,7 +418,7 @@ public:
     // is needed. Row index i is preserved for every row -- load-bearing, since callers key op_coeffs,
     // state_rows_/state_vals_ and the evolution graph by this same index.
     [[nodiscard]] auto resized(size_t new_slots_per_row) const -> std::unique_ptr<SparseRowStore> {
-        auto out = std::make_unique<SparseRowStore>(new_slots_per_row);
+        auto out = std::make_unique<SparseRowStore>(num_bits_, new_slots_per_row);
         out->modes_.resize(size_ * out->slots_per_row_);
         out->resize_codes(size_);
         out->size_ = size_;
@@ -526,7 +533,7 @@ public:
 
     // Whichever shape the key holds. The spilled arm is the dense set(), so a key that arrived too wide
     // for a codes word lands in the side map exactly as the dense path would have put it.
-    auto set(size_t i, const SparseRowKey<2 * NumModes> &key) -> void {
+    auto set(size_t i, const SparseRowKey &key) -> void {
         if (key.is_spilled()) {
             set(i, *key.spilled);
             return;
@@ -538,7 +545,7 @@ public:
         if (spilled(i)) {
             return overflow_.at(i);
         }
-        return sparse_row_to_monomial<2 * NumModes>(view(i));
+        return sparse_row_to_bitset(view(i), num_bits_);
     }
 
     // Ascending, matching the dense backends: slots are stored ascending in the mode, and within a mode
@@ -613,7 +620,7 @@ public:
 
     auto find(const SparseRow &key) const -> std::optional<size_t> { return find_hashed_(key); }
     auto find(const key_type &key) const -> std::optional<size_t> { return find_hashed_(key); }
-    auto find(const SparseRowKey<2 * NumModes> &key) const -> std::optional<size_t> { return find_hashed_(key); }
+    auto find(const SparseRowKey &key) const -> std::optional<size_t> { return find_hashed_(key); }
 
     // Insert-or-no-op. The row at `value` must already be written -- the confirm reads it.
     template <typename Key>
@@ -731,13 +738,13 @@ private:
         return dense_row_equals(key, view(i));
     }
 
-    [[nodiscard]] auto row_eq_key(size_t i, const SparseRowKey<2 * NumModes> &key) const -> bool {
+    [[nodiscard]] auto row_eq_key(size_t i, const SparseRowKey &key) const -> bool {
         return key.is_spilled() ? row_eq_key(i, *key.spilled) : row_eq_key(i, key.row);
     }
 
     // A row at this store's width. Only the spill arms need it: everything else reads slots in place.
     [[nodiscard]] auto to_monomial_(const SparseRow &row) const -> value_type {
-        return sparse_row_to_monomial<2 * NumModes>(row);
+        return sparse_row_to_bitset(row, num_bits_);
     }
 
     auto reserve_rows_(size_t n) -> void {
@@ -753,6 +760,7 @@ private:
     DefaultInitVector<uint16_t> codes16_ = {};
     DefaultInitVector<uint32_t> codes32_ = {};
     DefaultInitVector<CodesT> codes64_ = {};
+    size_t num_bits_ = 0;
     size_t size_ = 0;
     size_t slots_per_row_ = kDefaultSlots;
     // Declared after slots_per_row_: the constructor derives it from the clamped value.

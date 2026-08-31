@@ -278,10 +278,30 @@ The suite contains two benchmark groups:
 - `bench_models.py` measures two fixed models marked `slow`: a 120-qubit Fermi-Hubbard 29-step Trotter
   run (`test_model[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers
   (`test_model[pauli]`). Override any config field with `--<model>-<field>`, e.g.
-  `--pauli-num-layers 30`; `just bench --help` lists them all.
+  `--pauli-num-layers 30`; `just bench --help` lists them all. `--model-rounds` (1) sets the rounds
+  per model, each rebuilding the model first. Term counts, the operator accounting and `Baseline
+  RSS` are round count-independent; `Peak RSS` is not, because from the second round on the model
+  is rebuilt while pytest-benchmark still holds the previous round's, so the high-water mark covers
+  two of them. Pass `--model-rounds 5` or more whenever a timing *difference* is the point of the
+  run — a single sample on these models can sit well off the median, and comparing two one-sample
+  runs will read noise as signal.
 
 Each run writes pytest-benchmark timings to `results/time-<label>.json` and the remaining metrics
-to `<label>.json`. `monoprop-bench-report` combines all labels in `results/REPORT.md`.
+to `<label>.json`. `monoprop-bench-report` combines all labels in `results/REPORT.md`. The
+configuration table records the Python version, the nanobind frontend version compiled into the
+extension, and the installed `nanobind-backend` version; older artifacts without these fields
+render `—`. It also names the row backend the run actually used, as `asked → ran`: both halves are
+needed, since `monoprop_ROW_STORE` records what was requested but its default of `auto` leaves the
+choice to the storage width against a build-time crossover, so the setting alone does not identify
+the backend — and the two backends differ in footprint and in the order they accumulate a term sum.
+A run whose propagators disagree (they can only differ by width) reads `mixed`.
+
+The random benchmarks are reported per physical picture, since their size comes from the CLI and is
+shared by every label. The fixed models get a **Fixed models** section instead, one table each,
+because each model carries its own mode count: term count, time, **cost per term**, peak and
+resting RSS, and monoprop's own operator accounting with its **bytes per term**. The two per-term
+figures are the ones to compare across widths — the models grow their term count with their mode
+count, so the totals beside them are not comparable on their own.
 
 ### MPI
 
@@ -294,6 +314,13 @@ they occur at different times.
 just bench-build-mpi                           # build once (MPI on)
 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
+
+**The MPI build must stay loaded.** monoprop builds `MPI=OFF` by default; a
+non-MPI extension ignores the communicator, so every rank holds the **full**
+operator (N× memory). The recipes use `--no-sync` so the MPI build survives —
+rebuild after editing sources. `just bench-mpi` checks `monoprop.has_mpi` and
+aborts if MPI is missing; extra args are forwarded to `mpiexec` (as root, add
+`--allow-run-as-root`).
 
 ### Continuous benchmarking
 

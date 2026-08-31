@@ -192,6 +192,51 @@ def test_model_config_section_absent_when_no_configs(tmp_path: Path) -> None:
     assert "## Model configuration" not in md
 
 
+def test_config_table_names_the_backend_that_ran(tmp_path: Path) -> None:
+    """``auto`` names the backend the width resolved to, not the setting."""
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        meta={
+            "ranks": 1,
+            "monoprop_row_store": "auto",
+            "row_store_effective": "sparse",
+        },
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| Row store " in md
+    assert "| auto → sparse |" in md
+
+
+def test_config_table_does_not_repeat_a_forced_backend(tmp_path: Path) -> None:
+    """A forced setting and the resolved backend agree, so the arrow would be noise."""
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        meta={
+            "ranks": 1,
+            "monoprop_row_store": "dense",
+            "row_store_effective": "dense",
+        },
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| dense |" in md
+    assert "dense → dense" not in md
+
+
+def test_config_table_tolerates_a_run_without_a_resolved_backend(
+    tmp_path: Path,
+) -> None:
+    """Artifacts from before the propagator was asked carry the setting alone."""
+    _write_timings(tmp_path)
+    _write_results(tmp_path, meta={"ranks": 1, "monoprop_row_store": "auto"})
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "| auto |" in md
+
+
 def test_build_report_includes_operator_size(tmp_path: Path) -> None:
     _write_timings(tmp_path)
     _write_results(

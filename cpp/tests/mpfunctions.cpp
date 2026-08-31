@@ -37,12 +37,13 @@ static std::vector<VecZ> ds_input_indices_to_bitset_test = {
     {5},          // Single index set
     {4, 7}        // Two indices set
 };
-static std::vector<Monomial<NumQubits>> ds_output_indices_to_bitset_test = {
+// A monomial carries its width, so each pattern is widened here rather than by an element type.
+static MonomialList ds_output_indices_to_bitset_test = {
 
-    {0b11110000}, // Full indices set
-    {0b00000000}, // No indices set, empty majorana
-    {0b00000100}, // Single index set
-    {0b00001001}  // Two indices set
+    Bitset(2 * NumQubits, 0b11110000), // Full indices set
+    Bitset(2 * NumQubits, 0b00000000), // No indices set, empty majorana
+    Bitset(2 * NumQubits, 0b00000100), // Single index set
+    Bitset(2 * NumQubits, 0b00001001)  // Two indices set
 
 };
 
@@ -50,14 +51,14 @@ BOOST_DATA_TEST_CASE(indices_to_bitset_test,
                      bdata::make(ds_input_indices_to_bitset_test) ^ ds_output_indices_to_bitset_test,
                      input_indices,
                      expected_bitset) {
-    auto bitset = indices_to_bitset<NumQubits>(input_indices);
+    auto bitset = indices_to_bitset(input_indices, 2 * NumQubits);
     BOOST_CHECK(bitset == expected_bitset);
 }
 
-static std::vector<Monomial<NumQubits>> ds_input_bitset_to_indices_test = {
-    0b00000000, // fully paired
-    0b00011000, // 2 slots
-    0b10101010  // 4 slots
+static MonomialList ds_input_bitset_to_indices_test = {
+    Bitset(2 * NumQubits, 0b00000000), // fully paired
+    Bitset(2 * NumQubits, 0b00011000), // 2 slots
+    Bitset(2 * NumQubits, 0b10101010)  // 4 slots
 };
 static std::vector<int> ds_cutoff_values = {
     4,
@@ -76,50 +77,53 @@ BOOST_DATA_TEST_CASE(length_cutoff_test,
                      input_bitset,
                      cutoff,
                      expected_result) {
-    auto result = length_cutoff<NumQubits>(input_bitset, cutoff);
+    auto result = length_cutoff(input_bitset, cutoff);
     BOOST_CHECK(result == expected_result);
 }
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_empty) {
     std::vector<VecZ> empty_operator;
-    auto result = fermionic_to_binary_operator<NumQubits>(empty_operator);
+    auto result = fermionic_to_binary_operator(NumQubits, empty_operator);
     BOOST_CHECK(result.empty());
 }
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_single_term) {
     std::vector<VecZ> single_term_operator = {{0, 1, 2}};
-    auto result = fermionic_to_binary_operator<NumQubits>(single_term_operator);
+    auto result = fermionic_to_binary_operator(NumQubits, single_term_operator);
     BOOST_CHECK(result.size() == 1);
-    BOOST_CHECK(result[0] == 0b11100000);
+    BOOST_CHECK(result[0] == Bitset(2 * NumQubits, 0b11100000));
 }
 
 BOOST_AUTO_TEST_CASE(test_fermionic_to_binary_operator_multiple_terms) {
     std::vector<VecZ> multi_term_operator = {{0, 1}, {2, 3}};
-    auto result = fermionic_to_binary_operator<NumQubits>(multi_term_operator);
+    auto result = fermionic_to_binary_operator(NumQubits, multi_term_operator);
     BOOST_CHECK(result.size() == 2);
-    BOOST_CHECK(result[0] == 0b11000000);
-    BOOST_CHECK(result[1] == 0b00110000);
+    BOOST_CHECK(result[0] == Bitset(2 * NumQubits, 0b11000000));
+    BOOST_CHECK(result[1] == Bitset(2 * NumQubits, 0b00110000));
 }
 
 constexpr size_t NumQubits2 = 2;
-static std::vector<std::pair<Monomial<NumQubits2>, int>> ds_get_multiplicative_phase = {{{0b0001}, 0},
-                                                                                        {{0b0101}, -1},
-                                                                                        {{0b1001}, 1}};
+static std::vector<std::pair<Bitset, int>> ds_get_multiplicative_phase = {{Bitset(2 * NumQubits2, 0b0001), 0},
+                                                                          {Bitset(2 * NumQubits2, 0b0101), -1},
+                                                                          {Bitset(2 * NumQubits2, 0b1001), 1}};
 
 BOOST_DATA_TEST_CASE(get_multiplicative_phase_test, bdata::make(ds_get_multiplicative_phase), test_pair) {
     auto [majorana_set, expected_phase] = test_pair;
     VecZ gen_vec = {0, 1};
-    auto gen_bitset = indices_to_bitset<NumQubits2>(gen_vec);
+    auto gen_bitset = indices_to_bitset(gen_vec, 2 * NumQubits2);
     auto mono_count = majorana_set.count();
     auto gen_count = gen_bitset.count();
     auto overlap = (majorana_set & gen_bitset).count();
-    auto result = get_multiplicative_phase<NumQubits2>(majorana_set, gen_bitset, mono_count, gen_count, overlap);
+    auto result = get_multiplicative_phase(majorana_set, gen_bitset, mono_count, gen_count, overlap);
     BOOST_CHECK(result == expected_phase);
 }
 
 struct IS_FULLY_PAIRED_TEST_CASE {
     VecZ inds;
-    MonomialList<NumQubits2> op_terms;
+    // Bit patterns, not monomials: a MonomialList element is a runtime-width Bitset, whose one-argument
+    // constructor takes a *width*, so bare literals here would silently mean something else. The test
+    // body widens each to 2 * NumQubits2, leaving the patterns below readable as patterns.
+    std::vector<uint64_t> op_terms;
     VecZ expected_result;
     std::string test_name;
 
@@ -134,19 +138,24 @@ static std::vector<IS_FULLY_PAIRED_TEST_CASE> ds_is_fully_paired_test = {
     {{0, 1, 2, 3, 4, 5, 6}, {0b0001, 0b0011, 0b1000, 0b0101, 0b1100, 0b0110, 0b1110}, {1, 4}, "Partially paired"}};
 
 BOOST_DATA_TEST_CASE(is_fully_paired_test, bdata::make(ds_is_fully_paired_test), test_case) {
-    auto result = is_fully_paired<NumQubits2>(test_case.inds, test_case.op_terms);
+    MonomialList op_terms;
+    op_terms.reserve(test_case.op_terms.size());
+    for (const auto bits : test_case.op_terms) {
+        op_terms.emplace_back(2 * NumQubits2, bits);
+    }
+    auto result = is_fully_paired(test_case.inds, op_terms, 2 * NumQubits2);
     BOOST_CHECK(std::is_permutation(result.cbegin(), result.cend(), test_case.expected_result.cbegin()));
 }
 
 BOOST_AUTO_TEST_CASE(bit_flipping_utilities) {
-    auto val1 = even_bits<10, LSb0>();
-    auto val2 = odd_bits<10, LSb0>();
-    auto val3 = even_bits<10, MSb0>();
-    auto val4 = odd_bits<10, MSb0>();
-    BOOST_TEST(val1 == 0b0101010101);
-    BOOST_TEST(val2 == 0b1010101010);
-    BOOST_TEST(val3 == 0b1010101010);
-    BOOST_TEST(val4 == 0b0101010101);
+    auto val1 = even_bits<LSb0>(10);
+    auto val2 = odd_bits<LSb0>(10);
+    auto val3 = even_bits<MSb0>(10);
+    auto val4 = odd_bits<MSb0>(10);
+    BOOST_TEST((val1 == Bitset(10, 0b0101010101ULL)));
+    BOOST_TEST((val2 == Bitset(10, 0b1010101010ULL)));
+    BOOST_TEST((val3 == Bitset(10, 0b1010101010ULL)));
+    BOOST_TEST((val4 == Bitset(10, 0b0101010101ULL)));
 }
 
 // The evaluation functional carries the reference state sparsely, so every EvalState operation has to
@@ -262,12 +271,12 @@ BOOST_AUTO_TEST_CASE(eval_state_indices_above_matches_the_dense_scan) {
 // graph and on the pared one, in both pictures.
 BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly) {
     constexpr size_t kNumModes = 8;
-    const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
 
     for (const auto schrodinger_cutoff : {std::optional<unsigned int>{}, std::optional<unsigned int>{4}}) {
         BOOST_TEST_CONTEXT("schrodinger_cutoff = " << (schrodinger_cutoff ? "4" : "none")) {
             test_utils::SimulatorConfig cfg{.schrodinger_cutoff = schrodinger_cutoff, .comm = MPI_COMM_SELF};
-            auto sim = test_utils::build_simulator<kNumModes>(data, cfg);
+            auto sim = test_utils::build_simulator(kNumModes, data, cfg);
             sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 
             BOOST_CHECK_EQUAL(sim.expectation_value(data.parameters),
@@ -287,11 +296,15 @@ BOOST_AUTO_TEST_CASE(sparse_energy_matches_the_dense_gradient_value_bit_exactly)
 // interleaving gradient calls must each keep reproducing their isolated value exactly.
 BOOST_AUTO_TEST_CASE(interleaved_gradients_do_not_share_scratch_state) {
     constexpr size_t kNumModes = 8;
-    const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
 
     auto build = [&data](unsigned int cutoff) {
-        auto sim =
-            MonomialPropagator<kNumModes>(data.hamiltonian, cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
+        auto sim = test_utils::make_propagator(kNumModes,
+                                               data.hamiltonian,
+                                               cutoff,
+                                               data.initial_state,
+                                               std::nullopt,
+                                               MPI_COMM_SELF);
         sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
         return sim;
     };

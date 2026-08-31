@@ -116,7 +116,7 @@ auto validate_expected_initial_operator(size_t current_epoch, size_t expected_ep
     }
 }
 
-auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {
+auto validate_only_rotate_len_k(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {
     if (!only_rotate_len_k.has_value()) {
         return;
     }

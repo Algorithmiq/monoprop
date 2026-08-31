@@ -16,8 +16,8 @@
 //
 // This is the guard against a false negative in the rest of the suite: every case runs a second time
 // under monoprop_ROW_STORE=sparse (see cpp/tests/boostAddTests.cmake), and every fixture is far below
-// the automatic crossover -- so if the variable reached nothing, those extra passes would be the dense
-// backend passing twice and nobody would notice.
+// the automatic crossover -- so if the variable reached nothing, those 246 extra passes would be the
+// dense backend passing twice and nobody would notice.
 
 #include <boost/test/unit_test.hpp>
 
@@ -36,9 +36,9 @@ namespace {
 
 constexpr size_t kNumModes = 8;
 
-auto small_propagator() -> MonomialPropagator<kNumModes> {
-    const auto data = test_utils::load_case_data<kNumModes>("random_exact.msgpack");
-    return test_utils::build_simulator<kNumModes>(data);
+auto small_propagator() -> MonomialPropagator {
+    const auto data = test_utils::load_case_data("random_exact.msgpack");
+    return test_utils::build_simulator(kNumModes, data);
 }
 
 } // namespace
@@ -48,9 +48,10 @@ auto small_propagator() -> MonomialPropagator<kNumModes> {
 // second, so this case is the one that fails if the variable is ignored.
 BOOST_AUTO_TEST_CASE(row_store_selection_follows_the_environment) {
     const auto propagator = small_propagator();
+    const size_t storage_modes = propagator.storage_num_modes();
     // A fixture-sized system: below every shipped crossover, so `auto` must pick dense here. If this
     // ever fails, the suite's sparse coverage has stopped being a second configuration.
-    BOOST_REQUIRE(!monoprop::detail::SparseRowStore<kNumModes>::preferred_for_modes(kNumModes));
+    BOOST_REQUIRE(!monoprop::detail::SparseRowStore::preferred_for_modes(storage_modes));
 
     // Dereferenced: an unrecognized value is nullopt, and the propagator above would have thrown on it
     // before this line -- see the rejects-an-unrecognized-value case below.
@@ -66,14 +67,15 @@ BOOST_AUTO_TEST_CASE(row_store_selection_follows_the_environment) {
     }
 }
 
-// The automatic rule, independent of any propagator: the crossover is a whole 32-mode block, so no
-// storage width can straddle it.
+// The automatic rule, independent of any propagator: the crossover is a whole 32-mode block, which is
+// what storage_modes_for() produces, so no storage width can straddle it.
 BOOST_AUTO_TEST_CASE(row_store_auto_crossover_is_a_whole_storage_block) {
-    constexpr size_t kMin = monoprop::detail::SparseRowStore<kNumModes>::kMinModes;
+    constexpr size_t kMin = monoprop::detail::SparseRowStore::kMinModes;
     BOOST_TEST(kMin % 32 == 0U);
-    BOOST_TEST(!monoprop::detail::SparseRowStore<kNumModes>::preferred_for_modes(kMin - 1));
-    BOOST_TEST(monoprop::detail::SparseRowStore<kNumModes>::preferred_for_modes(kMin));
-    BOOST_TEST(monoprop::detail::SparseRowStore<kNumModes>::preferred_for_modes(kMin + 32));
+    BOOST_TEST(!monoprop::detail::SparseRowStore::preferred_for_modes(kMin - 1));
+    BOOST_TEST(monoprop::detail::SparseRowStore::preferred_for_modes(kMin));
+    BOOST_TEST(monoprop::detail::SparseRowStore::preferred_for_modes(kMin + 32));
+    BOOST_TEST(monoprop::detail::storage_modes_for(kMin) == kMin);
 }
 
 // An unrecognized value must be rejected, not silently treated as `auto`: the whole reason to set the

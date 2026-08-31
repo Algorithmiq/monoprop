@@ -19,18 +19,18 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "monoprop/MonomialPropagator.h"
 #include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/algebra/CodesAlgebra.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
-#include "monoprop/core/Monomial.h"
-#include "monoprop/detail/operator/SparseRowStore.h"
 
 #include "TestData.h"
 #include "TestUtilities.h"
@@ -41,13 +41,12 @@ using namespace monoprop::detail;
 namespace {
 
 // Rebuild a dense monomial from a row's mode lanes and an arbitrary codes word, so a codes-side
-// transform (pair_swap) can be compared against its dense counterpart. sparse_row_to_monomial is the
+// transform (pair_swap) can be compared against its dense counterpart. sparse_row_to_bitset is the
 // store's own materialization, which is the point: re-implementing it here would leave this oracle
 // agreeing with a slot convention the store no longer uses. Only valid where the substituted codes word
 // has the same occupancy as the row's own, which is the case for every transform here.
-template <size_t NumModes>
-auto to_monomial(const SparseRow &row, RowCodes codes) -> Monomial<NumModes> {
-    return sparse_row_to_monomial<2 * NumModes>(SparseRow{.modes = row.modes, .codes = codes});
+auto to_bitset(const SparseRow &row, RowCodes codes, size_t num_bits) -> Bitset {
+    return sparse_row_to_bitset(SparseRow{.modes = row.modes, .codes = codes}, num_bits);
 }
 
 // Which outcomes the comparison actually reached. Every branch of every ported function must be
@@ -91,11 +90,11 @@ auto require_discriminating(const Seen &seen) -> void {
 }
 
 // Every single-row function at once, against the dense version of each.
-template <size_t NumModes>
-auto check_row(const Monomial<NumModes> &mono, const SparseRow &row, size_t logical_num_modes, Seen &seen) -> void {
-    const size_t inactive_prefix = NumModes - logical_num_modes;
+auto check_row(const Bitset &mono, const SparseRow &row, size_t logical_num_modes, Seen &seen) -> void {
+    const size_t num_bits = mono.size();
+    const size_t inactive_prefix = (num_bits / 2) - logical_num_modes;
 
-    const auto dense_sums = cutoff_sums<NumModes>(mono, logical_num_modes);
+    const auto dense_sums = cutoff_sums(mono, CutoffMasks::make(num_bits, logical_num_modes));
     const auto codes_sums = codes_cutoff_sums(row, inactive_prefix);
     BOOST_TEST(codes_sums.or_sum == dense_sums.or_sum);
     BOOST_TEST(codes_sums.popcount_sum == dense_sums.popcount_sum);
@@ -105,45 +104,45 @@ auto check_row(const Monomial<NumModes> &mono, const SparseRow &row, size_t logi
     // fully-paired escape, one above it the plain comparison.
     for (const unsigned int cutoff : {0U, 1U, 2U, 4U, 8U, 64U}) {
         const bool kept = codes_length_cutoff(row, cutoff, inactive_prefix);
-        BOOST_TEST(kept == length_cutoff<NumModes>(mono, cutoff, logical_num_modes));
+        BOOST_TEST(kept == length_cutoff(mono, cutoff, CutoffMasks::make(num_bits, logical_num_modes)));
         BOOST_TEST(codes_support_cutoff(row, cutoff, inactive_prefix)
-                   == support_cutoff<NumModes>(mono, cutoff, logical_num_modes));
+                   == support_cutoff(mono, cutoff, CutoffMasks::make(num_bits, logical_num_modes)));
         seen.cutoff_kept |= kept;
         seen.cutoff_dropped |= !kept;
     }
 
     const bool paired = codes_is_paired(row.codes);
-    BOOST_TEST(paired == is_paired<NumModes>(mono));
+    BOOST_TEST(paired == is_paired(mono));
     seen.paired |= paired;
     seen.unpaired |= !paired;
 
     const size_t y = codes_pauli_y_count(row.codes);
-    BOOST_TEST(y == pauli_y_count<NumModes>(mono));
+    BOOST_TEST(y == pauli_y_count(mono));
     seen.y_letters |= y > 0;
 
-    BOOST_TEST((to_monomial<NumModes>(row, codes_pair_swap(row.codes)) == pair_swap<NumModes>(mono)));
+    BOOST_TEST((to_bitset(row, codes_pair_swap(row.codes), num_bits) == pair_swap(mono)));
 }
 
 // Encode monomials into one store and hand back both the store and the dense originals. All rows are
 // pushed before any view is taken: a view borrows the store's arrays, so growth would dangle it.
-template <size_t NumModes>
 struct Encoded {
-    std::vector<Monomial<NumModes>> dense;
-    SparseRowStore<NumModes> store{SparseRowStore<NumModes>::kMaxSlots};
+    std::vector<Bitset> dense;
+    SparseRowStore store;
 
-    auto add(const Monomial<NumModes> &mono) -> void {
+    explicit Encoded(size_t num_bits) : store(num_bits, SparseRowStore::kMaxSlots) {}
+
+    auto add(const Bitset &mono) -> void {
         dense.push_back(mono);
         store.push_back(mono);
     }
 };
 
-template <size_t NumModes>
-auto check_all(Encoded<NumModes> &enc, size_t logical_num_modes) -> Seen {
+auto check_all(Encoded &enc, size_t logical_num_modes) -> Seen {
     Seen seen;
     BOOST_REQUIRE(enc.dense.size() == enc.store.size());
     for (size_t i = 0; i < enc.dense.size(); ++i) {
         BOOST_REQUIRE_MESSAGE(!enc.store.spilled(i), "row " << i << " spilled; the algebra needs a codes word");
-        check_row<NumModes>(enc.dense[i], enc.store.view(i), logical_num_modes, seen);
+        check_row(enc.dense[i], enc.store.view(i), logical_num_modes, seen);
     }
     // The two-row functions, over every ordered pair for small sets and a stride otherwise: they are
     // O(n^2) in the row count and the fixtures carry hundreds of terms.
@@ -154,9 +153,9 @@ auto check_all(Encoded<NumModes> &enc, size_t logical_num_modes) -> Seen {
             const auto maj = enc.store.view(i);
             const auto gen = enc.store.view(k);
             const int phase = codes_interleave_phase(maj, gen);
-            BOOST_TEST(phase == interleave_phase<NumModes>(enc.dense[i], enc.dense[k]));
+            BOOST_TEST(phase == interleave_phase(enc.dense[i], enc.dense[k]));
             const bool anti = codes_pauli_anticommutes(maj, gen);
-            BOOST_TEST(anti == pauli_anticommutes<NumModes>(enc.dense[i], enc.dense[k]));
+            BOOST_TEST(anti == pauli_anticommutes(enc.dense[i], enc.dense[k]));
             seen.phase_plus |= phase > 0;
             seen.phase_minus |= phase < 0;
             seen.anticommutes |= anti;
@@ -168,80 +167,66 @@ auto check_all(Encoded<NumModes> &enc, size_t logical_num_modes) -> Seen {
 
 // The fixtures' Hamiltonian keys and generator index lists are the real-world monomials: Hermitian
 // Majorana products, so the set includes fully paired rows, which are the inputs both cutoffs treat
-// specially. NumModes is the storage width; the fixture's own mode count is the logical one.
-template <size_t NumModes>
-auto check_fixture(const std::string &name) -> Seen {
-    const auto data = test_utils::load_case_data<NumModes>(name);
+// specially.
+auto check_fixture(const std::string &name, size_t storage_num_modes) -> Seen {
+    const auto data = test_utils::load_case_data(name);
     BOOST_REQUIRE(data.num_modes > 0);
-    BOOST_REQUIRE(NumModes >= data.num_modes);
+    BOOST_REQUIRE(storage_num_modes >= data.num_modes);
+    const size_t num_bits = 2 * storage_num_modes;
     const size_t max_index = 2 * data.num_modes;
-    constexpr size_t kMaxSlots = SparseRowStore<NumModes>::kMaxSlots;
 
-    Encoded<NumModes> enc;
+    Encoded enc(num_bits);
     for (const auto &[inds, coeff] : data.hamiltonian) {
-        if (inds.size() > kMaxSlots) {
+        if (inds.size() > SparseRowStore::kMaxSlots) {
             continue; // would spill; the store's own tests cover that path
         }
-        enc.add(indices_to_bitset_checked<NumModes>(inds, max_index));
+        enc.add(indices_to_bitset_checked(inds, max_index, num_bits));
     }
     for (const auto &inds : data.majoranas) {
-        if (inds.size() > kMaxSlots) {
+        if (inds.size() > SparseRowStore::kMaxSlots) {
             continue;
         }
-        enc.add(indices_to_bitset_checked<NumModes>(inds, max_index));
+        enc.add(indices_to_bitset_checked(inds, max_index, num_bits));
     }
     BOOST_REQUIRE_MESSAGE(enc.dense.size() > 1, "fixture " << name << " yielded no monomials to compare");
-    return check_all<NumModes>(enc, data.num_modes);
-}
-
-// Randomized rows over one (storage, logical) pair.
-template <size_t NumModes>
-auto check_random(std::mt19937_64 &rng, size_t logical_num_modes) -> Seen {
-    Encoded<NumModes> enc;
-    for (size_t trial = 0; trial < 120; ++trial) {
-        Monomial<NumModes> mono;
-        const size_t occupied = rng() % (SparseRowStore<NumModes>::kMaxSlots + 1);
-        // Every fourth row is forced fully paired: that is the branch both cutoffs short-circuit on and
-        // the only input is_paired accepts.
-        const bool force_paired = (trial % 4) == 0;
-        for (size_t k = 0; k < occupied; ++k) {
-            const size_t mode = rng() % NumModes;
-            const unsigned int code = force_paired ? 0b11U : 1U + static_cast<unsigned int>(rng() % 3U);
-            if ((code & 1U) != 0U) {
-                mono.set(2 * mode);
-            }
-            if ((code & 2U) != 0U) {
-                mono.set((2 * mode) + 1);
-            }
-        }
-        enc.add(mono);
-    }
-    return check_all<NumModes>(enc, logical_num_modes);
+    return check_all(enc, data.num_modes);
 }
 
 } // namespace
 
 // Whole register: storage width equals the logical width, so every mode is active and the codes form
-// takes its zero-prefix path. The storage width is a template parameter here, so each fixture is
-// instantiated at its own mode count.
+// takes its zero-prefix path.
 BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_fixtures_whole_register) {
     Seen seen;
-    seen |= check_fixture<8>("random_exact.msgpack");
-    seen |= check_fixture<12>("lih_fermionic_spin_exact.msgpack");
-    seen |= check_fixture<16>("S0_8e8o_majoranic_c6.msgpack");
-    seen |= check_fixture<16>("majorana_lattice_layer_30.msgpack");
+    for (const std::string name : {"random_exact.msgpack",
+                                   "lih_fermionic_spin_exact.msgpack",
+                                   "S0_8e8o_majoranic_c6.msgpack",
+                                   "majorana_lattice_layer_30.msgpack"}) {
+        const auto data = test_utils::load_case_data(name);
+        seen |= check_fixture(name, data.num_modes);
+    }
     require_discriminating(seen);
 }
 
-// The production layout: the logical modes occupy the top of a wider register and the low physical modes
-// are inactive. This is the case cutoff_sums applies active_bit_offset for, and the one the codes form
-// has to reproduce by dropping a slot prefix.
+// The production layout: storage rounds up to whole 32-mode blocks, so the logical modes occupy the top
+// of the register and the low physical modes are inactive. This is the case cutoff_sums applies
+// active_bit_offset for, and the one the codes form has to reproduce by dropping a slot prefix.
 BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_fixtures_padded_storage) {
     Seen seen;
-    seen |= check_fixture<32>("random_exact.msgpack");
-    seen |= check_fixture<32>("lih_fermionic_spin_exact.msgpack");
-    seen |= check_fixture<32>("S0_8e8o_majoranic_c6.msgpack");
-    seen |= check_fixture<64>("majorana_lattice_layer_30.msgpack");
+    for (const std::string name : {"random_exact.msgpack",
+                                   "lih_fermionic_spin_exact.msgpack",
+                                   "S0_8e8o_majoranic_c6.msgpack",
+                                   "majorana_lattice_layer_30.msgpack"}) {
+        const auto data = test_utils::load_case_data(name);
+        size_t storage = monoprop::detail::storage_modes_for(data.num_modes);
+        if (storage == data.num_modes) {
+            // A mode count that is already a whole block leaves no inactive prefix, which is the case
+            // above. One more block is still a legal storage width -- the C++ suite passes such widths
+            // explicitly -- and gives this case something to exercise.
+            storage += 32;
+        }
+        seen |= check_fixture(name, storage);
+    }
     require_discriminating(seen);
 }
 
@@ -251,15 +236,31 @@ BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_fixtures_padded_storage) {
 BOOST_AUTO_TEST_CASE(codes_algebra_matches_dense_on_randomized_rows) {
     std::mt19937_64 rng(20260812U);
     Seen seen;
-    seen |= check_random<32>(rng, 32);
-    seen |= check_random<32>(rng, 16);
-    seen |= check_random<32>(rng, 29);
-    seen |= check_random<64>(rng, 64);
-    seen |= check_random<64>(rng, 32);
-    seen |= check_random<64>(rng, 61);
-    seen |= check_random<128>(rng, 128);
-    seen |= check_random<128>(rng, 64);
-    seen |= check_random<128>(rng, 125);
+    for (const size_t storage_num_modes : {32U, 64U, 128U}) {
+        for (const size_t logical_num_modes : {storage_num_modes, storage_num_modes / 2, storage_num_modes - 3}) {
+            const size_t num_bits = 2 * storage_num_modes;
+            Encoded enc(num_bits);
+            for (size_t trial = 0; trial < 120; ++trial) {
+                Bitset mono(num_bits);
+                const size_t occupied = rng() % (SparseRowStore::kMaxSlots + 1);
+                // Every fourth row is forced fully paired: that is the branch both cutoffs short-circuit
+                // on and the only input is_paired accepts.
+                const bool force_paired = (trial % 4) == 0;
+                for (size_t k = 0; k < occupied; ++k) {
+                    const size_t mode = rng() % storage_num_modes;
+                    const unsigned int code = force_paired ? 0b11U : 1U + static_cast<unsigned int>(rng() % 3U);
+                    if ((code & 1U) != 0U) {
+                        mono.set(2 * mode);
+                    }
+                    if ((code & 2U) != 0U) {
+                        mono.set((2 * mode) + 1);
+                    }
+                }
+                enc.add(mono);
+            }
+            seen |= check_all(enc, logical_num_modes);
+        }
+    }
     require_discriminating(seen);
 }
 
@@ -284,5 +285,5 @@ BOOST_AUTO_TEST_CASE(codes_algebra_word_identities) {
     BOOST_TEST(codes_popcount_below(codes, 2U) == 3U);
     BOOST_TEST(codes_popcount_below(codes, 3U) == 4U);
     // Past the last slot the answer is the whole word, and the shift that would express it is undefined.
-    BOOST_TEST(codes_popcount_below(codes, SparseRowStore<32>::kMaxSlots) == 4U);
+    BOOST_TEST(codes_popcount_below(codes, SparseRowStore::kMaxSlots) == 4U);
 }

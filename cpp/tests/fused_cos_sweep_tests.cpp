@@ -31,25 +31,23 @@ using namespace monoprop;
 constexpr double kAgreeAtol = 1e-12;
 constexpr double kExactAtol = 1e-9;
 
-template <size_t NumModes>
-auto inplace_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
-    auto sim = build_simulator<NumModes>(data, cfg);
+auto inplace_energy(size_t num_modes, const CaseData &data, const SimulatorConfig &cfg) -> double {
+    auto sim = build_simulator(num_modes, data, cfg);
     sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
     auto fn = sim.expectation_value_functional(std::nullopt);
     return fn(VecD{});
 }
 
-template <size_t NumModes>
-auto graph_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
-    auto sim = build_simulator<NumModes>(data, cfg);
+auto graph_energy(size_t num_modes, const CaseData &data, const SimulatorConfig &cfg) -> double {
+    auto sim = build_simulator(num_modes, data, cfg);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     auto fn = sim.expectation_value_functional(std::nullopt);
     return fn(data.parameters);
 }
 
 void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const char *label) {
-    const double inplace = inplace_energy<ExampleDataFix::n_modes>(data, cfg);
-    const double graph = graph_energy<ExampleDataFix::n_modes>(data, cfg);
+    const double inplace = inplace_energy(ExampleDataFix::n_modes, data, cfg);
+    const double graph = graph_energy(ExampleDataFix::n_modes, data, cfg);
     BOOST_TEST_CONTEXT(label << " inplace=" << inplace << " graph=" << graph) {
         BOOST_CHECK_SMALL(inplace - graph, kAgreeAtol);
         BOOST_CHECK_SMALL(inplace - data.actual_expval, kExactAtol);
