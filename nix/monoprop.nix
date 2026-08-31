@@ -68,10 +68,12 @@ buildPythonPackage {
     nanobind
     scikit-build-core
     setuptools-scm
-    # Upstream lists mpi4py in `[build-system] requires` unconditionally, even
-    # though the extension only links MPI when `withMPI` is set.
-    mpi4py
-  ];
+  ]
+  # Upstream provisions mpi4py through a scikit-build-core override keyed on the
+  # `monoprop_ENABLE_MPI` environment variable, which would resolve it from PyPI.
+  # The sandbox has no network, so the store copy is supplied here instead and the
+  # variable is deliberately left unset -- see `env` below.
+  ++ lib.optionals withMPI [ mpi4py ];
 
   buildInputs = [
     boost
@@ -97,6 +99,9 @@ buildPythonPackage {
         # on the interpreter's own site-packages path under nixpkgs.
         "nanobind_DIR=${nanobind}/${python.sitePackages}/nanobind/cmake"
       ]
+      # The CMake option is set directly rather than through upstream's
+      # `monoprop_ENABLE_MPI` environment switch: that switch also appends mpi4py to
+      # `build.requires`, i.e. a PyPI resolution the sandbox denies.
       ++ lib.optionals withMPI [ "monoprop_ENABLE_MPI=ON" ]
     );
   };
