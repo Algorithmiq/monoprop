@@ -30,6 +30,8 @@
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
+#include "TestOperator.h"
+
 using namespace monoprop;
 using monoprop::detail::CutoffContext;
 using monoprop::detail::MatchedEpochSet;
@@ -43,15 +45,8 @@ struct RecordingSink {
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
 
-// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
 auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
-    detail::MPOperator<8> op;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
-    return op;
+    return test_utils::indexed_operator<8>(terms);
 }
 
 } // namespace
@@ -147,13 +142,14 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     // than past the end of epoch_, where it would be silent undefined behaviour.
     matched.begin_gate(op.size());
 
-    detail::LayerBuildEngine<8, RecordingSink> eng(op,
-                                                   mpi::Comm{},
-                                                   /*R_=*/1,
-                                                   /*my_rank_=*/0,
-                                                   matched,
-                                                   combined_size,
-                                                   RecordingSink{});
+    detail::LayerBuildEngine<8, RecordingSink, detail::OperatorIndex<8>> eng(op,
+                                                                             *op.dense_rows,
+                                                                             mpi::Comm{},
+                                                                             /*R_=*/1,
+                                                                             /*my_rank_=*/0,
+                                                                             matched,
+                                                                             combined_size,
+                                                                             RecordingSink{});
     detail::query_push<8>(eng.queries_r[0], terms[1], 1);
     detail::query_push<8>(eng.queries_r[0], terms[5], -1);
     eng.src_idx_r[0] = {0, 2};

@@ -33,6 +33,7 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
 
@@ -159,15 +160,15 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
 
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
 // hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-template <size_t NumModes, Algebra A>
-[[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
+template <size_t NumModes, Algebra A, typename Store>
+[[gnu::always_inline]] inline auto emit_term_products(const Store &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
                                                       Monomial<NumModes> &new_mono,
                                                       size_t &overlap,
                                                       int &phase_factor) -> void {
     Monomial<NumModes> mono;
-    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
+    for_each_row_position<NumModes>(ham, i, [&](size_t pos) { mono.set(pos); });
     const Monomial<NumModes> &gen = A::generator(ctx);
     new_mono = mono ^ gen;
     overlap = mono.count_and(gen);
@@ -191,8 +192,12 @@ struct FusedScanResult {
 // deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
-template <size_t NumModes, Algebra A>
+// Templated on the row backend rather than reading it off `op`: build_layer binds the concrete store
+// once per layer (MPOperator::with_store) and hands it down, so a scan that touches one row per
+// anticommuting term pays no branch for the choice.
+template <size_t NumModes, Algebra A, typename Store>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
+                            const Store &store,
                             const Monomial<NumModes> &gen,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
                             const CutoffContext &cut_st,
@@ -236,7 +241,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             return res;
         }
         const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_words() : nullptr;
-        const size_t n = op.store->size();
+        const size_t n = store.size();
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
         // very array the reads come from and cover the full operator — a violation corrupts 1/cos recovery.
         assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
@@ -277,7 +282,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             Monomial<NumModes> new_mono;
             size_t overlap = 0;
             int phase_factor = 0;
-            emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
+            emit_term_products<NumModes, A>(store, i, ectx, new_mono, overlap, phase_factor);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
             const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
@@ -353,7 +358,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = op.store->popcount(i);
+                    const size_t mono_pop = row_popcount<NumModes>(store, i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -369,7 +374,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = op.store->popcount(i);
+                    const size_t mono_pop = row_popcount<NumModes>(store, i);
                     const bool is_follower = (w.foll >> tz) & 1u;
                     emit(mono_pop, i, abs_c, v_src, is_follower);
                 }
@@ -380,7 +385,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const size_t mono_pop = op.store->popcount(i);
+                    const size_t mono_pop = row_popcount<NumModes>(store, i);
                     if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
                         continue;
                     }

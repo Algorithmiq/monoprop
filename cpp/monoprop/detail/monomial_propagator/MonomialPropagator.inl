@@ -166,12 +166,20 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
 
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
-    // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
+    // Must run before the store: row_width_bound_() derives the row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
-    mp_op_.store->reserve(expected_local_terms);
-    // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
-    mp_op_.inverted_index_.reset();
+    // Replaces the store MPOperator's default: same width, but now with the cutoff-derived row width,
+    // which is only knowable after regenerate_cutoff_fn_() above. set_store() drops the stale lazy
+    // inverted index with it. Nothing has been inserted yet, so there are no rows to migrate.
+    const size_t bound = row_width_bound_();
+    if (use_sparse_rows_()) {
+        mp_op_.set_store(std::make_unique<detail::SparseRowStore<NumModes>>(
+            detail::SparseRowStore<NumModes>::slots_for_bound(bound)));
+    }
+    else {
+        mp_op_.set_store(std::make_unique<detail::OperatorIndex<NumModes>>(bound));
+    }
+    mp_op_.reserve_terms(expected_local_terms);
 
     size_t i = 0;
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
@@ -179,7 +187,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         const auto &mono = materialize_row<NumModes>(op, r);
         if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
             mp_op_.append_term(mono);
-            mp_op_.store->emplace(mono, i++);
+            mp_op_.index_term(mono, i++);
         }
     }
 
@@ -343,18 +351,34 @@ auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> Gr
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
-    constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
+auto MonomialPropagator<NumModes>::row_width_bound_() const -> size_t {
+    // Schrodinger's initial fill is the whole paired basis, whose rows are far longer than the bound
+    // derived from cutoff_fn_ below -- both backends would spill most of the initial rows.
     constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
     if (schrodinger_) {
         return kDefault;
     }
     // The bound is already in physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale.
-    const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_slot_bound();
-    if (!bound) {
-        return kDefault;
+    return detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_slot_bound().value_or(kDefault);
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::use_sparse_rows_() const -> bool {
+    const auto &settings = config::get();
+    if (!settings.row_store) {
+        throw PropagatorConfigError(
+            R"(monoprop_ROW_STORE must be "auto", "dense" or "sparse". Unset it to pick by system size.)");
     }
-    return std::min<size_t>(*bound, kMax);
+    using enum monoprop::config::RowStore;
+    switch (*settings.row_store) {
+        case Dense:
+            return false;
+        case Sparse:
+            return true;
+        case Auto:
+            break;
+    }
+    return detail::SparseRowStore<NumModes>::preferred_for_modes(NumModes);
 }
 
 template <size_t NumModes>
@@ -1107,11 +1131,11 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters, double atol)
     -> std::vector<std::pair<VecZ, std::complex<double>>> {
     using Term = std::pair<VecZ, std::complex<double>>;
-    // `p` is always unpartitioned here (a partition, or *this), so indexing() is available.
+    // `p` is always unpartitioned here (a partition, or *this), so for_each_term() is available.
     const auto collect = [&](MonomialPropagator &p) -> std::vector<Term> {
         std::vector<Term> terms;
         const VecD evolved = p.contract_partially(parameters, false);
-        p.indexing().for_each([&](const auto &mono, size_t idx) {
+        p.for_each_term([&](const auto &mono, size_t idx) {
             if (idx >= evolved.size()) {
                 return;
             }

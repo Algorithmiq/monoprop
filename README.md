@@ -117,7 +117,11 @@ uv sync --all-groups --all-extras -v    # installs the workspace, incl. the benc
 uv run python -m pytest -m "not mpi"   # Python tests (serial)
 just test-mpi                          # Python + C++ tests under MPI
 just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
+just test-sparse-rows                  # Python tests with the support-form row backend forced
 ```
+
+The C++ suite runs against both row backends: `ctest` registers every case a second
+time with `monoprop_ROW_STORE=sparse`, labelled `sparse-rows`.
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
 for the with/without-MPI details and the rank matrix.

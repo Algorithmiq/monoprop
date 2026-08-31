@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -26,6 +27,23 @@
 #include "monoprop/TypeAliases.h"
 
 namespace monoprop::detail {
+
+// The next row-array capacity for a geometric (1.5x) grow by `n` rows from `base` (the pre-growth size),
+// given the current capacity. Never exact-fit: an exact fit would realloc the whole operator every layer.
+// Shared by OperatorIndex and SparseRowStore, whose grow_rows_geometric() differ only in which arrays
+// that capacity gets applied to.
+[[nodiscard]] inline auto geometric_row_capacity(size_t base, size_t n, size_t capacity) noexcept -> size_t {
+    return std::max(base + n, capacity + (capacity / 2) + 1);
+}
+
+// What a row store's spilled rows cost outside its own arrays: the map node per entry (key, mapped
+// value and ~24 bytes of std::unordered_map node and bucket overhead). Shared for the same reason as
+// the capacity rule above -- the node-overhead estimate is a single number that must not be corrected
+// in one store and not the other, which would skew operator_memory_breakdown() for one backend only.
+template <typename OverflowMap>
+[[nodiscard]] inline auto spilled_rows_bytes(const OverflowMap &overflow) -> size_t {
+    return overflow.size() * (sizeof(typename OverflowMap::mapped_type) + sizeof(size_t) + 24);
+}
 
 class TermIndexCeilingReached : public std::runtime_error {
 public:

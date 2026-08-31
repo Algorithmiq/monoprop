@@ -193,6 +193,15 @@ def _fmt_cpus(meta: dict) -> str:
     return f"{logical}/{physical}"
 
 
+def _fmt_row_store(meta: dict) -> str:
+    """Render the row backend as ``asked → ran`` (the two differ whenever the setting is ``auto``)."""
+    asked = meta.get("monoprop_row_store", "—")
+    ran = meta.get("row_store_effective")
+    if ran is None:
+        return str(asked)
+    return str(asked) if asked == ran else f"{asked} → {ran}"
+
+
 def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
     """Render the run-configuration table (one row per run label)."""
     metas = {lbl: results.get(lbl, {}).get("meta", {}) for lbl in labels}
@@ -208,6 +217,7 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
         "Ranks/node",
         "Partitions (requested)",
         "monoprop threads",
+        "Row store",
         "CPUs (logical/physical)",
         "Host",
     ]
@@ -222,6 +232,7 @@ def _config_table(labels: list[str], results: dict[str, dict]) -> list[str]:
             str(metas[label].get("ranks_per_node", "—")),
             str(metas[label].get("partitions_env", "—")),
             str(metas[label].get("monoprop_threads", "default")),
+            _fmt_row_store(metas[label]),
             _fmt_cpus(metas[label]),
             str(metas[label].get("hostname", "—")),
         ]

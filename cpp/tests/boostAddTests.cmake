@@ -4,6 +4,9 @@ endif()
 if(NOT DEFINED TEST_MPI_NUMPROCS)
   set(TEST_MPI_NUMPROCS "2")
 endif()
+if(NOT DEFINED TEST_MPI_SPARSE_ROWS_NUMPROCS)
+  set(TEST_MPI_SPARSE_ROWS_NUMPROCS "2")
+endif()
 if(TEST_ENABLE_MPI_VARIANTS AND NOT MPIEXEC_EXECUTABLE)
   message(
     WARNING
@@ -35,6 +38,28 @@ if(TEST_ENABLE_MPI_VARIANTS)
 
   set(_mpi_ranks ${TEST_MPI_NUMPROCS})
   list(REMOVE_DUPLICATES _mpi_ranks)
+endif()
+
+# Validated the same way as _mpi_ranks above, but kept in its own list (TEST_MPI_SPARSE_ROWS_NUMPROCS)
+# rather than reusing _mpi_ranks: growing dense-backend rank coverage must not silently multiply how
+# many sparse-row mpiexec launches CI pays for.
+set(_mpi_sparse_ranks)
+if(TEST_ENABLE_MPI_VARIANTS)
+  if("${TEST_MPI_SPARSE_ROWS_NUMPROCS}" STREQUAL "")
+    set(TEST_MPI_SPARSE_ROWS_NUMPROCS 2)
+  endif()
+
+  foreach(_rank IN LISTS TEST_MPI_SPARSE_ROWS_NUMPROCS)
+    if(NOT _rank MATCHES "^[1-9][0-9]*$")
+      message(
+        FATAL_ERROR
+        "Invalid MPI rank '${_rank}' in TEST_MPI_SPARSE_ROWS_NUMPROCS='${TEST_MPI_SPARSE_ROWS_NUMPROCS}'. Use positive integers."
+      )
+    endif()
+  endforeach()
+
+  set(_mpi_sparse_ranks ${TEST_MPI_SPARSE_ROWS_NUMPROCS})
+  list(REMOVE_DUPLICATES _mpi_sparse_ranks)
 endif()
 
 set(extra_args ${TEST_EXTRA_ARGS})
@@ -209,6 +234,28 @@ foreach(LINE ${LINES})
       ENVIRONMENT
         ${serial_env}
     )
+    # Run the same case again with the support-form row backend forced. The suite is below
+    # SparseRowStore::preferred_for_modes()'s crossover, so the automatic choice would compile
+    # that backend but never run it, even though it is the one used for wide systems. Running each
+    # case separately makes any divergence easy to identify.
+    #
+    # Keep serial_env for the same reason as the variant above: this is another world-size-1 run
+    # of the same case, so without it half of `-L serial` would pay the MPI_Init setup cost that
+    # the other half avoids.
+    register_variant("${test}_sparse_rows"
+      COMMAND
+        "${TEST_EXECUTABLE}"
+        "--run_test=${test}"
+        "--report_level=detailed"
+        "--catch_system_errors=yes"
+        ${extra_args}
+      LABELS
+        serial
+        sparse-rows
+      ENVIRONMENT
+        ${serial_env}
+        "monoprop_ROW_STORE=sparse"
+    )
   endif()
 endforeach()
 
@@ -245,6 +292,46 @@ if(TEST_ENABLE_MPI_VARIANTS AND MPIEXEC_EXECUTABLE)
       ENVIRONMENT
         "OMPI_ALLOW_RUN_AS_ROOT=1"
         "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+    )
+  endforeach()
+
+  # MPI counterpart of the "_sparse_rows" serial variant above. The cross-rank resolve inserts absent
+  # terms into whichever backend is live, and the sparse one is what wide (MPI-scale) systems actually
+  # resolve to -- so it needs its own multi-rank coverage, not just the single-rank one above. Runs over
+  # _mpi_sparse_ranks, not _mpi_ranks, so it stays cheap by default regardless of how wide the dense rank
+  # list grows.
+  foreach(_mpi_rank IN LISTS _mpi_sparse_ranks)
+    set(mpi_cmd "${MPIEXEC_EXECUTABLE}")
+    list(
+      APPEND mpi_cmd
+      "${MPIEXEC_NUMPROC_FLAG}"
+      "${_mpi_rank}"
+    )
+    if(MPIEXEC_PREFLAGS)
+      list(APPEND mpi_cmd ${MPIEXEC_PREFLAGS})
+    endif()
+    list(
+      APPEND mpi_cmd
+      "${TEST_EXECUTABLE}"
+      "--report_level=detailed"
+      "--catch_system_errors=yes"
+      ${extra_args}
+    )
+    if(MPIEXEC_POSTFLAGS)
+      list(APPEND mpi_cmd ${MPIEXEC_POSTFLAGS})
+    endif()
+
+    register_variant("${TEST_TARGET}_mpi_${_mpi_rank}_sparse_rows"
+      COMMAND
+        ${mpi_cmd}
+      LABELS
+        mpi
+        "mpi-${_mpi_rank}"
+        sparse-rows
+      ENVIRONMENT
+        "OMPI_ALLOW_RUN_AS_ROOT=1"
+        "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+        "monoprop_ROW_STORE=sparse"
     )
   endforeach()
 endif()

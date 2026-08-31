@@ -96,11 +96,43 @@ Key files:
 - **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
   mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
   Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
-- **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
-  (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
-  `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row
-  store must include that header — the `OperatorIndex` overloads live in `monoprop::`, so ADL cannot
-  find them from a `monoprop::detail` argument.
+- **The row-store seam** (`cpp/monoprop/detail/operator/RowAccess.h`): a dense monomial is a transient,
+  not the storage. Four accessors — `materialize_row`, `assign_row`, `row_popcount`,
+  `for_each_row_position` — and three backends answer them: `MonomialList<N>`, `detail::OperatorIndex<N>`
+  (packed position lists) and `detail::SparseRowStore<N>` (fixed-width mode lanes plus one 2-bit-per-slot
+  `codes` word per row). Reach rows through the accessors, never through a backend's own API, and add any
+  fourth backend to `cpp/tests/row_accessor_tests.cpp`, which asserts that all of them agree through every
+  accessor. Any template parameterized on the row store must include that header — the overloads live in
+  `monoprop::`, so ADL cannot find them from a `monoprop::detail` argument.
+  `algebra/CodesAlgebra.h` is the structural algebra on a sparse row, one function per dense counterpart,
+  reading the `codes` word instead of looping over storage words, plus `sparse_toggle` — the product
+  `M ⊕ G` as one merge over two ascending lane arrays. It is exact, not an approximation:
+  `cpp/tests/codes_algebra_tests.cpp` and `codes_product_tests.cpp` assert agreement with each dense
+  version over the fixtures and randomized rows. Change one side and you must change the other. A product
+  can occupy more modes than either input; past its scratch capacity `sparse_toggle` reports `overflowed`
+  and the caller must fall back to the dense product — never truncate, because a truncated mode list still
+  carries a plausible-looking `codes` word.
+- **Which backend, and where it is bound**: a propagator uses one of the two row stores, chosen once from
+  its mode count by `SparseRowStore::preferred_for_modes()` — a build-time constant
+  (`monoprop_SPARSE_ROW_MIN_MODES`, derived in `CMakeLists.txt` from whether `ARCH_FLAG` is actually
+  emitted rather than from the option that asks for it, and deliberately not a cache entry) because what
+  moves the crossover is the target ISA. `monoprop_ROW_STORE=dense|sparse` forces it process-wide; an
+  unrecognized value throws rather than falling back, since the point of setting it is to know which
+  backend ran. `MPOperator` holds one pointer per backend with exactly one non-null and binds the live one
+  via `with_store` — **once per layer, inside `build_layer`**, never per term: the scan asks the store for
+  a row per anticommuting term, so everything downstream is templated on the store
+  (`LayerBuildEngine<N, Sink, Store>`, `fused_find_and_collect`, `probe_incoming_queries`). Off that path,
+  use `MPOperator`'s forwarding accessors; there is no accessor handing out a store, because there is no
+  one type to hand out — which is why `MonomialPropagator` exposes `for_each_term()`/`num_local_terms()`
+  rather than the `indexing()` it used to. Every C++ case runs a second time under
+  `monoprop_ROW_STORE=sparse` (the `sparse-rows` ctest label) — every fixture is below the crossover, so
+  without that the sparse backend would ship untested; `cpp/tests/row_store_selection_tests.cpp` is what
+  fails if the variable stops reaching the propagator. The two backends agree on term sets and values but
+  not on term *order*, so compare them with `just diff-baseline-sparse` (tolerance), never
+  `just diff-baseline` (byte-wise). A benchmark run records the backend it resolved to in its artifact's
+  `meta` (`monoprop_row_store` as asked, `row_store_effective` as run) and `REPORT.md` shows both: under
+  the default `auto` the setting alone does not identify the backend, and the two differ in footprint and
+  in accumulation order.
 - **`Basis` / the `Algebra` policy** (`cpp/monoprop/algebra/`): the two algebras are sibling models
   (`MajoranaAlgebra`, `PauliAlgebra` in `algebra/Algebra.h`) over shared structural primitives
   (`algebra/AlgebraCommon.h`). The propagation backbone (the scan/fold in `detail/evolution/...`) is
