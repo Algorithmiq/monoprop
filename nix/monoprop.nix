@@ -8,6 +8,7 @@
   ninja,
   pkg-config,
   nanobind,
+  nanobind-backend,
   scikit-build-core,
   setuptools-scm,
 
@@ -28,9 +29,9 @@
   # may be built on one machine and substituted onto another.
   enableArchFlags ? false,
 
-  # setuptools-scm derives the version from git metadata, which the build sandbox
-  # does not see. Bump alongside the release tag.
-  version ? "0.8.0",
+  # setuptools-scm derives development versions from git metadata, which the build
+  # sandbox does not see. VERSION records the latest stable release.
+  version ? lib.removeSuffix "\n" (builtins.readFile ../VERSION),
 }:
 
 buildPythonPackage {
@@ -44,6 +45,7 @@ buildPythonPackage {
       ../CMakeLists.txt
       ../LICENSE
       ../README.md
+      ../VERSION
       ../pyproject.toml
       # `tools/generate-dispatch.py` stamps this header onto the generated files.
       ../.github/license-header.txt
@@ -66,6 +68,10 @@ buildPythonPackage {
 
   build-system = [
     nanobind
+    # Split mode: `nanobind_add_module(... BACKEND_MODULE nanobind_backend)` builds
+    # `_core` without a backend of its own, so the module is needed at build time
+    # for the stub pass and at run time for the import.
+    nanobind-backend
     scikit-build-core
     setuptools-scm
   ]
@@ -83,6 +89,7 @@ buildPythonPackage {
 
   dependencies = [
     msgpack
+    nanobind-backend
     numpy
   ]
   ++ lib.optionals withMPI [ mpi4py ];

@@ -181,6 +181,13 @@ nix run                # Python interpreter with monoprop importable
 ```
 
 Inside `nix develop` the usual `uv sync` and `just` workflows apply unchanged.
+Downstream flakes can follow their own `nixpkgs`, import `monoprop.overlays.default`,
+and consume `pkgs.monoprop` or `pkgs.monoprop-mpi`; see the
+[building guide](https://docs.monoprop.algorithmiq.tech/building#using-monoprop-downstream-with-nix).
+The Nix entrypoints are distributed from the repository flake, not in the PyPI
+source distribution. Nix sandbox builds read the latest stable release from the
+root `VERSION` file; setuptools-scm remains authoritative for normal Git-based
+Python builds.
 
 ## Contributing
 

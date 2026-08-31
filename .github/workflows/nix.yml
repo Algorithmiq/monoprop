@@ -1,0 +1,69 @@
+name: Nix flake
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    # `nix/monoprop.nix` restates the build inputs, the CMake options and the source
+    # set by hand, so it goes stale whenever the upstream build definition moves.
+    paths:
+      - .github/workflows/nix.yml
+      - flake.lock
+      - flake.nix
+      - nix/**
+      - VERSION
+      - pyproject.toml
+      - CMakeLists.txt
+      - src/monoprop/bindings/CMakeLists.txt
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake:
+    name: Flake on ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+
+    # Darwin is exposed by `flake-utils.lib.eachDefaultSystem` but has never been
+    # validated; it reports without gating until it goes green on its own.
+    continue-on-error: ${{ matrix.runner == 'macos-15' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-26.04, macos-15]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.11.1
+
+      # Builds `checks.monoprop`, which is the non-MPI package, so the build below
+      # reuses this store path rather than compiling twice.
+      - name: Check flake
+        run: nix flake check --print-build-logs
+
+      - name: Build packages
+        run: nix build --print-build-logs .#monoprop .#monoprop-mpi
+
+      # `pythonImportsCheck` already imports the package inside the sandbox; this
+      # exercises the `nix run` app, i.e. the interpreter with monoprop propagated
+      # into its environment.
+      - name: Run app
+        run: nix run . -- -c 'import monoprop; print(monoprop.__version__)'
+
+      - name: Check dev shell
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            cmake --version
+            ninja --version
+            uv --version
+            just --version
+            pkg-config --modversion hwloc
+            mpicc --version
+          '

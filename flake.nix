@@ -12,23 +12,44 @@
       flake-utils,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
+    let
+      monopropOverlay = final: _prev: {
+        monoprop =
+          let
+            python = final.python312;
+            scikit-build-core = python.pkgs.scikit-build-core.overridePythonAttrs (_: rec {
+              version = "1.0.3";
+              src = final.fetchPypi {
+                pname = "scikit_build_core";
+                inherit version;
+                hash = "sha256-pNegWXjuN5dcN3Q1EMiZHi3rzn74OvsKB8DFdv1PFug=";
+              };
+              doCheck = false;
+            });
+            nanobind = python.pkgs.callPackage ./nix/nanobind.nix { };
+            nanobind-backend = python.pkgs.callPackage ./nix/nanobind-backend.nix {
+              inherit nanobind;
+            };
+          in
+          python.pkgs.callPackage ./nix/monoprop.nix {
+            inherit scikit-build-core nanobind nanobind-backend;
+          };
+
+        monoprop-mpi = final.monoprop.override { withMPI = true; };
+      };
+    in
+    {
+      overlays.default = monopropOverlay;
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ monopropOverlay ];
+        };
         python = pkgs.python312;
-        scikit-build-core = python.pkgs.scikit-build-core.overridePythonAttrs (_: rec {
-          version = "1.0.3";
-          src = pkgs.fetchPypi {
-            pname = "scikit_build_core";
-            inherit version;
-            hash = "sha256-pNegWXjuN5dcN3Q1EMiZHi3rzn74OvsKB8DFdv1PFug=";
-          };
-          doCheck = false;
-        });
-
-        monoprop = python.pkgs.callPackage ./nix/monoprop.nix { inherit scikit-build-core; };
-        monoprop-mpi = monoprop.override { withMPI = true; };
+        inherit (pkgs) monoprop monoprop-mpi;
 
         replEnv = python.withPackages (ps: [
           monoprop

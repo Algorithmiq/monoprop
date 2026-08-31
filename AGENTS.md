@@ -128,9 +128,14 @@ just build-docs  # Build documentation
 ```
 
 Nix users get the same toolchain with `nix develop`. The flake (`flake.nix` plus
-`nix/`) also exposes `packages.monoprop{,-mpi}` and a `nix run` app; the packaged
-build disables the C++ unit tests and arch flags, and its `version` is pinned by
-hand because setuptools-scm cannot read git metadata in the build sandbox.
+`nix/`) also exposes `packages.monoprop{,-mpi}`, `overlays.default`, and a `nix run`
+app. Downstream flakes should follow their own `nixpkgs` and use the overlay when
+composing monoprop into a shared Python package set. The flake and `nix/` are
+excluded from Python sdists, so Nix consumers must use a repository flake input.
+The packaged build disables the C++ unit tests and arch flags. Its stable version
+comes from the tracked root `VERSION` file because setuptools-scm cannot read git
+metadata in the build sandbox; update that file when preparing a release. The
+release workflow rejects tags that do not match it.
 
 
 ### Template Metaprogramming

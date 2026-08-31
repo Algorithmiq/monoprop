@@ -55,8 +55,51 @@ The packaged build deviates from the `uv` build in three places, all in
 - `monoprop_ENABLE_ARCH_FLAGS` is off, since a store path may be substituted onto a
   machine other than the one that built it; pass
   `.override { enableArchFlags = true; }` for a native build;
-- the version is pinned, because setuptools-scm cannot read git metadata inside the
-  sandbox; bump it alongside the release tag.
+- the version comes from the tracked root `VERSION` file, because setuptools-scm
+  cannot read git metadata inside the sandbox; update it to the stable version when
+  preparing a release. The release workflow rejects tags that do not match it.
+
+### Using monoprop downstream with Nix
+
+Use the exported overlay when monoprop must share a downstream project's Python
+and native dependency package set. Following the downstream `nixpkgs` input avoids
+introducing a second Python, Boost, hwloc, or MPI closure:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    monoprop = {
+      url = "github:Algorithmiq/monoprop";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, monoprop, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ monoprop.overlays.default ];
+      };
+      python = pkgs.python312.withPackages (ps: [
+        pkgs.monoprop
+        ps.numpy
+      ]);
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [ python ];
+      };
+    };
+}
+```
+
+The overlay provides `pkgs.monoprop` and `pkgs.monoprop-mpi`. For consumers that
+do not need to compose package sets, the pre-built flake outputs remain available
+as `monoprop.packages.${system}.monoprop` and
+`monoprop.packages.${system}.monoprop-mpi`. Consume these entrypoints from the Git
+repository flake; `flake.nix`, `flake.lock`, and `nix/` are deliberately excluded
+from the Python source distribution.
 
 ## Building the Python bindings
 
