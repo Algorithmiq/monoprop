@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from monoprop_bench_tools.models import build_random_propagator, make_random_problem
 
 
@@ -47,3 +49,21 @@ def test_built_graph_is_populated(serial_comm) -> None:
     propagator.build_graph(circuit)
     _n_cos_indices, n_cycles = propagator.graph_size()
     assert n_cycles > 0
+
+
+@pytest.mark.parametrize("gen_length", [4, 5, 8, 9])
+def test_hermitian_gen_lengths_are_accepted(gen_length: int) -> None:
+    problem = make_random_problem(
+        gen_length=gen_length, obs_terms=3, num_generators=2, num_modes=8, cutoff=6, seed=0
+    )
+    assert problem.circuit.system_size == 8
+
+
+@pytest.mark.parametrize("gen_length", [2, 3, 6, 7])
+def test_anti_hermitian_gen_lengths_raise_naming_the_option(gen_length: int) -> None:
+    # Unvalidated, the length reaches the extension and surfaces as a RuntimeError from the
+    # propagator's constructor, naming neither --gen-length nor the parity rule.
+    with pytest.raises(ValueError, match="--gen-length"):
+        make_random_problem(
+            gen_length=gen_length, obs_terms=3, num_generators=2, num_modes=8, cutoff=6, seed=0
+        )

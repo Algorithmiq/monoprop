@@ -121,6 +121,18 @@ class RandomProblem:
         return np.asarray(self.circuit.parameters, dtype=float)
 
 
+def _check_gen_length(gen_length: int, option: str) -> None:
+    """Reject a generator length whose real-coefficient monomials are not Hermitian."""
+    if gen_length % 4 not in (0, 1):
+        msg = (
+            f"{option} gives length {gen_length}. A product of k Majoranas obeys "
+            f"(g_1...g_k)^dag = (-1)^(k(k-1)/2) g_1...g_k, so it is Hermitian only for "
+            f"k % 4 in (0, 1); at k={gen_length} the real coefficients drawn here are "
+            "anti-Hermitian and the propagator's constructor rejects them."
+        )
+        raise ValueError(msg)
+
+
 def _check_modes(num_modes: int, option: str) -> None:
     """Reject a size above the extension's compile-time mode limit."""
     if num_modes > MAX_NUM_MODES:
@@ -177,7 +189,9 @@ def make_random_problem(
     """Build a random observable and generator circuit for benchmarking.
 
     Args:
-        gen_length: Number of Majorana operators in each random generator.
+        gen_length: Number of Majorana operators in each random generator. Must satisfy
+            ``gen_length % 4 in (0, 1)``, the lengths at which a real-coefficient
+            Majorana product is Hermitian.
         obs_terms: Number of terms in the random observable.
         num_generators: Number of random generators in the circuit.
         num_modes: Number of fermionic modes (Majorana indices = ``2 * num_modes``).
@@ -189,6 +203,7 @@ def make_random_problem(
         A :class:`RandomProblem` bundling the observable, circuit, and cutoff.
     """
     _check_modes(num_modes, "--num-modes")
+    _check_gen_length(gen_length, "--gen-length")
     rng = np.random.default_rng(seed)
     num_majorana_indices = 2 * num_modes
 
