@@ -51,7 +51,10 @@ mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-
 
 `monoprop_ENABLE_MPI` also provisions mpi4py as a build input; see
 [Building from source](/building#with-mpi) for why, and for the
-config-settings equivalent.
+config-settings equivalent. Installing the `mpi` extra alone only provides
+mpi4py and does not enable C++ MPI support. Accordingly, the CI matrix has
+explicit cache-free MPI build lanes on Linux x86-64, Linux ARM64, and macOS;
+only those lanes run the suite under `mpiexec`.
 
 ### C++ unit tests
 
@@ -83,11 +86,18 @@ ctest -S tools/ctest-mpi-matrix.cmake -VV
 ```
 
 A 64-bit `TermIndex` build is the only configuration that compiles the
-`monoprop_WIDE_TERM_INDEX` branches, so it has its own recipe:
+`monoprop_WIDE_TERM_INDEX` branches, so it has its own recipe. The environment
+variable is a scikit-build source-build switch, just like `monoprop_ENABLE_MPI`.
+The overrides merge their CMake definitions, so setting both variables enables
+the combined MPI and wide-index build:
 
 ```bash
 just test-wide   # rebuilds via uv sync with monoprop_WIDE_TERM_INDEX=ON, then runs CTest
+monoprop_ENABLE_MPI=ON monoprop_WIDE_TERM_INDEX=ON uv sync --all-extras
 ```
+
+CI gives every compiler, MPI, and term-index combination a distinct setup-uv
+cache suffix, because uv's cache key does not include build environment variables.
 
 CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
@@ -99,8 +109,27 @@ CTest registers every Boost case individually as a `serial` variant. When the
 build has MPI enabled and a launcher is found, it also registers the whole suite
 once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
 one entry per rank count rather than per case, because the ranks have to reach
-the same collectives. Select either group with
-`ctest --test-dir build/editable/Release -L serial` (or `-L mpi-2`).
+the same collectives. Each MPI entry times out after 600 seconds, preventing a
+collective deadlock from occupying the runner indefinitely.
+
+CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
+lane fails if its MPI variant was not registered. Standalone MPI-enabled C++
+test executables initialize MPI before constructing propagators and destroy the
+propagators before finalizing MPI. Select the groups locally with
+`ctest --test-dir build/editable/Release -LE mpi` and
+`ctest --test-dir build/editable/Release -L mpi --no-tests=error`. The
+`just test-mpi '1;2;4'` recipe configures and runs the corresponding C++ CTest
+rank entries as well as the Python rank matrix.
+
+Run `just code-coverage` to collect coverage in separate serial and MPI-enabled
+`Coverage` builds and render `monoprop-coverage/index.html`. The MPI collection
+runs the serial and MPI CTest labels plus the MPI-marked Python tests with two
+ranks. Python ranks write parallel coverage shards, while C++ coverage uses
+atomic gcov counters. The `code-coverage-collect` and
+`code-coverage-aggregate` recipes also drive the QA workflow, which publishes
+the combined reports to Codecov and SonarQube. MPI collection requires covered
+lines in multiple `detail/mpi` sources so a silently serial build cannot pass as
+MPI coverage.
 
 
 ## Adding tests

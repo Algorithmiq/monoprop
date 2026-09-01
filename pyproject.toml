@@ -77,7 +77,8 @@ test = [
   "pytest-cases>=3.8.6,<4",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
-  "pytest-mpi>=0.6",
+  # depend on branch which only outputs from rank zero
+  "pytest-mpi @ git+https://github.com/aragilar/pytest-mpi.git@nonzero",
   "pytest>=8.2.2,<9.1",
   "tabulate>=0.9",
 ]
@@ -155,15 +156,19 @@ sdist.include = [
 ]
 build.verbose = true
 build.tool-args = ["-j2"]
-# `monoprop_ENABLE_MPI` in the environment is the single switch: it both provisions the
-# build input and flips the CMake option.
-# NOTE: An override's `if.` clause can only match environment variables, never config-settings, so the
-# `--config-settings=cmake.define.monoprop_ENABLE_MPI=ON` route cannot reach this table
-# and has to carry `--config-settings=build.requires=mpi4py>=4.1.0` alongside it.
+# These environment variables are the source-build switches. Overrides can only
+# match environment variables, never config-settings, so setting an equivalent
+# CMake define directly does not activate any associated build requirements.
 [[tool.scikit-build.overrides]]
 if.env.monoprop_ENABLE_MPI = true
 build.requires = ["mpi4py>=4.1.0"]
 cmake.define.monoprop_ENABLE_MPI = "ON"
+
+[[tool.scikit-build.overrides]]
+if.env.monoprop_WIDE_TERM_INDEX = true
+# Both source-build switches may match; merge instead of replacing the MPI definition.
+inherit.cmake.define = "append"
+cmake.define.monoprop_WIDE_TERM_INDEX = "ON"
 
 
 [tool.setuptools_scm]

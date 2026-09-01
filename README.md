@@ -120,7 +120,20 @@ just test-wide                         # Python + C++ unit tests with a 64-bit T
 ```
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
-for the with/without-MPI details and the rank matrix.
+for the with/without-MPI details and the rank matrix. CI has explicit MPI-enabled
+lanes on Linux x86-64, Linux ARM64, and macOS; installing the `mpi` extra alone
+does not enable the C++ MPI build. CI requires a registered MPI CTest variant,
+and each whole-suite MPI run has a 600-second deadlock timeout. Source builds
+select the MPI and 64-bit term-index variants with `monoprop_ENABLE_MPI=ON` and
+`monoprop_WIDE_TERM_INDEX=ON`, respectively; the switches can be combined.
+Standalone MPI-enabled C++ programs must initialize MPI before constructing a
+propagator and finalize it only after all propagators have been destroyed. The
+exported CMake target preserves the package's MPI setting independently of any
+`MPI::MPI_CXX` target already present in the consuming project. QA coverage
+merges separate serial and MPI-instrumented builds, including two-rank Python
+and C++ MPI runs, so both compatibility paths contribute to the reports. Run
+`just code-coverage` for the same combined report locally; it builds both
+variants and renders `monoprop-coverage/index.html`.
 
 ## Repository layout
 

@@ -143,7 +143,9 @@ ctest --test-dir build/editable/Release
 This uses the scikit-build-core Release tree at `build/editable/Release` and
 runs `bin/monoprop_unit_tests.x` there, along with `bin/monoprop_link_export_probe.x` — a
 link-time check that the installed shared `monoprop` library exports every `detail/**` free
-function reachable from the public template chain.
+function reachable from the public template chain. The installed CMake target records whether
+monoprop itself was built with MPI; a serial package does not acquire MPI compile definitions or
+link dependencies merely because the consuming project already has an `MPI::MPI_CXX` target.
 
 ### Debug tree
 
@@ -247,7 +249,9 @@ Python API under TSan would require a TSan-instrumented CPython.
 
 ### Related workflows
 
-- Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration.
+- Use `just test-wide` for the 64-bit `monoprop_WIDE_TERM_INDEX` configuration;
+  source builds enable it with `monoprop_WIDE_TERM_INDEX=ON` in the environment,
+  and can combine it with `monoprop_ENABLE_MPI=ON`.
 - Use `just code-coverage` for the coverage build.
 - Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to
   filter the discovered C++ test set.

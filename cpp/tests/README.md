@@ -120,9 +120,12 @@ needed.
 With an MPI launcher on PATH (`MPIEXEC_EXECUTABLE`, `mpiexec`, or `mpirun`),
 CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
 `monoprop_MPI_TEST_PROCS` (default `2`) — one CTest entry per rank count, not
-per case, because the ranks have to reach the same collectives. For exhaustive
-rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
-MPI while debugging, invoke the binary directly:
+per case, because the ranks have to reach the same collectives. Each entry has
+a 600-second timeout, so a collective deadlock fails instead of occupying the
+runner indefinitely. For exhaustive
+rank coverage, run `just test-mpi '1;2;4'` or configure
+`-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under MPI while
+debugging, invoke the binary directly:
 `mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests

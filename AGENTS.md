@@ -153,6 +153,7 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators
 - **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
+- QA coverage uses the `just code-coverage-collect` and `just code-coverage-aggregate` recipes for separate serial and MPI `Coverage` builds.
 - **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration

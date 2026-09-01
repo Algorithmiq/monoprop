@@ -19,7 +19,7 @@ env:
 
 jobs:
   package-tests:
-    name: Check project ${{ matrix.runner }}/Python ${{ matrix.python-version }}/Compiler ${{ matrix.compiler}}/Wide term index ${{ matrix.wide}}
+    name: Test [mpi:${{ matrix.mpi }}, wide:${{ matrix.wide }}] ${{ matrix.runner }} py${{ matrix.python-version }} ${{ matrix.compiler }}
 
     strategy:
       fail-fast: false
@@ -28,6 +28,7 @@ jobs:
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
         compiler: [default, g++-14, clang++-18]
         wide: ["off"]
+        mpi: ["off"]
         exclude:
           - compiler: g++-14
             python-version: "3.14"
@@ -42,11 +43,33 @@ jobs:
             runner: ubuntu-26.04
             compiler: default
             wide: "on"
+            mpi: "off"
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: default
+            wide: "off"
+            mpi: "on"
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: default
+            wide: "on"
+            mpi: "on"
+          - python-version: "3.11"
+            runner: ubuntu-26.04-arm
+            compiler: default
+            wide: "off"
+            mpi: "on"
+          - python-version: "3.11"
+            runner: macos-15
+            compiler: default
+            wide: "off"
+            mpi: "on"
 
     runs-on: ${{ matrix.runner}}
 
     env:
-      SKBUILD_CMAKE_DEFINE: "monoprop_WIDE_TERM_INDEX=${{ matrix.wide }}"
+      monoprop_ENABLE_MPI: "${{ matrix.mpi }}"
+      monoprop_WIDE_TERM_INDEX: "${{ matrix.wide }}"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -56,10 +79,17 @@ jobs:
       - name: Install dependencies
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            brew install boost open-mpi msgpack-cxx hwloc
+            packages=(boost msgpack-cxx hwloc)
+            if [[ "${{ matrix.mpi }}" == "on" ]]; then
+              packages+=(open-mpi)
+            fi
+            brew install "${packages[@]}"
           else
             sudo apt-get update
-            packages="libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
+            packages="libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
+            if [[ "${{ matrix.mpi }}" == "on" ]]; then
+              packages="$packages libopenmpi-dev openmpi-bin"
+            fi
             if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
               packages="$packages clang-18"
             fi
@@ -79,11 +109,17 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          cache-suffix: ${{ matrix.compiler }}-wide-${{ matrix.wide }}-mpi-${{ matrix.mpi }}
           python-version: ${{ matrix.python-version }}
 
       - name: Install package
         run: |
-          uv sync --no-progress --group workspace-test --all-extras -v
+          if [[ "${{ matrix.mpi }}" == "on" ]]; then
+            uv sync --no-progress --group workspace-test --all-extras -v
+          else
+            uv sync --no-progress --group workspace-test --all-extras \
+              --no-extra mpi -v
+          fi
 
       - name: Python environment information
         run: |
@@ -101,6 +137,7 @@ jobs:
               "version": mp.__version__,
               "variant": mp.__variant__,
               "compiler_flags": mp.__compiler_flags__,
+              "MPI": mp.has_mpi,
             }
           )
           EOF
@@ -132,39 +169,42 @@ jobs:
           using namespace monoprop;
 
           auto main() -> int {
-              constexpr size_t kModes = 2;
-              OperatorDict ham;
-              ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+              mpi::init();
+              {
+                  constexpr size_t kModes = 2;
+                  OperatorDict ham;
+                  ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
 
-              // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
-              MonomialPropagator<kModes> graph_sim(ham,
-                                                   2 * kModes,
-                                                   VecZ{0, 1},
-                                                   std::optional<unsigned int>{4U},
-                                                   MPI_COMM_SELF,
-                                                   std::nullopt,
-                                                   std::nullopt,
-                                                   CutoffType::Length,
-                                                   std::nullopt);
-              const std::vector<VecZ> monos{{0}, {1}, {2}};
-              graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
-              graph_sim.graph_memory_usage();
-              graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
-
-              MonomialPropagator<kModes> partition_sim(ham,
+                  // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
+                  MonomialPropagator<kModes> graph_sim(ham,
                                                        2 * kModes,
                                                        VecZ{0, 1},
-                                                       std::nullopt,
+                                                       std::optional<unsigned int>{4U},
                                                        MPI_COMM_SELF,
                                                        std::nullopt,
                                                        std::nullopt,
                                                        CutoffType::Length,
-                                                       std::nullopt,
-                                                       kModes,
-                                                       Basis::Majorana,
-                                                       2);
-              partition_sim.size();
+                                                       std::nullopt);
+                  const std::vector<VecZ> monos{{0}, {1}, {2}};
+                  graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
+                  graph_sim.graph_memory_usage();
+                  graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
 
+                  MonomialPropagator<kModes> partition_sim(ham,
+                                                           2 * kModes,
+                                                           VecZ{0, 1},
+                                                           std::nullopt,
+                                                           MPI_COMM_SELF,
+                                                           std::nullopt,
+                                                           std::nullopt,
+                                                           CutoffType::Length,
+                                                           std::nullopt,
+                                                           kModes,
+                                                           Basis::Majorana,
+                                                           2);
+                  partition_sim.size();
+              }
+              mpi::finalize();
               return 0;
           }
           EOF
@@ -181,8 +221,9 @@ jobs:
           runner="${{ matrix.runner }}"
           pyver="${{ matrix.python-version }}"
           compiler="${{ matrix.compiler }}"
-          wide="${{ matrix.wide }}"
-          echo "label=$runner-$pyver-$compiler-$wide" >> $GITHUB_OUTPUT
+          wide="wide=${{ matrix.wide }}"
+          mpi="mpi=${{ matrix.mpi }}"
+          echo "label=$runner-$pyver-$compiler-$wide-$mpi" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
         run: |
@@ -193,20 +234,35 @@ jobs:
           --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
           -o junit_family=legacy
 
-      - name: Run C++ unit tests
+      - name: Run non-MPI C++ unit tests
         run: |
-          ctest --test-dir build/editable/Release --output-on-failure --output-junit ctest-"${{ steps.test-group-label.outputs.label }}".xml
+          ctest --test-dir build/editable/Release \
+            --output-on-failure \
+            --no-tests=error \
+            --label-exclude mpi \
+            --output-junit ctest-serial-"${{ steps.test-group-label.outputs.label }}".xml
+
+      - name: Run C++ unit tests under MPI
+        if: matrix.mpi == 'on'
+        run: |
+          ctest --test-dir build/editable/Release \
+            --output-on-failure \
+            --no-tests=error \
+            --label-regex mpi \
+            --output-junit ctest-mpi-"${{ steps.test-group-label.outputs.label }}".xml
 
       - name: Run Python tests under MPI
+        if: matrix.mpi == 'on'
         env:
           OMPI_ALLOW_RUN_AS_ROOT: "1"
           OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
           OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: |
           mpiexec --map-by :OVERSUBSCRIBE -n 2 \
-            uv run pytest tests --with-mpi -v
+            uv run --no-sync pytest tests --with-mpi -v
 
       - name: Run Python MPI marker rank matrix
+        if: matrix.mpi == 'on'
         env:
           OMPI_ALLOW_RUN_AS_ROOT: "1"
           OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
@@ -215,14 +271,24 @@ jobs:
           for r in 1 2 4; do
             echo "Running MPI python tests with ${r} rank(s)"
             mpiexec --map-by :OVERSUBSCRIBE -n "$r" \
-              uv run pytest tests --with-mpi -m mpi -v
+              uv run --no-sync pytest tests --with-mpi -m mpi -v
           done
 
-      - name: Upload test results to Codecov
+      - name: Upload serial test results to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-${{ steps.test-group-label.outputs.label }}.xml
+          files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-serial-${{ steps.test-group-label.outputs.label }}.xml
+          report_type: test_results
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload MPI C++ test results to Codecov
+        if: matrix.mpi == 'on'
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ctest-mpi-${{ steps.test-group-label.outputs.label }}.xml
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true
