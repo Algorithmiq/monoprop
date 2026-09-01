@@ -103,8 +103,6 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     if [[ "$mpi" == "on" ]]; then
       export OMPI_ALLOW_RUN_AS_ROOT=1
       export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-      # Reaches the ctest mpi variants below, which spawn their own mpiexec. The OMPI_MCA_ name is
-      # the OpenMPI 4 spelling and is ignored by 5.
       export OMPI_MCA_rmaps_base_oversubscribe=1
       export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
       mpiexec --map-by :OVERSUBSCRIBE -n 2 \

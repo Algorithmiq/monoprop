@@ -244,9 +244,7 @@ jobs:
 
       - name: Run C++ unit tests under MPI
         if: matrix.mpi == 'on'
-        # The mpi variants call `mpiexec -n <n>` themselves, so --map-by cannot reach them and a
-        # runner with fewer cores than ranks refuses to place. OMPI_MCA_* is the OpenMPI 4 spelling,
-        # ignored by 5, so both are set.
+        # set both OpenMPI 4 (ORTE) and OpenMPI 5 (PRRTE) variants of the oversubscription setting
         env:
           PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
           OMPI_MCA_rmaps_base_oversubscribe: "1"
