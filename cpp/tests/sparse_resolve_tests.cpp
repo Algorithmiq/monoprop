@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <random>
 #include <set>
+#include <span>
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
@@ -123,7 +124,7 @@ auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool
         for (size_t q = 0; q < queries[s].size(); ++q) {
             const int phase = ((q % 2) == 0) ? 1 : -1;
             const auto pos = positions_of<NumModes>(queries[s][q]);
-            detail::QueryWire<NumModes>::push(incoming[s], pos.data(), pos.size(), phase);
+            detail::QueryWire<NumModes>::push(incoming[s], pos, phase);
             if (fused) {
                 detail::QueryWire<NumModes>::push_value(incoming[s], 0.5 + static_cast<double>(q));
             }
@@ -215,7 +216,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         }
         VecZ scratch;
         const auto want_pos = positions_of<NumModes>(want);
-        if (detail::QueryWire<NumModes>::push(scratch, want_pos.data(), want_pos.size(), expect_phase[g]) > 1U) {
+        if (detail::QueryWire<NumModes>::push(scratch, want_pos, expect_phase[g]) > 1U) {
             ++wide_seen;
         }
     }
@@ -309,7 +310,7 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_set_positions_matches_set) {
         for (size_t b = terms[i].find_first(); b < terms[i].size(); b = terms[i].find_next(b)) {
             pos.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
         }
-        from_pos.set_positions(i, pos.data(), pos.size());
+        from_pos.set_positions(i, pos);
         if (pos.size() > kInlineWidth) {
             ++spilled;
         }
@@ -345,7 +346,7 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
     }
     std::vector<size_t> out(terms.size(), 0);
     std::vector<uint32_t> hashes(terms.size(), 0);
-    op.store->find_batch_positions(flat.data(), off.data(), kk.data(), terms.size(), out.data(), hashes.data());
+    op.store->find_batch_positions(flat, off, kk, out, hashes);
 
     std::vector<size_t> out_dense(terms.size(), 0);
     op.store->find_batch(terms.data(), terms.size(), out_dense.data());
@@ -353,7 +354,9 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
         BOOST_REQUIRE(out[i] != detail::OperatorIndex<kN>::kNotFound);
         BOOST_TEST(out[i] == i);
         BOOST_TEST(out[i] == out_dense[i]);
-        BOOST_TEST(hashes[i] == detail::OperatorIndex<kN>::fold_hash_positions(flat.data() + off[i], kk[i]));
+        BOOST_TEST(hashes[i]
+                   == detail::OperatorIndex<kN>::fold_hash_positions(
+                       std::span<const detail::OperatorIndex<kN>::PosT>(flat).subspan(off[i], kk[i])));
     }
 
     const auto absent = draw_distinct<kN>(rng, 50);
@@ -370,7 +373,7 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
         akk.push_back(static_cast<uint32_t>(k));
     }
     std::vector<size_t> aout(absent.size(), 0);
-    op.store->find_batch_positions(aflat.data(), aoff.data(), akk.data(), absent.size(), aout.data(), nullptr);
+    op.store->find_batch_positions(aflat, aoff, akk, aout);
     size_t genuinely_absent = 0;
     for (size_t i = 0; i < absent.size(); ++i) {
         // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.

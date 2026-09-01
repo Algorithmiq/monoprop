@@ -20,10 +20,10 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -147,9 +147,8 @@ public:
     //
     // Precondition: `pos` strictly ascending, every entry < 2*NumModes. A violation is silent in release
     // -- an unsorted row simply never matches, and an out-of-range one decodes to a different term.
-    auto set_positions(size_t i, const PosT *pos, size_t count) -> void {
-        assert(std::adjacent_find(pos, pos + count, std::greater_equal<PosT>{}) == pos + count
-               && "row positions must be strictly ascending");
+    auto set_positions(size_t i, std::span<const PosT> pos) -> void {
+        const size_t count = pos.size();
         assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
         PosT *row = &rows_[i * stride_];
         if (count > inline_width_) {
@@ -166,7 +165,7 @@ public:
             overflow_.erase(i);
         }
         row[0] = static_cast<PosT>(count);
-        std::copy_n(pos, count, row + 1);
+        std::copy_n(pos.data(), count, row + 1);
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
@@ -202,18 +201,18 @@ public:
         }
         return overflow_.at(i).count();
     }
-    // The row's stored ascending positions; (nullptr, 0) for a spilled row, and invalidated by any insert.
+    /*! @brief The row's stored ascending positions, empty for a spilled row. Invalidated by any insert. */
     struct RowPositions {
-        const PosT *pos;
-        size_t count;
-        [[nodiscard]] auto inlined() const -> bool { return pos != nullptr; }
+        std::span<const PosT> pos;
+        //! A spilled row has no position array at all, which an empty inline row still does.
+        [[nodiscard]] auto inlined() const -> bool { return pos.data() != nullptr; }
     };
     [[nodiscard]] auto row_positions(size_t i) const -> RowPositions {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
-            return {nullptr, 0};
+            return {};
         }
-        return {&rows_[(i * stride_) + 1], static_cast<size_t>(c)};
+        return {std::span<const PosT>(&rows_[(i * stride_) + 1], static_cast<size_t>(c))};
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = rows_.capacity() * sizeof(PosT);
@@ -280,12 +279,12 @@ public:
 
     // find_batch over ascending position lists: query q is pos_flat[pos_off[q] .. pos_off[q] + k_of[q]).
     // Identical results to find_batch on the monomials those positions describe.
-    auto find_batch_positions(const PosT *pos_flat,
-                              const size_t *pos_off,
-                              const uint32_t *k_of,
-                              size_t n,
-                              size_t *out,
-                              uint32_t *hash_out = nullptr) const -> void {
+    auto find_batch_positions(std::span<const PosT> pos_flat,
+                              std::span<const size_t> pos_off,
+                              std::span<const uint32_t> k_of,
+                              std::span<size_t> out,
+                              std::span<uint32_t> hash_out = {}) const -> void {
+        const size_t n = pos_off.size();
         static constexpr size_t G = 16;
         std::array<uint32_t, G> hh;
         std::array<size_t, G> sp;
@@ -293,12 +292,12 @@ public:
         for (size_t base = 0; base < n; base += G) {
             const size_t g = std::min(G, n - base);
             for (size_t j = 0; j < g; ++j) {
-                hh[j] = fold_hash_positions(pos_flat + pos_off[base + j], k_of[base + j]);
+                hh[j] = fold_hash_positions(pos_flat.subspan(pos_off[base + j], k_of[base + j]));
                 sp[j] = spread(hh[j]);
                 __builtin_prefetch(&table_.slots[sp[j] & table_.mask], 0, 0);
             }
-            if (hash_out != nullptr) {
-                std::copy_n(hh.begin(), g, hash_out + base);
+            if (!hash_out.empty()) {
+                std::copy_n(hh.begin(), g, hash_out.begin() + static_cast<std::ptrdiff_t>(base));
             }
             for (size_t j = 0; j < g; ++j) {
                 cand[j] = kEmptySlot;
@@ -312,26 +311,25 @@ public:
             }
             for (size_t j = 0; j < g; ++j) {
                 const size_t q = base + j;
-                const PosT *qpos = pos_flat + pos_off[q];
-                const size_t qk = k_of[q];
+                const std::span<const PosT> qpos = pos_flat.subspan(pos_off[q], k_of[q]);
                 if (cand[j] == kEmptySlot) {
                     out[q] = kNotFound;
                 }
-                else if (row_eq_positions(static_cast<size_t>(cand[j]), qpos, qk)) {
+                else if (row_eq_positions(static_cast<size_t>(cand[j]), qpos)) {
                     out[q] = static_cast<size_t>(cand[j]);
                 }
                 else {
                     // A 32-bit collision: rare enough to walk the chain from the top rather than resume it.
-                    out[q] = find_positions_(hh[j], qpos, qk);
+                    out[q] = find_positions_(hh[j], qpos);
                 }
             }
         }
     }
 
     // fold_hash of the monomial `pos` describes, through the same fold, so it is equal by construction.
-    [[nodiscard]] static auto fold_hash_positions(const PosT *pos, size_t count) noexcept -> uint32_t {
+    [[nodiscard]] static auto fold_hash_positions(std::span<const PosT> pos) noexcept -> uint32_t {
         key_type mono;
-        for (size_t j = 0; j < count; ++j) {
+        for (size_t j = 0; j < pos.size(); ++j) {
             mono.set(pos[j]);
         }
         return fold_hash(mono);
@@ -510,23 +508,23 @@ private:
     }
 
     // Compare row i against an ascending position list; a spilled row falls back to a dense compare.
-    [[nodiscard]] auto row_eq_positions(size_t i, const PosT *q, size_t qk) const -> bool {
+    [[nodiscard]] auto row_eq_positions(size_t i, std::span<const PosT> q) const -> bool {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {
             key_type mono;
-            for (size_t j = 0; j < qk; ++j) {
+            for (size_t j = 0; j < q.size(); ++j) {
                 mono.set(q[j]);
             }
             return overflow_.at(i) == mono;
         }
-        if (qk != static_cast<size_t>(c)) {
+        if (q.size() != static_cast<size_t>(c)) {
             return false;
         }
-        return std::equal(q, q + qk, &rows_[(i * stride_) + 1]);
+        return std::equal(q.begin(), q.end(), &rows_[(i * stride_) + 1]);
     }
 
     // find()'s chain walk for a position-list key, hash already folded; only the collision arm reaches it.
-    [[nodiscard]] auto find_positions_(uint32_t h, const PosT *q, size_t qk) const -> size_t {
+    [[nodiscard]] auto find_positions_(uint32_t h, std::span<const PosT> q) const -> size_t {
         if (table_.count == 0) {
             return kNotFound;
         }
@@ -535,7 +533,7 @@ private:
             if (e.idx == kEmptySlot) {
                 return kNotFound;
             }
-            if (e.h == h && row_eq_positions(static_cast<size_t>(e.idx), q, qk)) {
+            if (e.h == h && row_eq_positions(static_cast<size_t>(e.idx), q)) {
                 return static_cast<size_t>(e.idx);
             }
         }

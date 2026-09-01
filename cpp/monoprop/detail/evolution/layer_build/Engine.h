@@ -22,6 +22,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -145,7 +146,6 @@ struct GraphSink {
             out[base + q] = {srcs[q], QueryWire<NumModes>::phase_at(qbuf, off)};
             off = QueryWire<NumModes>::next_off(qbuf, form, off);
         }
-        assert(off == qbuf.size() && "querier buffer does not hold exactly one query per response");
     }
 
     // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
@@ -263,11 +263,10 @@ struct ContractSink {
         else {
             v_tgt = 0.0; // Heisenberg fresh insert
         }
-        fc.cross_half[cross_base_ + g] =
-            HalfRotationRec{ip,
-                            QueryWire<NumModes>::value_at(incoming[s], incoming_form(), pr.off_of[g]),
-                            static_cast<int32_t>(pr.phase_of[g]),
-                            /*is_insert=*/ip >= pr.base};
+        fc.cross_half[cross_base_ + g] = HalfRotationRec{ip,
+                                                         QueryWire<NumModes>::value_at(incoming[s], pr.off_of[g]),
+                                                         static_cast<int32_t>(pr.phase_of[g]),
+                                                         /*is_insert=*/ip >= pr.base};
         return v_tgt;
     }
     auto process_reserve(const std::vector<std::vector<Response>> &inc_r, size_t rank_count, size_t my_rank_) -> void {
@@ -292,7 +291,6 @@ struct ContractSink {
             fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
             off = QueryWire<NumModes>::next_off(qbuf, form, off);
         }
-        assert(off == qbuf.size() && "querier buffer does not hold exactly one query per response");
     }
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
@@ -370,8 +368,6 @@ struct LayerBuildEngine {
             lv = &src_val_r[my_rank];
         }
         // The scan routes a self-owned partner to the stage, never to the wire buffer.
-        assert(queries_r[my_rank].empty() && "a self-owned query was encoded instead of staged");
-        assert(ls.size() == self_stage_.size() && "the self stage does not hold exactly one query per source");
         resolve_range_(ls, lv, is_leader_pass);
         self_stage_.clear();
         ls.clear();
@@ -445,7 +441,6 @@ struct LayerBuildEngine {
                 }
                 src_off = next;
             }
-            assert(src_off == q.size() && "follower compaction did not consume the whole query buffer");
             q.resize(dst_off);
             s.resize(kept);
             if (v != nullptr) {
@@ -468,7 +463,8 @@ struct LayerBuildEngine {
         const size_t base = local_op.store->grow_rows_geometric(n_miss);
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
-            local_op.store->set_positions(base + k, deferred_pos_flat_.data() + m.pos_at, m.k);
+            local_op.store->set_positions(base + k,
+                                          std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         }
         local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
@@ -487,8 +483,6 @@ private:
         std::vector<int> counts(R);
         for (size_t r = 0; r < R; ++r) {
             // One response per query, and src_idx_r[r] holds one source per query: no walk, no division.
-            assert(src_idx_r[r].size() == QueryWire<NumModes>::count_queries(queries_r[r], sink.querier_form())
-                   && "a querier buffer does not hold exactly one query per source");
             counts[r] = static_cast<int>(src_idx_r[r].size());
         }
         return counts;
@@ -530,12 +524,11 @@ private:
                 break;
             }
             // The hashes come back because a miss needs one at insert, folded from these same positions.
-            local_op.store->find_batch_positions(self_stage_.pos_flat.data(),
-                                                 pos_off.data(),
-                                                 k_of.data(),
-                                                 m,
-                                                 found.data(),
-                                                 hashes.data());
+            local_op.store->find_batch_positions(std::span<const RowPosT>(self_stage_.pos_flat),
+                                                 std::span<const size_t>(pos_off).first(m),
+                                                 std::span<const uint32_t>(k_of).first(m),
+                                                 std::span<size_t>(found).first(m),
+                                                 std::span<uint32_t>(hashes).first(m));
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {

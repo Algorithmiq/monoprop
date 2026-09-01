@@ -51,7 +51,7 @@ auto differential(const std::vector<uint16_t> &pos, int phase) -> size_t {
     BOOST_REQUIRE_EQUAL(dphase, phase);
 
     VecZ sbuf;
-    const size_t sw = QW::push(sbuf, pos.data(), k, phase);
+    const size_t sw = QW::push(sbuf, pos, phase);
     BOOST_REQUIRE_EQUAL(sbuf.size(), sw);
 
     BOOST_TEST(QW::words_at(sbuf, 0) == sw);
@@ -59,8 +59,9 @@ auto differential(const std::vector<uint16_t> &pos, int phase) -> size_t {
     BOOST_TEST(QW::phase_at(sbuf, 0) == phase);
 
     std::vector<uint16_t> sout(k == 0 ? 1 : k);
-    const size_t snext = QW::read_positions(sbuf, 0, sout.data());
-    BOOST_TEST(snext == sw);
+    const auto sread = QW::read_positions(sbuf, 0, sout);
+    BOOST_TEST(sread.next == sw);
+    BOOST_TEST(sread.phase == phase);
     sout.resize(k);
     BOOST_TEST(sout == pos, boost::test_tools::per_element());
 
@@ -79,7 +80,7 @@ auto differential(const std::vector<uint16_t> &pos, int phase) -> size_t {
     for (size_t b = want.find_first(); b < want.size(); b = want.find_next(b)) {
         from_mono.push_back(static_cast<uint16_t>(b));
     }
-    const size_t mw = QW::push(mbuf, from_mono.data(), from_mono.size(), phase);
+    const size_t mw = QW::push(mbuf, from_mono, phase);
     BOOST_TEST(mw == sw);
     BOOST_TEST(mbuf == sbuf, boost::test_tools::per_element());
 
@@ -186,14 +187,14 @@ BOOST_AUTO_TEST_CASE(sparse_record_reaches_the_widest_gap_width) {
                 return;
             }
             VecZ buf;
-            const size_t w = QW::push(buf, pos.data(), pos.size(), 1);
-            const size_t gw = QW::gap_width(pos.data(), pos.size());
+            const size_t w = QW::push(buf, pos, 1);
+            const size_t gw = QW::gap_width(pos);
             if (gw != QW::kPosBits) {
                 return;
             }
             ++used;
             std::vector<uint16_t> back(pos.size());
-            QW::read_positions(buf, 0, back.data());
+            (void)QW::read_positions(buf, 0, back);
             bad += static_cast<size_t>(back != pos || QW::k_at(buf, 0) != pos.size()
                                        || w != QW::words_of(QW::gap_bits(pos.size(), gw)));
         };
@@ -289,7 +290,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_walks_a_multi_query_buffer_exactly) {
     };
     for (const auto &t : terms) {
         offs.push_back(off);
-        off += QW::push(buf, t.data(), t.size(), 1);
+        off += QW::push(buf, t, 1);
     }
     BOOST_TEST(QW::count_queries(buf, form) == terms.size());
 
@@ -298,7 +299,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_walks_a_multi_query_buffer_exactly) {
         BOOST_TEST(off == offs[i]);
         BOOST_TEST(QW::k_at(buf, off) == terms[i].size());
         std::vector<uint16_t> out(terms[i].size() + 1);
-        (void)QW::read_positions(buf, off, out.data());
+        (void)QW::read_positions(buf, off, out);
         out.resize(terms[i].size());
         BOOST_TEST(out == terms[i], boost::test_tools::per_element());
         off = QW::next_off(buf, form, off);
@@ -314,8 +315,8 @@ BOOST_AUTO_TEST_CASE(sparse_record_is_exactly_the_gap_code_it_costed) {
         const size_t k = rng() % 60;
         const auto pos = scattered(k, 256, rng);
         VecZ buf;
-        const size_t w = QW::push(buf, pos.data(), pos.size(), 1);
-        const size_t gwid = QW::gap_width(pos.data(), pos.size());
+        const size_t w = QW::push(buf, pos, 1);
+        const size_t gwid = QW::gap_width(pos);
         BOOST_TEST(w == QW::words_of(QW::gap_bits(pos.size(), gwid)),
                    "k=" << k << " wrote " << w << " words, costed " << QW::words_of(QW::gap_bits(pos.size(), gwid)));
         BOOST_TEST(w <= QW::words_of(QW::header_bits_for(pos.size()) + (pos.size() * QW::kPosBits)));
@@ -347,8 +348,8 @@ BOOST_AUTO_TEST_CASE(sparse_record_encoding_is_deterministic) {
         const auto pos = scattered(rng() % 40, 256, rng);
         VecZ a;
         VecZ b;
-        const size_t wa = QueryWire<128>::push(a, pos.data(), pos.size(), 1);
-        const size_t wb = QueryWire<128>::push(b, pos.data(), pos.size(), 1);
+        const size_t wa = QueryWire<128>::push(a, pos, 1);
+        const size_t wb = QueryWire<128>::push(b, pos, 1);
         BOOST_TEST(wa == wb);
         BOOST_TEST(a == b, boost::test_tools::per_element());
     }
@@ -359,18 +360,18 @@ BOOST_AUTO_TEST_CASE(sparse_record_pair_count_recomputes_d_from_positions) {
     std::mt19937_64 rng(0xD1D1ULL);
     for (size_t trial = 0; trial < 100; ++trial) {
         const auto pos = scattered(rng() % 30, 256, rng);
-        BOOST_TEST(QueryWire<128>::pair_count(pos.data(), pos.size()) == reference_pair_count(pos));
+        BOOST_TEST(QueryWire<128>::pair_count(pos) == reference_pair_count(pos));
     }
     const std::vector<uint16_t> straddle{1, 2, 5, 6};
-    BOOST_TEST(QueryWire<128>::pair_count(straddle.data(), straddle.size()) == 0U);
+    BOOST_TEST(QueryWire<128>::pair_count(straddle) == 0U);
     const std::vector<uint16_t> real{2, 3, 6, 7};
-    BOOST_TEST(QueryWire<128>::pair_count(real.data(), real.size()) == 2U);
+    BOOST_TEST(QueryWire<128>::pair_count(real) == 2U);
     std::vector<uint16_t> paired;
     for (uint16_t m = 0; m < 16; ++m) {
         paired.push_back(static_cast<uint16_t>(2 * m));
         paired.push_back(static_cast<uint16_t>(2 * m + 1));
     }
-    BOOST_TEST(QueryWire<128>::pair_count(paired.data(), paired.size()) == paired.size() / 2);
+    BOOST_TEST(QueryWire<128>::pair_count(paired) == paired.size() / 2);
 }
 
 namespace {
@@ -400,7 +401,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_stream_interleaves_values_and_stays_wal
             m.set(p);
         }
         const auto pos = positions_of<128>(m);
-        (void)QW::push(plain, pos.data(), pos.size(), 1);
+        (void)QW::push(plain, pos, 1);
     }
     VecZ fused;
     QW::build_fused(plain, vals, fused);
@@ -410,14 +411,14 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_stream_interleaves_values_and_stays_wal
     size_t off = 0;
     for (size_t i = 0; i < terms.size(); ++i) {
         BOOST_TEST(QW::k_at(fused, off) == terms[i].size());
-        BOOST_TEST(QW::value_at(fused, form, off) == vals[i]);
+        BOOST_TEST(QW::value_at(fused, off) == vals[i]);
         std::vector<uint16_t> out(terms[i].size() + 1);
-        int phase = 0;
-        const size_t next = QW::read_query(fused, form, off, out.data(), phase);
+        const auto rq = QW::read_query(fused, form, off, out);
+        BOOST_TEST(rq.phase == 1);
         out.resize(terms[i].size());
         BOOST_TEST(out == terms[i], boost::test_tools::per_element());
         off = QW::next_off(fused, form, off);
-        BOOST_TEST(next == off);
+        BOOST_TEST(rq.next == off);
     }
     BOOST_TEST(off == fused.size());
 }
@@ -434,7 +435,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
                 m.set(p);
             }
             const auto pos = positions_of<128>(m);
-            (void)QW::push(buf, pos.data(), pos.size(), 1);
+            (void)QW::push(buf, pos, 1);
         }
     };
 
@@ -468,7 +469,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
 
     size_t off = 0;
     for (size_t i = 0; i < values.size(); ++i) {
-        const double v_out = QW::value_at(fused, form, off);
+        const double v_out = QW::value_at(fused, off);
         BOOST_CHECK(std::memcmp(&v_out, &values[i], sizeof(double)) == 0);
         off = QW::next_off(fused, form, off);
     }
@@ -496,7 +497,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
     BOOST_CHECK_GE(out.capacity(), cap_after_big);
     off = 0;
     for (size_t i = 0; i < vsmall.size(); ++i) {
-        const double v_out = QW::value_at(out, form, off);
+        const double v_out = QW::value_at(out, off);
         BOOST_CHECK(std::memcmp(&v_out, &vsmall[i], sizeof(double)) == 0);
         off = QW::next_off(out, form, off);
     }
@@ -552,7 +553,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_round_trips_every_reachable_k_and_gap_width) 
             if (pos.size() != k) {
                 continue;
             }
-            BOOST_REQUIRE_EQUAL(QW::gap_width(pos.data(), k), k < 2 ? 0U : gw);
+            BOOST_REQUIRE_EQUAL(QW::gap_width(pos), k < 2 ? 0U : gw);
             const size_t w = differential<128>(pos, (k % 3U) == 0U ? 0 : ((k % 3U) == 1U ? 1 : -1));
             BOOST_TEST(w == QW::words_of(QW::gap_bits(k, k < 2 ? 0U : gw)));
             ++cells;

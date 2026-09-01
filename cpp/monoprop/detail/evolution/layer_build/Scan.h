@@ -178,16 +178,18 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 [[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
-                                                      const GenT *gen_pos,
-                                                      size_t gen_pop,
-                                                      PosT *out_pos) -> PartnerProduct<NumModes> {
+                                                      std::span<const GenT> gen_pos,
+                                                      std::span<PosT> out_pos) -> PartnerProduct<NumModes> {
+    const size_t gen_pop = gen_pos.size();
     const Monomial<NumModes> &gen = A::generator(ctx);
     PartnerProduct<NumModes> out;
     Monomial<NumModes> mono;
     if (const auto src = ham.row_positions(i); src.inlined()) {
-        out.k = merge_partner_positions(src.pos, src.count, gen_pos, gen_pop, out_pos, out.overlap);
-        for (size_t j = 0; j < src.count; ++j) {
-            mono.set(static_cast<size_t>(src.pos[j]));
+        const auto merged = merge_partner_positions(src.pos, gen_pos, out_pos);
+        out.k = merged.count;
+        out.overlap = merged.overlap;
+        for (const PosT q : src.pos) {
+            mono.set(static_cast<size_t>(q));
         }
         out.new_mono = mono ^ gen;
     }
@@ -315,8 +317,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         std::vector<RowPosT> pbuf(2 * NumModes);
 
         auto push = [&](const Monomial<NumModes> &dense,
-                        const RowPosT *pos,
-                        size_t k,
+                        std::span<const RowPosT> pos,
                         int phase,
                         size_t i,
                         double v_src,
@@ -329,10 +330,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 r_prime = monomial_hash<NumModes>(dense) % rank_count;
             }
             if (r_prime == my_rank) {
-                (is_follower ? res.follower_self : res.leader_self).push(pos, k, phase);
+                (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
             }
             else {
-                QueryWire<NumModes>::push(is_follower ? fq[r_prime] : lq[r_prime], pos, k, phase);
+                QueryWire<NumModes>::push(is_follower ? fq[r_prime] : lq[r_prime], pos, phase);
             }
             (is_follower ? fs[r_prime] : ls[r_prime]).push_back(i);
             if (capture_values) {
@@ -346,15 +347,18 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            const auto p = emit_term_products<NumModes, A>(ham, i, ectx, gen_pos.data(), gen_pop, pbuf.data());
-            assert(p.k == mono_pop + gen_pop - 2 * p.overlap && "the merge disagrees with the popcount identity");
+            const auto p = emit_term_products<NumModes, A>(ham,
+                                                           i,
+                                                           ectx,
+                                                           std::span<const uint16_t>(gen_pos),
+                                                           std::span<RowPosT>(pbuf));
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const bool struct_pass = cutoff_eval.passes_with_popcount(p.new_mono, p.k);
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
             const int phase = A::emit_phase(p.phase_factor, mono_pop, gen_pop, p.overlap);
-            push(p.new_mono, pbuf.data(), p.k, phase, i, v_src, is_follower);
+            push(p.new_mono, std::span<const RowPosT>(pbuf).first(p.k), phase, i, v_src, is_follower);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1

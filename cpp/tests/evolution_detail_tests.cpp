@@ -161,7 +161,7 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
         for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
             pos.push_back(static_cast<Eng::RowPosT>(b));
         }
-        eng.self_stage_.push(pos.data(), pos.size(), phase);
+        eng.self_stage_.push(pos, phase);
     };
     stage_self(terms[1], 1);
     stage_self(terms[5], -1);

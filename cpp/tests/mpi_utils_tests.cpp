@@ -121,7 +121,7 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
         while (off < buckets[r].size()) {
             const size_t k = QW::k_at(buckets[r], off);
             std::vector<QW::PosT> pos(k);
-            QW::read_positions(buckets[r], off, pos.data());
+            (void)QW::read_positions(buckets[r], off, pos);
             Monomial<32> mono;
             for (size_t j = 0; j < k; ++j) {
                 mono.set(static_cast<size_t>(pos[j]));

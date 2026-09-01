@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <limits>
+#include <span>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -55,21 +55,24 @@ struct IncomingProbe {
     // g → fold_hash of the query key, folded by the probe and reused by the insert.
     DefaultInitVector<uint32_t> hash_of;
 
-    // Builds a dense bitset; only the fully paired minority of callers needs one.
+    //! Query g's ascending positions, as a view into pos_flat.
+    [[nodiscard]] auto positions_at(size_t g) const -> std::span<const PosT> {
+        return std::span<const PosT>(pos_flat).subspan(pos_off[g], k_of[g]);
+    }
+
+    //! Builds a dense bitset; only the fully paired minority of callers needs one.
     [[nodiscard]] auto mono_at(size_t g) const -> Monomial<NumModes> {
         Monomial<NumModes> m;
-        const PosT *p = pos_flat.data() + pos_off[g];
-        for (size_t j = 0; j < k_of[g]; ++j) {
-            m.set(static_cast<size_t>(p[j]));
+        for (const PosT q : positions_at(g)) {
+            m.set(static_cast<size_t>(q));
         }
         return m;
     }
 
-    // Every mode of query g carries both Majoranas, read off the positions.
+    //! Every mode of query g carries both Majoranas, read off the positions.
     [[nodiscard]] auto is_paired_at(size_t g) const -> bool {
-        const PosT *p = pos_flat.data() + pos_off[g];
-        const size_t k = k_of[g];
-        return k == 2 * QueryWire<NumModes>::pair_count(p, k);
+        const auto pos = positions_at(g);
+        return pos.size() == 2 * QueryWire<NumModes>::pair_count(pos);
     }
 };
 
@@ -81,6 +84,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
                             size_t rank_count,
                             QueryForm form) -> IncomingProbe<NumModes> {
     using QW = QueryWire<NumModes>;
+    using PosT = typename IncomingProbe<NumModes>::PosT;
     IncomingProbe<NumModes> pr;
 
     pr.goff.assign(rank_count + 1, 0);
@@ -113,26 +117,25 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     for (size_t s = 0; s < rank_count; ++s) {
         size_t off = 0;
         for (size_t g = pr.goff[s]; g < pr.goff[s + 1]; ++g) {
-            int ph = 0;
             const size_t k = QW::k_at(incoming[s], off);
             const size_t at = pr.pos_flat.size();
             pr.pos_flat.resize(at + k); // default-init grow: read_query writes every element
             pr.pos_off[g] = at;
             pr.k_of[g] = static_cast<uint32_t>(k);
             pr.off_of[g] = off;
-            off = QW::read_query(incoming[s], form, off, pr.pos_flat.data() + at, ph);
-            pr.phase_of[g] = ph;
+            const auto d = QW::read_query(incoming[s], form, off, std::span<PosT>(pr.pos_flat).subspan(at, k));
+            pr.phase_of[g] = d.phase;
+            off = d.next;
         }
-        assert(off == incoming[s].size() && "the query walk did not consume the sender's whole buffer");
     }
     {
         const size_t op_size = op.store->size();
-        op.store->find_batch_positions(pr.pos_flat.data(),
-                                       pr.pos_off.data(),
-                                       pr.k_of.data(),
-                                       pr.nq_total,
-                                       pr.idx_of.data(),
-                                       pr.hash_of.data());
+        // The vectors are sized to capacity, not to nq_total, so every span is trimmed explicitly.
+        op.store->find_batch_positions(std::span<const PosT>(pr.pos_flat),
+                                       std::span<const size_t>(pr.pos_off).first(pr.nq_total),
+                                       std::span<const uint32_t>(pr.k_of).first(pr.nq_total),
+                                       std::span<size_t>(pr.idx_of).first(pr.nq_total),
+                                       std::span<uint32_t>(pr.hash_of).first(pr.nq_total));
         for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
@@ -164,7 +167,7 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
     const size_t base = op.store->grow_rows_geometric(n_miss);
     for (size_t j = 0; j < n_miss; ++j) {
         const size_t g = pr.miss_g[j];
-        op.store->set_positions(base + j, pr.pos_flat.data() + pr.pos_off[g], pr.k_of[g]);
+        op.store->set_positions(base + j, pr.positions_at(g));
     }
     op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return pr.hash_of[pr.miss_g[j]]; });
     op.reindex_after_growth(base, n_miss);

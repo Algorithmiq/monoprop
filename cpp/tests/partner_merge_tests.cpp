@@ -60,9 +60,9 @@ auto check_pair(const Monomial<kN> &mono, const Monomial<kN> &gen) -> size_t {
     const auto src = positions_of(mono);
     const auto gpos = positions_of(gen);
     std::vector<uint16_t> out(kBits);
-    size_t overlap = 0;
-    const size_t k =
-        detail::merge_partner_positions(src.data(), src.size(), gpos.data(), gpos.size(), out.data(), overlap);
+    const auto merged = detail::merge_partner_positions(src, gpos, out);
+    const size_t k = merged.count;
+    const size_t overlap = merged.overlap;
 
     const auto expect = dense_partner(mono, gen);
     BOOST_REQUIRE_EQUAL(k, expect.size());
@@ -70,7 +70,7 @@ auto check_pair(const Monomial<kN> &mono, const Monomial<kN> &gen) -> size_t {
         BOOST_REQUIRE_EQUAL(static_cast<size_t>(out[j]), expect[j]);
     }
     BOOST_REQUIRE_EQUAL(overlap, mono.count_and(gen));
-    // The popcount identity the emit site asserts on.
+    // The popcount identity the emit site relies on.
     BOOST_REQUIRE_EQUAL(k, mono.count() + gen.count() - (2 * overlap));
     return k;
 }
