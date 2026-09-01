@@ -20,6 +20,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -65,8 +66,8 @@ public:
     static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
                   "kOverflowMarker sentinel must not collide with a valid popcount");
 
-    // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling), so the
-    // all-ones TermIndex is free to mark an empty slot.
+    // Valid term indices are < kIndexCeiling (check_append_fits refuses the append that would reach
+    // it, check_index_fits the index itself), so the all-ones TermIndex is free to mark an empty slot.
     static constexpr size_t kIndexCeiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
     static constexpr TermIndex kEmptySlot = std::numeric_limits<TermIndex>::max();
     // find_batch's "absent" result; same value as detail::kMissingIndex (not included here — the
@@ -109,6 +110,7 @@ public:
     // exact-fit: an exact fit would realloc the whole operator every layer.
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
+        check_append_fits(base, n);
         if (capacity() < base + n) {
             const size_t cap = capacity();
             reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
@@ -536,6 +538,19 @@ private:
             if (e.h == h && row_eq_positions(static_cast<size_t>(e.idx), q)) {
                 return static_cast<size_t>(e.idx);
             }
+        }
+    }
+
+    // Refused before anything grows: an append that would pass the ceiling cannot be unwound, and
+    // size_ must never reach a count whose last index is unrepresentable. Written as a subtraction
+    // because base + n is the sum that would wrap.
+    static auto check_append_fits(size_t base, size_t n) -> void {
+        if (n > kIndexCeiling - base) {
+            throw TermIndexCeilingReached(
+                std::format("OperatorIndex: appending {} terms to a partition holding {} would pass the "
+                            "2^32 TermIndex ceiling; raise the partition or rank count to split it further.",
+                            n,
+                            base));
         }
     }
 

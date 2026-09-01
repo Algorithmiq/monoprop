@@ -65,6 +65,38 @@ BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
     BOOST_TEST(pos[2] == 63u);
 }
 
+// The ceiling is declared, never materialised: 2^32 rows is hundreds of GiB, so every case here is
+// arithmetic on the refusal path, which returns before a single row is allocated.
+BOOST_AUTO_TEST_CASE(append_past_the_term_index_ceiling_is_refused_before_it_grows) {
+    Store s;
+    BOOST_CHECK_THROW(s.grow_rows_geometric(Store::kIndexCeiling + 1), TermIndexCeilingReached);
+    BOOST_CHECK_EQUAL(s.size(), 0u);
+
+    s.push_back(bs({0, 1}));
+    // A store holding one term has room for kIndexCeiling - 1 more, so exactly kIndexCeiling is one too many.
+    BOOST_CHECK_THROW(s.grow_rows_geometric(Store::kIndexCeiling), TermIndexCeilingReached);
+    BOOST_CHECK_EQUAL(s.size(), 1u);
+    BOOST_CHECK((s.row(0) == bs({0, 1})));
+
+    // The count is checked as a subtraction, so a request that would wrap base + n is refused too.
+    BOOST_CHECK_THROW(s.grow_rows_geometric(std::numeric_limits<size_t>::max()), TermIndexCeilingReached);
+    BOOST_CHECK_EQUAL(s.size(), 1u);
+}
+
+// An empty append is legal at any size, including at the ceiling itself -- the last valid index is
+// kIndexCeiling - 1, so a store of exactly kIndexCeiling terms is full, not over.
+BOOST_AUTO_TEST_CASE(empty_append_never_throws_and_a_normal_append_still_grows) {
+    Store s;
+    BOOST_CHECK_NO_THROW(s.grow_rows_geometric(0));
+    BOOST_CHECK_EQUAL(s.size(), 0u);
+    s.push_back(bs({2}));
+    BOOST_CHECK_NO_THROW(s.grow_rows_geometric(0));
+    BOOST_CHECK_EQUAL(s.size(), 1u);
+    const size_t base = s.grow_rows_geometric(2);
+    BOOST_CHECK_EQUAL(base, 1u);
+    BOOST_CHECK_EQUAL(s.size(), 3u);
+}
+
 BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
     Store s;
     s.push_back(bs({0, 3, 5}));
