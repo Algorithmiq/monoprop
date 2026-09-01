@@ -17,12 +17,16 @@
 
 #pragma once
 
+#include <bit>
 #include <cstddef>
+#include <ranges>
+#include <span>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 
 namespace monoprop::test_ref {
@@ -67,6 +71,36 @@ inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v,
                    q.begin() + static_cast<std::ptrdiff_t>((i + 1) * W));
         out.push_back(detail::encode_value(v[i]));
     }
+}
+
+// Every field a wire header carries must be recoverable from the record's own positions, or it rots
+// unnoticed. Checks the phase in range, k against the positions handed back, the positions strictly
+// ascending and in bounds, and gw exactly the widest gap. Recomputed here rather than in the library,
+// so it runs in the Release build the suite actually uses.
+template <size_t NumModes, std::ranges::contiguous_range Pos>
+[[nodiscard]] inline auto wire_header_is_consistent(std::span<const size_t> buf, size_t off, const Pos &pos) -> bool {
+    const auto h = detail::QueryWire<NumModes>::header_at(buf, off);
+    if (h.phase < -1 || h.phase > 1) {
+        return false;
+    }
+    if (h.k != std::ranges::size(pos)) {
+        return false;
+    }
+    for (size_t j = 0; j + 1 < h.k; ++j) {
+        if (static_cast<size_t>(pos[j]) >= static_cast<size_t>(pos[j + 1])) {
+            return false; // positions must arrive strictly ascending
+        }
+    }
+    if (h.k != 0 && static_cast<size_t>(pos[h.k - 1]) >= 2 * NumModes) {
+        return false;
+    }
+    // gw is the maximum gap width: too small truncates a gap silently, too large wastes bits.
+    size_t g = 0;
+    for (size_t j = 1; j < h.k; ++j) {
+        const auto b = static_cast<size_t>(std::bit_width(static_cast<size_t>(pos[j] - pos[j - 1] - 1)));
+        g = (b > g) ? b : g;
+    }
+    return g == h.gw;
 }
 
 } // namespace monoprop::test_ref

@@ -64,6 +64,8 @@ auto differential(const std::vector<uint16_t> &pos, int phase) -> size_t {
     BOOST_TEST(sread.phase == phase);
     sout.resize(k);
     BOOST_TEST(sout == pos, boost::test_tools::per_element());
+    // The header must be recoverable from the positions it describes; see dense_query_reference.h.
+    BOOST_TEST(test_ref::wire_header_is_consistent<N>(sbuf, 0, sout));
 
     // Round-trips the decoded positions through a Monomial, cross-checked against the dense oracle.
     Monomial<N> sm;
