@@ -119,7 +119,8 @@ locate `hwloc`.
 
 ```bash
 uv sync --all-groups --all-extras -v    # installs the workspace, incl. the bench tooling
-uv run python -m pytest -m "not mpi"   # Python tests (serial)
+just test                              # build, then the Python and C++ suites
+just test-py / just test-cpp           # one leg, against whatever is installed
 just test-mpi                          # Python + C++ tests under MPI
 ```
 

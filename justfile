@@ -25,6 +25,18 @@ no_mpi_extra := "--no-extra mpi"
 mpi_enabled := lowercase(env('monoprop_ENABLE_MPI', 'off'))
 mpi_extra := if mpi_enabled =~ '^(on|true|yes|1)$' { "" } else { no_mpi_extra }
 
+# scikit-build names the editable tree after the build type, so the sanitizer and
+# coverage configurations are found through the same environment that built them.
+
+build_dir := "build/editable" / env('SKBUILD_CMAKE_BUILD_TYPE', 'Release')
+mpiexec := "mpiexec --map-by :OVERSUBSCRIBE"
+
+# The rank matrix asks for more ranks than a runner has cores. OpenMPI 4 (ORTE) and 5
+# (PRRTE) spell oversubscription differently, and neither errors on the other's variable.
+
+export OMPI_MCA_rmaps_base_oversubscribe := "1"
+export PRTE_MCA_rmaps_default_mapping_policy := ":oversubscribe"
+
 default: build-docs
 
 build *ARGS:
@@ -35,30 +47,50 @@ build *ARGS:
 info:
     uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI": mp.has_mpi})'
 
-test:
-    uv run python -m pytest -m "not mpi"
-    ctest --test-dir build/editable/Release --output-on-failure
+test: build test-py test-cpp
 
-# MPI is off by default in source builds, so build an MPI-enabled editable install
-# first, then run the suite under mpiexec with --no-sync (avoids a per-rank resync).
-# Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
+# The test legs below run against whatever is installed (--no-sync, so that a run cannot
+# silently rebuild a differently configured wheel). LABEL, when given, names the JUnit
+# report CI uploads.
 
-test-mpi RANKS='':
+test-py LABEL='':
+    uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
+        {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
+
+test-cpp LABEL='':
+    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-exclude mpi \
+        {{ if LABEL == '' { '' } else { '--output-junit ctest-serial-' + LABEL + '.xml' } }}
+
+# --no-tests=error: the MPI tests are registered only by an MPI-enabled build, so an
+# empty set here means the build was misconfigured, not that there is nothing to run.
+
+test-cpp-mpi LABEL='':
+    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
+        {{ if LABEL == '' { '' } else { '--output-junit ctest-mpi-' + LABEL + '.xml' } }}
+
+# RANKS is a single integer or a semicolon-separated list (e.g. "1;2;4"); the suite runs
+# once per entry. Extra arguments go to pytest, e.g. `just test-py-mpi "1;2;4" -m mpi`.
+
+test-py-mpi RANKS='' *PYTEST_ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shift 1
+    requested_ranks={{ quote(RANKS) }}
+    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"
+    for r in ${ranks//;/ }; do
+      echo "Running the Python test suite with ${r} MPI rank(s)"
+      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
+    done
+
+# Build MPI-enabled (source builds are serial by default), then run every leg. The C++
+# rank matrix is a build-time setting, so it is baked in here rather than passed to ctest.
+
+test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
     requested_ranks={{ quote(RANKS) }}; \
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     monoprop_ENABLE_MPI=ON {{ uv_sync }} --group workspace-test \
         --reinstall-package monoprop --no-cache \
-        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"; \
-    export OMPI_MCA_rmaps_base_oversubscribe="1"; \
-    export PRTE_MCA_rmaps_default_mapping_policy=":oversubscribe"; \
-    for r in ${ranks//;/ }; \
-    do echo "Running full Python test suite with ${r} MPI rank(s)"; \
-    mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
-    done; \
-    echo "Running non-MPI C++ unit tests"; \
-    ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-exclude mpi; \
-    echo "Running configured C++ MPI rank matrix: ${ranks}"; \
-    ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-regex mpi
+        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
 
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
@@ -98,11 +130,10 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
 
     uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
     if [[ "$mpi" == "on" ]]; then
+      # The coverage lane runs in a container as root.
       export OMPI_ALLOW_RUN_AS_ROOT=1
       export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-      export OMPI_MCA_rmaps_base_oversubscribe=1
-      export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
-      mpiexec --map-by :OVERSUBSCRIBE -n 2 \
+      {{ mpiexec }} -n 2 \
         uv run --no-sync coverage run --parallel-mode \
           -m pytest tests --with-mpi -m mpi
     fi

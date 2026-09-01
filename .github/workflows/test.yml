@@ -170,57 +170,22 @@ jobs:
           echo "label=$runner-$pyver-$compiler-$mpi" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
-        run: |
-          uv run pytest \
-          -r aR \
-          --durations=50 \
-          --durations-min=5.0 \
-          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
-          -o junit_family=legacy
+        run: just test-py "${{ steps.test-group-label.outputs.label }}"
 
       - name: Run non-MPI C++ unit tests
-        run: |
-          ctest --test-dir build/editable/Release \
-            --output-on-failure \
-            --no-tests=error \
-            --label-exclude mpi \
-            --output-junit ctest-serial-"${{ steps.test-group-label.outputs.label }}".xml
+        run: just test-cpp "${{ steps.test-group-label.outputs.label }}"
 
       - name: Run C++ unit tests under MPI
         if: matrix.mpi == 'on'
-        # set both OpenMPI 4 (ORTE) and OpenMPI 5 (PRRTE) variants of the oversubscription setting
-        env:
-          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: |
-          ctest --test-dir build/editable/Release \
-            --output-on-failure \
-            --no-tests=error \
-            --label-regex mpi \
-            --output-junit ctest-mpi-"${{ steps.test-group-label.outputs.label }}".xml
+        run: just test-cpp-mpi "${{ steps.test-group-label.outputs.label }}"
 
       - name: Run Python tests under MPI
         if: matrix.mpi == 'on'
-        env:
-          OMPI_ALLOW_RUN_AS_ROOT: "1"
-          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: |
-          mpiexec --map-by :OVERSUBSCRIBE -n 2 \
-            uv run --no-sync pytest tests --with-mpi -v
+        run: just test-py-mpi 2
 
       - name: Run Python MPI marker rank matrix
         if: matrix.mpi == 'on'
-        env:
-          OMPI_ALLOW_RUN_AS_ROOT: "1"
-          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: |
-          for r in 1 2 4; do
-            echo "Running MPI python tests with ${r} rank(s)"
-            mpiexec --map-by :OVERSUBSCRIBE -n "$r" \
-              uv run --no-sync pytest tests --with-mpi -m mpi -v
-          done
+        run: just test-py-mpi "1;2;4" -m mpi
 
       - name: Upload serial test results to Codecov
         uses: codecov/codecov-action@v7.0.0

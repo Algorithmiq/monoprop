@@ -121,9 +121,9 @@ We also use [`just`](https://github.com/casey/just) for task automation.
 ```bash
 uv sync --all-groups --all-extras -v  # Build & install (workspace-wide)
 monoprop_ENABLE_MPI=ON uv sync --all-extras --reinstall-package monoprop --no-cache -v  # MPI-enabled build
-uv run pytest  # Run tests (monoprop's suite + the workspace members' suites)
+just test  # Build, then the Python and C++ suites (test-py / test-cpp / test-cpp-mpi / test-py-mpi are the single legs)
 SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v  # Rebuild when changing sanitizer settings.
-LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" ASAN_OPTIONS=detect_leaks=0 uv run pytest  # Python tests against a sanitizer tree
+just test-cpp-asan / just test-py-asan / just test-cpp-tsan  # Test a sanitizer tree; the recipes own the option sets and SKBUILD_CMAKE_BUILD_TYPE selects the tree
 just build-docs  # Build documentation
 ```
 
