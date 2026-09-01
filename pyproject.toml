@@ -236,6 +236,8 @@ exclude = [
   "packages/monoprop-bench-tools/src/monoprop_bench_tools/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
+  # CI glue, not a package: prints to the workflow log and lives outside any module tree.
+  ".github/workflows/scripts/*.py",
 ]
 
 target-version = "py311"
