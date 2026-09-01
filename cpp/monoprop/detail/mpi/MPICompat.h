@@ -100,7 +100,7 @@ struct Geometry {
     int ranks = 1;
     int partitions = 1;
 };
-auto geometry(const Comm &comm) -> Geometry;
+monoprop_EXPORT auto geometry(const Comm &comm) -> Geometry;
 
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
