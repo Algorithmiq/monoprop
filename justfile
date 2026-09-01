@@ -38,6 +38,7 @@ test-mpi RANKS='':
         --reinstall-package monoprop --no-cache -v \
         --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"; \
     export OMPI_MCA_rmaps_base_oversubscribe="1"; \
+    export PRTE_MCA_rmaps_default_mapping_policy=":oversubscribe"; \
     for r in ${ranks//;/ }; \
     do echo "Running full Python test suite with ${r} MPI rank(s)"; \
     mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
@@ -102,7 +103,10 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     if [[ "$mpi" == "on" ]]; then
       export OMPI_ALLOW_RUN_AS_ROOT=1
       export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+      # Reaches the ctest mpi variants below, which spawn their own mpiexec. The OMPI_MCA_ name is
+      # the OpenMPI 4 spelling and is ignored by 5.
       export OMPI_MCA_rmaps_base_oversubscribe=1
+      export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
       mpiexec --map-by :OVERSUBSCRIBE -n 2 \
         uv run --no-sync coverage run --parallel-mode \
           -m pytest tests --with-mpi -m mpi
