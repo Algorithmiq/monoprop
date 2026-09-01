@@ -154,6 +154,7 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 - Heavy use of `@parametrize_with_cases` decorators
 - **pytest's fd-level capture hides C++ stderr** (e.g. `COMMPROF`) — rerun with `-s` to see it.
 - The scikit-build MPI and wide-index overrides must merge `cmake.define` when both environment switches match. Standalone MPI-enabled C++ executables must initialize MPI before constructing propagators and destroy them before finalizing MPI. Exported MPI usage requirements must be conditioned on `monoprop_ENABLE_MPI`, not on whether the consuming project happens to define `MPI::MPI_CXX`.
+- QA coverage uses the `just code-coverage-collect` and `just code-coverage-aggregate` recipes for separate serial and MPI `Coverage` builds. The MPI collection must run both CTest labels and two-rank Python MPI tests, and must assert that `detail/mpi` sources have covered lines. `just code-coverage` runs both collectors, aggregates their Python coverage shards and gcovr JSON tracefiles, and renders the local HTML report.
 - **A slow CTest run on an MPI build is `MPI_Init` fabric probing, not slow tests** — see `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 
 ## Key Dependencies & Integration

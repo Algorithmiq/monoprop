@@ -42,12 +42,13 @@ jobs:
             cpp/include/monoprop/**/*.h
             cpp/include/monoprop/**/*.inl
 
-  code-coverage:
-    name: Check code coverage
+  coverage-run:
+    name: Collect coverage [mpi:${{ matrix.mpi }}]
     runs-on: ubuntu-26.04
-    env:
-      SKBUILD_CMAKE_BUILD_TYPE: "Coverage"
-
+    strategy:
+      fail-fast: false
+      matrix:
+        mpi: ["off", "on"]
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -56,58 +57,69 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
+          sudo apt-get install -y just libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
+
+      - name: Install MPI dependencies
+        if: matrix.mpi == 'on'
+        run: sudo apt-get install -y libopenmpi-dev openmpi-bin
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
-          cache-suffix: coverage
+          cache-suffix: coverage-mpi-${{ matrix.mpi }}
           python-version: "3.11"
 
-      - name: Install package
+      - name: Collect coverage
         run: |
-          uv sync --no-progress --group workspace-test --all-extras -v
+          just code-coverage-collect \
+            "${{ matrix.mpi }}" \
+            build/editable/Coverage \
+            coverage-data
 
-      - name: Run Python tests
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-mpi-${{ matrix.mpi }}
+          path: coverage-data
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  code-coverage:
+    name: Check code coverage
+    runs-on: ubuntu-26.04
+    needs: [coverage-run]
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y just
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: coverage-report
+          python-version: "3.11"
+
+      - name: Download coverage data
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-mpi-*
+          path: coverage-input
+
+      - name: Combine coverage
         run: |
-          uv run pytest \
-          --cov=src/monoprop \
-          --cov-report=xml:python-coverage.xml
+          just code-coverage-aggregate \
+            coverage-input/coverage-mpi-off \
+            coverage-input/coverage-mpi-on \
+            .
 
-      - name: Collect coverage (C++ through Python bindings)
-        run: |
-          uvx gcovr \
-            --gcov-executable gcov \
-            --gcov-ignore-parse-errors \
-            --exclude-throw-branches \
-            --exclude-unreachable-branches \
-            --filter '^(cpp|src)/' \
-            --exclude '^(cpp/)?tests/' \
-            --merge-lines \
-            "build/editable/Coverage" \
-            --cobertura cpp-coverage-through-python-bindings.xml \
-            --sonarqube cpp-coverage-through-python-bindings-sonar.xml
-
-      - name: Run C++ unit tests
-        run: |
-          ctest --test-dir build/editable/Coverage --output-on-failure
-
-      - name: Collect coverage (C++ unit tests)
-        run: |
-          uvx gcovr \
-            --gcov-executable gcov \
-            --gcov-ignore-parse-errors \
-            --exclude-throw-branches \
-            --exclude-unreachable-branches \
-            --filter '^(cpp|src)/' \
-            --exclude '^(cpp/)?tests/' \
-            --merge-lines \
-            "build/editable/Coverage" \
-            --cobertura cpp-coverage.xml \
-            --sonarqube cpp-coverage-sonar.xml
-
-      - name: Upload C++ coverage to Codecov
+      - name: Upload combined coverage to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

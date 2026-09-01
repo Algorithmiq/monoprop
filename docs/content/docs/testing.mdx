@@ -121,6 +121,16 @@ propagators before finalizing MPI. Select the groups locally with
 `just test-mpi '1;2;4'` recipe configures and runs the corresponding C++ CTest
 rank entries as well as the Python rank matrix.
 
+Run `just code-coverage` to collect coverage in separate serial and MPI-enabled
+`Coverage` builds and render `monoprop-coverage/index.html`. The MPI collection
+runs the serial and MPI CTest labels plus the MPI-marked Python tests with two
+ranks. Python ranks write parallel coverage shards, while C++ coverage uses
+atomic gcov counters. The `code-coverage-collect` and
+`code-coverage-aggregate` recipes also drive the QA workflow, which publishes
+the combined reports to Codecov and SonarQube. MPI collection requires covered
+lines in multiple `detail/mpi` sources so a silently serial build cannot pass as
+MPI coverage.
+
 
 ## Adding tests
 
