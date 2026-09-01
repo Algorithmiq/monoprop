@@ -324,8 +324,6 @@ For a fixed seed and problem size, `terms` is deterministic; any change therefor
 algorithmic change. It is tracked for that reason alone: it is the only check that a timing win is
 not an accuracy change. Timing alerts from shared runners are recorded but do not fail the build.
 
-`latency` is the mean because Bencher's t-test threshold consumes a mean and a spread.
-
 #### Testbeds
 
 Bencher identifies each series by `(branch, testbed, measure)`. A testbed therefore denotes one
