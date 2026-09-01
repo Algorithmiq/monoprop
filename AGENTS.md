@@ -83,7 +83,8 @@ Key files:
   continuous-benchmarking workflow. Both read the schema written by `benches/conftest.py`, so a
   change to the recorded sections has to land on both sides of the package boundary. Benchmark
   names are Bencher's history key, so renaming or moving a `bench_*` test orphans its tracked
-  series.
+  series. Both bench modules measure the same four operations — `build_graph`, `propagate`,
+  `energy`, `gradient`.
 - **`rounds > 1` overlaps two rounds' live memory** (`setup=` runs before the prior round's
   teardown) — pin `--bench-rounds=1`; `record_memory` measures that construction transient,
   not per-op cost (use `op_memory`).

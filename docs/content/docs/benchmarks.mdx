@@ -269,16 +269,20 @@ monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
 uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
 
-The suite contains two benchmark groups:
+Both groups measure the same four operations -- `build_graph`, `propagate`, `energy` and
+`gradient` -- so a number means the same thing whichever problem produced it:
 
-- `bench_random.py` measures `build_graph`, `pare`, `energy`, `gradient`, and `inplace` on a random
-  problem. Configurable with `--gen-length` (4), `--obs-terms` (10000), `--num-generators`
+- `bench_random.py` runs them on a random problem, in both the Heisenberg and the Schrödinger
+  picture. Configurable with `--gen-length` (4), `--obs-terms` (10000), `--num-generators`
   (100), `--num-modes` (128), `--cutoff` (6), `--seed` (0) and `--bench-rounds` (1); defaults in
   parentheses.
-- `bench_models.py` measures two fixed models marked `slow`: a 120-qubit Fermi-Hubbard 29-step Trotter
-  run (`test_model[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers
-  (`test_model[pauli]`). Override any config field with `--<model>-<field>`, e.g.
-  `--pauli-num-layers 30`; `just bench --help` lists them all.
+- `bench_models.py` runs them on two fixed models marked `slow`, Heisenberg only: a 120-qubit
+  Fermi-Hubbard 29-step Trotter run (`[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers
+  (`[pauli]`). Override any config field with `--<model>-<field>`, e.g. `--pauli-num-layers 30`;
+  `just bench --help` lists them all.
+
+Run one group per process at scale: `build_graph`/`propagate` and `energy`/`gradient` each hold
+their own operator, and running all four together holds two per rank.
 
 Each run writes pytest-benchmark timings to `results/time-<label>.json` and the remaining metrics
 to `<label>.json`. `monoprop-bench-report` combines all labels in `results/REPORT.md`.
@@ -307,18 +311,18 @@ just bench-bmf ci-linux         # the same results as Bencher Metric Format JSON
 ```
 
 `monoprop-bench-bmf` combines both artifacts because each Bencher upload accepts one adapter. The
-standard `python_pytest` adapter includes timings but omits memory and operator metrics. Four
+standard `python_pytest` adapter includes timings but omits memory and operator metrics. Three
 measures are recorded:
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
 | `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99 |
-| `peak-memory` | bytes | per-operation peak RSS (`VmHWM`) | +10% |
-| `resting-memory` | bytes | settled operator + graph footprint | +10% |
+| `peak-memory` | bytes | per-operation peak RSS (`VmHWM`), summed over ranks | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
 For a fixed seed and problem size, `terms` is deterministic; any change therefore indicates an
-algorithmic change. Timing alerts from shared runners are recorded but do not fail the build.
+algorithmic change. It is tracked for that reason alone: it is the only check that a timing win is
+not an accuracy change. Timing alerts from shared runners are recorded but do not fail the build.
 
 #### Testbeds
 
