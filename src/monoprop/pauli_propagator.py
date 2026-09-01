@@ -63,7 +63,10 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             schrodinger_cutoff: ``None`` (default) keeps the Heisenberg picture; an integer selects
                 the Schrodinger picture and bounds the Pauli weight of the evolved state, including
                 its initialization from ``initial_state``. Choose it at least as large as ``cutoff``
-                for comparable accuracy.
+                for comparable accuracy. It also sizes the initial diagonal basis, which holds
+                ``sum(C(num_qubits, k) for k in range(schrodinger_cutoff + 1))`` Pauli strings --
+                superexponential in the cutoff, so a value approaching ``num_qubits`` is rejected
+                with a ``RuntimeError`` rather than started.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of weight.
             comm: Optional MPI communicator (must outlive the propagator).

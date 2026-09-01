@@ -24,8 +24,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -161,11 +163,40 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         }
     }
 
-    auto sc = schrodinger_cutoff.value_or(cutoff + 2);
-    sc = std::min(sc, static_cast<unsigned int>(2 * logical_num_modes_));
-    auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
+    // Schrodinger's initial rows are the global paired basis, hash-partitioned over the P = R*S world
+    // slots; Heisenberg's local_heisenberg_terms was already filtered to this slot's share above. Hence the
+    // two reserves: a global count needs its 1/P share, a local one already is the share.
+    size_t max_pairs = 0;
+    size_t expected_local_terms = std::max<size_t>(1, local_heisenberg_terms.size());
+    if (schrodinger_) {
+        // schrodinger_ is schrodinger_cutoff.has_value(), set in the member-init list, so the deref holds.
+        const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
+        max_pairs = sc / 2 + sc % 2;
+        const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
+        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
+        const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
+        const size_t share = global_terms / std::max<size_t>(1, num_ranks);
+        // A cutoff near the mode count makes the basis 2^logical_num_modes. Two independent ways that
+        // is hopeless, and both are needed: the count does not fit size_t at all, which is
+        // rank-independent because every slot walks the whole global basis however the rows are
+        // divided; or the slot's share of rows cannot be addressed by a term index. Rejected here by
+        // name rather than as a walk that does not finish.
+        if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
+            const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
+            const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
+            throw PropagatorConfigError(
+                std::format("schrodinger_cutoff ({}) admits {} paired basis terms over {} active modes, "
+                            "about {} per world slot — more than can be walked or addressed. Lower "
+                            "schrodinger_cutoff, or raise the rank x partition count (currently {}).",
+                            *schrodinger_cutoff,
+                            how_many,
+                            logical_num_modes_,
+                            per_slot,
+                            num_ranks));
+        }
+        expected_local_terms = std::max<size_t>(1, share);
+    }
 
-    const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
     mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
@@ -174,12 +205,22 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     mp_op_.inverted_index_.reset();
 
     size_t i = 0;
-    // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
-    for (size_t r = 0; r < op.size(); ++r) {
-        const auto &mono = materialize_row<NumModes>(op, r);
+    // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here. A row
+    // index is a position in the kept subsequence, so the enumeration order below is load-bearing.
+    const auto keep_if_owned = [&](const Monomial<NumModes> &mono) {
         if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
+        }
+    };
+    if (schrodinger_) {
+        // Enumerated, never listed: PartitionGroup constructs the S partitions concurrently on their own
+        // masters, so a list here would hold P full copies of the global basis at one instant.
+        for_each_paired_monomial<NumModes>(max_pairs, logical_num_modes_, keep_if_owned);
+    }
+    else {
+        for (const auto &mono : local_heisenberg_terms) { // already this slot's share; the test is a no-op
+            keep_if_owned(mono);
         }
     }
 

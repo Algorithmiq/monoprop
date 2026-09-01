@@ -19,6 +19,7 @@
 #include <bit>
 #include <complex>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -137,10 +138,39 @@ auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_m
     return current;
 }
 
-// All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only.
-template <size_t NumModes>
-auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
-    MonomialList<NumModes> combinations;
+// How many monomials for_each_paired_monomial emits: sum over k in [0, min(max_ones, n)] of C(n, k).
+// Saturates at SIZE_MAX instead of wrapping — a caller sizing an allocation or rejecting an over-wide
+// cutoff must never be handed a modular residue that reads as small.
+inline auto paired_op_size(size_t max_ones, size_t logical_num_modes) -> size_t {
+    constexpr auto saturated = std::numeric_limits<size_t>::max();
+    max_ones = std::min(max_ones, logical_num_modes);
+    size_t total = 1;
+    size_t binomial = 1; // C(n, k) carried across iterations
+    for (size_t k = 1; k <= max_ones; ++k) {
+        const size_t factor = logical_num_modes - k + 1;
+        if (binomial > saturated / factor) {
+            return saturated;
+        }
+        // Multiply before dividing: C(n,k-1)*(n-k+1) is divisible by k, so this stays exact.
+        binomial = binomial * factor / k;
+        if (total > saturated - binomial) {
+            return saturated;
+        }
+        total += binomial;
+    }
+    return total;
+}
+
+// All fully paired Majorana monomials with up to max_ones pairs, over the active logical modes only,
+// handed to f one at a time. Never materialized: the set is up to 2^logical_num_modes wide, and a
+// distributed build runs one of these walks per world slot concurrently.
+//
+// The emission order is a contract. Ascending pair count, then, within a pair count, ascending
+// lexicographic order of the selected modes' index tuple. A distributed propagator turns this sequence
+// into row indices by keeping the entries it owns and numbering them 0, 1, 2, ..., so reordering the walk
+// renumbers every stored row and stops two runs at one (rank, partition) count from being bit-identical.
+template <size_t NumModes, typename F>
+auto for_each_paired_monomial(size_t max_ones, size_t logical_num_modes, F &&f) -> void {
     // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.
     max_ones = std::min(max_ones, logical_num_modes);
     auto selector = std::vector(logical_num_modes, false);
@@ -150,13 +180,24 @@ auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialLi
         std::fill(selector.begin(), selector.begin() + num_ones, true);
 
         do {
-            combinations.push_back(monomial_from_selector<NumModes>(selector, inactive_mode_prefix));
+            f(monomial_from_selector<NumModes>(selector, inactive_mode_prefix));
         }
         while (std::ranges::prev_permutation(selector).found);
 
         std::ranges::fill(selector, false);
     }
+}
 
+// The materialized form of for_each_paired_monomial, for callers needing random access over a basis small
+// enough to hold. Not for a distributed construction path: this is the whole global basis, so every world
+// slot would hold a copy of all of it.
+template <size_t NumModes>
+auto generate_paired_op(size_t max_ones, size_t logical_num_modes) -> MonomialList<NumModes> {
+    MonomialList<NumModes> combinations;
+    combinations.reserve(paired_op_size(max_ones, logical_num_modes));
+    for_each_paired_monomial<NumModes>(max_ones, logical_num_modes, [&](const Monomial<NumModes> &mono) {
+        combinations.push_back(mono);
+    });
     return combinations;
 }
 
