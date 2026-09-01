@@ -30,8 +30,7 @@ Three measures are emitted:
     Per-operation mean, with the interval one standard deviation either side.
 ``peak-memory`` (bytes)
     Per-operation peak resident footprint, summed across ranks under MPI. The
-    sum bounds the job; ``memhwm_max`` bounds a node, but CI is single-rank,
-    where the two coincide.
+    sum bounds the job; ``memhwm_max`` bounds a node. The two coincide for single-rank jobs.
 ``terms`` (count)
     Terms in the evolved operator. Deterministic for a fixed seed and problem
     size, so it is held to an exact match: it is the only check that a timing
