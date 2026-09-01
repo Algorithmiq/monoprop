@@ -1,8 +1,8 @@
 name: Benchmark
 
-# Shared body of the Bencher continuous-benchmarking runs. Callers choose the
-# machine and the Bencher testbed; everything downstream is identical, so the
-# testbeds stay comparable in shape even though their absolute numbers are not.
+# Shared body of the Bencher runs; the caller names the machine and the benches/LADDER.md rungs.
+# Every rung runs on the same runner from the same MPI-enabled build and uploads to its own
+# testbed, because Bencher keys history on (branch, testbed, benchmark, measure).
 
 on:
   workflow_call:
@@ -11,24 +11,17 @@ on:
         description: Value for the job's `runs-on`.
         required: true
         type: string
-      testbed:
-        description: Bencher testbed. Must change whenever the hardware does.
-        required: true
-        type: string
       label:
-        description: Benchmark label, used to name the result artifacts.
+        description: Result-artifact prefix; each rung uploads as `<label>-<rung>`.
         required: true
         type: string
-      bench-markers:
-        description: pytest marker expression. Empty selects every benchmark.
-        required: false
+      rungs:
+        description: >-
+          One rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`.
+          `partitions` is an integer or `per-rank` for (physical cores / ranks).
+          Blank lines and `#` comments are ignored.
+        required: true
         type: string
-        default: not slow
-      bench-rounds:
-        description: Fixed timing rounds per benchmark.
-        required: false
-        type: string
-        default: "5"
 
 env:
   FORCE_COLOR: 3
@@ -41,6 +34,7 @@ jobs:
     # Skips forks, which have no BENCHER_API_KEY.
     if: ${{ github.repository == 'Algorithmiq/monoprop' }}
     runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -52,24 +46,27 @@ jobs:
         with:
           cache-suffix: benchmark
 
+      # uv's `cache-keys` cover neither `SKBUILD_*` nor `monoprop_ENABLE_MPI`, so without the
+      # reinstall the warm cache above can hand back an MPI-off wheel and every rung still pass.
       - name: Install package
         env:
           SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+          monoprop_ENABLE_MPI: "ON"
         run: just build --group bench
 
-      - name: Run benchmarks
-        env:
-          BENCHER_LABEL: ${{ inputs.label }}
-          monoprop_BENCH_MARKERS: ${{ inputs.bench-markers }}
-          monoprop_BENCH_ROUNDS: ${{ inputs.bench-rounds }}
-        run: |
-          just bench-ci "$BENCHER_LABEL"
+      - name: Resolve the core count
+        run: just bench-ci-resolve-cores
 
-      - name: Convert results to Bencher Metric Format
+      - name: Run the ladder rungs
         env:
-          BENCHER_LABEL: ${{ inputs.label }}
-        run: |
-          just bench-bmf "$BENCHER_LABEL" > bmf.json
+          BENCH_LABEL: ${{ inputs.label }}
+          RUNGS: ${{ inputs.rungs }}
+          # Empty, so a rung's `-k` is the only selector and the slow fixed models are reachable.
+          monoprop_BENCH_MARKERS: ""
+          # The RunsOn images run as root, and OpenMPI refuses to launch there without these.
+          OMPI_ALLOW_RUN_AS_ROOT: "1"
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
+        run: just bench-ci-rungs "$BENCH_LABEL"
 
       - name: Upload the raw measurement
         if: always()
@@ -77,39 +74,19 @@ jobs:
         with:
           name: bench-${{ inputs.label }}
           path: |
-            bmf.json
+            bmf-*.json
             benches/results/*.json
           if-no-files-found: warn
 
       - uses: bencherdev/bencher@v0.6.12
 
-      # The project slug and API key go through the environment rather than the
-      # command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY natively,
-      # and it keeps a maintainer-set variable out of the shell's parsing.
+      # The project slug and API key go through the environment: `bencher` reads
+      # BENCHER_PROJECT / BENCHER_API_KEY natively, and it keeps a maintainer-set
+      # variable out of the shell's parsing.
       - name: Track benchmarks with Bencher
         env:
           BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'monoprop' }}
           BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
-          BENCHER_TESTBED: ${{ inputs.testbed }}
-        run: |
-          bencher run \
-            --branch main \
-            --adapter json \
-            --file bmf.json \
-            --github-actions "${{ secrets.GITHUB_TOKEN }}" \
-            --thresholds-reset \
-            --threshold-measure latency \
-            --threshold-test t_test \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.99 \
-            --threshold-measure peak-memory \
-            --threshold-test percentage \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.10 \
-            --threshold-measure terms \
-            --threshold-test percentage \
-            --threshold-max-sample-size 1 \
-            --threshold-lower-boundary 0.0 \
-            --threshold-upper-boundary 0.0
+          BENCHER_BRANCH: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: just bench-ci-track
