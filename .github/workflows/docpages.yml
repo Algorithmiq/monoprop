@@ -43,17 +43,10 @@ jobs:
           # grab the history of the PR, so setuptools-scm can compute the correct version number
           fetch-depth: 0
 
-      - name: Install dependencies from APT
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev
-
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
         with:
-          enable-cache: true
           cache-suffix: documentation
-          python-version: "3.11"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7.0.0

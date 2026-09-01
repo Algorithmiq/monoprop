@@ -61,26 +61,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            packages=(boost msgpack-cxx hwloc)
-            if [[ "${{ matrix.mpi }}" == "on" ]]; then
-              packages+=(open-mpi)
-            fi
-            brew install "${packages[@]}"
-          else
-            sudo apt-get update
-            packages="libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
-            if [[ "${{ matrix.mpi }}" == "on" ]]; then
-              packages="$packages libopenmpi-dev openmpi-bin"
-            fi
-            if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
-              packages="$packages clang-18"
-            fi
-            sudo apt-get install -y $packages
-          fi
-
       - name: Set build environment variables
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
@@ -90,42 +70,22 @@ jobs:
             echo "CXX=${{ matrix.compiler }}" >> "$GITHUB_ENV"
           fi
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
         with:
-          enable-cache: true
-          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
           python-version: ${{ matrix.python-version }}
+          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
+          mpi: ${{ matrix.mpi }}
 
       - name: Install package
-        run: |
-          if [[ "${{ matrix.mpi }}" == "on" ]]; then
-            uv sync --no-progress --group workspace-test --all-extras -v
-          else
-            uv sync --no-progress --group workspace-test --all-extras \
-              --no-extra mpi -v
-          fi
+        run: just build --group workspace-test
 
       - name: Python environment information
         run: |
           uv tree
 
       - name: Get monoprop information
-        run: |
-          uv run python <<'EOF'
-          import pprint
-
-          import monoprop as mp
-
-          pprint.pprint(
-            {
-              "version": mp.__version__,
-              "variant": mp.__variant__,
-              "compiler_flags": mp.__compiler_flags__,
-              "MPI": mp.has_mpi,
-            }
-          )
-          EOF
+        run: just info
 
       - name: Verify that find_package(monoprop) works
         run: |

@@ -1,0 +1,9 @@
+# Debian/Ubuntu packages required to build monoprop from source.
+#
+# One package per line; `#` starts a comment. Kept as plain data so that every
+# consumer can read it: .github/actions/setup and .devcontainer/Dockerfile.
+
+libboost-dev            # Boost.Unordered and friends, a PUBLIC dependency
+libboost-test-dev       # Boost.Test, the C++ unit-test framework
+libmsgpack-cxx-dev      # reads the tests/data/*.msgpack fixtures
+libhwloc-dev            # CpuTopology.cpp: core discovery and partition pinning

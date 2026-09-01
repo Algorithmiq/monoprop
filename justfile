@@ -19,9 +19,21 @@ site := "docs"
 
 # Run the Python docs toolchain in the synced docs environment.
 
-docs_uv := "uv run --group docs --group test --no-dev --all-extras"
+docs_uv := "uv run --group docs --group test --no-dev --all-extras --no-extra mpi"
+uv_sync := "uv sync --no-progress --all-extras -v"
+no_mpi_extra := "--no-extra mpi"
+mpi_enabled := lowercase(env('monoprop_ENABLE_MPI', 'off'))
+mpi_extra := if mpi_enabled =~ '^(on|true|yes|1)$' { "" } else { no_mpi_extra }
 
 default: build-docs
+
+build *ARGS:
+    {{ uv_sync }} {{ mpi_extra }} "$@"
+
+# Report what the installed extension was actually built as.
+
+info:
+    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI": mp.has_mpi})'
 
 test:
     uv run python -m pytest -m "not mpi"
@@ -32,10 +44,10 @@ test:
 # Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
 
 test-mpi RANKS='':
-    requested_ranks={{quote(RANKS)}}; \
+    requested_ranks={{ quote(RANKS) }}; \
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
-    monoprop_ENABLE_MPI=ON uv sync --all-extras --group workspace-test \
-        --reinstall-package monoprop --no-cache -v \
+    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group workspace-test \
+        --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"; \
     export OMPI_MCA_rmaps_base_oversubscribe="1"; \
     export PRTE_MCA_rmaps_default_mapping_policy=":oversubscribe"; \
@@ -55,25 +67,20 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    mpi={{quote(MPI)}}
-    build_dir={{quote(BUILD_DIR)}}
-    output_dir={{quote(OUTPUT_DIR)}}
+    mpi={{ quote(MPI) }}
+    build_dir={{ quote(BUILD_DIR) }}
+    output_dir={{ quote(OUTPUT_DIR) }}
     export GCOV_EXIT_AT_ERROR=1
     if [[ "$mpi" != "on" && "$mpi" != "off" ]]; then
       echo "MPI must be 'on' or 'off', got: $mpi" >&2
       exit 2
     fi
 
-    sync_args=(
-      --no-progress
-      --group workspace-test
-      --all-extras
-      --reinstall-package monoprop
-      -v
-    )
+    sync_args=({{ uv_sync }})
     if [[ "$mpi" == "off" ]]; then
-      sync_args+=(--no-extra mpi)
+      sync_args+=({{ no_mpi_extra }})
     fi
+    sync_args+=(--group workspace-test --reinstall-package monoprop)
     # The top-level recipe isolates local rebuilds from a wheel cached for the other variant.
     if [[ "${monoprop_COVERAGE_NO_CACHE:-OFF}" == "ON" ]]; then
       sync_args+=(--no-cache)
@@ -82,7 +89,7 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     SKBUILD_BUILD_DIR="$build_dir" \
       SKBUILD_CMAKE_BUILD_TYPE=Coverage \
       monoprop_ENABLE_MPI="$mpi" \
-      uv sync "${sync_args[@]}"
+      "${sync_args[@]}"
 
     rm -rf "$output_dir"
     mkdir -p "$output_dir"
@@ -167,9 +174,9 @@ code-coverage-aggregate SERIAL_DIR MPI_DIR OUTPUT_DIR='.':
     #!/usr/bin/env bash
     set -euo pipefail
 
-    serial_dir={{quote(SERIAL_DIR)}}
-    mpi_dir={{quote(MPI_DIR)}}
-    output_dir={{quote(OUTPUT_DIR)}}
+    serial_dir={{ quote(SERIAL_DIR) }}
+    mpi_dir={{ quote(MPI_DIR) }}
+    output_dir={{ quote(OUTPUT_DIR) }}
     mkdir -p "$output_dir"
     rm -f "$output_dir/.coverage" \
       "$output_dir/python-coverage.xml" \
@@ -213,11 +220,11 @@ code-coverage-aggregate SERIAL_DIR MPI_DIR OUTPUT_DIR='.':
 code-coverage-html REPORT_DIR='.' OUTPUT_DIR='monoprop-coverage':
     lcov \
       --ignore-errors inconsistent,corrupt \
-      -a {{quote(REPORT_DIR)}}/python-coverage.info \
-      -a {{quote(REPORT_DIR)}}/cpp-coverage-through-python-bindings.info \
-      -a {{quote(REPORT_DIR)}}/cpp-coverage.info \
-      -o {{quote(REPORT_DIR)}}/merged.info
-    genhtml {{quote(REPORT_DIR)}}/merged.info -o {{quote(OUTPUT_DIR)}} \
+      -a {{ quote(REPORT_DIR) }}/python-coverage.info \
+      -a {{ quote(REPORT_DIR) }}/cpp-coverage-through-python-bindings.info \
+      -a {{ quote(REPORT_DIR) }}/cpp-coverage.info \
+      -o {{ quote(REPORT_DIR) }}/merged.info
+    genhtml {{ quote(REPORT_DIR) }}/merged.info -o {{ quote(OUTPUT_DIR) }} \
       --legend --title "monoprop coverage" \
       --prefix {{ project_source_dir }} \
       --ignore-errors inconsistent \
@@ -275,8 +282,7 @@ bench-mpi LABEL RANKS *MPIARGS:
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench-mpi`.
 bench-build-mpi:
-    monoprop_ENABLE_MPI=ON \
-        uv sync --all-extras --group bench --reinstall-package monoprop --no-cache -v
+    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group bench --reinstall-package monoprop --no-cache
 
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:

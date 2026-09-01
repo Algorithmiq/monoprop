@@ -322,6 +322,15 @@ Python API under TSan would require a TSan-instrumented CPython.
 - Use `just code-coverage` for the coverage build.
 - Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to
   filter the discovered C++ test set.
+- Use `just build [uv sync args…]` when you want the build CI performs. It adds
+  `--all-extras` and, for a serial build, drops the `mpi` extra — importing
+  `mpi4py.MPI` without an MPI runtime raises. `monoprop_ENABLE_MPI` drives all of
+  it, so `monoprop_ENABLE_MPI=ON just build --group workspace-test` is the MPI
+  build and a bare `just build` is the serial one.
+- The platform packages the build needs are listed in `tools/packages/`, one per
+  line: `apt.txt` / `brew.txt`, plus `apt-mpi.txt` / `brew-mpi.txt` for an MPI
+  build. `.github/actions/setup` and `.devcontainer/Dockerfile` both install from
+  those files, so there is one list per platform to keep current.
 
 
 ## See also

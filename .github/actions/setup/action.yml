@@ -1,0 +1,71 @@
+name: Set up a monoprop CI environment
+description: >-
+  Install just, uv, and the packages listed in tools/packages/. Installs tools,
+  not commands: anything a developer also runs belongs in the justfile.
+
+inputs:
+  python-version:
+    description: Python version handed to setup-uv.
+    required: false
+    default: "3.11"
+  cache-suffix:
+    description: >-
+      setup-uv cache key suffix. Must differ per build configuration, or a
+      restored cache carries a wheel built for another one.
+    required: true
+  mpi:
+    description: Install an MPI implementation ("on" or "off").
+    required: false
+    default: "off"
+
+runs:
+  using: composite
+  steps:
+    - name: Install just
+      uses: extractions/setup-just@v4.0.0
+
+    - name: Install the latest version of uv
+      uses: astral-sh/setup-uv@v10.0.1
+      with:
+        enable-cache: true
+        cache-suffix: ${{ inputs.cache-suffix }}
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install system dependencies
+      shell: bash
+      env:
+        MPI: ${{ inputs.mpi }}
+      run: |
+        set -euo pipefail
+
+        read_list() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true; }
+
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          prefix=tools/packages/brew
+        else
+          prefix=tools/packages/apt
+        fi
+
+        mapfile -t packages < <(read_list "$prefix.txt")
+        if [[ "${MPI,,}" =~ ^(on|true|yes|1)$ ]]; then
+          mapfile -t -O "${#packages[@]}" packages < <(read_list "$prefix-mpi.txt")
+        fi
+
+        # Derive the package from CXX, so a matrix lane needs no list of its own.
+        if [[ -n "${CXX:-}" ]] && ! command -v "$CXX" > /dev/null; then
+          case "$CXX" in
+            clang++*) packages+=("clang${CXX#clang++}") ;;
+            g++*) packages+=("g++${CXX#g++}") ;;
+            *)
+              echo "CXX=$CXX is not installed and no package name can be derived from it" >&2
+              exit 2
+              ;;
+          esac
+        fi
+
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          brew install "${packages[@]}"
+        else
+          sudo apt-get update
+          sudo apt-get install -y "${packages[@]}"
+        fi
