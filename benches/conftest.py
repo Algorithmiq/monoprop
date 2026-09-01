@@ -136,6 +136,10 @@ _RANDOM_OPTIONS = (
     ("pare-threshold", float, None, "Edge-retention cutoff for the graph functionals."),
 )
 
+# Picture -> built graph, so one process can time build_graph, then energy, then gradient
+# against the graph it just built rather than building a second one.
+_GRAPH_CACHE: dict[str, Any] = {}
+
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
@@ -547,8 +551,12 @@ def built_graph(
 
     Session-scoped per picture so the graph is built once and shared across the
     read-only graph benchmarks (``energy``, ``gradient``), and records the operator
-    size for this picture while the graph is resident.
+    size for this picture while the graph is resident. A graph the timed
+    ``build_graph`` benchmark already published is reused instead of built again.
     """
+    if picture in _GRAPH_CACHE:
+        return _GRAPH_CACHE[picture]
+
     mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
@@ -557,7 +565,23 @@ def built_graph(
     # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
 
+    _GRAPH_CACHE[picture] = mp
     return mp
+
+
+@pytest.fixture(scope="session")
+def publish_graph(picture: str) -> Callable[[Any, int], None]:
+    """Return ``publish(propagator, terms)``, handing a timed build to ``built_graph``.
+
+    Takes the term count rather than recomputing it: ``record_opsize`` has already
+    reduced it, and a second collective reduce over a 1B-term operator is not free.
+    """
+
+    def _publish(mp: Any, terms: int) -> None:
+        _GRAPH_CACHE[picture] = mp
+        _record("opsize", picture, {"terms": terms})
+
+    return _publish
 
 
 @pytest.fixture(scope="session")

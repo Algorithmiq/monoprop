@@ -26,6 +26,7 @@ def test_random_build_graph(
     bench_rounds,
     op_memory,
     record_opsize,
+    publish_graph,
 ):
     """Benchmark building the propagation graph from a fresh propagator."""
     last = []
@@ -47,8 +48,11 @@ def test_random_build_graph(
         iterations=1,
     )
     op_memory.close(last[0])
-    assert record_opsize(last[0]) > 0
+    terms = record_opsize(last[0])
+    assert terms > 0
     assert last[0].graph_layers > 0
+    # Hands the timed graph to energy/gradient, so one process builds once.
+    publish_graph(last[0], terms)
 
 
 def test_random_propagate(
