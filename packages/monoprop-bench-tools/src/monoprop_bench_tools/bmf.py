@@ -28,8 +28,6 @@ Three measures are emitted:
 
 ``latency`` (nanoseconds)
     Per-operation mean, with the interval one standard deviation either side.
-    The mean is Bencher's contract: its t-test threshold consumes a mean and a
-    spread.
 ``peak-memory`` (bytes)
     Per-operation peak resident footprint, summed across ranks under MPI. The
     sum bounds the job; ``memhwm_max`` bounds a node, but CI is single-rank,
