@@ -92,6 +92,70 @@ test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
         --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
 
+# Build and run a consumer project against the installed package, the way a downstream
+# user does.
+
+test-find-package BUILD_DIR='build/find-package-smoke':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    build_dir={{ quote(BUILD_DIR) }}
+    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake"
+    cmake --build "$build_dir"
+    "$build_dir/smoke"
+
+# The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
+# Tsan) and the matching monoprop_SANITIZER define; build_dir follows that environment.
+#
+# Only the C++ binary is fully instrumented, so the option sets differ per leg and cannot
+# be hoisted to the environment.
+
+ubsan_options := "halt_on_error=1:print_stacktrace=1"
+sanitizer_log := project_source_dir / "sanitizer-log"
+
+# The instrumented binary is the only leg that can check for leaks.
+
+test-cpp-asan:
+    ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
+    LSAN_OPTIONS="suppressions={{ project_source_dir }}/.github/lsan.supp" \
+    UBSAN_OPTIONS="{{ ubsan_options }}" \
+      ctest --test-dir {{ build_dir }} --output-on-failure
+
+# CPython is uninstrumented, so the leak, pointer-pair and initialization checks are off
+# here; the C++ leg covers those. ASan needs libstdc++ preloaded too, or its __cxa_throw
+# interceptor does not resolve. pytest replaces stderr, so the reports go to log files.
+
+test-py-asan:
+    LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
+    ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
+    UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
+      uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0
+
+# Print what test-py-asan sent to the log files. Silent when the tests themselves failed.
+
+sanitizer-reports:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    files=({{ sanitizer_log }}.*)
+    if (( ${#files[@]} == 0 )); then
+      echo "No sanitizer report was written; the failure came from the tests themselves."
+      exit 0
+    fi
+    for f in "${files[@]}"; do
+      echo "::group::$(basename "$f")"
+      cat "$f"
+      echo "::endgroup::"
+    done
+
+# TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
+# restricted to the concurrent partition and shared-memory paths.
+
+test-cpp-tsan:
+    TSAN_OPTIONS="halt_on_error=1:history_size=4" \
+      ctest --test-dir {{ build_dir }} --output-on-failure -R "(partition_|shm_comm_)"
+
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
 

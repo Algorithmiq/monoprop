@@ -217,6 +217,13 @@ function reachable from the public template chain. The installed CMake target re
 monoprop itself was built with MPI; a serial package does not acquire MPI compile definitions or
 link dependencies merely because the consuming project already has an `MPI::MPI_CXX` target.
 
+`just test-find-package` goes one step further out: it builds
+`cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
+package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that
+exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
+usage requirement the package fails to export. It compiles the same source as the in-tree
+probe, so the two cannot drift.
+
 ### Debug tree
 
 ```bash
