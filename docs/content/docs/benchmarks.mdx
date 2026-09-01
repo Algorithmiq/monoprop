@@ -352,11 +352,6 @@ The bare-metal workflow provisions a dedicated node for each run. Its lower meas
 supports tighter timing thresholds and permits execution of the fixed models omitted on the shared
 runner.
 
-**No benchmark workflow gates a pull request.** Both track the main branch, and a threshold
-over a series that spans runners is a report, not a verdict. Measuring a change is the author's
-job -- see "Benchmarking ladder" above. Every run uploads `bmf.json` and the raw result JSON as an artifact,
-so a failed Bencher upload does not take the measurement with it.
-
 The `bench-markers` and `bench-rounds` inputs of the reusable `bench.yml` workflow select the
 benchmarks and repetition count. These values should remain fixed after establishing a testbed,
 because changing them changes the meaning of its time series:

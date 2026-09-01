@@ -1,16 +1,35 @@
 # Comprehensive Benchmarking
 
-## Summary
+This benchmark separates kernel, shared-memory, process, network, and scaling effects. Define:
 
-| Group | What it measures |
-| --- | --- |
-| L1  | Single thread, 20M terms, 5GB |
-| L2a | Single-node perf, default user settings without MPI `1xcores`-shape. 0.95B terms Heisenberg, 0.60B Schrödinger, both ≤110GB|
-| L2b | The L2a problems on one node at `R × P` — MPI with no network in it |
-| L3  | Multi-node, same problem as L2b|
-| L4  | Strong/weak scaling. If L3 looks okay, don't bother running |
+- `N`: nodes
+- `C`: usable cores per node
+- `R`: MPI ranks per node
+- `P`: in-process partitions per rank
+- `P_total = N × R × P`: total partitions
 
-## Running one row
+Choose `R` for the platform, normally one rank per NUMA domain, then set `P = C / R`. Keep `R`
+and `P` fixed wherever the ladder requires a direct comparison.
+
+> **Example platform.** All flags, term counts, timings, and memory figures below were measured on
+> code based on `main` commit `97f95f762dfc7174243ccd59dd4ecbbb9775b610`, on Deucalion x86
+> nodes with `C=128`, using `R=8` and `P=16` for MPI runs. They are calibration and job-sizing
+> examples, not portable targets but memory should be relatively similar.
+
+## Ladder
+
+| rung | shape | purpose |
+| --- | --- | --- |
+| L1 | `N=1, R=1, P=1` | isolate single-thread kernel performance |
+| L2a | `N=1, R=1, P=C` | measure full-node shared-memory performance |
+| L2b | `N=1, R=R_platform, P=C/R` | isolate process and MPI overhead without a network hop |
+| L3 | `N>1`, same `R` and `P` as L2b | isolate the network |
+| L4 | vary `N`, hold `R` and `P` fixed | measure strong and weak scaling |
+
+L2a, L2b, and L3 use the same model flags. Only the execution shape changes. Term counts are
+topology-independent, so a mismatch means the problem definition changed.
+
+## Running a row
 
 ```bash
 uv sync --all-groups --all-extras          # once
@@ -18,307 +37,134 @@ just bench L1-hubbard --hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 \
     -k "test_model_propagate and hubbard"
 ```
 
-`LABEL` is one column in `benches/results/REPORT.md`, so name it for the group, the row and the
-arm: `L1-hubbard-branch`, `L1-hubbard-base`. Each run writes `results/time-<label>.json`
-(timings) and `results/<label>.json` (term counts, peak RSS, operator memory), then rebuilds the
-report. Reps are repeated invocations under different labels; leave `--bench-rounds` at 1, since
-`pedantic` builds round *k+1*'s arguments before releasing round *k*'s and a second round holds two
-propagators.
+Name `LABEL` by rung, row, and arm, for example `L1-hubbard-branch`. A run writes
+`results/time-<label>.json`, `results/<label>.json`, and rebuilds `benches/results/REPORT.md`.
+Use separate labels for repetitions and leave `--bench-rounds=1`; later rounds can overlap the
+previous round's live propagator and inflate memory.
 
-`build_graph`, `energy` and `gradient` may be selected together in one process: the timed
-`build_graph` publishes the graph it built and the two functionals evaluate that one, so the
-process builds a single operator. Keep `propagate` out of that selection — it holds its own
-operator, so adding it to the other three holds two per rank.
+Run `build_graph`, `energy`, and `gradient` together when all three are needed. They share one
+graph. Run `propagate` separately because it owns another operator.
 
 ## Declaring the shape
 
-Nodes `N`, ranks per node `R`, partitions per rank `P`, one core
-per partition — so `R × P` is the cores per node and `P_total` = `N × R × P` is what a
-communication cost is a function of. **`N` and `R` come from the launcher; `P` you must export.**
+The launcher sets `N` and `R`; export `P` explicitly:
 
 ```bash
-export monoprop_PARTITIONS=16 monoprop_NUM_THREADS=16
+export monoprop_PARTITIONS=<partitions-per-rank>
+export monoprop_NUM_THREADS=<cores-per-rank>
 ```
 
-Above one rank this is mandatory: `benches/conftest.py` refuses to start a multi-rank session with
-`monoprop_PARTITIONS` unset, because the engine's own default is `ranks == 1 ? cores : 1` and an
-unset knob would silently measure one partition per rank at a plausible wall time.
+For multi-rank runs this is mandatory. The engine otherwise defaults to one partition per rank.
+Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`, and
+`monoprop_threads` in the report's Configuration table.
 
-The rungs fix the shape as follows, so that each edge of the ladder moves one thing:
+## Calibrating model size
 
-| rung | `N` | `R` | `P` | the edge below it |
-| --- | ---: | ---: | ---: | --- |
-| L1 | 1 | 1 | 1 | — |
-| L2a | 1 | 1 | cores | in-process partitioning |
-| L2b | 1 | yours | cores / `R` | per process, no network |
-| L3 | yours | L2b's | L2b's | the network |
-| L4 | 1…64 | L2b's | L2b's | scaling in `N` |
-
-The shape is recorded with every run — `ranks`, `nodes`, `ranks_per_node`, `partitions_env` and
-`monoprop_threads` in `results/<label>.json`'s `meta`, surfaced as the Configuration table of
-`REPORT.md`. Check it before comparing two rows: a ladder whose points did not all run at the same
-`R` and `P` is not a ladder.
-
-## Model size knobs
-
-Every size below is an input, not a constant. The fixed models take `--<model>-<field>` for any
-field of their config dataclass (`just bench --help` lists them); the random problem takes
-`--num-generators`, `--num-modes`, `--cutoff`, `--obs-terms`, `--gen-length` and `--seed`.
-
-| knob | range | note |
+| model | preferred size control | constraint |
 | --- | --- | --- |
-| `--num-modes` | ≤ this build's `MAX_NUM_MODES` | rejected above it, rather than failing inside the extension |
-| `--hubbard-num-sites` | 2 × sites ≤ `MAX_NUM_MODES` | saturated from 60 at the default `lower_atol`; size Hubbard with `--hubbard-lower-atol` |
-| `--hubbard-observable-site` | `< --hubbard-num-sites` | a lattice position, not a constant: the default 46 sits 46/60 along the lattice, and shrinking the lattice without moving it changes the light cone. Out of range now raises |
-| `--pauli-num-qubits` | 127 only | `HEAVY_HEX_TOPOLOGY` is the fixed IBM Eagle coupling map, so any other count either indexes past the operator or leaves qubits uncoupled. Raises. Size this model with `--pauli-lower-atol` |
-| `--obs-terms` | any | an upper bound on the observable's terms, not an exact count: monomials are drawn independently and duplicates collapse, by about `obs_terms / 2·C(2·num_modes, gen_length)` — 0.06% at L1's 295k, 2.8% at L2a's 14.75M. Deterministic for a fixed `--seed`. **Heisenberg only** — see *Sizing the Schrödinger rows* |
-| `--num-generators` | any | the circuit's gate count, and the only usable size axis in the Schrödinger picture. It is also the length of the parameter vector, so `gradient` at 5800 generators does nearly six times the per-term work it does at 1000 |
-| `--gen-length` | `k % 4` in {0, 1} | a product of `k` Majoranas satisfies `(g_1...g_k)^dag = (-1)^(k(k-1)/2) g_1...g_k`, so it is Hermitian with the real coefficients drawn here only at those lengths. Verified over k=2..11: 4, 5, 8, 9 build and 2, 3, 6, 7, 10, 11 raise. Out of range now raises naming the option, rather than surfacing as `Non-Hermitian coeffs detected` from inside the extension |
-| `--pare-threshold` | any, default off | edge-retention cutoff for the graph functionals (`energy`, `gradient`). Unset keeps the exact graph |
+| Hubbard | `--hubbard-lower-atol` | `2 × num_sites <= MAX_NUM_MODES` |
+| Pauli | `--pauli-lower-atol` | the supplied heavy-hex model requires 127 qubits |
+| random, Heisenberg | `--obs-terms` | duplicates make this an upper bound; fix `--seed` |
+| random, Schrödinger | `--num-generators` | also sets gradient length and work |
 
-### Sizing the Schrödinger rows
 
-The Schrödinger picture evolves the state, so the observable does not drive the operator:
-`--obs-terms` is flat there (18.85M / 18.75M / 18.83M across a 74× sweep) and sizes the Heisenberg
-rows only. Of the remaining axes, two are cliffs rather than dials — one step of either goes from a
-few GiB to not fitting a 242 GiB node, because what grows is a transient inside `build_graph` and
-not the retained operator:
+Calibrate each row on the target platform before running the ladder:
 
-| axis | last value that fits | next value tried |
-| --- | --- | --- |
-| `--cutoff` | 6 — 18,853,861 terms, 3.6 GiB | 7 — SIGKILL |
-| `--num-modes` | 160 — 29,082,430 terms, 5.6 GiB | 180 — SIGKILL |
+1. Fix the model structure and seed.
+2. Sweep the preferred size control until the full row fits the desired memory budget.
+3. Size graph rows against the largest peak of `build_graph`, `energy`, and `gradient`, not the
+   graph build alone.
+4. Reuse the chosen flags unchanged in L2a, L2b, and L3.
 
-`--num-generators` is the axis that works. At `--cutoff=6 --num-modes=142 --obs-terms=200000`,
-one node at 1×128. Term counts are geometry- and operation-independent; the time and memory
-columns are not, so each row says what was measured — `build` is `build_graph` alone, `row` is all
-three operations in one process, which is what has to fit:
+In the Schrödinger picture, sweep number of qubits or `--num-generators` instead.
 
-| `--num-generators` | terms | ~s | ~GiB | measured |
-| ---: | ---: | ---: | ---: | --- |
-| 1000 | 18,853,861 | 1.3 | 3.6 | build |
-| 2000 | 24,707,186 | 3.2 | 4.2 | build |
-| 3000 | 42,566,127 | 6.1 | 7.2 | build |
-| 4000 | 97,631,757 | 13.3 | 16.2 | build |
-| 5000 | 261,929,069 | 30.6 | 32.2 | build |
-| 5600 | 485,959,982 | 97.9 | 78.0 | row |
-| **5800** | **597,445,055** | **115.9** | **99.7** | **row** |
-| 6000 | 737,159,992 | 142.8 | 115.1 | row |
-| 6200 | 907,357,991 | 172.1 | 143.1 | row |
-| 6400 | 1,115,757,089 | 117.0 | 138.5 | build |
-| 8000 | — | — | > 242 (SIGKILL) | build |
+## Example problem set
 
-L2a, L2b and L3 take the 5800-generator row: it is the largest whose whole-row peak fits the
-~110 GiB one-node budget the other L2a rows are held to. 6000 (115.1 GiB) and 6200 (143.1 GiB) clear 1B terms
-at 6400 but not the budget.
+Examples 128-core platform.
 
-**Size this rung against `gradient`, not `build_graph`.** At 6200 generators `build_graph` peaks at
-102.7 GiB and looks like it fits, while `gradient` in the same process peaks at 143.1 GiB. Two
-things make the last operation the expensive one, and only the second is about the gradient:
+### L1 example
 
-- The three operations share a process, and peak RSS follows capacity rather than live bytes, so an
-  operation starts at the high-water mark its predecessors left. Measured at 6200: `gradient`'s
-  floor was 114.31 GiB against `energy`'s peak of 114.32 — the same bytes, not new ones. Of that
-  143.1 GiB row peak only 28.8 GiB is `gradient`'s own transient (`opmemdelta`).
-- That transient still tracks the *circuit*, not the operator: 28.8 GiB at 6200 generators against
-  7.9 GiB at 1000, on an operator that is slightly smaller (907M terms against 949M). Sizing this
-  picture by gate count therefore buys terms and gradient memory together.
+Set `monoprop_PARTITIONS=1` and `monoprop_NUM_THREADS=1`.
 
-The axis accelerates — ×1.31, ×1.72, ×2.29, ×2.68 per extra 1000 gates — so read a size off this
-table rather than interpolating, and do not size the rung from two points: 1000→2000 alone
-predicts ~73,000 generators for 100M terms, where 4000 already reaches it. The counts are
-deterministic at a fixed `--seed`; 4000 reproduced to the term across two jobs.
-
-**A gate count is not a free parameter here.** `--num-generators` is also the length of the
-parameter vector, so the 5800-generator Schrödinger rows return a 5800-long gradient where the
-1000-generator Heisenberg rows return a 1000-long one. The two pictures' `gradient` cells are
-matched in terms and in memory, not in the work the functional does; do not read one against the
-other as a per-term ratio.
-
-## L1 — one thread
-
-One node, one rank, one partition: `export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1`.
-Removes every threading and MPI effect, so what moves is the kernel.
-
-The two `propagate` rows sit at ~10M terms and the two `gradient` rows at ~20M. The gradient rows
-are the same problem twice, once against the exact graph and once against a plan pared at
-`1e-10`, so a change to the functionals or to the masked plan shows on the pair rather than on
-either alone.
-
-| row | flags | `-k` | terms | ~s | ~GiB |
+| row | flags | selector | terms | time | peak RSS |
 | --- | --- | --- | ---: | ---: | ---: |
-| hubbard `propagate` | `--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05` | `test_model_propagate and hubbard` | 9,953,109 | 30 | 1 |
-| pauli `propagate` | `--pauli-cutoff=12 --pauli-lower-atol=1.22e-04` | `test_model_propagate and pauli` | 10,069,308 | 20 | 1 |
-| random `gradient` | `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000` | `test_random_gradient and heisenberg` | 19,902,244 | 11 | 2.5 |
-| random `gradient`, pared | *(same)* `--pare-threshold=1e-10` | `test_random_gradient and heisenberg` | 19,902,244 | 0.8 | 2.8 |
+| Hubbard `propagate` | `--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05` | `test_model_propagate and hubbard` | 9.95M | 30 s | 1 GiB |
+| Pauli `propagate` | `--pauli-cutoff=12 --pauli-lower-atol=1.22e-04` | `test_model_propagate and pauli` | 10.07M | 20 s | 1 GiB |
+| random `gradient` | `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000` | `test_random_gradient and heisenberg` | 19.90M | 11 s | 2.5 GiB |
+| random `gradient`, pared | same, plus `--pare-threshold=1e-10` | `test_random_gradient and heisenberg` | 19.90M | 0.8 s | 2.8 GiB |
 
-## L2a — one node, one rank, ~1B terms
+### L2a example
 
-One node, one rank, every core: `export monoprop_PARTITIONS=128 monoprop_NUM_THREADS=128`
-(substitute your core count). No MPI, so `P` alone carries the parallelism — this is the shape a
-user who never launches a rank gets, and the one whose partition count the engine would have
-picked on its own. The random rows are the only ones carrying all four operations, so they are
-where the operations separate.
+Set `monoprop_PARTITIONS=C` and `monoprop_NUM_THREADS=C`. On the example platform, `C=128`. These are medians of three repetitions.
 
-| row | flags | `-k` | terms | ~s | ~GiB |
+
+| row | flags | selector | terms | time | peak RSS |
 | --- | --- | --- | ---: | ---: | ---: |
-| hubbard `propagate` | `--hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06` | `test_model_propagate and hubbard` | 1,001,661,534 | 140 | 60 |
-| pauli `propagate` | `--pauli-cutoff=14 --pauli-lower-atol=8.9e-06` | `test_model_propagate and pauli` | 985,970,588 | 90 | 80 |
-| random `propagate` | `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=14750000` | `test_random_propagate and heisenberg` | 948,937,993 | 50 | 95 |
-| random `build_graph` | *(same)* | `test_random_build_graph and heisenberg` | 948,937,993 | 50 | 109 |
-| random `energy` | *(same)* | `test_random_energy and heisenberg` | 948,937,993 | 9.9 | 102 |
-| random `gradient` | *(same)* | `test_random_gradient and heisenberg` | 948,937,993 | 34 | 110 |
-| Schrödinger `build_graph` | `--num-generators=5800 --num-modes=142 --cutoff=6 --obs-terms=200000` | `test_random_build_graph and schrodinger` | 597,445,055 | 66 | 73 |
-| Schrödinger `energy` | *(same)* | `test_random_energy and schrodinger` | 597,445,055 | 11 | 79 |
-| Schrödinger `gradient` | *(same)* | `test_random_gradient and schrodinger` | 597,445,055 | 39 | 100 |
+| Hubbard `propagate` | `--hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06` | `test_model_propagate and hubbard` | 1.002B | 140 s | 60 GiB |
+| Pauli `propagate` | `--pauli-cutoff=14 --pauli-lower-atol=8.9e-06` | `test_model_propagate and pauli` | 0.986B | 90 s | 80 GiB |
+| random Heisenberg `propagate` | `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=14750000` | `test_random_propagate and heisenberg` | 0.949B | 50 s | 95 GiB |
+| random Heisenberg `build_graph` | same | `test_random_build_graph and heisenberg` | 0.949B | 50 s | 109 GiB |
+| random Heisenberg `energy` | same | `test_random_energy and heisenberg` | 0.949B | 9.9 s | 102 GiB |
+| random Heisenberg `gradient` | same | `test_random_gradient and heisenberg` | 0.949B | 34 s | 110 GiB |
+| random Schrödinger `build_graph` | `--num-generators=5800 --num-modes=142 --cutoff=6 --obs-terms=200000` | `test_random_build_graph and schrodinger` | 0.597B | 66 s | 73 GiB |
+| random Schrödinger `energy` | same | `test_random_energy and schrodinger` | 0.597B | 11 s | 79 GiB |
+| random Schrödinger `gradient` | same | `test_random_gradient and schrodinger` | 0.597B | 39 s | 100 GiB |
 
-Medians of three reps, arm order flipped between reps. `energy` and `gradient` are separate rows
-because they are not one cost: `gradient` is 3.4x `energy` in the Heisenberg picture and 3.4x in
-the Schrödinger one.
 
-These nine rows are the problem set for L2b and L3 as well; only the shape changes.
+## L2b: process overhead
 
-`build_graph`, `energy` and `gradient` share one process and one build — the graph the timed
-`build_graph` produces is what the other two evaluate — so run them with one selector, not three.
-`propagate` holds its own operator and stays out of that group.
+Run the L2a problems on one node with `R × P = C`. Use the same `R` and `P` in L3. One rank per
+NUMA domain is a portable starting point, not a guaranteed optimum.
 
-**The Schrödinger rows carry their own flags**, differing only in the gate count. `--obs-terms`
-cannot size that picture, so the rung is set by `--num-generators=5800` (see *Sizing the Schrödinger
-rows*), which is the largest gate count whose whole-row peak stays inside the ~110 GiB budget the
-Heisenberg rows sit at. That budget sizes the *flags*, which every rung then shares — but it does
-not bound the other rungs' memory, and measurement says L2b's is higher: per-rank overhead is paid
-`R` times and `N`=1 gives it no extra nodes to spread over. Size an L2b or L3 job from its own
-table. Two consequences worth reading before comparing the pictures:
+Example results at `N=1, R=8, P=16`:
 
-- The gradient's parameter vector is one entry per generator, so the Schrödinger `gradient`
-  differentiates 5800 parameters against the Heisenberg row's 1000. Unequal work, not just unequal
-  size.
-- Memory per term is higher in the Schrödinger picture — 0.167 GiB/Mterm at the `gradient` peak
-  against the Heisenberg rows' 0.115 — which is why matching the two pictures on memory leaves them
-  at 597M against 949M terms rather than at equal counts.
+| row | time | RSS sum per node | worst-rank RSS |
+| --- | ---: | ---: | ---: |
+| Hubbard `propagate` | 169 s | 59.5 GiB | 7.5 GiB |
+| Pauli `propagate` | 102 s | 85.6 GiB | 10.7 GiB |
+| random Heisenberg `propagate` | 48.4 s | 160 GiB | 20.2 GiB |
+| random Heisenberg `build_graph` | 53.2 s | 174 GiB | 21.8 GiB |
+| random Heisenberg `energy` | 10.4 s | 131 GiB | 16.4 GiB |
+| random Heisenberg `gradient` | 30.9 s | 139 GiB | 17.4 GiB |
+| random Schrödinger `build_graph` | 67.3 s | 77.5 GiB | 9.8 GiB |
+| random Schrödinger `energy` | 11.7 s | 81.3 GiB | 10.2 GiB |
+| random Schrödinger `gradient` | 39.5 s | 102 GiB | 12.8 GiB |
 
-## L2b — one node, `R` ranks × `P` partitions
+The node sum is an upper bound because shared pages are charged to every rank. Use it for
+provisioning, but do not compare it directly with a single process's peak. Per-rank overhead is
+model-dependent, so size L2b from its own measurements.
 
-The L2a problems again, on one node, with the cores split across processes instead of held by one:
-`R × P` = the core count and `N` = 1. L2a → L2b is therefore the *per-process* step with no network
-in it, and L2b → L3 is the network step. Before this rung existed the ladder went from one rank
-straight to several nodes and moved both at once, which left anything that appeared at L3
-attributable to neither.
+## L3: network overhead
 
-Same flags and same `-k` as L2a — only the shape differs. Term counts are geometry-independent
-(`cpp/tests/partition_equivalence_tests.cpp`), so a term count that disagrees with L2a's means the
-*problem* changed, not the topology.
+Run the L2b shape on multiple nodes without changing `R`, `P`, model flags, or selectors. The
+L2b-to-L3 difference then isolates the network.
 
-### Choosing `R` and `P`
+Example results at `N=4, R=8, P=16`:
 
-Two constraints, and then one choice:
+| row | time | RSS sum per node | worst-rank RSS |
+| --- | ---: | ---: | ---: |
+| Hubbard `propagate` | 35 s | 18 GiB | — |
+| Pauli `propagate` | 23 s | 25 GiB | — |
+| random Heisenberg `propagate` | 13 s | 100 GiB | — |
+| random Heisenberg `build_graph` | 14 s | 105 GiB | 13.1 GiB |
+| random Heisenberg `energy` | 2.3 s | 61 GiB | 7.7 GiB |
+| random Heisenberg `gradient` | 7.6 s | 63 GiB | 7.9 GiB |
+| random Schrödinger `build_graph` | 20 s | 26 GiB | 3.3 GiB |
+| random Schrödinger `energy` | 1.9 s | 26 GiB | 3.3 GiB |
+| random Schrödinger `gradient` | 8.9 s | 36 GiB | 4.5 GiB |
 
-- **`R × P` = the cores per node.** This is what makes the rung a comparison rather than a separate
-  measurement: the core count is held, so the only thing separating it from L2a is how many
-  processes hold those cores. Any other product is a valid run, just not this rung.
-- **`P` ≤ the cores one rank can see**, which under `--cpu-bind=cores` is its `--cpus-per-task`.
-  Above that the engine places nothing at all, at 13.8x to 24.6x, and says so only on C++ stderr —
-  see *Traps*. Note that this is the constraint L2a's `P` violates if it is left in the
-  environment: `P` here is `cores / R`.
-- **One rank per NUMA domain**, which then fixes both numbers on a given machine. The node these
-  tables were measured on is 8 domains × 16 cores, so `R`=8 and `P`=16.
+## L4: strong and weak scaling
 
-The third is a choice rather than a measured optimum, made for two reasons. It is the layout the
-library ships in, and it is **L3's shape** — L3 runs the same `R` and `P` at `N` > 1, so the two
-rungs differ in the node count and nothing else. If you change the split, change it in both rungs
-or the comparison they exist for is gone.
+Use one representative operation and hold `R` and `P` fixed.
 
-| row | terms | ~s | ~GiB/node | ~GiB worst rank |
-| --- | ---: | ---: | ---: | ---: |
-| hubbard `propagate` | 1,001,661,534 | 169 | 59.5 | 7.5 |
-| pauli `propagate` | 985,970,588 | 102 | 85.6 | 10.7 |
-| random `propagate` | 948,937,993 | 48.4 | 160 | 20.2 |
-| random `build_graph` | 948,937,993 | 53.2 | 174 | 21.8 |
-| random `energy` | 948,937,993 | 10.4 | 131 | 16.4 |
-| random `gradient` | 948,937,993 | 30.9 | 139 | 17.4 |
-| Schrödinger `build_graph` | 597,445,055 | 67.3 | 77.5 | 9.8 |
-| Schrödinger `energy` | 597,445,055 | 11.7 | 81.3 | 10.2 |
-| Schrödinger `gradient` | 597,445,055 | 39.5 | 102 | 12.8 |
+- **Strong scaling:** hold the problem fixed and vary `N`.
+- **Weak scaling:** hold work per node approximately fixed while varying `N`.
 
-Measured at `N`=1, `R`=8, `P`=16 (medians of two reps, cell order flipped between reps). Term
-counts are identical to L2a's and L3's, which is the geometry-independence check.
+For strong scaling relative to the smallest run `(N0, t0)`, efficiency is
+`N0 × t0 / (N × t(N))`. For weak scaling relative to one node, it is `t(1) / t(N)`.
 
-**`~GiB/node` is the sum over the node's ranks and `~GiB worst rank` is the largest single rank**,
-the same two columns L3 carries. The sum bounds the node and errs high — shared pages are charged
-to every rank — so it is the number to provision against and the wrong number to divide. In
-particular, reading L2b's 174 against L2a's 109 as "1.6x the memory" is a sum-against-max
-comparison; L2a's figure is one process's exact peak.
-
-What the pair does support is a per-rank reading, because peak RSS reproduces here where wall time
-does not: every memory cell above repeated across the two reps to within 0.2 GiB, and a separate
-one-rank run of the Heisenberg rows landed within 0.3 GiB of L2a's table on all three. Subtracting
-L2a's peak from the node sum and dividing by the eight ranks gives what each extra process costs
-beyond its share of the operator:
-
-| | Heisenberg | Schrödinger |
-| --- | ---: | ---: |
-| `build_graph` | 8.1 GiB/rank | 0.6 GiB/rank |
-| `energy` | 3.6 GiB/rank | 0.3 GiB/rank |
-| `gradient` | 3.6 GiB/rank | 0.2 GiB/rank |
-
-An order of magnitude apart on one shape, one node and one binary. The two flag sets differ in the
-observable — 14.75M terms against 200k — so what does not partition is what the observable drives,
-which is the same effect the L3 section records from the other direction. The raw observable is
-well under a GiB, so this is not the terms themselves being copied; something indexed by them
-scales with it. That has not been attributed further here.
-
-The consequence for sizing: **L2b is the memory-worst rung for the Heisenberg rows.** L2a holds one
-process, and L3 has more nodes to spread the same ranks over; L2b pays the per-rank cost `R` times
-on a single node. Size a job from the row and the rung being run, never from L2a alone.
-
-## L3 — several nodes, the same problems
-
-The L2b shape at `N` > 1. Hold `R` and `P` at exactly the values L2b ran, and the pair isolates
-the network: everything else about the two runs — cores per node, processes per node, partitions
-per process, flags, `-k` — is identical. Change `R` or `P` as well and it is still a valid
-multi-node run, just not that comparison.
-
-Same flags and same `-k` as L2a, so only the measured cells differ — which is why one calibration
-of the sizes serves every rung.
-
-| row | terms | ~s | ~GiB/node | ~GiB worst rank |
-| --- | ---: | ---: | ---: | ---: |
-| hubbard `propagate` | 1,001,661,534 | 35 | 18 | |
-| pauli `propagate` | 985,970,588 | 23 | 25 | |
-| random `propagate` | 948,937,993 | 13 | 100 | |
-| random `build_graph` | 948,937,993 | 14 | 105 | 13.1 |
-| random `energy` | 948,937,993 | 2.3 | 61 | 7.7 |
-| random `gradient` | 948,937,993 | 7.6 | 63 | 7.9 |
-| Schrödinger `build_graph` | 597,445,055 | 20 | 26 | 3.3 |
-| Schrödinger `energy` | 597,445,055 | 1.9 | 26 | 3.3 |
-| Schrödinger `gradient` | 597,445,055 | 8.9 | 36 | 4.5 |
-
-Measured at `N`=4, `R`=8, `P`=16 (medians of two reps) — a ballpark for sizing a job at that
-shape, not a target. Term counts are identical to L2a's and L2b's, which is the
-geometry-independence check.
-
-Memory per node does not fall the way time does, but there is **no fixed per-rank floor**: the
-Heisenberg rows pay 13.1 GiB on their worst rank and the Schrödinger rows 3.3 GiB, on the same
-shape. An earlier revision of this table quoted a ~9.5 GiB per-rank floor "paid whatever the
-problem", which the Schrödinger rows here refute by a factor of four. Size a job from the row
-you are running.
-
-The Schrödinger rows are also where the flag split pays off: 26 GiB/node here against the
-80 GiB/node an earlier revision recorded at 18.8M terms, at 32x the terms. That row inherited the
-Heisenberg arm's 14.75M-term observable and every rank on the node held a copy of it, while it
-contributed nothing to the evolved state.
-
-The single-node budget, not this shape, is what sizes the Schrödinger rung: at `N`=4 its worst rank
-holds 4.5 GiB and the row would fit many times over. L2a, L2b and L3 share one flag set so the
-term counts stay comparable, so L2a is the binding constraint.
-
-## L4 — strong and weak scaling
-
-Hubbard `propagate` only: a communication cost is a function of `P_total`, so varying the model as
-well would confound it. Hold `R` and `P` fixed across every point of a ladder and vary only `N`;
-`P_total` is then `N × R × P`. The tables below were built at `R`=8, `P`=16.
-
-Size is set by `--hubbard-lower-atol` at a fixed `--hubbard-cutoff=10`.
+The example uses Hubbard `propagate` with `--hubbard-cutoff=10`. This platform-specific sweep
+approximately doubles the term count at each step:
 
 | k | `--hubbard-lower-atol` | terms |
 | ---: | --- | ---: |
@@ -334,93 +180,52 @@ Size is set by `--hubbard-lower-atol` at a fixed `--hubbard-cutoff=10`.
 | 9 | `2.94e-07` | 48,317,129,677 |
 | 10 | `1.82e-07` | 94,684,031,363 |
 
-**Weak** — hold terms per node constant: **step one row down the table each time you double the
-node count.** Three ladders, each seven points from N=1 to N=64:
+For a weak-scaling series that doubles `N`, advance one `k` per point. For strong scaling, choose
+one `k` that fits the smallest node count and keep it fixed. On another platform, build a fresh
+size sweep rather than treating this table as a target.
 
-| ladder | starts at | Mterms/node | ~s at N=1 → N=64 |
-| --- | --- | ---: | --- |
-| ~97M/node | k=0 at N=1 | 97 | 11 → 37 |
-| ~385M/node | k=2 at N=1 | 385 | 48 → 80 |
-| ~1529M/node | k=4 at N=1 | 1529 | 216 → 257 |
+## Launch templates
 
-That spread **is** the weak-scaling result; ideal scaling would be flat. Efficiency is
-`t(N=1)/t(N)`.
-
-**Strong** — hold one k and vary N. Three ladders:
-
-| ladder | k | terms | N | ~s at smallest N → N=64 |
-| --- | ---: | ---: | --- | --- |
-| 1.57e9 fixed | 4 | 1,569,152,761 | 1…64 | 216 → 24 |
-| 6.13e9 fixed | 6 | 6,125,805,627 | 2…64 | 450 → 37 |
-| 2.44e10 fixed | 8 | 24,419,998,198 | 8…64 | 471 → 80 |
-
-Efficiency against the ladder's smallest node count `N0` is `N0 · t(N0) / (N · t(N))`. The larger
-two ladders start above one node because the problem does not fit below it, not because the point
-was skipped.
-
-## Shapes
-
-One rank over a whole node — L1 (with `P`=1) and L2a:
+For L1 and L2a, request one node and one rank. Set the core and partition counts from the granted
+CPU affinity:
 
 ```bash
-#!/bin/bash
-#SBATCH --nodes=1 --ntasks-per-node=1 --cpus-per-task=128 --exclusive --mem=0 --time=0:30:00
-set -euo pipefail
-export monoprop_PARTITIONS=128 monoprop_NUM_THREADS=128
+export monoprop_PARTITIONS="$C"
+export monoprop_NUM_THREADS="$C"
 just bench L2a-hubbard-branch --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06 \
     -k "test_model_propagate and hubbard"
 ```
 
-`N` nodes at `R` ranks × `P` partitions — L2b (with `--nodes=1`), L3 and L4. This is the same
-command with `srun` inserted and the report moved out of it; substitute your own `N`, `R` and `P`
-in all four places:
+For L2b, L3, and L4, request `R` ranks per node and `P` cores per rank. This Slurm example assumes
+the scheduler variables have already been set consistently:
 
 ```bash
-#!/bin/bash
-#SBATCH --nodes=4 --ntasks-per-node=8 --cpus-per-task=16 --exclusive --mem=0 --time=1:00:00
-set -euo pipefail
-export monoprop_PARTITIONS=16 monoprop_NUM_THREADS=16
-export monoprop_BENCH_LABEL=L3-hubbard-branch monoprop_BENCH_RESULTS=benches/results
-srun --ntasks-per-node=8 --cpus-per-task=16 --cpu-bind=cores \
+export monoprop_PARTITIONS="$P"
+export monoprop_NUM_THREADS="$P"
+export monoprop_BENCH_LABEL=L3-hubbard-branch
+export monoprop_BENCH_RESULTS=benches/results
+
+srun --ntasks-per-node="$R" --cpus-per-task="$P" --cpu-bind=cores \
     .venv/bin/python -m pytest benches -o filterwarnings=default \
     --benchmark-json="benches/results/time-$monoprop_BENCH_LABEL.json" \
     -k "test_model_propagate and hubbard" \
     --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06
+
 uv run --no-sync monoprop-bench-report benches/results
 ```
 
-The report runs **outside** `srun`: under it, one process per rank would race to write the same
-file. The two JSON artifacts are safe because only rank 0 writes them (`conftest.py`
-`pytest_configure`). A ladder is a loop over sizes inside one allocation sized for its largest
-point.
+Run the report outside the MPI launcher. Invoke the virtual-environment interpreter directly on
+each rank to avoid repeated dependency resolution on shared filesystems.
 
-The interpreter is named directly rather than run through `uv run`, which re-resolves the
-environment in every rank — a shared-filesystem metadata storm at L4's rank counts. `just bench`
-is still the right entry point at one rank, where there is one resolution.
+## Validation and common errors
 
-## Traps
-
-Each of these produces a plausible wrong number rather than an error.
-
-- **`srun --cpu-bind=cores` with no `--cpus-per-task` on the `srun` confines each task to one
-  core.** Measured in one allocation: no flags → 128 CPUs, `--cpus-per-task=128` → 128,
-  `--cpu-bind=cores` alone → 1. Repeat both flags on the `srun`, not only on the `#SBATCH`.
-- **`P` above the cores the rank can see disables pinning entirely**, at 13.8x to 24.6x. This is
-  the mistake going from L2a to L2b invites: L2a's `monoprop_PARTITIONS=128` left in the
-  environment of an 8-rank launch asks each rank for 128 partitions inside a 16-core mask, and
-  `CpuTopology.cpp` then returns an empty placement order rather than refusing. `P` is `cores / R`
-  at L2b, not L2a's `P`. The rule is `P > visible cores`, full stop — not divisibility, which was
-  refuted at `P`=192 and `P`=256 where the ratio is exactly integer and both still collapsed. The
-  only warning goes to C++ stderr, which pytest's fd capture eats without `-s`. Read it back
-  instead: `meta.pinning.affinity_cpus_min/max` is the mask each rank got and
-  `single_cpu_threads_min/max` is how many threads landed on one core each.
-- **`--cpu-bind=none` cost 1.45x** against Slurm's own cgroup pinning at 8 ranks per node. With one
-  rank holding a whole node there is nothing to confine and it stops mattering.
-- **`nproc` lies inside a job** — it honours `OMP_NUM_THREADS`, which the BLAS pinning sets to 1,
-  so a job holding 128 CPUs can log one core. Read `os.sched_getaffinity(0)`.
-- **Peak RSS follows capacity, not live bytes**, so a `shrink_to_fit` can raise it: `realloc` holds
-  the old and the new buffer at once.
-- **A two-operation row's peak is the MAX over its operations, never the sum.** `HighWaterMark`
-  resets `VmHWM` per benchmark, so both windows contain the same resident operator.
-- Unset `monoprop_PARTITIONS` and out-of-range model sizes used to be traps of this kind. Both now
-  raise; see *Declaring the shape* and *Model size knobs*.
+- Repeat the rank count, cores per rank, and binding options on the launcher command; scheduler
+  allocation directives may not propagate them.
+- Keep `P` no larger than the CPUs visible to each rank. Otherwise thread placement is disabled.
+- Use the scheduler affinity mask, such as `os.sched_getaffinity(0)`, to verify visible CPUs;
+  `nproc` may honor unrelated thread limits.
+- Keep CPU binding enabled unless the target platform has been measured otherwise.
+- Interpret peak RSS as a process high-water mark. Allocator capacity and temporary reallocation
+  can dominate live object size.
+- For grouped graph operations, compare the maximum peak across operations, not their sum.
+- Verify term counts and the recorded shape before interpreting timing differences.

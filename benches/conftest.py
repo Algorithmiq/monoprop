@@ -123,8 +123,7 @@ def _spread(comm: Any, value: int) -> dict[str, int]:
     return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
 
 
-# (name, type, default, help). The type is per row because ``--pare-threshold`` is a float
-# that defaults to off, where every size knob is an int.
+# (name, type, default, help). 
 _RANDOM_OPTIONS = (
     ("gen-length", int, 4, "Majorana operators per generator."),
     ("obs-terms", int, 10000, "Observable terms."),
@@ -143,8 +142,6 @@ _GRAPH_CACHE: dict[str, Any] = {}
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    # Keyed by PYTEST node id, so a two-operation row gets one entry each and the windows
-    # overlap: max over them, never sum (each already contains the resident operator).
     "memhwm": {},  # pytest node id -> summed-over-ranks peak RSS, whole test, setup() included
     "memhwm_max": {},  # pytest node id -> worst-rank peak RSS, whole test, setup() included
     "opsize": {},  # picture / model / node id -> {"terms": n}
@@ -551,8 +548,7 @@ def built_graph(
 
     Session-scoped per picture so the graph is built once and shared across the
     read-only graph benchmarks (``energy``, ``gradient``), and records the operator
-    size for this picture while the graph is resident. A graph the timed
-    ``build_graph`` benchmark already published is reused instead of built again.
+    size for this picture while the graph is resident.
     """
     if picture in _GRAPH_CACHE:
         return _GRAPH_CACHE[picture]
