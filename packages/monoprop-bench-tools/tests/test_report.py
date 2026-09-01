@@ -257,9 +257,6 @@ def test_build_report_omits_empty_schrodinger_section(tmp_path: Path) -> None:
 
 
 def test_two_models_do_not_share_a_row_label() -> None:
-    # Every fixed-model test is named test_model_*, so the model lives only in the
-    # parameter. Dropping it labels the hubbard and the pauli row identically and the
-    # report shows two rows nobody can tell apart.
     keys = [
         f"bench_models.py::test_model_{op}[{model}]"
         for op in ("build_graph", "propagate", "energy", "gradient")
