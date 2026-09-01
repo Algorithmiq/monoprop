@@ -64,14 +64,12 @@ jobs:
         run: |
           just build-docs
 
+      # lychee has no package in the runner images, so this uses the action rather than the
+      # `check-doc-links` recipe. Both read the same config, which carries the options.
       - name: Check built docs links (including external)
         uses: lycheeverse/lychee-action@v2
         with:
-          args: >-
-            --config .lychee.postbuild.toml --no-progress
-            --root-dir ${{ github.workspace }}/docs/out
-            --fallback-extensions html
-            'docs/out/**/*.html'
+          args: "--config .lychee.postbuild.toml 'docs/out/**/*.html'"
           fail: true
 
       - name: Setup Pages

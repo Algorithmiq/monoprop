@@ -440,7 +440,7 @@ build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
 
 # Check exported HTML links (including external URLs).
 check-doc-links:
-    lychee --config .lychee.postbuild.toml --root-dir "{{ project_source_dir }}/docs/out" --fallback-extensions html --index-files index.html 'docs/out/**/*.html'
+    lychee --config .lychee.postbuild.toml 'docs/out/**/*.html'
 
 # Serve the documentation locally with hot reloading.
 serve-docs:

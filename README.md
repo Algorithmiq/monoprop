@@ -213,6 +213,9 @@ just serve-docs   # live-reloading dev server
 just check-doc-links  # checks exported HTML links (including external URLs)
 ```
 
+The link checker's options live in `.lychee.postbuild.toml`, so the recipe and the
+docs workflow (which runs lychee through its own action) check the same thing.
+
 ### Keeping documentation up to date
 
 Any PR that changes behavior, public APIs, build/test commands, or repository paths

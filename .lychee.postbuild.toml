@@ -1,5 +1,17 @@
 # Post-build check over exported HTML with external links enabled.
 
+# The export is the site root, so root-relative hrefs resolve against it, and Next.js links
+# to a page without its `.html` extension. These live here rather than on the command line
+# so the `check-doc-links` recipe and the docs workflow, which runs lychee through its own
+# action, cannot drift.
+#
+# Do not set `index_files`: the export writes both `<page>.html` and a `<page>/` asset
+# directory, and `index_files` makes lychee demand an index inside the directory instead of
+# falling back to the page.
+root_dir = "docs/out"
+fallback_extensions = ["html"]
+no_progress = true
+
 # Avoid noisy/generated dependency paths if ever passed as inputs.
 exclude_path = ["docs/node_modules/**"]
 
