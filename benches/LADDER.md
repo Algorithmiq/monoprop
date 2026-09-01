@@ -5,8 +5,9 @@
 | Group | What it measures |
 | --- | --- |
 | L1  | Single thread, 20M terms, 5GB |
-| L2  | Single-node perf, default user settings without MPI `1xcores`-shape. 0.95B terms Heisenberg, 0.60B Schrödinger, both ≤110GB|
-| L3  | Multi-node, same problem as L2|
+| L2a | Single-node perf, default user settings without MPI `1xcores`-shape. 0.95B terms Heisenberg, 0.60B Schrödinger, both ≤110GB|
+| L2b | The L2a problems on one node at `R × P` — MPI with no network in it |
+| L3  | Multi-node, same problem as L2b|
 | L4  | Strong/weak scaling. If L3 looks okay, don't bother running |
 
 ## Running one row
@@ -43,6 +44,16 @@ Above one rank this is mandatory: `benches/conftest.py` refuses to start a multi
 `monoprop_PARTITIONS` unset, because the engine's own default is `ranks == 1 ? cores : 1` and an
 unset knob would silently measure one partition per rank at a plausible wall time.
 
+The rungs fix the shape as follows, so that each edge of the ladder moves one thing:
+
+| rung | `N` | `R` | `P` | the edge below it |
+| --- | ---: | ---: | ---: | --- |
+| L1 | 1 | 1 | 1 | — |
+| L2a | 1 | 1 | cores | in-process partitioning |
+| L2b | 1 | yours | cores / `R` | per process, no network |
+| L3 | yours | L2b's | L2b's | the network |
+| L4 | 1…64 | L2b's | L2b's | scaling in `N` |
+
 The shape is recorded with every run — `ranks`, `nodes`, `ranks_per_node`, `partitions_env` and
 `monoprop_threads` in `results/<label>.json`'s `meta`, surfaced as the Configuration table of
 `REPORT.md`. Check it before comparing two rows: a ladder whose points did not all run at the same
@@ -60,7 +71,7 @@ field of their config dataclass (`just bench --help` lists them); the random pro
 | `--hubbard-num-sites` | 2 × sites ≤ `MAX_NUM_MODES` | saturated from 60 at the default `lower_atol`; size Hubbard with `--hubbard-lower-atol` |
 | `--hubbard-observable-site` | `< --hubbard-num-sites` | a lattice position, not a constant: the default 46 sits 46/60 along the lattice, and shrinking the lattice without moving it changes the light cone. Out of range now raises |
 | `--pauli-num-qubits` | 127 only | `HEAVY_HEX_TOPOLOGY` is the fixed IBM Eagle coupling map, so any other count either indexes past the operator or leaves qubits uncoupled. Raises. Size this model with `--pauli-lower-atol` |
-| `--obs-terms` | any | an upper bound on the observable's terms, not an exact count: monomials are drawn independently and duplicates collapse, by about `obs_terms / 2·C(2·num_modes, gen_length)` — 0.06% at L1's 295k, 2.8% at L2's 14.75M. Deterministic for a fixed `--seed`. **Heisenberg only** — see *Sizing the Schrödinger rows* |
+| `--obs-terms` | any | an upper bound on the observable's terms, not an exact count: monomials are drawn independently and duplicates collapse, by about `obs_terms / 2·C(2·num_modes, gen_length)` — 0.06% at L1's 295k, 2.8% at L2a's 14.75M. Deterministic for a fixed `--seed`. **Heisenberg only** — see *Sizing the Schrödinger rows* |
 | `--num-generators` | any | the circuit's gate count, and the only usable size axis in the Schrödinger picture. It is also the length of the parameter vector, so `gradient` at 5800 generators does nearly six times the per-term work it does at 1000 |
 | `--gen-length` | `k % 4` in {0, 1} | a product of `k` Majoranas satisfies `(g_1...g_k)^dag = (-1)^(k(k-1)/2) g_1...g_k`, so it is Hermitian with the real coefficients drawn here only at those lengths. Verified over k=2..11: 4, 5, 8, 9 build and 2, 3, 6, 7, 10, 11 raise. Out of range now raises naming the option, rather than surfacing as `Non-Hermitian coeffs detected` from inside the extension |
 | `--pare-threshold` | any, default off | edge-retention cutoff for the graph functionals (`energy`, `gradient`). Unset keeps the exact graph |
@@ -97,8 +108,8 @@ three operations in one process, which is what has to fit:
 | 6400 | 1,115,757,089 | 117.0 | 138.5 | build |
 | 8000 | — | — | > 242 (SIGKILL) | build |
 
-L2 and L3 take the 5800-generator row: it is the largest whose whole-row peak fits the ~110 GiB
-one-node budget the other L2 rows are held to. 6000 (115.1 GiB) and 6200 (143.1 GiB) clear 1B terms
+L2a, L2b and L3 take the 5800-generator row: it is the largest whose whole-row peak fits the
+~110 GiB one-node budget the other L2a rows are held to. 6000 (115.1 GiB) and 6200 (143.1 GiB) clear 1B terms
 at 6400 but not the budget.
 
 **Size this rung against `gradient`, not `build_graph`.** At 6200 generators `build_graph` peaks at
@@ -141,11 +152,13 @@ either alone.
 | random `gradient` | `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000` | `test_random_gradient and heisenberg` | 19,902,244 | 11 | 2.5 |
 | random `gradient`, pared | *(same)* `--pare-threshold=1e-10` | `test_random_gradient and heisenberg` | 19,902,244 | 0.8 | 2.8 |
 
-## L2 — one node, ~1B terms
+## L2a — one node, one rank, ~1B terms
 
 One node, one rank, every core: `export monoprop_PARTITIONS=128 monoprop_NUM_THREADS=128`
-(substitute your core count). The random rows are the only ones carrying all four operations, so
-they are where the operations separate.
+(substitute your core count). No MPI, so `P` alone carries the parallelism — this is the shape a
+user who never launches a rank gets, and the one whose partition count the engine would have
+picked on its own. The random rows are the only ones carrying all four operations, so they are
+where the operations separate.
 
 | row | flags | `-k` | terms | ~s | ~GiB |
 | --- | --- | --- | ---: | ---: | ---: |
@@ -163,6 +176,8 @@ Medians of three reps, arm order flipped between reps. `energy` and `gradient` a
 because they are not one cost: `gradient` is 3.4x `energy` in the Heisenberg picture and 3.4x in
 the Schrödinger one.
 
+These nine rows are the problem set for L2b and L3 as well; only the shape changes.
+
 `build_graph`, `energy` and `gradient` share one process and one build — the graph the timed
 `build_graph` produces is what the other two evaluate — so run them with one selector, not three.
 `propagate` holds its own operator and stays out of that group.
@@ -170,7 +185,10 @@ the Schrödinger one.
 **The Schrödinger rows carry their own flags**, differing only in the gate count. `--obs-terms`
 cannot size that picture, so the rung is set by `--num-generators=5800` (see *Sizing the Schrödinger
 rows*), which is the largest gate count whose whole-row peak stays inside the ~110 GiB budget the
-Heisenberg rows sit at. Two consequences worth reading before comparing the pictures:
+Heisenberg rows sit at. That budget sizes the *flags*, which every rung then shares — but it does
+not bound the other rungs' memory, and measurement says L2b's is higher: per-rank overhead is paid
+`R` times and `N`=1 gives it no extra nodes to spread over. Size an L2b or L3 job from its own
+table. Two consequences worth reading before comparing the pictures:
 
 - The gradient's parameter vector is one entry per generator, so the Schrödinger `gradient`
   differentiates 5800 parameters against the Heisenberg row's 1000. Unequal work, not just unequal
@@ -179,15 +197,89 @@ Heisenberg rows sit at. Two consequences worth reading before comparing the pict
   against the Heisenberg rows' 0.115 — which is why matching the two pictures on memory leaves them
   at 597M against 949M terms rather than at equal counts.
 
+## L2b — one node, `R` ranks × `P` partitions
+
+The L2a problems again, on one node, with the cores split across processes instead of held by one:
+`R × P` = the core count and `N` = 1. L2a → L2b is therefore the *per-process* step with no network
+in it, and L2b → L3 is the network step. Before this rung existed the ladder went from one rank
+straight to several nodes and moved both at once, which left anything that appeared at L3
+attributable to neither.
+
+Same flags and same `-k` as L2a — only the shape differs. Term counts are geometry-independent
+(`cpp/tests/partition_equivalence_tests.cpp`), so a term count that disagrees with L2a's means the
+*problem* changed, not the topology.
+
+### Choosing `R` and `P`
+
+Two constraints, and then one choice:
+
+- **`R × P` = the cores per node.** This is what makes the rung a comparison rather than a separate
+  measurement: the core count is held, so the only thing separating it from L2a is how many
+  processes hold those cores. Any other product is a valid run, just not this rung.
+- **`P` ≤ the cores one rank can see**, which under `--cpu-bind=cores` is its `--cpus-per-task`.
+  Above that the engine places nothing at all, at 13.8x to 24.6x, and says so only on C++ stderr —
+  see *Traps*. Note that this is the constraint L2a's `P` violates if it is left in the
+  environment: `P` here is `cores / R`.
+- **One rank per NUMA domain**, which then fixes both numbers on a given machine. The node these
+  tables were measured on is 8 domains × 16 cores, so `R`=8 and `P`=16.
+
+The third is a choice rather than a measured optimum, made for two reasons. It is the layout the
+library ships in, and it is **L3's shape** — L3 runs the same `R` and `P` at `N` > 1, so the two
+rungs differ in the node count and nothing else. If you change the split, change it in both rungs
+or the comparison they exist for is gone.
+
+| row | terms | ~s | ~GiB/node | ~GiB worst rank |
+| --- | ---: | ---: | ---: | ---: |
+| hubbard `propagate` | 1,001,661,534 | 169 | 59.5 | 7.5 |
+| pauli `propagate` | 985,970,588 | 102 | 85.6 | 10.7 |
+| random `propagate` | 948,937,993 | 48.4 | 160 | 20.2 |
+| random `build_graph` | 948,937,993 | 53.2 | 174 | 21.8 |
+| random `energy` | 948,937,993 | 10.4 | 131 | 16.4 |
+| random `gradient` | 948,937,993 | 30.9 | 139 | 17.4 |
+| Schrödinger `build_graph` | 597,445,055 | 67.3 | 77.5 | 9.8 |
+| Schrödinger `energy` | 597,445,055 | 11.7 | 81.3 | 10.2 |
+| Schrödinger `gradient` | 597,445,055 | 39.5 | 102 | 12.8 |
+
+Measured at `N`=1, `R`=8, `P`=16 (medians of two reps, cell order flipped between reps). Term
+counts are identical to L2a's and L3's, which is the geometry-independence check.
+
+**`~GiB/node` is the sum over the node's ranks and `~GiB worst rank` is the largest single rank**,
+the same two columns L3 carries. The sum bounds the node and errs high — shared pages are charged
+to every rank — so it is the number to provision against and the wrong number to divide. In
+particular, reading L2b's 174 against L2a's 109 as "1.6x the memory" is a sum-against-max
+comparison; L2a's figure is one process's exact peak.
+
+What the pair does support is a per-rank reading, because peak RSS reproduces here where wall time
+does not: every memory cell above repeated across the two reps to within 0.2 GiB, and a separate
+one-rank run of the Heisenberg rows landed within 0.3 GiB of L2a's table on all three. Subtracting
+L2a's peak from the node sum and dividing by the eight ranks gives what each extra process costs
+beyond its share of the operator:
+
+| | Heisenberg | Schrödinger |
+| --- | ---: | ---: |
+| `build_graph` | 8.1 GiB/rank | 0.6 GiB/rank |
+| `energy` | 3.6 GiB/rank | 0.3 GiB/rank |
+| `gradient` | 3.6 GiB/rank | 0.2 GiB/rank |
+
+An order of magnitude apart on one shape, one node and one binary. The two flag sets differ in the
+observable — 14.75M terms against 200k — so what does not partition is what the observable drives,
+which is the same effect the L3 section records from the other direction. The raw observable is
+well under a GiB, so this is not the terms themselves being copied; something indexed by them
+scales with it. That has not been attributed further here.
+
+The consequence for sizing: **L2b is the memory-worst rung for the Heisenberg rows.** L2a holds one
+process, and L3 has more nodes to spread the same ranks over; L2b pays the per-rank cost `R` times
+on a single node. Size a job from the row and the rung being run, never from L2a alone.
+
 ## L3 — several nodes, the same problems
 
-The L2 problems again, at your own `N`, `R` and `P`. Choose `R × P` equal to L2's core count and
-the pair isolates what is paid per process rather than per core; choose anything else and it is
-still a valid multi-node run, just not that comparison.
+The L2b shape at `N` > 1. Hold `R` and `P` at exactly the values L2b ran, and the pair isolates
+the network: everything else about the two runs — cores per node, processes per node, partitions
+per process, flags, `-k` — is identical. Change `R` or `P` as well and it is still a valid
+multi-node run, just not that comparison.
 
-Same flags and same `-k` as L2, so only the measured cells differ. Term counts are
-geometry-independent (`cpp/tests/partition_equivalence_tests.cpp`), which is why one calibration
-serves every shape and a term-count disagreement means the *problem* changed, not the topology.
+Same flags and same `-k` as L2a, so only the measured cells differ — which is why one calibration
+of the sizes serves every rung.
 
 | row | terms | ~s | ~GiB/node | ~GiB worst rank |
 | --- | ---: | ---: | ---: | ---: |
@@ -202,7 +294,8 @@ serves every shape and a term-count disagreement means the *problem* changed, no
 | Schrödinger `gradient` | 597,445,055 | 8.9 | 36 | 4.5 |
 
 Measured at `N`=4, `R`=8, `P`=16 (medians of two reps) — a ballpark for sizing a job at that
-shape, not a target. Term counts are identical to L2's, which is the geometry-independence check.
+shape, not a target. Term counts are identical to L2a's and L2b's, which is the
+geometry-independence check.
 
 Memory per node does not fall the way time does, but there is **no fixed per-rank floor**: the
 Heisenberg rows pay 13.1 GiB on their worst rank and the Schrödinger rows 3.3 GiB, on the same
@@ -216,8 +309,8 @@ Heisenberg arm's 14.75M-term observable and every rank on the node held a copy o
 contributed nothing to the evolved state.
 
 The single-node budget, not this shape, is what sizes the Schrödinger rung: at `N`=4 its worst rank
-holds 4.5 GiB and the row would fit many times over. L2 and L3 share one flag set so the term
-counts stay comparable, so L2 is the binding constraint.
+holds 4.5 GiB and the row would fit many times over. L2a, L2b and L3 share one flag set so the
+term counts stay comparable, so L2a is the binding constraint.
 
 ## L4 — strong and weak scaling
 
@@ -267,19 +360,20 @@ was skipped.
 
 ## Shapes
 
-One rank over a whole node — L1 (with `P`=1) and L2:
+One rank over a whole node — L1 (with `P`=1) and L2a:
 
 ```bash
 #!/bin/bash
 #SBATCH --nodes=1 --ntasks-per-node=1 --cpus-per-task=128 --exclusive --mem=0 --time=0:30:00
 set -euo pipefail
 export monoprop_PARTITIONS=128 monoprop_NUM_THREADS=128
-just bench L2-hubbard-branch --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06 \
+just bench L2a-hubbard-branch --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06 \
     -k "test_model_propagate and hubbard"
 ```
 
-`N` nodes at `R` ranks × `P` partitions — L3 and L4. This is the same command with `srun` inserted
-and the report moved out of it; substitute your own `N`, `R` and `P` in all four places:
+`N` nodes at `R` ranks × `P` partitions — L2b (with `--nodes=1`), L3 and L4. This is the same
+command with `srun` inserted and the report moved out of it; substitute your own `N`, `R` and `P`
+in all four places:
 
 ```bash
 #!/bin/bash
@@ -288,7 +382,7 @@ set -euo pipefail
 export monoprop_PARTITIONS=16 monoprop_NUM_THREADS=16
 export monoprop_BENCH_LABEL=L3-hubbard-branch monoprop_BENCH_RESULTS=benches/results
 srun --ntasks-per-node=8 --cpus-per-task=16 --cpu-bind=cores \
-    uv run --no-sync python -m pytest benches -o filterwarnings=default \
+    .venv/bin/python -m pytest benches -o filterwarnings=default \
     --benchmark-json="benches/results/time-$monoprop_BENCH_LABEL.json" \
     -k "test_model_propagate and hubbard" \
     --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06
@@ -300,6 +394,10 @@ file. The two JSON artifacts are safe because only rank 0 writes them (`conftest
 `pytest_configure`). A ladder is a loop over sizes inside one allocation sized for its largest
 point.
 
+The interpreter is named directly rather than run through `uv run`, which re-resolves the
+environment in every rank — a shared-filesystem metadata storm at L4's rank counts. `just bench`
+is still the right entry point at one rank, where there is one resolution.
+
 ## Traps
 
 Each of these produces a plausible wrong number rather than an error.
@@ -307,6 +405,15 @@ Each of these produces a plausible wrong number rather than an error.
 - **`srun --cpu-bind=cores` with no `--cpus-per-task` on the `srun` confines each task to one
   core.** Measured in one allocation: no flags → 128 CPUs, `--cpus-per-task=128` → 128,
   `--cpu-bind=cores` alone → 1. Repeat both flags on the `srun`, not only on the `#SBATCH`.
+- **`P` above the cores the rank can see disables pinning entirely**, at 13.8x to 24.6x. This is
+  the mistake going from L2a to L2b invites: L2a's `monoprop_PARTITIONS=128` left in the
+  environment of an 8-rank launch asks each rank for 128 partitions inside a 16-core mask, and
+  `CpuTopology.cpp` then returns an empty placement order rather than refusing. `P` is `cores / R`
+  at L2b, not L2a's `P`. The rule is `P > visible cores`, full stop — not divisibility, which was
+  refuted at `P`=192 and `P`=256 where the ratio is exactly integer and both still collapsed. The
+  only warning goes to C++ stderr, which pytest's fd capture eats without `-s`. Read it back
+  instead: `meta.pinning.affinity_cpus_min/max` is the mask each rank got and
+  `single_cpu_threads_min/max` is how many threads landed on one core each.
 - **`--cpu-bind=none` cost 1.45x** against Slurm's own cgroup pinning at 8 ranks per node. With one
   rank holding a whole node there is nothing to confine and it stops mattering.
 - **`nproc` lies inside a job** — it honours `OMP_NUM_THREADS`, which the BLAS pinning sets to 1,

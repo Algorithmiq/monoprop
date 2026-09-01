@@ -306,9 +306,11 @@ monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot
 
 ### Benchmarking ladder
 
-`benches/LADDER.md` holds the ladder used for large-scale MPI benchmarking during development: four
+`benches/LADDER.md` holds the ladder used for large-scale MPI benchmarking during development: five
 groups of configurations, the flags and `-k` selector that produce each row, and the shapes to run
-them at.
+them at. Each rung differs from the one below it in exactly one thing -- partitions (L1 to L2a),
+processes (L2a to L2b), the network (L2b to L3), then node count (L3 to L4) -- so a regression that
+appears at one rung and not the one below it names its own cause.
 
 ### Continuous benchmarking
 
