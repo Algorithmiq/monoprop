@@ -38,7 +38,13 @@ runs:
       run: |
         set -euo pipefail
 
-        read_list() { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true; }
+        # macOS runners still ship bash 3.2, so no mapfile and no ${var,,}.
+        packages=()
+        add_list() {
+          while IFS= read -r package; do
+            packages+=("$package")
+          done < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true)
+        }
 
         if [[ "$RUNNER_OS" == "macOS" ]]; then
           prefix=tools/packages/brew
@@ -46,9 +52,9 @@ runs:
           prefix=tools/packages/apt
         fi
 
-        mapfile -t packages < <(read_list "$prefix.txt")
-        if [[ "${MPI,,}" =~ ^(on|true|yes|1)$ ]]; then
-          mapfile -t -O "${#packages[@]}" packages < <(read_list "$prefix-mpi.txt")
+        add_list "$prefix.txt"
+        if [[ "$(printf '%s' "$MPI" | tr '[:upper:]' '[:lower:]')" =~ ^(on|true|yes|1)$ ]]; then
+          add_list "$prefix-mpi.txt"
         fi
 
         # Derive the package from CXX, so a matrix lane needs no list of its own.
