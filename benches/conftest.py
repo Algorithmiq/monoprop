@@ -123,7 +123,7 @@ def _spread(comm: Any, value: int) -> dict[str, int]:
     return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
 
 
-# (name, type, default, help). 
+# (name, type, default, help).
 _RANDOM_OPTIONS = (
     ("gen-length", int, 4, "Majorana operators per generator."),
     ("obs-terms", int, 10000, "Observable terms."),
