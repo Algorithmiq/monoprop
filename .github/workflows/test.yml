@@ -19,7 +19,7 @@ env:
 
 jobs:
   package-tests:
-    name: Test [mpi:${{ matrix.mpi }}, wide:${{ matrix.wide }}] ${{ matrix.runner }} py${{ matrix.python-version }} ${{ matrix.compiler }}
+    name: Test [mpi:${{ matrix.mpi }}] ${{ matrix.runner }} py${{ matrix.python-version }} ${{ matrix.compiler }}
 
     strategy:
       fail-fast: false
@@ -27,7 +27,6 @@ jobs:
         python-version: ["3.11", "3.14"]
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
         compiler: [default, g++-14, clang++-18]
-        wide: ["off"]
         mpi: ["off"]
         exclude:
           - compiler: g++-14
@@ -42,34 +41,20 @@ jobs:
           - python-version: "3.11"
             runner: ubuntu-26.04
             compiler: default
-            wide: "on"
-            mpi: "off"
-          - python-version: "3.11"
-            runner: ubuntu-26.04
-            compiler: default
-            wide: "off"
-            mpi: "on"
-          - python-version: "3.11"
-            runner: ubuntu-26.04
-            compiler: default
-            wide: "on"
             mpi: "on"
           - python-version: "3.11"
             runner: ubuntu-26.04-arm
             compiler: default
-            wide: "off"
             mpi: "on"
           - python-version: "3.11"
             runner: macos-15
             compiler: default
-            wide: "off"
             mpi: "on"
 
     runs-on: ${{ matrix.runner}}
 
     env:
       monoprop_ENABLE_MPI: "${{ matrix.mpi }}"
-      monoprop_WIDE_TERM_INDEX: "${{ matrix.wide }}"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -109,7 +94,7 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
-          cache-suffix: ${{ matrix.compiler }}-wide-${{ matrix.wide }}-mpi-${{ matrix.mpi }}
+          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
           python-version: ${{ matrix.python-version }}
 
       - name: Install package
@@ -221,9 +206,8 @@ jobs:
           runner="${{ matrix.runner }}"
           pyver="${{ matrix.python-version }}"
           compiler="${{ matrix.compiler }}"
-          wide="wide=${{ matrix.wide }}"
           mpi="mpi=${{ matrix.mpi }}"
-          echo "label=$runner-$pyver-$compiler-$wide-$mpi" >> $GITHUB_OUTPUT
+          echo "label=$runner-$pyver-$compiler-$mpi" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
         run: |

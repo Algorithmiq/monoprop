@@ -76,15 +76,10 @@ BOOST_AUTO_TEST_CASE(graph_encoding_word_builder_finish_flushes_pending_and_empt
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_checked_term_index_boundary) {
-    // At the TermIndex ceiling it round-trips; above it throws only in the narrow build.
+    // At the TermIndex ceiling it round-trips; one above it throws rather than wrapping.
     const size_t ceiling = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
     BOOST_CHECK_EQUAL(detail::checked_term_index(ceiling, "term"), std::numeric_limits<TermIndex>::max());
-#if !defined(monoprop_WIDE_TERM_INDEX)
     BOOST_CHECK_THROW(detail::checked_term_index(ceiling + 1, "term"), std::overflow_error);
-#else
-    const size_t above_u32 = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1;
-    BOOST_CHECK_EQUAL(detail::checked_term_index(above_u32, "term"), static_cast<TermIndex>(above_u32));
-#endif
 }
 
 BOOST_AUTO_TEST_CASE(graph_encoding_checked_packed_phase_bounds) {

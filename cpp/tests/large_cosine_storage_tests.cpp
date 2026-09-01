@@ -14,7 +14,6 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -78,43 +77,16 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
     BOOST_CHECK_EQUAL(d_phi, -1);
 }
 
-// The per-rank cross-rank counts index into one layer's term set, so under the wide build they must
-// be TermIndex-wide; uint32_t would silently cap a single partition/layer at ~2^32 terms.
-BOOST_AUTO_TEST_CASE(cross_rank_partner_range_counts_track_term_index_width) {
+// The per-rank cross-rank counts index into one layer's term set, so they are TermIndex-wide; one
+// record per occupied slot, so this width scales traffic, not P squared. Written out rather than
+// imported: a check that borrows the value it checks cannot fail.
+BOOST_AUTO_TEST_CASE(cross_rank_occupied_slot_record_is_twelve_bytes) {
     CrossRankOccupiedSlot r{};
-    BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), sizeof(TermIndex));
-    BOOST_CHECK_EQUAL(sizeof(r.in_count), sizeof(TermIndex));
-    // One record per occupied slot, so its width scales traffic, not P squared.
-    // Written out rather than imported: a check that borrows the value it checks cannot fail.
-    constexpr size_t slot_field = std::max(sizeof(uint32_t), alignof(TermIndex));
-    BOOST_CHECK_EQUAL(alignof(CrossRankOccupiedSlot), alignof(TermIndex));
-    BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), slot_field + 2 * sizeof(TermIndex));
+    BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), 4U);
+    BOOST_CHECK_EQUAL(sizeof(r.in_count), 4U);
+    BOOST_CHECK_EQUAL(alignof(CrossRankOccupiedSlot), 4U);
+    BOOST_CHECK_EQUAL(sizeof(CrossRankOccupiedSlot), 12U);
 }
-
-#if defined(monoprop_WIDE_TERM_INDEX)
-// Under the wide build (TermIndex = u64), a cross-rank B (partner term) index above 2^32 must
-// round-trip losslessly through the packed cross-rank storage rather than hit a UINT32_MAX cap.
-BOOST_AUTO_TEST_CASE(cross_rank_sin_send_index_round_trips_above_u32) {
-    const size_t big_in = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1000;
-    const size_t big_out = static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 5;
-
-    std::vector<CrossRankPartnerData> cross_rank(2);
-    auto &p = cross_rank[1];
-    // B layout: in-block first, then out-block. One entry each.
-    p.sin_send_indices.push_back(big_in);
-    p.sin_send_indices.push_back(big_out);
-    p.sin_recv_entries.push_back({big_out, -1}); // D- (out) block, stored -phase
-    p.sin_recv_entries.push_back({big_in, 1});   // D+ (in) block
-    p.in_count = 1;
-
-    const auto storage = detail::build_packed_cross_rank_storage(std::move(cross_rank));
-
-    BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 0), big_in);
-    BOOST_CHECK_EQUAL(detail::cross_rank_sin_send_index(storage, 1, 1), big_out);
-    // D[0] derives from B: Q = 1, so D[0] = out-block[0] = big_out.
-    BOOST_CHECK_EQUAL(detail::cross_rank_sin_recv_index(storage, 1, 0), big_out);
-}
-#endif
 
 // The cross-rank exchange uses MPI int counts/displacements, so a single per-rank exchange is capped
 // at INT_MAX elements; checked_mpi_int must throw cleanly at that limit, never wrap silently.

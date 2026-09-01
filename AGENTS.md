@@ -37,6 +37,10 @@ monoprop is a high-performance C++/Python hybrid library implementing Majorana a
 - **Core C++ Engine**: Public headers in `cpp/include/monoprop/` and implementation in `cpp/monoprop/`
 - **Python Interface**: User-facing API in `src/monoprop/` with C++ bindings in `src/monoprop/bindings/`
 - **Template-Based Design**: Heavily templated C++ code with compile-time mode limits (`monoprop_MAX_NUM_MODES`)
+- **`TermIndex` is fixed at 32 bits** (`cpp/monoprop/TypeAliases.h`) and is not a build knob: one
+  partition caps at 2^32 terms, enforced at every narrowing by `OperatorIndex::check_index_fits` and
+  `detail::checked_term_index`. Hundreds of GiB of operator would fit in one partition first, so the
+  answer to the ceiling is more partitions or ranks, not a 64-bit variant.
 - **Generated Code**: Python dispatch and C++ bindings auto-generated via `tools/generate-*.py`
 - **uv workspace**: the repository root is the `monoprop` package; `packages/*` holds the sibling
   distributions. See "Workspace layout" below.

@@ -28,14 +28,9 @@
 using namespace monoprop;
 using namespace monoprop::detail;
 
-BOOST_AUTO_TEST_CASE(operator_index_term_index_width_matches_build) {
-#if defined(monoprop_WIDE_TERM_INDEX)
-    static_assert(sizeof(TermIndex) == 8, "wide build must use 64-bit TermIndex");
-    BOOST_TEST(sizeof(TermIndex) == 8u);
-#else
-    static_assert(sizeof(TermIndex) == 4, "default build must use 32-bit TermIndex");
+BOOST_AUTO_TEST_CASE(operator_index_term_index_is_32_bit) {
+    static_assert(sizeof(TermIndex) == 4, "TermIndex is fixed at 32 bits; the packed row stores assume it");
     BOOST_TEST(sizeof(TermIndex) == 4u);
-#endif
 }
 
 namespace {

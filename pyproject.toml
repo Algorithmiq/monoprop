@@ -159,19 +159,13 @@ sdist.include = [
 ]
 build.verbose = true
 build.tool-args = ["-j2"]
-# These environment variables are the source-build switches. Overrides can only
-# match environment variables, never config-settings, so setting an equivalent
-# CMake define directly does not activate any associated build requirements.
+# monoprop_ENABLE_MPI is the source-build switch. Overrides can only match
+# environment variables, never config-settings, so setting an equivalent CMake
+# define directly does not activate any associated build requirements.
 [[tool.scikit-build.overrides]]
 if.env.monoprop_ENABLE_MPI = true
 build.requires = ["mpi4py>=4.1.0"]
 cmake.define.monoprop_ENABLE_MPI = "ON"
-
-[[tool.scikit-build.overrides]]
-if.env.monoprop_WIDE_TERM_INDEX = true
-# Both source-build switches may match; merge instead of replacing the MPI definition.
-inherit.cmake.define = "append"
-cmake.define.monoprop_WIDE_TERM_INDEX = "ON"
 
 
 [tool.setuptools_scm]

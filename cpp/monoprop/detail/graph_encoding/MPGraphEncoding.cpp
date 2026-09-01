@@ -47,7 +47,7 @@ auto checked_world_slot(size_t rank) -> uint32_t {
 auto checked_term_index(size_t value, const char *what) -> TermIndex {
     if (value > static_cast<size_t>(std::numeric_limits<TermIndex>::max())) {
         throw std::overflow_error(
-            std::format("{} {} exceeds the TermIndex ceiling {}; rebuild with -Dmonoprop_WIDE_TERM_INDEX.",
+            std::format("{} {} exceeds the TermIndex ceiling {}; raise the partition or rank count.",
                         what,
                         value,
                         std::numeric_limits<TermIndex>::max()));

@@ -541,8 +541,8 @@ private:
 
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
-            throw TermIndexCeilingReached("OperatorIndex: operator index reached the TermIndex ceiling; rebuild with "
-                                          "-Dmonoprop_WIDE_TERM_INDEX (this partition's term count exceeded ~2^32).");
+            throw TermIndexCeilingReached("OperatorIndex: this partition's term count reached the 2^32 TermIndex "
+                                          "ceiling; raise the partition or rank count to split it further.");
         }
     }
 
