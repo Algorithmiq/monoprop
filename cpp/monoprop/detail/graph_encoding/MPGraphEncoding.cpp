@@ -35,7 +35,7 @@ auto checked_mpi_int(size_t value, const char *what) -> int {
 }
 
 // The u32 slot id bounds the flat world; a narrowing conversion, so checked rather than cast.
-auto checked_world_slot(size_t rank) -> uint32_t {
+static auto checked_world_slot(size_t rank) -> uint32_t {
     if (rank > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
         throw std::overflow_error(std::format("World slot {} exceeds the {} the occupied-slot record can hold.",
                                               rank,

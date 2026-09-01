@@ -35,11 +35,7 @@ using VecI = std::vector<int>;
 
 using VecZ = std::vector<size_t>;
 
-// One partition's term index. Fixed at 32 bits: 2^32 terms in a single partition would need
-// hundreds of GiB of resident operator, so the ceiling is reached by under-partitioning, never by
-// problem size; OperatorIndex refuses the append that would reach it, and checked_term_index()
-// guards the narrowings.
-using TermIndex = std::uint32_t;
+using TermIndex = std::uint32_t; // Max number of terms per partition
 
 // resize() leaves new trivial elements uninitialized; see the default_init_allocator caveat.
 template <typename T>

@@ -78,8 +78,7 @@ BOOST_AUTO_TEST_CASE(pruned_layer_supports_cos_counts_above_u32) {
 }
 
 // The per-rank cross-rank counts index into one layer's term set, so they are TermIndex-wide; one
-// record per occupied slot, so this width scales traffic, not P squared. Written out rather than
-// imported: a check that borrows the value it checks cannot fail.
+// record per occupied slot, so this width scales traffic, not P squared.
 BOOST_AUTO_TEST_CASE(cross_rank_occupied_slot_record_is_twelve_bytes) {
     CrossRankOccupiedSlot r{};
     BOOST_CHECK_EQUAL(sizeof(r.sin_send_count), 4U);

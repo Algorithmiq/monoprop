@@ -118,7 +118,7 @@ struct CrossRankOccupiedSlot final {
     TermIndex in_count = 0;
 };
 inline constexpr size_t kOccupiedSlotIdField = sizeof(uint32_t);
-static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + 2 * sizeof(TermIndex),
+static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + (2 * sizeof(TermIndex)),
               "the occupied-slot record is the graph's P coefficient: it must carry no padding beyond the "
               "alignment slot its u32 id already occupies.");
 static_assert(alignof(CrossRankOccupiedSlot) == alignof(TermIndex),
