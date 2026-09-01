@@ -183,12 +183,17 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 2. Use C++23 syntax and idioms.
 3. Use almost always auto style.
 4. Use trailing return type syntax in function declarations.
-5. Add a one-line `///` summary if the declaration is in `cpp/include/monoprop/`; elsewhere add a plain
+5. Write a const/non-const accessor pair as one deducing-this member (`this Self &&self`, returning
+   `auto &`) instead of two bodies; reach for `std::forward_like<Self>` when the referent's const-ness
+   does not follow the owner's, as through a `unique_ptr`. Do **not** take the object parameter *by
+   value* to serve as an operator's working copy: that makes it a stack array, which loses NRVO and
+   trips `-fstack-protector-strong` — see the comment on `Bitset`'s bitwise operators.
+6. Add a one-line `///` summary if the declaration is in `cpp/include/monoprop/`; elsewhere add a plain
    `//` note only where the code does not already say it.
-6. Implement in the corresponding `.cpp` under `cpp/monoprop/`.
-7. Add Python bindings in `src/monoprop/bindings/binder.h`
-8. Regenerate bindings with `tools/generate-binders.py`
-9. Test with both C++ and Python tests
+7. Implement in the corresponding `.cpp` under `cpp/monoprop/`.
+8. Add Python bindings in `src/monoprop/bindings/binder.h`
+9. Regenerate bindings with `tools/generate-binders.py`
+10. Test with both C++ and Python tests
 
 ## Documentation Maintenance Policy
 

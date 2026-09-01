@@ -26,6 +26,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "monoprop/detail/mpi/Comm.h"
@@ -106,8 +107,12 @@ public:
     ~PartitionGroup() { stop_and_join_(); }
 
     auto partition_count() const -> int { return n_; }
-    auto partition(int s) -> MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
-    auto partition(int s) const -> const MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
+    // Deducing this: unique_ptr::operator* yields a mutable referent whatever the owner's const-ness, so
+    // forward_like re-applies this group's.
+    template <typename Self>
+    auto partition(this Self &&self, int s) -> auto & {
+        return std::forward_like<Self>(*self.partitions_[static_cast<size_t>(s)]);
+    }
 
     // Run `body(partition_rank)` on all masters, block until every one finishes, then rethrow the first
     // exception raised (peers were released via poison, so a throw on one master never hangs the rest).

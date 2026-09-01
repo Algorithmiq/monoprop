@@ -109,6 +109,10 @@ public:
         return *this;
     }
 
+    // These deliberately keep a named local and a by-reference object parameter rather than taking
+    // `this Bitset self` by value: a by-value object parameter is a stack array, which loses NRVO and
+    // (under -fstack-protector-strong, the platform default) puts a frame and a canary check on the
+    // library's hottest primitive.
     [[nodiscard]] constexpr auto operator~() const noexcept -> Bitset {
         Bitset r = *this;
         for (auto i = 0uz; i < kNumWords; ++i)
@@ -177,8 +181,11 @@ public:
     }
 
     [[nodiscard]] static constexpr auto num_words() noexcept -> size_t { return kNumWords; }
-    [[nodiscard]] constexpr auto data() const noexcept -> const uint64_t * { return words_.data(); }
-    [[nodiscard]] constexpr auto data() noexcept -> uint64_t * { return words_.data(); }
+    // Deducing this: const-ness of the returned pointer follows the object.
+    template <typename Self>
+    [[nodiscard]] constexpr auto data(this Self &&self) noexcept -> auto * {
+        return self.words_.data();
+    }
     [[nodiscard]] constexpr auto word(size_t i) const noexcept -> uint64_t { return words_[i]; }
 
     [[nodiscard]] constexpr auto find_first() const noexcept -> size_t { // NumBits if none
