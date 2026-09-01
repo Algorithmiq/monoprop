@@ -5,7 +5,7 @@
 | Group | What it measures |
 | --- | --- |
 | L1  | Single thread, 20M terms, 5GB |
-| L2  | Single-node perf, default user settings without MPI `1xcores`-shape. 1B terms Heisenberg, ~100M Schrödinger, ≤110GB|
+| L2  | Single-node perf, default user settings without MPI `1xcores`-shape. 0.95B terms Heisenberg, 0.60B Schrödinger, both ≤110GB|
 | L3  | Multi-node, same problem as L2|
 | L4  | Strong/weak scaling. If L3 looks okay, don't bother running |
 
@@ -61,7 +61,7 @@ field of their config dataclass (`just bench --help` lists them); the random pro
 | `--hubbard-observable-site` | `< --hubbard-num-sites` | a lattice position, not a constant: the default 46 sits 46/60 along the lattice, and shrinking the lattice without moving it changes the light cone. Out of range now raises |
 | `--pauli-num-qubits` | 127 only | `HEAVY_HEX_TOPOLOGY` is the fixed IBM Eagle coupling map, so any other count either indexes past the operator or leaves qubits uncoupled. Raises. Size this model with `--pauli-lower-atol` |
 | `--obs-terms` | any | an upper bound on the observable's terms, not an exact count: monomials are drawn independently and duplicates collapse, by about `obs_terms / 2·C(2·num_modes, gen_length)` — 0.06% at L1's 295k, 2.8% at L2's 14.75M. Deterministic for a fixed `--seed`. **Heisenberg only** — see *Sizing the Schrödinger rows* |
-| `--num-generators` | any | the circuit's gate count, and the only usable size axis in the Schrödinger picture. It is also the length of the parameter vector, so `gradient` at 4000 generators does four times the per-term work it does at 1000 |
+| `--num-generators` | any | the circuit's gate count, and the only usable size axis in the Schrödinger picture. It is also the length of the parameter vector, so `gradient` at 5800 generators does nearly six times the per-term work it does at 1000 |
 | `--gen-length` | `k % 4` in {0, 1} | a product of `k` Majoranas satisfies `(g_1...g_k)^dag = (-1)^(k(k-1)/2) g_1...g_k`, so it is Hermitian with the real coefficients drawn here only at those lengths. Verified over k=2..11: 4, 5, 8, 9 build and 2, 3, 6, 7, 10, 11 raise. Out of range now raises naming the option, rather than surfacing as `Non-Hermitian coeffs detected` from inside the extension |
 | `--pare-threshold` | any, default off | edge-retention cutoff for the graph functionals (`energy`, `gradient`). Unset keeps the exact graph |
 
@@ -79,24 +79,39 @@ not the retained operator:
 | `--num-modes` | 160 — 29,082,430 terms, 5.6 GiB | 180 — SIGKILL |
 
 `--num-generators` is the axis that works. At `--cutoff=6 --num-modes=142 --obs-terms=200000`,
-one node at 1×128, `build_graph`:
+one node at 1×128. Term counts are geometry- and operation-independent; the time and memory
+columns are not, so each row says what was measured — `build` is `build_graph` alone, `row` is all
+three operations in one process, which is what has to fit:
 
-| `--num-generators` | terms | ~s | ~GiB |
-| ---: | ---: | ---: | ---: |
-| 1000 | 18,853,861 | 1.3 | 3.6 |
-| 2000 | 24,707,186 | 3.2 | 4.2 |
-| 3000 | 42,566,127 | 6.1 | 7.2 |
-| 4000 | 97,631,757 | 13.3 | 16.2 |
-| 5000 | 261,929,069 | 30.6 | 32.2 |
-| 6000 | 737,159,992 | 79.9 | 82.7 |
-| **6200** | **907,357,991** | **98.1** | **102.2** |
-| 6400 | 1,115,757,089 | 117.0 | 138.5 |
-| 8000 | SIGKILL | | > 242 |
+| `--num-generators` | terms | ~s | ~GiB | measured |
+| ---: | ---: | ---: | ---: | --- |
+| 1000 | 18,853,861 | 1.3 | 3.6 | build |
+| 2000 | 24,707,186 | 3.2 | 4.2 | build |
+| 3000 | 42,566,127 | 6.1 | 7.2 | build |
+| 4000 | 97,631,757 | 13.3 | 16.2 | build |
+| 5000 | 261,929,069 | 30.6 | 32.2 | build |
+| 5600 | 485,959,982 | 97.9 | 78.0 | row |
+| **5800** | **597,445,055** | **115.9** | **99.7** | **row** |
+| 6000 | 737,159,992 | 142.8 | 115.1 | row |
+| 6200 | 907,357,991 | 172.1 | 143.1 | row |
+| 6400 | 1,115,757,089 | 117.0 | 138.5 | build |
+| 8000 | — | — | > 242 (SIGKILL) | build |
 
-L2 and L3 take the 6200-generator row: it is the largest that fits the ~110 GiB one-node budget
-the other L2 rows are held to, and 6400 is what going over looks like — 1.12B terms, but 138.5 GiB.
-So the Schrödinger rows sit at 0.91B against the Heisenberg rows' 0.95B, matched in size rather
-than in gate count.
+L2 and L3 take the 5800-generator row: it is the largest whose whole-row peak fits the ~110 GiB
+one-node budget the other L2 rows are held to. 6000 (115.1 GiB) and 6200 (143.1 GiB) clear 1B terms
+at 6400 but not the budget.
+
+**Size this rung against `gradient`, not `build_graph`.** At 6200 generators `build_graph` peaks at
+102.7 GiB and looks like it fits, while `gradient` in the same process peaks at 143.1 GiB. Two
+things make the last operation the expensive one, and only the second is about the gradient:
+
+- The three operations share a process, and peak RSS follows capacity rather than live bytes, so an
+  operation starts at the high-water mark its predecessors left. Measured at 6200: `gradient`'s
+  floor was 114.31 GiB against `energy`'s peak of 114.32 — the same bytes, not new ones. Of that
+  143.1 GiB row peak only 28.8 GiB is `gradient`'s own transient (`opmemdelta`).
+- That transient still tracks the *circuit*, not the operator: 28.8 GiB at 6200 generators against
+  7.9 GiB at 1000, on an operator that is slightly smaller (907M terms against 949M). Sizing this
+  picture by gate count therefore buys terms and gradient memory together.
 
 The axis accelerates — ×1.31, ×1.72, ×2.29, ×2.68 per extra 1000 gates — so read a size off this
 table rather than interpolating, and do not size the rung from two points: 1000→2000 alone
@@ -104,7 +119,7 @@ predicts ~73,000 generators for 100M terms, where 4000 already reaches it. The c
 deterministic at a fixed `--seed`; 4000 reproduced to the term across two jobs.
 
 **A gate count is not a free parameter here.** `--num-generators` is also the length of the
-parameter vector, so the 6200-generator Schrödinger rows return a 6200-long gradient where the
+parameter vector, so the 5800-generator Schrödinger rows return a 5800-long gradient where the
 1000-generator Heisenberg rows return a 1000-long one. The two pictures' `gradient` cells are
 matched in terms and in memory, not in the work the functional does; do not read one against the
 other as a per-term ratio.
@@ -140,21 +155,29 @@ they are where the operations separate.
 | random `build_graph` | *(same)* | `test_random_build_graph and heisenberg` | 948,937,993 | 50 | 109 |
 | random `energy` | *(same)* | `test_random_energy and heisenberg` | 948,937,993 | 9.9 | 102 |
 | random `gradient` | *(same)* | `test_random_gradient and heisenberg` | 948,937,993 | 34 | 110 |
-| Schrödinger `build_graph` | `--num-generators=4000 --num-modes=142 --cutoff=6 --obs-terms=200000` | `test_random_build_graph and schrodinger` | 97,631,757 | 13 | 16 |
-| Schrödinger `energy` | *(same)* | `test_random_energy and schrodinger` | 97,631,757 | 0.8 | 15 |
-| Schrödinger `gradient` | *(same)* | `test_random_gradient and schrodinger` | 97,631,757 | 4.0 | 19 |
+| Schrödinger `build_graph` | `--num-generators=5800 --num-modes=142 --cutoff=6 --obs-terms=200000` | `test_random_build_graph and schrodinger` | 597,445,055 | 66 | 73 |
+| Schrödinger `energy` | *(same)* | `test_random_energy and schrodinger` | 597,445,055 | 11 | 79 |
+| Schrödinger `gradient` | *(same)* | `test_random_gradient and schrodinger` | 597,445,055 | 39 | 100 |
 
 Medians of three reps, arm order flipped between reps. `energy` and `gradient` are separate rows
-because they are not one cost: `gradient` is 3.4x `energy` in the Heisenberg picture and 4.9x in
+because they are not one cost: `gradient` is 3.4x `energy` in the Heisenberg picture and 3.4x in
 the Schrödinger one.
 
-**The Schrödinger rows carry their own flags**, differing in the gate count. `--obs-terms` cannot
-size that picture, so the rung is set by `--num-generators=4000` (see *Sizing the Schrödinger
-rows*); the smaller observable is what drops its memory, not the smaller operator. Two consequences
-worth reading before comparing the pictures: the gradient's parameter vector is one entry per
-generator, so the Schrödinger `gradient` differentiates 4000 parameters against the Heisenberg
-row's 1000 — unequal work, not just unequal size — and at 97.6M against 949M terms the two pictures
-are an order of magnitude apart by construction.
+`build_graph`, `energy` and `gradient` share one process and one build — the graph the timed
+`build_graph` produces is what the other two evaluate — so run them with one selector, not three.
+`propagate` holds its own operator and stays out of that group.
+
+**The Schrödinger rows carry their own flags**, differing only in the gate count. `--obs-terms`
+cannot size that picture, so the rung is set by `--num-generators=5800` (see *Sizing the Schrödinger
+rows*), which is the largest gate count whose whole-row peak stays inside the ~110 GiB budget the
+Heisenberg rows sit at. Two consequences worth reading before comparing the pictures:
+
+- The gradient's parameter vector is one entry per generator, so the Schrödinger `gradient`
+  differentiates 5800 parameters against the Heisenberg row's 1000. Unequal work, not just unequal
+  size.
+- Memory per term is higher in the Schrödinger picture — 0.167 GiB/Mterm at the `gradient` peak
+  against the Heisenberg rows' 0.115 — which is why matching the two pictures on memory leaves them
+  at 597M against 949M terms rather than at equal counts.
 
 ## L3 — several nodes, the same problems
 
@@ -174,23 +197,27 @@ serves every shape and a term-count disagreement means the *problem* changed, no
 | random `build_graph` | 948,937,993 | 14 | 105 | 13.1 |
 | random `energy` | 948,937,993 | 2.3 | 61 | 7.7 |
 | random `gradient` | 948,937,993 | 7.6 | 63 | 7.9 |
-| Schrödinger `build_graph` | 97,631,757 | 4.7 | 7.5 | 0.9 |
-| Schrödinger `energy` | 97,631,757 | 0.35 | 6.7 | 0.8 |
-| Schrödinger `gradient` | 97,631,757 | 1.2 | 7.9 | 1.0 |
+| Schrödinger `build_graph` | 597,445,055 | 20 | 26 | 3.3 |
+| Schrödinger `energy` | 597,445,055 | 1.9 | 26 | 3.3 |
+| Schrödinger `gradient` | 597,445,055 | 8.9 | 36 | 4.5 |
 
 Measured at `N`=4, `R`=8, `P`=16 (medians of two reps) — a ballpark for sizing a job at that
 shape, not a target. Term counts are identical to L2's, which is the geometry-independence check.
 
 Memory per node does not fall the way time does, but there is **no fixed per-rank floor**: the
-Heisenberg rows pay 13.1 GiB on their worst rank and the Schrödinger rows 0.9 GiB, on the same
+Heisenberg rows pay 13.1 GiB on their worst rank and the Schrödinger rows 3.3 GiB, on the same
 shape. An earlier revision of this table quoted a ~9.5 GiB per-rank floor "paid whatever the
-problem", which the Schrödinger rows here refute by an order of magnitude. Size a job from the row
+problem", which the Schrödinger rows here refute by a factor of four. Size a job from the row
 you are running.
 
-The Schrödinger rows are also where the flag split pays off: 7.5 GiB/node here against the
-80 GiB/node an earlier revision recorded at 18.8M terms, at 5.2x the terms. That row inherited the
+The Schrödinger rows are also where the flag split pays off: 26 GiB/node here against the
+80 GiB/node an earlier revision recorded at 18.8M terms, at 32x the terms. That row inherited the
 Heisenberg arm's 14.75M-term observable and every rank on the node held a copy of it, while it
 contributed nothing to the evolved state.
+
+The single-node budget, not this shape, is what sizes the Schrödinger rung: at `N`=4 its worst rank
+holds 4.5 GiB and the row would fit many times over. L2 and L3 share one flag set so the term
+counts stay comparable, so L2 is the binding constraint.
 
 ## L4 — strong and weak scaling
 
