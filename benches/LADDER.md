@@ -1,15 +1,13 @@
 # Comprehensive Benchmarking
 
-## Which group
+## Summary
 
-| a change to | run |
+| Group | What it measures |
 | --- | --- |
-| a kernel, encoding or data structure | L1, then L2. Hubbard makes 29 `propagate` calls and pauli 1, so a per-call cost shows on one and hides on the other |
-| the graph build or contraction | L2's graph and eval rows, both pictures |
-| the graph functionals or their masked plan | L1's gradient rows, which run with and without `--pare-threshold` |
-| MPI, routing, exchange or placement | L4. A communication cost is a function of `P` = ranks × partitions, not of node count |
-| memory layout or allocation | L1 **and** L2. The per-term and the per-process terms of the memory cost only separate across sizes |
-| ranks per node, or anything paid per process | L2 against L3 — same cores per node, one rank against several |
+| L1  | Single thread, 20M terms, 5GB |
+| L2  | Single-node perf, default user settings without MPI `1xcores`-shape. 1B terms, ~<100GB|
+| L3  | Multi-node, same problem as L2|
+| L4  | Strong/weak scaling. If L3 looks okay, don't bother running |
 
 ## Running one row
 
@@ -31,7 +29,7 @@ each hold their own operator, and selecting all four holds two per rank.
 
 ## Declaring the shape
 
-Three numbers describe every run: nodes `N`, ranks per node `R`, partitions per rank `P`, one core
+Nodes `N`, ranks per node `R`, partitions per rank `P`, one core
 per partition — so `R × P` is the cores per node and `P_total` = `N × R × P` is what a
 communication cost is a function of. **`N` and `R` come from the launcher; `P` you must export.**
 
