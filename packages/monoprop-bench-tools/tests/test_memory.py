@@ -109,3 +109,31 @@ def test_reset_also_clears_ru_maxrss() -> None:
 
     assert before >= 70 * MIB
     assert after < before
+
+
+def test_inner_window_does_not_erase_the_enclosing_peak() -> None:
+    """An inner window's reset must not hide a transient the outer window spans.
+
+    ``mm->hiwater_rss`` is per-process, so without the fold in :func:`reset_peak_rss` the
+    outer window reports only what happened after the inner one opened -- which is how a
+    construction transient measured in ``setup`` can vanish from the recorded peak.
+    """
+    if not reset_peak_rss():
+        pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    if _under_sanitizer():
+        # Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable.
+        pytest.skip("peak-RSS accounting is not meaningful under a sanitizer runtime")
+
+    with HighWaterMark() as outer:
+        blob = bytearray(80 * MIB)
+        for i in range(0, len(blob), 4096):
+            blob[i] = 1
+        del blob  # the transient is over before the inner window opens
+        with HighWaterMark(settle=False) as inner:
+            small = bytearray(8 * MIB)
+            for i in range(0, len(small), 4096):
+                small[i] = 1
+            del small
+
+    assert outer.delta_bytes >= 70 * MIB  # the outer window still sees it
+    assert inner.delta_bytes < 70 * MIB  # the inner one reports its own only

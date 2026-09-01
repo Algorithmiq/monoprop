@@ -445,9 +445,12 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     """Record ``memhwm`` (summed peak RSS) and ``memhwm_max`` (the worst rank's peak RSS).
 
     It spans ``setup``, so it predicts an OOM kill but is the wrong number for comparing
-    operations -- ``opmemdelta`` is that. The sum alone has inverted per-rank readings here
-    before, so ``memhwm_max`` is recorded alongside it, never in place of it. Both reduces
-    are collective; only rank 0 records.
+    operations -- ``opmemdelta`` is that. Spanning ``setup`` relies on windows nesting: the
+    ``op_memory`` window opens inside ``setup``, after construction, and resets the same
+    per-process kernel field, so without the fold in ``reset_peak_rss`` this figure would
+    silently start at that reset and omit the construction transient entirely. The sum alone
+    has inverted per-rank readings here before, so ``memhwm_max`` is recorded alongside it,
+    never in place of it. Both reduces are collective; only rank 0 records.
     """
     with HighWaterMark() as window:
         yield

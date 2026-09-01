@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import os
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -71,6 +72,19 @@ def peak_rss_bytes() -> int:
     return proc_field("/proc/self/status", "VmHWM:")
 
 
+# Every HighWaterMark between __enter__ and __exit__. mm->hiwater_rss is per-process, not
+# per-window, so an inner window's reset would erase an outer window's peak: the reset folds
+# the mark into these first. Weak so a window abandoned without stop() is still collected.
+_OPEN_WINDOWS: weakref.WeakSet[HighWaterMark] = weakref.WeakSet()
+
+
+def _fold_open_windows() -> None:
+    """Carry the current mark into every open window, before a reset discards it."""
+    observed = peak_rss_bytes()
+    for window in list(_OPEN_WINDOWS):
+        window.peak_bytes = max(window.peak_bytes, observed)
+
+
 def reset_peak_rss() -> bool:
     """Reset ``VmHWM`` to the current RSS, starting a new measurement window.
 
@@ -79,11 +93,16 @@ def reset_peak_rss() -> bool:
     therefore loses ``ru_maxrss`` as a whole-run ceiling, and must take the maximum over
     its windows instead.
 
+    The field is per-process, so this would also erase the peak of any :class:`HighWaterMark`
+    already open. Their marks are folded forward first, which is what makes windows nest --
+    an inner window measuring one operation cannot hide the transient an outer window spans.
+
     Returns:
         ``True`` if the reset took effect, ``False`` where ``/proc/self/clear_refs`` is
         unavailable (non-Linux, kernel < 4.0, or a restricted sandbox), in which case
         ``VmHWM`` keeps counting from process start and callers must fall back.
     """
+    _fold_open_windows()
     try:
         Path("/proc/self/clear_refs").write_text(_CLEAR_REFS_MM_HIWATER_RSS)
     except OSError:  # pragma: no cover - platform dependent
@@ -170,6 +189,10 @@ class HighWaterMark:
     ``exact`` is ``False`` when the kernel would not reset the window (see
     :func:`reset_peak_rss`); the peak then degrades to the RSS observed on exit, which is
     a lower bound. Callers that publish numbers should check it.
+
+    Windows nest: an inner one resets the same per-process kernel field, so it folds the
+    mark into every enclosing window first. An outer window therefore still reports the
+    peak of the whole block, including transients that fell before an inner window opened.
     """
 
     def __init__(self, *, settle: bool = True) -> None:
@@ -188,8 +211,10 @@ class HighWaterMark:
     def __enter__(self) -> Self:
         """Take the baseline and reset the kernel's peak-RSS window to it."""
         self.baseline_bytes = resting_rss_bytes() if self._settle else rss_bytes()
+        # Before registering: this window's own reset must not fold a mark into itself.
         self.exact = reset_peak_rss()
         self.peak_bytes = self.baseline_bytes
+        _OPEN_WINDOWS.add(self)
         return self
 
     def __exit__(
@@ -199,8 +224,11 @@ class HighWaterMark:
         tb: TracebackType | None,
     ) -> None:
         """Read the peak back, never below the baseline. Exceptions propagate."""
+        _OPEN_WINDOWS.discard(self)
         observed = peak_rss_bytes() if self.exact else rss_bytes()
-        self.peak_bytes = max(self.baseline_bytes, observed)
+        # peak_bytes already carries what any inner window's reset folded in, and starts at
+        # the baseline, so the kernel's remaining mark can only raise it.
+        self.peak_bytes = max(self.peak_bytes, observed)
 
     def start(self) -> Self:
         """Open the window explicitly; a ``pedantic`` run cannot be wrapped in a ``with``."""
