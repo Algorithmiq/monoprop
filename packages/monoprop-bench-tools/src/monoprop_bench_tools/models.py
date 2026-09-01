@@ -349,7 +349,7 @@ def build_hubbard_problem(
     """
     config = config or HubbardConfig()
     _check_modes(config.num_qubits, "--hubbard-num-sites")
-    # A lattice position, not a constant: off the lattice it silently changes the light cone.
+    # A lattice position, not a constant: shrinking the lattice without scaling shifts the light cone; out of range now raises.
     if not 0 <= config.observable_site < config.num_sites:
         msg = (
             f"--hubbard-observable-site {config.observable_site} is outside the "
