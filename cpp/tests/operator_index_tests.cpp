@@ -17,12 +17,14 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 using namespace monoprop;
@@ -159,4 +161,48 @@ BOOST_AUTO_TEST_CASE(grow_rows_geometric_returns_base_and_extends_size) {
     BOOST_TEST(s.grow_rows_geometric(2) == 3u);
     BOOST_TEST(s.size() == 5u);
     BOOST_TEST(s.grow_rows_geometric(0) == 5u);
+}
+
+// The per-row join key is what BucketJoin stages a gate's anticommuting rows from, so it must agree with
+// the fingerprint of the row's own positions no matter which writer wrote the row -- dense set(), packed
+// set_positions(), a row overwritten in place, and a spilled row.
+BOOST_AUTO_TEST_CASE(operator_index_row_key_matches_the_fingerprint_of_the_row) {
+    Store s(3); // inline width 3, so the four-position rows below spill
+    const std::array<VecZ, 4> rows{VecZ{0, 3, 5}, VecZ{}, VecZ{1, 2, 4, 7}, VecZ{6}};
+    s.grow_rows_geometric(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        s.set(i, bs(rows[i]));
+    }
+    const auto key_from_dense = [](const MSet &m) { return Store::join_tag(routing::linear_hash<2 * N>(m)); };
+    const auto positions_of = [](const MSet &m) {
+        std::vector<Store::PosT> pos;
+        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+            pos.push_back(static_cast<Store::PosT>(b));
+        }
+        return pos;
+    };
+    for (size_t i = 0; i < rows.size(); ++i) {
+        BOOST_TEST(s.key(i) == key_from_dense(bs(rows[i])));
+        const auto pos = positions_of(bs(rows[i]));
+        BOOST_TEST(s.key(i) == Store::key_of_positions(pos.data(), pos.size()));
+    }
+    // set_positions writes the same key as set() for the same term, on both the inline and spill paths.
+    Store t(3);
+    t.grow_rows_geometric(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto pos = positions_of(bs(rows[i]));
+        t.set_positions(i, std::span<const Store::PosT>(pos));
+        BOOST_TEST(t.key(i) == s.key(i));
+    }
+    // Overwriting a row replaces its key; a clone carries the keys across.
+    t.set(0, bs({2, 9}));
+    BOOST_TEST(t.key(0) == key_from_dense(bs({2, 9})));
+    const auto copy = t.clone();
+    for (size_t i = 0; i < rows.size(); ++i) {
+        BOOST_TEST(copy->key(i) == t.key(i));
+    }
+    // push_back goes through the same door, and the keys are priced on their own.
+    t.push_back(bs({0, 1}));
+    BOOST_TEST(t.key(t.size() - 1) == key_from_dense(bs({0, 1})));
+    BOOST_TEST(t.row_keys_bytes() >= t.size() * sizeof(uint32_t));
 }

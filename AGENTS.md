@@ -105,10 +105,14 @@ Key files:
   routing fingerprint (`routing::fingerprint_positions`, `detail/mpi/Routing.h`), GF(2)-linear so the
   partner's key is `fp(M) ^ fp(G)`; every key match is confirmed against the positions. Neither side of
   that join is small (with `lower_atol` the records are ~0.85 of Anti(G)), so **neither is the
-  random-access side**: the scan stages its anticommuting rows with the key it folds while the row is in
-  cache, the records are staged after the exchange, and both are bucketed by the key's top bits and joined
-  bucket by bucket in L1. The protocol's per-row state (`rot`, `foll`, `received`, `partner_rot`) is
-  `RowMarks` in `GateScratch.h`, bitsets over rows cleared per gate by zeroing the fold's `nz` words.
+  random-access side**: the scan stages its anticommuting rows, the records are staged after the exchange,
+  and both are bucketed by the key's top bits and joined bucket by bucket in L1. The row side is staged
+  from the 4-byte join key `detail::OperatorIndex` keeps per row (`key(i)`, the mixed fingerprint's top 32
+  bits, maintained by every writer and priced as `row_keys_bytes`), so staging a gate's whole
+  anticommuting set reads no rows; a partner's key still comes from the partner's own positions, because
+  the mixing is not GF(2)-linear. The protocol's per-row
+  state (`rot`, `foll`, `received`, `partner_rot`) is `RowMarks` in `GateScratch.h`, bitsets over rows
+  cleared per gate by zeroing the fold's `nz` words.
 - **One round per gate** (`cpp/monoprop/detail/evolution/layer_build/Engine.h`, records in `Scan.h`,
   join in `Resolve.h`): every anticommuting term whose partner passes the structural cutoff sends ONE
   record `(key = M⊕G, φ, rot, [value])` to the partner's owner, in the same `alltoallv`. The receiver

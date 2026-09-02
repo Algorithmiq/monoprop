@@ -25,6 +25,7 @@
 #include <set>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "monoprop/algebra/PauliAlgebra.h"
@@ -132,6 +133,26 @@ auto run_join(const detail::OperatorIndex<NumModes> &store,
         const uint64_t fp = src.inlined() ? routing::fingerprint_positions(labels, src.pos.data(), src.pos.size())
                                           : routing::linear_hash<2 * NumModes>(store.row(row));
         join.add_row(fp, row);
+    }
+    join.begin_queries(queries.size());
+    for (size_t q = 0; q < queries.size(); ++q) {
+        join.add_query(q, query_fp[q]);
+    }
+    join.run(store, [&](size_t q) { return std::span<const PosT>(queries[q]); });
+    return join;
+}
+
+// Same gate, but the row side staged from the key the store keeps per row -- the path the scan takes.
+template <size_t NumModes>
+auto run_join_from_keys(const detail::OperatorIndex<NumModes> &store,
+                        std::span<const size_t> rows,
+                        const std::vector<std::vector<typename detail::OperatorIndex<NumModes>::PosT>> &queries,
+                        const std::vector<uint64_t> &query_fp) -> detail::BucketJoin<NumModes> {
+    using PosT = typename detail::OperatorIndex<NumModes>::PosT;
+    detail::BucketJoin<NumModes> join;
+    join.begin_rows(rows.size());
+    for (const size_t row : rows) {
+        join.add_row_key(store.key(row), row);
     }
     join.begin_queries(queries.size());
     for (size_t q = 0; q < queries.size(); ++q) {
@@ -419,4 +440,67 @@ BOOST_AUTO_TEST_CASE(bucket_join_releases_capacity_after_a_large_gate) {
     join.begin_rows(4);
     join.begin_queries(4);
     BOOST_TEST(join.memory_bytes() < big / 4);
+}
+
+// The scan stages rows from `OperatorIndex::key`, never from a fold over the row, so the stored key must
+// tag a row exactly as a fingerprint would: same hits, same misses, on inline and spilled rows alike.
+BOOST_AUTO_TEST_CASE(bucket_join_stored_row_keys_join_like_folded_ones) {
+    constexpr size_t kN = 48;
+    using PosT = detail::OperatorIndex<kN>::PosT;
+    std::mt19937_64 rng(20260903);
+    detail::OperatorIndex<kN> store(4); // inline width 4, so the wider rows below spill
+    constexpr size_t kRows = 600;
+    store.grow_rows_geometric(kRows);
+    // Distinct terms: a staged row and an unstaged one that named the same monomial would make the
+    // oracle below ambiguous, and no operator holds a term twice anyway.
+    std::unordered_set<Monomial<kN>, MonoHash<kN>> minted;
+    std::vector<Monomial<kN>> terms;
+    terms.reserve(kRows);
+    while (terms.size() < kRows) {
+        const auto m = random_monomial<kN>(rng, 2 + (terms.size() % 7));
+        if (minted.insert(m).second) {
+            terms.push_back(m);
+        }
+    }
+    for (size_t i = 0; i < kRows; ++i) {
+        store.set(i, terms[i]);
+        BOOST_REQUIRE(store.key(i) == detail::OperatorIndex<kN>::join_tag(fp_of<kN>(terms[i])));
+    }
+    std::vector<size_t> staged;
+    for (size_t i = 0; i < kRows; i += 2) {
+        staged.push_back(i);
+    }
+    // Ask for every term, staged or not, plus terms that are absent from the store entirely.
+    std::vector<std::vector<PosT>> queries;
+    std::vector<uint64_t> query_fp;
+    std::vector<size_t> want_row;
+    const auto ask = [&](const Monomial<kN> &m, size_t row) {
+        std::vector<PosT> pos;
+        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+            pos.push_back(static_cast<PosT>(b));
+        }
+        queries.push_back(pos);
+        query_fp.push_back(fp_of<kN>(m));
+        want_row.push_back(row);
+    };
+    std::unordered_set<Monomial<kN>, MonoHash<kN>> seen = minted;
+    for (size_t i = 0; i < kRows; ++i) {
+        ask(terms[i], (i % 2 == 0) ? i : detail::BucketJoin<kN>::kMissing);
+    }
+    while (queries.size() < kRows + 200) {
+        const auto m = random_monomial<kN>(rng, 9);
+        if (seen.insert(m).second) {
+            ask(m, detail::BucketJoin<kN>::kMissing);
+        }
+    }
+    const auto folded = run_join<kN>(store, staged, queries, query_fp);
+    const auto keyed = run_join_from_keys<kN>(store, staged, queries, query_fp);
+    size_t hits = 0;
+    for (size_t q = 0; q < queries.size(); ++q) {
+        BOOST_REQUIRE(keyed.hit(q) == want_row[q]);
+        BOOST_REQUIRE(keyed.hit(q) == folded.hit(q));
+        hits += (keyed.hit(q) != detail::BucketJoin<kN>::kMissing) ? 1 : 0;
+    }
+    BOOST_TEST(hits == staged.size());
+    BOOST_TEST(store.overflow_size() > 0U); // the spilled rows were part of it
 }

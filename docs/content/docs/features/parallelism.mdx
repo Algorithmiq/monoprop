@@ -113,8 +113,10 @@ if it is tracked at all, is inside the gate's own anticommuting set — which th
 anticommutation index already returns. Partner lookup therefore never consults a persistent
 hash table over the operator: each gate joins its own anticommuting rows against the records
 it must answer, both sides bucketed by the mixed fingerprint and every match confirmed against
-the row's positions, and discards the buckets. The operator store holds positions and
-coefficients and nothing else.
+the row's positions, and discards the buckets. Alongside the positions and coefficients the
+store keeps only a four-byte join key per term — that same mixed fingerprint — so staging a
+gate's anticommuting set costs no row reads; it is reported separately as `row_keys_bytes` in
+`operator_memory_breakdown`.
 
 Every gate is then one exchange round. A term $M$ that anticommutes with $G$ and whose
 partner $M \oplus G$ is structurally admissible sends one record — the partner's positions,

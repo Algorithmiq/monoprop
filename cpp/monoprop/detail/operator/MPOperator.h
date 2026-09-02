@@ -289,6 +289,8 @@ inline auto unordered_flat_map_storage_bytes(const FlatMap &map) -> size_t {
 template <size_t NumModes>
 struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_bytes{0uz};
+    // The store's per-row join keys (OperatorIndex::key): 4 B/term, separate from the rows they key.
+    size_t row_keys_bytes{0uz};
     size_t op_coeffs_bytes{0uz};
     size_t state_coeffs_bytes{0uz};
     size_t indexing_bytes{0uz};
@@ -311,12 +313,13 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_entries{0uz};
 
     auto total_bytes() const -> size_t {
-        return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes + gate_scratch_bytes;
+        return operator_terms_bytes + row_keys_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes
+               + init_operator_bytes + initial_state_bytes + inverted_index_bytes + gate_scratch_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
         operator_terms_bytes += o.operator_terms_bytes;
+        row_keys_bytes += o.row_keys_bytes;
         op_coeffs_bytes += o.op_coeffs_bytes;
         state_coeffs_bytes += o.state_coeffs_bytes;
         indexing_bytes += o.indexing_bytes;
@@ -338,6 +341,7 @@ template <size_t NumModes>
 inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
+    breakdown.row_keys_bytes = op.store->row_keys_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)

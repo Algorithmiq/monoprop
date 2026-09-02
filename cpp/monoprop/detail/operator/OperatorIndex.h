@@ -31,6 +31,9 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+// For the per-row join key only: routing owns the fingerprint, and a second definition of it here would
+// be a second thing to keep in step with BucketJoin's tag.
+#include "monoprop/detail/mpi/Routing.h"
 
 namespace monoprop::detail {
 
@@ -49,6 +52,12 @@ public:
 // whole store: a partner M ^ G, if tracked, anticommutes with G and so is inside the gate's own
 // anticommuting set, which layer_build/BucketJoin.h joins per gate. The few out-of-gate lookups build a
 // transient TermLookup over the rows they need.
+//
+// What IS kept per row is its 4-byte join key -- the top 32 bits of the mixed routing fingerprint, which
+// is exactly BucketJoin's compare tag. Every gate stages its whole anticommuting set into that join, and
+// folding the key there meant reading each row's positions once per gate; holding it costs 4 B/term once
+// and turns pass 1 into a sequential read of keys_. It is NOT the 64-bit fingerprint: that is
+// GF(2)-linear, the mixed key is not, so a partner's key still comes from the partner's own positions.
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -77,6 +86,22 @@ public:
     // store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
+    //! Row i's join key. Maintained by every writer, so a gate stages its join without reading a row.
+    [[nodiscard]] auto key(size_t i) const -> uint32_t { return keys_[i]; }
+
+    //! The compare tag of a 64-bit fingerprint: what a row's key is, and what BucketJoin tags a query with.
+    [[nodiscard]] static auto join_tag(uint64_t fp) noexcept -> uint32_t {
+        return static_cast<uint32_t>(routing::mix64(fp) >> 32U);
+    }
+
+    //! The join key of a term given as ascending positions, and of a dense one; the same map either way.
+    [[nodiscard]] static auto key_of_positions(const PosT *pos, size_t k) noexcept -> uint32_t {
+        return join_tag(routing::fingerprint_positions(labels(), pos, k));
+    }
+    [[nodiscard]] static auto key_of(const value_type &mono) noexcept -> uint32_t {
+        return join_tag(routing::linear_hash<2 * NumModes>(mono));
+    }
+
     explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_) {}
@@ -89,6 +114,7 @@ public:
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
         out->rows_ = rows_;
+        out->keys_ = keys_;
         out->size_ = size_;
         out->overflow_ = overflow_;
         return out;
@@ -115,6 +141,7 @@ public:
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
         rows_.resize((base + n) * stride_);
+        keys_.resize(base + n);
         size_ = base + n;
         return base;
     }
@@ -125,6 +152,7 @@ public:
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
         const size_t c = mono.count();
+        keys_[i] = key_of(mono);
         PosT *row = &rows_[i * stride_];
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
@@ -149,6 +177,7 @@ public:
     auto set_positions(size_t i, std::span<const PosT> pos) -> void {
         const size_t count = pos.size();
         assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
+        keys_[i] = key_of_positions(pos.data(), count);
         PosT *row = &rows_[i * stride_];
         if (count > inline_width_) {
             // The spill path has no position array, so build the dense form -- only here.
@@ -213,11 +242,14 @@ public:
         }
         return {std::span<const PosT>(&rows_[(i * stride_) + 1], static_cast<size_t>(c))};
     }
+    // The rows themselves. The join keys are reported separately (row_keys_bytes) so the breakdown can
+    // price them on their own; neither figure includes the other.
     [[nodiscard]] auto memory_bytes() const -> size_t {
         size_t total = rows_.capacity() * sizeof(PosT);
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
+    [[nodiscard]] auto row_keys_bytes() const -> size_t { return keys_.capacity() * sizeof(uint32_t); }
 
     // Every row in index order.
     template <typename Func>
@@ -251,7 +283,16 @@ public:
 
 private:
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
+    auto reserve_rows(size_t n) -> void {
+        rows_.reserve(n * stride_);
+        keys_.reserve(n);
+    }
+
+    // The label table, bound through a local static so the per-term path does not re-enter routing's guard.
+    static auto labels() noexcept -> const uint64_t * {
+        static const uint64_t *const table = routing::linear_basis<2 * NumModes>().data();
+        return table;
+    }
 
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
@@ -261,6 +302,9 @@ private:
     }
 
     DefaultInitVector<PosT> rows_ = {};
+    // One join key per row, parallel to rows_. Default-init like rows_: a grown row's key is
+    // indeterminate until its set() writes both.
+    DefaultInitVector<uint32_t> keys_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;

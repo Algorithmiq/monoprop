@@ -134,18 +134,20 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
 }
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a
-// static part (the structural cutoff on M'=M⊕G, applied in emit).
+// static part (the structural cutoff on M'=M⊕G, applied in emit). The dynamic part is two independent
+// tests, kept separate because only one of them needs the row: the scan reads the coefficient half
+// first and, when it fails, may never read the row at all (Scan.h's visit under drop_silent).
+inline auto rotation_coeff_gate(const CutoffContext &ctx, double abs_c) -> bool {
+    return !ctx.is_below_sin(abs_c);
+}
+inline auto rotation_pop_gate(std::optional<size_t> only_rotate_len_k, size_t mono_pop) -> bool {
+    return !only_rotate_len_k.has_value() || mono_pop <= static_cast<size_t>(*only_rotate_len_k);
+}
 inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
                                   size_t mono_pop,
                                   const CutoffContext &ctx,
                                   double abs_c) -> bool {
-    if (only_rotate_len_k && mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
-        return false;
-    }
-    if (ctx.is_below_sin(abs_c)) {
-        return false;
-    }
-    return true;
+    return rotation_pop_gate(only_rotate_len_k, mono_pop) && rotation_coeff_gate(ctx, abs_c);
 }
 
 // One partner M⊕G as ascending positions plus the (k, d) digest the structural cutoff reads, the
@@ -368,15 +370,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         using RowPositions = typename OperatorIndex<NumModes>::RowPositions;
         RowMarks &marks = scratch.marks;
 
-        // The generator's positions, once per gate: the merge's second input. Its fingerprint is the
-        // per-gate constant every partner's fingerprint is one XOR away from.
+        // The generator's positions, once per gate: the merge's second input.
         std::vector<uint16_t> &gen_pos = scratch.gen;
         gen_pos.clear();
         for (size_t b = gen.find_first(); b < gen.size(); b = gen.find_next(b)) {
             gen_pos.push_back(static_cast<uint16_t>(b));
         }
+        // Bound once per gate so the per-record fold never re-enters routing's static-init guard.
         const uint64_t *const labels = routing::linear_basis<2 * NumModes>().data();
-        const uint64_t fp_gen = routing::linear_hash<2 * NumModes>(gen);
         // pbuf capacity is 2*NumModes: the partner's positions are distinct, so this always suffices.
         std::vector<RowPosT> &pbuf = scratch.partner;
         if (pbuf.size() < 2 * NumModes) {
@@ -440,50 +441,57 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             return {src, ham.popcount(i)};
         };
-        auto fingerprint_of_row = [&](const RowRead &row, size_t i) -> uint64_t {
-            if (row.src.inlined()) {
-                return routing::fingerprint_positions(labels, row.src.pos.data(), row.src.pos.size());
-            }
-            return routing::linear_hash<2 * NumModes>(ham.row(i));
-        };
-
-        // Fully paired rows must be heard from even when they are silent (see `drop_silent`): the
-        // absence pass would otherwise read a tracked-but-silent partner as absent and add its state
-        // phase, which is ±1 rather than the <= atol value the knob means to drop. A spilled row is
-        // treated as paired (it has no position array here, and the case is rare).
-        auto silence_is_safe = [&](const RowRead &row) -> bool {
-            if (state_mask == nullptr) {
-                return true; // Heisenberg: c0 is 0, so a false absence adds a signed zero
-            }
-            if (!row.src.inlined()) {
-                return false;
-            }
-            return !digest_is_paired(row.pop, count_paired_positions(row.src.pos.data(), row.pop));
-        };
-
         // One anticommuting row: its pivot bit, its key for the join, then the partner product and the
         // send predicate. `fetch_coeff` yields (v_src, |c|); it reads what the cos sweep has just loaded
-        // in the fused path, so it is called up front -- `drop_silent` needs the coefficient to decide
-        // whether the merge is needed at all.
-        auto visit = [&](const RowRead &row, size_t i, bool is_follower, auto &&fetch_coeff) {
+        // in the fused path, so it is called up front -- `drop_silent` decides from the coefficient alone
+        // whether this row has to be read at all. `pre` is the row when the caller has already read it
+        // (the orbital-gate loop reads it for the cosine push), nullptr otherwise.
+        auto visit = [&](size_t i, bool is_follower, const RowRead *pre, auto &&fetch_coeff) {
             if (is_follower) {
                 marks.set_foll(i);
             }
             // Every anticommuting row is a possible hit target for an incoming record, whether or not it
-            // sends one itself, so all of them are staged for the join -- with the row's positions still
-            // in cache from read_row, which is why the key is folded here and not in a second pass.
-            const uint64_t fp_row = fingerprint_of_row(row, i);
-            scratch.join.add_row(fp_row, i);
+            // sends one itself, so all of them are staged for the join -- off the key the store keeps per
+            // row, which is why staging costs no row read.
+            scratch.join.add_row_key(ham.key(i), i);
+            std::optional<RowRead> lazy;
+            auto row_of = [&]() -> const RowRead & {
+                if (pre != nullptr) {
+                    return *pre;
+                }
+                if (!lazy.has_value()) {
+                    lazy = read_row(i);
+                }
+                return *lazy;
+            };
+            // Fully paired rows must be heard from even when they are silent (see `drop_silent`): the
+            // absence pass would otherwise read a tracked-but-silent partner as absent and add its state
+            // phase, which is ±1 rather than the <= atol value the knob means to drop. A spilled row is
+            // treated as paired (it has no position array here, and the case is rare).
+            auto silence_is_safe = [&]() -> bool {
+                if (state_mask == nullptr) {
+                    return true; // Heisenberg: c0 is 0, so a false absence adds a signed zero
+                }
+                const RowRead &row = row_of();
+                if (!row.src.inlined()) {
+                    return false;
+                }
+                return !digest_is_paired(row.pop, count_paired_positions(row.src.pos.data(), row.pop));
+            };
             const auto [v_src, abs_c] = fetch_coeff();
             // E(ν) factorises: this half reads the row alone (its length and its coefficient), the other
             // needs the partner's digest. A record is silent iff this half already fails, so with
-            // `drop_silent` the whole partner product -- the merge, the cutoff, the encoding -- is
-            // skipped for it. That is where the knob's time comes from; dropping only the record itself
-            // saves the wire, not the work.
-            const bool row_rot = rotation_dynamic_gate(only_rotate_len_k, row.pop, cut_st, abs_c);
-            if (!row_rot && drop_silent && silence_is_safe(row)) {
+            // `drop_silent` the whole partner product -- the row read, the merge, the cutoff, the
+            // encoding -- is skipped for it, and the sine cutoff is tested first because it is the half
+            // that needs no popcount. Dropping only the record itself would save the wire, not the work.
+            bool row_rot = rotation_coeff_gate(cut_st, abs_c);
+            if (row_rot && only_rotate_len_k.has_value()) {
+                row_rot = rotation_pop_gate(only_rotate_len_k, row_of().pop);
+            }
+            if (!row_rot && drop_silent && silence_is_safe()) {
                 return; // approximate: the partner loses this term's |sin*v| <= atol contribution
             }
+            const RowRead &row = row_of();
             auto p = emit_partner<NumModes, A>(ham,
                                                i,
                                                row.src,
@@ -505,7 +513,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             if (drop_silent && !rot) {
                 // row_rot held (or the fast path above would have returned), so `rot` failed on the
                 // partner's cutoff: silent again, and the same approximation applies.
-                if (silence_is_safe(row)) {
+                if (silence_is_safe()) {
                     return;
                 }
             }
@@ -518,7 +526,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             if (rot && state_mask != nullptr && digest_is_paired(p.k, p.paired)) {
                 c0 = A::state_phase_positions(pbuf.data(), p.k, *state_mask);
             }
-            push(fp_row ^ fp_gen, p, std::span<const RowPosT>(pbuf).first(p.k), phase, rot, i, v_src, c0);
+            // The record's key. The row's stored key is mixed (not GF(2)-linear), so fp(μ) cannot come
+            // from it by XOR; folding μ's own positions is the same map a receiver applies to the
+            // positions it decodes, and it runs only for a record that is actually going out.
+            const uint64_t fp_partner = p.k == 0 ? 0 : routing::fingerprint_positions(labels, pbuf.data(), p.k);
+            push(fp_partner, p, std::span<const RowPosT>(pbuf).first(p.k), phase, rot, i, v_src, c0);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
@@ -569,7 +581,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     const size_t i = w.base + tz;
                     const double v_src = fused_scale_coeffs[i];
                     fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                    visit(read_row(i), i, ((w.foll >> tz) & 1U) != 0, [&] {
+                    visit(i, ((w.foll >> tz) & 1U) != 0, nullptr, [&] {
                         return std::pair<double, double>{v_src, std::abs(v_src)};
                     });
                 }
@@ -580,7 +592,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    visit(read_row(i), i, ((w.foll >> tz) & 1U) != 0, [&] { return derive_coeff(i); });
+                    visit(i, ((w.foll >> tz) & 1U) != 0, nullptr, [&] { return derive_coeff(i); });
                 }
             }
             else {
@@ -593,7 +605,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
                         cos_b.push_index(i);
                     }
-                    visit(row, i, ((w.foll >> tz) & 1U) != 0, [&] { return derive_coeff(i); });
+                    visit(i, ((w.foll >> tz) & 1U) != 0, &row, [&] { return derive_coeff(i); });
                 }
             }
         }

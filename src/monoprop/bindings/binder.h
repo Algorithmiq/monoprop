@@ -257,6 +257,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.operator_memory_usage();
         return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
+                                             {"row_keys_bytes", b.row_keys_bytes},
                                              {"op_coeffs_bytes", b.op_coeffs_bytes},
                                              {"state_coeffs_bytes", b.state_coeffs_bytes},
                                              {"indexing_bytes", b.indexing_bytes},

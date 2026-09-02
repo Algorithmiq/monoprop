@@ -77,6 +77,12 @@ public:
     //! One anticommuting row under its own fingerprint. Order is irrelevant: the buckets reorder anyway.
     auto add_row(uint64_t fp, size_t row) -> void { rows_.push_back(entry_of(fp, row)); }
 
+    // The same, from the key the store already holds for that row (OperatorIndex::key): the scan stages
+    // its whole anticommuting set this way, so pass 1 never touches a row.
+    auto add_row_key(uint32_t key, size_t row) -> void {
+        rows_.push_back(Entry{.tag = key, .v = static_cast<uint32_t>(row)});
+    }
+
     // The record side, in Q order (self-staged then incoming, as the join applies them). Sizes the hit
     // slots, which are the join's only output.
     auto begin_queries(size_t n_queries) -> void {
@@ -160,8 +166,10 @@ private:
     static constexpr size_t kMinBucketBits = 4;
     static constexpr size_t kMaxBucketBits = 10;
 
+    // One definition of the tag, in the store (OperatorIndex::join_tag), so a row's stored key and a
+    // query's tag cannot drift apart.
     static auto entry_of(uint64_t fp, size_t v) -> Entry {
-        return Entry{.tag = static_cast<uint32_t>(routing::mix64(fp) >> 32U), .v = static_cast<uint32_t>(v)};
+        return Entry{.tag = OperatorIndex<NumModes>::join_tag(fp), .v = static_cast<uint32_t>(v)};
     }
 
     // Counting sort of `in` into `out` by the tag's top bits, with `offsets` left as the bucket bounds
