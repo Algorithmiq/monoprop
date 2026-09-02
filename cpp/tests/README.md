@@ -41,11 +41,6 @@ ctest --test-dir build/editable/Release -L mpi    # MPI variants
 ctest --test-dir build/editable/Release -L mpi-2  # only the 2-rank run
 ```
 
-`find_package_smoke/` is not part of this build: it is a standalone project that
-consumes the installed package the way a downstream user does. Build and run it
-with `just test-find-package`. It compiles `link_export_probe/link_export_probe.cpp`,
-so the in-tree probe and the external consumer exercise the same API.
-
 Or drive the binary directly:
 
 ```bash

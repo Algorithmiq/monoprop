@@ -64,8 +64,6 @@ jobs:
         run: |
           just build-docs
 
-      # lychee has no package in the runner images, so this uses the action rather than the
-      # `check-doc-links` recipe. Both read the same config, which carries the options.
       - name: Check built docs links (including external)
         uses: lycheeverse/lychee-action@v2
         with:

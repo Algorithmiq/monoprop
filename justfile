@@ -25,15 +25,10 @@ no_mpi_extra := "--no-extra mpi"
 mpi_enabled := lowercase(env('monoprop_ENABLE_MPI', 'off'))
 mpi_extra := if mpi_enabled =~ '^(on|true|yes|1)$' { "" } else { no_mpi_extra }
 
-# scikit-build names the editable tree after the build type, so the sanitizer and
-# coverage configurations are found through the same environment that built them.
-
 build_dir := "build/editable" / env('SKBUILD_CMAKE_BUILD_TYPE', 'Release')
 mpiexec := "mpiexec --map-by :OVERSUBSCRIBE"
 
-# The rank matrix asks for more ranks than a runner has cores. OpenMPI 4 (ORTE) and 5
-# (PRRTE) spell oversubscription differently, and neither errors on the other's variable.
-
+# Keep both OpenMPI 4 (ORTE) and 5 (PRRTE) spell oversubscription env-vars.
 export OMPI_MCA_rmaps_base_oversubscribe := "1"
 export PRTE_MCA_rmaps_default_mapping_policy := ":oversubscribe"
 
@@ -62,7 +57,7 @@ test-cpp LABEL='':
         {{ if LABEL == '' { '' } else { '--output-junit ctest-serial-' + LABEL + '.xml' } }}
 
 # --no-tests=error: the MPI tests are registered only by an MPI-enabled build, so an
-# empty set here means the build was misconfigured, not that there is nothing to run.
+# empty set here means the build was misconfigured.
 
 test-cpp-mpi LABEL='':
     ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
@@ -82,8 +77,8 @@ test-py-mpi RANKS='' *PYTEST_ARGS:
       {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
     done
 
-# Build MPI-enabled (source builds are serial by default), then run every leg. The C++
-# rank matrix is a build-time setting, so it is baked in here rather than passed to ctest.
+# Build MPI-enabled, then run every leg. The C++
+# rank matrix is a build-time setting.
 
 test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
     requested_ranks={{ quote(RANKS) }}; \
@@ -92,8 +87,7 @@ test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
         --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
 
-# Build and run a consumer project against the installed package, the way a downstream
-# user does.
+# Build and run a consumer project against the installed package.
 
 test-find-package BUILD_DIR='build/find-package-smoke':
     #!/usr/bin/env bash
@@ -106,7 +100,7 @@ test-find-package BUILD_DIR='build/find-package-smoke':
     "$build_dir/smoke"
 
 # The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
-# Tsan) and the matching monoprop_SANITIZER define; build_dir follows that environment.
+# Tsan) and the matching monoprop_SANITIZER define.
 #
 # Only the C++ binary is fully instrumented, so the option sets differ per leg and cannot
 # be hoisted to the environment.
@@ -114,7 +108,6 @@ test-find-package BUILD_DIR='build/find-package-smoke':
 ubsan_options := "halt_on_error=1:print_stacktrace=1"
 sanitizer_log := project_source_dir / "sanitizer-log"
 
-# The instrumented binary is the only leg that can check for leaks.
 
 test-cpp-asan:
     ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
