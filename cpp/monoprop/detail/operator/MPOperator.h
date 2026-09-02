@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -323,6 +324,14 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
     size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
+    // of op_coeffs_bytes: capacity the coefficient array holds beyond its live rows. Reserved, faulted by
+    // the growth that wrote the old buffer alongside the new one, and not returned until quiescence.
+    size_t op_coeffs_slack_bytes{0uz};
+    // Counts of inverted-index columns per log-spaced density bucket (see InvertedIndex::density_histogram):
+    // every column, and the dense tier alone. The sparse tier is their elementwise difference.
+    using DensityHistogram = std::array<size_t, InvertedIndex<NumModes>::kDensityBuckets>;
+    DensityHistogram inverted_index_density_hist{};
+    DensityHistogram inverted_index_dense_density_hist{};
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
     size_t state_coeffs_nonzero{0uz};
     // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
@@ -347,6 +356,11 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        op_coeffs_slack_bytes += o.op_coeffs_slack_bytes;
+        for (size_t i = 0; i < inverted_index_density_hist.size(); ++i) {
+            inverted_index_density_hist[i] += o.inverted_index_density_hist[i];
+            inverted_index_dense_density_hist[i] += o.inverted_index_dense_density_hist[i];
+        }
         state_coeffs_nonzero += o.state_coeffs_nonzero;
         init_operator_entries += o.init_operator_entries;
         return *this;
@@ -375,8 +389,12 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_dense_bytes = tiers[0];
         breakdown.inverted_index_sparse_bytes = tiers[1];
         breakdown.inverted_index_dense_columns = tiers[2];
+        const auto hist = op.inverted_index_->density_histogram();
+        breakdown.inverted_index_density_hist = hist[0];
+        breakdown.inverted_index_dense_density_hist = hist[1];
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
+    breakdown.op_coeffs_slack_bytes = (op.op_coeffs.capacity() - op.op_coeffs.size()) * sizeof(double);
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

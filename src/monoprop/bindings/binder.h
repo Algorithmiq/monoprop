@@ -41,6 +41,17 @@ namespace nb = nanobind;
 using namespace nanobind::literals;
 
 namespace monoprop::bindings::detail {
+// A fixed-size count array as a Python list of ints. nb::cast of the array itself would need the
+// std/array caster pulled in for a single use.
+template <typename Counts>
+auto to_size_list(const Counts &counts) -> nb::list {
+    nb::list out;
+    for (const size_t count : counts) {
+        out.append(count);
+    }
+    return out;
+}
+
 // mpi4py comm object -> MPI_Comm.
 auto get_mpi_comm(nb::object obj) -> MPI_Comm;
 
@@ -254,25 +265,38 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "Total bytes held by the graph on this rank");
 
     // total_bytes() alone cannot say whether the row store or the transposed inverted index dominates.
+    // Built as a std::map and copied out so the keys stay sorted, then widened to an nb::dict because the
+    // density histograms are lists rather than scalars.
     cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.operator_memory_usage();
-        return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
-                                             {"row_keys_bytes", b.row_keys_bytes},
-                                             {"op_coeffs_bytes", b.op_coeffs_bytes},
-                                             {"state_coeffs_bytes", b.state_coeffs_bytes},
-                                             {"indexing_bytes", b.indexing_bytes},
-                                             {"init_operator_bytes", b.init_operator_bytes},
-                                             {"initial_state_bytes", b.initial_state_bytes},
-                                             {"inverted_index_bytes", b.inverted_index_bytes},
-                                             {"gate_scratch_bytes", b.gate_scratch_bytes},
-                                             {"total_bytes", b.total_bytes()},
-                                             // Diagnostics, outside total_bytes().
-                                             {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
-                                             {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
-                                             {"d_invidx_dense_columns", b.inverted_index_dense_columns},
-                                             {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
-                                             {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
-                                             {"d_init_operator_entries", b.init_operator_entries}};
+        const auto scalars = std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
+                                                           {"row_keys_bytes", b.row_keys_bytes},
+                                                           {"op_coeffs_bytes", b.op_coeffs_bytes},
+                                                           {"state_coeffs_bytes", b.state_coeffs_bytes},
+                                                           {"indexing_bytes", b.indexing_bytes},
+                                                           {"init_operator_bytes", b.init_operator_bytes},
+                                                           {"initial_state_bytes", b.initial_state_bytes},
+                                                           {"inverted_index_bytes", b.inverted_index_bytes},
+                                                           {"gate_scratch_bytes", b.gate_scratch_bytes},
+                                                           {"total_bytes", b.total_bytes()},
+                                                           // Diagnostics, outside total_bytes().
+                                                           {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
+                                                           {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                                           {"d_invidx_dense_columns", b.inverted_index_dense_columns},
+                                                           {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
+                                                           {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
+                                                           {"d_init_operator_entries", b.init_operator_entries},
+                                                           {"d_op_coeffs_slack_bytes", b.op_coeffs_slack_bytes}};
+
+        nb::dict out;
+        for (const auto &[name, value] : scalars) {
+            out[name.c_str()] = value;
+        }
+        // Fixed length (InvertedIndex::kDensityBuckets) in every build, so an A/B can subtract the two
+        // lists bucket by bucket without agreeing on anything else first.
+        out["d_invidx_density_hist"] = to_size_list(b.inverted_index_density_hist);
+        out["d_invidx_dense_density_hist"] = to_size_list(b.inverted_index_dense_density_hist);
+        return out;
     });
 
     // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P
