@@ -97,22 +97,29 @@ Key files:
 - **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
   mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
   Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
-- **Partner lookup is per gate, not per operator** (`cpp/monoprop/detail/evolution/layer_build/AntiTable.h`):
+- **Partner lookup is per gate, not per operator** (`cpp/monoprop/detail/evolution/layer_build/BucketJoin.h`):
   a tracked partner `M⊕G` of an anticommuting term anticommutes with `G` too, so it is found inside the
   gate's own anticommuting set. `detail::OperatorIndex<N>` therefore keeps no hash table — rows only —
   and the out-of-gate lookups (`get_operator`'s pending drain, `update_initial_operator`) build a transient
   `detail::TermLookup` (`detail/operator/TermLookup.h`) over the rows they need. The per-gate key is the
   routing fingerprint (`routing::fingerprint_positions`, `detail/mpi/Routing.h`), GF(2)-linear so the
-  partner's key is `fp(M) ^ fp(G)`; every key match is confirmed against the positions.
+  partner's key is `fp(M) ^ fp(G)`; every key match is confirmed against the positions. Neither side of
+  that join is small (with `lower_atol` the records are ~0.85 of Anti(G)), so **neither is the
+  random-access side**: the scan stages its anticommuting rows with the key it folds while the row is in
+  cache, the records are staged after the exchange, and both are bucketed by the key's top bits and joined
+  bucket by bucket in L1. The protocol's per-row state (`rot`, `foll`, `received`, `partner_rot`) is
+  `RowMarks` in `GateScratch.h`, bitsets over rows cleared per gate by zeroing the fold's `nz` words.
 - **One round per gate** (`cpp/monoprop/detail/evolution/layer_build/Engine.h`, records in `Scan.h`,
   join in `Resolve.h`): every anticommuting term whose partner passes the structural cutoff sends ONE
   record `(key = M⊕G, φ, rot, [value])` to the partner's owner, in the same `alltoallv`. The receiver
-  joins each record against its own AntiTable: a hit rotates iff the record's `rot` or the row's own
-  `rot` is set (the pair's two adds happen on the two owners, with `φ(M⊕G,G) = −φ(M,G)`), a `rot=1` miss
-  mints the key at `base+j` in join order, a `rot=0` miss is dropped; afterwards `rot ∧ ¬received` on a
-  sent ordinal means the partner is absent everywhere. There is no query→response pass and no
+  joins each record against its own anticommuting rows: a hit rotates iff the record's `rot` or the row's
+  own `rot` is set (the pair's two adds happen on the two owners, with `φ(M⊕G,G) = −φ(M,G)`), a `rot=1`
+  miss mints the key at `base+j` in join order, a `rot=0` miss is dropped; afterwards `rot ∧ ¬received`
+  on a sent row means the partner is absent everywhere. There is no query→response pass and no
   leader/follower split on the wire; graph mode derives its positional in/out pairing from the same
-  join order plus the pivot bit.
+  join order plus the pivot bit. A silent (`rot=0`) record exists only so its partner can rotate with
+  the sender's value and not read the sender as absent; `monoprop_DROP_SILENT_RECORDS=1` (off by
+  default, fused path only, `detail/EnvConfig.h`) drops them for a below-`lower_atol` error per pair.
 - **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
   (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
   `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row

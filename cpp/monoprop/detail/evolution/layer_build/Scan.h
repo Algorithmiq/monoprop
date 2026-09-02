@@ -28,6 +28,7 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/GateScratch.h"
@@ -73,15 +74,7 @@ auto build_even_parity_generator_columns(const Monomial<NumModes> &gen_mono) -> 
     return columns;
 }
 
-// One nonzero-overlap word carried from scan pass 1 to emit pass 2. `overlap` bit t set ⟺ term (base+t)
-// anticommutes with G; `foll` = overlap & pivot column = the followers (leaders are `overlap ^ foll`).
-struct EvenParityNzWord {
-    size_t base;
-    uint64_t overlap;
-    uint64_t foll;
-};
-
-// Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
+// Even-parity scan pass 1 over words [wlo,whi). n_anti is tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
 // in before followers are derived.
@@ -96,11 +89,9 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    bool g_odd,
                                    const uint64_t *row_parity_ptr,
                                    std::vector<EvenParityNzWord> &nz,
-                                   size_t &n_anti,
-                                   size_t &n_foll) -> void {
+                                   size_t &n_anti) -> void {
     nz.clear();
     n_anti = 0;
-    n_foll = 0;
     const bool pivot_dense = sc.column_is_dense(pivot_col);
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
@@ -122,11 +113,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                 continue;
             }
             n_anti += static_cast<size_t>(std::popcount(overlap));
-            uint64_t foll = 0;
-            if (pivot_dense) {
-                foll = overlap & pivot_dense_ptr[wi];
-                n_foll += static_cast<size_t>(std::popcount(foll));
-            }
+            const uint64_t foll = pivot_dense ? (overlap & pivot_dense_ptr[wi]) : uint64_t{0};
             nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
         }
         if (pivot_dense || nz.size() == nz_block_start) {
@@ -139,7 +126,6 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
             EvenParityNzWord &e = nz[k];
             const size_t wi = e.base / 64;
             e.foll = e.overlap & pw[wi - bb];
-            n_foll += static_cast<size_t>(std::popcount(e.foll));
         }
     };
     for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
@@ -172,6 +158,7 @@ struct PartnerProduct {
     size_t overlap = 0; // slots in both M and G, which cancel
     size_t paired = 0;  // modes of M⊕G carrying both positions: the d of the (k, d) digest
     int phase_factor = 0;
+    bool sign_pending = false; // phase_factor not filled: the caller asked for the digest only
     bool has_dense = false;
     Monomial<NumModes> dense; // M⊕G; valid iff has_dense
 };
@@ -193,6 +180,11 @@ template <typename PosT>
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
 // hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready. `src` is row i's positions
 // as the caller already read them (a spilled row has none, and that case walks the dense form instead).
+//
+// `need_sign` false returns the digest with `sign_pending` set and no sign computed, for a caller whose
+// send predicate reads the digest first and may drop the record: the sign is then taken from the same
+// positions once the record is known to go out. The paths that build the dense partner compute the sign
+// on the way there, so they honour the request only in the common inline case.
 template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 [[gnu::always_inline]] inline auto emit_partner(const OperatorIndex<NumModes> &ham,
                                                 size_t i,
@@ -200,7 +192,8 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
                                                 const typename A::GenContext &ctx,
                                                 std::span<const GenT> gen_pos,
                                                 std::span<PosT> out_pos,
-                                                bool need_dense) -> PartnerProduct<NumModes> {
+                                                bool need_dense,
+                                                bool need_sign = true) -> PartnerProduct<NumModes> {
     const Monomial<NumModes> &gen = A::generator(ctx);
     PartnerProduct<NumModes> out;
     if (src.inlined()) {
@@ -209,7 +202,12 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
         out.overlap = merged.overlap;
         out.paired = merged.paired;
         if (A::sign_from_positions_ok(ctx)) {
-            out.phase_factor = A::rotation_sign_positions(ctx, src.pos.data(), src.pos.size());
+            if (need_sign) {
+                out.phase_factor = A::rotation_sign_positions(ctx, src.pos.data(), src.pos.size());
+            }
+            else {
+                out.sign_pending = true;
+            }
             if (need_dense) {
                 for (size_t j = 0; j < out.k; ++j) {
                     out.dense.set(static_cast<size_t>(out_pos[j]));
@@ -251,10 +249,10 @@ struct FusedScanResult {
     // The wire records (QueryWire.h) per destination slot, in stream order = ascending source row. Fused
     // (value word after each record) iff capture_values.
     mpi::WindowVec<VecZ> queries;
-    // Per destination slot, the AntiTable ordinal of each record's SOURCE, parallel to the records of
-    // that slot (the self slot's parallel to `self`). Ascending, because the scan walks rows ascending
-    // and ordinals follow rows: the absence pass and the graph sink's out lists rely on that order.
-    mpi::WindowVec<std::vector<uint32_t>> sent;
+    // Per destination slot, the SOURCE row and emit phase of each record, parallel to the records of
+    // that slot (the self slot's parallel to `self`). Ascending in row, because the scan walks rows
+    // ascending: the absence pass and the graph sink's out lists rely on that order.
+    mpi::WindowVec<std::vector<SentRecord>> sent;
     // Parallel to `sent`: c0(μ), the pre-gate coefficient the partner would be minted with (Schrödinger:
     // state score of a fully paired μ, else 0). Only filled when a state mask is given, i.e. for the
     // fused Schrödinger picture; read by the absence pass alone.
@@ -265,15 +263,18 @@ struct FusedScanResult {
     SelfQueryStage<NumModes> self;
 };
 
-// Classify, cut off and emit in one pass over the anticommuting terms. Every anticommuting row is entered
-// into scratch.anti keyed by its fingerprint, with its pivot bit (`foll`), and then decides two things
-// about its partner μ = M⊕G (Engine.h has the protocol):
+// Classify, cut off and emit in one pass over the anticommuting terms. Every anticommuting row records
+// its pivot bit (`foll`) in scratch.marks and then decides two things about its partner μ = M⊕G
+// (Engine.h has the protocol):
 //   send(M) = struct_pass(μ) ∨ over_cutoff_possible     a record for μ goes to owner(μ)
 //   E(M)    = rotation_dynamic_gate ∧ (struct_pass(μ) ∨ is_above_upper(|c|))   its `rot` bit
 // E ⇒ send. A term that fails send has no tracked partner (Engine.h argues why), so nothing is lost by
-// not sending; one that passes send but fails E sends a rot=0 record so the partner learns it exists.
+// not sending; one that passes send but fails E sends a rot=0 record so the partner learns it exists --
+// that record is what monoprop_DROP_SILENT_RECORDS trades away.
 // Records go to the owner of μ (routing::Router; self at R==1) in ascending source-index order, so the
-// join and the miss-index assignment are deterministic.
+// join and the miss-index assignment are deterministic. The rows themselves are NOT indexed here: the
+// join is streamed over `scratch.nz` against a table of the records (QueryJoin.h), so the only per-term
+// row work the scan does is the partner merge every record needs anyway.
 //
 // `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting coeff in
 // place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built; the value a record carries
@@ -302,6 +303,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const auto ectx = A::make_gen_context(gen);
     assert(window.stop() <= rank_count && window.count != 0);
 
+    // Opt-in approximation (EnvConfig.h), fused path only: a silent term sends nothing, so its partner
+    // loses a |sin*v| <= atol contribution. Graph mode must not use it -- replay pairs my out-records
+    // with the peer's in-records positionally, which needs every tracked partner to answer.
+    const bool drop_silent = capture_values && config::get().drop_silent_records;
+
     FusedScanResult<NumModes> res;
     res.window = window;
     res.queries.reset(window);
@@ -310,8 +316,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     if (state_mask != nullptr) {
         res.sent_c0.reset(window);
     }
-    // An empty table on every early return: the join probes it for every record it carries.
-    scratch.anti.begin(0);
+    // No anticommuting words on an early return: the join then has no row to match a record against,
+    // and the per-row marks stay untouched because nothing is sent either.
+    scratch.nz.clear();
+    scratch.join.clear_rows();
 
     {
         // The anticommutation fold runs over G's inverted-index columns (Majorana: G; Pauli: J(G) =
@@ -358,8 +366,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const OperatorIndex<NumModes> &ham = *op.store;
         using RowPosT = typename OperatorIndex<NumModes>::PosT;
         using RowPositions = typename OperatorIndex<NumModes>::RowPositions;
-        using Ordinal = typename AntiTable<NumModes>::Ordinal;
-        AntiTable<NumModes> &table = scratch.anti;
+        RowMarks &marks = scratch.marks;
 
         // The generator's positions, once per gate: the merge's second input. Its fingerprint is the
         // per-gate constant every partner's fingerprint is one XOR away from.
@@ -385,7 +392,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         std::span<const RowPosT> pos,
                         int phase,
                         bool rot,
-                        Ordinal ord,
+                        size_t row,
                         double v_src,
                         double c0) {
             // Single rank: every partner is self-owned. Multi-rank routes by owner: off the fingerprint
@@ -415,70 +422,112 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     QueryWire<NumModes>::push_value(buf, v_src);
                 }
             }
-            res.sent.at_slot(r_prime).push_back(ord);
+            res.sent.at_slot(r_prime).push_back(SentRecord{static_cast<TermIndex>(row), static_cast<int8_t>(phase)});
             if (state_mask != nullptr) {
                 res.sent_c0.at_slot(r_prime).push_back(c0);
             }
         };
 
-        // Row i as the scan reads it: its positions (empty span for a spilled row), popcount and
-        // fingerprint. Read once per anticommuting row, before any gate, because the row enters the
-        // partner table whether or not it is emitted.
+        // Row i as the scan reads it: its positions (empty span for a spilled row) and popcount.
         struct RowRead {
             RowPositions src;
             size_t pop;
-            uint64_t fp;
         };
         auto read_row = [&](size_t i) -> RowRead {
             const RowPositions src = ham.row_positions(i);
             if (src.inlined()) {
-                return {src, src.pos.size(), routing::fingerprint_positions(labels, src.pos.data(), src.pos.size())};
+                return {src, src.pos.size()};
             }
-            const Monomial<NumModes> dense = ham.row(i);
-            return {src, dense.count(), routing::linear_hash<2 * NumModes>(dense)};
+            return {src, ham.popcount(i)};
+        };
+        auto fingerprint_of_row = [&](const RowRead &row, size_t i) -> uint64_t {
+            if (row.src.inlined()) {
+                return routing::fingerprint_positions(labels, row.src.pos.data(), row.src.pos.size());
+            }
+            return routing::linear_hash<2 * NumModes>(ham.row(i));
         };
 
-        // One anticommuting row, already in the table as `ord`: the partner product, then send / E.
-        // abs_c/v_src come from the caller's coeff read, not re-read.
-        auto visit = [&](const RowRead &row, size_t i, Ordinal ord, double abs_c, double v_src, bool is_follower) {
-            if (is_follower) {
-                table.set_foll(ord);
+        // Fully paired rows must be heard from even when they are silent (see `drop_silent`): the
+        // absence pass would otherwise read a tracked-but-silent partner as absent and add its state
+        // phase, which is ±1 rather than the <= atol value the knob means to drop. A spilled row is
+        // treated as paired (it has no position array here, and the case is rare).
+        auto silence_is_safe = [&](const RowRead &row) -> bool {
+            if (state_mask == nullptr) {
+                return true; // Heisenberg: c0 is 0, so a false absence adds a signed zero
             }
-            const auto p = emit_partner<NumModes, A>(ham,
-                                                     i,
-                                                     row.src,
-                                                     ectx,
-                                                     std::span<const uint16_t>(gen_pos),
-                                                     std::span<RowPosT>(pbuf),
-                                                     need_dense);
+            if (!row.src.inlined()) {
+                return false;
+            }
+            return !digest_is_paired(row.pop, count_paired_positions(row.src.pos.data(), row.pop));
+        };
+
+        // One anticommuting row: its pivot bit, its key for the join, then the partner product and the
+        // send predicate. `fetch_coeff` yields (v_src, |c|); it reads what the cos sweep has just loaded
+        // in the fused path, so it is called up front -- `drop_silent` needs the coefficient to decide
+        // whether the merge is needed at all.
+        auto visit = [&](const RowRead &row, size_t i, bool is_follower, auto &&fetch_coeff) {
+            if (is_follower) {
+                marks.set_foll(i);
+            }
+            // Every anticommuting row is a possible hit target for an incoming record, whether or not it
+            // sends one itself, so all of them are staged for the join -- with the row's positions still
+            // in cache from read_row, which is why the key is folded here and not in a second pass.
+            const uint64_t fp_row = fingerprint_of_row(row, i);
+            scratch.join.add_row(fp_row, i);
+            const auto [v_src, abs_c] = fetch_coeff();
+            // E(ν) factorises: this half reads the row alone (its length and its coefficient), the other
+            // needs the partner's digest. A record is silent iff this half already fails, so with
+            // `drop_silent` the whole partner product -- the merge, the cutoff, the encoding -- is
+            // skipped for it. That is where the knob's time comes from; dropping only the record itself
+            // saves the wire, not the work.
+            const bool row_rot = rotation_dynamic_gate(only_rotate_len_k, row.pop, cut_st, abs_c);
+            if (!row_rot && drop_silent && silence_is_safe(row)) {
+                return; // approximate: the partner loses this term's |sin*v| <= atol contribution
+            }
+            auto p = emit_partner<NumModes, A>(ham,
+                                               i,
+                                               row.src,
+                                               ectx,
+                                               std::span<const uint16_t>(gen_pos),
+                                               std::span<RowPosT>(pbuf),
+                                               need_dense,
+                                               /*need_sign=*/false);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const bool struct_pass = cutoff_eval.has_digest_form() ? cutoff_eval.passes_from_digest(p.k, p.paired)
                                                                    : cutoff_eval.passes_with_popcount(p.dense, p.k);
             if (!struct_pass && !over_cutoff_possible) {
                 return; // μ cannot be tracked and would not be minted: nobody needs to hear from M
             }
-            const bool rot = rotation_dynamic_gate(only_rotate_len_k, row.pop, cut_st, abs_c)
-                             && (struct_pass || cut_st.is_above_upper(abs_c));
-            const int phase = A::emit_phase(p.phase_factor, row.pop, gen_pop, p.overlap);
-            table.set_phase(ord, phase);
-            double c0 = 0.0;
+            const bool rot = row_rot && (struct_pass || cut_st.is_above_upper(abs_c));
             if (rot) {
-                table.set_rot(ord);
-                // Only an E-record can mint, so only it needs the fresh partner's pre-gate coefficient.
-                if (state_mask != nullptr && digest_is_paired(p.k, p.paired)) {
-                    c0 = A::state_phase_positions(pbuf.data(), p.k, *state_mask);
+                marks.set_rot(i);
+            }
+            if (drop_silent && !rot) {
+                // row_rot held (or the fast path above would have returned), so `rot` failed on the
+                // partner's cutoff: silent again, and the same approximation applies.
+                if (silence_is_safe(row)) {
+                    return;
                 }
             }
-            push(row.fp ^ fp_gen, p, std::span<const RowPosT>(pbuf).first(p.k), phase, rot, ord, v_src, c0);
+            if (p.sign_pending) {
+                p.phase_factor = A::rotation_sign_positions(ectx, row.src.pos.data(), row.src.pos.size());
+            }
+            const int phase = A::emit_phase(p.phase_factor, row.pop, gen_pop, p.overlap);
+            double c0 = 0.0;
+            // Only an E-record can mint, so only it needs the fresh partner's pre-gate coefficient.
+            if (rot && state_mask != nullptr && digest_is_paired(p.k, p.paired)) {
+                c0 = A::state_phase_positions(pbuf.data(), p.k, *state_mask);
+            }
+            push(fp_row ^ fp_gen, p, std::span<const RowPosT>(pbuf).first(p.k), phase, rot, i, v_src, c0);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
-        // between them. `nz` is thread_local so each partition master reuses its capacity across gates.
-        thread_local std::vector<EvenParityNzWord> nz;
+        // between them. `nz` is scratch-owned, both to reuse its capacity across gates and because the
+        // join streams it again after the exchange (Engine.h).
+        std::vector<EvenParityNzWord> &nz = scratch.nz;
         size_t n_anti = 0;
-        size_t n_foll = 0;
         if (skip_scan) {
-            nz.clear(); // pass 1 clears it on entry; the skip must too (thread_local reuse)
+            nz.clear(); // pass 1 clears it on entry; the skip must too (the vector is reused)
         }
         else {
             even_parity_scan_pass1<NumModes>(inverted_index,
@@ -491,10 +540,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              g_odd,
                                              row_parity_ptr,
                                              nz,
-                                             n_anti,
-                                             n_foll);
+                                             n_anti);
         }
-        table.begin(n_anti);
+        // After pass 1, so the clear knows which words carry this gate's rows and the join's row side is
+        // sized to the tally; before the emit pass, which is what fills both.
+        marks.begin(n, nz);
+        scratch.join.begin_rows(n_anti);
         if (rank_count == 1) {
             // A hint only; wider terms grow the buffer as needed.
             res.self.reserve(n_anti, QueryWire<NumModes>::kReservePositionsPerQuery);
@@ -516,11 +567,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const RowRead row = read_row(i);
-                    const Ordinal ord = table.add(static_cast<TermIndex>(i), row.fp);
                     const double v_src = fused_scale_coeffs[i];
                     fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                    visit(row, i, ord, std::abs(v_src), v_src, ((w.foll >> tz) & 1U) != 0);
+                    visit(read_row(i), i, ((w.foll >> tz) & 1U) != 0, [&] {
+                        return std::pair<double, double>{v_src, std::abs(v_src)};
+                    });
                 }
             }
             else if (word_aligned_cos) {
@@ -529,26 +580,20 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const RowRead row = read_row(i);
-                    const Ordinal ord = table.add(static_cast<TermIndex>(i), row.fp);
-                    const auto [v_src, abs_c] = derive_coeff(i);
-                    visit(row, i, ord, abs_c, v_src, ((w.foll >> tz) & 1U) != 0);
+                    visit(read_row(i), i, ((w.foll >> tz) & 1U) != 0, [&] { return derive_coeff(i); });
                 }
             }
             else {
                 // Orbital gate active: the per-index cosine push covers only orbital-passing terms. A
-                // capped term is still entered into the partner table and still sends (with rot=0), since
-                // its partner may rotate it.
+                // capped term still sends (with rot=0), since its partner may rotate it.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
                     const RowRead row = read_row(i);
-                    const Ordinal ord = table.add(static_cast<TermIndex>(i), row.fp);
                     if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
                         cos_b.push_index(i);
                     }
-                    const auto [v_src, abs_c] = derive_coeff(i);
-                    visit(row, i, ord, abs_c, v_src, ((w.foll >> tz) & 1U) != 0);
+                    visit(row, i, ((w.foll >> tz) & 1U) != 0, [&] { return derive_coeff(i); });
                 }
             }
         }

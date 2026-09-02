@@ -34,7 +34,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
-#include "monoprop/detail/evolution/layer_build/AntiTable.h"
+#include "monoprop/detail/evolution/layer_build/BucketJoin.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
@@ -45,7 +45,6 @@
 #include "monoprop/detail/operator/RowAccess.h"
 
 using namespace monoprop;
-using monoprop::detail::AntiTable;
 using monoprop::detail::CutoffContext;
 
 namespace {
@@ -104,8 +103,8 @@ auto fp_of(const Monomial<kN> &m) -> uint64_t {
     return routing::fingerprint_positions(routing::linear_basis<2 * kN>().data(), pos.data(), pos.size());
 }
 
-// The scenario every engine case below runs: six tracked rows t0..t5 in the table (ordinal == row), each
-// sending one self-addressed record in stream order. Odd ordinals carry the pivot (foll).
+// The scenario every engine case below runs: six tracked anticommuting rows t0..t5, each sending one
+// self-addressed record in stream order. Odd rows carry the pivot (foll).
 //
 //   src  key         rot  φ    v      expectation at the join
 //   t0   t1 (hit)    1    +1   0.5    hit: rotates by the record's rot
@@ -122,26 +121,24 @@ struct Scenario {
     Monomial<kN> absent_y = indices_to_bitset<kN>({4, 5});
     Op op;
     detail::GateScratch<kN> scratch;
+    // The scan's product: rows 0..5 are the gate's anticommuting set, all in word 0.
+    std::vector<detail::EvenParityNzWord> nz{{.base = 0, .overlap = 0b11'1111, .foll = 0b10'1010}};
 
     Scenario() {
         for (size_t i = 0; i < 6; ++i) {
             terms.push_back(indices_to_bitset<kN>({i, i + 8}));
         }
         op = indexed_op(terms);
-        scratch.anti.begin(terms.size());
+        scratch.marks.begin(terms.size(), nz);
+        scratch.join.begin_rows(terms.size());
         for (size_t i = 0; i < terms.size(); ++i) {
-            const auto ord = scratch.anti.add(static_cast<TermIndex>(i), fp_of(terms[i]));
-            BOOST_REQUIRE_EQUAL(ord, i);
+            scratch.join.add_row(fp_of(terms[i]), i);
             if (i % 2 == 1) {
-                scratch.anti.set_foll(ord);
+                scratch.marks.set_foll(i);
             }
         }
-        for (const uint32_t ord : {0U, 1U, 3U, 5U}) {
-            scratch.anti.set_rot(ord);
-        }
-        const int phases[] = {1, -1, 1, -1, 1, 1};
-        for (uint32_t ord = 0; ord < 6; ++ord) {
-            scratch.anti.set_phase(ord, phases[ord]);
+        for (const size_t row : {0U, 1U, 3U, 5U}) {
+            scratch.marks.set_rot(row);
         }
     }
 
@@ -154,9 +151,10 @@ struct Scenario {
             res.sent_c0.reset(res.window);
             res.sent_c0.at_slot(0) = {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         }
-        auto push = [&](const Monomial<kN> &key, int phase, bool rot, double v, uint32_t ord) {
+        auto push = [&](const Monomial<kN> &key, int phase, bool rot, double v, size_t row) {
             res.self.push(positions_of(key), phase, fp_of(key), rot, v);
-            res.sent.at_slot(0).push_back(ord);
+            res.sent.at_slot(0).push_back(
+                detail::SentRecord{.row = static_cast<TermIndex>(row), .phase = static_cast<int8_t>(phase)});
         };
         push(terms[1], 1, true, 0.5, 0);
         push(absent_x, -1, true, 0.25, 1);
@@ -221,7 +219,7 @@ BOOST_AUTO_TEST_CASE(one_round_join_applies_the_receiver_rule) {
     BOOST_REQUIRE_EQUAL(sc.op.store->size(), 7U);
     BOOST_TEST((sc.op.store->row(6) == sc.absent_x));
 
-    const auto &t = sc.scratch.anti;
+    const auto &t = sc.scratch.marks;
     BOOST_TEST(!t.received(0));
     BOOST_TEST(t.received(1));
     BOOST_TEST(t.received(2));
@@ -241,9 +239,21 @@ BOOST_AUTO_TEST_CASE(one_round_absence_pass_reports_unanswered_and_answered_lead
     RecordingSink sink;
     auto scan = sc.scan(/*with_c0=*/true);
     detail::MissStage<kN> misses;
-    detail::join_self<kN>(scan.self, sc.scratch.anti, *sc.op.store, /*my_rank=*/0, /*base=*/6, misses, sink);
+    sc.scratch.join.begin_queries(scan.self.size());
+    for (size_t q = 0; q < scan.self.size(); ++q) {
+        sc.scratch.join.add_query(q, scan.self.fp_of[q]);
+    }
+    sc.scratch.join.run(*sc.op.store, [&](size_t q) { return scan.self.positions_at(q); });
+    detail::join_self<kN>(scan.self,
+                          sc.scratch.join,
+                          /*q_base=*/0,
+                          sc.scratch.marks,
+                          /*my_rank=*/0,
+                          /*base=*/6,
+                          misses,
+                          sink);
     sink.recs.clear();
-    detail::absence_pass<kN>(sc.scratch.anti, scan.sent, scan.sent_c0, sink);
+    detail::absence_pass<kN>(sc.scratch.marks, scan.sent, scan.sent_c0, sink);
     BOOST_REQUIRE_EQUAL(sink.recs.size(), 2U);
     BOOST_TEST(sink.recs[0].kind == "out_unanswered");
     BOOST_TEST(sink.recs[0].idx == 0U);
@@ -587,13 +597,15 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                            nullptr,
                                                            1.0,
                                                            &mask);
-    BOOST_REQUIRE_EQUAL(scratch.anti.size(), 3U);
+    BOOST_REQUIRE_EQUAL(scratch.join.rows(), 3U);
     BOOST_REQUIRE_EQUAL(res.self.size(), 3U); // R = 1: every record is self-addressed and staged
     const auto &sent = res.sent.at_slot(0);
     const auto &c0 = res.sent_c0.at_slot(0);
     BOOST_REQUIRE_EQUAL(sent.size(), 3U);
     BOOST_REQUIRE_EQUAL(c0.size(), 3U);
-    BOOST_TEST(sent == (std::vector<uint32_t>{0, 1, 2}), boost::test_tools::per_element());
+    for (size_t j = 0; j < 3; ++j) {
+        BOOST_TEST(sent[j].row == static_cast<TermIndex>(j));
+    }
     BOOST_TEST(c0[0] == -1.0);
     BOOST_TEST(c0[1] == 0.0);
     BOOST_TEST(c0[2] == 1.0);
@@ -602,7 +614,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
     for (size_t q = 0; q < 3; ++q) {
         BOOST_TEST(res.self.rot_of[q] == 1);
         BOOST_TEST(res.self.val_of[q] == 1.0);
-        BOOST_TEST(scratch.anti.rot(static_cast<uint32_t>(q)));
+        BOOST_TEST(scratch.marks.rot(q));
     }
     // Without a state mask (Heisenberg) no c0 is carried at all.
     detail::GateScratch<kM> scratch_h;

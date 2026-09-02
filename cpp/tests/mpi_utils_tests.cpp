@@ -229,13 +229,13 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          false,
                                                                                          nullptr,
                                                                                          1.0);
-                // Every anticommuting row is in the table, emitted or not.
-                BOOST_REQUIRE(scratch.anti.size() > 0U);
+                // Every anticommuting row is staged for the join, emitted or not.
+                BOOST_REQUIRE(scratch.join.rows() > 0U);
                 BOOST_REQUIRE_EQUAL(res.queries.size(), window.count);
                 BOOST_REQUIRE_EQUAL(res.sent.size(), window.count);
                 if (window.contains(my_rank)) {
                     // The scan routes a self-owned partner to the stage, so my own bucket must be empty,
-                    // and the stage's parallel ordinal list is the one for the self slot.
+                    // and the stage's parallel record list is the one for the self slot.
                     BOOST_REQUIRE(res.queries.at_slot(my_rank).empty());
                     BOOST_REQUIRE_EQUAL(res.sent.at_slot(my_rank).size(), res.self.size());
                 }
@@ -243,20 +243,23 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                     // A non-zero shift puts self outside the window entirely, so nothing may be staged.
                     BOOST_REQUIRE_EQUAL(res.self.size(), 0U);
                 }
-                // One record per emitting source, so the per-slot ordinal lists account for every record
-                // and are ascending: the absence pass and the graph sink's out lists rely on that.
+                // One record per sending source, so the per-slot source lists account for every record
+                // and are ascending in row: the absence pass and the graph sink's out lists rely on that.
                 for (size_t k = 0; k < window.count; ++k) {
                     const mpi::WindowIndex wi{k};
-                    const auto &ords = res.sent[wi];
-                    BOOST_REQUIRE(std::is_sorted(ords.begin(), ords.end()));
-                    BOOST_REQUIRE((std::adjacent_find(ords.begin(), ords.end()) == ords.end()));
+                    std::vector<TermIndex> rows;
+                    for (const auto &rec : res.sent[wi]) {
+                        rows.push_back(rec.row);
+                    }
+                    BOOST_REQUIRE(std::is_sorted(rows.begin(), rows.end()));
+                    BOOST_REQUIRE((std::adjacent_find(rows.begin(), rows.end()) == rows.end()));
                     if (window.slot(wi) != my_rank) {
                         BOOST_REQUIRE_EQUAL(
                             detail::QueryWire<kN>::count_queries(res.queries[wi], detail::QueryForm::Plain),
-                            ords.size());
+                            rows.size());
                     }
-                    for (const auto ord : ords) {
-                        BOOST_REQUIRE(ord < scratch.anti.size());
+                    for (const auto row : rows) {
+                        BOOST_REQUIRE(static_cast<size_t>(row) < op.store->size());
                     }
                 }
                 check_bucket_ownership(res.queries, router, checked);

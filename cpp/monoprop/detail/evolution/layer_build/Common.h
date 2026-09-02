@@ -32,6 +32,24 @@ namespace monoprop::detail {
 // OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
+// One nonzero-overlap word of the anticommutation fold, produced by the scan's pass 1 and read again by
+// the join's streaming pass and the per-gate mark clear. `overlap` bit t set ⟺ term (base+t)
+// anticommutes with G; `foll` = overlap & pivot column = the followers (leaders are `overlap ^ foll`).
+// `base` is a multiple of 64: it is word wi's first row, so base/64 indexes a row-bitset word directly.
+struct EvenParityNzWord {
+    size_t base;
+    uint64_t overlap;
+    uint64_t foll;
+};
+
+// One record this slot sent for a gate, in stream order (ascending source row): the source row and the
+// emit phase φ of that source. The absence pass walks these, so the row is carried rather than looked
+// up -- there are no per-gate ordinals to index a phase array by.
+struct SentRecord {
+    TermIndex row;
+    int8_t phase; // ternary, as A::emit_phase returns it
+};
+
 // A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower
 // the gather to memmove.
 struct PhasedEntry {

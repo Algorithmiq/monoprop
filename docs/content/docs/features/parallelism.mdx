@@ -111,9 +111,10 @@ The fingerprint serves one more purpose. Because a term that anticommutes with $
 partner $M \oplus G$ that anticommutes with $G$ too, the partner of every term a gate touches,
 if it is tracked at all, is inside the gate's own anticommuting set — which the
 anticommutation index already returns. Partner lookup therefore never consults a persistent
-hash table over the operator: each gate builds a small table over its anticommuting rows,
-keyed by the mixed fingerprint with every match confirmed against the row's positions, and
-discards it. The operator store holds positions and coefficients and nothing else.
+hash table over the operator: each gate joins its own anticommuting rows against the records
+it must answer, both sides bucketed by the mixed fingerprint and every match confirmed against
+the row's positions, and discards the buckets. The operator store holds positions and
+coefficients and nothing else.
 
 Every gate is then one exchange round. A term $M$ that anticommutes with $G$ and whose
 partner $M \oplus G$ is structurally admissible sends one record — the partner's positions,
@@ -128,6 +129,19 @@ answered knows, with no second message, that its partner is absent everywhere �
 partner's owner could have sent the matching key, and it does whenever the partner is
 tracked. Graph mode records the same joins as the layer's in/out endpoint lists, so the
 replay pairs them positionally without exchanging indices.
+
+Symmetry is what makes one round enough, and it is not free: a term below `lower_atol` does
+not rotate, but its partner may, and only the term itself can supply its own coefficient — so
+it still sends a record with the rotation bit clear. In the `lower_atol` regime those silent
+records are most of the traffic and most of the join. `monoprop_DROP_SILENT_RECORDS=1` drops
+them: a rotating term then loses its partner's contribution $\sin(2\theta)\,\varphi\,v$,
+whose magnitude is below the coefficient threshold that already discarded the partner from the
+rotation, so the error is of the same class as the truncation itself and not bit-identical to
+the exact protocol. It applies to `propagate` and expectation values (the fused path) only:
+graph mode ignores it, because replay pairs a slot's out-records with its peer's in-records
+positionally and that pairing needs every tracked partner to answer. Fully paired terms keep
+sending in the Schrödinger picture whatever the knob says — their state phase is what an
+absent partner would be minted with, so a silent one must not be mistaken for absent.
 
 Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
 none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`
@@ -146,6 +160,7 @@ that bound into an identity.
 | --- | --- | --- |
 | `monoprop_ROUTING` | `linear` | `splitmix` selects the dense all-to-all; `linear`, or unset, takes every rank bit from $h$ and requires a power-of-two $R$. Any other value is rejected at startup rather than silently defaulting. |
 | `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
+| `monoprop_DROP_SILENT_RECORDS` | `0` | `1` drops the gate records of anticommuting terms that do not themselves rotate, trading a below-threshold contribution per rotating pair for the traffic and join work those records cost. Approximate by construction, so it is off by default and ignored in graph mode; `0` or unset is the exact one-round protocol. Any other value is rejected at startup. |
 
 ### Single-node (`MPI.COMM_SELF`)
 

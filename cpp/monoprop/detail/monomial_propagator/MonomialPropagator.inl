@@ -36,6 +36,7 @@
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
+#include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/partition/PartitionGroup.h"
 
@@ -771,8 +772,19 @@ auto MonomialPropagator<NumModes>::any_local_term_fails_cutoff_() const -> bool 
         quick = sc->cutoff;
     }
     const auto &store = *mp_op_.store;
+    const bool digest_form = eval.has_digest_form();
     for (size_t i = 0; i < store.size(); ++i) {
-        if (quick.has_value() && store.popcount(i) <= *quick) {
+        const size_t pop = store.popcount(i);
+        if (quick.has_value() && pop <= *quick) {
+            continue;
+        }
+        // Both structural cutoffs are functions of the (k, d) digest, which the row's own position list
+        // yields directly -- only an opaque cutoff or a spilled row (no position array) needs a bitset.
+        const auto src = store.row_positions(i);
+        if (digest_form && src.inlined()) {
+            if (!eval.passes_from_digest(pop, detail::count_paired_positions(src.pos.data(), pop))) {
+                return true;
+            }
             continue;
         }
         if (!eval(store.row(i))) {

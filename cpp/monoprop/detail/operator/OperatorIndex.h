@@ -47,7 +47,7 @@ public:
 //
 // There is deliberately no key -> row index here. Propagation never looks a term up by value against the
 // whole store: a partner M ^ G, if tracked, anticommutes with G and so is inside the gate's own
-// anticommuting set, which layer_build/AntiTable.h indexes per gate. The few out-of-gate lookups build a
+// anticommuting set, which layer_build/BucketJoin.h joins per gate. The few out-of-gate lookups build a
 // transient TermLookup over the rows they need.
 template <size_t NumModes>
 class OperatorIndex {
@@ -229,7 +229,7 @@ public:
 
     // Compare row i against an ascending position list without materializing the row (the popcount byte
     // first, so a mismatch usually costs one compare); a spilled row falls back to a dense compare. This
-    // is the confirm behind every fingerprint match (AntiTable::probe).
+    // is the confirm behind every fingerprint match (BucketJoin::run).
     [[nodiscard]] auto row_eq_positions(size_t i, std::span<const PosT> q) const -> bool {
         const PosT c = rows_[i * stride_];
         if (c == kOverflowMarker) {

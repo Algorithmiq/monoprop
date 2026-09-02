@@ -28,11 +28,11 @@ namespace monoprop::mpi {
 // One tag per (transport, verb), all five here so no two can collide unseen: one thread per rank calls
 // MPI, so the tag is all that keeps a count round in flight from being matched by a payload receive.
 //
-// Why Engine.h's run_exchange may post BOTH its begin_alltoallv rounds under kFlatPayloadTag on one
-// communicator: MPI does not overtake within a (src, dst, tag, comm); the query round's MPI_Waitall
-// completes before round 2 posts; and both ends skip a zero-count leg on the same value -- what one
-// sends a peer IS that peer's recv count, by transpose -- so the two posted sequences match element
-// for element and a round-2 receive cannot match a round-1 send.
+// Why consecutive gate exchanges (Engine.h posts one round per gate) may reuse kFlatPayloadTag on one
+// communicator: MPI does not overtake within a (src, dst, tag, comm); a gate's MPI_Waitall completes
+// before the next gate posts; and both ends skip a zero-count leg on the same value -- what one sends a
+// peer IS that peer's recv count, by transpose -- so the two posted sequences match element for element
+// and a later receive cannot match an earlier send.
 inline constexpr int kHybridCountTag = 0x6D70; // 'mp'
 inline constexpr int kHybridPayloadTag = 0x6D71;
 inline constexpr int kFlatPayloadTag = 0x6D72;

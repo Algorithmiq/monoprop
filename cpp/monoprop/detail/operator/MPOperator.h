@@ -295,7 +295,7 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes{0uz};
     size_t initial_state_bytes{0uz};
     size_t inverted_index_bytes{0uz};
-    // The per-gate layer-build scratch (AntiTable and buffers). Propagator-owned, so 0 unless
+    // The per-gate layer-build scratch (the join, the row marks and the buffers). Propagator-owned, so 0 unless
     // MonomialPropagator fills it in.
     size_t gate_scratch_bytes{0uz};
 

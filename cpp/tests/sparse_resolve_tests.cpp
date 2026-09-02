@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The receiver side of the one-round exchange: the incoming records decoded and probed (IncomingProbe),
-// joined under the receiver rule (join_incoming) and the misses inserted (MissStage / insert_misses) --
+// The receiver side of the one-round exchange: the incoming records decoded (IncomingRecords), matched
+// against the gate's rows (BucketJoin), joined under the receiver rule (join_incoming) and the misses
+// inserted (MissStage / insert_misses) --
 // differentially against the records the caller built, the dense Monomial-keyed insert path and a
 // transient TermLookup oracle, none of which is the code under test.
 
@@ -28,7 +29,8 @@
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
-#include "monoprop/detail/evolution/layer_build/AntiTable.h"
+#include "monoprop/detail/evolution/layer_build/BucketJoin.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/mpi/Comm.h"
@@ -89,22 +91,44 @@ auto make_op(const std::vector<Monomial<NumModes>> &terms) -> detail::MPOperator
     return op;
 }
 
-// The partner table a gate that finds EVERY row anticommuting would build: the receiver-side oracle the
-// probe runs against. Spilled rows take the dense fingerprint, exactly as the scan does.
+// The per-gate state a gate that finds EVERY row anticommuting would leave behind: every row staged in
+// the join, marks cleared over all of them. This is the receiver-side oracle the decode and join run
+// against. Spilled rows take the dense fingerprint, exactly as the scan does.
 template <size_t NumModes>
-auto table_over_all_rows(const detail::MPOperator<NumModes> &op) -> detail::AntiTable<NumModes> {
-    detail::AntiTable<NumModes> table;
-    const size_t n = op.store->size();
-    table.begin(n);
-    const uint64_t *labels = routing::linear_basis<2 * NumModes>().data();
-    for (size_t i = 0; i < n; ++i) {
-        const auto src = op.store->row_positions(i);
-        const uint64_t fp = src.inlined() ? routing::fingerprint_positions(labels, src.pos.data(), src.pos.size())
-                                          : routing::linear_hash<2 * NumModes>(op.store->row(i));
-        table.add(static_cast<TermIndex>(i), fp);
+struct AllRowsGate {
+    detail::BucketJoin<NumModes> join;
+    detail::RowMarks marks;
+    std::vector<detail::EvenParityNzWord> nz;
+
+    explicit AllRowsGate(const detail::MPOperator<NumModes> &op) {
+        const size_t n = op.store->size();
+        for (size_t base = 0; base < n; base += 64) {
+            const size_t k = std::min<size_t>(64, n - base);
+            nz.push_back(detail::EvenParityNzWord{.base = base,
+                                                  .overlap = (k == 64) ? ~uint64_t{0} : ((uint64_t{1} << k) - 1U),
+                                                  .foll = 0});
+        }
+        marks.begin(n, nz);
+        join.begin_rows(n);
+        const uint64_t *labels = routing::linear_basis<2 * NumModes>().data();
+        for (size_t i = 0; i < n; ++i) {
+            const auto src = op.store->row_positions(i);
+            const uint64_t fp = src.inlined() ? routing::fingerprint_positions(labels, src.pos.data(), src.pos.size())
+                                              : routing::linear_hash<2 * NumModes>(op.store->row(i));
+            join.add_row(fp, i);
+        }
     }
-    return table;
-}
+
+    // Stages a decoded batch's keys in record order and matches them against the rows.
+    template <typename Records>
+    auto match(const detail::MPOperator<NumModes> &op, const Records &pr) -> void {
+        join.begin_queries(pr.nq_total);
+        for (size_t g = 0; g < pr.nq_total; ++g) {
+            join.add_query(g, pr.fp_of[g]);
+        }
+        join.run(*op.store, [&](size_t q) { return pr.positions_at(q); });
+    }
+};
 
 template <size_t NumModes>
 auto draw_distinct(std::mt19937_64 &rng, size_t n) -> std::vector<Monomial<NumModes>> {
@@ -241,8 +265,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    auto table = table_over_all_rows<NumModes>(op);
-    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, form, table);
+    AllRowsGate<NumModes> gate(op);
+    const auto pr = detail::decode_incoming_records<NumModes>(incoming, form);
+    gate.match(op, pr);
     BOOST_REQUIRE_EQUAL(pr.window.base, window.base);
     BOOST_REQUIRE_EQUAL(pr.window.count, window.count);
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
@@ -288,9 +313,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
             key.push_back(want.word(w));
         }
         const bool want_hit = seeded.count(key) != 0;
-        BOOST_TEST((pr.ord_of[g] != detail::AntiTable<NumModes>::kNone) == want_hit);
+        const size_t row = gate.join.hit(g);
+        BOOST_TEST((row != detail::BucketJoin<NumModes>::kMissing) == want_hit);
         if (want_hit) {
-            const size_t row = table.row_of(pr.ord_of[g]);
             BOOST_TEST((op.store->row(row) == want));
             expected_hit_row.push_back(row);
             ++hits_seen;
@@ -315,12 +340,12 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     BOOST_TEST(dropped_seen > 0);
     BOOST_REQUIRE(!expected_mints.empty());
 
-    // The join: every hit applies (the table has no rot bits set, so only rot=1 records rotate a hit),
+    // The join: every hit applies (no row has its rot bit set, so only rot=1 records rotate a hit),
     // every rot=1 miss mints at base + j in flat record order, every rot=0 miss is dropped.
     const size_t base = op.store->size();
     detail::MissStage<NumModes> misses;
     RecordingSink sink;
-    detail::join_incoming<NumModes>(pr, table, base, misses, sink);
+    detail::join_incoming<NumModes>(pr, gate.join, /*q_base=*/0, gate.marks, base, misses, sink);
     BOOST_REQUIRE_EQUAL(misses.size(), expected_mints.size());
     size_t mints_seen = 0;
     size_t hit_calls = 0;
@@ -347,8 +372,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     // Only rot=1 records rotate an unmarked hit, so the hit calls are the rot=1 hits.
     size_t rot_hits = 0;
     for (size_t g = 0; g < pr.nq_total; ++g) {
-        if (pr.ord_of[g] != detail::AntiTable<NumModes>::kNone) {
-            BOOST_TEST(table.received(pr.ord_of[g]));
+        const size_t row = gate.join.hit(g);
+        if (row != detail::BucketJoin<NumModes>::kMissing) {
+            BOOST_TEST(gate.marks.received(row));
             if (expect_rot[g]) {
                 ++rot_hits;
             }
@@ -459,49 +485,55 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_set_positions_matches_set) {
     BOOST_TEST(from_pos.overflow_size() == from_mono.overflow_size());
 }
 
-BOOST_AUTO_TEST_CASE(sparse_resolve_table_probe_matches_the_lookup_oracle) {
-    // The partner table against a TermLookup over the same rows: every seeded term hits its own row from
-    // its positions, and a genuinely absent term misses. Spilled (wide) rows are in the draw.
+BOOST_AUTO_TEST_CASE(sparse_resolve_join_matches_the_lookup_oracle) {
+    // The gate join against a TermLookup over the same rows: every seeded term, asked for as a query,
+    // matches its own row, and a genuinely absent term matches nothing. Spilled (wide) rows are in the
+    // draw, which is what pins the fingerprint of a row with no position array.
     constexpr size_t kN = 250;
+    using PosT = detail::OperatorIndex<kN>::PosT;
     std::mt19937_64 rng(20260819);
     const auto terms = draw_distinct<kN>(rng, 300);
     auto op = make_op<kN>(terms);
-    const auto table = table_over_all_rows<kN>(op);
     const auto lookup = detail::build_term_lookup<kN>(*op.store, 0, op.store->size());
     const uint64_t *labels = routing::linear_basis<2 * kN>().data();
 
+    const auto absent = draw_distinct<kN>(rng, 50);
+    std::vector<Monomial<kN>> asked = terms;
+    size_t genuinely_absent = 0;
+    for (const auto &m : absent) {
+        // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.
+        if (lookup.find(m) == lookup.end()) {
+            asked.push_back(m);
+            ++genuinely_absent;
+        }
+    }
+    BOOST_TEST(genuinely_absent > 0);
+
+    std::vector<std::vector<PosT>> query_pos;
+    query_pos.reserve(asked.size());
+    for (const auto &m : asked) {
+        query_pos.push_back(positions_of<kN>(m));
+    }
+    AllRowsGate<kN> gate(op);
+    gate.join.begin_queries(asked.size());
+    for (size_t q = 0; q < asked.size(); ++q) {
+        const uint64_t fp = routing::fingerprint_positions(labels, query_pos[q].data(), query_pos[q].size());
+        BOOST_REQUIRE_EQUAL(fp, routing::linear_hash<2 * kN>(asked[q]));
+        gate.join.add_query(q, fp);
+    }
+    gate.join.run(*op.store, [&](size_t q) { return std::span<const PosT>(query_pos[q]); });
+
     size_t spilled = 0;
     for (size_t i = 0; i < terms.size(); ++i) {
-        std::vector<detail::OperatorIndex<kN>::PosT> pos;
-        for (size_t b = terms[i].find_first(); b < terms[i].size(); b = terms[i].find_next(b)) {
-            pos.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
-        }
-        const uint64_t fp = routing::fingerprint_positions(labels, pos.data(), pos.size());
-        BOOST_REQUIRE_EQUAL(fp, routing::linear_hash<2 * kN>(terms[i]));
-        const auto ord = table.probe(*op.store, fp, pos);
-        BOOST_REQUIRE(ord != detail::AntiTable<kN>::kNone);
-        BOOST_TEST(table.row_of(ord) == i);
+        BOOST_REQUIRE(gate.join.hit(i) != detail::BucketJoin<kN>::kMissing);
+        BOOST_TEST(gate.join.hit(i) == i);
         BOOST_TEST(lookup.at(terms[i]) == i);
         if (!op.store->row_positions(i).inlined()) {
             ++spilled;
         }
     }
     BOOST_TEST(spilled > 0);
-
-    const auto absent = draw_distinct<kN>(rng, 50);
-    size_t genuinely_absent = 0;
-    for (const auto &m : absent) {
-        // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.
-        if (lookup.find(m) != lookup.end()) {
-            continue;
-        }
-        std::vector<detail::OperatorIndex<kN>::PosT> pos;
-        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-            pos.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
-        }
-        const uint64_t fp = routing::fingerprint_positions(labels, pos.data(), pos.size());
-        BOOST_TEST(table.probe(*op.store, fp, pos) == detail::AntiTable<kN>::kNone);
-        ++genuinely_absent;
+    for (size_t q = terms.size(); q < asked.size(); ++q) {
+        BOOST_TEST(gate.join.hit(q) == detail::BucketJoin<kN>::kMissing);
     }
-    BOOST_TEST(genuinely_absent > 0);
 }

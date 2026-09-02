@@ -29,7 +29,7 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
-#include "monoprop/detail/evolution/layer_build/AntiTable.h"
+#include "monoprop/detail/evolution/layer_build/BucketJoin.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
@@ -74,15 +74,16 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 // (φ_μ = −φ_ν is forced by (i M_G)² = −1 and pinned by evolution_detail_tests.) The protocol is one
 // symmetric round: every anticommuting ν that passes the send predicate (Scan.h) pushes one record
 // (key μ, φ_ν, rot = E(ν), [v_ν]) to owner(μ); after ONE exchange each slot joins what it received
-// against its own AntiTable:
+// against its own anticommuting rows (BucketJoin.h):
 //   • hit  → μ tracked here: apply +φ_rec·v_rec onto μ iff rot_rec ∨ E(μ). Both endpoints receive the
 //            other's record (a tracked term passes the send predicate), so both adds happen, once each,
 //            with exact pre-cos values -- no ×1/cos recovery of a stored value.
 //   • miss → μ absent everywhere: a rot=1 record mints μ at base + j (join order) with the same half;
 //            a rot=0 record is dropped, since neither side rotates.
 //   • absence pass over the records ν sent: only the owner of μ can send key ν, and it does whenever μ
-//            is tracked, so ¬received[ν] ⟺ μ absent. If E(ν), μ was minted from ν's record and ν's own
-//            half is −φ_ν·c0(μ), c0 being the fresh term's pre-gate coefficient the sender computed.
+//            is tracked, so ¬received[ν] ⟺ μ absent (unless monoprop_DROP_SILENT_RECORDS is on, which
+//            is why that knob is an approximation and off by default). If E(ν), μ was minted from ν's record and ν's
+//            own half is −φ_ν·c0(μ), c0 being the fresh term's pre-gate coefficient the sender computed.
 // Δ = 0 (self peer) is the same rule with the records staged as positions instead of encoded. Mint
 // indices are assigned in a fixed order -- self stage first, then incoming sources ascending, each in
 // stream order -- so a run is bit-identical at fixed (R, S).
@@ -94,7 +95,7 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 // Graph-build sink: accumulates the per-slot PartnerAcc endpoints and assembles a LayerCore at finalize.
 // wants_values=false — the scan captures no coeffs and every rotation records only (index, phase).
 //
-// Roles in a pair are decided by the pivot bit (`AntiTable::foll`): ν and μ differ exactly on G's bits
+// Roles in a pair are decided by the pivot bit (`RowMarks::foll`): ν and μ differ exactly on G's bits
 // and the pivot is one of them, so exactly one endpoint of a tracked pair carries it. Per peer slot q,
 // with the join's arrival order = q's stream order = ascending row at q:
 //   in_pairs        hits on my follower rows whose pair rotates          (arrival order) (row(μ), φ_rec)
@@ -188,8 +189,9 @@ struct ContractSink {
         fc.halves.push_back(HalfRotationRec{idx, v, static_cast<int32_t>(phase), /*is_insert=*/true});
     }
     auto out_pair(size_t /*slot*/, size_t /*row*/, int /*phase*/) -> void {}
-    // Pushed in Heisenberg too, where c0 = 0: the signed-zero add is what a fresh Heisenberg partner's
-    // source received before, and skipping it would flip the sign of an exactly-zero coefficient.
+    // Pushed in Heisenberg too, where c0 = 0, so the branch is one rule rather than two. Adding ±0.0
+    // cannot change a nonzero coefficient; its only effect is on a coefficient that is exactly -0.0,
+    // which the add can turn into +0.0.
     auto out_unanswered(size_t /*slot*/, size_t row, double c0, int phase) -> void {
         fc.halves.push_back(HalfRotationRec{row, c0, static_cast<int32_t>(-phase), /*is_insert=*/false});
     }
@@ -215,8 +217,9 @@ struct LayerBuildEngine {
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
-    // This gate's partner table (built by the scan) and the other per-gate scratch, propagator-owned so
-    // capacity survives the gate. The table carries the protocol's per-ordinal state (AntiTable.h).
+    // This gate's join (its row side staged by the scan) and the other per-gate scratch,
+    // propagator-owned so capacity survives the gate; the protocol's per-row state is in
+    // scratch.marks (GateScratch.h).
     GateScratch<NumModes> &scratch;
     size_t combined_size;
     // The destination slots this generator can reach: `plan`'s window for my_rank. Every per-slot array
@@ -249,14 +252,22 @@ struct LayerBuildEngine {
         assert(window.stop() <= R && window.count != 0);
     }
 
-    // The one round: exchange the scan's records, join the self stage and then the incoming records in
-    // that fixed order, insert the misses, walk the sent records. Taking the scan result by value is what
-    // makes the sequence unmissable -- nothing else can read the records once they are here.
+    // The one round: exchange the scan's records, match every record against this slot's anticommuting
+    // rows in ONE bucketed join, apply the receiver rule to the self stage and then the incoming records
+    // in that fixed order, insert the misses, walk the sent records. Taking the scan result by value is
+    // what makes the sequence unmissable -- nothing else can read the records once they are here.
+    //
+    // The self stage is joined after the wait, not before it: both sides of the query space must be in
+    // the same join, since the rows are streamed against it exactly once. That costs the small overlap
+    // the self stage used to give, and only when a slot has both self-owned and remote partners for one
+    // generator -- under linear routing a generator's shift is either zero (all self, empty exchange) or
+    // not (empty self stage).
     auto exchange_and_join(FusedScanResult<NumModes> &&scan) -> void {
         // The scan sized its arrays to the same plan, so the two windows must agree exactly -- a mismatch
         // would re-base every slot against the wrong base.
         assert(scan.window.base == window.base && scan.window.count == window.count);
-        AntiTable<NumModes> &table = scratch.anti;
+        RowMarks &marks = scratch.marks;
+        BucketJoin<NumModes> &join = scratch.join;
         const size_t base = local_op.store->size();
         misses.clear();
 
@@ -271,20 +282,35 @@ struct LayerBuildEngine {
         }
         if (window.contains(my_rank)) {
             assert(scan.queries.at_slot(my_rank).empty() && "self-owned records are staged, never encoded");
-            join_self<NumModes>(scan.self, table, *local_op.store, my_rank, base, misses, sink);
         }
         else {
             assert(scan.self.size() == 0 && "a self-owned partner outside this generator's peer window");
         }
+        mpi::WindowVec<VecZ> incoming;
+        IncomingRecords<NumModes> pr;
         if (pending.has_value()) {
-            mpi::WindowVec<VecZ> incoming;
             pending->wait_into(incoming);
-            const IncomingProbe<NumModes> pr =
-                probe_incoming_queries<NumModes>(incoming, local_op, sink.incoming_form(), table);
-            join_incoming<NumModes>(pr, table, base, misses, sink);
+            pr = decode_incoming_records<NumModes>(incoming, sink.incoming_form());
         }
+
+        // Query order IS mint order: the self stage first, then the incoming sources in ascending window
+        // order, each in its sender's stream order.
+        const size_t n_self = scan.self.size();
+        join.begin_queries(n_self + pr.nq_total);
+        for (size_t q = 0; q < n_self; ++q) {
+            join.add_query(q, scan.self.fp_of[q]);
+        }
+        for (size_t g = 0; g < pr.nq_total; ++g) {
+            join.add_query(n_self + g, pr.fp_of[g]);
+        }
+        join.run(*local_op.store, [&](size_t q) -> std::span<const RowPosT> {
+            return (q < n_self) ? scan.self.positions_at(q) : pr.positions_at(q - n_self);
+        });
+
+        join_self<NumModes>(scan.self, join, /*q_base=*/0, marks, my_rank, base, misses, sink);
+        join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink);
         insert_misses<NumModes>(local_op, misses, base);
-        absence_pass<NumModes>(table, scan.sent, scan.sent_c0, sink);
+        absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
     }
 
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {
@@ -360,8 +386,9 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult<NumModes> fused;
     CosMask cos_all;
-    // An identity generator skips the scan, so the table it would have built is emptied here.
-    scratch.anti.begin(0);
+    // An identity generator skips the scan, so the row side it would have staged is emptied here.
+    scratch.nz.clear();
+    scratch.join.clear_rows();
     if (!identity_gen) {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         // The fresh partner's pre-gate coefficient is state-scored only in the Schrödinger picture, and

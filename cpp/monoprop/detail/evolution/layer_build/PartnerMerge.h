@@ -93,7 +93,7 @@ template <std::ranges::contiguous_range Row, std::ranges::contiguous_range Gen, 
 }
 
 /*! @brief Stages the records addressed to this slot itself as positions, for direct use by the
- *  AntiTable probe and OperatorIndex::set_positions, with no encoding step.
+ *  join and OperatorIndex::set_positions, with no encoding step.
  *
  *  Carries exactly the fields a wire record does (QueryWire.h): key positions, phase, rot and, for
  *  the fused form, the sender's value.
@@ -109,7 +109,7 @@ struct SelfQueryStage {
     DefaultInitVector<int8_t> phase_of; //!< emit_phase is ternary, so a byte is the whole range
     DefaultInitVector<uint8_t> rot_of;  //!< the sender's rotation bit
     DefaultInitVector<double> val_of;   //!< the sender's pre-cos coefficient; written only when values are captured
-    DefaultInitVector<uint64_t> fp_of;  //!< routing fingerprint of the query (fp(M) ^ fp(G)): the AntiTable key
+    DefaultInitVector<uint64_t> fp_of;  //!< routing fingerprint of the query (fp(M) ^ fp(G)): the join key
 
     [[nodiscard]] auto size() const -> size_t { return n_; }
     [[nodiscard]] auto positions() const -> size_t { return pos_n_; }

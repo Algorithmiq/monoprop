@@ -21,6 +21,7 @@
 
 using monoprop::config::EnvConfigError;
 using monoprop::config::RoutingMode;
+using monoprop::config::detail::parse_bool;
 using monoprop::config::detail::parse_positive_int;
 using monoprop::config::detail::parse_routing_mode;
 using monoprop::config::detail::parse_uint64;
@@ -61,6 +62,19 @@ BOOST_AUTO_TEST_CASE(env_config_parse_uint64_unset_valid_and_rejected) {
     BOOST_CHECK_THROW(parse_uint64("k", "12x"), EnvConfigError);
     BOOST_CHECK_THROW(parse_uint64("k", "-1"), EnvConfigError);                   // strtoull would WRAP it
     BOOST_CHECK_THROW(parse_uint64("k", "18446744073709551616"), EnvConfigError); // ERANGE
+}
+
+// The record knob is 0/1 and nothing else: "true" or "yes" defaulting to off would leave an
+// approximation switched off with no diagnostic, or on with none.
+BOOST_AUTO_TEST_CASE(env_config_parse_bool_rejects_anything_but_zero_or_one) {
+    BOOST_CHECK(parse_bool("k", nullptr) == std::nullopt);
+    BOOST_CHECK(parse_bool("k", "") == std::nullopt);
+    BOOST_CHECK(parse_bool("k", "0") == std::optional<bool>(false));
+    BOOST_CHECK(parse_bool("k", "1") == std::optional<bool>(true));
+    BOOST_CHECK_THROW(parse_bool("k", "true"), EnvConfigError);
+    BOOST_CHECK_THROW(parse_bool("k", "yes"), EnvConfigError);
+    BOOST_CHECK_THROW(parse_bool("k", "2"), EnvConfigError);
+    BOOST_CHECK_THROW(parse_bool("k", "01"), EnvConfigError);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_parse_routing_mode_rejects_a_typo) {

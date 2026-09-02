@@ -16,7 +16,7 @@
 
 // A transient monomial -> row map over a range of an OperatorIndex's rows. The operator store keeps no
 // persistent key index (propagation resolves partners inside each gate's anticommuting set, see
-// layer_build/AntiTable.h), so the few call sites that look a term up by value outside a gate -- draining
+// layer_build/BucketJoin.h), so the few call sites that look a term up by value outside a gate -- draining
 // pending initial-operator coefficients, re-weighting the initial operator -- build one of these over the
 // rows they need and drop it.
 

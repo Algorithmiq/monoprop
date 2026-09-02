@@ -827,8 +827,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero) {
     }
 }
 
-// Engine.h's run_exchange posts both its rounds on ONE communicator under kFlatPayloadTag, and the
-// non-overtaking argument in Pairwise.h is what says a round-2 receive cannot match a round-1 send.
+// Consecutive gate exchanges post their rounds on ONE communicator under kFlatPayloadTag, and the
+// non-overtaking argument in Pairwise.h is what says a later receive cannot match an earlier send.
 // Two back-to-back sparse rounds, the second on the transpose of the first's counts, assert it.
 BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds) {
     const int R = world_size();

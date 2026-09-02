@@ -46,7 +46,7 @@
 // them. None of them is the splitmix router, which is `q % (R*S)` bit for bit, and R == 1 is that case
 // by construction. R > 1 must then be a power of two, or there is no XOR structure to route by and the
 // geometry is rejected (UnroutableGeometry) rather than silently falling back. The same fingerprint is
-// the engine's per-gate dedup key (layer_build/AntiTable.h), so one label table serves both.
+// the engine's per-gate join key (layer_build/BucketJoin.h), so one label table serves both.
 //
 // The derivation, what linear routing buys and what it costs: docs/content/docs/features/parallelism.mdx,
 // under "Rank routing".
