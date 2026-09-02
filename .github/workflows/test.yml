@@ -10,8 +10,6 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # A push to `main` uploads to Codecov, so cancelling it loses that commit's report for
-  # good -- and back-to-back merges share the group, the later one cancelling the earlier.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
