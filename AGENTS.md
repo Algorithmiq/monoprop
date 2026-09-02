@@ -61,4 +61,3 @@ just build-docs
 - Slow CTest startup in MPI builds is `MPI_Init` fabric probing; see
   `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 - Sanitizer rebuild and test:
-
