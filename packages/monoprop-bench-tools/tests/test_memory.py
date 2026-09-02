@@ -26,6 +26,7 @@ import gc
 import resource
 
 import pytest
+from monoprop_bench_tools.memory import cpu
 from monoprop_bench_tools.memory.cpu import (
     HighWaterMark,
     heap_trim,
@@ -109,3 +110,51 @@ def test_reset_also_clears_ru_maxrss() -> None:
 
     assert before >= 70 * MIB
     assert after < before
+
+
+def test_inner_window_does_not_erase_the_enclosing_peak() -> None:
+    """An inner window's reset must not hide a transient the outer window spans.
+
+    ``mm->hiwater_rss`` is per-process, so without the fold in :func:`reset_peak_rss` the
+    outer window reports only what happened after the inner one opened -- which is how a
+    construction transient measured in ``setup`` can vanish from the recorded peak.
+    """
+    if not reset_peak_rss():
+        pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    if _under_sanitizer():
+        # Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable.
+        pytest.skip("peak-RSS accounting is not meaningful under a sanitizer runtime")
+
+    with HighWaterMark() as outer:
+        blob = bytearray(80 * MIB)
+        for i in range(0, len(blob), 4096):
+            blob[i] = 1
+        del blob  # the transient is over before the inner window opens
+        with HighWaterMark(settle=False) as inner:
+            small = bytearray(8 * MIB)
+            for i in range(0, len(small), 4096):
+                small[i] = 1
+            del small
+
+    assert outer.delta_bytes >= 70 * MIB  # the outer window still sees it
+    assert inner.delta_bytes < 70 * MIB  # the inner one reports its own only
+
+
+def test_inexact_enclosing_window_ignores_process_peak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed reset keeps the documented exit-RSS lower-bound fallback."""
+
+    def deny_reset(*args: object, **kwargs: object) -> None:
+        raise OSError
+
+    monkeypatch.setattr(cpu, "resting_rss_bytes", lambda: 100)
+    monkeypatch.setattr(cpu, "rss_bytes", lambda: 100)
+    monkeypatch.setattr(cpu, "peak_rss_bytes", lambda: 1_000)
+    monkeypatch.setattr(cpu.Path, "write_text", deny_reset)
+
+    with HighWaterMark() as outer, HighWaterMark(settle=False):
+        pass
+
+    assert not outer.exact
+    assert outer.peak_bytes == 100
