@@ -73,16 +73,17 @@ def peak_rss_bytes() -> int:
 
 
 # Every HighWaterMark between __enter__ and __exit__. mm->hiwater_rss is per-process, not
-# per-window, so an inner window's reset would erase an outer window's peak: the reset folds
-# the mark into these first. Weak so a window abandoned without stop() is still collected.
+# per-window, so an inner window's reset would erase an exact outer window's peak: the reset
+# folds the mark into these first. Weak so a window abandoned without stop() is still collected.
 _OPEN_WINDOWS: weakref.WeakSet[HighWaterMark] = weakref.WeakSet()
 
 
 def _fold_open_windows() -> None:
-    """Carry the current mark into every open window, before a reset discards it."""
+    """Carry the current mark into every exact open window before resetting it."""
     observed = peak_rss_bytes()
     for window in list(_OPEN_WINDOWS):
-        window.peak_bytes = max(window.peak_bytes, observed)
+        if window.exact:
+            window.peak_bytes = max(window.peak_bytes, observed)
 
 
 def reset_peak_rss() -> bool:
@@ -93,9 +94,10 @@ def reset_peak_rss() -> bool:
     therefore loses ``ru_maxrss`` as a whole-run ceiling, and must take the maximum over
     its windows instead.
 
-    The field is per-process, so this would also erase the peak of any :class:`HighWaterMark`
-    already open. Their marks are folded forward first, which is what makes windows nest --
-    an inner window measuring one operation cannot hide the transient an outer window spans.
+    The field is per-process, so this would also erase the peak of any exact
+    :class:`HighWaterMark` already open. Their marks are folded forward first, which is what
+    makes windows nest -- an inner window measuring one operation cannot hide the transient
+    an outer window spans. Inexact windows retain their exit-RSS fallback.
 
     Returns:
         ``True`` if the reset took effect, ``False`` where ``/proc/self/clear_refs`` is

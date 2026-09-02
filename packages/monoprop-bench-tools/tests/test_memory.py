@@ -26,6 +26,7 @@ import gc
 import resource
 
 import pytest
+from monoprop_bench_tools.memory import cpu
 from monoprop_bench_tools.memory.cpu import (
     HighWaterMark,
     heap_trim,
@@ -137,3 +138,23 @@ def test_inner_window_does_not_erase_the_enclosing_peak() -> None:
 
     assert outer.delta_bytes >= 70 * MIB  # the outer window still sees it
     assert inner.delta_bytes < 70 * MIB  # the inner one reports its own only
+
+
+def test_inexact_enclosing_window_ignores_process_peak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed reset keeps the documented exit-RSS lower-bound fallback."""
+
+    def deny_reset(*args: object, **kwargs: object) -> None:
+        raise OSError
+
+    monkeypatch.setattr(cpu, "resting_rss_bytes", lambda: 100)
+    monkeypatch.setattr(cpu, "rss_bytes", lambda: 100)
+    monkeypatch.setattr(cpu, "peak_rss_bytes", lambda: 1_000)
+    monkeypatch.setattr(cpu.Path, "write_text", deny_reset)
+
+    with HighWaterMark() as outer, HighWaterMark(settle=False):
+        pass
+
+    assert not outer.exact
+    assert outer.peak_bytes == 100
