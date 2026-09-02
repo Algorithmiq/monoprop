@@ -53,8 +53,8 @@ graph invalidates the functional: calling it afterwards raises `RuntimeError` ra
 value for a circuit the propagator no longer holds. Build a new functional after such a call. The
 direct [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] path
 always reflects the current propagator. One failure goes further than invalidating the functional: a
-mutation that fails part-way through a *partitioned* propagator retires the propagator itself, so
-neither path answers again — see [Parallelism and distribution](/features/parallelism).
+mutation that gets *part-way* through a partitioned propagator and then throws retires the propagator
+itself, so neither path answers again — see [Parallelism and distribution](/features/parallelism).
 
 A re-weight is the one mutation a functional survives:
 [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]
@@ -74,7 +74,8 @@ This is what every public mutating method does to a functional built before it r
 | [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] with `inplace=True` | raises |
 | [parameter_mapping][monoprop.monomial_propagator.MonomialPropagator.parameter_mapping] | raises |
 | [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator] | answers for the new coefficients — except in the Schrödinger picture with a `pare_threshold`, where it raises, because the pared graph was selected from the coefficients the re-weight replaced |
-| a rejected `update_initial_operator` | raises: a partitioned propagator applies the re-weight one partition at a time, so a term only one of them holds is rejected with its siblings already re-weighted |
+| a rejected `update_initial_operator` | answers, unchanged: every partition accepts the whole dict before any of it is written, so a refusal commits nothing |
+| any other call refused outright — a bad `gate_indices`, a `parameter_mapping` of the wrong length, a seed too short to replay the stored graph | answers, unchanged: nothing was written, on any partition count |
 | a `build_graph` or `propagate` that fails part-way | raises: a gate generator is bounds-checked only as the gate loop reaches it, so the gates before it are already committed |
 | `cutoff`, `cutoff_type`, `basis_change`, `lower_atol`, `upper_atol` | answers, unchanged: these gate the next build and touch nothing a functional replays |
 | `contract_partially` with `inplace=False` | answers, unchanged: it mutates nothing |

@@ -79,7 +79,17 @@ public:
         : control_(std::move(control)),
           expected_revision_(control_->structure_revision.load()),
           shape_(std::move(shape)),
-          num_params_(derive_num_params(shape_)) {}
+          num_params_(derive_num_params(shape_)) {
+        // A re-weight publishes only while a plan is reading; see FunctionalControl.
+        control_->add_plan();
+    }
+
+    FunctionalPlan(const FunctionalPlan &) = delete;
+    FunctionalPlan(FunctionalPlan &&) = delete;
+    auto operator=(const FunctionalPlan &) -> FunctionalPlan & = delete;
+    auto operator=(FunctionalPlan &&) -> FunctionalPlan & = delete;
+
+    ~FunctionalPlan() { control_->drop_plan(); }
 
     /// Required parameter-axis length.
     auto num_params() const -> size_t { return num_params_; }
@@ -104,6 +114,11 @@ public:
                                    .expected_revision = expected_revision_,
                                    .operator_layout_unchanged = local == nullptr || operator_layout_unchanged(*local),
                                    .last_structural_change = control_->last_structural_change.load()});
+        if (std::holds_alternative<Fanout>(shape_)) {
+            // evaluate() reaches the group directly, not through MonomialPropagator::partitions_(), so
+            // the door's check is repeated here -- after the revision, which every latch to date bumps too.
+            validate_partition_facade_intact(control_->partition_fault.load());
+        }
         validate_functional_call(params, num_params_);
     }
 

@@ -292,7 +292,8 @@ public:
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
     /// Re-weight the initial operator in place; every existing term op_dict omits is zeroed, the
-    /// identity term included.
+    /// identity term included. A dict this operator refuses commits nothing, on every partition, so it
+    /// leaves live functionals valid.
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
@@ -303,6 +304,14 @@ protected:
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
+
+    // This rank's share of `op_dict` plus its encoded core term. Pure: bounds-checks and encodes but
+    // writes nothing, so the dry pass and the commit agree on what is acceptable.
+    auto prepare_initial_operator_(const OperatorDict &op_dict) const -> std::pair<OperatorDict, double>;
+
+    // Throw if `op_dict` would be refused, writing nothing. On a facade each partition judges its own
+    // share -- the only way to refuse a term just one of them holds before any has committed.
+    auto check_initial_operator_(const OperatorDict &op_dict) -> void;
 
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
@@ -386,15 +395,15 @@ private:
 
     // Record that what a plan replays has moved. `site` must be a string literal: plans read it after
     // this propagator is gone. A mutation that is rejected outright must not bump -- it changed nothing,
-    // so it must not invalidate anything. A mutation that can fail part-way bumps on the failure path
-    // instead: invalidating a functional that did not need it costs a rebuild, answering from a snapshot
-    // of a half-written operator costs a wrong number.
-    auto bump_structure_(const char *site) const -> void { functional_control_->bump(site); }
-
-    // The scoped form of the rule above, and the one every structural mutator uses: it records the
-    // change when the scope exits, so a mutator that throws after committing part of its work
-    // invalidates on the same terms as one that completed. `armed` is false where the guarded call is
-    // a known no-op. See detail::MutationGuard.
+    // so it must not invalidate anything -- decided above the fan-out, so a facade agrees with a single
+    // partition. A mutation that can fail part-way bumps on the failure path instead: invalidating a
+    // functional that did not need it costs a rebuild, answering from a half-written operator costs a
+    // wrong number.
+    //
+    // Every structural mutator uses the scope below rather than bumping by hand, so no exit path can
+    // forget it -- hence no unscoped bump. It records the change on scope exit, so a mutator that throws
+    // after committing part of its work invalidates like one that completed. `armed` is false where the
+    // guarded call is a known no-op. See detail::MutationGuard.
     // On a facade it also latches the fault, if the round it guards is the kind that leaves the
     // partitions disagreeing, so the two verdicts a part-way fan-out earns are decided together.
     auto bump_structure_scope_(const char *site, bool armed = true) const -> detail::MutationGuard {

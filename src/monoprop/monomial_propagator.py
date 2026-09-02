@@ -608,16 +608,17 @@ class MonomialPropagator(ABC, Generic[T_op]):
         pared graph was selected from the coefficients this call replaces, so it raises instead of
         following them.
 
-        A rejected re-weight invalidates them: a partitioned propagator applies the new weights one
-        partition at a time, so a term only one of them holds is rejected with its siblings already
-        re-weighted, and a functional cannot tell that apart from a rejection that committed nothing.
-        They raise rather than answer for weights the propagator disagrees with.
+        A rejected re-weight leaves them valid too, because it commits nothing: the whole dict is
+        accepted before any of it is written, and on a partitioned propagator each partition judges
+        its own share first, so a term only one of them holds cannot be refused with its siblings
+        already re-weighted.
 
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] or
                 [PauliOperator][monoprop.pauli.PauliOperator], per the front-end, whose terms replace
-                the matching initial-operator. Every existing term it leaves out is zeroed, the
-                identity term included.
+                the matching initial-operator. This *replaces* rather than patches: every existing
+                term it leaves out is zeroed, the identity term included, so a re-weight carrying
+                only the non-identity terms drops the constant offset.
 
         Raises:
             RuntimeError: In the Heisenberg picture, if a term is absent from the current operator.

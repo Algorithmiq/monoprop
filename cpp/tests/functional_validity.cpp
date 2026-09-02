@@ -529,20 +529,28 @@ BOOST_AUTO_TEST_CASE(pared_schrodinger_functional_refuses_to_follow_a_reweight) 
     BOOST_CHECK_NO_THROW(make_call(prop, /*gradient=*/false, std::nullopt)(kBaseParams));
 }
 
-// A rejected re-weight is not a refresh: MPOperator::update_initial_operator throws for a term the
-// operator does not hold, and core_term_ may already carry the new value by then. A functional must
-// report that rather than answer from weights the propagator disagrees with.
-BOOST_AUTO_TEST_CASE(a_failed_reweight_invalidates_the_functional) {
-    auto prop = make_propagator(/*schrodinger=*/false);
-    build_base_graph(prop);
-    auto call = make_call(prop, /*gradient=*/false, std::nullopt);
-    BOOST_CHECK_NO_THROW(call(kBaseParams));
+// A refused re-weight commits nothing: the dry pass and MPOperator both accept the whole dict before
+// either writes, and the guard covers only the write that follows. So a live functional keeps
+// answering -- on either partition count, which is the point of deciding it before the fan-out.
+BOOST_AUTO_TEST_CASE(a_rejected_reweight_leaves_the_functional_valid) {
+    for (const size_t partitions : {1U, 2U}) {
+        BOOST_TEST_CONTEXT("partitions=" << partitions) {
+            auto prop = make_propagator(/*schrodinger=*/false, partitions);
+            build_base_graph(prop);
+            auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+            const double before = call(kBaseParams);
 
-    OperatorDict unknown_term;
-    unknown_term[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
-    BOOST_CHECK_THROW(prop.update_initial_operator(unknown_term), std::runtime_error);
+            OperatorDict unknown_term;
+            unknown_term[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
+            BOOST_CHECK_EXCEPTION(prop.update_initial_operator(unknown_term),
+                                  std::runtime_error,
+                                  reports("not found in the operator"));
 
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("update_initial_operator()"));
+            BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
+            // And the fixed-up retry goes through, which a latched fault would refuse.
+            BOOST_CHECK_NO_THROW(mutate_update_initial_operator(prop));
+        }
+    }
 }
 
 // Building a second functional must not look like a re-weight to the first: both are built over the one
@@ -652,48 +660,128 @@ BOOST_AUTO_TEST_CASE(a_part_way_build_graph_failure_invalidates_the_functional) 
     }
 }
 
-// The facade half of the row above, over the one mutation that diverges deterministically: a term the
-// operator does not hold is rejected by the single partition that would own it, with its siblings
-// already re-weighted. Nothing can reconcile the two, so the facade latches the fault and refuses every
-// later call rather than answering for a partitioning that never existed.
-BOOST_AUTO_TEST_CASE(a_part_way_fan_out_failure_refuses_the_facade) {
+// The mutation that used to diverge deterministically, and no longer can: a term the operator does not
+// hold is visible only to its owning partition, so committing the siblings first left the facade
+// holding two partitionings. The dry pass makes it an ordinary rejection instead.
+BOOST_AUTO_TEST_CASE(a_partly_unknown_reweight_leaves_the_facade_whole) {
     auto prop = make_propagator(/*schrodinger=*/false, /*partitions=*/2);
     build_base_graph(prop);
     auto call = make_call(prop, /*gradient=*/false, std::nullopt);
-    BOOST_CHECK_NO_THROW(call(kBaseParams));
+    const double before = call(kBaseParams);
 
     OperatorDict partly_unknown;
     partly_unknown[VecZ{0, 1}] = std::complex<double>{0.0, kReweightedFirstWeight};
-    partly_unknown[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
-    BOOST_CHECK_THROW(prop.update_initial_operator(partly_unknown), std::runtime_error);
-
-    const auto refuses = reports("update_initial_operator() failed part-way");
-    BOOST_CHECK_EXCEPTION(prop.graph_layers(), std::runtime_error, refuses);
-    BOOST_CHECK_EXCEPTION(prop.size(), std::runtime_error, refuses);
-    BOOST_CHECK_EXCEPTION(prop.expectation_value(kBaseParams), std::runtime_error, refuses);
-    BOOST_CHECK_EXCEPTION(prop.expectation_value_functional(), std::runtime_error, refuses);
-    // The functional built beforehand reports the mutation rather than the fault: its plan checks the
-    // revision, which the same unwind bumped, before it reaches a partition.
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("update_initial_operator()"));
-    // A copy carries the latch: it copies partitions that already disagree, so it can answer no better.
-    auto copy = prop;
-    BOOST_CHECK_EXCEPTION(copy.graph_layers(), std::runtime_error, refuses);
-}
-
-// The other half of the same rule, and the reason the fault is not simply "a fan-out threw": every
-// partition rejects this call for the same reason and none of them gets as far as changing anything, so
-// the facade stays whole and the fixed-up retry must go through.
-BOOST_AUTO_TEST_CASE(an_identically_rejected_fan_out_leaves_the_facade_whole) {
-    auto prop = make_propagator(/*schrodinger=*/false, /*partitions=*/2);
-    build_base_graph(prop);
-
-    // A coefficient-informed extension one parameter short of what replaying the stored graph needs.
-    // Every partition holds the same graph, so every one of them rejects it before touching anything.
-    BOOST_CHECK_THROW(prop.build_graph(kBaseGates, VecZ{0, 1}, VecD{1.0, 1.0}, std::nullopt, VecD{kBaseParams[0]}),
-                      std::runtime_error);
+    partly_unknown[VecZ{0, 2}] = std::complex<double>{0.0, 1.0}; // absent: only its owner can see that
+    BOOST_CHECK_EXCEPTION(prop.update_initial_operator(partly_unknown),
+                          std::runtime_error,
+                          reports("not found in the operator"));
 
     BOOST_CHECK_NO_THROW(prop.graph_layers());
-    BOOST_CHECK_NO_THROW(prop.expectation_value(kBaseParams));
+    BOOST_CHECK_NO_THROW(prop.size());
+    BOOST_TEST(prop.expectation_value(kBaseParams) == before, tt::tolerance(1e-12));
+    BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
+
+    // The retry with only terms the operator holds commits everywhere.
+    mutate_update_initial_operator(prop);
+    auto fresh = make_propagator(/*schrodinger=*/false, /*partitions=*/2, kReweightedFirstWeight);
+    build_base_graph(fresh);
+    BOOST_TEST(call(kBaseParams) == make_call(fresh, /*gradient=*/false, std::nullopt)(kBaseParams));
+}
+
+// The latch remains the backstop for what no dry pass can pre-empt: an allocation mid-commit, or a bad
+// gate generator poisoning the collective its slower siblings are still inside (see
+// a_part_way_build_graph_failure_invalidates_the_functional). Nothing diverges on demand any more, so
+// the mechanism is asserted where it is decided: the guard that latches, and the validator it feeds.
+BOOST_AUTO_TEST_CASE(a_part_way_round_latches_the_facade_fault) {
+    detail::FunctionalControl control;
+    bool diverged = false;
+
+    // Completed, so nothing to reconcile.
+    {
+        auto guard = detail::MutationGuard(control, "site()", true, /*on_success=*/true, &diverged);
+    }
+    BOOST_TEST((control.partition_fault.load() == nullptr));
+    BOOST_CHECK_NO_THROW(validate_partition_facade_intact(control.partition_fault.load()));
+
+    // Threw, but rejected identically everywhere: still nothing to reconcile.
+    BOOST_CHECK_THROW(
+        [&] {
+            auto guard = detail::MutationGuard(control, "site()", true, /*on_success=*/true, &diverged);
+            throw std::runtime_error("rejected everywhere");
+        }(),
+        std::runtime_error);
+    BOOST_TEST((control.partition_fault.load() == nullptr));
+
+    // Threw with the partitions disagreeing: the site is latched and every later use refuses.
+    diverged = true;
+    BOOST_CHECK_THROW(
+        [&] {
+            auto guard =
+                detail::MutationGuard(control, "update_initial_operator()", true, /*on_success=*/true, &diverged);
+            throw std::runtime_error("part-way");
+        }(),
+        std::runtime_error);
+    BOOST_TEST(std::string_view(control.partition_fault.load()) == std::string_view("update_initial_operator()"));
+    BOOST_CHECK_EXCEPTION(validate_partition_facade_intact(control.partition_fault.load()),
+                          std::runtime_error,
+                          reports("update_initial_operator() failed part-way"));
+}
+
+// A call refused outright changed nothing, so it must invalidate nothing -- and a facade must reach
+// that verdict where one partition does. Deciding it inside the children instead would invalidate a
+// live functional at monoprop_PARTITIONS=auto and leave it valid at =off.
+BOOST_AUTO_TEST_CASE(an_outright_rejection_leaves_the_functional_valid) {
+    // (what is rejected, the call). Every partition refuses each for the same reason.
+    const std::array<std::pair<std::string_view, void (*)(Prop &)>, 4> rejections{{
+        {"gate_indices that do not form contiguous runs from 0",
+         [](Prop &p) { p.build_graph(kBaseGates, VecZ{0, 1}, VecD{1.0, 1.0}, VecZ{0, 2}); }},
+        {"a seed one parameter short of replaying the stored graph",
+         [](Prop &p) { p.build_graph(kBaseGates, VecZ{0, 1}, VecD{1.0, 1.0}, std::nullopt, VecD{kBaseParams[0]}); }},
+        {"a parameter vector shorter than this call's mapping needs",
+         [](Prop &p) { p.build_graph(kBaseGates, VecZ{0, 5}, VecD{1.0, 1.0}, std::nullopt, VecD{0.1}); }},
+        {"a parameter_mapping matching neither the layer nor the gate count",
+         [](Prop &p) { p.set_parameter_mapping(VecZ{0, 1, 2, 3, 4}); }},
+    }};
+
+    for (const auto &[what, reject] : rejections) {
+        for (const size_t partitions : {1U, 2U}) {
+            BOOST_TEST_CONTEXT("rejected=" << what << " partitions=" << partitions) {
+                auto prop = make_propagator(/*schrodinger=*/false, partitions);
+                build_base_graph(prop);
+                auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+                const double before = call(kBaseParams);
+                const size_t layers_before = prop.graph_layers();
+
+                BOOST_CHECK_THROW(reject(prop), std::runtime_error);
+
+                // Nothing moved, on either shape.
+                BOOST_TEST(prop.graph_layers() == layers_before);
+                BOOST_TEST(prop.expectation_value(kBaseParams) == before, tt::tolerance(1e-12));
+                BOOST_TEST(call(kBaseParams) == before, tt::tolerance(1e-12));
+                // And the retry after a fix goes through.
+                BOOST_CHECK_NO_THROW(mutate_build_graph(prop));
+            }
+        }
+    }
+}
+
+// The published set is dropped, not left behind, once the last plan reading it goes away: a re-weight
+// does not move the revision, so a set kept because "the revision still matches" would reach the next
+// plan as current. That is what makes skipping the publication safe.
+BOOST_AUTO_TEST_CASE(a_reweight_with_no_live_plan_still_reaches_the_next_one) {
+    auto prop = make_propagator(/*schrodinger=*/false);
+    build_base_graph(prop);
+    // Builds a plan and drops it, leaving a published set behind with no reader.
+    const double before = prop.expectation_value(kBaseParams);
+
+    mutate_update_initial_operator(prop);
+
+    auto fresh = make_propagator(/*schrodinger=*/false, /*partitions=*/1, kReweightedFirstWeight);
+    build_base_graph(fresh);
+    BOOST_TEST(prop.expectation_value(kBaseParams) == fresh.expectation_value(kBaseParams));
+    BOOST_TEST(prop.expectation_value(kBaseParams) != before);
+    // A plan built now reads the same weights the direct path does.
+    BOOST_TEST(make_call(prop, /*gradient=*/false, std::nullopt)(kBaseParams) == fresh.expectation_value(kBaseParams));
 }
 
 // propagate() folds into the operator instead of appending, so nothing counts the mutation: without

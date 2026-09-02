@@ -44,6 +44,26 @@ Schrödinger picture the state is evolved independently, so you can change the
 observable arbitrarily and read it off against the same evolved state; in the Heisenberg
 picture the observable can be re-weighted.
 
+The update *replaces* the operator rather than patching it: every existing term the dict leaves out
+is zeroed, **the identity term included**. So a re-weight carrying only the non-identity terms drops
+the constant offset — pass it again to keep it.
+
+```python
+from monoprop import MajoranaPropagator, MajoranaOperator
+
+observable = MajoranaOperator({(): 0.25, (0, 1, 2, 3): 1.0}, 4)
+sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
+assert sim.expval([]) == -0.75  # 0.25 identity - 1.0 observable
+
+# The dict below carries no identity term, so the 0.25 offset is zeroed with it.
+sim.update_initial_operator(MajoranaOperator({(0, 1, 2, 3): 0.5}, 4))
+assert sim.expval([]) == -0.5
+
+# Passing it again keeps it.
+sim.update_initial_operator(MajoranaOperator({(): 0.25, (0, 1, 2, 3): 0.5}, 4))
+assert sim.expval([]) == -0.25
+```
+
 Functionals built before the update stay valid and answer for the new coefficients, so a re-weight
 loop does not have to rebuild them — see [Reusable functionals](/features/evaluation#reusable-functionals)
 for the one exception and for what a live view of the weights costs.
@@ -51,7 +71,9 @@ for the one exception and for what a live view of the weights costs.
 <Callout type="info">
     Only terms that already exist in the initial operator can be updated; supplying a
   monomial that is not present (or a non-Hermitian coefficient) raises
-  `RuntimeError`:
+  `RuntimeError`. The whole dict is checked before any of it is applied — on a partitioned
+  propagator too, where only one partition can see a term is missing — so a rejected update
+  leaves the operator, and any live functional, as they were:
 
   ```python
   import pytest
@@ -61,5 +83,6 @@ for the one exception and for what a live view of the weights costs.
   sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
   with pytest.raises(RuntimeError):
       sim.update_initial_operator(MajoranaOperator({(1, 2, 3, 4): 1.0}, 4))  # This monomial doesn't exist
+  sim.update_initial_operator(MajoranaOperator({(0, 1, 2, 3): 0.5}, 4))  # The fixed-up retry goes through
   ```
 </Callout>

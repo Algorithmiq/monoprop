@@ -60,8 +60,16 @@ struct FunctionalControl {
     // Last structural change.
     std::atomic<const char *> last_structural_change{nullptr};
 
-    // Current weights, null until the first plan.
+    // Current weights, null until the first plan and again when a re-weight finds no plan reading them.
     WeightsSlot weights;
+
+    // Plans reading this block. A re-weight publishes only when one is and clears the slot otherwise, so
+    // expectation_value() -- a plan per call -- costs no copy per re-weight. Mutable like WeightsSlot's
+    // mutex: a plan holds this block by const handle, and this counts readers rather than being read.
+    mutable std::atomic<size_t> live_plans{0};
+
+    auto add_plan() const -> void { live_plans.fetch_add(1); }
+    auto drop_plan() const -> void { live_plans.fetch_sub(1); }
 
     // Names the fan-out mutation that unwound part-way, or null while the facade is intact.
     std::atomic<const char *> partition_fault{nullptr};

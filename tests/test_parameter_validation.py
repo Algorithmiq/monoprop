@@ -638,58 +638,150 @@ class TestFunctionalValidityTable:
         with pytest.raises(RuntimeError, match=r"build_graph"):
             functional(parameters)
 
-    def test_part_way_fan_out_failure_refuses_the_facade(
+    def test_partly_unknown_reweight_leaves_the_facade_whole(
         self, monkeypatch, serial_comm
     ):
-        """A fan-out that throws part-way leaves the partitions holding different state.
+        """A term the operator does not hold is visible only to its owning partition.
 
-        A term the operator does not hold is rejected by the one partition that would own it, with
-        its siblings already re-weighted -- the one mutation that diverges deterministically rather
-        than by whichever partition loses a race. No read can reconcile the two, so the facade
-        latches the fault and refuses every later call rather than answering for a partitioning that
-        never existed. Two partitions are asked for by number rather than through ``auto``, which
-        resolves to one -- and so to no facade at all -- on a single-core host.
+        Committing the siblings first left the facade holding two partitionings, with nothing able to
+        reconcile them. The dry pass makes it an ordinary rejection instead. Two partitions are asked
+        for by number rather than through ``auto``, which resolves to one -- and so to no facade --
+        on a single-core host.
         """
         monkeypatch.setenv("monoprop_PARTITIONS", "2")
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         parameters = list(self._PARAMS)
         functional = mp.expectation_value_functional()
-        functional(parameters)
+        before = functional(parameters)
 
         with pytest.raises(RuntimeError, match=r"not found in the operator"):
             mp.update_initial_operator(
                 MajoranaOperator(
                     {
                         (0, 1): self._REWEIGHTED_FIRST_WEIGHT * 1j,
-                        (0, 2): 1.0j,  # absent: only its owning partition rejects it
+                        (0, 2): 1.0j,  # absent: only its owning partition can see that
                     },
                     num_modes=self._MODES,
                 )
             )
 
-        refuses = r"update_initial_operator\(\) failed part-way"
-        with pytest.raises(RuntimeError, match=refuses):
-            _ = mp.graph_layers
-        with pytest.raises(RuntimeError, match=refuses):
-            mp.size()
-        with pytest.raises(RuntimeError, match=refuses):
-            mp.expval(parameters)
-        with pytest.raises(RuntimeError, match=refuses):
-            mp.expectation_value_functional()
+        assert mp.graph_layers == 2
+        assert mp.size() > 0
+        assert mp.expval(parameters) == pytest.approx(before)
+        assert functional(parameters) == pytest.approx(before)
 
-        # The functional built beforehand reports the mutation rather than the fault: its plan checks
-        # the revision, which the same unwind bumped, before it reaches a partition.
-        with pytest.raises(RuntimeError, match=r"update_initial_operator"):
-            functional(parameters)
+        # The retry, carrying only terms the operator holds, commits on every partition.
+        self._mutate_update_initial_operator(mp)
+        fresh = self._propagator(
+            serial_comm,
+            schrodinger=False,
+            with_graph=True,
+            first_weight=self._REWEIGHTED_FIRST_WEIGHT,
+        )
+        assert functional(parameters) == pytest.approx(fresh.expval(parameters))
+
+    # (what is rejected, the call). Every partition refuses each for the same reason, before any of
+    # them writes.
+    _OUTRIGHT_REJECTIONS = (
+        (
+            "a seed one parameter short of replaying the stored graph",
+            lambda mp, params: mp.build_graph(
+                Circuit(
+                    (ExpGate(MajoranaOperator({(1,): 1.0}, num_modes=2)),), 2, (0.4,)
+                ),
+                seed_parameters=[params[0]],
+            ),
+        ),
+        (
+            "gate_indices that do not form contiguous runs from 0",
+            # The front end derives gate_indices itself, so only the engine can express a bad list.
+            lambda mp, _params: mp._simulator.build_graph(
+                ((0,), (2,)), (0, 1), (1.0, 1.0), (0, 2)
+            ),
+        ),
+    )
+    # A parameter_mapping of the wrong length is the third shape the engine rejects up front, but the
+    # front end refuses it first with a ValueError, so only cpp/tests/functional_validity.cpp can
+    # reach it.
+
+    @pytest.mark.parametrize(
+        "rejection", _OUTRIGHT_REJECTIONS, ids=[r[0] for r in _OUTRIGHT_REJECTIONS]
+    )
+    @pytest.mark.usefixtures("partitions")
+    def test_outright_rejection_leaves_the_functional_valid(
+        self, serial_comm, rejection
+    ):
+        """A call refused outright changed nothing, so it invalidates nothing -- on either setting.
+
+        Deciding it inside the children instead would invalidate a live functional at
+        ``monoprop_PARTITIONS=auto`` and leave it valid at ``=off``: the divergence this table exists
+        to rule out.
+        """
+        _, reject = rejection
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        parameters = list(self._PARAMS)
+        functional = mp.expectation_value_functional()
+        before = functional(parameters)
+
+        with pytest.raises(RuntimeError):
+            reject(mp, parameters)
+
+        assert mp.graph_layers == 2
+        assert mp.expval(parameters) == pytest.approx(before)
+        assert functional(parameters) == pytest.approx(before)
+
+    @pytest.mark.usefixtures("partitions")
+    def test_rejected_reweight_leaves_the_functional_valid(self, serial_comm):
+        """The re-weight row for a dict the operator refuses.
+
+        Both the dry pass and the store accept the whole dict before either writes, and the guard
+        covers only the write that follows, so the functional keeps answering.
+        """
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        parameters = list(self._PARAMS)
+        functional = mp.expectation_value_functional()
+        before = functional(parameters)
+
+        with pytest.raises(RuntimeError, match=r"not found in the operator"):
+            mp.update_initial_operator(
+                MajoranaOperator({(0, 2): 1.0j}, num_modes=self._MODES)
+            )
+
+        assert functional(parameters) == pytest.approx(before)
+        # And the fixed-up retry goes through, which a latched fault would refuse.
+        self._mutate_update_initial_operator(mp)
+
+    @pytest.mark.usefixtures("partitions")
+    def test_reweight_with_no_live_functional_still_reaches_the_next_one(
+        self, serial_comm
+    ):
+        """A re-weight with nothing reading the published weights drops them rather than keeping them.
+
+        It does not move the structure revision, so a set kept on "the revision still matches"
+        grounds would reach the next functional as current. Dropping it is what lets an [expval][]
+        loop skip the coefficient-vector copy per re-weight.
+        """
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        parameters = list(self._PARAMS)
+        before = mp.expval(parameters)  # builds a functional and drops it
+
+        self._mutate_update_initial_operator(mp)
+
+        fresh = self._propagator(
+            serial_comm,
+            schrodinger=False,
+            with_graph=True,
+            first_weight=self._REWEIGHTED_FIRST_WEIGHT,
+        )
+        expected = fresh.expval(parameters)
+        assert mp.expval(parameters) == pytest.approx(expected)
+        assert mp.expval(parameters) != pytest.approx(before)
+        assert mp.expectation_value_functional()(parameters) == pytest.approx(expected)
 
     def test_identically_rejected_fan_out_leaves_the_facade_usable(
         self, monkeypatch, serial_comm
     ):
-        """The other half of the same rule, and why the fault is not just "a fan-out threw".
-
-        Every partition rejects this call for the same reason and none of them gets as far as
-        changing anything, so the facade is still whole and the fixed-up retry has to go through.
-        """
+        """The retry path, spelled out on the facade: the propagator is still whole afterwards."""
         monkeypatch.setenv("monoprop_PARTITIONS", "2")
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         parameters = list(self._PARAMS)
