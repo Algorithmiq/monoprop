@@ -530,6 +530,9 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
         return;
     }
 
+    // One reservation for both the copy and the zero-fill tail, so the caller's array takes a single
+    // growth step at the row store's policy rather than up to two of std::vector's own.
+    detail::reserve_coeffs_geometric(coeffs, mp_op_.size());
     if (coeffs.size() < current.size()) {
         coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
     }

@@ -89,6 +89,20 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
            && std::ranges::equal(sparse.values, expected.second);
 }
 
+// Pairwise-distinct two-position monomials over the 16 slots of Monomial<8>, indexed 0..119 in
+// colexicographic order. Enough for a capacity ladder that crosses several growth steps.
+inline constexpr size_t kLadderTerms = 100;
+
+auto distinct_term(size_t k) -> Monomial<8> {
+    constexpr size_t kSlots = Monomial<8>::size();
+    size_t first = 0;
+    while (k >= kSlots - 1 - first) {
+        k -= kSlots - 1 - first;
+        ++first;
+    }
+    return indices_to_bitset<8>(VecZ{first, first + 1 + k});
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
@@ -325,6 +339,55 @@ BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inve
     // rebuilds against the grown store.
     op.append_term(indices_to_bitset<8>({2, 3}));
     BOOST_CHECK_EQUAL(op.inverted_index().rows(), 2U);
+}
+
+// The coefficient array parallels the row store, so it must grow on the store's 1.5x policy and not on
+// std::vector's doubling. Only capacity is at stake -- the ladder is checked alongside the values.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_grows_coeffs_at_the_row_store_policy) {
+    detail::MPOperator<8> op;
+
+    size_t prev_cap = op.op_coeffs.capacity();
+    for (size_t step = 1; step <= kLadderTerms; ++step) {
+        op.append_term(distinct_term(step - 1));
+        const auto &coeffs = op.get_operator();
+        BOOST_REQUIRE_EQUAL(coeffs.size(), op.size());
+
+        const size_t cap = op.op_coeffs.capacity();
+        BOOST_CHECK_GE(cap, coeffs.size());
+        BOOST_CHECK_LE(cap, std::max(coeffs.size(), prev_cap + (prev_cap / 2) + 1));
+        BOOST_CHECK_EQUAL(coeffs.back(), 0.0); // every new slot is written 0.0 before use
+        prev_cap = cap;
+
+        op.op_coeffs[step - 1] = static_cast<double>(step);
+    }
+
+    // Growth never disturbs an already-written coefficient.
+    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), kLadderTerms);
+    for (size_t i = 0; i < kLadderTerms; ++i) {
+        BOOST_CHECK_EQUAL(op.op_coeffs[i], static_cast<double>(i + 1));
+    }
+}
+
+// dense_state() extends the same way, and its already-scored prefix must survive the growth too.
+BOOST_AUTO_TEST_CASE(mp_operator_dense_state_grows_coeffs_at_the_row_store_policy) {
+    const VecZ initial_state{0, 1};
+    detail::MPOperator<8> op;
+    op.basis = Basis::Majorana;
+    op.initial_state = initial_state;
+
+    size_t prev_cap = op.state_coeffs.capacity();
+    for (size_t step = 1; step <= kLadderTerms; ++step) {
+        op.append_term(distinct_term(step - 1));
+        const auto &state = op.dense_state();
+        BOOST_REQUIRE_EQUAL(state.size(), op.size());
+
+        const size_t cap = op.state_coeffs.capacity();
+        BOOST_CHECK_GE(cap, state.size());
+        BOOST_CHECK_LE(cap, std::max(state.size(), prev_cap + (prev_cap / 2) + 1));
+        prev_cap = cap;
+    }
+
+    BOOST_CHECK(op.dense_state() == expected_state(op, Basis::Majorana, initial_state));
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_estimate_memory_usage_tracks_inverted_index_presence) {
