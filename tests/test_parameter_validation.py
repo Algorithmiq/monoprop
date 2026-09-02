@@ -671,8 +671,14 @@ class TestFunctionalValidityTable:
                 self._PART_WAY_GATES, self._PART_WAY_MAPPING, self._PART_WAY_COEFFS
             )
 
-        # The graph grew, so the call did mutate on its way to the throw.
-        assert mp.graph_layers > layers_before
+        # The graph grew, so the call did mutate on its way to the throw. Only the single-partition
+        # shape can witness that: the bad generator is rejected independently on every partition, so
+        # whichever reaches it first poisons the collective the slower ones are still inside, and a
+        # poisoned partition unwinds before committing the layer. graph_layers reads partition 0, so
+        # on the facade it reports whichever of the two that partition happened to be.
+        if partitions == "off":
+            assert mp.graph_layers > layers_before
+
         with pytest.raises(RuntimeError, match=r"build_graph"):
             functional(parameters)
 
