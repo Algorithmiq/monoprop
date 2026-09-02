@@ -11,7 +11,7 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
 - Qt-style Doxygen on every header declaration, member docs after the member. `//` for one-line
   C++ comments, `/* */` for blocks.
 - Comment invariants, contracts and non-obvious choices only. Never narrate the code.
-- Google-style Python docstrings, accurate enough for `just gen-api`.
+- Google-style Python docstrings without type hints, accurate enough for `just gen-api`. Type hints in the code.
 - In `docs/content/docs/**/*.mdx` and docstrings, link API symbols as `[Symbol][]` or
   `[Display][fully.qualified.path]` -- never `/api/...` URLs, never backticks around a link.
   See `docs/content/docs/documenting.mdx`.
