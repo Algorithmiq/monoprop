@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <complex>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -452,6 +453,108 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_gate_scratch_nonzero_after_a_gate) {
     auto without = live;
     without.gate_scratch_bytes = 0;
     BOOST_CHECK_EQUAL(live.total_bytes() - without.total_bytes(), live.gate_scratch_bytes);
+}
+
+// The coefficient slack is a subset of op_coeffs_bytes, so it accumulates under += like the other d_
+// fields and must never reach total_bytes().
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_op_coeffs_slack_out_of_total) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.op_coeffs_slack_bytes = 24;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.op_coeffs_bytes = 20;
+    other.op_coeffs_slack_bytes = 8;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.op_coeffs_slack_bytes, 32U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
+}
+
+// It has to be shown to MOVE, and to be exactly the capacity the array holds past its live rows.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_op_coeffs_slack_is_the_unused_capacity) {
+    detail::MPOperator<8> op;
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U); // nothing allocated
+
+    for (size_t k = 0; k < kLadderTerms; ++k) {
+        op.append_term(distinct_term(k));
+    }
+    (void)op.get_operator();
+    op.op_coeffs.reserve(op.op_coeffs.size() + 64);
+
+    const auto b = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(b.op_coeffs_slack_bytes, (op.op_coeffs.capacity() - op.op_coeffs.size()) * sizeof(double));
+    BOOST_CHECK_GE(b.op_coeffs_slack_bytes, 64U * sizeof(double));
+    BOOST_CHECK_LT(b.op_coeffs_slack_bytes, b.op_coeffs_bytes); // a subset of the field it breaks down
+
+    op.op_coeffs.shrink_to_fit();
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U);
+}
+
+// One column per occupancy tier, with the occupancies chosen so each lands in a named bucket:
+// column 0 in every row, 1 in 16 of 128, 2 in 4, 3 in one, 4..10 carrying the row's index (64 each),
+// and 11..15 in none. Buckets are [2^-(9-i), 2^-(8-i)), so those are 1 -> 7, 1/8 -> 7, 1/32 -> 5,
+// 1/128 -> 3 and 0 -> 0.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_reports_the_inverted_index_density_histogram) {
+    constexpr size_t kRows = 128;
+    std::vector<Monomial<8>> terms;
+    for (size_t r = 0; r < kRows; ++r) {
+        VecZ positions{0};
+        if (r < 16) {
+            positions.push_back(1);
+        }
+        if (r < 4) {
+            positions.push_back(2);
+        }
+        if (r == 0) {
+            positions.push_back(3);
+        }
+        for (size_t bit = 0; bit < 7; ++bit) { // 7 bits make the 128 rows pairwise distinct
+            if ((r >> bit) & 1U) {
+                positions.push_back(4 + bit);
+            }
+        }
+        terms.push_back(indices_to_bitset<8>(positions));
+    }
+    auto op = build_indexed_op(terms);
+
+    const auto absent = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(std::ranges::fold_left(absent.inverted_index_density_hist, size_t{0}, std::plus{}), 0U);
+
+    (void)op.inverted_index();
+    const auto b = detail::estimate_memory_usage<8>(op);
+
+    const decltype(b.inverted_index_density_hist) expected{5, 0, 0, 1, 0, 1, 0, 9};
+    BOOST_CHECK(b.inverted_index_density_hist == expected);
+
+    // Every column is counted exactly once, and the dense tier is a subset of the same histogram.
+    BOOST_CHECK_EQUAL(std::ranges::fold_left(b.inverted_index_density_hist, size_t{0}, std::plus{}),
+                      Monomial<8>::size());
+    for (size_t i = 0; i < b.inverted_index_density_hist.size(); ++i) {
+        BOOST_CHECK_LE(b.inverted_index_dense_density_hist[i], b.inverted_index_density_hist[i]);
+    }
+    BOOST_CHECK_EQUAL(std::ranges::fold_left(b.inverted_index_dense_density_hist, size_t{0}, std::plus{}),
+                      b.inverted_index_dense_columns);
+}
+
+// Both histograms accumulate bucket by bucket, and neither is a byte count total_bytes() could take.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_accumulates_density_histograms_bucketwise) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.inverted_index_density_hist = {1, 0, 0, 0, 0, 0, 0, 2};
+    acc.inverted_index_dense_density_hist = {0, 0, 0, 0, 0, 0, 0, 2};
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.inverted_index_density_hist = {3, 0, 0, 0, 0, 0, 0, 4};
+    other.inverted_index_dense_density_hist = {0, 0, 0, 0, 0, 0, 0, 4};
+
+    acc += other;
+    const decltype(acc.inverted_index_density_hist) expected{4, 0, 0, 0, 0, 0, 0, 6};
+    const decltype(acc.inverted_index_dense_density_hist) expected_dense{0, 0, 0, 0, 0, 0, 0, 6};
+    BOOST_CHECK(acc.inverted_index_density_hist == expected);
+    BOOST_CHECK(acc.inverted_index_dense_density_hist == expected_dense);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
 }
 
 // init_operator_entries is a count: accumulated by operator+= but never summed into total_bytes().

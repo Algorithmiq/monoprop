@@ -39,6 +39,8 @@ template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
     static constexpr size_t kPromoteDensityInv = 64;
+    // Buckets of the diagnostic density histogram below. Log-spaced, one bucket per halving.
+    static constexpr size_t kDensityBuckets = 8;
 
     struct Column {
         std::vector<uint64_t> words; // full-height bit-vector; used iff is_dense
@@ -212,6 +214,49 @@ struct InvertedIndex {
             out[2] += static_cast<size_t>(col.is_dense);
         }
         return out;
+    }
+
+    // Diagnostic: how the columns are spread over occupancy, as counts of columns per log-spaced density
+    // bucket. Bucket i covers density in [2^-(9-i), 2^-(8-i)) -- bucket 0 everything below 1/512, bucket 7
+    // everything from 1/8 up -- so bucket 4 begins exactly at the 1/kPromoteDensityInv promotion threshold
+    // and buckets 4..7 are the tiers that pay a full-height bitmap. out[0] counts every column, out[1] the
+    // dense tier alone; the sparse tier is their elementwise difference.
+    //
+    // A dense column no longer keeps its set-row list, so its occupancy is recovered by popcount -- one
+    // pass over the dense words, which is why this is a ledger call and not something a hot path may use.
+    auto density_histogram() const -> std::array<std::array<size_t, kDensityBuckets>, 2> {
+        std::array<std::array<size_t, kDensityBuckets>, 2> out{};
+        if (row_count == 0) {
+            return out;
+        }
+        for (const auto &col : cols) {
+            size_t set_rows = col.set_rows.size();
+            if (col.is_dense) {
+                set_rows = 0;
+                for (const uint64_t word : col.words) {
+                    set_rows += static_cast<size_t>(std::popcount(word));
+                }
+            }
+            const size_t bucket = density_bucket_(set_rows, row_count);
+            ++out[0][bucket];
+            if (col.is_dense) {
+                ++out[1][bucket];
+            }
+        }
+        return out;
+    }
+
+    // Integer-only, so no column lands on the wrong side of an edge through a rounded division: the density
+    // reaches 1/inv exactly when set_rows * inv >= rows.
+    static auto density_bucket_(size_t set_rows, size_t rows) -> size_t {
+        size_t bucket = 0;
+        for (size_t inv = 512; inv >= 8; inv /= 2) {
+            if (set_rows * inv < rows) {
+                break;
+            }
+            ++bucket;
+        }
+        return bucket;
     }
 };
 

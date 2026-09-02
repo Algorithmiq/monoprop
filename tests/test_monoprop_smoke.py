@@ -174,6 +174,29 @@ _GRAPH_DIAGNOSTIC_KEYS = (
     "d_occupied_slots",
     "d_cross_rank_endpoints",
 )
+_OPERATOR_LEDGER_KEYS = (
+    "operator_terms_bytes",
+    "row_keys_bytes",
+    "op_coeffs_bytes",
+    "state_coeffs_bytes",
+    "indexing_bytes",
+    "init_operator_bytes",
+    "initial_state_bytes",
+    "inverted_index_bytes",
+    "gate_scratch_bytes",
+)
+_OPERATOR_DIAGNOSTIC_KEYS = (
+    "d_invidx_dense_bytes",
+    "d_invidx_sparse_bytes",
+    "d_invidx_dense_columns",
+    "d_terms_slack_bytes",
+    "d_state_coeffs_nonzero",
+    "d_init_operator_entries",
+    "d_op_coeffs_slack_bytes",
+)
+# The only non-scalar entries: fixed-length lists, so an A/B subtracts them bucket by bucket.
+_OPERATOR_HISTOGRAM_KEYS = ("d_invidx_density_hist", "d_invidx_dense_density_hist")
+_DENSITY_BUCKETS = 8
 
 
 @parametrize_with_cases(
@@ -214,3 +237,41 @@ def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
     assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]
     assert breakdown["d_occupied_slots"] <= breakdown["d_cross_rank_endpoints"]
     assert breakdown["d_slot_record_bytes"] <= breakdown["cross_rank_bytes"]
+
+
+@parametrize_with_cases(
+    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
+)
+def test_operator_memory_breakdown_keys_and_totals(problem, serial_comm):
+    """The operator ledger is the same measurement contract as the graph one."""
+    monomial_circuit = problem.monomial_circuit
+    core = _make_bound_core(problem, serial_comm, schrodinger=False)
+    _evolve_bound_core(core, monomial_circuit)
+
+    breakdown = core.operator_memory_breakdown()
+
+    assert set(breakdown) == {
+        *_OPERATOR_LEDGER_KEYS,
+        "total_bytes",
+        *_OPERATOR_DIAGNOSTIC_KEYS,
+        *_OPERATOR_HISTOGRAM_KEYS,
+    }
+
+    # total_bytes() is the live-at-quiescence figure: the d_ keys are subsets or counts.
+    assert breakdown["total_bytes"] == sum(breakdown[k] for k in _OPERATOR_LEDGER_KEYS)
+    assert breakdown["total_bytes"] == core.operator_memory_bytes()
+    assert breakdown["total_bytes"] > 0
+
+    # Capacity the coefficient array holds past its live rows, so it cannot exceed the whole array.
+    assert breakdown["d_op_coeffs_slack_bytes"] <= breakdown["op_coeffs_bytes"]
+
+    for key in _OPERATOR_HISTOGRAM_KEYS:
+        assert len(breakdown[key]) == _DENSITY_BUCKETS
+        assert all(isinstance(count, int) for count in breakdown[key])
+
+    # Every column is counted once, and the promoted columns are a subset of the same histogram.
+    total_hist = breakdown["d_invidx_density_hist"]
+    dense_hist = breakdown["d_invidx_dense_density_hist"]
+    assert all(dense <= total for dense, total in zip(dense_hist, total_hist))
+    assert sum(dense_hist) == breakdown["d_invidx_dense_columns"]
+    assert sum(total_hist) >= sum(dense_hist)

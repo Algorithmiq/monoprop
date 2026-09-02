@@ -118,6 +118,17 @@ store keeps only a four-byte join key per term — that same mixed fingerprint �
 gate's anticommuting set costs no row reads; it is reported separately as `row_keys_bytes` in
 `operator_memory_breakdown`.
 
+Two further entries of `operator_memory_breakdown` sit outside `total_bytes()`, which stays the
+live-at-quiescence figure. `d_op_coeffs_slack_bytes` is the capacity the coefficient array holds
+beyond its live rows: it grows on the row store's own 1.5x policy and is handed back only at
+quiescence, so it is resident for the whole propagation. `d_invidx_density_hist` counts the
+anticommutation index's columns in eight log-spaced occupancy buckets, bucket $i$ covering density
+$[2^{-(9-i)}, 2^{-(8-i)})$, so bucket 4 begins exactly at the $1/64$ threshold above which a column
+is stored as a full-height bitmap instead of a set-row list; `d_invidx_dense_density_hist` is the
+same count over the columns that took that promotion, and the two differ by the sparse tier. The
+slack is a subset of `op_coeffs_bytes` and the histograms are counts, so folding either into the
+total would double-count.
+
 Every gate is then one exchange round for the terms that rotate. A term $M$ that
 anticommutes with $G$ and passes the rotation gate sends one record — the partner's
 positions, the rotation phase $\varphi(M, G)$, one bit saying whether $M$'s own side
