@@ -316,6 +316,46 @@ protected:
     // structural position bound when it has one.
     auto packed_inline_width_() const -> size_t;
 
+    // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
+    static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;
+
+    // Partition fan-out vocabulary. Every one of these is facade-only: partition_group_ != nullptr is a precondition.
+    //
+    // `for_each_partition_` / `map_partitions_` / `concat_partitions_` dispatch to the partitions' own pinned master
+    // threads, which is mandatory for anything that touches partition state: the partitions trade over an
+    // in-process comm and their collectives are barrier-synced, so all S must run together.
+    // `fold_partitions_` / `sum_partitions_` / `first_partition_` instead read quiescent partitions straight from the
+    // facade thread, which is safe precisely because they mutate nothing.
+
+    auto for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void;
+
+    // One result per partition, in partition order.
+    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
+    auto map_partitions_(Fn fn) -> std::vector<R>;
+
+    // Concatenated in partition order. The partitions are disjoint, so the result enumerates the whole
+    // operator (deterministic for a fixed partition count).
+    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
+    auto concat_partitions_(Fn fn) -> R;
+
+    // Sequential fold of `proj(partition)`; `accumulate(total, value)` combines.
+    template <typename Proj, typename Accumulate, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
+    auto fold_partitions_(Proj proj, Accumulate accumulate) const -> R;
+
+    // fold_partitions_ for the additive breakdowns: the fields sum over the disjoint hash partitions.
+    template <typename Proj, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
+    auto sum_partitions_(Proj proj) const -> R;
+
+    // Partition 0 for values that are not partitioned: the graph structure and gate info are identical on
+    // every partition, the core (identity) term is replicated on all of them, and an allreduced scalar is
+    // already global on each. Anything hash-partitioned must go through sum_/concat_partitions_ instead.
+    auto first_partition_() const -> const MonomialPropagator &;
+
+    auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
+
+    template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
+    auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
+
 private:
     unsigned int cutoff_;
 
