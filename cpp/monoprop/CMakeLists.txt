@@ -21,7 +21,6 @@ target_compile_definitions(
   monoprop-objs
   PUBLIC
     $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
-    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
 )
 
 # flags to prepend
@@ -99,7 +98,6 @@ target_compile_definitions(
   monoprop
   INTERFACE
     $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
-    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
 )
 
 target_compile_features(monoprop INTERFACE cxx_std_23)

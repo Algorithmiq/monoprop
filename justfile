@@ -48,16 +48,6 @@ test-mpi RANKS='':
     echo "Running configured C++ MPI rank matrix: ${ranks}"; \
     ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-regex mpi
 
-# Build and run the C++ suite with a 64-bit TermIndex (monoprop_WIDE_TERM_INDEX=ON).
-# This is the only configuration that compiles the wide `#if defined(monoprop_WIDE_TERM_INDEX)`
-# branches (operator_index_tests, large_cosine_storage_tests, graph_encoding_tests), so it
-# guards them from bit-rotting. Serial is enough to exercise those branches.
-
-test-wide:
-    monoprop_WIDE_TERM_INDEX=ON uv sync --all-extras --group workspace-test --reinstall-package monoprop --no-cache
-    uv run --no-sync python -m pytest -m "not mpi"
-    ctest --test-dir build/editable/Release --output-on-failure
-
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
 
