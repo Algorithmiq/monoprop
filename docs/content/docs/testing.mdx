@@ -15,7 +15,8 @@ the tools needed to run the tests.
 The Python tests run with `pytest`. Without MPI:
 
 ```bash
-uv run python -m pytest -m "not mpi"   # or: just test
+just test              # build, then the Python and C++ suites
+just test-py           # the Python suite against whatever is installed
 ```
 
 This collects two suites: monoprop's own (`tests/`) and the one belonging to the
@@ -35,8 +36,8 @@ produce. The `just` recipes build an MPI-enabled extension and launch the suite
 under `mpiexec`:
 
 ```bash
-just test-mpi          # full suite under MPI
-just test-mpi-matrix   # MPI-marked tests across a rank matrix
+just test-mpi                  # build with MPI, then run every leg
+just test-py-mpi "1;2;4" -m mpi # MPI-marked tests across a rank matrix
 ```
 
 To do it by hand, build with MPI on, then run under `mpiexec` with `--no-sync`
@@ -105,8 +106,7 @@ CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
 lane fails if its MPI variant was not registered. Standalone MPI-enabled C++
 test executables initialize MPI before constructing propagators and destroy the
 propagators before finalizing MPI. Select the groups locally with
-`ctest --test-dir build/editable/Release -LE mpi` and
-`ctest --test-dir build/editable/Release -L mpi --no-tests=error`. The
+`just test-cpp` and `just test-cpp-mpi`, which are the same commands CI runs. The
 `just test-mpi '1;2;4'` recipe configures and runs the corresponding C++ CTest
 rank entries as well as the Python rank matrix.
 

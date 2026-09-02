@@ -217,6 +217,13 @@ function reachable from the public template chain. The installed CMake target re
 monoprop itself was built with MPI; a serial package does not acquire MPI compile definitions or
 link dependencies merely because the consuming project already has an `MPI::MPI_CXX` target.
 
+`just test-find-package` goes one step further out: it builds
+`cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
+package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that
+exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
+usage requirement the package fails to export. It compiles the same source as the in-tree
+probe, so the two cannot drift.
+
 ### Debug tree
 
 ```bash
@@ -254,10 +261,7 @@ The C++ test binary is fully instrumented, so every check applies to it,
 including leak detection:
 
 ```bash
-ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1 \
-LSAN_OPTIONS=suppressions=$PWD/.github/lsan.supp \
-UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-ctest --test-dir build/editable/AsanUbsan --output-on-failure
+just test-cpp-asan
 ```
 
 The Python tests are a different situation: an instrumented `_core` is loaded
@@ -265,10 +269,7 @@ into an ordinary CPython, so the ASan runtime must be preloaded, and the checks
 that assume the whole process is instrumented have to be switched off.
 
 ```bash
-ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1 \
-UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
-uv run pytest
+just test-py-asan
 ```
 
 Both preloads are required. Without `libasan.so`, the first `import monoprop`
@@ -285,17 +286,14 @@ uninstrumented interpreter — the C++ leg above is what covers leaks.
 <Callout title="Sanitizer reports are hidden by pytest" type="warn">
 pytest replaces the stderr file descriptor, so a sanitizer report printed from
 native code is swallowed and the run looks like a bare exit code 1 with no
-diagnostic. Add `log_path` to route reports to files instead, then read them:
+diagnostic. `just test-py-asan` therefore sets `log_path`, routing the reports to
+`sanitizer-log.*`; read them with:
 
 ```bash
-ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:log_path=$PWD/sanitizer-log \
-UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:log_path=$PWD/sanitizer-log \
-LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
-uv run pytest
-cat sanitizer-log.*
+just sanitizer-reports
 ```
 
-The QA workflow does this and dumps the files on failure.
+The QA workflow runs that recipe on failure.
 </Callout>
 
 #### ThreadSanitizer
@@ -305,8 +303,7 @@ SKBUILD_CMAKE_BUILD_TYPE=Tsan \
 SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=tsan" \
 uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
 
-TSAN_OPTIONS=halt_on_error=1:history_size=4 \
-ctest --test-dir build/editable/Tsan --output-on-failure -R "(partition_|shm_comm_)"
+just test-cpp-tsan
 ```
 
 TSan is scoped to the concurrency surface — the partition and `ShmComm` tests —
@@ -320,8 +317,17 @@ Python API under TSan would require a TSan-instrumented CPython.
 ### Related workflows
 
 - Use `just code-coverage` for the coverage build.
-- Use `ctest --test-dir build/editable/Release -L serial` or `-L mpi-2` to
-  filter the discovered C++ test set.
+- Use `just test-cpp` and `just test-cpp-mpi` for the two C++ legs, or
+  `ctest --test-dir build/editable/Release -L mpi-2` to filter further.
+- Use `just build [uv sync args…]` when you want the build CI performs. It adds
+  `--all-extras` and, for a serial build, drops the `mpi` extra — importing
+  `mpi4py.MPI` without an MPI runtime raises. `monoprop_ENABLE_MPI` drives all of
+  it, so `monoprop_ENABLE_MPI=ON just build --group workspace-test` is the MPI
+  build and a bare `just build` is the serial one.
+- The platform packages the build needs are listed in `tools/packages/`, one per
+  line: `apt.txt` / `brew.txt`, plus `apt-mpi.txt` / `brew-mpi.txt` for an MPI
+  build. `.github/actions/setup` and `.devcontainer/Dockerfile` both install from
+  those files, so there is one list per platform to keep current.
 
 
 ## See also

@@ -61,26 +61,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
-            packages=(boost msgpack-cxx hwloc)
-            if [[ "${{ matrix.mpi }}" == "on" ]]; then
-              packages+=(open-mpi)
-            fi
-            brew install "${packages[@]}"
-          else
-            sudo apt-get update
-            packages="libboost-dev libboost-test-dev libmsgpack-cxx-dev libhwloc-dev"
-            if [[ "${{ matrix.mpi }}" == "on" ]]; then
-              packages="$packages libopenmpi-dev openmpi-bin"
-            fi
-            if [[ "${{ matrix.compiler }}" == "clang++-18" ]]; then
-              packages="$packages clang-18"
-            fi
-            sudo apt-get install -y $packages
-          fi
-
       - name: Set build environment variables
         run: |
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
@@ -90,115 +70,25 @@ jobs:
             echo "CXX=${{ matrix.compiler }}" >> "$GITHUB_ENV"
           fi
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
         with:
-          enable-cache: true
-          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
           python-version: ${{ matrix.python-version }}
+          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
+          mpi: ${{ matrix.mpi }}
 
       - name: Install package
-        run: |
-          if [[ "${{ matrix.mpi }}" == "on" ]]; then
-            uv sync --no-progress --group workspace-test --all-extras -v
-          else
-            uv sync --no-progress --group workspace-test --all-extras \
-              --no-extra mpi -v
-          fi
+        run: just build --group workspace-test
 
       - name: Python environment information
         run: |
           uv tree
 
       - name: Get monoprop information
-        run: |
-          uv run python <<'EOF'
-          import pprint
-
-          import monoprop as mp
-
-          pprint.pprint(
-            {
-              "version": mp.__version__,
-              "variant": mp.__variant__,
-              "compiler_flags": mp.__compiler_flags__,
-              "MPI": mp.has_mpi,
-            }
-          )
-          EOF
+        run: just info
 
       - name: Verify that find_package(monoprop) works
-        run: |
-          mkdir -p find-package-smoke
-
-          cat > find-package-smoke/CMakeLists.txt <<'EOF'
-          cmake_minimum_required(VERSION 3.28)
-          project(monoprop_find_package_smoke LANGUAGES CXX)
-
-          set(CMAKE_CXX_EXTENSIONS OFF)
-
-          find_package(monoprop CONFIG REQUIRED)
-
-          add_executable(smoke main.cpp)
-          target_link_libraries(smoke PRIVATE monoprop::monoprop)
-          EOF
-
-          cat > find-package-smoke/main.cpp <<'EOF'
-          #include "monoprop/MonomialPropagator.h"
-          #include "monoprop/detail/mpi/MPICompat.h"
-
-          #include <complex>
-          #include <optional>
-          #include <vector>
-
-          using namespace monoprop;
-
-          auto main() -> int {
-              mpi::init();
-              {
-                  constexpr size_t kModes = 2;
-                  OperatorDict ham;
-                  ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
-
-                  // Graph-building / Schrodinger path: detail/graph_encoding/MPGraphEncodingStorage.h.
-                  MonomialPropagator<kModes> graph_sim(ham,
-                                                       2 * kModes,
-                                                       VecZ{0, 1},
-                                                       std::optional<unsigned int>{4U},
-                                                       MPI_COMM_SELF,
-                                                       std::nullopt,
-                                                       std::nullopt,
-                                                       CutoffType::Length,
-                                                       std::nullopt);
-                  const std::vector<VecZ> monos{{0}, {1}, {2}};
-                  graph_sim.build_graph(monos, VecZ{0, 1, 2}, VecD{1.0, 1.0, 1.0});
-                  graph_sim.graph_memory_usage();
-                  graph_sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
-
-                  MonomialPropagator<kModes> partition_sim(ham,
-                                                           2 * kModes,
-                                                           VecZ{0, 1},
-                                                           std::nullopt,
-                                                           MPI_COMM_SELF,
-                                                           std::nullopt,
-                                                           std::nullopt,
-                                                           CutoffType::Length,
-                                                           std::nullopt,
-                                                           kModes,
-                                                           Basis::Majorana,
-                                                           2);
-                  partition_sim.size();
-              }
-              mpi::finalize();
-              return 0;
-          }
-          EOF
-
-          cmake -S find-package-smoke -B find-package-smoke/build -Dmonoprop_DIR="$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_path('purelib'))")"/monoprop/cmake
-
-          cmake --build find-package-smoke/build
-
-          find-package-smoke/build/smoke
+        run: just test-find-package
 
       - name: Get test group label
         id: test-group-label
@@ -210,57 +100,22 @@ jobs:
           echo "label=$runner-$pyver-$compiler-$mpi" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
-        run: |
-          uv run pytest \
-          -r aR \
-          --durations=50 \
-          --durations-min=5.0 \
-          --junit-xml=pytest-"${{ steps.test-group-label.outputs.label }}".xml \
-          -o junit_family=legacy
+        run: just test-py "${{ steps.test-group-label.outputs.label }}"
 
       - name: Run non-MPI C++ unit tests
-        run: |
-          ctest --test-dir build/editable/Release \
-            --output-on-failure \
-            --no-tests=error \
-            --label-exclude mpi \
-            --output-junit ctest-serial-"${{ steps.test-group-label.outputs.label }}".xml
+        run: just test-cpp "${{ steps.test-group-label.outputs.label }}"
 
       - name: Run C++ unit tests under MPI
         if: matrix.mpi == 'on'
-        # set both OpenMPI 4 (ORTE) and OpenMPI 5 (PRRTE) variants of the oversubscription setting
-        env:
-          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: |
-          ctest --test-dir build/editable/Release \
-            --output-on-failure \
-            --no-tests=error \
-            --label-regex mpi \
-            --output-junit ctest-mpi-"${{ steps.test-group-label.outputs.label }}".xml
+        run: just test-cpp-mpi "${{ steps.test-group-label.outputs.label }}"
 
       - name: Run Python tests under MPI
         if: matrix.mpi == 'on'
-        env:
-          OMPI_ALLOW_RUN_AS_ROOT: "1"
-          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: |
-          mpiexec --map-by :OVERSUBSCRIBE -n 2 \
-            uv run --no-sync pytest tests --with-mpi -v
+        run: just test-py-mpi 2
 
       - name: Run Python MPI marker rank matrix
         if: matrix.mpi == 'on'
-        env:
-          OMPI_ALLOW_RUN_AS_ROOT: "1"
-          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: |
-          for r in 1 2 4; do
-            echo "Running MPI python tests with ${r} rank(s)"
-            mpiexec --map-by :OVERSUBSCRIBE -n "$r" \
-              uv run --no-sync pytest tests --with-mpi -m mpi -v
-          done
+        run: just test-py-mpi "1;2;4" -m mpi
 
       - name: Upload serial test results to Codecov
         uses: codecov/codecov-action@v7.0.0

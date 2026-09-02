@@ -19,34 +19,135 @@ site := "docs"
 
 # Run the Python docs toolchain in the synced docs environment.
 
-docs_uv := "uv run --group docs --group test --no-dev --all-extras"
+docs_uv := "uv run --group docs --group test --no-dev --all-extras --no-extra mpi"
+uv_sync := "uv sync --no-progress --all-extras -v"
+no_mpi_extra := "--no-extra mpi"
+mpi_enabled := lowercase(env('monoprop_ENABLE_MPI', 'off'))
+mpi_extra := if mpi_enabled =~ '^(on|true|yes|1)$' { "" } else { no_mpi_extra }
+
+build_dir := "build/editable" / env('SKBUILD_CMAKE_BUILD_TYPE', 'Release')
+mpiexec := "mpiexec --map-by :OVERSUBSCRIBE"
+
+# Keep both OpenMPI 4 (ORTE) and 5 (PRRTE) spell oversubscription env-vars.
+export OMPI_MCA_rmaps_base_oversubscribe := "1"
+export PRTE_MCA_rmaps_default_mapping_policy := ":oversubscribe"
 
 default: build-docs
 
-test:
-    uv run python -m pytest -m "not mpi"
-    ctest --test-dir build/editable/Release --output-on-failure
+build *ARGS:
+    {{ uv_sync }} {{ mpi_extra }} "$@"
 
-# MPI is off by default in source builds, so build an MPI-enabled editable install
-# first, then run the suite under mpiexec with --no-sync (avoids a per-rank resync).
-# Pass RANKS as either a single integer or a semicolon-separated list (e.g. "1;2;4").
+# Report what the installed extension was actually built as.
 
-test-mpi RANKS='':
-    requested_ranks={{quote(RANKS)}}; \
+info:
+    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI": mp.has_mpi})'
+
+test: build test-py test-cpp
+
+# The test legs below run against whatever is installed (--no-sync, so that a run cannot
+# silently rebuild a differently configured wheel). LABEL, when given, names the JUnit
+# report CI uploads.
+
+test-py LABEL='':
+    uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
+        {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
+
+test-cpp LABEL='':
+    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-exclude mpi \
+        {{ if LABEL == '' { '' } else { '--output-junit ctest-serial-' + LABEL + '.xml' } }}
+
+# --no-tests=error: the MPI tests are registered only by an MPI-enabled build, so an
+# empty set here means the build was misconfigured.
+
+test-cpp-mpi LABEL='':
+    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
+        {{ if LABEL == '' { '' } else { '--output-junit ctest-mpi-' + LABEL + '.xml' } }}
+
+# RANKS is a single integer or a semicolon-separated list (e.g. "1;2;4"); the suite runs
+# once per entry. Extra arguments go to pytest, e.g. `just test-py-mpi "1;2;4" -m mpi`.
+
+test-py-mpi RANKS='' *PYTEST_ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shift 1
+    requested_ranks={{ quote(RANKS) }}
+    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"
+    for r in ${ranks//;/ }; do
+      echo "Running the Python test suite with ${r} MPI rank(s)"
+      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
+    done
+
+# Build MPI-enabled, then run every leg. The C++
+# rank matrix is a build-time setting.
+
+test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
+    requested_ranks={{ quote(RANKS) }}; \
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
-    monoprop_ENABLE_MPI=ON uv sync --all-extras --group workspace-test \
-        --reinstall-package monoprop --no-cache -v \
-        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"; \
-    export OMPI_MCA_rmaps_base_oversubscribe="1"; \
-    export PRTE_MCA_rmaps_default_mapping_policy=":oversubscribe"; \
-    for r in ${ranks//;/ }; \
-    do echo "Running full Python test suite with ${r} MPI rank(s)"; \
-    mpiexec -n "$r" uv run --no-sync python -m pytest tests --with-mpi -v; \
-    done; \
-    echo "Running non-MPI C++ unit tests"; \
-    ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-exclude mpi; \
-    echo "Running configured C++ MPI rank matrix: ${ranks}"; \
-    ctest --test-dir build/editable/Release --output-on-failure --no-tests=error --label-regex mpi
+    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group workspace-test \
+        --reinstall-package monoprop --no-cache \
+        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
+
+# Build and run a consumer project against the installed package.
+
+test-find-package BUILD_DIR='build/find-package-smoke':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    build_dir={{ quote(BUILD_DIR) }}
+    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake"
+    cmake --build "$build_dir"
+    "$build_dir/smoke"
+
+# The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
+# Tsan) and the matching monoprop_SANITIZER define.
+#
+# Only the C++ binary is fully instrumented, so the option sets differ per leg and cannot
+# be hoisted to the environment.
+
+ubsan_options := "halt_on_error=1:print_stacktrace=1"
+sanitizer_log := project_source_dir / "sanitizer-log"
+
+
+test-cpp-asan:
+    ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
+    LSAN_OPTIONS="suppressions={{ project_source_dir }}/.github/lsan.supp" \
+    UBSAN_OPTIONS="{{ ubsan_options }}" \
+      ctest --test-dir {{ build_dir }} --output-on-failure
+
+# CPython is uninstrumented, so the leak, pointer-pair and initialization checks are off
+# here; the C++ leg covers those. ASan needs libstdc++ preloaded too, or its __cxa_throw
+# interceptor does not resolve. pytest replaces stderr, so the reports go to log files.
+
+test-py-asan:
+    LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
+    ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
+    UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
+      uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0
+
+# Print what test-py-asan sent to the log files. Silent when the tests themselves failed.
+
+sanitizer-reports:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    files=({{ sanitizer_log }}.*)
+    if (( ${#files[@]} == 0 )); then
+      echo "No sanitizer report was written; the failure came from the tests themselves."
+      exit 0
+    fi
+    for f in "${files[@]}"; do
+      echo "::group::$(basename "$f")"
+      cat "$f"
+      echo "::endgroup::"
+    done
+
+# TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
+# restricted to the concurrent partition and shared-memory paths.
+
+test-cpp-tsan:
+    TSAN_OPTIONS="halt_on_error=1:history_size=4" \
+      ctest --test-dir {{ build_dir }} --output-on-failure -R "(partition_|shm_comm_)"
 
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
@@ -55,25 +156,20 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    mpi={{quote(MPI)}}
-    build_dir={{quote(BUILD_DIR)}}
-    output_dir={{quote(OUTPUT_DIR)}}
+    mpi={{ quote(MPI) }}
+    build_dir={{ quote(BUILD_DIR) }}
+    output_dir={{ quote(OUTPUT_DIR) }}
     export GCOV_EXIT_AT_ERROR=1
     if [[ "$mpi" != "on" && "$mpi" != "off" ]]; then
       echo "MPI must be 'on' or 'off', got: $mpi" >&2
       exit 2
     fi
 
-    sync_args=(
-      --no-progress
-      --group workspace-test
-      --all-extras
-      --reinstall-package monoprop
-      -v
-    )
+    sync_args=({{ uv_sync }})
     if [[ "$mpi" == "off" ]]; then
-      sync_args+=(--no-extra mpi)
+      sync_args+=({{ no_mpi_extra }})
     fi
+    sync_args+=(--group workspace-test --reinstall-package monoprop)
     # The top-level recipe isolates local rebuilds from a wheel cached for the other variant.
     if [[ "${monoprop_COVERAGE_NO_CACHE:-OFF}" == "ON" ]]; then
       sync_args+=(--no-cache)
@@ -82,7 +178,7 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     SKBUILD_BUILD_DIR="$build_dir" \
       SKBUILD_CMAKE_BUILD_TYPE=Coverage \
       monoprop_ENABLE_MPI="$mpi" \
-      uv sync "${sync_args[@]}"
+      "${sync_args[@]}"
 
     rm -rf "$output_dir"
     mkdir -p "$output_dir"
@@ -91,11 +187,10 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
 
     uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
     if [[ "$mpi" == "on" ]]; then
+      # The coverage lane runs in a container as root.
       export OMPI_ALLOW_RUN_AS_ROOT=1
       export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-      export OMPI_MCA_rmaps_base_oversubscribe=1
-      export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
-      mpiexec --map-by :OVERSUBSCRIBE -n 2 \
+      {{ mpiexec }} -n 2 \
         uv run --no-sync coverage run --parallel-mode \
           -m pytest tests --with-mpi -m mpi
     fi
@@ -167,9 +262,9 @@ code-coverage-aggregate SERIAL_DIR MPI_DIR OUTPUT_DIR='.':
     #!/usr/bin/env bash
     set -euo pipefail
 
-    serial_dir={{quote(SERIAL_DIR)}}
-    mpi_dir={{quote(MPI_DIR)}}
-    output_dir={{quote(OUTPUT_DIR)}}
+    serial_dir={{ quote(SERIAL_DIR) }}
+    mpi_dir={{ quote(MPI_DIR) }}
+    output_dir={{ quote(OUTPUT_DIR) }}
     mkdir -p "$output_dir"
     rm -f "$output_dir/.coverage" \
       "$output_dir/python-coverage.xml" \
@@ -213,11 +308,11 @@ code-coverage-aggregate SERIAL_DIR MPI_DIR OUTPUT_DIR='.':
 code-coverage-html REPORT_DIR='.' OUTPUT_DIR='monoprop-coverage':
     lcov \
       --ignore-errors inconsistent,corrupt \
-      -a {{quote(REPORT_DIR)}}/python-coverage.info \
-      -a {{quote(REPORT_DIR)}}/cpp-coverage-through-python-bindings.info \
-      -a {{quote(REPORT_DIR)}}/cpp-coverage.info \
-      -o {{quote(REPORT_DIR)}}/merged.info
-    genhtml {{quote(REPORT_DIR)}}/merged.info -o {{quote(OUTPUT_DIR)}} \
+      -a {{ quote(REPORT_DIR) }}/python-coverage.info \
+      -a {{ quote(REPORT_DIR) }}/cpp-coverage-through-python-bindings.info \
+      -a {{ quote(REPORT_DIR) }}/cpp-coverage.info \
+      -o {{ quote(REPORT_DIR) }}/merged.info
+    genhtml {{ quote(REPORT_DIR) }}/merged.info -o {{ quote(OUTPUT_DIR) }} \
       --legend --title "monoprop coverage" \
       --prefix {{ project_source_dir }} \
       --ignore-errors inconsistent \
@@ -275,8 +370,7 @@ bench-mpi LABEL RANKS *MPIARGS:
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench-mpi`.
 bench-build-mpi:
-    monoprop_ENABLE_MPI=ON \
-        uv sync --all-extras --group bench --reinstall-package monoprop --no-cache -v
+    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group bench --reinstall-package monoprop --no-cache
 
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:
@@ -339,7 +433,7 @@ build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
 
 # Check exported HTML links (including external URLs).
 check-doc-links:
-    lychee --config .lychee.postbuild.toml --root-dir "{{ project_source_dir }}/docs/out" --fallback-extensions html --index-files index.html 'docs/out/**/*.html'
+    lychee --config .lychee.postbuild.toml 'docs/out/**/*.html'
 
 # Serve the documentation locally with hot reloading.
 serve-docs:
