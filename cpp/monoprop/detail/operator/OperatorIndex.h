@@ -358,7 +358,7 @@ public:
         if (n == 0) {
             return;
         }
-        bulk_insert_hashed(n, base, [this, &key_at](size_t k) { return fold_hash(key_at(k)); });
+        bulk_insert_hashed(n, base, [&key_at](size_t k) { return fold_hash(key_at(k)); });
     }
     // bulk_insert with the hashes already in hand: same precondition (n distinct rows, already written,
     // at consecutive indices) and the same slot assignment. `hashes[k]` must be fold_hash of the key of
