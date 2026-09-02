@@ -31,8 +31,8 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 
 #include <complex>
-#include <cstdio>
 #include <optional>
+#include <print>
 #include <vector>
 
 // Forces every member function of MonomialPropagator<NumModes> to be compiled for these two
@@ -68,8 +68,8 @@ auto run_graph_build_chain() -> void {
     const auto mem = sim.graph_memory_usage();
     const auto [value, grad] = sim.expectation_value_and_gradient(VecD{0.1, 0.2, 0.3});
 
-    std::fprintf(stderr,
-                 "[link_export_probe] graph chain: layers=%zu cross_rank_bytes=%zu value=%f grad_size=%zu\n",
+    std::println(stderr,
+                 "[link_export_probe] graph chain: layers={} cross_rank_bytes={} value={} grad_size={}",
                  sim.graph_layers(),
                  mem.cross_rank_bytes,
                  value,
@@ -97,14 +97,16 @@ auto run_partition_chain() -> void {
                                    Basis::Majorana,
                                    /*partitions=*/2);
 
-    std::fprintf(stderr, "[link_export_probe] partition chain: size=%zu\n", sim.size());
+    std::println(stderr, "[link_export_probe] partition chain: size={}", sim.size());
 }
 
 } // namespace
 
 auto main() -> int {
+    monoprop::mpi::init();
     run_graph_build_chain();
     run_partition_chain();
-    std::fprintf(stderr, "[link_export_probe] OK\n");
+    monoprop::mpi::finalize();
+    std::println(stderr, "[link_export_probe] OK");
     return 0;
 }

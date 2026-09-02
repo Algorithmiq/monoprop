@@ -47,22 +47,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y just libopenmpi-dev openmpi-bin libboost-dev libhwloc-dev
-
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
         with:
-          enable-cache: true
-          python-version: "3.11"
+          cache-suffix: benchmark
 
       - name: Install package
         env:
           SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
-        run: |
-          uv sync --no-progress --group bench --all-extras -v
+        run: just build --group bench
 
       - name: Run benchmarks
         env:

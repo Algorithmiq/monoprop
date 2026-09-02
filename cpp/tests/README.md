@@ -73,6 +73,9 @@ name and cannot address suite-nested cases, tests use flat
 - **`ExchangeLayoutOracle.h`**: `build_layer_exchange_layout` — the independent
   reference for a layer's exchange counts and displacements, which
   `derive_exchange_layout` in the library is checked against.
+- **`dense_query_reference.h`**: the retired dense query record, frozen as the
+  independent oracle for `sparse_query_tests.cpp`. Test-only, and not kept in
+  sync with the wire format.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -82,18 +85,25 @@ name and cannot address suite-nested cases, tests use flat
 - **Containers / algebra / utilities**: `bitset_tests.cpp` (the Bitset container
   vs a std::bitset oracle), `mpfunctions.cpp` (MP utilities + bit-flip helpers),
   `pauli_algebra_tests.cpp`, `majorana_cutoff_tests.cpp` (length/support cutoff,
-  CutoffEvaluator, interleave phase, coeff encode/decode), `validation_tests.cpp`
-  (parameter validators), `mpi_utils_tests.cpp` (find_rank + word serialization),
-  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
+  CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
+  bitwise reference), `validation_tests.cpp`
+  (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
+  scan routing agreement), `evolution_detail_tests.cpp` (MatchedEpochSet +
+  CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
   get_operator init-map drain, update_initial_operator picture branches,
-  insert_absent_terms, inverted-index sync, memory estimate, deep copy).
+  insert_absent_terms, inverted-index sync, memory estimate, deep copy),
+  `bulk_insert_tests.cpp` (the grouped-prefetch insert vs a one-key-at-a-time
+  reference: table state and enumeration order).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
-  `fused_query_codec_tests.cpp`, `combined_recompute_equivalence.cpp`
-  (recompute equivalence + snapshot invariance), `exact_upper_atol_rescue.cpp`,
+  `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense
+  oracle, plus the fused value channel), `sparse_resolve_tests.cpp` (probe and
+  insert from wire positions vs the dense Monomial-keyed path),
+  `combined_recompute_equivalence.cpp` (recompute equivalence +
+  snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
 - **Graph encoding / packing**: `graph_encoding_tests.cpp` (CosineWordBuilder
   coalescer, checked_* overflow guards, packed-phase storage + int8 read,
@@ -120,9 +130,12 @@ needed.
 With an MPI launcher on PATH (`MPIEXEC_EXECUTABLE`, `mpiexec`, or `mpirun`),
 CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
 `monoprop_MPI_TEST_PROCS` (default `2`) — one CTest entry per rank count, not
-per case, because the ranks have to reach the same collectives. For exhaustive
-rank coverage: `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under
-MPI while debugging, invoke the binary directly:
+per case, because the ranks have to reach the same collectives. Each entry has
+a 600-second timeout, so a collective deadlock fails instead of occupying the
+runner indefinitely. For exhaustive
+rank coverage, run `just test-mpi '1;2;4'` or configure
+`-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under MPI while
+debugging, invoke the binary directly:
 `mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests

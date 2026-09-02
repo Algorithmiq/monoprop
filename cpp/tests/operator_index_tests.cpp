@@ -28,14 +28,9 @@
 using namespace monoprop;
 using namespace monoprop::detail;
 
-BOOST_AUTO_TEST_CASE(operator_index_term_index_width_matches_build) {
-#if defined(monoprop_WIDE_TERM_INDEX)
-    static_assert(sizeof(TermIndex) == 8, "wide build must use 64-bit TermIndex");
-    BOOST_TEST(sizeof(TermIndex) == 8u);
-#else
-    static_assert(sizeof(TermIndex) == 4, "default build must use 32-bit TermIndex");
+BOOST_AUTO_TEST_CASE(operator_index_term_index_is_32_bit) {
+    static_assert(sizeof(TermIndex) == 4, "TermIndex is fixed at 32 bits; the packed row stores assume it");
     BOOST_TEST(sizeof(TermIndex) == 4u);
-#endif
 }
 
 namespace {
@@ -68,6 +63,38 @@ BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
     // sets bits at 2*32-1-0=63, 2*32-1-3=60, 2*32-1-5=58, so find_first gives 58 first.
     BOOST_TEST(pos[0] == 58u);
     BOOST_TEST(pos[2] == 63u);
+}
+
+// The ceiling is declared, never materialised: 2^32 rows is hundreds of GiB, so every case here is
+// arithmetic on the refusal path, which returns before a single row is allocated.
+BOOST_AUTO_TEST_CASE(append_past_the_term_index_ceiling_is_refused_before_it_grows) {
+    Store s;
+    BOOST_CHECK_THROW(s.grow_rows_geometric(Store::kIndexCeiling + 1), TermIndexCeilingReached);
+    BOOST_CHECK_EQUAL(s.size(), 0u);
+
+    s.push_back(bs({0, 1}));
+    // A store holding one term has room for kIndexCeiling - 1 more, so exactly kIndexCeiling is one too many.
+    BOOST_CHECK_THROW(s.grow_rows_geometric(Store::kIndexCeiling), TermIndexCeilingReached);
+    BOOST_CHECK_EQUAL(s.size(), 1u);
+    BOOST_CHECK((s.row(0) == bs({0, 1})));
+
+    // The count is checked as a subtraction, so a request that would wrap base + n is refused too.
+    BOOST_CHECK_THROW(s.grow_rows_geometric(std::numeric_limits<size_t>::max()), TermIndexCeilingReached);
+    BOOST_CHECK_EQUAL(s.size(), 1u);
+}
+
+// An empty append is legal at any size, including at the ceiling itself -- the last valid index is
+// kIndexCeiling - 1, so a store of exactly kIndexCeiling terms is full, not over.
+BOOST_AUTO_TEST_CASE(empty_append_never_throws_and_a_normal_append_still_grows) {
+    Store s;
+    BOOST_CHECK_NO_THROW(s.grow_rows_geometric(0));
+    BOOST_CHECK_EQUAL(s.size(), 0u);
+    s.push_back(bs({2}));
+    BOOST_CHECK_NO_THROW(s.grow_rows_geometric(0));
+    BOOST_CHECK_EQUAL(s.size(), 1u);
+    const size_t base = s.grow_rows_geometric(2);
+    BOOST_CHECK_EQUAL(base, 1u);
+    BOOST_CHECK_EQUAL(s.size(), 3u);
 }
 
 BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {

@@ -6,7 +6,7 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
 
 ## Rules
 
-- C++23 idioms, trailing return types, the project's `auto` style, `clang-format` with the
+- C++23 idioms, trailing return types, follow almost-always-`auto` style, `clang-format` with the
   repository configuration.
 - Qt-style Doxygen on every header declaration, member docs after the member. `//` for one-line
   C++ comments, `/* */` for blocks.

@@ -105,6 +105,11 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+The platform packages are listed in `tools/packages/` (`apt.txt` / `brew.txt`,
+plus the `-mpi` lists), which is what CI and the devcontainer install.
+`just build [uv sync args…]` performs the build CI performs — the same recipe
+GitHub Actions calls, so a lane can be reproduced locally.
+
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
@@ -114,13 +119,25 @@ locate `hwloc`.
 
 ```bash
 uv sync --all-groups --all-extras -v    # installs the workspace, incl. the bench tooling
-uv run python -m pytest -m "not mpi"   # Python tests (serial)
+just test                              # build, then the Python and C++ suites
+just test-py / just test-cpp           # one leg, against whatever is installed
 just test-mpi                          # Python + C++ tests under MPI
-just test-wide                         # Python + C++ unit tests with a 64-bit TermIndex
 ```
 
 See the [testing guide](https://docs.monoprop.algorithmiq.tech/testing)
-for the with/without-MPI details and the rank matrix.
+for the with/without-MPI details and the rank matrix. CI has explicit MPI-enabled
+lanes on Linux x86-64, Linux ARM64, and macOS; installing the `mpi` extra alone
+does not enable the C++ MPI build. CI requires a registered MPI CTest variant,
+and each whole-suite MPI run has a 600-second deadlock timeout. Source builds
+select the MPI variant with `monoprop_ENABLE_MPI=ON` in the environment.
+Standalone MPI-enabled C++ programs must initialize MPI before constructing a
+propagator and finalize it only after all propagators have been destroyed. The
+exported CMake target preserves the package's MPI setting independently of any
+`MPI::MPI_CXX` target already present in the consuming project. QA coverage
+merges separate serial and MPI-instrumented builds, including two-rank Python
+and C++ MPI runs, so both compatibility paths contribute to the reports. Run
+`just code-coverage` for the same combined report locally; it builds both
+variants and renders `monoprop-coverage/index.html`.
 
 ## Repository layout
 
@@ -156,6 +173,26 @@ Without a DevContainer, install the prerequisites from the
 [building guide](https://docs.monoprop.algorithmiq.tech/building#prerequisites)
 by hand.
 
+### Nix
+
+The repository is a [Nix flake](https://wiki.nixos.org/wiki/Flakes), so on Nix or
+NixOS none of the prerequisites have to be installed by hand:
+
+```bash
+nix develop            # dev shell: C++ toolchain, hwloc, MPI, uv, just, node
+nix build .#monoprop   # build the package (`.#monoprop-mpi` for the MPI build)
+nix run                # Python interpreter with monoprop importable
+```
+
+Inside `nix develop` the usual `uv sync` and `just` workflows apply unchanged.
+Downstream flakes can follow their own `nixpkgs`, import `monoprop.overlays.default`,
+and consume `pkgs.monoprop` or `pkgs.monoprop-mpi`; see the
+[building guide](https://docs.monoprop.algorithmiq.tech/building#using-monoprop-downstream-with-nix).
+The Nix entrypoints are distributed from the repository flake, not in the PyPI
+source distribution. Nix sandbox builds read the latest stable release from the
+root `VERSION` file; setuptools-scm remains authoritative for normal Git-based
+Python builds.
+
 ## Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
@@ -175,6 +212,9 @@ just build-docs   # output: docs/out/
 just serve-docs   # live-reloading dev server
 just check-doc-links  # checks exported HTML links (including external URLs)
 ```
+
+The link checker's options live in `.lychee.postbuild.toml`, so the recipe and the
+docs workflow (which runs lychee through its own action) check the same thing.
 
 ### Keeping documentation up to date
 

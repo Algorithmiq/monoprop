@@ -43,6 +43,12 @@ To run all pre-commit checks manually:
 prek run --all
 ```
 
+One of those hooks, `check-workflow-commands`, enforces where commands live: a GitHub
+workflow step may not run `uv sync`, `pytest`, `ctest`, `mpiexec`, `cmake` and friends
+directly, because then a failing CI lane cannot be reproduced by running what it ran. Put
+the command in a `just` recipe and have the workflow call that. The few deliberate
+exceptions are listed, with their reasons, in `tools/check-workflow-commands.py`.
+
 ## Documentation
 
 Building the documentation locally requires [npm](https://docs.npmjs.com/), the Node.js package manager. Once npm is available, you can run:

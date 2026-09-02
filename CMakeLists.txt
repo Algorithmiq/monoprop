@@ -49,11 +49,6 @@ set(
   "Maximum number of simulable Fermionic modes with Python bindings"
 )
 option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-option(
-  monoprop_WIDE_TERM_INDEX
-  "Use 64-bit term indices (support > 2^32 terms per partition)"
-  OFF
-)
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
@@ -100,7 +95,6 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
-message(STATUS "   Wide term index        : ${monoprop_WIDE_TERM_INDEX}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 

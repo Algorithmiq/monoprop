@@ -1,0 +1,4 @@
+# Added to tools/packages/apt.txt when an MPI runtime is requested.
+
+libopenmpi-dev          # MPI::MPI_CXX, and the headers mpi4py builds against
+openmpi-bin             # mpiexec, for the multi-rank test and coverage runs

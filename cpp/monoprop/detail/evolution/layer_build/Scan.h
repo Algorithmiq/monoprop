@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -29,6 +30,8 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -157,23 +160,52 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
+// The dense form is unavoidable: the owner hash folds every word and the basis sign reads the source
+// bitset, so it is built regardless, and the merge below runs beside it.
+template <size_t NumModes>
+struct PartnerProduct {
+    Monomial<NumModes> new_mono;
+    size_t k = 0;       // popcount(M⊕G)
+    size_t overlap = 0; // slots in both M and G, which cancel
+    int phase_factor = 0;
+};
+
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
-// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready.
-template <size_t NumModes, Algebra A>
+// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready. `out_pos` receives the
+// partner's ascending positions; a spilled source row has no position array, so that case walks the
+// dense partner to fill it instead.
+template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 [[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
                                                       size_t i,
                                                       const typename A::GenContext &ctx,
-                                                      Monomial<NumModes> &new_mono,
-                                                      size_t &overlap,
-                                                      int &phase_factor) -> void {
-    Monomial<NumModes> mono;
-    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
+                                                      std::span<const GenT> gen_pos,
+                                                      std::span<PosT> out_pos) -> PartnerProduct<NumModes> {
+    const size_t gen_pop = gen_pos.size();
     const Monomial<NumModes> &gen = A::generator(ctx);
-    new_mono = mono ^ gen;
-    overlap = mono.count_and(gen);
-    phase_factor = A::rotation_sign(ctx, mono, new_mono);
+    PartnerProduct<NumModes> out;
+    Monomial<NumModes> mono;
+    if (const auto src = ham.row_positions(i); src.inlined()) {
+        const auto merged = merge_partner_positions(src.pos, gen_pos, out_pos);
+        out.k = merged.count;
+        out.overlap = merged.overlap;
+        for (const PosT q : src.pos) {
+            mono.set(static_cast<size_t>(q));
+        }
+        out.new_mono = mono ^ gen;
+    }
+    else {
+        ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
+        out.new_mono = mono ^ gen;
+        out.overlap = mono.count_and(gen);
+        for (size_t b = out.new_mono.find_first(); b < out.new_mono.size(); b = out.new_mono.find_next(b)) {
+            out_pos[out.k++] = static_cast<PosT>(b);
+        }
+    }
+    out.phase_factor = A::rotation_sign(ctx, mono, out.new_mono);
+    return out;
 }
 
+template <size_t NumModes>
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
     std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
@@ -184,6 +216,10 @@ struct FusedScanResult {
     // leader_src / follower_src. Empty when capture_values is false.
     std::vector<std::vector<double>> leader_val;
     std::vector<std::vector<double>> follower_val;
+    // Self-owned queries, staged as positions instead of queued to the wire and resolved inline.
+    // Order must match leader_src[my_rank] / follower_src[my_rank], or resolution attributes the wrong source.
+    SelfQueryStage<NumModes> leader_self;
+    SelfQueryStage<NumModes> follower_self;
 };
 
 // Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
@@ -202,12 +238,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             size_t my_rank,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
-                            double fused_scale_cos = 1.0) -> FusedScanResult {
+                            double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
-    FusedScanResult res;
+    FusedScanResult<NumModes> res;
     res.leader_queries.assign(rank_count, VecZ{});
     res.leader_src.assign(rank_count, std::vector<size_t>{});
     res.follower_queries.assign(rank_count, VecZ{});
@@ -268,40 +304,61 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         auto &fs = res.follower_src;
         auto &fv = res.follower_val;
 
+        const OperatorIndex<NumModes> &ham = *op.store;
+        using RowPosT = typename OperatorIndex<NumModes>::PosT;
+
+        // The generator's positions, once per gate: the merge's second input.
+        std::vector<uint16_t> gen_pos;
+        gen_pos.reserve(gen_pop);
+        for (size_t b = gen.find_first(); b < gen.size(); b = gen.find_next(b)) {
+            gen_pos.push_back(static_cast<uint16_t>(b));
+        }
+        // pbuf capacity is 2*NumModes: the partner's positions are distinct, so this always suffices.
+        std::vector<RowPosT> pbuf(2 * NumModes);
+
+        auto push = [&](const Monomial<NumModes> &dense,
+                        std::span<const RowPosT> pos,
+                        int phase,
+                        size_t i,
+                        double v_src,
+                        bool is_follower) {
+            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
+            // Must be the same function find_rank computes (MPIUtils.h) or a term is placed and queried
+            // on different ranks, which duplicates a row silently; mpi_utils_tests.cpp asserts it.
+            size_t r_prime = my_rank;
+            if (rank_count != 1) {
+                r_prime = monomial_hash<NumModes>(dense) % rank_count;
+            }
+            if (r_prime == my_rank) {
+                (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
+            }
+            else {
+                QueryWire<NumModes>::push(is_follower ? fq[r_prime] : lq[r_prime], pos, phase);
+            }
+            (is_follower ? fs[r_prime] : ls[r_prime]).push_back(i);
+            if (capture_values) {
+                (is_follower ? fv[r_prime] : lv[r_prime]).push_back(v_src);
+            }
+        };
+
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
             }
-            Monomial<NumModes> new_mono;
-            size_t overlap = 0;
-            int phase_factor = 0;
-            emit_term_products<NumModes, A>(*op.store, i, ectx, new_mono, overlap, phase_factor);
+            const auto p = emit_term_products<NumModes, A>(ham,
+                                                           i,
+                                                           ectx,
+                                                           std::span<const uint16_t>(gen_pos),
+                                                           std::span<RowPosT>(pbuf));
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
-            const size_t new_pop = mono_pop + gen_pop - 2 * overlap;
-            const bool struct_pass = cutoff_eval.passes_with_popcount(new_mono, new_pop);
+            const bool struct_pass = cutoff_eval.passes_with_popcount(p.new_mono, p.k);
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
-            const int phase = A::emit_phase(phase_factor, mono_pop, gen_pop, overlap);
-            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            const size_t r_prime = (rank_count == 1) ? my_rank : (monomial_hash<NumModes>(new_mono) % rank_count);
-            const size_t source = i;
-            if (is_follower) {
-                query_push<NumModes>(fq[r_prime], new_mono, phase);
-                fs[r_prime].push_back(source);
-                if (capture_values) {
-                    fv[r_prime].push_back(v_src);
-                }
-            }
-            else {
-                query_push<NumModes>(lq[r_prime], new_mono, phase);
-                ls[r_prime].push_back(source);
-                if (capture_values) {
-                    lv[r_prime].push_back(v_src);
-                }
-            }
+            const int phase = A::emit_phase(p.phase_factor, mono_pop, gen_pop, p.overlap);
+            push(p.new_mono, std::span<const RowPosT>(pbuf).first(p.k), phase, i, v_src, is_follower);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
@@ -327,9 +384,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              n_foll);
         }
         if (rank_count == 1) {
-            lq[my_rank].reserve((n_anti - n_foll) * kQueryWords<NumModes>);
+            // A hint only; wider terms grow the buffer as needed.
+            const size_t pq = QueryWire<NumModes>::kReservePositionsPerQuery;
+            res.leader_self.reserve(n_anti - n_foll, pq);
             ls[my_rank].reserve(n_anti - n_foll);
-            fq[my_rank].reserve(n_foll * kQueryWords<NumModes>);
+            res.follower_self.reserve(n_foll, pq);
             fs[my_rank].reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
