@@ -50,6 +50,20 @@ struct SentRecord {
     int8_t phase; // ternary, as A::emit_phase returns it
 };
 
+// Round 2 of the gate protocol (Engine.h): the answer a slot owes a record that hit one of its silent
+// rows. `sent_idx` is that record's position in the sender's own stream to this slot, which is what
+// lets the answer name a row without carrying one -- the sender maps it back through its `sent` list.
+// Two words, so the response round reuses the records' transport verb and buffer type.
+inline constexpr size_t kResponseWords = 2;
+
+// COMMPROF's tallies (MonomialPropagator::run_gate_loop_ prints them): the wire volume of one call's
+// gates, as this slot SENT it. Accumulated across the gates of a call, not reset per gate.
+struct ExchangeCounters {
+    size_t gates = 0;     // gates that exchanged, i.e. excluding the identity ones
+    size_t records = 0;   // round-1 records pushed, self-staged included
+    size_t responses = 0; // round-2 responses staged, the self slot's immediate ones included
+};
+
 // A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower
 // the gather to memmove.
 struct PhasedEntry {
@@ -78,7 +92,8 @@ struct PartnerAcc {
 // so the order of the records is irrelevant to the result.
 struct HalfRotationRec {
     size_t local_idx = 0;     // the slot this rank owns
-    double v_partner = 0.0;   // partner's pre-cos coefficient: v_rec for hits and mints, c0(μ) for absences
+    double v_partner = 0.0;   // partner's pre-cos coefficient: v_rec for a hit or mint, the answering row's
+                              // own coefficient for a response, c0(μ) for an absence
     int32_t phase_signed = 0; // +φ_rec for a hit or mint, −φ_own for an absent partner: pre-signed so the
                               // apply never negates
     // A mint writes a slot inserted this gate (after the fused cos sweep), so the apply folds the gate's
@@ -99,6 +114,12 @@ inline auto encode_value(double v) -> size_t {
 }
 inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
+}
+
+//! Appends one round-2 response, `kResponseWords` words wide.
+inline auto push_response(VecZ &buf, size_t sent_idx, double v) -> void {
+    buf.push_back(sent_idx);
+    buf.push_back(encode_value(v));
 }
 
 } // namespace monoprop::detail

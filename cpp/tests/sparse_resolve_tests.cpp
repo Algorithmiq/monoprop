@@ -192,6 +192,8 @@ auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool
 
 // Records every sink call with its slot, so the join order and the slot attribution are both pinned.
 struct RecordingSink {
+    static constexpr bool wants_responses = false;
+
     struct Rec {
         char kind; // 'h' hit, 'm' mint
         size_t slot;
@@ -345,7 +347,8 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     const size_t base = op.store->size();
     detail::MissStage<NumModes> misses;
     RecordingSink sink;
-    detail::join_incoming<NumModes>(pr, gate.join, /*q_base=*/0, gate.marks, base, misses, sink);
+    mpi::WindowVec<VecZ> responses; // wants_responses is false, so the join never touches it
+    detail::join_incoming<NumModes>(pr, gate.join, /*q_base=*/0, gate.marks, base, misses, sink, responses);
     BOOST_REQUIRE_EQUAL(misses.size(), expected_mints.size());
     size_t mints_seen = 0;
     size_t hit_calls = 0;

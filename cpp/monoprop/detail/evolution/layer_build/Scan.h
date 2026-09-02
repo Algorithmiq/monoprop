@@ -28,7 +28,6 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/core/Monomial.h"
-#include "monoprop/detail/EnvConfig.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/GateScratch.h"
@@ -135,8 +134,8 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a
 // static part (the structural cutoff on M'=M⊕G, applied in emit). The dynamic part is two independent
-// tests, kept separate because only one of them needs the row: the scan reads the coefficient half
-// first and, when it fails, may never read the row at all (Scan.h's visit under drop_silent).
+// tests, kept separate because only one of them needs the row: the value path reads the coefficient half
+// first and, when it fails, never reads the row at all (Scan.h's visit).
 inline auto rotation_coeff_gate(const CutoffContext &ctx, double abs_c) -> bool {
     return !ctx.is_below_sin(abs_c);
 }
@@ -268,19 +267,22 @@ struct FusedScanResult {
 // Classify, cut off and emit in one pass over the anticommuting terms. Every anticommuting row records
 // its pivot bit (`foll`) in scratch.marks and then decides two things about its partner μ = M⊕G
 // (Engine.h has the protocol):
-//   send(M) = struct_pass(μ) ∨ over_cutoff_possible     a record for μ goes to owner(μ)
 //   E(M)    = rotation_dynamic_gate ∧ (struct_pass(μ) ∨ is_above_upper(|c|))   its `rot` bit
-// E ⇒ send. A term that fails send has no tracked partner (Engine.h argues why), so nothing is lost by
-// not sending; one that passes send but fails E sends a rot=0 record so the partner learns it exists --
-// that record is what monoprop_DROP_SILENT_RECORDS trades away.
+//   send(M) = capture_values ? E(M) : struct_pass(μ) ∨ over_cutoff_possible
+// The value path sends records for emitting terms ONLY: a silent term's contribution reaches its
+// partner as a round-2 response instead, so it needs neither the row, the merge nor the wire, and the
+// coefficient half of E is therefore tested first. Graph mode has no coefficients and so no silent
+// terms to answer, and keeps the symmetric predicate its positional in/out pairing is proved on.
 // Records go to the owner of μ (routing::Router; self at R==1) in ascending source-index order, so the
 // join and the miss-index assignment are deterministic. The rows themselves are NOT indexed here: the
-// join is streamed over `scratch.nz` against a table of the records (QueryJoin.h), so the only per-term
+// join is streamed over `scratch.nz` against a table of the records (BucketJoin.h), so the only per-term
 // row work the scan does is the partner merge every record needs anyway.
 //
-// `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting coeff in
+// `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales the anticommuting coeffs in
 // place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built; the value a record carries
-// is the PRE-cos coefficient, read before the store. `state_mask` (Schrödinger fused picture only)
+// is the PRE-cos coefficient, read before the store. Only rows that set `rot` are scaled here: a silent
+// row must still hold its pre-gate coefficient when the join answers a hit on it, so its cos factor is
+// folded in afterwards by scale_silent_anti_coeffs. `state_mask` (Schrödinger fused picture only)
 // switches on the c0(μ) side channel in `sent_c0`. `window` must be the peer plan's window for
 // `my_rank`: it is what the per-slot arrays are sized to.
 template <size_t NumModes, Algebra A>
@@ -305,10 +307,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const auto ectx = A::make_gen_context(gen);
     assert(window.stop() <= rank_count && window.count != 0);
 
-    // Opt-in approximation (EnvConfig.h), fused path only: a silent term sends nothing, so its partner
-    // loses a |sin*v| <= atol contribution. Graph mode must not use it -- replay pairs my out-records
-    // with the peer's in-records positionally, which needs every tracked partner to answer.
-    const bool drop_silent = capture_values && config::get().drop_silent_records;
+    // The value path is exactly the path that answers silent hits with a response (Engine.h,
+    // ContractSink::wants_responses), and so the path whose send predicate is E(M) alone.
+    const bool answer_silent_hits = capture_values;
 
     FusedScanResult<NumModes> res;
     res.window = window;
@@ -442,10 +443,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             return {src, ham.popcount(i)};
         };
         // One anticommuting row: its pivot bit, its key for the join, then the partner product and the
-        // send predicate. `fetch_coeff` yields (v_src, |c|); it reads what the cos sweep has just loaded
-        // in the fused path, so it is called up front -- `drop_silent` decides from the coefficient alone
-        // whether this row has to be read at all. `pre` is the row when the caller has already read it
-        // (the orbital-gate loop reads it for the cosine push), nullptr otherwise.
+        // send predicate. `fetch_coeff` yields (v_src, |c|) and is called up front, because on the value
+        // path the coefficient alone decides whether this row has to be read at all. `pre` is the row
+        // when the caller has already read it (the orbital-gate loop reads it for the cosine push),
+        // nullptr otherwise.
         auto visit = [&](size_t i, bool is_follower, const RowRead *pre, auto &&fetch_coeff) {
             if (is_follower) {
                 marks.set_foll(i);
@@ -464,32 +465,18 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
                 return *lazy;
             };
-            // Fully paired rows must be heard from even when they are silent (see `drop_silent`): the
-            // absence pass would otherwise read a tracked-but-silent partner as absent and add its state
-            // phase, which is ±1 rather than the <= atol value the knob means to drop. A spilled row is
-            // treated as paired (it has no position array here, and the case is rare).
-            auto silence_is_safe = [&]() -> bool {
-                if (state_mask == nullptr) {
-                    return true; // Heisenberg: c0 is 0, so a false absence adds a signed zero
-                }
-                const RowRead &row = row_of();
-                if (!row.src.inlined()) {
-                    return false;
-                }
-                return !digest_is_paired(row.pop, count_paired_positions(row.src.pos.data(), row.pop));
-            };
             const auto [v_src, abs_c] = fetch_coeff();
             // E(ν) factorises: this half reads the row alone (its length and its coefficient), the other
-            // needs the partner's digest. A record is silent iff this half already fails, so with
-            // `drop_silent` the whole partner product -- the row read, the merge, the cutoff, the
-            // encoding -- is skipped for it, and the sine cutoff is tested first because it is the half
-            // that needs no popcount. Dropping only the record itself would save the wire, not the work.
+            // needs the partner's digest. A record is silent iff this half already fails, so on the value
+            // path the whole partner product -- the row read, the merge, the cutoff, the encoding -- is
+            // skipped for it, and the sine cutoff is tested first because it is the half that needs no
+            // popcount. Exactness survives because a hit on this row is answered with its coefficient.
             bool row_rot = rotation_coeff_gate(cut_st, abs_c);
             if (row_rot && only_rotate_len_k.has_value()) {
                 row_rot = rotation_pop_gate(only_rotate_len_k, row_of().pop);
             }
-            if (!row_rot && drop_silent && silence_is_safe()) {
-                return; // approximate: the partner loses this term's |sin*v| <= atol contribution
+            if (!row_rot && answer_silent_hits) {
+                return;
             }
             const RowRead &row = row_of();
             auto p = emit_partner<NumModes, A>(ham,
@@ -507,14 +494,16 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 return; // μ cannot be tracked and would not be minted: nobody needs to hear from M
             }
             const bool rot = row_rot && (struct_pass || cut_st.is_above_upper(abs_c));
+            if (!rot && answer_silent_hits) {
+                return; // silent on the partner's cutoff instead: answered the same way
+            }
             if (rot) {
                 marks.set_rot(i);
-            }
-            if (drop_silent && !rot) {
-                // row_rot held (or the fast path above would have returned), so `rot` failed on the
-                // partner's cutoff: silent again, and the same approximation applies.
-                if (silence_is_safe()) {
-                    return;
+                // The fused cos sweep, for the rows it applies to: a row that sets `rot` sends a record,
+                // so nothing will ask it for its pre-gate coefficient and the scale can land now, while
+                // v_src is still in a register. Silent rows are swept by scale_silent_anti_coeffs.
+                if (fused_scale_coeffs != nullptr) {
+                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
                 }
             }
             if (p.sign_pending) {
@@ -573,22 +562,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
-            if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep: scaling in place here is what replaces building a cosine set. The
-                // record carries v_src, read before the store.
-                for (uint64_t m = w.overlap; m; m &= m - 1) {
-                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                    const size_t i = w.base + tz;
-                    const double v_src = fused_scale_coeffs[i];
-                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                    visit(i, ((w.foll >> tz) & 1U) != 0, nullptr, [&] {
-                        return std::pair<double, double>{v_src, std::abs(v_src)};
-                    });
+            if (word_aligned_cos) {
+                // No orbital gate: the whole word goes into the cosine set, unless the fused sweep is
+                // scaling in place instead (visit does that, per row, once `rot` is known).
+                if (fused_scale_coeffs == nullptr) {
+                    cos_b.push_word(w.base, w.overlap);
                 }
-            }
-            else if (word_aligned_cos) {
-                // No orbital gate: record the whole word in the cosine set.
-                cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
@@ -612,6 +591,26 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         res.cos_blocks.push_back(cos_b.finish());
     }
     return res;
+}
+
+// The other half of the fused cos sweep: the gate's cosine scale for the anticommuting rows the scan
+// left alone, i.e. exactly the silent ones (`!marks.rot`). Those rows must still carry their pre-gate
+// coefficient while the join runs, because that value is what a response sends back to a partner that
+// did rotate (Engine.h round 2) -- so this runs AFTER the join and before the halves are applied. The
+// multiplication is the same `v * cos` the scan would have done, and the two row sets are disjoint and
+// together exactly Anti(G), so the result is independent of which pass touched a row.
+//
+// Only for the fused sweep: the two-pass paths scale from a CosMask instead, which already covers the
+// silent rows. `coeffs` must be the swept array, `nz` the fold's words and `marks` the scan's own.
+inline auto scale_silent_anti_coeffs(std::span<const EvenParityNzWord> nz,
+                                     const RowMarks &marks,
+                                     double *coeffs,
+                                     double cos_val) -> void {
+    for (const auto &w : nz) {
+        for (uint64_t m = w.overlap & ~marks.rot_word(w.base / 64); m; m &= m - 1) {
+            coeffs[w.base + static_cast<size_t>(std::countr_zero(m))] *= cos_val;
+        }
+    }
 }
 
 } // namespace monoprop::detail

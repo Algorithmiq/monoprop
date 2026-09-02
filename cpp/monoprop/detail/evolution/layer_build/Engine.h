@@ -71,22 +71,32 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 // anticommuting with G has a partner μ = ν ⊕ G owned by one flat slot, and the pair (ν, μ) rotates iff
 // E(ν) ∨ E(μ), with both adds using both PRE-cos values:
 //     c_ν += sin·(−φ_ν)·v_μ,   c_μ += sin·φ_ν·v_ν,   φ_ν = A::emit_phase(ν, G) = −φ_μ.
-// (φ_μ = −φ_ν is forced by (i M_G)² = −1 and pinned by evolution_detail_tests.) The protocol is one
-// symmetric round: every anticommuting ν that passes the send predicate (Scan.h) pushes one record
-// (key μ, φ_ν, rot = E(ν), [v_ν]) to owner(μ); after ONE exchange each slot joins what it received
+// (φ_μ = −φ_ν is forced by (i M_G)² = −1 and pinned by evolution_detail_tests.) The value path is one
+// and a half rounds: only an EMITTING ν sends a record (key μ, φ_ν, rot = E(ν), [v_ν]) to owner(μ), so
+// round 1 is O(|emitted|) rather than O(|Anti(G)|); after that exchange each slot joins what it received
 // against its own anticommuting rows (BucketJoin.h):
-//   • hit  → μ tracked here: apply +φ_rec·v_rec onto μ iff rot_rec ∨ E(μ). Both endpoints receive the
-//            other's record (a tracked term passes the send predicate), so both adds happen, once each,
-//            with exact pre-cos values -- no ×1/cos recovery of a stored value.
-//   • miss → μ absent everywhere: a rot=1 record mints μ at base + j (join order) with the same half;
-//            a rot=0 record is dropped, since neither side rotates.
-//   • absence pass over the records ν sent: only the owner of μ can send key ν, and it does whenever μ
-//            is tracked, so ¬received[ν] ⟺ μ absent (unless monoprop_DROP_SILENT_RECORDS is on, which
-//            is why that knob is an approximation and off by default). If E(ν), μ was minted from ν's record and ν's
-//            own half is −φ_ν·c0(μ), c0 being the fresh term's pre-gate coefficient the sender computed.
-// Δ = 0 (self peer) is the same rule with the records staged as positions instead of encoded. Mint
-// indices are assigned in a fixed order -- self stage first, then incoming sources ascending, each in
-// stream order -- so a run is bit-identical at fixed (R, S).
+//   • hit  → μ tracked here: apply +φ_rec·v_rec onto μ iff rot_rec ∨ E(μ). If E(μ) too, μ's own record
+//            supplies ν's half symmetrically and nothing more is needed. If μ is SILENT it sent no
+//            record, so this slot stages a response (the record's position in the sender's stream, plus
+//            μ's pre-gate coefficient) back to ν's slot -- the half round. Values stay pre-cos on both
+//            sides: a silent row is not swept by the scan (Scan.h scale_silent_anti_coeffs), so no
+//            ×1/cos recovery of a stored value is needed anywhere.
+//   • miss → μ absent everywhere: the record mints μ at base + j (join order) with the same half.
+//   • round 2 delivers the responses; each applies ν's half, −φ_ν·v_μ, and marks ν answered.
+//   • absence pass over the records ν sent: only the owner of μ can send key ν or answer it, so
+//            ¬received[ν] ∧ ¬answered[ν] ⟺ μ absent. μ was then minted from ν's record and ν's own
+//            half is −φ_ν·c0(μ), c0 being the fresh term's pre-gate coefficient the sender computed.
+// Per pair that is the same two adds with the same pre-cos values whichever branch supplies them, so the
+// three cases are exact and not an approximation of the symmetric protocol.
+// Δ = 0 (self peer) is the same rule with the records staged as positions instead of encoded, and a
+// silent hit applied at once instead of answered. Mint indices are assigned in a fixed order -- self
+// stage first, then incoming sources ascending, each in stream order -- so a run is bit-identical at
+// fixed (R, S).
+//
+// Graph mode has no coefficients, so no term is silent and no response can be needed: it keeps the
+// symmetric one-round predicate (every anticommuting term whose partner is structurally admissible
+// sends, `rot` says whether its own side rotates) and the four ordered lists its positional replay is
+// proved on. `Sink::wants_responses` is the compile-time switch between the two.
 //
 // Graph mode records the same rotations as (index, phase) endpoints per peer slot, in an order replay can
 // pair positionally; GraphSink below has the rules. A sink owns the divergent state and supplies the
@@ -109,6 +119,7 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
+    static constexpr bool wants_responses = false;
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
 
     size_t R;
@@ -177,13 +188,24 @@ struct GraphSink {
 template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
+    static constexpr bool wants_responses = true;
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
 
     FusedContract &fc;
     bool fused_scale; // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
+    // The picture's coefficients as the scan left them. A SILENT row still holds its pre-gate value
+    // there (Scan.h sweeps only the rows that emit), which is exactly what a response owes the
+    // partner that rotated it, so no per-row copy of the pre-cos values is kept.
+    const double *pre_gate_coeffs = nullptr;
 
     auto hit(size_t /*slot*/, size_t row, double v, int phase, bool /*foll*/) -> void {
         fc.halves.push_back(HalfRotationRec{row, v, static_cast<int32_t>(phase), /*is_insert=*/false});
+    }
+    [[nodiscard]] auto silent_value(size_t row) const -> double { return pre_gate_coeffs[row]; }
+    // ν's half of an asymmetric pair, from the response its partner sent (or, on the self slot, from the
+    // silent hit directly): −φ_ν · v_μ, the same add the symmetric case gets off μ's own record.
+    auto answer(size_t /*slot*/, size_t row, double v, int phase) -> void {
+        fc.halves.push_back(HalfRotationRec{row, v, static_cast<int32_t>(-phase), /*is_insert=*/false});
     }
     auto mint(size_t /*slot*/, size_t idx, double v, int phase) -> void {
         fc.halves.push_back(HalfRotationRec{idx, v, static_cast<int32_t>(phase), /*is_insert=*/true});
@@ -252,10 +274,12 @@ struct LayerBuildEngine {
         assert(window.stop() <= R && window.count != 0);
     }
 
-    // The one round: exchange the scan's records, match every record against this slot's anticommuting
-    // rows in ONE bucketed join, apply the receiver rule to the self stage and then the incoming records
-    // in that fixed order, insert the misses, walk the sent records. Taking the scan result by value is
-    // what makes the sequence unmissable -- nothing else can read the records once they are here.
+    // The round and a half: exchange the scan's records, match every record against this slot's
+    // anticommuting rows in ONE bucketed join, apply the receiver rule to the self stage and then the
+    // incoming records in that fixed order, exchange the responses the silent hits staged, insert the
+    // misses while that is in flight, apply the responses, walk the sent records. Taking the scan result
+    // by value is what makes the sequence unmissable -- nothing else can read the records once they are
+    // here.
     //
     // The self stage is joined after the wait, not before it: both sides of the query space must be in
     // the same join, since the rows are streamed against it exactly once. That costs the small overlap
@@ -292,6 +316,10 @@ struct LayerBuildEngine {
             pending->wait_into(incoming);
             pr = decode_incoming_records<NumModes>(incoming, sink.incoming_form());
         }
+        // The response staging indexes the response buffers by the SOURCE window's index, so the two
+        // windows must be the one window -- a mismatch would answer the wrong peer.
+        assert((pr.nq_total == 0 || (pr.window.base == window.base && pr.window.count == window.count))
+               && "the delivered records came from a window this gate cannot answer");
 
         // Query order IS mint order: the self stage first, then the incoming sources in ascending window
         // order, each in its sender's stream order.
@@ -307,10 +335,54 @@ struct LayerBuildEngine {
             return (q < n_self) ? scan.self.positions_at(q) : pr.positions_at(q - n_self);
         });
 
-        join_self<NumModes>(scan.self, join, /*q_base=*/0, marks, my_rank, base, misses, sink);
-        join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink);
+        mpi::WindowVec<VecZ> responses;
+        if constexpr (Sink::wants_responses) {
+            responses.reset(window);
+        }
+        size_t answered_self = 0;
+        if (n_self != 0) {
+            answered_self = join_self<NumModes>(scan.self,
+                                                join,
+                                                /*q_base=*/0,
+                                                marks,
+                                                my_rank,
+                                                base,
+                                                misses,
+                                                sink,
+                                                std::span<const SentRecord>(scan.sent.at_slot(my_rank)));
+        }
+        join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink, responses);
+
+        // Round 2 is the same verb with the response counts, posted before the inserts so the store's
+        // growth overlaps the peers' answers. Its window is round 1's: the rank shift is an involution,
+        // so the slot a record came from is a slot this one can send to.
+        std::optional<mpi::PendingAlltoallv<size_t>> answering;
+        if constexpr (Sink::wants_responses) {
+            if (R > 1) {
+                answering.emplace(
+                    mpi::begin_alltoallv(responses, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
+            }
+        }
         insert_misses<NumModes>(local_op, misses, base);
+        if constexpr (Sink::wants_responses) {
+            if (answering.has_value()) {
+                mpi::WindowVec<VecZ> answers;
+                answering->wait_into(answers);
+                apply_responses<NumModes>(marks, scan.sent, answers, sink);
+            }
+        }
         absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
+
+        scratch.counters.gates += 1;
+        for (size_t k = 0; k < window.count; ++k) {
+            scratch.counters.records += scan.sent[mpi::WindowIndex{k}].size();
+        }
+        if constexpr (Sink::wants_responses) {
+            scratch.counters.responses += answered_self;
+            for (size_t k = 0; k < window.count; ++k) {
+                scratch.counters.responses += responses[mpi::WindowIndex{k}].size() / kResponseWords;
+            }
+        }
     }
 
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {
@@ -445,10 +517,18 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
-        storage = run(ContractSink<NumModes>{.fc = *fused_contract, .fused_scale = fused_scale});
+        storage = run(ContractSink<NumModes>{.fc = *fused_contract,
+                                             .fused_scale = fused_scale,
+                                             .pre_gate_coeffs = coeffs.data()});
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});
+    }
+    // The other half of the fused sweep, and it has to be here: the responses above read a silent row's
+    // pre-gate coefficient, so its cos factor can only land once the join is done with it. The halves are
+    // applied later still (apply_fused_contract), so they see the scaled value either way.
+    if (fused_scale) {
+        scale_silent_anti_coeffs(scratch.nz, scratch.marks, fused_scale_coeffs->data(), cos_build);
     }
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the

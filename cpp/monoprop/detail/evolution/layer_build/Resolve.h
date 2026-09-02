@@ -36,12 +36,15 @@
 namespace monoprop::detail {
 
 // The join side of the gate exchange (Engine.h states the protocol). Everything here is
-// picture-independent; what a hit, a mint or an absence records is supplied by a compile-time sink with
-// four surfaces:
+// picture-independent; what a hit, a mint, a response or an absence records is supplied by a
+// compile-time sink with these surfaces:
 //   hit(slot, row, v, phase, foll)      a record hit tracked row `row` and the pair rotates
 //   mint(slot, idx, v, phase)           a rot=1 record missed: its key is inserted at `idx`
 //   out_pair(slot, row, phase)          a leader of this slot whose partner is tracked and rotates
 //   out_unanswered(slot, row, c0, phase) an E-record of this slot whose key missed at `slot`
+// and, iff `Sink::wants_responses`, the round-2 pair:
+//   silent_value(row) -> double         row's pre-gate coefficient, the payload of a response
+//   answer(slot, row, v, phase)         a response arrived for this slot's row: its half is −phase·v
 // `slot` is always the flat slot of the peer the record came from / went to.
 //
 // How a partner is found is entirely BucketJoin's business: the join reads `join.hit(q)` and nothing
@@ -184,6 +187,9 @@ auto insert_misses(MPOperator<NumModes> &op, const MissStage<NumModes> &misses, 
 //          and then this slot's half is +φ_rec · v_rec onto row(μ).
 //   miss → μ is absent everywhere; a rot=1 record mints it at base + j with the same half. A rot=0
 //          record that misses is dropped: neither side rotates, so there is nothing to mint.
+// Returns whether ν still owes its own half a value: true iff the pair rotates on the record's `rot`
+// alone, i.e. μ is tracked but silent, which is the case round 2 answers (Engine.h). Always false
+// unless the sink asked for responses; graph mode's silent rows send records of their own instead.
 template <size_t NumModes, typename Sink>
 [[gnu::always_inline]] inline auto join_record(RowMarks &marks,
                                                size_t slot,
@@ -194,28 +200,35 @@ template <size_t NumModes, typename Sink>
                                                double v,
                                                size_t base,
                                                MissStage<NumModes> &misses,
-                                               Sink &sink) -> void {
+                                               Sink &sink) -> bool {
     if (row != BucketJoin<NumModes>::kMissing) {
         marks.set_received(row);
         if (rot) {
             marks.set_partner_rot(row);
         }
-        if (rot || marks.rot(row)) {
+        const bool own_rot = marks.rot(row);
+        if (rot || own_rot) {
             sink.hit(slot, row, v, phase, marks.foll(row));
         }
-        return;
+        return Sink::wants_responses && rot && !own_rot;
     }
     if (!rot) {
-        return;
+        return false;
     }
     const size_t idx = base + misses.size();
     misses.push(pos);
     sink.mint(slot, idx, v, phase);
+    return false;
 }
 
 // The records this slot addressed to itself, in stream order. They occupy the join's query indices
 // [q_base, q_base + stage.size()), which for the one-round protocol is the front of the query space:
 // the self stage is joined first, so its misses take the first mint indices.
+//
+// `sent_self` is the parallel record of what those queries were sent for (the source row and its φ),
+// which is why a silent hit needs no response here: both halves are on this slot, so ν's is applied at
+// once instead of travelling. `answered` is still marked, so the absence pass reads the pair alike
+// however the answer arrived.
 template <size_t NumModes, typename Sink>
 auto join_self(const SelfQueryStage<NumModes> &stage,
                const BucketJoin<NumModes> &join,
@@ -224,23 +237,40 @@ auto join_self(const SelfQueryStage<NumModes> &stage,
                size_t my_rank,
                size_t base,
                MissStage<NumModes> &misses,
-               Sink &sink) -> void {
+               Sink &sink,
+               std::span<const SentRecord> sent_self) -> size_t {
+    assert(!Sink::wants_responses || sent_self.size() == stage.size());
+    size_t answered = 0;
     for (size_t q = 0; q < stage.size(); ++q) {
-        join_record<NumModes>(marks,
-                              my_rank,
-                              join.hit(q_base + q),
-                              stage.positions_at(q),
-                              static_cast<int>(stage.phase_of[q]),
-                              stage.rot_of[q] != 0,
-                              stage.val_of[q],
-                              base,
-                              misses,
-                              sink);
+        const size_t row = join.hit(q_base + q);
+        const bool answer = join_record<NumModes>(marks,
+                                                  my_rank,
+                                                  row,
+                                                  stage.positions_at(q),
+                                                  static_cast<int>(stage.phase_of[q]),
+                                                  stage.rot_of[q] != 0,
+                                                  stage.val_of[q],
+                                                  base,
+                                                  misses,
+                                                  sink);
+        if constexpr (Sink::wants_responses) {
+            if (answer) {
+                const SentRecord &s = sent_self[q];
+                marks.set_answered(s.row);
+                sink.answer(my_rank, s.row, sink.silent_value(row), static_cast<int>(s.phase));
+                ++answered;
+            }
+        }
     }
+    return answered;
 }
 
 // The records the exchange delivered: sources in ascending window order, each in its stream order. That
 // order is what pairs a peer's in-mints with this slot's out-unanswered positionally in graph mode.
+//
+// A hit on a silent row stages a response to that record's sender, naming the record by its position in
+// the sender's own stream to this slot -- the one index both sides can compute without agreeing on
+// anything but the order they already agree on.
 template <size_t NumModes, typename Sink>
 auto join_incoming(const IncomingRecords<NumModes> &pr,
                    const BucketJoin<NumModes> &join,
@@ -248,31 +278,68 @@ auto join_incoming(const IncomingRecords<NumModes> &pr,
                    RowMarks &marks,
                    size_t base,
                    MissStage<NumModes> &misses,
-                   Sink &sink) -> void {
+                   Sink &sink,
+                   mpi::WindowVec<VecZ> &responses) -> void {
     for (size_t k = 0; k < pr.window.count; ++k) {
-        const size_t slot = pr.window.slot(mpi::WindowIndex{k});
+        const mpi::WindowIndex wi{k};
+        const size_t slot = pr.window.slot(wi);
         for (size_t g = pr.goff[k]; g < pr.goff[k + 1]; ++g) {
-            join_record<NumModes>(marks,
-                                  slot,
-                                  join.hit(q_base + g),
-                                  pr.positions_at(g),
-                                  static_cast<int>(pr.phase_of[g]),
-                                  pr.rot_of[g] != 0,
-                                  pr.value_at(g),
-                                  base,
-                                  misses,
-                                  sink);
+            const size_t row = join.hit(q_base + g);
+            const bool answer = join_record<NumModes>(marks,
+                                                      slot,
+                                                      row,
+                                                      pr.positions_at(g),
+                                                      static_cast<int>(pr.phase_of[g]),
+                                                      pr.rot_of[g] != 0,
+                                                      pr.value_at(g),
+                                                      base,
+                                                      misses,
+                                                      sink);
+            if constexpr (Sink::wants_responses) {
+                if (answer) {
+                    push_response(responses[wi], g - pr.goff[k], sink.silent_value(row));
+                }
+            }
         }
     }
 }
 
-// The walk over this slot's own records after the join, per destination slot in stream order (ascending
-// ordinal). Only the owner of μ can send key ν, and it does whenever μ is tracked, so
-//     ¬received[ord(ν)]  ⟺  μ is absent.
-// An E-record whose partner is absent was minted by its owner from that record; the sender's own half
-// (−φ_ν · c0(μ)) is supplied here, which is the absence proper. A leader whose partner is tracked and
-// whose pair rotates is reported as the out-side of that pair; the graph sink pairs it positionally with
-// the peer's in-pair, the fused sink ignores it (its half arrived with the partner's record).
+// Round 2's arrival: response j from slot q names one of the records THIS slot sent to q, by its
+// position in that stream, and carries the answering row's pre-gate coefficient. ν's half is
+// −φ_ν · v_μ, φ_ν being the phase the sender kept in `sent` -- the record itself carried no row, and
+// none had to.
+template <size_t NumModes, typename Sink>
+auto apply_responses(RowMarks &marks,
+                     const mpi::WindowVec<std::vector<SentRecord>> &sent,
+                     const mpi::WindowVec<VecZ> &responses,
+                     Sink &sink) -> void {
+    const mpi::SlotWindow w = responses.window();
+    for (size_t k = 0; k < w.count; ++k) {
+        const mpi::WindowIndex wi{k};
+        const VecZ &buf = responses[wi];
+        const std::vector<SentRecord> &records = sent[wi];
+        const size_t slot = w.slot(wi);
+        for (size_t off = 0; off + kResponseWords <= buf.size(); off += kResponseWords) {
+            const size_t idx = buf[off];
+            assert(idx < records.size() && "a response named a record this slot never sent to that peer");
+            const SentRecord &s = records[idx];
+            marks.set_answered(s.row);
+            sink.answer(slot, s.row, decode_value(buf[off + 1]), static_cast<int>(s.phase));
+        }
+    }
+}
+
+// The walk over this slot's own records after the join and after round 2, per destination slot in stream
+// order (ascending ordinal). A record ν sent gets exactly one of three answers, and they are what
+// distinguishes an absent partner from a tracked one:
+//   received[ν]  μ sent a record of its own, so μ is tracked and rotates; both halves are applied.
+//   answered[ν]  μ is tracked but silent, and sent its coefficient back; ν's half came from that.
+//   neither      nobody could send key ν but μ's owner, and it does whenever μ is tracked ⇒ μ is
+//                absent, minted by its owner from this very record, and ν's own half
+//                (−φ_ν · c0(μ)) is supplied here. That is the absence proper.
+// A leader whose partner is tracked and whose pair rotates is reported as the out-side of that pair;
+// the graph sink pairs it positionally with the peer's in-pair, the fused sink ignores it (its half
+// arrived with the partner's record).
 template <size_t NumModes, typename Sink>
 auto absence_pass(const RowMarks &marks,
                   const mpi::WindowVec<std::vector<SentRecord>> &sent,
@@ -288,7 +355,7 @@ auto absence_pass(const RowMarks &marks,
             const size_t row = static_cast<size_t>(records[j].row);
             const int phase = static_cast<int>(records[j].phase);
             const bool received = marks.received(row);
-            if (marks.rot(row) && !received) {
+            if (marks.rot(row) && !received && !marks.answered(row)) {
                 sink.out_unanswered(slot, row, has_c0 ? sent_c0[wi][j] : 0.0, phase);
             }
             else if (received && !marks.foll(row) && (marks.rot(row) || marks.partner_rot(row))) {

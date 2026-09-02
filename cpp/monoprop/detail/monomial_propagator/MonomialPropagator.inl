@@ -805,14 +805,37 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
     // it whatever its local answer.
     const size_t local_fails = any_local_term_fails_cutoff_() ? 1 : 0;
     over_cutoff_possible_ = upper_atol_.has_value() || mpi::allreduce_sum<size_t>(local_fails, comm_) != 0;
+    gate_scratch_.counters = detail::ExchangeCounters{};
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &mono = majoranas[idx];
         evolution_func(mono, only_rotate_len_k, i);
     }
+    report_comm_profile_();
 
     initialize_operator_caches_();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::report_comm_profile_() const -> void {
+    if (!config::get().comm_profile) {
+        return;
+    }
+    // COMMPLACE's shape -- greppable prefix, one line, this slot's own tallies. Records and responses
+    // are what this slot SENT over the call's exchanging gates (graph mode never sends a response).
+    const auto &c = gate_scratch_.counters;
+    const double gates = (c.gates == 0) ? 1.0 : static_cast<double>(c.gates);
+    const auto line = std::format("COMMPROF slot={} gates={} records={} responses={} records_per_gate={:.1f} "
+                                  "responses_per_gate={:.1f}\n",
+                                  static_cast<size_t>(mpi::rank(comm_)),
+                                  c.gates,
+                                  c.records,
+                                  c.responses,
+                                  static_cast<double>(c.records) / gates,
+                                  static_cast<double>(c.responses) / gates);
+    std::fputs(line.c_str(), stderr);
+    std::fflush(stderr);
 }
 
 template <size_t NumModes>

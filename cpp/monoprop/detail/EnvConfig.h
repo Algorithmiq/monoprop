@@ -30,11 +30,11 @@
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
 //   monoprop_ROUTING            "splitmix" | "linear" → routing_mode
 //   monoprop_ROUTE_SEED         decimal uint64 basis seed → route_seed
-//   monoprop_DROP_SILENT_RECORDS  0|1 (off by default) → drop_silent_records
+//   monoprop_COMMPROF           0|1 (off by default) → comm_profile
 //
-// The routing knobs and the record knob all THROW on a malformed value instead of falling back: each
-// silently changes the transport or the numbers, so a typo that defaulted would stay invisible until a
-// performance or accuracy postmortem.
+// The routing knobs and the profile switch all THROW on a malformed value instead of falling back: each
+// silently changes the transport or what is reported, so a typo that defaulted would stay invisible
+// until a performance postmortem.
 
 namespace monoprop::config {
 
@@ -120,10 +120,9 @@ struct Settings {
     std::optional<int> num_threads;
     std::optional<RoutingMode> routing_mode;
     std::optional<std::uint64_t> route_seed;
-    // Opt-in approximation: an anticommuting term that does not rotate sends no gate record, so its
-    // partner loses a contribution bounded by the coefficient threshold. Off by default; the exact
-    // protocol needs those records (layer_build/Scan.h).
-    bool drop_silent_records = false;
+    // Report-only: one COMMPROF line per slot per propagate/build_graph call, naming the gate exchange's
+    // wire volume (MonomialPropagator::run_gate_loop_). Nothing reads it back.
+    bool comm_profile = false;
 };
 
 // Parse the environment once; the Settings are cached and shared across TUs.
@@ -133,9 +132,7 @@ inline auto get() -> const Settings & {
         s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
         s.routing_mode = detail::parse_routing_mode("monoprop_ROUTING", std::getenv("monoprop_ROUTING"));
         s.route_seed = detail::parse_uint64("monoprop_ROUTE_SEED", std::getenv("monoprop_ROUTE_SEED"));
-        s.drop_silent_records =
-            detail::parse_bool("monoprop_DROP_SILENT_RECORDS", std::getenv("monoprop_DROP_SILENT_RECORDS"))
-                .value_or(false);
+        s.comm_profile = detail::parse_bool("monoprop_COMMPROF", std::getenv("monoprop_COMMPROF")).value_or(false);
         return s;
     }();
     return settings;

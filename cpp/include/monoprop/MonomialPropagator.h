@@ -456,6 +456,9 @@ private:
     // Not beside check_routing_agreement: at construction the gate list does not exist yet.
     auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
 
+    // One COMMPROF line for the call's gate-exchange volume, under monoprop_COMMPROF. Report-only.
+    auto report_comm_profile_() const -> void;
+
     template <typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,
                         std::optional<size_t> only_rotate_len_k,

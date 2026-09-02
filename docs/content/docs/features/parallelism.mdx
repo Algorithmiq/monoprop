@@ -118,32 +118,35 @@ store keeps only a four-byte join key per term — that same mixed fingerprint �
 gate's anticommuting set costs no row reads; it is reported separately as `row_keys_bytes` in
 `operator_memory_breakdown`.
 
-Every gate is then one exchange round. A term $M$ that anticommutes with $G$ and whose
-partner $M \oplus G$ is structurally admissible sends one record — the partner's positions,
-the rotation phase $\varphi(M, G)$, one bit saying whether $M$'s own side rotates, and in
-the fused path $M$'s pre-gate coefficient — to the partner's owner; both members of a pair
-do so symmetrically, in the same `alltoallv`. The owner of $M \oplus G$ looks the key up in
-its per-gate table: a hit is the partner, and the pair rotates if either side asked for it,
+Every gate is then one exchange round for the terms that rotate. A term $M$ that
+anticommutes with $G$ and passes the rotation gate sends one record — the partner's
+positions, the rotation phase $\varphi(M, G)$, one bit saying whether $M$'s own side
+rotates, and in the fused path $M$'s pre-gate coefficient — to the partner's owner, all of
+them in one `alltoallv`. The owner of $M \oplus G$ joins the key against its own
+anticommuting rows: a hit is the partner, and the pair rotates if either side asked for it,
 each owner applying the record it received ($\varphi(M \oplus G, G) = -\varphi(M, G)$, so
-the two adds are exactly the two-term rotation); a miss from a rotating source mints the
-partner, a miss from a silent one is dropped. A sender whose rotating record was not
-answered knows, with no second message, that its partner is absent everywhere — only the
-partner's owner could have sent the matching key, and it does whenever the partner is
-tracked. Graph mode records the same joins as the layer's in/out endpoint lists, so the
-replay pairs them positionally without exchanging indices.
+the two adds are exactly the two-term rotation); a miss mints the partner. Graph mode
+records the same joins as the layer's in/out endpoint lists, so the replay pairs them
+positionally without exchanging indices.
 
-Symmetry is what makes one round enough, and it is not free: a term below `lower_atol` does
-not rotate, but its partner may, and only the term itself can supply its own coefficient — so
-it still sends a record with the rotation bit clear. In the `lower_atol` regime those silent
-records are most of the traffic and most of the join. `monoprop_DROP_SILENT_RECORDS=1` drops
-them: a rotating term then loses its partner's contribution $\sin(2\theta)\,\varphi\,v$,
-whose magnitude is below the coefficient threshold that already discarded the partner from the
-rotation, so the error is of the same class as the truncation itself and not bit-identical to
-the exact protocol. It applies to `propagate` and expectation values (the fused path) only:
-graph mode ignores it, because replay pairs a slot's out-records with its peer's in-records
-positionally and that pairing needs every tracked partner to answer. Fully paired terms keep
-sending in the Schrödinger picture whatever the knob says — their state phase is what an
-absent partner would be minted with, so a silent one must not be mistaken for absent.
+A pair where both sides rotate is answered by that one round alone: each side receives the
+other's record. Where only one side rotates it is not, because a term below `lower_atol`
+still owns a coefficient its rotating partner needs, and only that term can supply it. Making
+every such term send a record of its own would put the whole anticommuting set on the wire and
+into the join — in the `lower_atol` regime, six times the records for the same rotations. So
+the *hit* carries the answer back instead: a record that lands on a silent row applies its own
+half there and returns that row's coefficient in a second, small message, naming the record by
+its position in the sender's stream. The sender applies its half from the answer. That makes
+three distinguishable outcomes for a record, and they are what tells a tracked partner from an
+absent one: the partner's own record arrived, or an answer arrived, or neither — and neither
+means absent, because only the partner's owner could have replied at all. Answers are
+coefficients of terms that did not rotate, so they are exact: the round-and-a-half protocol
+reproduces the symmetric one bit for bit, at the volume of the rotations rather than of the
+anticommuting set.
+
+Graph mode has no coefficients and therefore no silent terms to answer: it keeps the
+symmetric predicate, sending for every anticommuting term whose partner is structurally
+admissible, which is what its positional in/out pairing is proved on.
 
 Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
 none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`
@@ -162,7 +165,7 @@ that bound into an identity.
 | --- | --- | --- |
 | `monoprop_ROUTING` | `linear` | `splitmix` selects the dense all-to-all; `linear`, or unset, takes every rank bit from $h$ and requires a power-of-two $R$. Any other value is rejected at startup rather than silently defaulting. |
 | `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
-| `monoprop_DROP_SILENT_RECORDS` | `0` | `1` drops the gate records of anticommuting terms that do not themselves rotate, trading a below-threshold contribution per rotating pair for the traffic and join work those records cost. Approximate by construction, so it is off by default and ignored in graph mode; `0` or unset is the exact one-round protocol. Any other value is rejected at startup. |
+| `monoprop_COMMPROF` | `0` | `1` writes one `COMMPROF` line per slot to stderr at the end of each `propagate` or `build_graph` call, naming the gates that exchanged and the records and answers that slot sent, in total and per gate. Report-only; nothing reads it back. Any other value is rejected at startup. |
 
 ### Single-node (`MPI.COMM_SELF`)
 

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The one-round gate exchange (Engine.h): the join and absence rules driven directly on a hand-built scan
-// result, the graph sink's endpoint layout, the phase antisymmetry the protocol's exactness rests on, and
+// The gate exchange (Engine.h): the join, response and absence rules driven directly on a hand-built
+// scan result, the graph sink's endpoint layout, the phase antisymmetry the protocol's exactness rests on, and
 // the receiver rule end to end through propagate() on two-term operators. Plus the CutoffContext predicates.
 
 #include <boost/test/unit_test.hpp>
@@ -26,6 +26,7 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,9 +50,11 @@ using monoprop::detail::CutoffContext;
 
 namespace {
 
-// Records every sink surface in call order.
+// Records every sink surface in call order. wants_responses is false: this sink is the oracle for the
+// symmetric stream graph mode sends, where a silent row sends a record of its own instead of answering.
 struct RecordingSink {
     static constexpr bool wants_values = true;
+    static constexpr bool wants_responses = false;
     [[nodiscard]] auto incoming_form() const -> detail::QueryForm { return detail::QueryForm::Fused; }
 
     struct Rec {
@@ -75,6 +78,17 @@ struct RecordingSink {
     }
     auto out_unanswered(size_t slot, size_t row, double c0, int phase) -> void {
         recs.push_back({"out_unanswered", slot, row, c0, phase, false});
+    }
+};
+
+// The same, for the value path: it answers a hit on a silent row, and its response payload names the row
+// it was read from so a case can assert which row answered.
+struct AnsweringSink : RecordingSink {
+    static constexpr bool wants_responses = true;
+
+    [[nodiscard]] auto silent_value(size_t row) const -> double { return 100.0 + static_cast<double>(row); }
+    auto answer(size_t slot, size_t row, double v, int phase) -> void {
+        recs.push_back({"answer", slot, row, v, phase, false});
     }
 };
 
@@ -164,6 +178,34 @@ struct Scenario {
         push(absent_y, 1, false, 3.0, 5);
         return res;
     }
+
+    // The value path's stream over the same rows: only the four EMITTING rows send, so every record
+    // carries rot=1 and the three answers a record can get are all present at once.
+    //
+    //   src  key         φ    v      outcome
+    //   t0   t1 (hit)    +1   0.5    symmetric pair with t1: both emit, so neither is answered
+    //   t1   t0 (hit)    -1   0.25   the other half of it
+    //   t3   t2 (hit)    -1   1.5    t2 is SILENT -> response, so t3 is answered and not absent
+    //   t5   X  (absent) +1   3.0    miss -> mint, and t5 takes the absence add
+    // Own rot bits are the fixture's {t0, t1, t3, t5}; t2 and t4 are the silent rows.
+    auto value_scan() -> detail::FusedScanResult<kN> {
+        detail::FusedScanResult<kN> res;
+        res.window = mpi::SlotWindow{.base = 0, .count = 1};
+        res.queries.reset(res.window);
+        res.sent.reset(res.window);
+        res.sent_c0.reset(res.window);
+        res.sent_c0.at_slot(0) = {0.0, 0.0, 0.0, -1.0};
+        auto push = [&](const Monomial<kN> &key, int phase, double v, size_t row) {
+            res.self.push(positions_of(key), phase, fp_of(key), /*rot=*/true, v);
+            res.sent.at_slot(0).push_back(
+                detail::SentRecord{.row = static_cast<TermIndex>(row), .phase = static_cast<int8_t>(phase)});
+        };
+        push(terms[1], 1, 0.5, 0);
+        push(terms[0], -1, 0.25, 1);
+        push(terms[2], -1, 1.5, 3);
+        push(absent_x, 1, 3.0, 5);
+        return res;
+    }
 };
 
 } // namespace
@@ -251,7 +293,8 @@ BOOST_AUTO_TEST_CASE(one_round_absence_pass_reports_unanswered_and_answered_lead
                           /*my_rank=*/0,
                           /*base=*/6,
                           misses,
-                          sink);
+                          sink,
+                          std::span<const detail::SentRecord>(scan.sent.at_slot(0)));
     sink.recs.clear();
     detail::absence_pass<kN>(sc.scratch.marks, scan.sent, scan.sent_c0, sink);
     BOOST_REQUIRE_EQUAL(sink.recs.size(), 2U);
@@ -265,14 +308,66 @@ BOOST_AUTO_TEST_CASE(one_round_absence_pass_reports_unanswered_and_answered_lead
     BOOST_TEST(misses.size() == 1U);
 }
 
-// The fused sink turns the same joins into half-rotations: +φ_rec·v_rec on hits and mints (mints flagged as
-// inserts), −φ_own·c0 on the unanswered E-record, nothing for the answered leader.
+// The value path end to end on one slot: the three answers a record can get, and the four sink surfaces
+// they drive. A hit on the silent row t2 stages no message at all here -- the self slot applies ν's half
+// at once -- but it still marks t3 answered, which is what keeps t3 out of the absence pass.
+BOOST_AUTO_TEST_CASE(one_and_half_round_answers_a_silent_hit_and_leaves_it_out_of_the_absence_pass) {
+    Scenario sc;
+    detail::LayerBuildEngine<kN, AnsweringSink> eng(sc.op, mpi::Comm{}, 1, 0, sc.scratch, 6, AnsweringSink{});
+    eng.exchange_and_join(sc.value_scan());
+
+    const auto &r = eng.sink.recs;
+    BOOST_REQUIRE_EQUAL(r.size(), 7U);
+    // t0/t1 are symmetric: each hit lands on a row whose own rot is set, so neither is answered.
+    BOOST_TEST(r[0].kind == "hit");
+    BOOST_TEST(r[0].idx == 1U);
+    BOOST_TEST(r[0].v == 0.5);
+    BOOST_TEST(r[1].kind == "hit");
+    BOOST_TEST(r[1].idx == 0U);
+    BOOST_TEST(r[1].v == 0.25);
+    // t3's record hits the silent t2: μ's half applies, and t2 answers with its own coefficient.
+    BOOST_TEST(r[2].kind == "hit");
+    BOOST_TEST(r[2].idx == 2U);
+    BOOST_TEST(r[2].v == 1.5);
+    BOOST_TEST(r[2].phase == -1);
+    BOOST_TEST(r[3].kind == "answer");
+    BOOST_TEST(r[3].idx == 3U);  // the answer lands on the SENDER's row, not the row that answered
+    BOOST_TEST(r[3].v == 102.0); // silent_value(2)
+    BOOST_TEST(r[3].phase == -1);
+    BOOST_TEST(r[4].kind == "mint");
+    BOOST_TEST(r[4].idx == 6U);
+    BOOST_TEST(r[4].v == 3.0);
+    // t0 is the leader of the one symmetric pair; t5's partner was minted remotely, so it alone is
+    // unanswered. t3 is answered and must NOT appear here, which is the whole point of the mark.
+    BOOST_TEST(r[5].kind == "out_pair");
+    BOOST_TEST(r[5].idx == 0U);
+    BOOST_TEST(r[6].kind == "out_unanswered");
+    BOOST_TEST(r[6].idx == 5U);
+    BOOST_TEST(r[6].v == -1.0);
+
+    const auto &t = sc.scratch.marks;
+    BOOST_TEST(t.answered(3));
+    BOOST_TEST(!t.answered(5)); // absent partner, not a silent one
+    BOOST_TEST(!t.answered(0));
+    BOOST_TEST(!t.received(3)); // t2 sent nothing: the answer is the only thing t3 heard
+    BOOST_TEST(t.received(2));
+}
+
+// The fused sink turns those joins into half-rotations: +φ_rec·v_rec on hits and mints (mints flagged as
+// inserts), −φ_own·v_μ for an answer, −φ_own·c0 for an absence, nothing for the answered leader.
 BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) {
     Scenario sc;
     detail::FusedContract fc;
-    detail::LayerBuildEngine<kN, detail::ContractSink<kN>>
-        eng(sc.op, mpi::Comm{}, 1, 0, sc.scratch, 6, detail::ContractSink<kN>{.fc = fc, .fused_scale = true});
-    eng.exchange_and_join(sc.scan(/*with_c0=*/true));
+    const VecD coeffs = {10.0, 11.0, 12.0, 13.0, 14.0, 15.0};
+    detail::LayerBuildEngine<kN, detail::ContractSink<kN>> eng(
+        sc.op,
+        mpi::Comm{},
+        1,
+        0,
+        sc.scratch,
+        6,
+        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .pre_gate_coeffs = coeffs.data()});
+    eng.exchange_and_join(sc.value_scan());
     BOOST_REQUIRE_EQUAL(fc.halves.size(), 6U);
     const auto expect = [&](size_t k, size_t idx, double v, int phase, bool insert) {
         BOOST_TEST_CONTEXT("half " << k) {
@@ -283,11 +378,11 @@ BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) 
         }
     };
     expect(0, 1, 0.5, 1, false);
-    expect(1, 6, 0.25, -1, true);
-    expect(2, 3, 0.75, 1, false);
-    expect(3, 2, 1.5, -1, false);
-    expect(4, 5, 2.0, 1, false);
-    expect(5, 0, -1.0, -1, false); // the absence: −φ_t0 · c0
+    expect(1, 0, 0.25, -1, false);
+    expect(2, 2, 1.5, -1, false);
+    expect(3, 3, coeffs[2], 1, false); // the answer: −φ_t3 · c[t2], straight off the coefficient array
+    expect(4, 6, 3.0, 1, true);
+    expect(5, 5, -1.0, -1, false); // the absence: −φ_t5 · c0
     // Every slot is touched at most once, which is what lets the apply run in any order.
     std::vector<size_t> touched;
     for (const auto &h : fc.halves) {
@@ -295,6 +390,60 @@ BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) 
     }
     std::ranges::sort(touched);
     BOOST_TEST((std::ranges::adjacent_find(touched) == touched.end()));
+}
+
+// Round 2 across slots: a response names the record by its position in the SENDER's own stream, and the
+// sender maps that back to the row and phase it kept in `sent`. No row index is ever on the wire, in
+// either direction -- which is what makes the answer 12 bytes and independent of the peer's row layout.
+BOOST_AUTO_TEST_CASE(one_and_half_round_response_names_the_record_and_the_sender_maps_it_back) {
+    Scenario sc;
+    // Two flat slots. The peer's stream holds two records; the second hits the silent row t2.
+    const mpi::SlotWindow window{.base = 0, .count = 2};
+    mpi::WindowVec<VecZ> wire;
+    wire.reset(window);
+    using QW = detail::QueryWire<kN>;
+    VecZ &peer = wire.at_slot(1);
+    QW::push(peer, positions_of(sc.terms[1]), 1, /*rot=*/true);
+    QW::push_value(peer, 0.5);
+    QW::push(peer, positions_of(sc.terms[2]), -1, /*rot=*/true);
+    QW::push_value(peer, 1.5);
+
+    const auto pr = detail::decode_incoming_records<kN>(wire, detail::QueryForm::Fused);
+    BOOST_REQUIRE_EQUAL(pr.nq_total, 2U);
+    sc.scratch.join.begin_queries(pr.nq_total);
+    for (size_t g = 0; g < pr.nq_total; ++g) {
+        sc.scratch.join.add_query(g, pr.fp_of[g]);
+    }
+    sc.scratch.join.run(*sc.op.store, [&](size_t q) { return pr.positions_at(q); });
+
+    AnsweringSink sink;
+    detail::MissStage<kN> misses;
+    mpi::WindowVec<VecZ> responses;
+    responses.reset(window);
+    detail::join_incoming<kN>(pr, sc.scratch.join, /*q_base=*/0, sc.scratch.marks, /*base=*/6, misses, sink, responses);
+    // t1's own rot is set, so that hit needs no answer; t2's is not, so record 1 of slot 1's stream does.
+    BOOST_TEST(responses.at_slot(0).empty());
+    BOOST_REQUIRE_EQUAL(responses.at_slot(1).size(), detail::kResponseWords);
+    BOOST_TEST(responses.at_slot(1)[0] == 1U);
+    BOOST_TEST(detail::decode_value(responses.at_slot(1)[1]) == 102.0); // silent_value(2)
+
+    // The other direction: an answer to record 1 of this slot's own stream to slot 1.
+    mpi::WindowVec<std::vector<detail::SentRecord>> sent;
+    sent.reset(window);
+    sent.at_slot(1) = {detail::SentRecord{.row = 4, .phase = 1}, detail::SentRecord{.row = 5, .phase = -1}};
+    mpi::WindowVec<VecZ> answers;
+    answers.reset(window);
+    detail::push_response(answers.at_slot(1), 1, 7.5);
+    sink.recs.clear();
+    detail::apply_responses<kN>(sc.scratch.marks, sent, answers, sink);
+    BOOST_REQUIRE_EQUAL(sink.recs.size(), 1U);
+    BOOST_TEST(sink.recs[0].kind == "answer");
+    BOOST_TEST(sink.recs[0].slot == 1U);
+    BOOST_TEST(sink.recs[0].idx == 5U); // sent[slot 1][1].row, not the index on the wire
+    BOOST_TEST(sink.recs[0].v == 7.5);
+    BOOST_TEST(sink.recs[0].phase == -1); // sent[slot 1][1].phase, so the half is +1 · 7.5
+    BOOST_TEST(sc.scratch.marks.answered(5));
+    BOOST_TEST(!sc.scratch.marks.answered(4));
 }
 
 // The graph sink's layout: in = [in_pairs (hits on followers), in_mints], out = [out_pairs (answered

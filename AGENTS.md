@@ -111,19 +111,24 @@ Key files:
   bits, maintained by every writer and priced as `row_keys_bytes`), so staging a gate's whole
   anticommuting set reads no rows; a partner's key still comes from the partner's own positions, because
   the mixing is not GF(2)-linear. The protocol's per-row
-  state (`rot`, `foll`, `received`, `partner_rot`) is `RowMarks` in `GateScratch.h`, bitsets over rows
-  cleared per gate by zeroing the fold's `nz` words.
-- **One round per gate** (`cpp/monoprop/detail/evolution/layer_build/Engine.h`, records in `Scan.h`,
-  join in `Resolve.h`): every anticommuting term whose partner passes the structural cutoff sends ONE
-  record `(key = M⊕G, φ, rot, [value])` to the partner's owner, in the same `alltoallv`. The receiver
-  joins each record against its own anticommuting rows: a hit rotates iff the record's `rot` or the row's
-  own `rot` is set (the pair's two adds happen on the two owners, with `φ(M⊕G,G) = −φ(M,G)`), a `rot=1`
-  miss mints the key at `base+j` in join order, a `rot=0` miss is dropped; afterwards `rot ∧ ¬received`
-  on a sent row means the partner is absent everywhere. There is no query→response pass and no
-  leader/follower split on the wire; graph mode derives its positional in/out pairing from the same
-  join order plus the pivot bit. A silent (`rot=0`) record exists only so its partner can rotate with
-  the sender's value and not read the sender as absent; `monoprop_DROP_SILENT_RECORDS=1` (off by
-  default, fused path only, `detail/EnvConfig.h`) drops them for a below-`lower_atol` error per pair.
+  state (`rot`, `foll`, `received`, `partner_rot`, `answered`) is `RowMarks` in `GateScratch.h`, bitsets
+  over rows cleared per gate by zeroing the fold's `nz` words.
+- **One and a half rounds per gate** (`cpp/monoprop/detail/evolution/layer_build/Engine.h`, records in
+  `Scan.h`, join in `Resolve.h`): on the value path every anticommuting term that ROTATES (`rot` = E(M))
+  sends ONE record `(key = M⊕G, φ, rot, value)` to the partner's owner, all in one `alltoallv`; a silent
+  term sends nothing and needs neither its row nor the partner merge. The receiver joins each record
+  against its own anticommuting rows: a hit rotates iff the record's `rot` or the row's own `rot` is set
+  (the pair's two adds happen on the two owners, with `φ(M⊕G,G) = −φ(M,G)`), and a hit on a *silent* row
+  stages a response — the record's position in the sender's stream plus that row's pre-gate coefficient —
+  which round 2 carries back in the same verb; a miss mints the key at `base+j` in join order. A sent row
+  is therefore answered exactly one of three ways, `received ∨ answered ∨ absent`, and the absence pass
+  (`rot ∧ ¬received ∧ ¬answered`) is what supplies the sender's half of a remotely minted partner.
+  Exact, not an approximation: a response carries the same pre-cos value the symmetric protocol put on
+  the wire, which is why the scan sweeps the gate's cosine only over rows that emit and
+  `scale_silent_anti_coeffs` sweeps the rest AFTER the join. Graph mode has no coefficients, so nothing
+  is silent: it keeps the symmetric predicate (send iff the partner passes the structural cutoff) and
+  derives its positional in/out pairing from the join order plus the pivot bit — `Sink::wants_responses`
+  is the compile-time switch. `monoprop_COMMPROF=1` (`detail/EnvConfig.h`) reports the volume per call.
 - **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
   (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
   `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row
