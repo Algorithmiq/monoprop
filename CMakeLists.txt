@@ -44,7 +44,7 @@ endif()
 
 set(
   monoprop_MAX_NUM_MODES
-  "250"
+  "1024"
   CACHE STRING
   "Maximum number of simulable Fermionic modes with Python bindings"
 )
