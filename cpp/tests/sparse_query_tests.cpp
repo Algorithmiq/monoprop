@@ -319,8 +319,9 @@ BOOST_AUTO_TEST_CASE(sparse_record_is_exactly_the_gap_code_it_costed) {
         VecZ buf;
         const size_t w = QW::push(buf, pos, 1);
         const size_t gwid = QW::gap_width(pos);
-        BOOST_TEST(w == QW::words_of(QW::gap_bits(pos.size(), gwid)),
-                   "k=" << k << " wrote " << w << " words, costed " << QW::words_of(QW::gap_bits(pos.size(), gwid)));
+        BOOST_CHECK_MESSAGE(
+            w == QW::words_of(QW::gap_bits(pos.size(), gwid)),
+            "k=" << k << " wrote " << w << " words, costed " << QW::words_of(QW::gap_bits(pos.size(), gwid)));
         BOOST_TEST(w <= QW::words_of(QW::header_bits_for(pos.size()) + (pos.size() * QW::kPosBits)));
     }
 }

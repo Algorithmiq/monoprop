@@ -42,7 +42,7 @@ auto make_pair(const std::vector<size_t> &positions) -> std::pair<Bitset<N>, std
 template <size_t N>
 auto expect_equal(const Bitset<N> &bs, const std::bitset<N> &ref) -> void {
     for (size_t i = 0; i < N; ++i) {
-        BOOST_TEST(bs.test(i) == ref.test(i), "bit " << i);
+        BOOST_CHECK_MESSAGE(bs.test(i) == ref.test(i), "bit " << i);
     }
     BOOST_TEST(bs.count() == ref.count());
 }
