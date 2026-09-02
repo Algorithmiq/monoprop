@@ -17,6 +17,7 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
   See `docs/content/docs/documenting.mdx`.
 - **Run `prek run --all-files` and the relevant tests before pushing, and fix every finding.**
   `lint.yml` runs the same hooks over the PR's commit range, so a skipped lint is a red PR.
+- Changes to the API or user-facing behavior (including developers, e.g. test workflows) should be reflected in the docs and, if relevant, the `README.md`.
 
 ## Git and PRs
 
@@ -34,10 +35,12 @@ Public headers `cpp/include/monoprop/`, implementation `cpp/monoprop/`, Python A
 workspace's `monoprop` package.
 
 `bindings.cpp` and `_dispatch.py` are generated -- never edit them. To change the C++ API: edit
-the header and implementation, then `binder.h` if Python needs it, then run
-`tools/generate-binders.py`, then test both surfaces.
+the header and implementation, then `binder.h` if Python needs it, then rebuild the project and run both C++ and Python tests.
 
 ## Commands
+
+We use `uv` for environment management.
+We also use [`just`](https://github.com/casey/just) for task automation. The recipes in the `justfile` show how to build and test in the supported configurations.
 
 ```bash
 uv sync --all-groups --all-extras -v
@@ -57,7 +60,3 @@ just build-docs
   `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 - Sanitizer rebuild and test:
 
-```bash
-SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
-LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" ASAN_OPTIONS=detect_leaks=0 uv run pytest
-```
