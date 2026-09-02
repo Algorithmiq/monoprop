@@ -26,6 +26,7 @@ def test_random_build_graph(
     bench_rounds,
     op_memory,
     record_opsize,
+    publish_graph,
 ):
     """Benchmark building the propagation graph from a fresh propagator."""
     last = []
@@ -47,8 +48,11 @@ def test_random_build_graph(
         iterations=1,
     )
     op_memory.close(last[0])
-    assert record_opsize(last[0]) > 0
+    terms = record_opsize(last[0])
+    assert terms > 0
     assert last[0].graph_layers > 0
+    # Hands the timed graph to energy/gradient, so one process builds once.
+    publish_graph(last[0], terms)
 
 
 def test_random_propagate(
@@ -83,10 +87,16 @@ def test_random_propagate(
 
 
 def test_random_energy(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+    benchmark,
+    built_graph,
+    random_problem,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating the expectation-value functional."""
-    functional = built_graph.expectation_value_functional()
+    functional = built_graph.expectation_value_functional(pare_threshold)
     op_memory.open()
 
     # The entry barrier must stay untimed, so it lives in a setup, and a setup that returns args forbids args=.
@@ -104,10 +114,16 @@ def test_random_energy(
 
 
 def test_random_gradient(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+    benchmark,
+    built_graph,
+    random_problem,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
-    functional = built_graph.expectation_value_and_gradient_functional()
+    functional = built_graph.expectation_value_and_gradient_functional(pare_threshold)
     op_memory.open()
 
     def setup():
