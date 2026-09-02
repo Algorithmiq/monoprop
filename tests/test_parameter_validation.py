@@ -674,13 +674,82 @@ class TestFunctionalValidityTable:
         # The graph grew, so the call did mutate on its way to the throw. Only the single-partition
         # shape can witness that: the bad generator is rejected independently on every partition, so
         # whichever reaches it first poisons the collective the slower ones are still inside, and a
-        # poisoned partition unwinds before committing the layer. graph_layers reads partition 0, so
-        # on the facade it reports whichever of the two that partition happened to be.
+        # poisoned partition unwinds before committing the layer. Whether that happened decides what
+        # the facade read even means -- it answers when all of them committed and refuses when a
+        # poisoned one did not (see test_part_way_fan_out_failure_refuses_the_facade).
         if partitions == "off":
             assert mp.graph_layers > layers_before
 
         with pytest.raises(RuntimeError, match=r"build_graph"):
             functional(parameters)
+
+    def test_part_way_fan_out_failure_refuses_the_facade(
+        self, monkeypatch, serial_comm
+    ):
+        """A fan-out that throws part-way leaves the partitions holding different state.
+
+        A term the operator does not hold is rejected by the one partition that would own it, with
+        its siblings already re-weighted -- the one mutation that diverges deterministically rather
+        than by whichever partition loses a race. No read can reconcile the two, so the facade
+        latches the fault and refuses every later call rather than answering for a partitioning that
+        never existed. Two partitions are asked for by number rather than through ``auto``, which
+        resolves to one -- and so to no facade at all -- on a single-core host.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", "2")
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        parameters = list(self._PARAMS)
+        functional = mp.expectation_value_functional()
+        functional(parameters)
+
+        with pytest.raises(RuntimeError, match=r"not found in the operator"):
+            mp.update_initial_operator(
+                MajoranaOperator(
+                    {
+                        (0, 1): self._REWEIGHTED_FIRST_WEIGHT * 1j,
+                        (0, 2): 1.0j,  # absent: only its owning partition rejects it
+                    },
+                    num_modes=self._MODES,
+                )
+            )
+
+        refuses = r"update_initial_operator\(\) failed part-way"
+        with pytest.raises(RuntimeError, match=refuses):
+            _ = mp.graph_layers
+        with pytest.raises(RuntimeError, match=refuses):
+            mp.size()
+        with pytest.raises(RuntimeError, match=refuses):
+            mp.expval(parameters)
+        with pytest.raises(RuntimeError, match=refuses):
+            mp.expectation_value_functional()
+
+        # The functional built beforehand reports the mutation rather than the fault: its plan checks
+        # the revision, which the same unwind bumped, before it reaches a partition.
+        with pytest.raises(RuntimeError, match=r"update_initial_operator"):
+            functional(parameters)
+
+    def test_identically_rejected_fan_out_leaves_the_facade_usable(
+        self, monkeypatch, serial_comm
+    ):
+        """The other half of the same rule, and why the fault is not just "a fan-out threw".
+
+        Every partition rejects this call for the same reason and none of them gets as far as
+        changing anything, so the facade is still whole and the fixed-up retry has to go through.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", "2")
+        mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
+        parameters = list(self._PARAMS)
+        before = mp.expval(parameters)
+
+        # A coefficient-informed extension one parameter short of replaying the stored graph.
+        extension = Circuit((ExpGate(self._generator(1)),), self._MODES, (0.4,))
+        with pytest.raises(RuntimeError):
+            mp.build_graph(extension, seed_parameters=[parameters[0]])
+
+        assert mp.graph_layers == 2
+        assert mp.expval(parameters) == pytest.approx(before)
+        # The retry seeds the whole accumulated axis, the appended gate's angle included.
+        mp.build_graph(extension, seed_parameters=[*parameters, 0.4])
+        assert mp.graph_layers == 3
 
     @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_part_way_propagate_failure_invalidates_the_functional(

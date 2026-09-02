@@ -631,6 +631,50 @@ BOOST_AUTO_TEST_CASE(a_part_way_build_graph_failure_invalidates_the_functional) 
     }
 }
 
+// The facade half of the row above, over the one mutation that diverges deterministically: a term the
+// operator does not hold is rejected by the single partition that would own it, with its siblings
+// already re-weighted. Nothing can reconcile the two, so the facade latches the fault and refuses every
+// later call rather than answering for a partitioning that never existed.
+BOOST_AUTO_TEST_CASE(a_part_way_fan_out_failure_refuses_the_facade) {
+    auto prop = make_propagator(/*schrodinger=*/false, /*partitions=*/2);
+    build_base_graph(prop);
+    auto call = make_call(prop, /*gradient=*/false, std::nullopt);
+    BOOST_CHECK_NO_THROW(call(kBaseParams));
+
+    OperatorDict partly_unknown;
+    partly_unknown[VecZ{0, 1}] = std::complex<double>{0.0, kReweightedFirstWeight};
+    partly_unknown[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
+    BOOST_CHECK_THROW(prop.update_initial_operator(partly_unknown), std::runtime_error);
+
+    const auto refuses = reports_site("update_initial_operator() failed part-way");
+    BOOST_CHECK_EXCEPTION(prop.graph_layers(), std::runtime_error, refuses);
+    BOOST_CHECK_EXCEPTION(prop.size(), std::runtime_error, refuses);
+    BOOST_CHECK_EXCEPTION(prop.expectation_value(kBaseParams), std::runtime_error, refuses);
+    BOOST_CHECK_EXCEPTION(prop.expectation_value_functional(), std::runtime_error, refuses);
+    // The functional built beforehand reports the mutation rather than the fault: its plan checks the
+    // revision, which the same unwind bumped, before it reaches a partition.
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports_site("update_initial_operator()"));
+    // A copy carries the latch: it copies partitions that already disagree, so it can answer no better.
+    auto copy = prop;
+    BOOST_CHECK_EXCEPTION(copy.graph_layers(), std::runtime_error, refuses);
+}
+
+// The other half of the same rule, and the reason the fault is not simply "a fan-out threw": every
+// partition rejects this call for the same reason and none of them gets as far as changing anything, so
+// the facade stays whole and the fixed-up retry must go through.
+BOOST_AUTO_TEST_CASE(an_identically_rejected_fan_out_leaves_the_facade_whole) {
+    auto prop = make_propagator(/*schrodinger=*/false, /*partitions=*/2);
+    build_base_graph(prop);
+
+    // A coefficient-informed extension one parameter short of what replaying the stored graph needs.
+    // Every partition holds the same graph, so every one of them rejects it before touching anything.
+    BOOST_CHECK_THROW(prop.build_graph(kBaseGates, VecZ{0, 1}, VecD{1.0, 1.0}, std::nullopt, VecD{kBaseParams[0]}),
+                      std::runtime_error);
+
+    BOOST_CHECK_NO_THROW(prop.graph_layers());
+    BOOST_CHECK_NO_THROW(prop.expectation_value(kBaseParams));
+}
+
 // propagate() folds into the operator instead of appending, so nothing counts the mutation: without
 // the failure-path bump the functional would keep answering for coefficients that had moved.
 BOOST_AUTO_TEST_CASE(a_part_way_propagate_failure_invalidates_the_functional) {

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <condition_variable>
 #include <cstddef>
@@ -60,7 +61,8 @@ public:
         : n_(n_partitions),
           parent_(parent),
           partitions_(static_cast<size_t>(n_partitions)),
-          errs_(static_cast<size_t>(n_partitions)) {
+          errs_(static_cast<size_t>(n_partitions)),
+          poisoned_(static_cast<size_t>(n_partitions), 0) {
         make_transport_();
         discover_node_peers_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
@@ -85,7 +87,8 @@ public:
           node_size_(src.node_size_),
           node_mask_(src.node_mask_),
           partitions_(static_cast<size_t>(src.n_)),
-          errs_(static_cast<size_t>(src.n_)) {
+          errs_(static_cast<size_t>(src.n_)),
+          poisoned_(static_cast<size_t>(src.n_), 0) {
         make_transport_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
@@ -118,6 +121,8 @@ public:
             for (auto &e : errs_) {
                 e = nullptr;
             }
+            std::ranges::fill(poisoned_, 0);
+            diverged_ = false;
             job_ = &body;
             done_count_ = 0;
             ++job_gen_;
@@ -127,6 +132,7 @@ public:
             std::unique_lock lk(m_);
             cv_done_.wait(lk, [&] { return done_count_ == n_; });
         }
+        classify_round_();
         for (auto &e : errs_) {
             if (e) {
                 std::rethrow_exception(e);
@@ -134,7 +140,32 @@ public:
         }
     }
 
+    // Whether the last round left the partitions holding different state, for the facade's mutation
+    // guard to read while the round's exception unwinds. A pointer because the guard is handed one once
+    // and reads it on destruction; the group outlives it. Every round resets it, and a round that
+    // diverged always throws, so the value the guard reads belongs to the round that is unwinding --
+    // which holds only as long as a mutator lets that throw out rather than swallowing it and running
+    // another round under the same guard.
+    auto diverged_flag() const -> const bool * { return &diverged_; }
+
 private:
+    // Every partition runs the same body, so a round that throws on all of them and poisoned none threw
+    // before it changed anything: each master rejected the call identically, up front, and none was
+    // released from a collective part-way. Anything else -- a poisoned peer, or a mix of throws and
+    // completions -- means the masters stopped at different points and their states no longer agree.
+    auto classify_round_() -> void {
+        bool any_error = false;
+        bool all_errored = true;
+        bool any_poisoned = false;
+        for (int r = 0; r < n_; ++r) {
+            const bool errored = errs_[static_cast<size_t>(r)] != nullptr;
+            any_error |= errored;
+            all_errored &= errored;
+            any_poisoned |= poisoned_[static_cast<size_t>(r)] != 0;
+        }
+        diverged_ = any_error && (!all_errored || any_poisoned);
+    }
+
     // Poison first so a master parked in a barrier is released rather than joined-on forever.
     auto stop_and_join_() noexcept -> void {
         transport_poison_();
@@ -293,6 +324,13 @@ private:
             try {
                 (*job)(rank);
             }
+            catch (const mpi::ShmCommPoisoned &) {
+                // Released from a collective a peer never joined: this master stopped mid-body, so
+                // whatever the peers went on to commit, it did not. See classify_round_().
+                poisoned_[static_cast<size_t>(rank)] = 1;
+                errs_[static_cast<size_t>(rank)] = std::current_exception();
+                transport_poison_();
+            }
             catch (...) {
                 errs_[static_cast<size_t>(rank)] = std::current_exception();
                 transport_poison_();
@@ -316,6 +354,10 @@ private:
 #endif
     std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> partitions_;
     std::vector<std::exception_ptr> errs_;
+    // One byte per partition, written only by its own master: std::vector<bool> would let disjoint
+    // indices tear the same word (see collect_on_all).
+    std::vector<unsigned char> poisoned_;
+    bool diverged_ = false; // facade thread only: written in run_on_all, read by the mutation guard
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
 

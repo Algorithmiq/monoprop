@@ -52,7 +52,9 @@ propagator it came from, which it keeps alive for as long as you hold it. A stru
 graph invalidates the functional: calling it afterwards raises `RuntimeError` rather than returning a
 value for a circuit the propagator no longer holds. Build a new functional after such a call. The
 direct [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] path
-always reflects the current propagator.
+always reflects the current propagator. One failure goes further than invalidating the functional: a
+mutation that fails part-way through a *partitioned* propagator retires the propagator itself, so
+neither path answers again — see [Parallelism and distribution](/features/parallelism).
 
 A re-weight is the one mutation a functional survives:
 [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]

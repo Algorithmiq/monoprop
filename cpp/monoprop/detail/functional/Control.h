@@ -63,6 +63,9 @@ struct FunctionalControl {
     // Current weights, null until the first plan.
     WeightsSlot weights;
 
+    // Names the fan-out mutation that unwound part-way, or null while the facade is intact.
+    std::atomic<const char *> partition_fault{nullptr};
+
     // Record a structure change.
     auto bump(const char *site) -> void {
         last_structural_change.store(site);
@@ -73,10 +76,11 @@ struct FunctionalControl {
 // Bumps the control block if a mutation throws after a possible state change.
 class [[nodiscard]] BumpOnUnwind {
 public:
-    BumpOnUnwind(FunctionalControl &control, const char *site, bool armed = true)
+    BumpOnUnwind(FunctionalControl &control, const char *site, bool armed = true, const bool *facade_diverged = nullptr)
         : control_(control),
           site_(site),
           armed_(armed),
+          facade_diverged_(facade_diverged),
           uncaught_(std::uncaught_exceptions()) {}
 
     BumpOnUnwind(const BumpOnUnwind &) = delete;
@@ -87,6 +91,9 @@ public:
     ~BumpOnUnwind() {
         if (armed_ && std::uncaught_exceptions() > uncaught_) {
             control_.bump(site_);
+            if (facade_diverged_ != nullptr && *facade_diverged_) {
+                control_.partition_fault.store(site_);
+            }
         }
     }
 
@@ -94,6 +101,7 @@ private:
     FunctionalControl &control_;
     const char *site_;
     bool armed_;
+    const bool *facade_diverged_;
     int uncaught_;
 };
 

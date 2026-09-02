@@ -212,7 +212,11 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       basis_(other.basis_),
       partition_group_(other.partition_group_
                            ? std::make_unique<detail::partition::PartitionGroup<NumModes>>(*other.partition_group_)
-                           : nullptr) {}
+                           : nullptr) {
+    if (const char *fault = other.functional_control_->partition_fault.load()) {
+        functional_control_->partition_fault.store(fault);
+    }
+}
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t {
@@ -253,19 +257,27 @@ auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mp
 // Partition fan-out vocabulary; the declarations record which helper is legal where.
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::check_partition_fault_() const -> void {
+    validate_partition_facade_intact(functional_control_->partition_fault.load());
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
+    check_partition_fault_();
     partition_group_->run_on_all([&](int r) { fn(partition_group_->partition(r)); });
 }
 
 template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_(Fn fn) -> std::vector<R> {
+    check_partition_fault_();
     return detail::partition::map_partitions(*partition_group_, fn);
 }
 
 template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_indexed_(Fn fn) -> std::vector<R> {
+    check_partition_fault_();
     return detail::partition::collect_on_all(*partition_group_,
                                              [&](int r) -> R { return fn(r, partition_group_->partition(r)); });
 }
@@ -289,6 +301,7 @@ auto MonomialPropagator<NumModes>::concat_partitions_(Fn fn) -> R {
 template <size_t NumModes>
 template <typename Proj, typename Accumulate, typename R>
 auto MonomialPropagator<NumModes>::fold_partitions_(Proj proj, Accumulate accumulate) const -> R {
+    check_partition_fault_();
     R total{};
     for (int r = 0; r < partition_group_->partition_count(); ++r) {
         accumulate(total, proj(partition_group_->partition(r)));
@@ -304,6 +317,7 @@ auto MonomialPropagator<NumModes>::sum_partitions_(Proj proj) const -> R {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::first_partition_() const -> const MonomialPropagator & {
+    check_partition_fault_();
     return partition_group_->partition(0);
 }
 
@@ -363,7 +377,9 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
     -> std::pair<MonomialList<NumModes>, VecD> {
     // A failed re-weight cannot be followed: the facade fan-out can commit some partitions before
     // another rejects a term only it holds, and a functional cannot tell that apart from a dict
-    // rejected before anything committed. Guarding the whole body keeps today's verdict for both.
+    // rejected before anything committed. Guarding the whole body keeps today's verdict for both. The
+    // fault latch does separate them -- only the first leaves the partitions disagreeing -- so a dict
+    // every partition rejects stays retryable.
     auto guard = bump_structure_on_unwind_("update_initial_operator()");
     if (partition_group_) {
         // The facade holds no local terms of its own, so the return is empty. Each partition publishes

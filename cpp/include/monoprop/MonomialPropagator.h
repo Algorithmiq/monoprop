@@ -353,6 +353,10 @@ protected:
 
     auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
 
+    // Throws if a fan-out mutation unwound part-way, leaving the partitions holding different state (see
+    // detail::BumpOnUnwind).
+    auto check_partition_fault_() const -> void;
+
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
 
@@ -390,8 +394,13 @@ private:
     // The failure-path half of the rule above: guard the mutation itself, so a mutator that throws
     // after committing part of its work still invalidates. `armed` is false where the guarded call
     // is a known no-op. See detail::BumpOnUnwind.
+    // On a facade it also latches the fault, if the round it guards is the kind that leaves the
+    // partitions disagreeing, so the two verdicts a part-way fan-out earns are decided together.
     auto bump_structure_on_unwind_(const char *site, bool armed = true) const -> detail::BumpOnUnwind {
-        return detail::BumpOnUnwind(*functional_control_, site, armed);
+        return detail::BumpOnUnwind(*functional_control_,
+                                    site,
+                                    armed,
+                                    partition_group_ ? partition_group_->diverged_flag() : nullptr);
     }
 
     // Hand the current initial-operator weights to every functional over this propagator, as one

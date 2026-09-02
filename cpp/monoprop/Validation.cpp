@@ -131,6 +131,17 @@ auto validate_weight_refresh(const WeightRefresh &refresh) -> void {
     }
 }
 
+auto validate_partition_facade_intact(const char *fault_site) -> void {
+    if (fault_site == nullptr) {
+        return;
+    }
+    throw ValidationError(std::format("{} failed part-way across the partitions of this propagator, so they no "
+                                      "longer hold the same state: the ones it reached committed the change and "
+                                      "the rest never will. No answer would be either partitioning's, so this "
+                                      "propagator refuses all further use. Build a new one.",
+                                      fault_site));
+}
+
 auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {
     if (!only_rotate_len_k.has_value()) {
         return;
