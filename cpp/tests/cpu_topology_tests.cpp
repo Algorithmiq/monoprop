@@ -46,6 +46,11 @@ struct AffinityGuard {
     cpu_set_t saved_{};
     AffinityGuard() { sched_getaffinity(0, sizeof(saved_), &saved_); }
     ~AffinityGuard() { sched_setaffinity(0, sizeof(saved_), &saved_); }
+#else
+    // Off Linux there is no affinity to restore, but the destructor must still be user-declared:
+    // an empty aggregate makes every `AffinityGuard guard;` look like an unused variable.
+    AffinityGuard() = default;
+    ~AffinityGuard() = default;
 #endif
 };
 

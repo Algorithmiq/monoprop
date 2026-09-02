@@ -180,7 +180,6 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
                                                       const typename A::GenContext &ctx,
                                                       std::span<const GenT> gen_pos,
                                                       std::span<PosT> out_pos) -> PartnerProduct<NumModes> {
-    const size_t gen_pop = gen_pos.size();
     const Monomial<NumModes> &gen = A::generator(ctx);
     PartnerProduct<NumModes> out;
     Monomial<NumModes> mono;
