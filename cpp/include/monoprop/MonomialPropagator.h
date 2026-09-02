@@ -461,6 +461,13 @@ private:
                         std::optional<size_t> only_rotate_len_k,
                         EvolutionFunc evolution_func) -> void;
 
+    // Whether a tracked term may fail the structural cutoff during this call: upper_atol can rescue one,
+    // or the initial operator (never filtered) already holds one somewhere in the world. The gate
+    // exchange's send predicate reads it (Engine.h); it is agreed across the comm by run_gate_loop_ once
+    // per call, because a disagreement would drop records one side expects.
+    auto any_local_term_fails_cutoff_() const -> bool;
+    bool over_cutoff_possible_ = false;
+
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,
                         std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,

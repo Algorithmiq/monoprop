@@ -88,12 +88,15 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
-  scan routing agreement), `routing_tests.cpp` (Router term -> flat-slot map:
+  scan routing agreement and the per-slot sent-ordinal lists), `routing_tests.cpp` (Router term -> flat-slot map:
   the splitmix equivalence, the fingerprint and flat-shift identities, the
   gf2_rank coverage diagnostic, and the shipped default),
   `position_kernels_tests.cpp` (the position-only emit kernels -- both algebras'
   rotation sign, the (k, d) digest cutoff and emit_partner -- against their dense
-  oracles), `evolution_detail_tests.cpp` (self-resolve over the AntiTable +
+  oracles), `evolution_detail_tests.cpp` (the one-round gate exchange on a
+  hand-built scan: the receiver rule at the join, the absence pass, the fused
+  and graph sinks' outputs, the emit-phase antisymmetry it rests on, the
+  receiver rule end to end through propagate(), the Schrödinger c0 channel, and
   CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
@@ -102,12 +105,15 @@ name and cannot address suite-nested cases, tests use flat
   insert_absent_terms, inverted-index sync, memory estimate, deep copy),
   `anti_table_tests.cpp` (the per-gate partner table: the lemma it rests on, the
   fingerprint probe vs a TermLookup oracle over inline, spilled and paired rows,
-  the position confirm, and the leader-pass marks).
+  the position confirm, and the per-ordinal protocol state bits).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
   `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense
-  oracle, plus the fused value channel), `sparse_resolve_tests.cpp` (probe and
-  insert from wire positions vs the dense Monomial-keyed path),
+  oracle, plus the fused value channel), `sparse_resolve_tests.cpp` (the receiver
+  side: probe, join and mint from wire positions vs the dense Monomial-keyed
+  path), `graph_pair_order_tests.cpp` (an in-process ShmComm world: every
+  (p, q) out-part length equals q's in-part length, and the graph replay
+  reproduces the fused propagate to a few ULP),
   `combined_recompute_equivalence.cpp` (recompute equivalence +
   snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.

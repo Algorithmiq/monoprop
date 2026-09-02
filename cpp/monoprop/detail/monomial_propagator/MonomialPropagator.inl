@@ -615,7 +615,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
             bool fused_scale = false;
             build_evolve_result_(mono, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
             extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
-            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
+            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, fused_scale);
         });
 }
 
@@ -759,11 +759,40 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::any_local_term_fails_cutoff_() const -> bool {
+    const detail::CutoffEvaluator<NumModes> eval(cutoff_fn_);
+    // Both structural forms keep any term with popcount <= cutoff (or_sum <= popcount), so only the rows
+    // above it are materialised.
+    std::optional<size_t> quick;
+    if (const auto *lc = eval.length_cutoff(); lc != nullptr) {
+        quick = lc->cutoff;
+    }
+    else if (const auto *sc = eval.support_cutoff(); sc != nullptr) {
+        quick = sc->cutoff;
+    }
+    const auto &store = *mp_op_.store;
+    for (size_t i = 0; i < store.size(); ++i) {
+        if (quick.has_value() && store.popcount(i) <= *quick) {
+            continue;
+        }
+        if (!eval(store.row(i))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
     report_routing_coverage_(majoranas);
+    // Terms inserted during this call pass the cutoff unless upper_atol rescues them, so one agreement per
+    // call covers every gate. A sum of 0/1 flags is the OR; it is a collective, so every participant runs
+    // it whatever its local answer.
+    const size_t local_fails = any_local_term_fails_cutoff_() ? 1 : 0;
+    over_cutoff_possible_ = upper_atol_.has_value() || mpi::allreduce_sum<size_t>(local_fails, comm_) != 0;
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
@@ -796,6 +825,7 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          upper_atol_,
                                          param,
                                          only_rotate_len_k,
+                                         over_cutoff_possible_,
                                          gate_scratch_,
                                          comm_,
                                          out_cos,

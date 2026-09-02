@@ -221,6 +221,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          cut,
                                                                                          coeffs,
                                                                                          std::nullopt,
+                                                                                         /*over_cutoff_possible=*/false,
                                                                                          window,
                                                                                          my_rank,
                                                                                          router,
@@ -230,21 +231,36 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          1.0);
                 // Every anticommuting row is in the table, emitted or not.
                 BOOST_REQUIRE(scratch.anti.size() > 0U);
-                BOOST_REQUIRE_EQUAL(res.leader_queries.size(), window.count);
+                BOOST_REQUIRE_EQUAL(res.queries.size(), window.count);
+                BOOST_REQUIRE_EQUAL(res.sent.size(), window.count);
                 if (window.contains(my_rank)) {
-                    // The scan routes a self-owned partner to the stage, so my own bucket must be empty.
-                    BOOST_REQUIRE(res.leader_queries.at_slot(my_rank).empty());
-                    BOOST_REQUIRE(res.follower_queries.at_slot(my_rank).empty());
+                    // The scan routes a self-owned partner to the stage, so my own bucket must be empty,
+                    // and the stage's parallel ordinal list is the one for the self slot.
+                    BOOST_REQUIRE(res.queries.at_slot(my_rank).empty());
+                    BOOST_REQUIRE_EQUAL(res.sent.at_slot(my_rank).size(), res.self.size());
                 }
                 else {
                     // A non-zero shift puts self outside the window entirely, so nothing may be staged.
-                    BOOST_REQUIRE_EQUAL(res.leader_self.size(), 0U);
-                    BOOST_REQUIRE_EQUAL(res.follower_self.size(), 0U);
+                    BOOST_REQUIRE_EQUAL(res.self.size(), 0U);
                 }
-                check_bucket_ownership(res.leader_queries, router, checked);
-                check_bucket_ownership(res.follower_queries, router, checked);
-                check_self_ownership(res.leader_self, router, my_rank, self_checked);
-                check_self_ownership(res.follower_self, router, my_rank, self_checked);
+                // One record per emitting source, so the per-slot ordinal lists account for every record
+                // and are ascending: the absence pass and the graph sink's out lists rely on that.
+                for (size_t k = 0; k < window.count; ++k) {
+                    const mpi::WindowIndex wi{k};
+                    const auto &ords = res.sent[wi];
+                    BOOST_REQUIRE(std::is_sorted(ords.begin(), ords.end()));
+                    BOOST_REQUIRE((std::adjacent_find(ords.begin(), ords.end()) == ords.end()));
+                    if (window.slot(wi) != my_rank) {
+                        BOOST_REQUIRE_EQUAL(
+                            detail::QueryWire<kN>::count_queries(res.queries[wi], detail::QueryForm::Plain),
+                            ords.size());
+                    }
+                    for (const auto ord : ords) {
+                        BOOST_REQUIRE(ord < scratch.anti.size());
+                    }
+                }
+                check_bucket_ownership(res.queries, router, checked);
+                check_self_ownership(res.self, router, my_rank, self_checked);
             }
             BOOST_TEST_MESSAGE("ranks=" << ranks << " linear=" << router.is_linear() << " shift=" << shift
                                         << " encoded=" << checked << " staged=" << self_checked);

@@ -39,44 +39,39 @@ struct PhasedEntry {
     int phase;
 };
 
-// Uniform per-rank rotation accumulator, drained into the LayerCore's sin_send/sin_recv lists by
-// GraphSink::finalize. Self slot: in:=(tgt,φ), out:=(src,φ); cross-rank: in=resolver, out=querier side.
+// One peer slot's rotation endpoints as the graph sink collects them (Engine.h GraphSink has the rules),
+// drained into the LayerCore's sin_send/sin_recv lists by GraphSink::finalize as
+// in = [in_pairs, in_mints] and out = [out_pairs, out_unanswered]. Replay pairs my out[j] with the
+// peer's in[j] positionally, which the four lists' orders guarantee: in_pairs/in_mints are in the
+// peer's stream order (ascending peer row), out_pairs/out_unanswered in ascending own row.
 struct PartnerAcc {
-    // Default-init storage: every resize-then-overwrite path must fully overwrite [base, base+n) before reading.
-    DefaultInitVector<PhasedEntry> in_entries;
-    DefaultInitVector<PhasedEntry> out_entries;
+    std::vector<PhasedEntry> in_pairs;       // my follower endpoints of pairs with a tracked partner
+    std::vector<PhasedEntry> in_mints;       // partners this slot minted from a peer's E-record
+    std::vector<PhasedEntry> out_pairs;      // my leader endpoints of pairs with a tracked partner
+    std::vector<PhasedEntry> out_unanswered; // my E-records whose key missed at the peer (it minted)
+
+    [[nodiscard]] auto in_count() const -> size_t { return in_pairs.size() + in_mints.size(); }
+    [[nodiscard]] auto out_count() const -> size_t { return out_pairs.size() + out_unanswered.size(); }
 };
 
-// Fused contraction (ContractImmediately — the default forward path at all rank counts): one rotation
-// (source S, target T, phase φ) applied directly to op_coeffs, bypassing the LayerCore, after cos-scaling S and T:
-//   op[S] += -sin·φ·op_pre[T]      op[T] += +sin·φ·op_pre[S]
-struct RotationRec {
-    size_t src = 0;
-    size_t tgt = 0;
-    double v_src = 0.0; // op_pre[src] — signed coeff captured at scan emit
-    double v_tgt = 0.0; // op_pre[tgt] — resolve-time (hits) / post-extension (inserts) coeff
-    int32_t phase = 0;  // ±1 rotation phase (A::emit_phase)
-};
-
-// One cross-rank half-rotation (R>1): each rank applies only the add to the slot it owns. The resolver
-// owns target T: {T, v_src, +φ}; the querier owns source S: {S, v_tgt, −φ}. Applied like the self-rank
-// sin_recv apply: op[local_idx] += sin·phase_signed·v_partner (v_partner off the wire, pre-cos).
+// One half-rotation (Engine.h has the protocol): the add this slot owns of a rotation between ν and
+// μ = ν ⊕ G, applied as op[local_idx] += sin·phase_signed·v_partner with v_partner the partner's pre-cos
+// coefficient off the wire. Each slot is touched by exactly one add per gate (a term has one partner),
+// so the order of the records is irrelevant to the result.
 struct HalfRotationRec {
-    size_t local_idx = 0;     // slot this rank owns: T (resolver) or S (querier)
-    double v_partner = 0.0;   // partner's pre-cos coeff: v_src (resolver) / v_tgt (querier)
-    int32_t phase_signed = 0; // +φ (resolver) / −φ (querier), pre-signed so the apply never negates
-    // Resolver miss halves write a slot inserted this gate (after the fused cos sweep), so the apply folds
-    // the gate's cos in (c = cos·c + sin) instead of a plain add. False for hit/querier halves: pre-gate terms.
+    size_t local_idx = 0;     // the slot this rank owns
+    double v_partner = 0.0;   // partner's pre-cos coefficient: v_rec for hits and mints, c0(μ) for absences
+    int32_t phase_signed = 0; // +φ_rec for a hit or mint, −φ_own for an absent partner: pre-signed so the
+                              // apply never negates
+    // A mint writes a slot inserted this gate (after the fused cos sweep), so the apply folds the gate's
+    // cos in (c = cos·c + sin·φ·v) instead of a plain add. False for every pre-gate term.
     bool is_insert = false;
 };
 
-// Sink threaded through build_layer's fused branch; a non-null FusedContract* selects the fused path.
-// Self-routed rotations (both endpoints local) are full RotationRecs, split into hit and insert lists so
-// the apply can fill insert v_tgt (readable only after extend_coeffs) without scanning for a sentinel.
+// Sink threaded through build_layer's fused branch (ContractImmediately); a non-null FusedContract*
+// selects the fused path. Drained by apply_fused_contract.
 struct FusedContract {
-    std::vector<RotationRec> hits;
-    std::vector<RotationRec> inserts;
-    std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
+    std::vector<HalfRotationRec> halves;
 };
 
 // bit_cast, not a conversion, so v_src arrives over the wire bit-identical.

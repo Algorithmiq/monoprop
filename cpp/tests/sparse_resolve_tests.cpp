@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The position-form resolve path, differentially against the queries the caller built, the dense
-// Monomial-keyed insert path and a transient TermLookup oracle, none of which is the code under test.
+// The receiver side of the one-round exchange: the incoming records decoded and probed (IncomingProbe),
+// joined under the receiver rule (join_incoming) and the misses inserted (MissStage / insert_misses) --
+// differentially against the records the caller built, the dense Monomial-keyed insert path and a
+// transient TermLookup oracle, none of which is the code under test.
 
 #include <boost/test/unit_test.hpp>
 
@@ -136,6 +138,17 @@ auto positions_of(const Monomial<NumModes> &m) -> std::vector<uint16_t> {
     return pos;
 }
 
+// Record q of sender s carries phase (+1, -1 alternating), rot = (q % 3 != 2) and value 0.5 + q.
+auto record_phase(size_t q) -> int {
+    return ((q % 2) == 0) ? 1 : -1;
+}
+auto record_rot(size_t q) -> bool {
+    return (q % 3) != 2;
+}
+auto record_value(size_t q) -> double {
+    return 0.5 + static_cast<double>(q);
+}
+
 template <size_t NumModes>
 auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused, mpi::SlotWindow window)
     -> mpi::WindowVec<VecZ> {
@@ -143,16 +156,36 @@ auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool
     for (size_t s = 0; s < queries.size(); ++s) {
         VecZ &buf = incoming[mpi::WindowIndex{s}];
         for (size_t q = 0; q < queries[s].size(); ++q) {
-            const int phase = ((q % 2) == 0) ? 1 : -1;
             const auto pos = positions_of<NumModes>(queries[s][q]);
-            detail::QueryWire<NumModes>::push(buf, pos, phase);
+            detail::QueryWire<NumModes>::push(buf, pos, record_phase(q), record_rot(q));
             if (fused) {
-                detail::QueryWire<NumModes>::push_value(buf, 0.5 + static_cast<double>(q));
+                detail::QueryWire<NumModes>::push_value(buf, record_value(q));
             }
         }
     }
     return incoming;
 }
+
+// Records every sink call with its slot, so the join order and the slot attribution are both pinned.
+struct RecordingSink {
+    struct Rec {
+        char kind; // 'h' hit, 'm' mint
+        size_t slot;
+        size_t idx;
+        double v;
+        int phase;
+        bool foll;
+    };
+    std::vector<Rec> recs;
+    auto hit(size_t slot, size_t row, double v, int phase, bool foll) -> void {
+        recs.push_back({'h', slot, row, v, phase, foll});
+    }
+    auto mint(size_t slot, size_t idx, double v, int phase) -> void {
+        recs.push_back({'m', slot, idx, v, phase, false});
+    }
+    auto out_pair(size_t, size_t, int) -> void { BOOST_FAIL("the join never reports out-side entries"); }
+    auto out_unanswered(size_t, size_t, double, int) -> void { BOOST_FAIL("the join never reports out-side entries"); }
+};
 
 template <size_t NumModes>
 auto check_probe_matches_the_queries(std::mt19937_64 &rng,
@@ -161,7 +194,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
                                      size_t rank_count,
                                      bool fused,
                                      size_t window_base = 0) -> void {
-    // A non-zero base is the case a re-basing bug survives: sender_slot must still name the flat slot.
+    // A non-zero base is the case a re-basing bug survives: the sink must still see the flat slot.
     const mpi::SlotWindow window{.base = window_base, .count = rank_count};
     const auto seed_terms = draw_distinct<NumModes>(rng, n_seed);
     const auto fresh_terms = draw_distinct<NumModes>(rng, n_query);
@@ -178,7 +211,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
         for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
             key.push_back(m.word(w));
         }
-        // A repeat would violate bulk_insert's precondition; the engine gets distinctness from ^G.
+        // A repeat would violate the mint's distinctness precondition; the engine gets it from ^G.
         if (!queried.insert(key).second) {
             continue;
         }
@@ -188,13 +221,18 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     BOOST_REQUIRE(hits_planned > 0);
     BOOST_REQUIRE(misses_planned > 0);
 
+    // The flat record order the receiver must reproduce: senders ascending, each in stream order.
     std::vector<Monomial<NumModes>> expect_mono;
     std::vector<int> expect_phase;
+    std::vector<bool> expect_rot;
+    std::vector<double> expect_value;
     std::vector<size_t> expect_sender;
     for (size_t s = 0; s < rank_count; ++s) {
         for (size_t q = 0; q < queries[s].size(); ++q) {
             expect_mono.push_back(queries[s][q]);
-            expect_phase.push_back(((q % 2) == 0) ? 1 : -1);
+            expect_phase.push_back(record_phase(q));
+            expect_rot.push_back(record_rot(q));
+            expect_value.push_back(fused ? record_value(q) : 0.0);
             expect_sender.push_back(s);
         }
     }
@@ -203,14 +241,16 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    const auto table = table_over_all_rows<NumModes>(op);
+    auto table = table_over_all_rows<NumModes>(op);
     const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, form, table);
     BOOST_REQUIRE_EQUAL(pr.window.base, window.base);
     BOOST_REQUIRE_EQUAL(pr.window.count, window.count);
-
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
     BOOST_REQUIRE(pr.nq_total > 0);
+    BOOST_REQUIRE_EQUAL(pr.goff.size(), rank_count + 1);
+    BOOST_REQUIRE_EQUAL(pr.goff.back(), pr.nq_total);
     BOOST_REQUIRE_EQUAL(pr.pos_off.size(), pr.nq_total);
+    BOOST_REQUIRE_EQUAL(pr.val_of.empty(), !fused);
 
     std::set<std::vector<uint64_t>> seeded;
     for (const auto &m : seed_terms) {
@@ -223,29 +263,44 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
 
     size_t hits_seen = 0;
     size_t wide_seen = 0;
-    std::vector<Monomial<NumModes>> expected_misses;
+    size_t dropped_seen = 0;
+    std::vector<Monomial<NumModes>> expected_mints; // rot=1 misses, in flat record order
+    std::vector<size_t> expected_mint_slot;
+    std::vector<size_t> expected_hit_row;
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const Monomial<NumModes> &want = expect_mono[g];
-        BOOST_TEST((pr.mono_at(g) == want));
+        const auto pos = pr.positions_at(g);
+        Monomial<NumModes> got;
+        for (const auto p : pos) {
+            got.set(static_cast<size_t>(p));
+        }
+        BOOST_TEST((got == want));
         BOOST_TEST(pr.k_of[g] == want.count());
         BOOST_TEST(pr.phase_of[g] == expect_phase[g]);
-        BOOST_TEST(pr.sender_index(g).value == expect_sender[g]);
-        BOOST_TEST(pr.sender_slot(g) == window.base + expect_sender[g]);
-        BOOST_TEST(pr.is_paired_at(g) == monoprop::is_paired<NumModes>(want));
+        BOOST_TEST((pr.rot_of[g] != 0) == expect_rot[g]);
+        BOOST_TEST(pr.value_at(g) == expect_value[g]);
+        const size_t s = expect_sender[g];
+        BOOST_TEST(pr.goff[s] <= g);
+        BOOST_TEST(g < pr.goff[s + 1]);
 
         std::vector<uint64_t> key;
         for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
             key.push_back(want.word(w));
         }
         const bool want_hit = seeded.count(key) != 0;
-        BOOST_TEST((pr.idx_of[g] < pr.base) == want_hit);
         BOOST_TEST((pr.ord_of[g] != detail::AntiTable<NumModes>::kNone) == want_hit);
         if (want_hit) {
-            BOOST_TEST(table.row_of(pr.ord_of[g]) == pr.idx_of[g]);
+            const size_t row = table.row_of(pr.ord_of[g]);
+            BOOST_TEST((op.store->row(row) == want));
+            expected_hit_row.push_back(row);
             ++hits_seen;
         }
+        else if (expect_rot[g]) {
+            expected_mints.push_back(want);
+            expected_mint_slot.push_back(window.base + s);
+        }
         else {
-            expected_misses.push_back(want);
+            ++dropped_seen;
         }
         VecZ scratch;
         const auto want_pos = positions_of<NumModes>(want);
@@ -253,26 +308,65 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
             ++wide_seen;
         }
     }
-    // Vacuous-pass guards: no hit means the confirm never ran, no wide record means the cursor didn't.
+    // Vacuous-pass guards: no hit means the confirm never ran, no wide record means the cursor didn't,
+    // no dropped record means the rot=0 miss arm never ran.
     BOOST_TEST(hits_seen > 0);
     BOOST_TEST(wide_seen > 0);
+    BOOST_TEST(dropped_seen > 0);
+    BOOST_REQUIRE(!expected_mints.empty());
 
-    BOOST_REQUIRE_EQUAL(pr.miss_g.size(), expected_misses.size());
-    for (size_t j = 0; j < pr.miss_g.size(); ++j) {
-        BOOST_TEST((expect_mono[pr.miss_g[j]] == expected_misses[j]));
-        BOOST_TEST(pr.idx_of[pr.miss_g[j]] == pr.base + j);
+    // The join: every hit applies (the table has no rot bits set, so only rot=1 records rotate a hit),
+    // every rot=1 miss mints at base + j in flat record order, every rot=0 miss is dropped.
+    const size_t base = op.store->size();
+    detail::MissStage<NumModes> misses;
+    RecordingSink sink;
+    detail::join_incoming<NumModes>(pr, table, base, misses, sink);
+    BOOST_REQUIRE_EQUAL(misses.size(), expected_mints.size());
+    size_t mints_seen = 0;
+    size_t hit_calls = 0;
+    for (const auto &r : sink.recs) {
+        if (r.kind == 'm') {
+            BOOST_REQUIRE(mints_seen < expected_mints.size());
+            BOOST_TEST(r.idx == base + mints_seen);
+            BOOST_TEST(r.slot == expected_mint_slot[mints_seen]);
+            Monomial<NumModes> minted;
+            for (const auto p : misses.positions_at(mints_seen)) {
+                minted.set(static_cast<size_t>(p));
+            }
+            BOOST_TEST((minted == expected_mints[mints_seen]));
+            ++mints_seen;
+        }
+        else {
+            ++hit_calls;
+            BOOST_TEST(r.idx < base);
+            BOOST_TEST((std::find(expected_hit_row.begin(), expected_hit_row.end(), r.idx) != expected_hit_row.end()));
+            BOOST_TEST(window.contains(r.slot));
+        }
     }
+    BOOST_TEST(mints_seen == expected_mints.size());
+    // Only rot=1 records rotate an unmarked hit, so the hit calls are the rot=1 hits.
+    size_t rot_hits = 0;
+    for (size_t g = 0; g < pr.nq_total; ++g) {
+        if (pr.ord_of[g] != detail::AntiTable<NumModes>::kNone) {
+            BOOST_TEST(table.received(pr.ord_of[g]));
+            if (expect_rot[g]) {
+                ++rot_hits;
+            }
+        }
+    }
+    BOOST_TEST(hit_calls == rot_hits);
+    BOOST_TEST(rot_hits > 0);
 
-    detail::insert_incoming_misses<NumModes>(op, pr);
+    detail::insert_misses<NumModes>(op, misses, base);
 
     // The second implementation: the dense Monomial-keyed path, sharing no code with set_positions.
     auto ref = make_op<NumModes>(seed_terms);
-    detail::insert_absent_terms<NumModes>(ref, expected_misses.size(), [&](size_t j, size_t base) {
-        assign_row<NumModes>(*ref.store, base + j, expected_misses[j]);
+    detail::insert_absent_terms<NumModes>(ref, expected_mints.size(), [&](size_t j, size_t b) {
+        assign_row<NumModes>(*ref.store, b + j, expected_mints[j]);
     });
 
     BOOST_REQUIRE_EQUAL(op.store->size(), ref.store->size());
-    BOOST_TEST(op.store->size() > pr.base);
+    BOOST_TEST(op.store->size() > base);
     size_t overflow_seen = 0;
     for (size_t i = 0; i < ref.store->size(); ++i) {
         BOOST_TEST((op.store->row(i) == ref.store->row(i)));

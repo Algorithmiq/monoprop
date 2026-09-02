@@ -88,6 +88,16 @@ struct MajoranaAlgebra {
     static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
         return monoprop::majorana_state_phase<NumModes>(mono, state_mask);
     }
+    // The same score from the term's ascending positions: (-1)^(|M ∩ mask| + |M|/2), with |M ∩ mask| a
+    // count of positions the mask has set. Meaningful only for a fully paired M, like state_phase.
+    template <typename PosT>
+    static auto state_phase_positions(const PosT *pos, size_t count, const Monomial<NumModes> &state_mask) -> double {
+        size_t in_mask = 0;
+        for (size_t j = 0; j < count; ++j) {
+            in_mask += static_cast<size_t>(state_mask.test(static_cast<size_t>(pos[j])));
+        }
+        return POWERS_OF_MINUS_ONE[(in_mask + count / 2) % 2];
+    }
 };
 
 template <size_t NumModes>
@@ -144,6 +154,15 @@ struct PauliAlgebra {
     }
     static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
         return pauli_state_phase<NumModes>(mono, state_mask);
+    }
+    // The same score from the term's ascending positions: (-1)^(|Z ∩ occupied|), the mask count alone.
+    template <typename PosT>
+    static auto state_phase_positions(const PosT *pos, size_t count, const Monomial<NumModes> &state_mask) -> double {
+        size_t in_mask = 0;
+        for (size_t j = 0; j < count; ++j) {
+            in_mask += static_cast<size_t>(state_mask.test(static_cast<size_t>(pos[j])));
+        }
+        return (in_mask & 1U) ? -1.0 : 1.0;
     }
 };
 

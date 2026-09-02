@@ -394,29 +394,32 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_stream_interleaves_values_and_stays_wal
     std::mt19937_64 rng(0xF5EDULL);
     std::vector<std::vector<uint16_t>> terms;
     std::vector<double> vals;
-    VecZ plain;
+    std::vector<bool> rots;
+    VecZ fused;
     for (size_t i = 0; i < 24; ++i) {
         terms.push_back(scattered(rng() % 45, 256, rng));
         vals.push_back(static_cast<double>(i) * 0.5 - 3.25);
+        rots.push_back((i % 3) != 1);
         Monomial<128> m;
         for (const auto p : terms.back()) {
             m.set(p);
         }
         const auto pos = positions_of<128>(m);
-        (void)QW::push(plain, pos, 1);
+        (void)QW::push(fused, pos, 1, rots.back());
+        QW::push_value(fused, vals.back());
     }
-    VecZ fused;
-    QW::build_fused(plain, vals, fused);
 
     const QueryForm form = QueryForm::Fused;
     BOOST_TEST(QW::count_queries(fused, form) == terms.size());
     size_t off = 0;
     for (size_t i = 0; i < terms.size(); ++i) {
         BOOST_TEST(QW::k_at(fused, off) == terms[i].size());
+        BOOST_TEST(QW::rot_at(fused, off) == rots[i]);
         BOOST_TEST(QW::value_at(fused, off) == vals[i]);
         std::vector<uint16_t> out(terms[i].size() + 1);
         const auto rq = QW::read_query(fused, form, off, out);
         BOOST_TEST(rq.phase == 1);
+        BOOST_TEST(rq.rot == rots[i]);
         out.resize(terms[i].size());
         BOOST_TEST(out == terms[i], boost::test_tools::per_element());
         off = QW::next_off(fused, form, off);
@@ -430,14 +433,15 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
     using QW = QueryWire<128>;
     const QueryForm form = QueryForm::Fused;
 
-    auto push_terms = [](VecZ &buf, const std::vector<std::vector<uint16_t>> &terms) {
-        for (const auto &t : terms) {
+    auto push_terms = [](VecZ &buf, const std::vector<std::vector<uint16_t>> &terms, const std::vector<double> &vals) {
+        for (size_t i = 0; i < terms.size(); ++i) {
             Monomial<128> m;
-            for (const auto p : t) {
+            for (const auto p : terms[i]) {
                 m.set(p);
             }
             const auto pos = positions_of<128>(m);
             (void)QW::push(buf, pos, 1);
+            QW::push_value(buf, vals[i]);
         }
     };
 
@@ -464,10 +468,8 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
     };
     BOOST_REQUIRE_EQUAL(terms.size(), values.size());
 
-    VecZ plain;
-    push_terms(plain, terms);
     VecZ fused;
-    QW::build_fused(plain, values, fused);
+    push_terms(fused, terms, values);
 
     size_t off = 0;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -477,24 +479,22 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
     }
     BOOST_TEST(off == fused.size());
 
-    // Buffer reuse: sizes must be exact, or a shorter gate reads the previous gate's trailing words.
-    VecZ plain_big;
+    // Buffer reuse: the per-slot buffers are cleared, not reallocated, between gates, so a shorter gate
+    // must leave exactly its own words behind.
+    VecZ out;
     std::vector<double> vbig;
     std::vector<std::vector<uint16_t>> big;
     for (size_t r = 0; r < 32; ++r) {
         big.push_back({static_cast<uint16_t>(r), static_cast<uint16_t>(r + 60)});
         vbig.push_back(static_cast<double>(r) * 1.5 - 7.0);
     }
-    push_terms(plain_big, big);
-    VecZ out;
-    QW::build_fused(plain_big, vbig, out);
+    push_terms(out, big, vbig);
     const size_t cap_after_big = out.capacity();
 
-    VecZ plain_small;
     const std::vector<double> vsmall = {42.0, -42.0, 0.25};
     const std::vector<std::vector<uint16_t>> small = {{1}, {2, 3}, {4, 5, 6}};
-    push_terms(plain_small, small);
-    QW::build_fused(plain_small, vsmall, out);
+    out.clear();
+    push_terms(out, small, vsmall);
     BOOST_TEST(QW::count_queries(out, form) == vsmall.size());
     BOOST_CHECK_GE(out.capacity(), cap_after_big);
     off = 0;
@@ -504,12 +504,45 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable
         off = QW::next_off(out, form, off);
     }
     BOOST_TEST(off == out.size());
+}
 
-    // Empty input: the self slot is cleared before the exchange, into a buffer holding stale words.
-    VecZ empty;
-    VecZ dirty{1, 2, 3};
-    QW::build_fused(empty, {}, dirty);
-    BOOST_TEST(dirty.empty());
+// The rot bit sits between the phase and k fields: every (k, phase, rot) combination round-trips through
+// the header, including the long-k escape, and flipping rot changes exactly that bit of the first word.
+BOOST_AUTO_TEST_CASE(sparse_record_rot_bit_round_trips_across_header_shapes) {
+    using QW = QueryWire<128>;
+    for (const size_t k : {0U, 1U, 2U, 7U, 30U, 31U, 32U, 40U, 100U}) {
+        std::vector<uint16_t> pos;
+        for (size_t j = 0; j < k; ++j) {
+            pos.push_back(static_cast<uint16_t>(2 * j + (j % 2))); // strictly ascending, mixed gaps
+        }
+        for (const int phase : {-1, 0, 1}) {
+            VecZ a;
+            VecZ b;
+            (void)QW::push(a, pos, phase, false);
+            (void)QW::push(b, pos, phase, true);
+            BOOST_REQUIRE_EQUAL(a.size(), b.size());
+            const auto ha = QW::header_at(a, 0);
+            const auto hb = QW::header_at(b, 0);
+            BOOST_TEST(ha.k == k);
+            BOOST_TEST(hb.k == k);
+            BOOST_TEST(ha.phase == phase);
+            BOOST_TEST(hb.phase == phase);
+            BOOST_TEST(!ha.rot);
+            BOOST_TEST(hb.rot);
+            BOOST_TEST(!QW::rot_at(a, 0));
+            BOOST_TEST(QW::rot_at(b, 0));
+            BOOST_TEST((static_cast<uint64_t>(a[0]) ^ static_cast<uint64_t>(b[0])) == (uint64_t{1} << QW::kPhaseBits));
+            for (size_t w = 1; w < a.size(); ++w) {
+                BOOST_TEST(a[w] == b[w]);
+            }
+            std::vector<uint16_t> out(k);
+            const auto d = QW::read_positions(b, 0, out);
+            BOOST_TEST(d.rot);
+            BOOST_TEST(d.phase == phase);
+            BOOST_TEST(d.next == b.size());
+            BOOST_TEST(out == pos, boost::test_tools::per_element());
+        }
+    }
 }
 
 // Positions with exactly k entries whose widest gap is exactly `gw`: one gap of 2^(gw-1) -- the smallest

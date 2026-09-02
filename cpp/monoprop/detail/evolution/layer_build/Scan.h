@@ -244,36 +244,42 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 template <size_t NumModes>
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
-    // The six arrays below are indexed by DESTINATION SLOT through WindowVec::at_slot, and cover only
+    // The per-slot arrays below are indexed by DESTINATION SLOT through WindowVec::at_slot, and cover only
     // the slots this generator can reach: S of the P=R*S world under linear routing, all P under
     // splitmix. See mpi::PeerPlan::window.
     mpi::SlotWindow window;
-    mpi::WindowVec<VecZ> leader_queries;              // serialized leader queries per owner slot
-    mpi::WindowVec<std::vector<size_t>> leader_src;   // parallel to leader_queries (source op idx)
-    mpi::WindowVec<VecZ> follower_queries;            // serialized follower queries per owner slot
-    mpi::WindowVec<std::vector<size_t>> follower_src; // parallel to follower_queries
-    // Fused-contraction only (capture_values): signed pre-cos source coeff (v_src) parallel to
-    // leader_src / follower_src. Empty when capture_values is false.
-    mpi::WindowVec<std::vector<double>> leader_val;
-    mpi::WindowVec<std::vector<double>> follower_val;
-    // Self-owned queries, staged as positions instead of encoded into the window's self slot, and resolved
-    // inline. Order must match that slot's leader_src / follower_src, or resolution attributes the wrong
-    // source. Empty unless the window contains my_rank, i.e. unless this generator's rank shift is zero.
-    SelfQueryStage<NumModes> leader_self;
-    SelfQueryStage<NumModes> follower_self;
+    // The wire records (QueryWire.h) per destination slot, in stream order = ascending source row. Fused
+    // (value word after each record) iff capture_values.
+    mpi::WindowVec<VecZ> queries;
+    // Per destination slot, the AntiTable ordinal of each record's SOURCE, parallel to the records of
+    // that slot (the self slot's parallel to `self`). Ascending, because the scan walks rows ascending
+    // and ordinals follow rows: the absence pass and the graph sink's out lists rely on that order.
+    mpi::WindowVec<std::vector<uint32_t>> sent;
+    // Parallel to `sent`: c0(μ), the pre-gate coefficient the partner would be minted with (Schrödinger:
+    // state score of a fully paired μ, else 0). Only filled when a state mask is given, i.e. for the
+    // fused Schrödinger picture; read by the absence pass alone.
+    mpi::WindowVec<std::vector<double>> sent_c0;
+    // Records addressed to this slot itself, staged as positions instead of encoded into the window's
+    // self slot, and joined inline. Empty unless the window contains my_rank, i.e. unless this
+    // generator's rank shift is zero.
+    SelfQueryStage<NumModes> self;
 };
 
-// Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
-// M'=M⊕G (routing::Router; self at R==1) in ascending source-index order, so resolve and index assignment are
-// deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
-// coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
-// value is post-cos (resolve recovers it via 1/cos).
+// Classify, cut off and emit in one pass over the anticommuting terms. Every anticommuting row is entered
+// into scratch.anti keyed by its fingerprint, with its pivot bit (`foll`), and then decides two things
+// about its partner μ = M⊕G (Engine.h has the protocol):
+//   send(M) = struct_pass(μ) ∨ over_cutoff_possible     a record for μ goes to owner(μ)
+//   E(M)    = rotation_dynamic_gate ∧ (struct_pass(μ) ∨ is_above_upper(|c|))   its `rot` bit
+// E ⇒ send. A term that fails send has no tracked partner (Engine.h argues why), so nothing is lost by
+// not sending; one that passes send but fails E sends a rot=0 record so the partner learns it exists.
+// Records go to the owner of μ (routing::Router; self at R==1) in ascending source-index order, so the
+// join and the miss-index assignment are deterministic.
 //
-// Every anticommuting row -- emitted or not -- is entered into scratch.anti keyed by its fingerprint
-// before any gate runs, because a term below the threshold or above the rotation cap is still somebody's
-// partner (AntiTable.h). The partner's fingerprint is fp(M) ^ fp(G), which is also what routes it: under
-// linear routing no per-term hash and no dense monomial exist on this path. `window` must be the peer
-// plan's window for `my_rank`: it is what the six query arrays are sized to.
+// `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting coeff in
+// place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built; the value a record carries
+// is the PRE-cos coefficient, read before the store. `state_mask` (Schrödinger fused picture only)
+// switches on the c0(μ) side channel in `sent_c0`. `window` must be the peer plan's window for
+// `my_rank`: it is what the per-slot arrays are sized to.
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -281,13 +287,15 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
                             std::optional<size_t> only_rotate_len_k,
+                            bool over_cutoff_possible,
                             mpi::SlotWindow window,
                             size_t my_rank,
                             const routing::Router &router,
                             GateScratch<NumModes> &scratch,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
-                            double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
+                            double fused_scale_cos = 1.0,
+                            const Monomial<NumModes> *state_mask = nullptr) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const size_t rank_count = router.flat_world();
@@ -296,17 +304,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
 
     FusedScanResult<NumModes> res;
     res.window = window;
-    res.leader_queries.reset(window);
-    res.leader_src.reset(window);
-    res.follower_queries.reset(window);
-    res.follower_src.reset(window);
-    // Sized on the early-return paths below too, so the fused engine's per-slot src_val_r access is
-    // always in bounds (parallel to leader_src / follower_src).
-    if (capture_values) {
-        res.leader_val.reset(window);
-        res.follower_val.reset(window);
+    res.queries.reset(window);
+    res.sent.reset(window);
+    // Sized on the early-return paths below too, so the engine's per-slot access is always in bounds.
+    if (state_mask != nullptr) {
+        res.sent_c0.reset(window);
     }
-    // An empty table on every early return: the resolve passes probe it for every query they carry.
+    // An empty table on every early return: the join probes it for every record it carries.
     scratch.anti.begin(0);
 
     {
@@ -328,7 +332,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const uint64_t *const row_parity_ptr = g_odd ? inverted_index.row_parity_words() : nullptr;
         const size_t n = op.store->size();
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
-        // very array the reads come from and cover the full operator — a violation corrupts 1/cos recovery.
+        // very array the reads come from and cover the full operator.
         assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
 
         const size_t last_word = word_count - 1;
@@ -351,16 +355,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // g_odd guard is load-bearing: an odd Majorana generator anticommutes with disjoint odd-weight terms.
         const bool skip_scan = !g_odd && fold_cols_empty;
 
-        auto &lq = res.leader_queries;
-        auto &ls = res.leader_src;
-        auto &lv = res.leader_val;
-        auto &fq = res.follower_queries;
-        auto &fs = res.follower_src;
-        auto &fv = res.follower_val;
-
         const OperatorIndex<NumModes> &ham = *op.store;
         using RowPosT = typename OperatorIndex<NumModes>::PosT;
         using RowPositions = typename OperatorIndex<NumModes>::RowPositions;
+        using Ordinal = typename AntiTable<NumModes>::Ordinal;
         AntiTable<NumModes> &table = scratch.anti;
 
         // The generator's positions, once per gate: the merge's second input. Its fingerprint is the
@@ -386,9 +384,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         const PartnerProduct<NumModes> &p,
                         std::span<const RowPosT> pos,
                         int phase,
-                        size_t i,
+                        bool rot,
+                        Ordinal ord,
                         double v_src,
-                        bool is_follower) {
+                        double c0) {
             // Single rank: every partner is self-owned. Multi-rank routes by owner: off the fingerprint
             // under linear routing, off the dense hash under splitmix. routing::Router is the only owner
             // function; find_rank (MPIUtils.h) must stay in step with it or a term is placed and queried
@@ -407,14 +406,18 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // at_slot is the only re-basing door and asserts membership: a destination outside this
             // generator's window means the shift is wrong, and would otherwise land on another peer.
             if (r_prime == my_rank) {
-                (is_follower ? res.follower_self : res.leader_self).push(pos, phase, fp_partner);
+                res.self.push(pos, phase, fp_partner, rot, v_src);
             }
             else {
-                QueryWire<NumModes>::push(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime), pos, phase);
+                VecZ &buf = res.queries.at_slot(r_prime);
+                QueryWire<NumModes>::push(buf, pos, phase, rot);
+                if (capture_values) {
+                    QueryWire<NumModes>::push_value(buf, v_src);
+                }
             }
-            (is_follower ? fs : ls).at_slot(r_prime).push_back(i);
-            if (capture_values) {
-                (is_follower ? fv : lv).at_slot(r_prime).push_back(v_src);
+            res.sent.at_slot(r_prime).push_back(ord);
+            if (state_mask != nullptr) {
+                res.sent_c0.at_slot(r_prime).push_back(c0);
             }
         };
 
@@ -435,11 +438,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             return {src, dense.count(), routing::linear_hash<2 * NumModes>(dense)};
         };
 
-        // The dynamic gate runs before emit_partner, so a gate-rejected term computes no products.
+        // One anticommuting row, already in the table as `ord`: the partner product, then send / E.
         // abs_c/v_src come from the caller's coeff read, not re-read.
-        auto emit = [&](const RowRead &row, size_t i, double abs_c, double v_src, bool is_follower) {
-            if (!rotation_dynamic_gate(only_rotate_len_k, row.pop, cut_st, abs_c)) {
-                return;
+        auto visit = [&](const RowRead &row, size_t i, Ordinal ord, double abs_c, double v_src, bool is_follower) {
+            if (is_follower) {
+                table.set_foll(ord);
             }
             const auto p = emit_partner<NumModes, A>(ham,
                                                      i,
@@ -451,11 +454,22 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
             const bool struct_pass = cutoff_eval.has_digest_form() ? cutoff_eval.passes_from_digest(p.k, p.paired)
                                                                    : cutoff_eval.passes_with_popcount(p.dense, p.k);
-            if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
-                return;
+            if (!struct_pass && !over_cutoff_possible) {
+                return; // μ cannot be tracked and would not be minted: nobody needs to hear from M
             }
+            const bool rot = rotation_dynamic_gate(only_rotate_len_k, row.pop, cut_st, abs_c)
+                             && (struct_pass || cut_st.is_above_upper(abs_c));
             const int phase = A::emit_phase(p.phase_factor, row.pop, gen_pop, p.overlap);
-            push(row.fp ^ fp_gen, p, std::span<const RowPosT>(pbuf).first(p.k), phase, i, v_src, is_follower);
+            table.set_phase(ord, phase);
+            double c0 = 0.0;
+            if (rot) {
+                table.set_rot(ord);
+                // Only an E-record can mint, so only it needs the fresh partner's pre-gate coefficient.
+                if (state_mask != nullptr && digest_is_paired(p.k, p.paired)) {
+                    c0 = A::state_phase_positions(pbuf.data(), p.k, *state_mask);
+                }
+            }
+            push(row.fp ^ fp_gen, p, std::span<const RowPosT>(pbuf).first(p.k), phase, rot, ord, v_src, c0);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
@@ -483,11 +497,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         table.begin(n_anti);
         if (rank_count == 1) {
             // A hint only; wider terms grow the buffer as needed.
-            const size_t pq = QueryWire<NumModes>::kReservePositionsPerQuery;
-            res.leader_self.reserve(n_anti - n_foll, pq);
-            ls.at_slot(my_rank).reserve(n_anti - n_foll);
-            res.follower_self.reserve(n_foll, pq);
-            fs.at_slot(my_rank).reserve(n_foll);
+            res.self.reserve(n_anti, QueryWire<NumModes>::kReservePositionsPerQuery);
+            res.sent.at_slot(my_rank).reserve(n_anti);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
             if (capture_values) {
@@ -500,53 +511,44 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         CosineWordBuilder cos_b;
         for (const auto &w : nz) {
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-                // Fused cos sweep: scaling in place here is what replaces building a cosine set.
+                // Fused cos sweep: scaling in place here is what replaces building a cosine set. The
+                // record carries v_src, read before the store.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
                     const RowRead row = read_row(i);
-                    table.add(static_cast<TermIndex>(i), row.fp);
+                    const Ordinal ord = table.add(static_cast<TermIndex>(i), row.fp);
                     const double v_src = fused_scale_coeffs[i];
                     fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                    const double abs_c = std::abs(v_src);
-                    if (cut_st.is_below_sin(abs_c)) {
-                        continue;
-                    }
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(row, i, abs_c, v_src, is_follower);
+                    visit(row, i, ord, std::abs(v_src), v_src, ((w.foll >> tz) & 1U) != 0);
                 }
             }
             else if (word_aligned_cos) {
-                // No orbital gate: record the whole word in the cosine set, then per bit apply the atol gate.
+                // No orbital gate: record the whole word in the cosine set.
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
                     const RowRead row = read_row(i);
-                    table.add(static_cast<TermIndex>(i), row.fp);
+                    const Ordinal ord = table.add(static_cast<TermIndex>(i), row.fp);
                     const auto [v_src, abs_c] = derive_coeff(i);
-                    if (cut_st.is_below_sin(abs_c)) {
-                        continue;
-                    }
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(row, i, abs_c, v_src, is_follower);
+                    visit(row, i, ord, abs_c, v_src, ((w.foll >> tz) & 1U) != 0);
                 }
             }
             else {
-                // Orbital gate active: the per-index cosine push covers only orbital-passing terms, so the
-                // popcount test precedes it. A capped term is still entered into the partner table.
+                // Orbital gate active: the per-index cosine push covers only orbital-passing terms. A
+                // capped term is still entered into the partner table and still sends (with rot=0), since
+                // its partner may rotate it.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
                     const RowRead row = read_row(i);
-                    table.add(static_cast<TermIndex>(i), row.fp);
-                    if (row.pop > static_cast<size_t>(*only_rotate_len_k)) {
-                        continue;
+                    const Ordinal ord = table.add(static_cast<TermIndex>(i), row.fp);
+                    if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
+                        cos_b.push_index(i);
                     }
-                    cos_b.push_index(i);
                     const auto [v_src, abs_c] = derive_coeff(i);
-                    const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(row, i, abs_c, v_src, is_follower);
+                    visit(row, i, ord, abs_c, v_src, ((w.foll >> tz) & 1U) != 0);
                 }
             }
         }

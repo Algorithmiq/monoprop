@@ -115,6 +115,20 @@ hash table over the operator: each gate builds a small table over its anticommut
 keyed by the mixed fingerprint with every match confirmed against the row's positions, and
 discards it. The operator store holds positions and coefficients and nothing else.
 
+Every gate is then one exchange round. A term $M$ that anticommutes with $G$ and whose
+partner $M \oplus G$ is structurally admissible sends one record — the partner's positions,
+the rotation phase $\varphi(M, G)$, one bit saying whether $M$'s own side rotates, and in
+the fused path $M$'s pre-gate coefficient — to the partner's owner; both members of a pair
+do so symmetrically, in the same `alltoallv`. The owner of $M \oplus G$ looks the key up in
+its per-gate table: a hit is the partner, and the pair rotates if either side asked for it,
+each owner applying the record it received ($\varphi(M \oplus G, G) = -\varphi(M, G)$, so
+the two adds are exactly the two-term rotation); a miss from a rotating source mints the
+partner, a miss from a silent one is dropped. A sender whose rotating record was not
+answered knows, with no second message, that its partner is absent everywhere — only the
+partner's owner could have sent the matching key, and it does whenever the partner is
+tracked. Graph mode records the same joins as the layer's in/out endpoint lists, so the
+replay pairs them positionally without exchanging indices.
+
 Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
 none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`
 bit for bit. It therefore requires $R$ to be a power of two; any other rank count has no

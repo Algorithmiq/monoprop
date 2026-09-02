@@ -67,120 +67,98 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
     }
 }
 
-// A sink owns the divergent state and supplies the emission surfaces — self-resolve, cross-rank
-// resolve/process, deferred self-insert — plus finalize. Each monomorphizes: no run-time fused/graph branch.
+// The gate exchange. Per gate G with parameter θ (sin = sin 2θ, cos = cos 2θ), every tracked term ν
+// anticommuting with G has a partner μ = ν ⊕ G owned by one flat slot, and the pair (ν, μ) rotates iff
+// E(ν) ∨ E(μ), with both adds using both PRE-cos values:
+//     c_ν += sin·(−φ_ν)·v_μ,   c_μ += sin·φ_ν·v_ν,   φ_ν = A::emit_phase(ν, G) = −φ_μ.
+// (φ_μ = −φ_ν is forced by (i M_G)² = −1 and pinned by evolution_detail_tests.) The protocol is one
+// symmetric round: every anticommuting ν that passes the send predicate (Scan.h) pushes one record
+// (key μ, φ_ν, rot = E(ν), [v_ν]) to owner(μ); after ONE exchange each slot joins what it received
+// against its own AntiTable:
+//   • hit  → μ tracked here: apply +φ_rec·v_rec onto μ iff rot_rec ∨ E(μ). Both endpoints receive the
+//            other's record (a tracked term passes the send predicate), so both adds happen, once each,
+//            with exact pre-cos values -- no ×1/cos recovery of a stored value.
+//   • miss → μ absent everywhere: a rot=1 record mints μ at base + j (join order) with the same half;
+//            a rot=0 record is dropped, since neither side rotates.
+//   • absence pass over the records ν sent: only the owner of μ can send key ν, and it does whenever μ
+//            is tracked, so ¬received[ν] ⟺ μ absent. If E(ν), μ was minted from ν's record and ν's own
+//            half is −φ_ν·c0(μ), c0 being the fresh term's pre-gate coefficient the sender computed.
+// Δ = 0 (self peer) is the same rule with the records staged as positions instead of encoded. Mint
+// indices are assigned in a fixed order -- self stage first, then incoming sources ascending, each in
+// stream order -- so a run is bit-identical at fixed (R, S).
+//
+// Graph mode records the same rotations as (index, phase) endpoints per peer slot, in an order replay can
+// pair positionally; GraphSink below has the rules. A sink owns the divergent state and supplies the
+// four surfaces Resolve.h lists plus finalize. Each monomorphizes: no run-time fused/graph branch.
 
-// Graph-build sink: accumulates the per-rank PartnerAcc endpoints and assembles a LayerCore at finalize.
+// Graph-build sink: accumulates the per-slot PartnerAcc endpoints and assembles a LayerCore at finalize.
 // wants_values=false — the scan captures no coeffs and every rotation records only (index, phase).
+//
+// Roles in a pair are decided by the pivot bit (`AntiTable::foll`): ν and μ differ exactly on G's bits
+// and the pivot is one of them, so exactly one endpoint of a tracked pair carries it. Per peer slot q,
+// with the join's arrival order = q's stream order = ascending row at q:
+//   in_pairs        hits on my follower rows whose pair rotates          (arrival order) (row(μ), φ_rec)
+//   in_mints        rot=1 misses                                          (arrival order) (base+j, φ_rec)
+//   out_pairs       my leaders with received ∧ (rot ∨ partner_rot)       (ascending row) (row, φ_own)
+//   out_unanswered  my rot ∧ ¬received                                    (ascending row) (row, φ_own)
+// Replay's positional pairing needs my out[j] and q's in[j] to be the same pair: my out_pairs are q's
+// in_pairs (q's followers whose leader is at p), both in ascending-leader order; my out_unanswered are
+// q's in_mints (my E-records that missed at q), both in my stream order. The in-pair takes the leader's
+// φ, the out-pair its own, so sin_recv's (out, −φ) / (in, +φ) split (finalize) reproduces the two adds.
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
-    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
-    using Response = TermIndex;
-    static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
     size_t R;
     size_t my_rank;
-    std::vector<PartnerAcc> acc;
-    size_t def_in_base_ = 0; // deferred self-miss bases into acc[my_rank]
-    size_t def_out_base_ = 0;
-    // Cross-rank base into acc[slot].in_entries, over the query window (set in prepare).
-    mpi::WindowVec<size_t> in_base_;
+    std::vector<PartnerAcc> acc; // flat [P]: finalize hands it to build_layer_storage_unified, which is P-shaped
 
     GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
 
-    auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
-        acc[my_rank].in_entries.push_back({found, phase});
-        acc[my_rank].out_entries.push_back({src, phase});
-    }
-    auto prepare_deferred(size_t n_miss) -> void {
-        def_in_base_ = acc[my_rank].in_entries.size();
-        def_out_base_ = acc[my_rank].out_entries.size();
-        acc[my_rank].in_entries.resize(def_in_base_ + n_miss);
-        acc[my_rank].out_entries.resize(def_out_base_ + n_miss);
-    }
-    auto emit_deferred(size_t k, size_t idx, size_t src, int phase, double /*v_src*/) -> void {
-        acc[my_rank].in_entries[def_in_base_ + k] = {idx, phase};
-        acc[my_rank].out_entries[def_out_base_ + k] = {src, phase};
-    }
-
-    // Cross-rank (R>1). Send buffer = the plain query stream (no value fusion). The exchange is positional:
-    // responses[s][q] must answer incoming[s][q], one resolution per query.
-    auto send_buffer(mpi::WindowVec<VecZ> &queries,
-                     mpi::WindowVec<std::vector<double>> & /*vals*/,
-                     mpi::WindowVec<VecZ> & /*scratch*/) -> mpi::WindowVec<VecZ> & {
-        return queries;
-    }
-    // `acc` stays flat [P] -- finalize hands it to build_layer_storage_unified, which is P-shaped -- so
-    // the window index is turned back into a slot here rather than re-basing it.
-    auto prepare(const IncomingProbe<NumModes> & /*pr*/,
-                 MPOperator<NumModes> & /*op*/,
-                 const mpi::WindowVec<std::vector<Response>> &responses) -> void {
-        const mpi::SlotWindow w = responses.window();
-        in_base_.reset(w);
-        for (size_t k = 0; k < w.count; ++k) {
-            const mpi::WindowIndex wi{k};
-            PartnerAcc &a = acc[w.slot(wi)];
-            in_base_[wi] = a.in_entries.size();
-            a.in_entries.resize(in_base_[wi] + responses[wi].size());
+    auto hit(size_t slot, size_t row, double /*v*/, int phase, bool foll) -> void {
+        if (foll) {
+            acc[slot].in_pairs.push_back({row, phase});
         }
     }
-    auto on_resolved(size_t g,
-                     mpi::WindowIndex s,
-                     size_t q,
-                     size_t ip,
-                     const IncomingProbe<NumModes> &pr,
-                     const mpi::WindowVec<VecZ> & /*incoming*/) -> Response {
-        acc[pr.window.slot(s)].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
-        return static_cast<TermIndex>(ip);
-    }
-    auto process_reserve(const mpi::WindowVec<std::vector<Response>> & /*inc_r*/, size_t /*my_rank*/) -> void {}
-    auto on_response_block(size_t r,
-                           const std::vector<Response> &resp,
-                           const std::vector<size_t> &srcs,
-                           const VecZ &qbuf) -> void {
-        auto &out = acc[r].out_entries;
-        const size_t base = out.size();
-        const size_t nq = resp.size();
-        const QueryForm form = querier_form();
-        out.resize(base + nq);
-        size_t off = 0;
-        for (size_t q = 0; q < nq; ++q) {
-            assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
-            out[base + q] = {srcs[q], QueryWire<NumModes>::phase_at(qbuf, off)};
-            off = QueryWire<NumModes>::next_off(qbuf, form, off);
-        }
+    auto mint(size_t slot, size_t idx, double /*v*/, int phase) -> void { acc[slot].in_mints.push_back({idx, phase}); }
+    auto out_pair(size_t slot, size_t row, int phase) -> void { acc[slot].out_pairs.push_back({row, phase}); }
+    auto out_unanswered(size_t slot, size_t row, double /*c0*/, int phase) -> void {
+        acc[slot].out_unanswered.push_back({row, phase});
     }
 
-    // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
-    // see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints included, since the
-    // sin_recv apply only adds the sine term.
+    // Drains the per-slot accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
+    // see cross_rank_sin_recv_index): sin_send = [in…, out…], sin_recv = [(out, −φ)…, (in, +φ)…]. cos
+    // covers all anticommuting indices, endpoints included, since the sin_recv apply only adds the sine
+    // term.
     auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
         -> std::shared_ptr<LayerCore> {
         std::vector<CrossRankPartnerData> partners(R);
         for (size_t r = 0; r < R; ++r) {
             const auto &a = acc[r];
             auto &p = partners[r];
-            const size_t P = a.in_entries.size();
-            const size_t Q = a.out_entries.size();
+            const size_t P = a.in_count();
+            const size_t Q = a.out_count();
             if (P + Q == 0) {
                 continue;
             }
             p.in_count = P; // boundary for deriving the sin_recv index list from sin_send (not stored)
             p.sin_send_indices.resize(P + Q);
             p.sin_recv_entries.resize(P + Q);
-            for (size_t k = 0; k < P + Q; ++k) {
-                if (k < P) {
-                    const auto &e = a.in_entries[k];
+            size_t k = 0;
+            for (const auto *list : {&a.in_pairs, &a.in_mints}) {
+                for (const auto &e : *list) {
                     p.sin_send_indices[k] = e.idx;
                     p.sin_recv_entries[Q + k] = {e.idx, e.phase};
+                    ++k;
                 }
-                else {
-                    const size_t j = k - P;
-                    const auto &e = a.out_entries[j];
-                    p.sin_send_indices[k] = e.idx;
+            }
+            size_t j = 0;
+            for (const auto *list : {&a.out_pairs, &a.out_unanswered}) {
+                for (const auto &e : *list) {
+                    p.sin_send_indices[P + j] = e.idx;
                     p.sin_recv_entries[j] = {e.idx, -e.phase};
+                    ++j;
                 }
             }
         }
@@ -192,114 +170,28 @@ struct GraphSink {
     }
 };
 
-// Fused ContractImmediately sink: applies each resolved rotation directly to op_coeffs via the
-// FusedContract record streams (no LayerCore — finalize returns nullptr). wants_values=true: the scan
-// captures the signed pre-cos v_src, and resolve reads v_tgt from op_coeffs (·inv_cos under the cos sweep).
+// Fused ContractImmediately sink: every half-rotation this slot owns goes straight into the FusedContract
+// (no LayerCore — finalize returns nullptr), applied to op_coeffs by apply_fused_contract. wants_values=true:
+// records carry the sender's pre-cos coefficient, which is the whole value the apply needs.
 template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
-    // This rank receives fused records, but on_response_block is handed its own plain queries_r;
-    // reading the wrong form there decodes a neighbouring record's phase, i.e. a coefficient sign flip.
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
-    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
-    using Response = double;
-    static auto init_response() -> Response { return 0.0; }
 
-    size_t R;
-    size_t my_rank;
     FusedContract &fc;
-    const VecD &op_coeffs; // the very array the scan read, not a copy
-    bool fused_scale;      // fused cos sweep active: hit v_tgt recovered as stored·inv_cos
-    double inv_cos;
-    bool schrodinger;                 // fresh cross-rank miss coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
-    Basis basis;                      // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
-    size_t def_base_ = 0;             // deferred self-insert base into fc.inserts
-    size_t cross_base_ = 0;           // cross-rank resolver-half base into fc.cross_half
-    Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
+    bool fused_scale; // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
 
-    // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
-    // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
-
-    // Self-resolve hit: both endpoints are local.
-    [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
-        const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
-        fc.hits.push_back(RotationRec{src, found, v_src, v_tgt, static_cast<int32_t>(phase)});
+    auto hit(size_t /*slot*/, size_t row, double v, int phase, bool /*foll*/) -> void {
+        fc.halves.push_back(HalfRotationRec{row, v, static_cast<int32_t>(phase), /*is_insert=*/false});
     }
-    // Deferred self-miss insert: v_tgt filled later (after op_coeffs is extended by the apply).
-    auto prepare_deferred(size_t n_miss) -> void {
-        def_base_ = fc.inserts.size();
-        fc.inserts.resize(def_base_ + n_miss);
+    auto mint(size_t /*slot*/, size_t idx, double v, int phase) -> void {
+        fc.halves.push_back(HalfRotationRec{idx, v, static_cast<int32_t>(phase), /*is_insert=*/true});
     }
-    [[gnu::always_inline]] auto emit_deferred(size_t k, size_t idx, size_t src, int phase, double v_src) -> void {
-        fc.inserts[def_base_ + k] = RotationRec{src, idx, v_src, /*v_tgt=*/0.0, static_cast<int32_t>(phase)};
-    }
-
-    // Cross-rank (R>1). Send buffer = queries interleaved with their v_src stream into `scratch`
-    // (combined_qv_), so one alltoallv carries query + value.
-    auto send_buffer(mpi::WindowVec<VecZ> &queries,
-                     mpi::WindowVec<std::vector<double>> &vals,
-                     mpi::WindowVec<VecZ> &scratch) -> mpi::WindowVec<VecZ> & {
-        const mpi::SlotWindow w = queries.window();
-        scratch.reset(w);
-        for (size_t k = 0; k < w.count; ++k) {
-            const mpi::WindowIndex wi{k};
-            QueryWire<NumModes>::build_fused(queries[wi], vals[wi], scratch[wi]);
-        }
-        return scratch;
-    }
-    auto prepare(const IncomingProbe<NumModes> &pr,
-                 MPOperator<NumModes> &op,
-                 const mpi::WindowVec<std::vector<Response>> & /*responses*/) -> void {
-        state_mask_ = schrodinger ? initial_state_mask<NumModes>(op.initial_state) : Monomial<NumModes>{};
-        cross_base_ = fc.cross_half.size();
-        fc.cross_half.resize(cross_base_ + pr.nq_total);
-    }
-    auto on_resolved(size_t g,
-                     mpi::WindowIndex s,
-                     size_t /*q*/,
-                     size_t ip,
-                     const IncomingProbe<NumModes> &pr,
-                     const mpi::WindowVec<VecZ> &incoming) -> Response {
-        double v_tgt;
-        if (ip < pr.base) {
-            v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
-        }
-        else if (schrodinger) {
-            v_tgt = pr.is_paired_at(g) ? algebra_state_phase<NumModes>(basis, pr.mono_at(g), state_mask_) : 0.0;
-        }
-        else {
-            v_tgt = 0.0; // Heisenberg fresh insert
-        }
-        fc.cross_half[cross_base_ + g] = HalfRotationRec{ip,
-                                                         QueryWire<NumModes>::value_at(incoming[s], pr.off_of[g]),
-                                                         static_cast<int32_t>(pr.phase_of[g]),
-                                                         /*is_insert=*/ip >= pr.base};
-        return v_tgt;
-    }
-    auto process_reserve(const mpi::WindowVec<std::vector<Response>> &inc_r, size_t my_rank_) -> void {
-        const mpi::SlotWindow w = inc_r.window();
-        size_t incoming = 0;
-        for (size_t k = 0; k < w.count; ++k) {
-            const mpi::WindowIndex wi{k};
-            if (w.slot(wi) != my_rank_) {
-                incoming += inc_r[wi].size();
-            }
-        }
-        fc.cross_half.reserve(fc.cross_half.size() + incoming);
-    }
-    // A querier half always writes a pre-gate term the cos sweep already covered ⇒ is_insert=false.
-    auto on_response_block(size_t /*r*/,
-                           const std::vector<Response> &rval,
-                           const std::vector<size_t> &srcs,
-                           const VecZ &qbuf) -> void {
-        const size_t nq = rval.size();
-        const QueryForm form = querier_form();
-        size_t off = 0;
-        for (size_t q = 0; q < nq; ++q) {
-            const auto nphase = static_cast<int32_t>(-QueryWire<NumModes>::phase_at(qbuf, off));
-            fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
-            off = QueryWire<NumModes>::next_off(qbuf, form, off);
-        }
+    auto out_pair(size_t /*slot*/, size_t /*row*/, int /*phase*/) -> void {}
+    // Pushed in Heisenberg too, where c0 = 0: the signed-zero add is what a fresh Heisenberg partner's
+    // source received before, and skipping it would flip the sign of an exactly-zero coefficient.
+    auto out_unanswered(size_t /*slot*/, size_t row, double c0, int phase) -> void {
+        fc.halves.push_back(HalfRotationRec{row, c0, static_cast<int32_t>(-phase), /*is_insert=*/false});
     }
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
@@ -319,42 +211,22 @@ template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
-    // A miss keeps its decoded positions (pos_at indexes deferred_pos_flat_).
-    struct DeferredSelfMiss {
-        size_t pos_at;
-        uint32_t k;
-        size_t src;
-        int phase;
-        double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
-    };
     MPOperator<NumModes> &local_op; // scanned, looked up, and grown by the inserts
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
     // This gate's partner table (built by the scan) and the other per-gate scratch, propagator-owned so
-    // capacity survives the gate. The table also carries the leader-pass marks the follower pass reads:
-    // distinct leaders → distinct found, so each ordinal is marked once.
+    // capacity survives the gate. The table carries the protocol's per-ordinal state (AntiTable.h).
     GateScratch<NumModes> &scratch;
     size_t combined_size;
     // The destination slots this generator can reach: `plan`'s window for my_rank. Every per-slot array
-    // below is sized to it, so a flat slot only ever enters through WindowVec::at_slot.
+    // is sized to it, so a flat slot only ever enters through WindowVec::at_slot.
     mpi::SlotWindow window;
-    mpi::WindowVec<VecZ> queries_r;
-    mpi::WindowVec<std::vector<size_t>> src_idx_r;
-    std::vector<DeferredSelfMiss> deferred_self_misses;
-    // Deferred-miss positions, concatenated in miss order; parallel to deferred_self_misses.
-    std::vector<RowPosT> deferred_pos_flat_;
-    // This pass's self-owned queries as positions, straight from the scan: never encoded, so the resolve
-    // below has nothing to decode. Parallel to src_idx_r's self slot.
-    SelfQueryStage<NumModes> self_stage_;
-    // Scan-captured v_src per query (ContractSink only via Sink::wants_values; empty for GraphSink).
-    mpi::WindowVec<std::vector<double>> src_val_r;
-    // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
-    mpi::WindowVec<VecZ> combined_qv_;
-    // Which destination ranks this gate's queries can reach. Dense unless the router is GF(2)-linear;
-    // see mpi::PeerPlan. Derived once per layer in build_layer, never per query.
+    // Which destination ranks this gate's records can reach. Dense unless the router is GF(2)-linear;
+    // see mpi::PeerPlan. Derived once per layer in build_layer, never per record.
     mpi::PeerPlan plan;
     Sink sink;
+    MissStage<NumModes> misses; // this gate's mints, in join order
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      mpi::Comm comm_,
@@ -375,188 +247,48 @@ struct LayerBuildEngine {
         const auto geom = mpi::geometry(comm);
         window = plan.window(my_rank, static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
         assert(window.stop() <= R && window.count != 0);
-        queries_r.reset(window);
-        src_idx_r.reset(window);
     }
 
-    // Resolve this rank's own query stream inline, then clear it so the alltoallv never sends to self.
-    // Self is inside the window only when this generator's rank shift is zero; otherwise the window names
-    // another rank outright and the scan cannot have staged a self-owned partner.
-    auto resolve_self_queries(bool is_leader_pass) -> void {
-        if (!window.contains(my_rank)) {
-            assert(self_stage_.size() == 0 && "a self-owned partner outside this generator's peer window");
-            self_stage_.clear();
-            return;
-        }
-        std::vector<size_t> &ls = src_idx_r.at_slot(my_rank);
-        std::vector<double> *lv = nullptr;
-        if constexpr (Sink::wants_values) {
-            lv = &src_val_r.at_slot(my_rank);
-        }
-        // The scan routes a self-owned partner to the stage, never to the wire buffer.
-        resolve_range_(ls, lv, is_leader_pass);
-        self_stage_.clear();
-        ls.clear();
-        if constexpr (Sink::wants_values) {
-            src_val_r.at_slot(my_rank).clear();
-        }
-    }
-
-    // One partner-resolution pass over the given query streams, which it takes ownership of. Round 1
-    // carries the queries (the sink may fuse the v_src stream into them) and the resolver inserts absent
-    // partners in that same round; round 2 returns the answers. Taking the streams here rather than having
-    // the caller assign the members first is what makes the two-pass protocol unmissable — the follower
-    // pass must also drop the queries a leader already matched, and that only holds once the leader pass
-    // has run.
-    auto run_exchange(bool is_leader_pass,
-                      mpi::WindowVec<VecZ> &&queries,
-                      mpi::WindowVec<std::vector<size_t>> &&src_idx,
-                      mpi::WindowVec<std::vector<double>> &&src_val,
-                      SelfQueryStage<NumModes> &&self_stage) -> void {
+    // The one round: exchange the scan's records, join the self stage and then the incoming records in
+    // that fixed order, insert the misses, walk the sent records. Taking the scan result by value is what
+    // makes the sequence unmissable -- nothing else can read the records once they are here.
+    auto exchange_and_join(FusedScanResult<NumModes> &&scan) -> void {
         // The scan sized its arrays to the same plan, so the two windows must agree exactly -- a mismatch
         // would re-base every slot against the wrong base.
-        assert(queries.window().base == window.base && queries.window().count == window.count);
-        assert(src_idx.window().base == window.base && src_idx.window().count == window.count);
-        queries_r = std::move(queries);
-        src_idx_r = std::move(src_idx);
-        self_stage_ = std::move(self_stage);
-        // src_val is empty unless Sink::wants_values, so the move is a no-op under GraphSink.
-        src_val_r = std::move(src_val);
-        if (!is_leader_pass && R > 1) {
-            drop_matched_cross_rank_followers();
-        }
-        resolve_self_queries(is_leader_pass);
-        if (R <= 1) {
-            return;
-        }
-        mpi::WindowVec<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
-        mpi::WindowVec<VecZ> inc_q;
-        mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, scratch.anti, sink);
-        std::vector<int> resp_recv = response_recv_counts();
-        mpi::WindowVec<std::vector<typename Sink::Response>> inc_r;
-        // The answers retrace the queries, and the pairing is an XOR involution, so the same plan holds.
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan).wait_into(inc_r);
-        process_responses<NumModes>(inc_r, src_idx_r, queries_r, my_rank, sink);
-    }
+        assert(scan.window.base == window.base && scan.window.count == window.count);
+        AntiTable<NumModes> &table = scratch.anti;
+        const size_t base = local_op.store->size();
+        misses.clear();
 
-    // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
-    auto drop_matched_cross_rank_followers() -> void {
-        using QW = QueryWire<NumModes>;
-        const QueryForm form = sink.querier_form();
-        for (size_t k = 0; k < window.count; ++k) {
-            const mpi::WindowIndex wi{k};
-            if (window.slot(wi) == my_rank) {
-                continue;
-            }
-            VecZ &q = queries_r[wi];
-            std::vector<size_t> &s = src_idx_r[wi];
-            // Fused: the v_src stream is parallel to the query/source streams, so compact it in lockstep.
-            std::vector<double> *v = nullptr;
-            if constexpr (Sink::wants_values) {
-                v = &src_val_r[wi];
-            }
-            const size_t nq = s.size();
-            size_t kept = 0;
-            // Two cursors, since a dropped query has no fixed width; order is the accumulation order.
-            size_t src_off = 0;
-            size_t dst_off = 0;
-            for (size_t k = 0; k < nq; ++k) {
-                const size_t next = QW::next_off(q, form, src_off);
-                if (!scratch.anti.is_marked_row(s[k])) {
-                    dst_off += QW::move_query(q, form, src_off, dst_off);
-                    s[kept] = s[k];
-                    if (v != nullptr) {
-                        (*v)[kept] = (*v)[k];
-                    }
-                    ++kept;
-                }
-                src_off = next;
-            }
-            q.resize(dst_off);
-            s.resize(kept);
-            if (v != nullptr) {
-                v->resize(kept);
-            }
+        // Self is inside the window only when this generator's rank shift is zero; otherwise the window
+        // names another rank outright and the scan cannot have staged a self-owned partner. The self block
+        // of the wire array is empty either way (staged, never encoded), so the exchange never sends to
+        // self.
+        std::optional<mpi::PendingAlltoallv<size_t>> pending;
+        if (R > 1) {
+            pending.emplace(
+                mpi::begin_alltoallv(scan.queries, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
         }
-    }
-
-    // Sub-step of finish() — call only after both resolve passes complete, or the base+k assignment and
-    // per-miss distinctness break. Misses are pairwise-distinct (mono = source⊕G, ⊕G injective), so miss
-    // k gets base+k in leader-then-follower order.
-    auto insert_deferred_self_misses() -> void {
-        const size_t n_miss = deferred_self_misses.size();
-        if (n_miss == 0) {
-            return;
+        if (window.contains(my_rank)) {
+            assert(scan.queries.at_slot(my_rank).empty() && "self-owned records are staged, never encoded");
+            join_self<NumModes>(scan.self, table, *local_op.store, my_rank, base, misses, sink);
         }
-        sink.prepare_deferred(n_miss);
-        // Grow the rows, write each miss's positions; same base+k ordering as insert_absent_terms.
-        const size_t base = local_op.store->grow_rows_geometric(n_miss);
-        for (size_t k = 0; k < n_miss; ++k) {
-            const auto &m = deferred_self_misses[k];
-            local_op.store->set_positions(base + k,
-                                          std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
-            sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
+        else {
+            assert(scan.self.size() == 0 && "a self-owned partner outside this generator's peer window");
         }
-        local_op.reindex_after_growth(base, n_miss);
+        if (pending.has_value()) {
+            mpi::WindowVec<VecZ> incoming;
+            pending->wait_into(incoming);
+            const IncomingProbe<NumModes> pr =
+                probe_incoming_queries<NumModes>(incoming, local_op, sink.incoming_form(), table);
+            join_incoming<NumModes>(pr, table, base, misses, sink);
+        }
+        insert_misses<NumModes>(local_op, misses, base);
+        absence_pass<NumModes>(table, scan.sent, scan.sent_c0, sink);
     }
 
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {
-        insert_deferred_self_misses();
         return sink.finalize(std::move(cos_all), out_cos, combined_size, local_op);
-    }
-
-private:
-    // Response counts are the transpose of the query counts (one answer per query), so passing them as
-    // known_recv_counts skips the response count-Alltoall round.
-    // FLAT [P], which is what begin_alltoallv's known_recv_counts is indexed by; only the window's slots
-    // can be non-zero, and the window is what masks the rest.
-    auto response_recv_counts() const -> std::vector<int> {
-        std::vector<int> counts(R, 0);
-        for (size_t k = 0; k < window.count; ++k) {
-            const mpi::WindowIndex wi{k};
-            // One response per query, and src_idx_r's block holds one source per query: no walk, no division.
-            counts[window.slot(wi)] = static_cast<int>(src_idx_r[wi].size());
-        }
-        return counts;
-    }
-
-    // Self-resolve against this gate's partner table: a query's partner, if tracked, is one of the
-    // anticommuting rows the scan entered (AntiTable.h), so the probe is L2-resident and needs no batching.
-    // Hits/misses are emitted to the sink in query order. `lv` is the per-query v_src array parallel to
-    // `ls` (read only when Sink::wants_values).
-    auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
-        -> void {
-        const AntiTable<NumModes> &table = scratch.anti;
-        const auto &store = *local_op.store;
-        const size_t hi = self_stage_.size();
-        for (size_t q = 0; q < hi; ++q) {
-            const size_t src = ls[q];
-            if (!is_leader_pass && table.is_marked_row(src)) {
-                continue; // follower already matched by a leader → not an independent rotation
-            }
-            const auto pos =
-                std::span<const RowPosT>(self_stage_.pos_flat).subspan(self_stage_.pos_off[q], self_stage_.k_of[q]);
-            const int phase = self_stage_.phase_of[q];
-            double v_src = 0.0;
-            if constexpr (Sink::wants_values) {
-                v_src = (*lv)[q];
-            }
-            const auto ord = table.probe(store, self_stage_.fp_of[q], pos);
-            if (ord != AntiTable<NumModes>::kNone) {
-                // Every table row predates this gate, so a hit is always a pre-layer term (< combined_size).
-                if (is_leader_pass) {
-                    scratch.anti.mark(ord);
-                }
-                sink.self_hit(src, table.row_of(ord), phase, v_src);
-            }
-            else {
-                // The stage dies with this pass and the misses are flushed after both, so copy now.
-                const size_t at = deferred_pos_flat_.size();
-                deferred_pos_flat_.insert(deferred_pos_flat_.end(), pos.begin(), pos.end());
-                deferred_self_misses.push_back({at, static_cast<uint32_t>(pos.size()), src, phase, v_src});
-            }
-        }
     }
 };
 
@@ -565,7 +297,10 @@ static inline auto empty_coeffs() -> const VecD & {
     return coeffs;
 }
 
-// Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
+// Primary-path layer builder: one fused scan, one exchange, one join into the chosen sink. See LayerBuilder.h.
+// `over_cutoff_possible` is the caller's per-call flag (MonomialPropagator::run_gate_loop_): true when a
+// tracked term may fail the structural cutoff, which widens the scan's send predicate to every
+// anticommuting term.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
@@ -575,6 +310,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  const std::optional<double> &upper_atol,
                  const std::optional<double> &param,
                  std::optional<size_t> only_rotate_len_k,
+                 bool over_cutoff_possible,
                  GateScratch<NumModes> &scratch,
                  mpi::Comm comm,
                  CosMask *out_cos = nullptr,
@@ -589,7 +325,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
     const routing::Router router = router_for<NumModes>(comm);
     assert(router.flat_world() == R);
-    // Under linear routing every query for THIS generator lands on the rank this rank's own index XOR
+    // Under linear routing every record for THIS generator lands on the rank this rank's own index XOR
     // rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise, which is
     // today's collective.
     const size_t gen_shift = router.rank_shift<NumModes>(gen);
@@ -603,10 +339,9 @@ auto build_layer(MPOperator<NumModes> &local_op,
     const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
-    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. No length cap only (a
-    // popcount>k hit is outside the per-index cos set, so 1/cos recovery would be wrong) and cos!=0 (else
-    // recovery is impossible; two-pass fallback). cos is even, so the sweep's cos(2·build_angle) matches
-    // the apply's cos(2·apply_angle) bit-for-bit.
+    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. No length cap
+    // only (a popcount>k term is outside the per-index cos set) and cos!=0 (else the two-pass fallback).
+    // cos is even, so the sweep's cos(2·build_angle) matches the apply's cos(2·apply_angle) bit-for-bit.
     const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
     const bool fused_scale = use_fused && !only_rotate_len_k.has_value() && fused_scale_coeffs != nullptr
                              && param.has_value() && cos_build != 0.0;
@@ -617,10 +352,10 @@ auto build_layer(MPOperator<NumModes> &local_op,
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
     // An identity generator anticommutes with nothing: the scan returns on its empty fold-column set
-    // with no query, no cosine block and no coefficient swept, and run_exchange's three collectives per
-    // pass would carry no payload. The generator list is replicated, so skipping needs no agreement.
-    // (A zero chemical potential alone contributes 60 of the 60-site Hubbard's 476 generators per
-    // Trotter layer.) No gate is merged: a no-op gate is simply not exchanged for.
+    // with no record, no cosine block and no coefficient swept, and the exchange would carry no payload.
+    // The generator list is replicated, so skipping needs no agreement. (A zero chemical potential alone
+    // contributes 60 of the 60-site Hubbard's 476 generators per Trotter layer.) No gate is merged: a
+    // no-op gate is simply not exchanged for.
     const bool identity_gen = !gen.any();
 
     FusedScanResult<NumModes> fused;
@@ -629,6 +364,12 @@ auto build_layer(MPOperator<NumModes> &local_op,
     scratch.anti.begin(0);
     if (!identity_gen) {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
+        // The fresh partner's pre-gate coefficient is state-scored only in the Schrödinger picture, and
+        // only the fused path needs it on the sender side (graph replay reads it off the extended vector).
+        std::optional<Monomial<NumModes>> state_mask;
+        if (use_fused && schrodinger) {
+            state_mask = initial_state_mask<NumModes>(local_op.initial_state);
+        }
         fused = with_algebra<NumModes>(basis, [&]<typename A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
                                                        gen,
@@ -636,13 +377,15 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        cut_st,
                                                        coeffs,
                                                        only_rotate_len_k,
+                                                       over_cutoff_possible,
                                                        scan_window,
                                                        my_rank,
                                                        router,
                                                        scratch,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
-                                                       cos_build);
+                                                       cos_build,
+                                                       state_mask ? &*state_mask : nullptr);
         });
         if (fused.cos_blocks.size() == 1) {
             // The serial scan produces a single cosine block set — take it wholesale.
@@ -668,32 +411,14 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              std::move(sink),
                                              plan);
         if (!identity_gen) {
-            eng.run_exchange(/*is_leader_pass=*/true,
-                             std::move(fused.leader_queries),
-                             std::move(fused.leader_src),
-                             std::move(fused.leader_val),
-                             std::move(fused.leader_self));
-            eng.run_exchange(/*is_leader_pass=*/false,
-                             std::move(fused.follower_queries),
-                             std::move(fused.follower_src),
-                             std::move(fused.follower_val),
-                             std::move(fused.follower_self));
+            eng.exchange_and_join(std::move(fused));
         }
-
         return eng.finish(std::move(cos_all), out_cos);
     };
 
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
-        const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink<NumModes>{.R = R,
-                                             .my_rank = my_rank,
-                                             .fc = *fused_contract,
-                                             .op_coeffs = coeffs,
-                                             .fused_scale = fused_scale,
-                                             .inv_cos = inv_cos,
-                                             .schrodinger = schrodinger,
-                                             .basis = basis});
+        storage = run(ContractSink<NumModes>{.fc = *fused_contract, .fused_scale = fused_scale});
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});

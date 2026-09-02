@@ -104,6 +104,15 @@ Key files:
   `detail::TermLookup` (`detail/operator/TermLookup.h`) over the rows they need. The per-gate key is the
   routing fingerprint (`routing::fingerprint_positions`, `detail/mpi/Routing.h`), GF(2)-linear so the
   partner's key is `fp(M) ^ fp(G)`; every key match is confirmed against the positions.
+- **One round per gate** (`cpp/monoprop/detail/evolution/layer_build/Engine.h`, records in `Scan.h`,
+  join in `Resolve.h`): every anticommuting term whose partner passes the structural cutoff sends ONE
+  record `(key = M⊕G, φ, rot, [value])` to the partner's owner, in the same `alltoallv`. The receiver
+  joins each record against its own AntiTable: a hit rotates iff the record's `rot` or the row's own
+  `rot` is set (the pair's two adds happen on the two owners, with `φ(M⊕G,G) = −φ(M,G)`), a `rot=1` miss
+  mints the key at `base+j` in join order, a `rot=0` miss is dropped; afterwards `rot ∧ ¬received` on a
+  sent ordinal means the partner is absent everywhere. There is no query→response pass and no
+  leader/follower split on the wire; graph mode derives its positional in/out pairing from the same
+  join order plus the pivot bit.
 - **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
   (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
   `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row

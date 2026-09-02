@@ -201,24 +201,64 @@ BOOST_AUTO_TEST_CASE(anti_table_confirms_positions_after_a_fingerprint_match) {
     BOOST_TEST(table.probe(store, fa, positions_of<kN>(indices_to_bitset<kN>({0, 4}))) == detail::AntiTable<kN>::kNone);
 }
 
-// Marks are per ordinal, cleared by begin(), and reachable by row.
-BOOST_AUTO_TEST_CASE(anti_table_marks_are_per_ordinal_and_cleared_by_begin) {
+// The protocol's per-ordinal state (rot, foll, received, partner_rot, phase) is cleared by begin() and
+// independent per bit, so a stale bit from the previous gate can never rotate a pair in this one.
+BOOST_AUTO_TEST_CASE(anti_table_state_bits_are_per_ordinal_and_cleared_by_begin) {
     detail::AntiTable<8> table;
     table.begin(3);
     table.add(2, 0x11);
     table.add(5, 0x22);
     table.add(9, 0x33);
-    BOOST_TEST(!table.is_marked(1));
-    table.mark(1);
-    BOOST_TEST(table.is_marked(1));
-    BOOST_TEST(table.is_marked_row(5));
-    BOOST_TEST(!table.is_marked_row(2));
-    BOOST_TEST(!table.is_marked_row(7)); // not in the table at all
+    for (uint32_t ord = 0; ord < 3; ++ord) {
+        BOOST_TEST(!table.rot(ord));
+        BOOST_TEST(!table.foll(ord));
+        BOOST_TEST(!table.received(ord));
+        BOOST_TEST(!table.partner_rot(ord));
+    }
+    table.set_rot(1);
+    table.set_foll(2);
+    table.set_received(1);
+    table.set_partner_rot(0);
+    table.set_phase(0, -1);
+    table.set_phase(1, 1);
+    BOOST_TEST(table.rot(1));
+    BOOST_TEST(!table.rot(0));
+    BOOST_TEST(!table.rot(2));
+    BOOST_TEST(table.foll(2));
+    BOOST_TEST(!table.foll(1));
+    BOOST_TEST(table.received(1));
+    BOOST_TEST(!table.received(2));
+    BOOST_TEST(table.partner_rot(0));
+    BOOST_TEST(!table.partner_rot(1));
+    BOOST_TEST(table.phase(0) == -1);
+    BOOST_TEST(table.phase(1) == 1);
     BOOST_TEST(table.ordinal_of_row(9) == 2U);
+
+    // A smaller gate: every bit of the surviving ordinal is clear again.
     table.begin(1);
     table.add(5, 0x22);
-    BOOST_TEST(!table.is_marked(0));
+    BOOST_TEST(!table.rot(0));
+    BOOST_TEST(!table.foll(0));
+    BOOST_TEST(!table.received(0));
+    BOOST_TEST(!table.partner_rot(0));
     BOOST_TEST(table.size() == 1U);
+
+    // Growth past the begin() estimate keeps the per-ordinal arrays in step with the rows (the hash slots
+    // themselves are sized from begin() and are not what grows here, so stay within them).
+    table.begin(64);
+    for (uint32_t i = 0; i < 70; ++i) {
+        const auto ord = table.add(static_cast<TermIndex>(i), 0x1000 + i);
+        BOOST_REQUIRE_EQUAL(ord, i);
+        if ((i % 3) == 0) {
+            table.set_rot(ord);
+        }
+        table.set_phase(ord, (i % 2) == 0 ? 1 : -1);
+    }
+    for (uint32_t i = 0; i < 70; ++i) {
+        BOOST_TEST(table.rot(i) == ((i % 3) == 0));
+        BOOST_TEST(!table.received(i));
+        BOOST_TEST(table.phase(i) == ((i % 2) == 0 ? 1 : -1));
+    }
 
     // Retained capacity is bounded: a large gate followed by a tiny one releases the large table.
     table.begin(100000);

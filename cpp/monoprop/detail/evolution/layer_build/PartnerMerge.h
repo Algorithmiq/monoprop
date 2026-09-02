@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ranges>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -91,8 +92,11 @@ template <std::ranges::contiguous_range Row, std::ranges::contiguous_range Gen, 
     return {n, overlap, paired};
 }
 
-/*! @brief Stages self-owned query positions for direct use by the AntiTable probe and
- *  OperatorIndex::set_positions, with no encoding step.
+/*! @brief Stages the records addressed to this slot itself as positions, for direct use by the
+ *  AntiTable probe and OperatorIndex::set_positions, with no encoding step.
+ *
+ *  Carries exactly the fields a wire record does (QueryWire.h): key positions, phase, rot and, for
+ *  the fused form, the sender's value.
  */
 template <size_t NumModes>
 struct SelfQueryStage {
@@ -103,10 +107,15 @@ struct SelfQueryStage {
     DefaultInitVector<size_t> pos_off;  //!< query -> absolute offset into pos_flat
     DefaultInitVector<uint32_t> k_of;   //!< positions per query
     DefaultInitVector<int8_t> phase_of; //!< emit_phase is ternary, so a byte is the whole range
+    DefaultInitVector<uint8_t> rot_of;  //!< the sender's rotation bit
+    DefaultInitVector<double> val_of;   //!< the sender's pre-cos coefficient; written only when values are captured
     DefaultInitVector<uint64_t> fp_of;  //!< routing fingerprint of the query (fp(M) ^ fp(G)): the AntiTable key
 
     [[nodiscard]] auto size() const -> size_t { return n_; }
     [[nodiscard]] auto positions() const -> size_t { return pos_n_; }
+    [[nodiscard]] auto positions_at(size_t q) const -> std::span<const PosT> {
+        return std::span<const PosT>(pos_flat).subspan(pos_off[q], k_of[q]);
+    }
 
     auto clear() -> void {
         n_ = 0;
@@ -118,6 +127,8 @@ struct SelfQueryStage {
             pos_off.resize(n_queries);
             k_of.resize(n_queries);
             phase_of.resize(n_queries);
+            rot_of.resize(n_queries);
+            val_of.resize(n_queries);
             fp_of.resize(n_queries);
         }
         if (pos_flat.size() < n_queries * positions_per_query) {
@@ -125,9 +136,9 @@ struct SelfQueryStage {
         }
     }
 
-    //! Appends one query's positions and its (offset, k, phase, fp) record; grows only when capacity runs out.
+    //! Appends one record; grows only when capacity runs out.
     template <std::ranges::contiguous_range Pos>
-    auto push(const Pos &pos, int phase, uint64_t fp) -> void {
+    auto push(const Pos &pos, int phase, uint64_t fp, bool rot = false, double val = 0.0) -> void {
         assert(phase >= -1 && phase <= 1 && "emit_phase is ternary: rotation_sign, or REAL_PARTS entry");
         const size_t k = std::ranges::size(pos);
         const size_t n = n_;
@@ -142,6 +153,8 @@ struct SelfQueryStage {
         }
         k_of[n] = static_cast<uint32_t>(k);
         phase_of[n] = static_cast<int8_t>(phase);
+        rot_of[n] = static_cast<uint8_t>(rot);
+        val_of[n] = val;
         fp_of[n] = fp;
         n_ = n + 1;
         pos_n_ = at + k;
@@ -158,6 +171,8 @@ private:
             pos_off.resize(want);
             k_of.resize(want);
             phase_of.resize(want);
+            rot_of.resize(want);
+            val_of.resize(want);
             fp_of.resize(want);
         }
         if (pos_n_ + k > pos_flat.size()) {

@@ -32,30 +32,37 @@ namespace monoprop::detail {
 /*! @brief `Fused` records carry a trailing value word after the positions; `Plain` ones do not. */
 enum class QueryForm { Plain, Fused };
 
-/*! @brief One term's wire record for a cross-rank query: its ascending set-bit positions,
- *  gap-coded, plus a phase.
+/*! @brief One term's wire record in the gate exchange: the partner's ascending set-bit positions,
+ *  gap-coded, plus the sender's emit phase and its rotation bit.
+ *
+ *  The record is what a term ν sends to the owner of its partner μ = ν ⊕ G (Engine.h has the
+ *  protocol): the key is μ's positions, `phase` is φ_ν = A::emit_phase(ν, G), and `rot` is the
+ *  sender's emission predicate E(ν) -- whether ν alone would rotate the pair. A `Fused` record
+ *  carries one trailing word with ν's pre-cos coefficient (`push_value`), bit-cast so it arrives
+ *  exactly.
  *
  *  It replaces a fixed dense stride, which would spend one word per 64 modes however few bits a
- *  term actually sets. Fields pack LSB-first from word 0: a 2-bit phase biased to unsigned, a
- *  5-bit popcount @p k whose all-ones value escapes to a wider field, a 4-bit gap width @p gw,
- *  then the first position in `kPosBits` bits and the remaining k-1 positions as gaps of @p gw
- *  bits to their predecessor. Both k and gw are per-record, so a two-bit term and a full-support
- *  one each cost what they are.
+ *  term actually sets. Fields pack LSB-first from word 0: a 2-bit phase biased to unsigned, the
+ *  1-bit @p rot, a 5-bit popcount @p k whose all-ones value escapes to a wider field, a 4-bit gap
+ *  width @p gw, then the first position in `kPosBits` bits and the remaining k-1 positions as gaps
+ *  of @p gw bits to their predecessor. Both k and gw are per-record, so a two-bit term and a
+ *  full-support one each cost what they are.
  *
  *  At `NumModes = 128` (`kBits = 256`, so `kPosBits = 8`) a term at positions {3, 7, 8, 40} with
- *  phase +1 has k = 4 and gaps {3, 0, 31}, hence `gw = bit_width(31) = 5`:
+ *  phase +1 and rot set has k = 4 and gaps {3, 0, 31}, hence `gw = bit_width(31) = 5`:
  *
  *  @code
  *  bits  0..1   phase   2   +1, biased by 1
- *  bits  2..6   k       4   below kKEscape, so no wide-k field follows
- *  bits  7..10  gw      5
- *  bits 11..18  first   3
- *  bits 19..23  gap     3   7 - 3 - 1
- *  bits 24..28  gap     0   8 - 7 - 1
- *  bits 29..33  gap     31  40 - 8 - 1
+ *  bit   2      rot     1
+ *  bits  3..7   k       4   below kKEscape, so no wide-k field follows
+ *  bits  8..11  gw      5
+ *  bits 12..19  first   3
+ *  bits 20..24  gap     3   7 - 3 - 1
+ *  bits 25..29  gap     0   8 - 7 - 1
+ *  bits 30..34  gap     31  40 - 8 - 1
  *  @endcode
  *
- *  34 bits, so one word, against the four a 256-bit dense stride spends on the same term.
+ *  35 bits, so one word, against the four a 256-bit dense stride spends on the same term.
  */
 template <size_t NumModes>
 struct QueryWire {
@@ -69,12 +76,13 @@ struct QueryWire {
     static constexpr size_t kPosBits = static_cast<size_t>(std::bit_width(kBits - 1));
 
     static constexpr size_t kPhaseBits = 2;
+    static constexpr size_t kRotBits = 1;
     static constexpr size_t kKBits = 5;
     //! k is a popcount of a kBits bitset, so the escape field never needs more bits than this.
     static constexpr size_t kLongKBits = static_cast<size_t>(std::bit_width(kBits));
     static constexpr size_t kGwBits = 4;
     static constexpr size_t kKEscape = (1U << kKBits) - 1U;
-    static constexpr size_t kHeaderBits = kPhaseBits + kKBits + kGwBits;
+    static constexpr size_t kHeaderBits = kPhaseBits + kRotBits + kKBits + kGwBits;
     static_assert(kPosBits <= (1U << kGwBits) - 1U, "gw <= kPosBits must fit the header's gap-width field");
     static_assert(kHeaderBits + kLongKBits <= 64, "the widest header must be readable from word 0 alone");
 
@@ -87,6 +95,7 @@ struct QueryWire {
     struct Decoded {
         size_t next; //!< word offset just past what this call consumed
         int phase;   //!< the record's ternary phase
+        bool rot;    //!< the sender's rotation bit
     };
 
     /*! @brief Bit-packs variable-width fields into `buf`, one 64-bit word at a time. */
@@ -148,6 +157,7 @@ struct QueryWire {
     /*! @brief A record's decoded header fields. */
     struct Header {
         int phase = 0;
+        bool rot = false;
         size_t k = 0;
         size_t gw = 0;
         size_t bits = 0; //!< header width, i.e. where the payload begins
@@ -157,8 +167,9 @@ struct QueryWire {
         const auto w0 = static_cast<uint64_t>(buf[off]);
         Header h;
         h.phase = static_cast<int>(w0 & 0x3U) - 1;
-        h.k = static_cast<size_t>((w0 >> kPhaseBits) & kKEscape);
-        h.bits = kPhaseBits + kKBits;
+        h.rot = ((w0 >> kPhaseBits) & 1U) != 0;
+        h.k = static_cast<size_t>((w0 >> (kPhaseBits + kRotBits)) & kKEscape);
+        h.bits = kPhaseBits + kRotBits + kKBits;
         if (h.k == kKEscape) {
             h.k = static_cast<size_t>((w0 >> h.bits) & ((uint64_t{1} << kLongKBits) - 1U));
             h.bits += kLongKBits;
@@ -188,6 +199,7 @@ struct QueryWire {
 
     [[nodiscard]] static auto k_at(WireView buf, size_t off) noexcept -> size_t { return header_at(buf, off).k; }
     [[nodiscard]] static auto phase_at(WireView buf, size_t off) noexcept -> int { return header_at(buf, off).phase; }
+    [[nodiscard]] static auto rot_at(WireView buf, size_t off) noexcept -> bool { return header_at(buf, off).rot; }
 
     //! gw = bit_width(max gap), folded into push()'s own pass over the positions.
     template <std::ranges::contiguous_range Pos>
@@ -202,14 +214,14 @@ struct QueryWire {
         return g;
     }
 
-    /*! @brief Appends one record for `pos` and `phase`, and returns the words written.
+    /*! @brief Appends one record for `pos`, `phase` and `rot`, and returns the words written.
      *
      *  `pos` must be strictly ascending with every position below `kBits`; a violation encodes a
      *  different, still well-formed record rather than failing. The element type is deduced because
      *  the store's position width is narrower than the wire's below 129 modes.
      */
     template <std::ranges::contiguous_range Pos>
-    static auto push(VecZ &buf, const Pos &pos, int phase) -> size_t {
+    static auto push(VecZ &buf, const Pos &pos, int phase, bool rot = false) -> size_t {
         const size_t k = std::ranges::size(pos);
         assert(k <= kMaxPositions && "term has more positions than the record's width admits");
         assert(phase >= -1 && phase <= 1 && "emit_phase is ternary: rotation_sign, or REAL_PARTS entry");
@@ -217,6 +229,7 @@ struct QueryWire {
         const size_t gw = gap_width(pos);
         Writer w{buf};
         w.put(static_cast<uint64_t>(phase + 1), kPhaseBits);
+        w.put(static_cast<uint64_t>(rot), kRotBits);
         if (k >= kKEscape) {
             w.put(kKEscape, kKBits);
             w.put(static_cast<uint64_t>(k), kLongKBits);
@@ -253,7 +266,7 @@ struct QueryWire {
                 out[j] = static_cast<OutT>(prev);
             }
         }
-        return {off + words_of_header(h), h.phase};
+        return {off + words_of_header(h), h.phase, h.rot};
     }
 
     //! d, recomputed rather than carried: in ascending order a pair is an even position then its successor.
@@ -298,36 +311,6 @@ struct QueryWire {
         while (off < buf.size()) {
             off = next_off(buf, form, off);
             ++n;
-        }
-        return n;
-    }
-
-    //! Interleaves a plain query stream with its parallel value array into one fused stream.
-    static auto build_fused(WireView queries, std::span<const double> vals, VecZ &out) -> void {
-        out.clear();
-        out.reserve(queries.size() + vals.size());
-        size_t off = 0;
-        size_t i = 0;
-        while (off < queries.size()) {
-            const size_t n = words_at(queries, off);
-            out.insert(out.end(),
-                       queries.begin() + static_cast<std::ptrdiff_t>(off),
-                       queries.begin() + static_cast<std::ptrdiff_t>(off + n));
-            assert(i < vals.size() && "fused build needs exactly one value per query");
-            out.push_back(encode_value(vals[i]));
-            off += n;
-            ++i;
-        }
-    }
-
-    //! Copies the record at src_off (and its value word, if fused) to dst_off; returns the words moved.
-    static auto move_query(VecZ &buf, QueryForm form, size_t src_off, size_t dst_off) -> size_t {
-        const size_t n = words_at(buf, src_off) + (form == QueryForm::Fused ? 1U : 0U);
-        if (src_off != dst_off) {
-            assert(dst_off < src_off && "compaction only ever moves a query earlier");
-            std::copy(buf.begin() + static_cast<std::ptrdiff_t>(src_off),
-                      buf.begin() + static_cast<std::ptrdiff_t>(src_off + n),
-                      buf.begin() + static_cast<std::ptrdiff_t>(dst_off));
         }
         return n;
     }
