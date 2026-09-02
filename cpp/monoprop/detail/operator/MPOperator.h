@@ -60,6 +60,20 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Reserve for a coefficient array that parallels the row store, on the store's own growth policy.
+//
+// Left to itself std::vector doubles, so a coefficient array appended alongside the rows settles at up
+// to 8 B/term more capacity than the rows it parallels -- and vector never returns that mid-run, only
+// at the quiescence shrink_to_fit. Mirroring OperatorIndex::grow_rows_geometric's 1.5x keeps the two in
+// step. Capacity is unobservable, so this is exactly a memory choice: the array stays one contiguous
+// vector, append-only, with every fresh slot zero-filled by the resize that follows.
+inline auto reserve_coeffs_geometric(VecD &coeffs, size_t new_size) -> void {
+    const size_t cap = coeffs.capacity();
+    if (cap < new_size) {
+        coeffs.reserve(std::max(new_size, cap + (cap / 2) + 1));
+    }
+}
+
 template <size_t NumModes>
 struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
@@ -127,6 +141,7 @@ struct MPOperator {
         }
 
         const size_t first_new = op_coeffs.size();
+        reserve_coeffs_geometric(op_coeffs, size());
         op_coeffs.resize(size(), 0.0);
 
         if (init_op_map.empty()) {
@@ -178,6 +193,7 @@ struct MPOperator {
             return state_coeffs;
         }
         const size_t cur_len = state_coeffs.size();
+        reserve_coeffs_geometric(state_coeffs, size());
         state_coeffs.resize(size(), 0.0);
         scatter_state_rows_from_(cur_len, state_coeffs);
         return state_coeffs;
