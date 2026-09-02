@@ -42,6 +42,7 @@
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -137,10 +138,10 @@ public:
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
-        // The stamp array is a member of THIS class, not of the operator, so the operator-side estimate
-        // leaves matched_scratch_bytes at 0 and only this level can fill it in.
+        // The gate scratch is a member of THIS class, not of the operator, so the operator-side estimate
+        // leaves gate_scratch_bytes at 0 and only this level can fill it in.
         auto breakdown = detail::estimate_memory_usage(mp_op_);
-        breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
+        breakdown.gate_scratch_bytes = gate_scratch_.memory_bytes();
         return breakdown;
     }
 
@@ -309,7 +310,7 @@ protected:
     detail::MPOperator<NumModes> mp_op_;
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
-    detail::MatchedEpochSet matched_scratch_;
+    detail::GateScratch<NumModes> gate_scratch_;
 
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
     // structural position bound when it has one.

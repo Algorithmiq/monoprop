@@ -70,18 +70,6 @@ BOOST_AUTO_TEST_CASE(rows_roundtrip_dense_popcount_positions) {
     BOOST_TEST(pos[2] == 63u);
 }
 
-BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
-    Store s;
-    s.push_back(bs({0, 3, 5}));
-    s.emplace(bs({0, 3, 5}), 0);
-    s.push_back(bs({1, 2}));
-    s.emplace(bs({1, 2}), 1);
-    auto f = s.find(bs({1, 2}));
-    BOOST_TEST(f.has_value());
-    BOOST_TEST(*f == 1u);
-    BOOST_TEST(!s.find(bs({7, 9})).has_value());
-}
-
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
     Store s(4);                    // stride = 1 + 4, fixed at construction
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
@@ -97,101 +85,78 @@ BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
     BOOST_TEST((s.row(0) == bs({0, 1, 2})));
 }
 
-BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
-    Store a;
-    // 64 distinct rows (positions i and (i+7)%62) force at least one rehash of the in-place index.
-    for (int i = 0; i < 64; ++i) {
-        a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
-        a.emplace(a.row(static_cast<size_t>(i)), static_cast<size_t>(i));
-    }
-    auto f = a.find(a.row(50));
-    BOOST_TEST(f.has_value());
-    BOOST_TEST(*f == 50u);
-}
-
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
-    a.emplace(bs({0, 3, 5}), 0);
     a.push_back(bs({1, 2}));
-    a.emplace(bs({1, 2}), 1);
 
     auto b = a.clone();
     BOOST_TEST(b->size() == 2u);
     BOOST_TEST((b->row(0) == bs({0, 3, 5})));
-    auto f = b->find(bs({1, 2}));
-    BOOST_TEST(f.has_value());
-    BOOST_TEST(*f == 1u);
+    BOOST_TEST((b->row(1) == bs({1, 2})));
 
     a.push_back(bs({6, 7}));
-    a.emplace(bs({6, 7}), 2);
     BOOST_TEST(b->size() == 2u);
-    BOOST_TEST(!b->find(bs({6, 7})).has_value());
 
-    // If the clone still referenced the source's rows, this find would read a->row(0) (now {8,9})
-    // and fail.
+    // If the clone still referenced the source's rows, row 0 would now read {8,9}.
     a.set(0, bs({8, 9}));
-    auto g = b->find(bs({0, 3, 5}));
-    BOOST_TEST(g.has_value());
-    BOOST_TEST(*g == 0u);
+    BOOST_TEST((b->row(0) == bs({0, 3, 5})));
+    BOOST_TEST((a.row(0) == bs({8, 9})));
 }
 
 BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
     Store a(2); // width 2; a 3-position row overflows losslessly
     a.push_back(bs({0, 1, 2}));
-    a.emplace(bs({0, 1, 2}), 0);
 
     auto b = a.clone();
     BOOST_TEST(b->popcount(0) == 3u);
     BOOST_TEST((b->row(0) == bs({0, 1, 2})));
-    BOOST_TEST(*b->find(bs({0, 1, 2})) == 0u);
+    BOOST_TEST(b->overflow_size() == 1u);
 }
 
-// find_batch (the group-prefetch pipelined lookup) must be semantically identical to n independent
-// find() calls. The query mix below spans several G=16 groups plus a short tail and interleaves
-// present and absent keys, so every branch but the h32-collision fallback runs; that one needs a
-// real 32-bit hash collision, but the equivalence assertion pins it whichever path a key takes.
-BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
+// for_each walks every row in index order: the Python-visible enumeration.
+BOOST_AUTO_TEST_CASE(for_each_visits_rows_in_index_order) {
     Store s;
-    constexpr size_t kRows = 200; // > 12 groups of G=16
-    // (i/60, 4 + i%60) is a bijection for i < 240 over the disjoint ranges {0..3} and {4..63}.
-    for (size_t i = 0; i < kRows; ++i) {
-        const auto key = bs({i / 60, 4 + (i % 60)});
-        s.push_back(key);
-        s.emplace(key, i);
+    for (size_t i = 0; i < 40; ++i) {
+        s.push_back(bs({i % 62, (i + 7) % 62}));
     }
+    size_t expect = 0;
+    bool in_order = true;
+    s.for_each([&](const MSet &mono, size_t i) {
+        in_order = in_order && (i == expect) && (mono == s.row(i));
+        ++expect;
+    });
+    BOOST_TEST(in_order);
+    BOOST_TEST(expect == 40u);
+}
 
-    std::vector<MSet> queries;
-    for (size_t i = 0; i < kRows; ++i) {
-        queries.push_back(bs({i / 60, 4 + (i % 60)}));
-        queries.push_back(bs({0, 1, 2 + (i % 20)}));
-    }
-    queries.push_back(bs({0, 1, 2})); // 401 total
-    BOOST_TEST(queries.size() % 16u != 0u);
-
-    std::vector<size_t> out(queries.size(), 424242);
-    s.find_batch(queries.data(), queries.size(), out.data());
-
-    bool all_match = true;
-    for (size_t i = 0; i < queries.size(); ++i) {
-        const auto scalar = s.find(queries[i]);
-        const size_t expected = scalar ? *scalar : Store::kNotFound;
-        if (out[i] != expected) {
-            all_match = false;
+// row_eq_positions is the confirm behind every fingerprint match: exact on inline rows (popcount first,
+// then the positions) and on spilled rows through the dense compare.
+BOOST_AUTO_TEST_CASE(row_eq_positions_confirms_exactly) {
+    Store s(3);
+    s.push_back(bs({0, 3, 5}));    // inline
+    s.push_back(bs({0, 1, 2, 4})); // spilled at width 3
+    const auto pos_of = [](const MSet &m) {
+        std::vector<Store::PosT> pos;
+        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+            pos.push_back(static_cast<Store::PosT>(b));
         }
-    }
-    BOOST_TEST(all_match);
-    BOOST_TEST(out[0] == 0u);               // first present key -> row 0
-    BOOST_TEST(out[1] == Store::kNotFound); // first absent key
+        return pos;
+    };
+    BOOST_TEST(s.row_eq_positions(0, pos_of(bs({0, 3, 5}))));
+    BOOST_TEST(!s.row_eq_positions(0, pos_of(bs({0, 3}))));    // popcount differs
+    BOOST_TEST(!s.row_eq_positions(0, pos_of(bs({0, 3, 6})))); // one position differs
+    BOOST_TEST(s.row_eq_positions(1, pos_of(bs({0, 1, 2, 4}))));
+    BOOST_TEST(!s.row_eq_positions(1, pos_of(bs({0, 1, 2, 5}))));
+    BOOST_TEST(!s.row_eq_positions(1, pos_of(bs({0, 3, 5}))));
 }
 
-// Pins find_batch's partition.count == 0 early-out.
-BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
+// grow_rows_geometric guards the TermIndex ceiling: it is the only door rows enter through.
+BOOST_AUTO_TEST_CASE(grow_rows_geometric_returns_base_and_extends_size) {
     Store s;
-    const std::array<MSet, 3> keys{bs({0, 3}), bs({1, 2}), bs({4, 5, 6})};
-    std::array<size_t, 3> out{0, 0, 0};
-    s.find_batch(keys.data(), keys.size(), out.data());
-    for (size_t i = 0; i < keys.size(); ++i) {
-        BOOST_TEST(out[i] == Store::kNotFound);
-    }
+    BOOST_TEST(s.grow_rows_geometric(3) == 0u);
+    BOOST_TEST(s.size() == 3u);
+    BOOST_TEST(s.grow_rows_geometric(2) == 3u);
+    BOOST_TEST(s.size() == 5u);
+    BOOST_TEST(s.grow_rows_geometric(0) == 5u);
 }

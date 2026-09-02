@@ -31,6 +31,7 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/TermLookup.h"
 
 // Forward-declared to break an include cycle with algebra/Algebra.h.
 namespace monoprop {
@@ -118,24 +119,28 @@ struct MPOperator {
     }
 
     // erase/clear keep bucket_count(), which init_operator_bytes reports, so drained buckets must be released.
+    // A pending term was absent from every row the last drain saw, so only the rows grown since then can
+    // hold it: the lookup is built over those alone.
     auto get_operator() -> const VecD & {
         if (size() == op_coeffs.size()) {
             return op_coeffs;
         }
 
+        const size_t first_new = op_coeffs.size();
         op_coeffs.resize(size(), 0.0);
 
         if (init_op_map.empty()) {
             return op_coeffs;
         }
 
+        const auto lookup = build_term_lookup<NumModes>(*store, first_new, size());
         const auto before = init_op_map.size();
-        erase_if(init_op_map, [this](const auto &kv) {
-            const auto found = store->find(kv.first);
-            if (found) {
-                op_coeffs[*found] = kv.second;
+        erase_if(init_op_map, [this, &lookup](const auto &kv) {
+            const auto found = lookup.find(kv.first);
+            if (found != lookup.end()) {
+                op_coeffs[found->second] = kv.second;
             }
-            return found.has_value();
+            return found != lookup.end();
         });
         if (init_op_map.size() != before) {
             init_op_map.rehash(0);
@@ -193,11 +198,14 @@ struct MPOperator {
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
+        const auto lookup = build_term_lookup<NumModes>(*store, 0, size());
 
         for (const auto &[k, v] : op_dict) {
             // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
             const auto mono = indices_to_bitset<NumModes>(k);
-            const auto rank_evolved_op = store->find(mono);
+            const auto found = lookup.find(mono);
+            const std::optional<size_t> rank_evolved_op =
+                found == lookup.end() ? std::nullopt : std::optional<size_t>{static_cast<size_t>(found->second)};
             const auto rank_init_op = init_op_map.find(mono);
             const auto coeff = algebra_encode_coeff<NumModes>(basis, v, mono);
 
@@ -260,16 +268,15 @@ struct MPOperator {
     }
 };
 
-// Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
-// slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
-// (op.size() must equal the returned base).
-template <size_t NumModes, typename KeyAt, typename PerSlot>
-inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
+// Callers must pass pairwise-distinct, currently-absent terms: slot k deterministically lands at base+k
+// and nothing checks for a duplicate. Call after any pass that reads pre-insert op state (op.size() must
+// equal the returned base). per_slot(k, base) writes row base+k.
+template <size_t NumModes, typename PerSlot>
+inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
-    op.store->bulk_insert(n, base, std::forward<KeyAt>(key_at));
     op.reindex_after_growth(base, n);
     return base;
 }
@@ -288,8 +295,9 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes{0uz};
     size_t initial_state_bytes{0uz};
     size_t inverted_index_bytes{0uz};
-    // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
-    size_t matched_scratch_bytes{0uz};
+    // The per-gate layer-build scratch (AntiTable and buffers). Propagator-owned, so 0 unless
+    // MonomialPropagator fills it in.
+    size_t gate_scratch_bytes{0uz};
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -304,7 +312,7 @@ struct MPOperatorMemoryBreakdown final {
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
+               + initial_state_bytes + inverted_index_bytes + gate_scratch_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -315,7 +323,7 @@ struct MPOperatorMemoryBreakdown final {
         init_operator_bytes += o.init_operator_bytes;
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
-        matched_scratch_bytes += o.matched_scratch_bytes;
+        gate_scratch_bytes += o.gate_scratch_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
@@ -335,7 +343,9 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)
                                    + op.state_vals_.capacity() * sizeof(double);
-    breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
+    // No persistent key index exists any more (see OperatorIndex.h); the field stays so the breakdown's
+    // shape is stable, and reports the store object itself.
+    breakdown.indexing_bytes = sizeof(*op.store);
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.init_operator_entries = op.init_op_map.size();
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);

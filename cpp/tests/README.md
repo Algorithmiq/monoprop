@@ -89,16 +89,20 @@ name and cannot address suite-nested cases, tests use flat
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
   scan routing agreement), `routing_tests.cpp` (Router term -> flat-slot map:
-  the `d = 0` splitmix equivalence, the linear shift identity, the gf2_rank
-  coverage diagnostic, and the shipped default),
-  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
+  the splitmix equivalence, the fingerprint and flat-shift identities, the
+  gf2_rank coverage diagnostic, and the shipped default),
+  `position_kernels_tests.cpp` (the position-only emit kernels -- both algebras'
+  rotation sign, the (k, d) digest cutoff and emit_partner -- against their dense
+  oracles), `evolution_detail_tests.cpp` (self-resolve over the AntiTable +
+  CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
   get_operator init-map drain, update_initial_operator picture branches,
   insert_absent_terms, inverted-index sync, memory estimate, deep copy),
-  `bulk_insert_tests.cpp` (the grouped-prefetch insert vs a one-key-at-a-time
-  reference: table state and enumeration order).
+  `anti_table_tests.cpp` (the per-gate partner table: the lemma it rests on, the
+  fingerprint probe vs a TermLookup oracle over inline, spilled and paired rows,
+  the position confirm, and the leader-pass marks).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
   `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// MatchedEpochSet, CutoffContext and the self-resolve mark guard driven directly, not through build_layer.
+// The self-resolve pass over the per-gate AntiTable and CutoffContext, driven directly, not through build_layer.
 
 #include <boost/test/unit_test.hpp>
 
@@ -25,14 +25,16 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/layer_build/AntiTable.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
 using namespace monoprop;
+using monoprop::detail::AntiTable;
 using monoprop::detail::CutoffContext;
-using monoprop::detail::MatchedEpochSet;
 
 namespace {
 
@@ -43,140 +45,86 @@ struct RecordingSink {
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
 
-// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
 auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<8>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<8>(*op.store, base + k, terms[k]);
+    });
     return op;
+}
+
+// The partner table the scan would build for a gate that finds rows [0, n) anticommuting.
+auto table_over_rows(detail::GateScratch<8> &scratch, const detail::MPOperator<8> &op, size_t n) -> void {
+    const uint64_t *labels = routing::linear_basis<16>().data();
+    scratch.anti.begin(n);
+    for (size_t i = 0; i < n; ++i) {
+        const auto src = op.store->row_positions(i);
+        scratch.anti.add(static_cast<TermIndex>(i),
+                         routing::fingerprint_positions(labels, src.pos.data(), src.pos.size()));
+    }
 }
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(matched_epoch_begin_gate_clears_all) {
-    MatchedEpochSet set;
-    set.begin_gate(5);
-    set.mark(2);
-    set.mark(4);
-    BOOST_TEST(set.is_marked(2));
-    BOOST_TEST(set.is_marked(4));
-    BOOST_TEST(!set.is_marked(0));
-
-    set.begin_gate(5);
-    BOOST_TEST(!set.is_marked(2));
-    BOOST_TEST(!set.is_marked(4));
-    set.mark(0);
-    BOOST_TEST(set.is_marked(0));
-    BOOST_TEST(!set.is_marked(2));
-}
-
-// Growing the operator only appends to the tail; old slots stay cleared and new slots are usable.
-BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
-    MatchedEpochSet set;
-    set.begin_gate(4);
-    set.mark(3);
-    BOOST_TEST(set.is_marked(3));
-
-    set.begin_gate(8);
-    BOOST_TEST(!set.is_marked(3));
-    set.mark(7);
-    BOOST_TEST(set.is_marked(7));
-    BOOST_TEST(!set.is_marked(3));
-}
-
-// Reaches the wrap by assigning cur_, which pins the branch and the counter restart but not the fill.
-BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_resets) {
-    MatchedEpochSet set;
-    set.begin_gate(4); // allocate the backing array
-    // Force the counter to the wrap boundary; a stale slot still equals the pre-wrap counter.
-    set.cur_ = std::numeric_limits<MatchedEpochSet::Stamp>::max();
-    set.mark(1);
-    BOOST_TEST(set.is_marked(1));
-
-    set.begin_gate(4); // triggers the fill(0) + cur_ = 0 -> ++cur_ = 1 reset
-    BOOST_TEST(set.cur_ == 1U);
-    BOOST_TEST(!set.is_marked(1));
-    set.mark(2);
-    BOOST_TEST(set.is_marked(2));
-}
-
-// Reaches the wrap by counting gates, with the mark at epoch 1 so a missing fill would alias onto it.
-BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_reached_by_gate_count) {
-    constexpr auto kMaxStamp = std::numeric_limits<MatchedEpochSet::Stamp>::max();
-    constexpr size_t kPeriod = static_cast<size_t>(kMaxStamp);
-
-    MatchedEpochSet set;
-    set.begin_gate(4);
-    BOOST_REQUIRE(set.cur_ == MatchedEpochSet::Stamp{1});
-    set.mark(1);
-    BOOST_TEST(set.is_marked(1));
-
-    // One increment per gate, folded into a single assertion rather than 65534 of them.
-    bool one_epoch_per_gate = true;
-    for (size_t k = 2; k <= kPeriod; ++k) {
-        set.begin_gate(4);
-        one_epoch_per_gate = one_epoch_per_gate && (static_cast<size_t>(set.cur_) == k);
-    }
-    BOOST_TEST(one_epoch_per_gate);
-    BOOST_TEST(set.cur_ == kMaxStamp); // boundary reached by counting, not by assignment
-
-    // The wrap: cur_ returns to 1, the surviving mark's own stamp, so a false is_marked(1) is the fill.
-    set.begin_gate(4);
-    BOOST_TEST(set.cur_ == MatchedEpochSet::Stamp{1});
-    BOOST_TEST(!set.is_marked(1));
-    set.mark(2);
-    BOOST_TEST(set.is_marked(2));
-    BOOST_TEST(!set.is_marked(1));
-}
-
-// A self-resolve hit whose index the store only grew into after construction is a real hit -- it must reach
-// the sink -- but it is outside the matched set, whose array is sized to combined_size.
-BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
+// Self-resolve against the gate's partner table: a query whose term is in the table is a hit and, on the
+// leader pass, marks that term (the follower pass then skips it); a query whose term is absent is a
+// deferred miss. Rows the table does not hold -- terms this layer inserted -- are misses by construction.
+BOOST_AUTO_TEST_CASE(self_resolve_hits_mark_only_on_the_leader_pass) {
     std::vector<Monomial<8>> terms;
     for (size_t i = 0; i < 6; ++i) {
         terms.push_back(indices_to_bitset<8>({i, i + 8}));
     }
     detail::MPOperator<8> op = indexed_op(terms);
-    const size_t combined_size = 4; // rows 4 and 5 stand for terms this layer inserted after construction
+    const size_t combined_size = 6;
 
-    MatchedEpochSet matched;
-    // Pre-grown past combined_size on purpose: an unguarded mark then lands in an observable slot rather
-    // than past the end of epoch_, where it would be silent undefined behaviour.
-    matched.begin_gate(op.size());
+    detail::GateScratch<8> scratch;
+    table_over_rows(scratch, op, combined_size);
 
     detail::LayerBuildEngine<8, RecordingSink> eng(op,
                                                    mpi::Comm{},
                                                    /*R_=*/1,
                                                    /*my_rank_=*/0,
-                                                   matched,
+                                                   scratch,
                                                    combined_size,
                                                    RecordingSink{});
     // The self leg is staged as positions, never encoded, so this feeds the stage the scan would fill.
     using Eng = detail::LayerBuildEngine<8, RecordingSink>;
-    const auto stage_self = [&eng](const Monomial<8> &m, int phase) {
+    const uint64_t *labels = routing::linear_basis<16>().data();
+    const auto stage_self = [&](const Monomial<8> &m, int phase) {
         std::vector<Eng::RowPosT> pos;
         for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
             pos.push_back(static_cast<Eng::RowPosT>(b));
         }
-        eng.self_stage_.push(pos, phase);
+        eng.self_stage_.push(pos, phase, routing::fingerprint_positions(labels, pos.data(), pos.size()));
     };
     stage_self(terms[1], 1);
     stage_self(terms[5], -1);
-    eng.src_idx_r.at_slot(0) = {0, 2};
+    stage_self(indices_to_bitset<8>({2, 3}), 1); // absent: a miss
+    eng.src_idx_r.at_slot(0) = {0, 2, 4};
 
     eng.resolve_self_queries(/*is_leader_pass=*/true);
 
-    // Both keys are in the store, so both resolve as hits and neither may be deferred as a miss.
-    BOOST_TEST(eng.deferred_self_misses.empty());
     BOOST_TEST_REQUIRE(eng.sink.hits.size() == 2U);
     BOOST_TEST(eng.sink.hits[0].second == 1U);
     BOOST_TEST(eng.sink.hits[1].second == 5U);
-    BOOST_TEST(matched.is_marked(1));
-    BOOST_TEST(!matched.is_marked(4));
-    BOOST_TEST(!matched.is_marked(5));
+    BOOST_TEST_REQUIRE(eng.deferred_self_misses.size() == 1U);
+    BOOST_TEST(eng.deferred_self_misses[0].src == 4U);
+    BOOST_TEST(scratch.anti.is_marked_row(1));
+    BOOST_TEST(scratch.anti.is_marked_row(5));
+    BOOST_TEST(!scratch.anti.is_marked_row(0));
+    BOOST_TEST(!scratch.anti.is_marked_row(4));
+
+    // The follower pass skips a marked source and resolves the rest; nothing is marked on it.
+    eng.self_stage_.clear();
+    stage_self(terms[2], 1);
+    stage_self(terms[3], 1);
+    eng.src_idx_r.at_slot(0) = {1, 0}; // source 1 was matched by a leader → dropped; source 0 was not
+    eng.sink.hits.clear();
+    eng.resolve_self_queries(/*is_leader_pass=*/false);
+    BOOST_TEST_REQUIRE(eng.sink.hits.size() == 1U);
+    BOOST_TEST(eng.sink.hits[0].first == 0U);
+    BOOST_TEST(eng.sink.hits[0].second == 3U);
+    BOOST_TEST(!scratch.anti.is_marked_row(3));
 }
 
 BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {

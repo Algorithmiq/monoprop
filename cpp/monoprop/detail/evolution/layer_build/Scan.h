@@ -30,6 +30,7 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
@@ -161,48 +162,82 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
-// The dense form is unavoidable: the owner hash folds every word and the basis sign reads the source
-// bitset, so it is built regardless, and the merge below runs beside it.
+// One partner M⊕G as ascending positions plus the (k, d) digest the structural cutoff reads, the
+// cancelled-slot count the Hermitian phase reads, and the basis sign -- all from the source row's
+// positions. The dense form is built only where something still reads it: the splitmix router's hash, an
+// opaque cutoff, or a sign kernel without a position form (a Pauli generator on more than 32 qubits).
 template <size_t NumModes>
 struct PartnerProduct {
-    Monomial<NumModes> new_mono;
     size_t k = 0;       // popcount(M⊕G)
     size_t overlap = 0; // slots in both M and G, which cancel
+    size_t paired = 0;  // modes of M⊕G carrying both positions: the d of the (k, d) digest
     int phase_factor = 0;
+    bool has_dense = false;
+    Monomial<NumModes> dense; // M⊕G; valid iff has_dense
 };
 
+// Paired modes of an ascending position list: an even position immediately followed by its successor.
+template <typename PosT>
+[[nodiscard]] inline auto count_paired_positions(const PosT *pos, size_t k) noexcept -> size_t {
+    size_t d = 0;
+    for (size_t j = 0; j + 1 < k; ++j) {
+        const auto p = static_cast<size_t>(pos[j]);
+        if (p % 2 == 0 && static_cast<size_t>(pos[j + 1]) == p + 1) {
+            ++d;
+            ++j;
+        }
+    }
+    return d;
+}
+
 // phase_factor is the basis-specific sign only: Majorana interleave_phase, still to be folded with
-// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready. `out_pos` receives the
-// partner's ascending positions; a spilled source row has no position array, so that case walks the
-// dense partner to fill it instead.
+// hermitian_phase at emit; Pauli pauli_rotation_sign, already rotation-ready. `src` is row i's positions
+// as the caller already read them (a spilled row has none, and that case walks the dense form instead).
 template <size_t NumModes, Algebra A, typename PosT, typename GenT>
-[[gnu::always_inline]] inline auto emit_term_products(const OperatorIndex<NumModes> &ham,
-                                                      size_t i,
-                                                      const typename A::GenContext &ctx,
-                                                      std::span<const GenT> gen_pos,
-                                                      std::span<PosT> out_pos) -> PartnerProduct<NumModes> {
-    const size_t gen_pop = gen_pos.size();
+[[gnu::always_inline]] inline auto emit_partner(const OperatorIndex<NumModes> &ham,
+                                                size_t i,
+                                                typename OperatorIndex<NumModes>::RowPositions src,
+                                                const typename A::GenContext &ctx,
+                                                std::span<const GenT> gen_pos,
+                                                std::span<PosT> out_pos,
+                                                bool need_dense) -> PartnerProduct<NumModes> {
     const Monomial<NumModes> &gen = A::generator(ctx);
     PartnerProduct<NumModes> out;
-    Monomial<NumModes> mono;
-    if (const auto src = ham.row_positions(i); src.inlined()) {
+    if (src.inlined()) {
         const auto merged = merge_partner_positions(src.pos, gen_pos, out_pos);
         out.k = merged.count;
         out.overlap = merged.overlap;
-        for (const PosT q : src.pos) {
-            mono.set(static_cast<size_t>(q));
+        out.paired = merged.paired;
+        if (A::sign_from_positions_ok(ctx)) {
+            out.phase_factor = A::rotation_sign_positions(ctx, src.pos.data(), src.pos.size());
+            if (need_dense) {
+                for (size_t j = 0; j < out.k; ++j) {
+                    out.dense.set(static_cast<size_t>(out_pos[j]));
+                }
+                out.has_dense = true;
+            }
         }
-        out.new_mono = mono ^ gen;
-    }
-    else {
-        ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
-        out.new_mono = mono ^ gen;
-        out.overlap = mono.count_and(gen);
-        for (size_t b = out.new_mono.find_first(); b < out.new_mono.size(); b = out.new_mono.find_next(b)) {
-            out_pos[out.k++] = static_cast<PosT>(b);
+        else {
+            Monomial<NumModes> mono;
+            for (const PosT q : src.pos) {
+                mono.set(static_cast<size_t>(q));
+            }
+            out.dense = mono ^ gen;
+            out.has_dense = true;
+            out.phase_factor = A::rotation_sign(ctx, mono, out.dense);
         }
+        return out;
     }
-    out.phase_factor = A::rotation_sign(ctx, mono, out.new_mono);
+    Monomial<NumModes> mono;
+    ham.for_each_position(i, [&](size_t pos) { mono.set(pos); });
+    out.dense = mono ^ gen;
+    out.has_dense = true;
+    out.overlap = mono.count_and(gen);
+    for (size_t b = out.dense.find_first(); b < out.dense.size(); b = out.dense.find_next(b)) {
+        out_pos[out.k++] = static_cast<PosT>(b);
+    }
+    out.paired = count_paired_positions(out_pos.data(), out.k);
+    out.phase_factor = A::rotation_sign(ctx, mono, out.dense);
     return out;
 }
 
@@ -234,10 +269,11 @@ struct FusedScanResult {
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
 //
-// `gen_shift` is router.rank_shift(gen), and `op` must hold only terms `my_rank` owns -- then the owner of
-// M⊕G is rank(M) ^ gen_shift and the linear planes never run per term. Both are what mpi::PeerPlan
-// already assumes; a violation moves ownership silently, so the fast path asserts against dest().
-// `window` must be that plan's window for `my_rank`: it is what the six query arrays are sized to.
+// Every anticommuting row -- emitted or not -- is entered into scratch.anti keyed by its fingerprint
+// before any gate runs, because a term below the threshold or above the rotation cap is still somebody's
+// partner (AntiTable.h). The partner's fingerprint is fp(M) ^ fp(G), which is also what routes it: under
+// linear routing no per-term hash and no dense monomial exist on this path. `window` must be the peer
+// plan's window for `my_rank`: it is what the six query arrays are sized to.
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -248,7 +284,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             mpi::SlotWindow window,
                             size_t my_rank,
                             const routing::Router &router,
-                            size_t gen_shift,
+                            GateScratch<NumModes> &scratch,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
@@ -270,6 +306,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         res.leader_val.reset(window);
         res.follower_val.reset(window);
     }
+    // An empty table on every early return: the resolve passes probe it for every query they carry.
+    scratch.anti.begin(0);
 
     {
         // The anticommutation fold runs over G's inverted-index columns (Majorana: G; Pauli: J(G) =
@@ -322,34 +360,54 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
 
         const OperatorIndex<NumModes> &ham = *op.store;
         using RowPosT = typename OperatorIndex<NumModes>::PosT;
+        using RowPositions = typename OperatorIndex<NumModes>::RowPositions;
+        AntiTable<NumModes> &table = scratch.anti;
 
-        // The generator's positions, once per gate: the merge's second input.
-        std::vector<uint16_t> gen_pos;
-        gen_pos.reserve(gen_pop);
+        // The generator's positions, once per gate: the merge's second input. Its fingerprint is the
+        // per-gate constant every partner's fingerprint is one XOR away from.
+        std::vector<uint16_t> &gen_pos = scratch.gen;
+        gen_pos.clear();
         for (size_t b = gen.find_first(); b < gen.size(); b = gen.find_next(b)) {
             gen_pos.push_back(static_cast<uint16_t>(b));
         }
+        const uint64_t *const labels = routing::linear_basis<2 * NumModes>().data();
+        const uint64_t fp_gen = routing::linear_hash<2 * NumModes>(gen);
         // pbuf capacity is 2*NumModes: the partner's positions are distinct, so this always suffices.
-        std::vector<RowPosT> pbuf(2 * NumModes);
+        std::vector<RowPosT> &pbuf = scratch.partner;
+        if (pbuf.size() < 2 * NumModes) {
+            pbuf.resize(2 * NumModes);
+        }
+        // What still reads the dense partner: the splitmix router (its hash), an opaque cutoff, or a sign
+        // kernel with no position form. Under linear routing with a structural cutoff: nothing.
+        const bool need_dense = (rank_count != 1 && !router.is_linear()) || !cutoff_eval.has_digest_form()
+                                || !A::sign_from_positions_ok(ectx);
 
-        auto push = [&](const Monomial<NumModes> &dense,
+        auto push = [&](uint64_t fp_partner,
+                        const PartnerProduct<NumModes> &p,
                         std::span<const RowPosT> pos,
                         int phase,
                         size_t i,
                         double v_src,
                         bool is_follower) {
-            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            // routing::Router is the only owner function; find_rank (MPIUtils.h) must stay in step with it
-            // or a term is placed and queried on different ranks, which duplicates a row silently.
+            // Single rank: every partner is self-owned. Multi-rank routes by owner: off the fingerprint
+            // under linear routing, off the dense hash under splitmix. routing::Router is the only owner
+            // function; find_rank (MPIUtils.h) must stay in step with it or a term is placed and queried
+            // on different ranks, which duplicates a row silently.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
-                r_prime = router.dest_from_shift<NumModes>(dense, my_rank, gen_shift);
-                assert(r_prime == router.dest<NumModes>(dense)); // an identity, not an approximation
+                if (router.is_linear()) {
+                    r_prime = router.dest_from_fingerprint(fp_partner);
+                    assert(!p.has_dense || r_prime == router.dest<NumModes>(p.dense)); // an identity
+                }
+                else {
+                    assert(p.has_dense);
+                    r_prime = router.dest<NumModes>(p.dense);
+                }
             }
             // at_slot is the only re-basing door and asserts membership: a destination outside this
             // generator's window means the shift is wrong, and would otherwise land on another peer.
             if (r_prime == my_rank) {
-                (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
+                (is_follower ? res.follower_self : res.leader_self).push(pos, phase, fp_partner);
             }
             else {
                 QueryWire<NumModes>::push(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime), pos, phase);
@@ -360,24 +418,44 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         };
 
-        // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
+        // Row i as the scan reads it: its positions (empty span for a spilled row), popcount and
+        // fingerprint. Read once per anticommuting row, before any gate, because the row enters the
+        // partner table whether or not it is emitted.
+        struct RowRead {
+            RowPositions src;
+            size_t pop;
+            uint64_t fp;
+        };
+        auto read_row = [&](size_t i) -> RowRead {
+            const RowPositions src = ham.row_positions(i);
+            if (src.inlined()) {
+                return {src, src.pos.size(), routing::fingerprint_positions(labels, src.pos.data(), src.pos.size())};
+            }
+            const Monomial<NumModes> dense = ham.row(i);
+            return {src, dense.count(), routing::linear_hash<2 * NumModes>(dense)};
+        };
+
+        // The dynamic gate runs before emit_partner, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
-        auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
-            if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
+        auto emit = [&](const RowRead &row, size_t i, double abs_c, double v_src, bool is_follower) {
+            if (!rotation_dynamic_gate(only_rotate_len_k, row.pop, cut_st, abs_c)) {
                 return;
             }
-            const auto p = emit_term_products<NumModes, A>(ham,
-                                                           i,
-                                                           ectx,
-                                                           std::span<const uint16_t>(gen_pos),
-                                                           std::span<RowPosT>(pbuf));
+            const auto p = emit_partner<NumModes, A>(ham,
+                                                     i,
+                                                     row.src,
+                                                     ectx,
+                                                     std::span<const uint16_t>(gen_pos),
+                                                     std::span<RowPosT>(pbuf),
+                                                     need_dense);
             // Structural cutoff on the partner M⊕G, unless upper_atol rescues it (CutoffContext::is_above_upper).
-            const bool struct_pass = cutoff_eval.passes_with_popcount(p.new_mono, p.k);
+            const bool struct_pass = cutoff_eval.has_digest_form() ? cutoff_eval.passes_from_digest(p.k, p.paired)
+                                                                   : cutoff_eval.passes_with_popcount(p.dense, p.k);
             if (!struct_pass && !cut_st.is_above_upper(abs_c)) {
                 return;
             }
-            const int phase = A::emit_phase(p.phase_factor, mono_pop, gen_pop, p.overlap);
-            push(p.new_mono, std::span<const RowPosT>(pbuf).first(p.k), phase, i, v_src, is_follower);
+            const int phase = A::emit_phase(p.phase_factor, row.pop, gen_pop, p.overlap);
+            push(row.fp ^ fp_gen, p, std::span<const RowPosT>(pbuf).first(p.k), phase, i, v_src, is_follower);
         };
 
         // Pass 1 and pass 2 stay fused over `nz`: splitting them regressed measurably, as `nz` spills L1
@@ -402,6 +480,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                              n_anti,
                                              n_foll);
         }
+        table.begin(n_anti);
         if (rank_count == 1) {
             // A hint only; wider terms grow the buffer as needed.
             const size_t pq = QueryWire<NumModes>::kReservePositionsPerQuery;
@@ -425,47 +504,49 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
+                    const RowRead row = read_row(i);
+                    table.add(static_cast<TermIndex>(i), row.fp);
                     const double v_src = fused_scale_coeffs[i];
                     fused_scale_coeffs[i] = v_src * fused_scale_cos;
                     const double abs_c = std::abs(v_src);
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = op.store->popcount(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                    emit(row, i, abs_c, v_src, is_follower);
                 }
             }
             else if (word_aligned_cos) {
-                // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
-                // gate before the popcount row read — deferring popcount saves random packed-row loads.
+                // No orbital gate: record the whole word in the cosine set, then per bit apply the atol gate.
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
+                    const RowRead row = read_row(i);
+                    table.add(static_cast<TermIndex>(i), row.fp);
                     const auto [v_src, abs_c] = derive_coeff(i);
                     if (cut_st.is_below_sin(abs_c)) {
                         continue;
                     }
-                    const size_t mono_pop = op.store->popcount(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                    emit(row, i, abs_c, v_src, is_follower);
                 }
             }
             else {
-                // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
-                // orbital-passing terms, so the popcount row read must precede both.
+                // Orbital gate active: the per-index cosine push covers only orbital-passing terms, so the
+                // popcount test precedes it. A capped term is still entered into the partner table.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
                     const size_t tz = static_cast<size_t>(std::countr_zero(m));
                     const size_t i = w.base + tz;
-                    const size_t mono_pop = op.store->popcount(i);
-                    if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
+                    const RowRead row = read_row(i);
+                    table.add(static_cast<TermIndex>(i), row.fp);
+                    if (row.pop > static_cast<size_t>(*only_rotate_len_k)) {
                         continue;
                     }
                     cos_b.push_index(i);
                     const auto [v_src, abs_c] = derive_coeff(i);
                     const bool is_follower = (w.foll >> tz) & 1u;
-                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                    emit(row, i, abs_c, v_src, is_follower);
                 }
             }
         }

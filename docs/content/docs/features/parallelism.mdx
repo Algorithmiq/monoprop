@@ -91,14 +91,29 @@ empty. That is a load-balance failure and not a wrong answer, so it is left as a
 rather than enforced at runtime — measured $\rho = 32$ over the 60-site Hubbard's 416
 distinct shifts, against the $d = 7$ that $R = 128$ needs.
 
-Within a rank, partitions keep the full-avalanche `splitmix` hash: fanout across shared
-memory is free, so only balance matters there. Routing is therefore two-level. Writing $q$
-for the `splitmix` hash of $M$, the partition is $q \bmod S$ and the rank is $h_d(M)$ with
-$d = \log_2 R$ — every rank bit, so the fanout is 1:
+The same image $h(M)$ — the term's *fingerprint*, computed by XOR-ing one label per set
+position, so a packed row is never expanded into a bitset to be routed — also places the
+term within a rank. With $S$ a power of two the partition takes the next $\log_2 S$ bits of
+$h$, so the whole flat slot is linear in $M$ and every partition has exactly one peer
+partition per generator, inside the rank as well as across ranks:
 
 $$
-\mathrm{flat}(M) = h_d(M)\,S + (q \bmod S).
+\mathrm{flat}(M) = h_d(M)\,S + \bigl(h(M) \gg d\bigr) \bmod S,
+\qquad
+\mathrm{flat}(M \oplus G) = \mathrm{flat}(M) \oplus \mathrm{flat}(G).
 $$
+
+With $S$ not a power of two only the rank level has that structure: the partition is the
+mixed fingerprint modulo $S$, balance only, and a generator's queries from one partition land
+on the $S$ partitions of one peer rank.
+
+The fingerprint serves one more purpose. Because a term that anticommutes with $G$ has a
+partner $M \oplus G$ that anticommutes with $G$ too, the partner of every term a gate touches,
+if it is tracked at all, is inside the gate's own anticommuting set — which the
+anticommutation index already returns. Partner lookup therefore never consults a persistent
+hash table over the operator: each gate builds a small table over its anticommuting rows,
+keyed by the mixed fingerprint with every match confirmed against the row's positions, and
+discards it. The operator store holds positions and coefficients and nothing else.
 
 Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
 none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The position-form resolve path, differentially against the queries the caller built and the dense
-// Monomial-keyed insert path, neither of which is the code under test.
+// The position-form resolve path, differentially against the queries the caller built, the dense
+// Monomial-keyed insert path and a transient TermLookup oracle, none of which is the code under test.
 
 #include <boost/test/unit_test.hpp>
 
@@ -26,11 +26,14 @@
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/evolution/layer_build/AntiTable.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/TermLookup.h"
 
 using namespace monoprop;
 
@@ -78,12 +81,27 @@ auto make_op(const std::vector<Monomial<NumModes>> &terms) -> detail::MPOperator
     if (terms.empty()) {
         return op;
     }
-    detail::insert_absent_terms<NumModes>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<NumModes> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<NumModes>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<NumModes>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<NumModes>(*op.store, base + k, terms[k]);
+    });
     return op;
+}
+
+// The partner table a gate that finds EVERY row anticommuting would build: the receiver-side oracle the
+// probe runs against. Spilled rows take the dense fingerprint, exactly as the scan does.
+template <size_t NumModes>
+auto table_over_all_rows(const detail::MPOperator<NumModes> &op) -> detail::AntiTable<NumModes> {
+    detail::AntiTable<NumModes> table;
+    const size_t n = op.store->size();
+    table.begin(n);
+    const uint64_t *labels = routing::linear_basis<2 * NumModes>().data();
+    for (size_t i = 0; i < n; ++i) {
+        const auto src = op.store->row_positions(i);
+        const uint64_t fp = src.inlined() ? routing::fingerprint_positions(labels, src.pos.data(), src.pos.size())
+                                          : routing::linear_hash<2 * NumModes>(op.store->row(i));
+        table.add(static_cast<TermIndex>(i), fp);
+    }
+    return table;
 }
 
 template <size_t NumModes>
@@ -185,7 +203,8 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, form);
+    const auto table = table_over_all_rows<NumModes>(op);
+    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, form, table);
     BOOST_REQUIRE_EQUAL(pr.window.base, window.base);
     BOOST_REQUIRE_EQUAL(pr.window.count, window.count);
 
@@ -220,7 +239,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
         }
         const bool want_hit = seeded.count(key) != 0;
         BOOST_TEST((pr.idx_of[g] < pr.base) == want_hit);
+        BOOST_TEST((pr.ord_of[g] != detail::AntiTable<NumModes>::kNone) == want_hit);
         if (want_hit) {
+            BOOST_TEST(table.row_of(pr.ord_of[g]) == pr.idx_of[g]);
             ++hits_seen;
         }
         else {
@@ -246,11 +267,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
 
     // The second implementation: the dense Monomial-keyed path, sharing no code with set_positions.
     auto ref = make_op<NumModes>(seed_terms);
-    detail::insert_absent_terms<NumModes>(
-        ref,
-        expected_misses.size(),
-        [&](size_t j) -> const Monomial<NumModes> & { return expected_misses[j]; },
-        [&](size_t j, size_t base) { assign_row<NumModes>(*ref.store, base + j, expected_misses[j]); });
+    detail::insert_absent_terms<NumModes>(ref, expected_misses.size(), [&](size_t j, size_t base) {
+        assign_row<NumModes>(*ref.store, base + j, expected_misses[j]);
+    });
 
     BOOST_REQUIRE_EQUAL(op.store->size(), ref.store->size());
     BOOST_TEST(op.store->size() > pr.base);
@@ -264,15 +283,14 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
     }
     BOOST_TEST(overflow_seen > 0);
 
-    // The index, not just the rows: a wrong hash leaves the row correct and unfindable.
+    // Every inserted row is findable again by value, and distinct: the next gate's table is built from
+    // exactly these rows, so a duplicate or an unreadable row would surface there.
+    const auto lookup = detail::build_term_lookup<NumModes>(*op.store, 0, op.store->size());
+    BOOST_REQUIRE_EQUAL(lookup.size(), op.store->size());
     for (size_t i = 0; i < ref.store->size(); ++i) {
-        const auto key = ref.store->row(i);
-        const auto in_op = op.store->find(key);
-        const auto in_ref = ref.store->find(key);
-        BOOST_REQUIRE(in_ref.has_value());
-        BOOST_REQUIRE(in_op.has_value());
-        BOOST_TEST(*in_op == *in_ref);
-        BOOST_TEST(*in_ref == i);
+        const auto it = lookup.find(ref.store->row(i));
+        BOOST_REQUIRE(it != lookup.end());
+        BOOST_TEST(it->second == i);
     }
 }
 
@@ -347,62 +365,49 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_set_positions_matches_set) {
     BOOST_TEST(from_pos.overflow_size() == from_mono.overflow_size());
 }
 
-BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
-    // The hash identity, isolated: fold_hash_positions differing from fold_hash misses, and legally.
+BOOST_AUTO_TEST_CASE(sparse_resolve_table_probe_matches_the_lookup_oracle) {
+    // The partner table against a TermLookup over the same rows: every seeded term hits its own row from
+    // its positions, and a genuinely absent term misses. Spilled (wide) rows are in the draw.
     constexpr size_t kN = 250;
     std::mt19937_64 rng(20260819);
     const auto terms = draw_distinct<kN>(rng, 300);
     auto op = make_op<kN>(terms);
+    const auto table = table_over_all_rows<kN>(op);
+    const auto lookup = detail::build_term_lookup<kN>(*op.store, 0, op.store->size());
+    const uint64_t *labels = routing::linear_basis<2 * kN>().data();
 
-    std::vector<detail::OperatorIndex<kN>::PosT> flat;
-    std::vector<size_t> off;
-    std::vector<uint32_t> kk;
-    for (const auto &m : terms) {
-        off.push_back(flat.size());
-        size_t k = 0;
-        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-            flat.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
-            ++k;
-        }
-        kk.push_back(static_cast<uint32_t>(k));
-    }
-    std::vector<size_t> out(terms.size(), 0);
-    std::vector<uint32_t> hashes(terms.size(), 0);
-    op.store->find_batch_positions(flat, off, kk, out, hashes);
-
-    std::vector<size_t> out_dense(terms.size(), 0);
-    op.store->find_batch(terms.data(), terms.size(), out_dense.data());
+    size_t spilled = 0;
     for (size_t i = 0; i < terms.size(); ++i) {
-        BOOST_REQUIRE(out[i] != detail::OperatorIndex<kN>::kNotFound);
-        BOOST_TEST(out[i] == i);
-        BOOST_TEST(out[i] == out_dense[i]);
-        BOOST_TEST(hashes[i]
-                   == detail::OperatorIndex<kN>::fold_hash_positions(
-                       std::span<const detail::OperatorIndex<kN>::PosT>(flat).subspan(off[i], kk[i])));
+        std::vector<detail::OperatorIndex<kN>::PosT> pos;
+        for (size_t b = terms[i].find_first(); b < terms[i].size(); b = terms[i].find_next(b)) {
+            pos.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
+        }
+        const uint64_t fp = routing::fingerprint_positions(labels, pos.data(), pos.size());
+        BOOST_REQUIRE_EQUAL(fp, routing::linear_hash<2 * kN>(terms[i]));
+        const auto ord = table.probe(*op.store, fp, pos);
+        BOOST_REQUIRE(ord != detail::AntiTable<kN>::kNone);
+        BOOST_TEST(table.row_of(ord) == i);
+        BOOST_TEST(lookup.at(terms[i]) == i);
+        if (!op.store->row_positions(i).inlined()) {
+            ++spilled;
+        }
     }
+    BOOST_TEST(spilled > 0);
 
     const auto absent = draw_distinct<kN>(rng, 50);
-    std::vector<detail::OperatorIndex<kN>::PosT> aflat;
-    std::vector<size_t> aoff;
-    std::vector<uint32_t> akk;
-    for (const auto &m : absent) {
-        aoff.push_back(aflat.size());
-        size_t k = 0;
-        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-            aflat.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
-            ++k;
-        }
-        akk.push_back(static_cast<uint32_t>(k));
-    }
-    std::vector<size_t> aout(absent.size(), 0);
-    op.store->find_batch_positions(aflat, aoff, akk, aout);
     size_t genuinely_absent = 0;
-    for (size_t i = 0; i < absent.size(); ++i) {
+    for (const auto &m : absent) {
         // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.
-        if (!op.store->find(absent[i]).has_value()) {
-            BOOST_TEST(aout[i] == detail::OperatorIndex<kN>::kNotFound);
-            ++genuinely_absent;
+        if (lookup.find(m) != lookup.end()) {
+            continue;
         }
+        std::vector<detail::OperatorIndex<kN>::PosT> pos;
+        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+            pos.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
+        }
+        const uint64_t fp = routing::fingerprint_positions(labels, pos.data(), pos.size());
+        BOOST_TEST(table.probe(*op.store, fp, pos) == detail::AntiTable<kN>::kNone);
+        ++genuinely_absent;
     }
     BOOST_TEST(genuinely_absent > 0);
 }

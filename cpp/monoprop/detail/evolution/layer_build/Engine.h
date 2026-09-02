@@ -29,7 +29,9 @@
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/layer_build/AntiTable.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
@@ -317,11 +319,10 @@ template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
-    // A miss keeps its decoded positions (pos_at indexes deferred_pos_flat_) and the probe's hash.
+    // A miss keeps its decoded positions (pos_at indexes deferred_pos_flat_).
     struct DeferredSelfMiss {
         size_t pos_at;
         uint32_t k;
-        uint32_t hash;
         size_t src;
         int phase;
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
@@ -330,9 +331,10 @@ struct LayerBuildEngine {
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
-    // Follower-matched set over [0, combined_size), caller-owned (see MatchedEpochSet). Distinct leaders
-    // → distinct found, so each slot is marked once.
-    MatchedEpochSet &matched;
+    // This gate's partner table (built by the scan) and the other per-gate scratch, propagator-owned so
+    // capacity survives the gate. The table also carries the leader-pass marks the follower pass reads:
+    // distinct leaders → distinct found, so each ordinal is marked once.
+    GateScratch<NumModes> &scratch;
     size_t combined_size;
     // The destination slots this generator can reach: `plan`'s window for my_rank. Every per-slot array
     // below is sized to it, so a flat slot only ever enters through WindowVec::at_slot.
@@ -358,7 +360,7 @@ struct LayerBuildEngine {
                      mpi::Comm comm_,
                      size_t R_,
                      size_t my_rank_,
-                     MatchedEpochSet &matched_scratch,
+                     GateScratch<NumModes> &scratch_,
                      size_t combined_size_,
                      Sink &&sink_,
                      mpi::PeerPlan plan_ = {}) // dense by default: the tests build the engine directly
@@ -366,7 +368,7 @@ struct LayerBuildEngine {
           comm(comm_),
           R(R_),
           my_rank(my_rank_),
-          matched(matched_scratch),
+          scratch(scratch_),
           combined_size(combined_size_),
           plan(plan_),
           sink(std::move(sink_)) {
@@ -375,7 +377,6 @@ struct LayerBuildEngine {
         assert(window.stop() <= R && window.count != 0);
         queries_r.reset(window);
         src_idx_r.reset(window);
-        matched.begin_gate(combined_size);
     }
 
     // Resolve this rank's own query stream inline, then clear it so the alltoallv never sends to self.
@@ -431,7 +432,7 @@ struct LayerBuildEngine {
         mpi::WindowVec<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         mpi::WindowVec<VecZ> inc_q;
         mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, matched, combined_size, sink);
+        auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, scratch.anti, sink);
         std::vector<int> resp_recv = response_recv_counts();
         mpi::WindowVec<std::vector<typename Sink::Response>> inc_r;
         // The answers retrace the queries, and the pairing is an XOR involution, so the same plan holds.
@@ -462,7 +463,7 @@ struct LayerBuildEngine {
             size_t dst_off = 0;
             for (size_t k = 0; k < nq; ++k) {
                 const size_t next = QW::next_off(q, form, src_off);
-                if (!matched.is_marked(s[k])) {
+                if (!scratch.anti.is_marked_row(s[k])) {
                     dst_off += QW::move_query(q, form, src_off, dst_off);
                     s[kept] = s[k];
                     if (v != nullptr) {
@@ -489,8 +490,7 @@ struct LayerBuildEngine {
             return;
         }
         sink.prepare_deferred(n_miss);
-        // Grow the rows, write each miss's positions, insert; same base+k ordering as insert_absent_terms.
-        // Kept as the dense reference sparse_resolve_tests.cpp differentially tests this path against.
+        // Grow the rows, write each miss's positions; same base+k ordering as insert_absent_terms.
         const size_t base = local_op.store->grow_rows_geometric(n_miss);
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
@@ -498,7 +498,6 @@ struct LayerBuildEngine {
                                           std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         }
-        local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
         local_op.reindex_after_growth(base, n_miss);
     }
 
@@ -522,67 +521,40 @@ private:
         return counts;
     }
 
-    // Batched self-resolve over the index's group-prefetch find_batch; hits/misses are emitted to the sink
-    // in query order. `lv` is the per-query v_src array parallel to `ls` (read only when Sink::wants_values).
-    static constexpr size_t kResolveBatch = 64;
+    // Self-resolve against this gate's partner table: a query's partner, if tracked, is one of the
+    // anticommuting rows the scan entered (AntiTable.h), so the probe is L2-resident and needs no batching.
+    // Hits/misses are emitted to the sink in query order. `lv` is the per-query v_src array parallel to
+    // `ls` (read only when Sink::wants_values).
     auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
         -> void {
-        const size_t op_size = local_op.store->size();
-        // Gathered per batch because a matched follower is skipped; offsets stay absolute into pos_flat.
-        std::array<size_t, kResolveBatch> pos_off;
-        std::array<uint32_t, kResolveBatch> k_of;
-        std::array<uint32_t, kResolveBatch> hashes;
-        std::array<int, kResolveBatch> phases;
-        std::array<size_t, kResolveBatch> srcs;
-        std::array<double, kResolveBatch> vals;
-        std::array<size_t, kResolveBatch> found;
+        const AntiTable<NumModes> &table = scratch.anti;
+        const auto &store = *local_op.store;
         const size_t hi = self_stage_.size();
-        size_t q = 0;
-        while (q < hi) {
-            size_t m = 0;
-            for (; q < hi && m < kResolveBatch; ++q) {
-                const size_t src = ls[q];
-                if (!is_leader_pass && matched.is_marked(src)) {
-                    continue; // follower already matched by a leader → not an independent rotation
-                }
-                pos_off[m] = self_stage_.pos_off[q];
-                k_of[m] = self_stage_.k_of[q];
-                phases[m] = self_stage_.phase_of[q];
-                srcs[m] = src;
-                if constexpr (Sink::wants_values) {
-                    vals[m] = (*lv)[q];
-                }
-                ++m;
+        for (size_t q = 0; q < hi; ++q) {
+            const size_t src = ls[q];
+            if (!is_leader_pass && table.is_marked_row(src)) {
+                continue; // follower already matched by a leader → not an independent rotation
             }
-            if (m == 0) {
-                break;
+            const auto pos =
+                std::span<const RowPosT>(self_stage_.pos_flat).subspan(self_stage_.pos_off[q], self_stage_.k_of[q]);
+            const int phase = self_stage_.phase_of[q];
+            double v_src = 0.0;
+            if constexpr (Sink::wants_values) {
+                v_src = (*lv)[q];
             }
-            // The hashes come back because a miss needs one at insert, folded from these same positions.
-            local_op.store->find_batch_positions(std::span<const RowPosT>(self_stage_.pos_flat),
-                                                 std::span<const size_t>(pos_off).first(m),
-                                                 std::span<const uint32_t>(k_of).first(m),
-                                                 std::span<size_t>(found).first(m),
-                                                 std::span<uint32_t>(hashes).first(m));
-            for (size_t j = 0; j < m; ++j) {
-                double v_src = 0.0;
-                if constexpr (Sink::wants_values) {
-                    v_src = vals[j];
+            const auto ord = table.probe(store, self_stage_.fp_of[q], pos);
+            if (ord != AntiTable<NumModes>::kNone) {
+                // Every table row predates this gate, so a hit is always a pre-layer term (< combined_size).
+                if (is_leader_pass) {
+                    scratch.anti.mark(ord);
                 }
-                // kNotFound == kMissingIndex == size_t max, so one bound check covers both.
-                if (found[j] < op_size) {
-                    // Freshly inserted partners (found >= combined_size) skip the mark: combined_size bounds it.
-                    if (is_leader_pass && found[j] < combined_size) {
-                        matched.mark(found[j]);
-                    }
-                    sink.self_hit(srcs[j], found[j], phases[j], v_src);
-                }
-                else {
-                    // The stage dies with this pass and the misses are flushed after both, so copy now.
-                    const size_t at = deferred_pos_flat_.size();
-                    const auto *const first = self_stage_.pos_flat.data() + pos_off[j];
-                    deferred_pos_flat_.insert(deferred_pos_flat_.end(), first, first + k_of[j]);
-                    deferred_self_misses.push_back({at, k_of[j], hashes[j], srcs[j], phases[j], v_src});
-                }
+                sink.self_hit(src, table.row_of(ord), phase, v_src);
+            }
+            else {
+                // The stage dies with this pass and the misses are flushed after both, so copy now.
+                const size_t at = deferred_pos_flat_.size();
+                deferred_pos_flat_.insert(deferred_pos_flat_.end(), pos.begin(), pos.end());
+                deferred_self_misses.push_back({at, static_cast<uint32_t>(pos.size()), src, phase, v_src});
             }
         }
     }
@@ -603,7 +575,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  const std::optional<double> &upper_atol,
                  const std::optional<double> &param,
                  std::optional<size_t> only_rotate_len_k,
-                 MatchedEpochSet &matched_scratch,
+                 GateScratch<NumModes> &scratch,
                  mpi::Comm comm,
                  CosMask *out_cos = nullptr,
                  FusedContract *fused_contract = nullptr,
@@ -653,6 +625,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     FusedScanResult<NumModes> fused;
     CosMask cos_all;
+    // An identity generator skips the scan, so the table it would have built is emptied here.
+    scratch.anti.begin(0);
     if (!identity_gen) {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         fused = with_algebra<NumModes>(basis, [&]<typename A>() {
@@ -665,7 +639,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        scan_window,
                                                        my_rank,
                                                        router,
-                                                       gen_shift,
+                                                       scratch,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
                                                        cos_build);
@@ -689,7 +663,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              comm,
                                              R,
                                              my_rank,
-                                             matched_scratch,
+                                             scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink),
                                              plan);

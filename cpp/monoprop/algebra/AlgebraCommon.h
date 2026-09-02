@@ -16,6 +16,7 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -181,6 +182,20 @@ auto support_cutoff(const Monomial<NumModes> &mono, unsigned int cutoff) -> bool
     return support_cutoff<NumModes>(mono, cutoff, NumModes);
 }
 
+// The (k, d) digest forms of the two predicates above: k = |M|, d = modes carrying both positions. Then
+// xor_sum = k - 2d, popcount_sum = k and or_sum = k - d, so nothing here reads a bitset. Same precondition
+// as cutoff_sums with no active mask: every set position of a well-formed monomial lies at or above
+// 2 * (NumModes - logical_num_modes), which the constructor's bounds check guarantees for stored rows.
+[[nodiscard]] inline constexpr auto digest_is_paired(size_t k, size_t d) noexcept -> bool {
+    return k == 2 * d;
+}
+[[nodiscard]] inline constexpr auto length_keeps(size_t k, size_t d, unsigned int cutoff) noexcept -> bool {
+    return digest_is_paired(k, d) || k <= cutoff;
+}
+[[nodiscard]] inline constexpr auto support_keeps(size_t k, size_t d, unsigned int cutoff) noexcept -> bool {
+    return digest_is_paired(k, d) || (k - d) <= cutoff;
+}
+
 namespace detail {
 
 template <size_t NumModes>
@@ -241,6 +256,21 @@ public:
             return (*support_cutoff_)(mono);
         }
         return cutoff_fn_(mono);
+    }
+
+    // True when the cutoff is one of the two structural forms, i.e. passes_from_digest answers it. An
+    // opaque cutoff_fn_ (basis change) has no digest and the emit site must materialise the partner.
+    [[nodiscard]] auto has_digest_form() const -> bool {
+        return length_cutoff_ != nullptr || support_cutoff_ != nullptr;
+    }
+
+    // The decision from the (k, d) digest alone (see length_keeps). Precondition: has_digest_form().
+    [[nodiscard]] auto passes_from_digest(size_t k, size_t d) const -> bool {
+        if (length_cutoff_ != nullptr) {
+            return length_keeps(k, d, length_cutoff_->cutoff);
+        }
+        assert(support_cutoff_ != nullptr && "passes_from_digest on an opaque cutoff");
+        return support_keeps(k, d, support_cutoff_->cutoff);
     }
 
     // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size

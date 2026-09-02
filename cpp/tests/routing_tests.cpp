@@ -14,9 +14,10 @@
 
 // routing::Router -- the term -> flat-slot map. Two states, two properties that carry the whole design:
 //   * splitmix is bit-for-bit today's `monomial_hash % P`, so the refactor cannot move a single term;
-//   * under linear routing the destination RANK of M^G is rank(M) ^ shift(G), which is what turns the
-//     dense all-to-all into a pairwise exchange. A break here is silent -- wrong owner, not a crash --
-//     so the shift identity and the Scan/find_rank agreement are both asserted explicitly.
+//   * under linear routing the destination of M^G is read off fp(M) ^ fp(G), and with a power-of-two
+//     partition count the whole slot obeys flat(M^G) == flat(M) ^ flat_shift(G), which is what turns
+//     the dense all-to-all into a pairwise exchange. A break here is silent -- wrong owner, not a crash
+//     -- so the shift identity and the Scan/find_rank agreement are both asserted explicitly.
 //
 // Flat cases with a shared prefix, no suite nesting (suites break Boost's ctest discovery here).
 
@@ -58,9 +59,8 @@ auto monomials_of_weight(size_t count, size_t weight, uint64_t seed) -> std::vec
     return out;
 }
 
-// The map Router::dest computed before the basis was transposed: load one 64-bit vector per SET bit and
-// XOR. Rebuilt from mix64 and the seed rather than read from linear_basis(), so the plane build and this
-// share nothing but the specification.
+// The specified map: load one 64-bit label per SET bit and XOR. Rebuilt from mix64 and the seed rather
+// than read from linear_basis(), so the router and this share nothing but the specification.
 template <size_t NumBits>
 auto linear_hash_reference(const monoprop::Bitset<NumBits> &bits) -> uint64_t {
     const uint64_t seed = routing::seed_from_env();
@@ -148,33 +148,52 @@ BOOST_AUTO_TEST_CASE(routing_shift_identity_holds_under_linear_routing) {
     }
 }
 
-// What the emit path actually calls. rank(M^G) == rank(M) ^ shift(G) is an identity, so the check is
-// exact equality against dest() over every geometry and both modes -- including splitmix, where
-// dest_from_shift is a pass-through and must not move a term either. S == 1 (no partition index at all),
-// S a power of two (the masked modulo) and S = 3, 14 (the division) are all here.
-BOOST_AUTO_TEST_CASE(routing_dest_from_shift_agrees_with_dest) {
+// What the emit path actually calls: the partner's slot off its fingerprint fp(M) ^ fp(G). The check is
+// exact equality against dest() over every linear geometry -- S == 1 (no partition index at all), S a
+// power of two (the linear partition bits) and S = 3, 14 (the mixed modulo) are all here -- and, where
+// the whole slot is linear, the shift identity flat(M^G) == flat(M) ^ flat_shift(G).
+BOOST_AUTO_TEST_CASE(routing_dest_from_fingerprint_agrees_with_dest) {
     const auto terms = random_monomials(400, 6, 0x5E1F7A11ULL);
     const auto gens = random_monomials(25, 4, 0x9110F7E5ULL);
     const std::vector<std::pair<size_t, size_t>>
-        geometries{{1, 1}, {8, 1}, {16, 1}, {2, 2}, {32, 16}, {64, 8}, {4, 3}, {8, 14}, {1, 14}};
+        geometries{{8, 1}, {16, 1}, {2, 2}, {32, 16}, {64, 8}, {4, 3}, {8, 14}};
     size_t checked = 0;
+    size_t shifted = 0;
     for (const auto &[r, s] : geometries) {
-        for (const bool linear : {false, true}) {
-            const auto router = Router::for_modes<kN>(r, s, linear);
-            for (const auto &g : gens) {
-                const size_t shift = router.rank_shift<kN>(g);
-                for (const auto &m : terms) {
-                    // dest(m) stands in for the flat slot the owning rank would pass in.
-                    const auto partner = m ^ g;
-                    BOOST_REQUIRE_EQUAL(router.dest_from_shift<kN>(partner, router.dest<kN>(m), shift),
-                                        router.dest<kN>(partner));
-                    ++checked;
+        const auto router = Router::for_modes<kN>(r, s, true);
+        BOOST_REQUIRE(router.is_linear());
+        BOOST_REQUIRE_EQUAL(router.is_flat_linear(), std::has_single_bit(s));
+        for (const auto &g : gens) {
+            const uint64_t fp_g = routing::linear_hash<2 * kN>(g);
+            const auto flat_shift = router.flat_shift<kN>(g);
+            BOOST_REQUIRE_EQUAL(flat_shift.has_value(), router.is_flat_linear());
+            for (const auto &m : terms) {
+                const auto partner = m ^ g;
+                const uint64_t fp_m = routing::linear_hash<2 * kN>(m);
+                BOOST_REQUIRE_EQUAL(router.dest_from_fingerprint(fp_m ^ fp_g), router.dest<kN>(partner));
+                BOOST_REQUIRE_EQUAL(router.dest_from_fingerprint(fp_m), router.dest<kN>(m));
+                if (flat_shift) {
+                    BOOST_REQUIRE_EQUAL(router.dest<kN>(partner), router.dest<kN>(m) ^ *flat_shift);
+                    ++shifted;
                 }
+                ++checked;
             }
         }
     }
-    BOOST_TEST_MESSAGE("dest_from_shift checks: " << checked);
-    BOOST_TEST(checked >= 100000U);
+    BOOST_TEST_MESSAGE("dest_from_fingerprint checks: " << checked << " flat-shift checks: " << shifted);
+    BOOST_TEST(checked >= 50000U);
+    BOOST_TEST(shifted >= 20000U);
+}
+
+// The rank shift is the low log2(R) bits of the generator's image, zero under splitmix.
+BOOST_AUTO_TEST_CASE(routing_rank_shift_is_the_low_rank_bits) {
+    const auto gens = random_monomials(50, 4, 0x1234ULL);
+    for (const auto &g : gens) {
+        BOOST_TEST(Router::for_modes<kN>(16, 3, true).rank_shift<kN>(g) == (routing::linear_hash<2 * kN>(g) & 15U));
+        BOOST_TEST(Router::for_modes<kN>(16, 3, false).rank_shift<kN>(g) == 0U);
+        BOOST_TEST(!Router::for_modes<kN>(16, 3, false).flat_shift<kN>(g).has_value());
+        BOOST_TEST(!Router::for_modes<kN>(1, 8, true).flat_shift<kN>(g).has_value()); // R == 1 is dense
+    }
 }
 
 // The S == 1 skip: the partition index is 0 for every term, so under linear routing the destination is
@@ -187,9 +206,41 @@ BOOST_AUTO_TEST_CASE(routing_single_partition_destination_is_the_rank_index) {
     }
 }
 
-// The consequence that the transport will rely on: every term a rank owns sends its query for one
-// generator to exactly ONE peer rank -- and the partition index within that peer still spreads.
-BOOST_AUTO_TEST_CASE(routing_fanout_is_one_under_linear_routing) {
+// With S a power of two the whole slot is linear: every term a SLOT owns sends its query for one
+// generator to exactly one peer slot, inside the rank as well as across ranks.
+BOOST_AUTO_TEST_CASE(routing_fanout_is_one_slot_when_partitions_are_a_power_of_two) {
+    constexpr size_t kRanks = 8;
+    constexpr size_t kParts = 16;
+    const auto router = Router::for_modes<kN>(kRanks, kParts, true);
+    BOOST_REQUIRE(router.is_flat_linear());
+    BOOST_REQUIRE_EQUAL(router.flat_linear_bits(), 7U);
+    const auto terms = random_monomials(6000, 6, 0xCCCC03ULL);
+    const auto gens = random_monomials(12, 4, 0xDDDD04ULL);
+    std::vector<std::vector<Monomial<kN>>> owned(kRanks * kParts);
+    for (const auto &m : terms) {
+        owned[router.dest<kN>(m)].push_back(m);
+    }
+    size_t populated = 0;
+    for (size_t slot = 0; slot < owned.size(); ++slot) {
+        if (owned[slot].empty()) {
+            continue;
+        }
+        ++populated;
+        for (const auto &g : gens) {
+            std::set<size_t> dests;
+            for (const auto &m : owned[slot]) {
+                dests.insert(router.dest<kN>(m ^ g));
+            }
+            BOOST_REQUIRE_EQUAL(dests.size(), 1U);
+            BOOST_REQUIRE_EQUAL(*dests.begin(), slot ^ *router.flat_shift<kN>(g));
+        }
+    }
+    BOOST_TEST(populated == kRanks * kParts); // 6000 terms over 128 cosets: every slot populated
+}
+
+// With S not a power of two only the rank level is linear: one peer rank, and the partition index within
+// that peer still spreads.
+BOOST_AUTO_TEST_CASE(routing_fanout_is_one_rank_when_partitions_are_not_a_power_of_two) {
     constexpr size_t kRanks = 8;
     constexpr size_t kParts = 14;
     const auto router = Router::for_modes<kN>(kRanks, kParts, true);
@@ -281,7 +332,7 @@ BOOST_AUTO_TEST_CASE(routing_every_dest_lands_inside_the_generators_window) {
                 for (const auto &m : terms) {
                     const size_t me = router.dest<kN>(m);
                     const mpi::SlotWindow w = plan.window(me, r, s);
-                    BOOST_REQUIRE(w.contains(router.dest_from_shift<kN>(m ^ g, me, shift)));
+                    BOOST_REQUIRE(w.contains(router.dest<kN>(m ^ g)));
                     ++checked;
                 }
             }
@@ -348,10 +399,10 @@ BOOST_AUTO_TEST_CASE(routing_dest_is_in_range_and_deterministic) {
     }
 }
 
-// The transposed basis must be the SAME map, not merely a faster one: a divergence is a silently wrong
-// owner. Pin dest() and rank_shift() against the old bit-walk over both routers, every geometry, and
-// popcounts from empty to full support.
-BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) {
+// dest() must be the specified map, bit for bit, on both routers and every geometry: a divergence is a
+// silently wrong owner. The reference rebuilds the label table from mix64 and the seed, so it shares
+// nothing with linear_basis() but the specification; fingerprint_positions is pinned to it as well.
+BOOST_AUTO_TEST_CASE(routing_dest_is_bit_identical_to_the_specified_map) {
     std::vector<Monomial<kN>> monos;
     for (const size_t w : {size_t{0},
                            size_t{1},
@@ -368,8 +419,7 @@ BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) 
     }
     BOOST_REQUIRE_EQUAL(monos.size(), 5000U);
 
-    // (R, S), each run under both routers: log2(R) runs 0, 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, so the plane
-    // count varies from none to twelve and R = 1 pins the geometry that is dense under either mode.
+    const uint64_t *labels = routing::linear_basis<2 * kN>().data();
     const std::vector<std::pair<size_t, size_t>> geometries{{128, 14},
                                                             {16, 1},
                                                             {64, 28},
@@ -391,13 +441,25 @@ BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) 
             const uint64_t lin_mask = d == 0 ? 0ULL : (uint64_t{1} << d) - 1;
             for (const auto &m : monos) {
                 const uint64_t q = monomial_hash<kN>(m);
-                // d == 0 is the splitmix arm, and R = 1 under linear routing lands there too.
-                const size_t expected =
-                    d == 0 ? static_cast<size_t>(q % (r * s))
-                           : static_cast<size_t>(((linear_hash_reference<2 * kN>(m) & lin_mask) * s) + (q % s));
+                const uint64_t fp = linear_hash_reference<2 * kN>(m);
+                std::vector<uint16_t> pos;
+                for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+                    pos.push_back(static_cast<uint16_t>(b));
+                }
+                BOOST_REQUIRE_EQUAL(routing::fingerprint_positions(labels, pos.data(), pos.size()), fp);
+                BOOST_REQUIRE_EQUAL(routing::linear_hash<2 * kN>(m), fp);
+                size_t expected = 0;
+                if (d == 0) {
+                    expected = static_cast<size_t>(q % (r * s)); // splitmix, and R = 1 under linear routing
+                }
+                else {
+                    const size_t rank = static_cast<size_t>(fp & lin_mask);
+                    const size_t part = std::has_single_bit(s) ? static_cast<size_t>((fp >> d) & (s - 1))
+                                                               : static_cast<size_t>(routing::mix64(fp) % s);
+                    expected = (rank * s) + part;
+                }
                 BOOST_REQUIRE_EQUAL(router.dest<kN>(m), expected);
-                BOOST_REQUIRE_EQUAL(router.rank_shift<kN>(m),
-                                    static_cast<size_t>(linear_hash_reference<2 * kN>(m) & lin_mask));
+                BOOST_REQUIRE_EQUAL(router.rank_shift<kN>(m), static_cast<size_t>(fp & lin_mask));
                 ++checked;
             }
         }

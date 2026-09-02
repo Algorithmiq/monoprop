@@ -18,6 +18,7 @@
 // fold, a term's rotation sign and emitted sine phase, the coefficient codec, and the diagonal
 // initial-state score. The arithmetic behind each answer lives in MajoranaAlgebra.h / PauliAlgebra.h.
 
+#include <cassert>
 #include <complex>
 #include <concepts>
 #include <cstddef>
@@ -59,6 +60,20 @@ struct MajoranaAlgebra {
         return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
     }
 
+    // The same sign from M's ascending positions instead of its bitset: parity_and(W) is the parity of
+    // |M ∩ W|, i.e. the XOR of W's bits AT those positions, so a packed row is signed without expansion.
+    // Always available for this algebra (the mask covers every position).
+    static auto sign_from_positions_ok(const GenContext & /*ctx*/) -> bool { return true; }
+    template <typename PosT>
+    [[gnu::always_inline]] static auto rotation_sign_positions(const GenContext &ctx, const PosT *pos, size_t count)
+        -> int {
+        bool parity = false;
+        for (size_t j = 0; j < count; ++j) {
+            parity ^= ctx.interleave_mask.test(static_cast<size_t>(pos[j]));
+        }
+        return parity ? -1 : 1;
+    }
+
     // Anticommutation fold columns = G itself; odd |G| needs the per-row parity(|M|) correction.
     static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return gen; }
     static auto fold_needs_odd_correction(const Monomial<NumModes> &gen) -> bool { return gen.count() % 2 != 0; }
@@ -97,6 +112,23 @@ struct PauliAlgebra {
     // Pauli's rotation sign is already the emitted sine phase -- no Hermitian fold.
     static auto emit_phase(int rotation_sign, size_t /*mono_pop*/, size_t /*gen_pop*/, size_t /*overlap*/) -> int {
         return rotation_sign;
+    }
+
+    // The same sign from M's positions: gather the bits at G's qubits into the per-gate compact word and
+    // run the kernel there (pauli_rotation_sign_compact). Unavailable when G acts on more than 32 qubits.
+    static auto sign_from_positions_ok(const GenContext &ctx) -> bool { return ctx.pauli_ctx.compact_ok; }
+    template <typename PosT>
+    [[gnu::always_inline]] static auto rotation_sign_positions(const GenContext &ctx, const PosT *pos, size_t count)
+        -> int {
+        assert(ctx.pauli_ctx.compact_ok);
+        constexpr uint8_t kNone = PauliGenContext<NumModes>::kNotInGen;
+        uint64_t m_compact = 0;
+        for (size_t j = 0; j < count; ++j) {
+            const uint8_t cs = ctx.pauli_ctx.compact_slot[static_cast<size_t>(pos[j])];
+            // cs == kNone contributes nothing: shift by a masked amount and AND with the predicate.
+            m_compact |= (uint64_t{cs != kNone}) << (cs & 63U);
+        }
+        return pauli_rotation_sign_compact<NumModes>(ctx.pauli_ctx, m_compact);
     }
 
     // Anticommutation fold columns = J(G) = pair_swap(G); Pauli needs no odd-|G| row-parity correction.

@@ -97,6 +97,13 @@ Key files:
 - **`Monomial<N>`** (`cpp/monoprop/core/Monomial.h`) = `Bitset<2*N>`: ONE basis operator, two bits per
   mode/qubit. Basis-agnostic — read as a Majorana product, or as a Pauli string (JW image).
   Collections: `MonomialList<N>` (no coeffs) and `MonomialMap<N>` (monomial → real coeff).
+- **Partner lookup is per gate, not per operator** (`cpp/monoprop/detail/evolution/layer_build/AntiTable.h`):
+  a tracked partner `M⊕G` of an anticommuting term anticommutes with `G` too, so it is found inside the
+  gate's own anticommuting set. `detail::OperatorIndex<N>` therefore keeps no hash table — rows only —
+  and the out-of-gate lookups (`get_operator`'s pending drain, `update_initial_operator`) build a transient
+  `detail::TermLookup` (`detail/operator/TermLookup.h`) over the rows they need. The per-gate key is the
+  routing fingerprint (`routing::fingerprint_positions`, `detail/mpi/Routing.h`), GF(2)-linear so the
+  partner's key is `fp(M) ^ fp(G)`; every key match is confirmed against the positions.
 - **Row access** (`cpp/monoprop/detail/operator/RowAccess.h`): the one backend-agnostic vocabulary
   (`materialize_row`, `assign_row`, `row_popcount`, `for_each_row_position`) over the dense
   `MonomialList<N>` and the packed `detail::OperatorIndex<N>`. Any template parameterized on the row
@@ -158,7 +165,7 @@ mp = MajoranaPropagator(operator, initial_state, cutoff=4)
 
 ### Testing Structure
 
-- `tests/cases.py`: Parametrized test cases using `pytest-cases`; `load_problem()` loads a `tests/data/*.msgpack` fixture directly into the public API (`MonomialCircuit` + `MonomialOperator`). C++ tests use the equivalent `test_utils::load_case()` in `cpp/tests/TestData.h`
+- `tests/cases.py`: Parametrized test cases using `pytest-cases`; `load_problem()` loads a `tests/data/*.msgpack` fixture directly into the public API (`Circuit` + `MajoranaOperator`). C++ tests use the equivalent `test_utils::load_case()` in `cpp/tests/TestData.h`
 - Fixture msgpack schema is documented in `tests/data/README.md`
 - Tests validate against exact solutions for small systems
 - Heavy use of `@parametrize_with_cases` decorators

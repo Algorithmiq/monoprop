@@ -32,31 +32,6 @@ namespace monoprop::detail {
 // OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
-// Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
-// across gates.
-struct MatchedEpochSet {
-    // One 2-byte stamp per term: the counter is never serialised, never exchanged, only compared to cur_.
-    using Stamp = uint16_t;
-
-    std::vector<Stamp> epoch_;
-    Stamp cur_ = 0;
-
-    // Wraps once per 65535 gates; without the fill a stale stamp on a row reused after a truncation aliases.
-    auto begin_gate(size_t n) -> void {
-        if (cur_ == std::numeric_limits<Stamp>::max()) {
-            std::fill(epoch_.begin(), epoch_.end(), Stamp{0});
-            cur_ = 0;
-        }
-        ++cur_;
-        if (epoch_.size() < n) {
-            epoch_.resize(n, Stamp{0});
-        }
-    }
-    auto mark(size_t i) -> void { epoch_[i] = cur_; }
-    [[nodiscard]] auto is_marked(size_t i) const -> bool { return epoch_[i] == cur_; }
-    [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
-};
-
 // A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower
 // the gather to memmove.
 struct PhasedEntry {

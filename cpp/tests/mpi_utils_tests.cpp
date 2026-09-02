@@ -108,11 +108,9 @@ auto draw_well_formed(std::mt19937_64 &rng, size_t logical, size_t weight) -> Mo
 auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> {
     detail::MPOperator<32> op;
     op.basis = Basis::Majorana;
-    detail::insert_absent_terms<32>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<32> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<32>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<32>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<32>(*op.store, base + k, terms[k]);
+    });
     return op;
 }
 
@@ -190,8 +188,9 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     std::optional<size_t> first_total;
     for (const size_t ranks : {2U, 4U, 8U}) {
         // BOTH routers, because the agreement is a property of the pair and not of either hash: the scan
-        // calls Router::dest_from_shift and find_rank calls Router::dest, so a divergence introduced by
-        // one of them shows up here whichever routing the geometry resolves to.
+        // routes off the partner's fingerprint (Router::dest_from_fingerprint) or the dense hash, and
+        // find_rank calls Router::dest, so a divergence introduced by one of them shows up here whichever
+        // routing the geometry resolves to.
         for (const bool linear : {false, true}) {
             const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, linear);
             const size_t shift = router.rank_shift<kN>(gen);
@@ -215,6 +214,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                std::cref(coeffs),
                                                                                std::nullopt,
                                                                                std::optional<double>{0.3});
+                detail::GateScratch<kN> scratch;
                 const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
                                                                                          gen,
                                                                                          eval,
@@ -224,10 +224,12 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          window,
                                                                                          my_rank,
                                                                                          router,
-                                                                                         shift,
+                                                                                         scratch,
                                                                                          false,
                                                                                          nullptr,
                                                                                          1.0);
+                // Every anticommuting row is in the table, emitted or not.
+                BOOST_REQUIRE(scratch.anti.size() > 0U);
                 BOOST_REQUIRE_EQUAL(res.leader_queries.size(), window.count);
                 if (window.contains(my_rank)) {
                     // The scan routes a self-owned partner to the stage, so my own bucket must be empty.

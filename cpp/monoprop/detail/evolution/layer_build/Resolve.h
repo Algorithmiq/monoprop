@@ -23,9 +23,11 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
+#include "monoprop/detail/evolution/layer_build/AntiTable.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -56,8 +58,8 @@ struct IncomingProbe {
     DefaultInitVector<PosT> pos_flat;
     DefaultInitVector<size_t> pos_off;
     DefaultInitVector<uint32_t> k_of;
-    // g → fold_hash of the query key, folded by the probe and reused by the insert.
-    DefaultInitVector<uint32_t> hash_of;
+    // g → the query's ordinal in the receiver's AntiTable (AntiTable::kNone for a miss): the mark handle.
+    DefaultInitVector<uint32_t> ord_of;
 
     //! Query g's ascending positions, as a view into pos_flat.
     [[nodiscard]] auto positions_at(size_t g) const -> std::span<const PosT> {
@@ -85,11 +87,15 @@ struct IncomingProbe {
 };
 
 // Read-only phases 1-2 of the exchange: `form` says whether the incoming records are fused
-// (ContractSink) or plain (GraphSink). The caller runs phase 3, then insert_incoming_misses.
+// (ContractSink) or plain (GraphSink). Each query is looked up in the receiver's own AntiTable for this
+// gate -- its fingerprint recomputed off the decoded positions, so the wire carries none -- because a
+// tracked partner of an anticommuting term is itself anticommuting (AntiTable.h). The caller runs phase
+// 3, then insert_incoming_misses.
 template <size_t NumModes>
 auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
                             MPOperator<NumModes> &op,
-                            QueryForm form) -> IncomingProbe<NumModes> {
+                            QueryForm form,
+                            const AntiTable<NumModes> &table) -> IncomingProbe<NumModes> {
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingProbe<NumModes>::PosT;
     IncomingProbe<NumModes> pr;
@@ -119,7 +125,7 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
     pr.idx_of.resize(pr.nq_total);
     pr.pos_off.resize(pr.nq_total);
     pr.k_of.resize(pr.nq_total);
-    pr.hash_of.resize(pr.nq_total);
+    pr.ord_of.resize(pr.nq_total);
     pr.pos_flat.clear();
     // A hint only, so this stays one allocation for the common case.
     pr.pos_flat.reserve(pr.nq_total * QW::kReservePositionsPerQuery);
@@ -139,17 +145,13 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
         }
     }
     {
-        const size_t op_size = op.store->size();
-        // The vectors are sized to capacity, not to nq_total, so every span is trimmed explicitly.
-        op.store->find_batch_positions(std::span<const PosT>(pr.pos_flat),
-                                       std::span<const size_t>(pr.pos_off).first(pr.nq_total),
-                                       std::span<const uint32_t>(pr.k_of).first(pr.nq_total),
-                                       std::span<size_t>(pr.idx_of).first(pr.nq_total),
-                                       std::span<uint32_t>(pr.hash_of).first(pr.nq_total));
+        const uint64_t *const labels = routing::linear_basis<2 * NumModes>().data();
         for (size_t g = 0; g < pr.nq_total; ++g) {
-            if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
-                pr.idx_of[g] = kMissingIndex;
-            }
+            const auto pos = pr.positions_at(g);
+            const uint64_t fp = routing::fingerprint_positions(labels, pos.data(), pos.size());
+            const auto ord = table.probe(*op.store, fp, pos);
+            pr.ord_of[g] = ord;
+            pr.idx_of[g] = ord == AntiTable<NumModes>::kNone ? kMissingIndex : table.row_of(ord);
         }
     }
 
@@ -172,14 +174,13 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
     if (n_miss == 0) {
         return;
     }
-    // insert_absent_terms' three steps without its two dense round-trips, and on the same ordering
-    // contract, which is what matters: slot j lands at base+j, in miss order = (sender, record) order.
+    // insert_absent_terms' steps without its dense round-trip, and on the same ordering contract, which is
+    // what matters: slot j lands at base+j, in miss order = (sender, record) order.
     const size_t base = op.store->grow_rows_geometric(n_miss);
     for (size_t j = 0; j < n_miss; ++j) {
         const size_t g = pr.miss_g[j];
         op.store->set_positions(base + j, pr.positions_at(g));
     }
-    op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return pr.hash_of[pr.miss_g[j]]; });
     op.reindex_after_growth(base, n_miss);
 }
 
@@ -194,11 +195,10 @@ template <size_t NumModes, typename Sink>
 auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
                       MPOperator<NumModes> &op,
                       bool is_leader_pass,
-                      MatchedEpochSet &matched,
-                      size_t combined_size, // pre-layer op size: bounds the matched set
+                      AntiTable<NumModes> &table, // this gate's anticommuting rows; marks live here
                       Sink &sink) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form());
+    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), table);
     // The response window is the query window: the pairing is an XOR involution, so a rank answers
     // exactly the slots it queried.
     mpi::WindowVec<std::vector<Resp>> responses(pr.window);
@@ -209,16 +209,16 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
         return responses;
     }
 
-    // Phase 3 (scatter): responses + sink records + matched-follower marks. Freshly inserted partners
-    // (ip ≥ combined_size) skip the mark.
+    // Phase 3 (scatter): responses + sink records + matched-follower marks. A miss has no ordinal and so
+    // no mark: freshly inserted partners are never followers of this gate.
     sink.prepare(pr, op, responses);
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const mpi::WindowIndex s = pr.sender_index(g);
         const size_t q = g - pr.goff[s.value];
         const size_t ip = pr.idx_of[g];
         responses[s][q] = sink.on_resolved(g, s, q, ip, pr, incoming);
-        if (is_leader_pass && ip < combined_size) {
-            matched.mark(ip);
+        if (is_leader_pass && pr.ord_of[g] != AntiTable<NumModes>::kNone) {
+            table.mark(pr.ord_of[g]);
         }
     }
 

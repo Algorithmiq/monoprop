@@ -175,13 +175,11 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
 
-    size_t i = 0;
-    // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here.
+    // The initial monomials are distinct (OperatorDict keys, or the paired basis), so an append is an insert.
     for (size_t r = 0; r < op.size(); ++r) {
         const auto &mono = materialize_row<NumModes>(op, r);
         if (my_rank == find_rank<NumModes>(mono, router)) {
             mp_op_.append_term(mono);
-            mp_op_.store->emplace(mono, i++);
         }
     }
 
@@ -201,7 +199,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       cutoff_fn_(other.cutoff_fn_),
       mp_op_(other.mp_op_),
       graph_(other.graph_),
-      matched_scratch_(other.matched_scratch_),
+      gate_scratch_(), // capacity only; nothing in it outlives a gate
       cutoff_(other.cutoff_),
       lower_atol_(other.lower_atol_),
       upper_atol_(other.upper_atol_),
@@ -798,7 +796,7 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          upper_atol_,
                                          param,
                                          only_rotate_len_k,
-                                         matched_scratch_,
+                                         gate_scratch_,
                                          comm_,
                                          out_cos,
                                          fused_contract,

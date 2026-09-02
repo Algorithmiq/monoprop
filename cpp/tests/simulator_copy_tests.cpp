@@ -19,6 +19,7 @@
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/operator/TermLookup.h"
 
 // Copy-constructing a simulator must produce a fully independent deep copy -- the mechanism behind
 // Python __deepcopy__. The operator store is non-copyable, so the copy rebuilds it via clone() and
@@ -99,10 +100,13 @@ BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_index_valid, ExampleDataFix) 
 
     const auto &idx = copy.indexing();
     BOOST_TEST(idx.size() == sim.indexing().size());
+    // Every row of the copy is a distinct term equal to the original's row at the same index.
+    const auto lookup = monoprop::detail::build_term_lookup<n_modes>(idx, 0, idx.size());
+    BOOST_TEST(lookup.size() == idx.size());
     bool all_found = true;
     idx.for_each([&](const auto &mono, size_t i) {
-        const auto f = idx.find(mono);
-        if (!f || *f != i) {
+        const auto f = lookup.find(mono);
+        if (f == lookup.end() || f->second != i || !(sim.indexing().row(i) == mono)) {
             all_found = false;
         }
     });
