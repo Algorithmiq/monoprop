@@ -75,17 +75,11 @@ public:
     };
 
     /// Pins the propagator control block and its current revision.
-    FunctionalPlan(size_t num_params, std::shared_ptr<const FunctionalControl> control, Local local)
-        : num_params_(num_params),
-          control_(std::move(control)),
+    FunctionalPlan(std::shared_ptr<const FunctionalControl> control, std::variant<Local, Fanout> shape)
+        : control_(std::move(control)),
           expected_revision_(control_->structure_revision.load()),
-          shape_(std::move(local)) {}
-
-    FunctionalPlan(size_t num_params, std::shared_ptr<const FunctionalControl> control, Fanout fanout)
-        : num_params_(num_params),
-          control_(std::move(control)),
-          expected_revision_(control_->structure_revision.load()),
-          shape_(std::move(fanout)) {}
+          shape_(std::move(shape)),
+          num_params_(derive_num_params(shape_)) {}
 
     /// Required parameter-axis length.
     auto num_params() const -> size_t { return num_params_; }
@@ -158,10 +152,20 @@ private:
                && local.mp_op->inverted_index_->rows() == local.inverted_index_rows;
     }
 
-    size_t num_params_{0};
+    // Read off the shape rather than passed in, so a plan cannot declare a parameter axis its own
+    // mapping disagrees with.
+    static auto derive_num_params(const std::variant<Local, Fanout> &shape) -> size_t {
+        if (const auto *fanout = std::get_if<Fanout>(&shape)) {
+            // Child plans share graph structure, so any of them gives the axis.
+            return fanout->partitions.front()->num_params();
+        }
+        return expected_num_params(std::get<Local>(shape).parameter_mapping);
+    }
+
     std::shared_ptr<const FunctionalControl> control_;
     size_t expected_revision_{0};
     std::variant<Local, Fanout> shape_;
+    size_t num_params_{0};
 };
 
 /// Shared functional handle; derived types differ only in `operator()`.

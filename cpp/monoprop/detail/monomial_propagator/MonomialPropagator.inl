@@ -111,7 +111,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     }
 
     const size_t n_partitions = resolve_partition_count_(partitions, comm);
-    // All ranks need the same partition count for hybrid collectives.
+    // The R ranks x S partitions form one flat P = R*S SPMD world, so a mismatch across ranks would
+    // deadlock at the first hybrid collective.
     if (comm.kind == mpi::Comm::Kind::Mpi && mpi::size(comm) > 1
         && mpi::allreduce_sum<size_t>(n_partitions, comm) != n_partitions * static_cast<size_t>(mpi::size(comm))) {
         throw PartitionCountMismatch(
@@ -165,11 +166,11 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     auto op = schrodinger_ ? generate_paired_op<NumModes>(sc / 2 + sc % 2, logical_num_modes_) : local_heisenberg_terms;
 
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
-    // packed_inline_width_() depends on cutoff_fn_.
+    // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
     mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
     mp_op_.store->reserve(expected_local_terms);
-    // Rebuild the lazy index for the new store.
+    // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
 
     size_t i = 0;
@@ -257,29 +258,28 @@ auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mp
 // Partition fan-out vocabulary; the declarations record which helper is legal where.
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::check_partition_fault_() const -> void {
+auto MonomialPropagator<NumModes>::partitions_() const -> detail::partition::PartitionGroup<NumModes> & {
     validate_partition_facade_intact(functional_control_->partition_fault.load());
+    return *partition_group_;
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void {
-    check_partition_fault_();
-    partition_group_->run_on_all([&](int r) { fn(partition_group_->partition(r)); });
+    auto &group = partitions_();
+    group.run_on_all([&](int r) { fn(group.partition(r)); });
 }
 
 template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_(Fn fn) -> std::vector<R> {
-    check_partition_fault_();
-    return detail::partition::map_partitions(*partition_group_, fn);
+    return detail::partition::map_partitions(partitions_(), fn);
 }
 
 template <size_t NumModes>
 template <typename Fn, typename R>
 auto MonomialPropagator<NumModes>::map_partitions_indexed_(Fn fn) -> std::vector<R> {
-    check_partition_fault_();
-    return detail::partition::collect_on_all(*partition_group_,
-                                             [&](int r) -> R { return fn(r, partition_group_->partition(r)); });
+    auto &group = partitions_();
+    return detail::partition::collect_on_all(group, [&](int r) -> R { return fn(r, group.partition(r)); });
 }
 
 template <size_t NumModes>
@@ -301,10 +301,10 @@ auto MonomialPropagator<NumModes>::concat_partitions_(Fn fn) -> R {
 template <size_t NumModes>
 template <typename Proj, typename Accumulate, typename R>
 auto MonomialPropagator<NumModes>::fold_partitions_(Proj proj, Accumulate accumulate) const -> R {
-    check_partition_fault_();
+    auto &group = partitions_();
     R total{};
-    for (int r = 0; r < partition_group_->partition_count(); ++r) {
-        accumulate(total, proj(partition_group_->partition(r)));
+    for (int r = 0; r < group.partition_count(); ++r) {
+        accumulate(total, proj(group.partition(r)));
     }
     return total;
 }
@@ -317,8 +317,7 @@ auto MonomialPropagator<NumModes>::sum_partitions_(Proj proj) const -> R {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::first_partition_() const -> const MonomialPropagator & {
-    check_partition_fault_();
-    return partition_group_->partition(0);
+    return partitions_().partition(0);
 }
 
 template <size_t NumModes>
@@ -691,12 +690,12 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     if (partition_group_) {
-        // A fan-out that throws part-way has already mutated the partitions it reached.
-        auto guard = bump_structure_on_unwind_("build_graph()");
+        // A fan-out that throws part-way has already mutated the partitions it reached, so the scope
+        // records the change on that path too.
+        auto guard = bump_structure_scope_("build_graph()");
         for_each_partition_([&](MonomialPropagator &s) {
             s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
         });
-        bump_structure_("build_graph()");
         return;
     }
 
@@ -746,7 +745,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
 
     // The gate loop bounds-checks each generator as it reaches it, so a bad generator in a multi-gate
     // call throws with the earlier layers already appended.
-    auto guard = bump_structure_on_unwind_("build_graph()");
+    auto guard = bump_structure_scope_("build_graph()");
     if (!parameters.has_value()) {
         evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
     }
@@ -759,7 +758,6 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                        seed,
                                        only_rotate_len_k);
     }
-    bump_structure_("build_graph()");
 }
 
 template <size_t NumModes>
@@ -784,19 +782,18 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              graph_layers()));
     }
     if (partition_group_) {
-        // A fan-out that throws part-way has already mutated the partitions it reached.
-        auto guard = bump_structure_on_unwind_("propagate()");
+        // A fan-out that throws part-way has already mutated the partitions it reached, so the scope
+        // records the change on that path too.
+        auto guard = bump_structure_scope_("propagate()");
         for_each_partition_([&](MonomialPropagator &s) {
             s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
         });
-        bump_structure_("propagate()");
         return;
     }
     // The gate loop bounds-checks each generator as it reaches it, so a bad generator in a multi-gate
     // call throws with the earlier gates already folded into the operator.
-    auto guard = bump_structure_on_unwind_("propagate()");
+    auto guard = bump_structure_scope_("propagate()");
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
-    bump_structure_("propagate()");
 }
 
 template <size_t NumModes>
@@ -1015,9 +1012,7 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
         typename Plan::Fanout fanout;
         fanout.group = partition_group_.get();
         fanout.partitions = map_partitions_([&](MonomialPropagator &s) { return s.make_plan_(pare_threshold); });
-        // Child plans share graph structure and parameter-axis length.
-        const auto num_params = fanout.partitions.front()->num_params();
-        return std::make_shared<const Plan>(num_params, functional_control_, std::move(fanout));
+        return std::make_shared<const Plan>(functional_control_, std::move(fanout));
     }
 
     typename Plan::Local local;
@@ -1025,7 +1020,6 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
     auto gate_arrays = graph_gate_arrays_();
     local.parameter_mapping = std::move(gate_arrays.first);
     local.gen_coeffs = std::move(gate_arrays.second);
-    const auto num_params = expected_num_params(local.parameter_mapping);
 
     // Heisenberg snapshots sparse scores; Schrodinger snapshots the dense state.
     const auto num_terms = mp_op_.size();
@@ -1064,9 +1058,10 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
     }
     else {
         // Snapshot active layers only; graph_ retains layers retired by slicing.
+        const size_t active = graph_.layers();
         std::vector<Layer> owned;
-        owned.reserve(graph_.layers());
-        for (size_t i = 0; i < graph_.layers(); ++i) {
+        owned.reserve(active);
+        for (size_t i = 0; i < active; ++i) {
             owned.push_back(graph_.get_layer(i));
         }
         local.graph = std::make_shared<const MPGraph>(graph_.is_schrodinger(), std::move(owned));
@@ -1074,7 +1069,7 @@ auto MonomialPropagator<NumModes>::make_plan_(std::optional<double> pare_thresho
 
     local.cos = build_cos_callbacks<NumModes>(inverted_index, local.graph->replay_view(), basis_);
 
-    return std::make_shared<const Plan>(num_params, functional_control_, std::move(local));
+    return std::make_shared<const Plan>(functional_control_, std::move(local));
 }
 
 template <size_t NumModes>
@@ -1109,21 +1104,15 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &pa
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
-    // The one site name all three bump paths below report; bump_structure_ stores the pointer, so it has
-    // to be a literal that outlives every propagator.
+    // The site both branches below report.
     static constexpr const char *kInplaceSite = "contract_partially(inplace=true)";
     if (partition_group_) {
         // Decided before the fan-out, so an empty parameter vector -- which every child early-returns on
         // without folding anything -- leaves a functional valid here exactly as it does on one partition.
         validate_parameters_length(parameters, parameter_mapping());
         const bool folds = !parameters.empty();
-        auto guard = bump_structure_on_unwind_(kInplaceSite, inplace && folds);
-        auto merged =
-            concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
-        if (inplace && folds) {
-            bump_structure_(kInplaceSite);
-        }
-        return merged;
+        auto guard = bump_structure_scope_(kInplaceSite, inplace && folds);
+        return concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
     }
     const auto gate_arrays = graph_gate_arrays_();
     const auto &parameter_mapping = gate_arrays.first;
@@ -1136,9 +1125,10 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
     }
 
     const size_t num_majoranas = parameter_mapping.size();
-    // Retiring the folded layers commits before the evolve that can throw, so the failure path has to
-    // bump as well; out of place nothing is written, so the guard stays disarmed there.
-    auto guard = bump_structure_on_unwind_(kInplaceSite, inplace);
+    // Inplace this retires the folded layers and moves the coefficients, so every plan built against
+    // either is stale -- including when the evolve that follows the retirement throws. Out of place
+    // nothing is written, so the guard stays disarmed.
+    auto guard = bump_structure_scope_(kInplaceSite, inplace);
     // Inplace slicing produces an owned MPGraph that must be bound to a named local before viewing
     // (never view a temporary); slice_view() views this graph's still-live layers directly.
     if (schrodinger_) {
@@ -1149,9 +1139,6 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
             const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
             evolved_state = evolve_operator_with_recompute_(VecD(state), sliced.replay_view(), mapped_params);
             mp_op_.state_coeffs = evolved_state;
-            // The graph lost the layers it folded and the state moved, so every plan built against
-            // either is stale. Out of place nothing changes, so there is no bump on that branch.
-            bump_structure_(kInplaceSite);
         }
         else {
             evolved_state =
@@ -1167,7 +1154,6 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
         const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
         evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
         mp_op_.op_coeffs = evolved_op;
-        bump_structure_(kInplaceSite);
     }
     else {
         evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);

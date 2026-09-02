@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -61,8 +62,7 @@ public:
         : n_(n_partitions),
           parent_(parent),
           partitions_(static_cast<size_t>(n_partitions)),
-          errs_(static_cast<size_t>(n_partitions)),
-          poisoned_(static_cast<size_t>(n_partitions), 0) {
+          errs_(static_cast<size_t>(n_partitions)) {
         make_transport_();
         discover_node_peers_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
@@ -87,8 +87,7 @@ public:
           node_size_(src.node_size_),
           node_mask_(src.node_mask_),
           partitions_(static_cast<size_t>(src.n_)),
-          errs_(static_cast<size_t>(src.n_)),
-          poisoned_(static_cast<size_t>(src.n_), 0) {
+          errs_(static_cast<size_t>(src.n_)) {
         make_transport_();
         cpusets_ = topo_partition_cpusets(n_, node_rank_, node_size_, node_mask_);
         start_masters_();
@@ -121,7 +120,7 @@ public:
             for (auto &e : errs_) {
                 e = nullptr;
             }
-            std::ranges::fill(poisoned_, 0);
+            any_poisoned_.store(false);
             diverged_ = false;
             job_ = &body;
             done_count_ = 0;
@@ -154,16 +153,10 @@ private:
     // released from a collective part-way. Anything else -- a poisoned peer, or a mix of throws and
     // completions -- means the masters stopped at different points and their states no longer agree.
     auto classify_round_() -> void {
-        bool any_error = false;
-        bool all_errored = true;
-        bool any_poisoned = false;
-        for (int r = 0; r < n_; ++r) {
-            const bool errored = errs_[static_cast<size_t>(r)] != nullptr;
-            any_error |= errored;
-            all_errored &= errored;
-            any_poisoned |= poisoned_[static_cast<size_t>(r)] != 0;
-        }
-        diverged_ = any_error && (!all_errored || any_poisoned);
+        const auto errored = [](const std::exception_ptr &e) { return e != nullptr; };
+        const bool any_error = std::ranges::any_of(errs_, errored);
+        const bool all_errored = std::ranges::all_of(errs_, errored);
+        diverged_ = any_error && (!all_errored || any_poisoned_.load());
     }
 
     // Poison first so a master parked in a barrier is released rather than joined-on forever.
@@ -327,7 +320,7 @@ private:
             catch (const mpi::ShmCommPoisoned &) {
                 // Released from a collective a peer never joined: this master stopped mid-body, so
                 // whatever the peers went on to commit, it did not. See classify_round_().
-                poisoned_[static_cast<size_t>(rank)] = 1;
+                any_poisoned_.store(true);
                 errs_[static_cast<size_t>(rank)] = std::current_exception();
                 transport_poison_();
             }
@@ -354,9 +347,9 @@ private:
 #endif
     std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> partitions_;
     std::vector<std::exception_ptr> errs_;
-    // One byte per partition, written only by its own master: std::vector<bool> would let disjoint
-    // indices tear the same word (see collect_on_all).
-    std::vector<unsigned char> poisoned_;
+    // Set by any master released from a collective its peers never joined; only ever read as "did
+    // anyone", so one flag rather than one slot per partition.
+    std::atomic<bool> any_poisoned_{false};
     bool diverged_ = false; // facade thread only: written in run_on_all, read by the mutation guard
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;

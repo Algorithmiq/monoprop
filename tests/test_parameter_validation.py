@@ -205,13 +205,7 @@ class TestGraphAndParameterValidation:
     @pytest.mark.parametrize(
         "schrodinger_cutoff", [None, 2], ids=["heisenberg", "schrodinger"]
     )
-    @pytest.mark.parametrize(
-        "functional_name",
-        [
-            "expectation_value_functional",
-            "expectation_value_and_gradient_functional",
-        ],
-    )
+    @pytest.mark.parametrize("functional_name", list(_DIRECT_CALL))
     def test_functional_follows_initial_operator_update(
         self,
         serial_comm,
@@ -442,26 +436,18 @@ class TestFunctionalValidityTable:
     )
 
     @pytest.mark.parametrize("row", ROWS, ids=[row[0] for row in ROWS])
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize("pared", [False, True], ids=["exact", "pared"])
     @pytest.mark.parametrize(
         "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
     )
-    @pytest.mark.parametrize(
-        "functional_name",
-        [
-            "expectation_value_functional",
-            "expectation_value_and_gradient_functional",
-        ],
-    )
+    @pytest.mark.parametrize("functional_name", list(_DIRECT_CALL))
+    @pytest.mark.usefixtures("partitions")
     def test_mutator_effect_on_live_functional(
         self,
-        monkeypatch,
         serial_comm,
         functional_name,
         schrodinger,
         pared,
-        partitions,
         row,
     ):
         (
@@ -472,7 +458,6 @@ class TestFunctionalValidityTable:
             pared_schrodinger,
             rationale,
         ) = row
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
 
         mp = self._propagator(
             serial_comm, schrodinger=schrodinger, with_graph=not needs_empty_graph
@@ -502,31 +487,21 @@ class TestFunctionalValidityTable:
                 functional(parameters), before, exact=False, context=context
             )
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
-    @pytest.mark.parametrize(
-        "factory",
-        [
-            "expectation_value_functional",
-            "expectation_value_and_gradient_functional",
-        ],
-    )
-    def test_bound_functional_reports_its_parameter_axis(
-        self, monkeypatch, serial_comm, factory, partitions
-    ):
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
+    @pytest.mark.parametrize("factory", list(_DIRECT_CALL))
+    @pytest.mark.usefixtures("partitions")
+    def test_bound_functional_reports_its_parameter_axis(self, serial_comm, factory):
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         assert getattr(mp._simulator, factory)(None).num_params == len(self._PARAMS)
         # The front end hands back its own callable, which forwards what the engine object exposes.
         assert getattr(mp, factory)(None).num_params == len(self._PARAMS)
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.usefixtures("partitions")
     def test_parameter_mapping_invalidates_functional_it_desynchronises(
-        self, monkeypatch, serial_comm, partitions
+        self, serial_comm
     ):
         """The relabel moves the propagator's own answer, and the functional refuses the call rather
         than following it half way.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         functional = mp.expectation_value_functional()
         parameters = list(self._PARAMS)
@@ -538,21 +513,14 @@ class TestFunctionalValidityTable:
         with pytest.raises(RuntimeError, match=r"set_parameter_mapping"):
             functional(parameters)
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
-    @pytest.mark.parametrize(
-        "factory",
-        [
-            "expectation_value_functional",
-            "expectation_value_and_gradient_functional",
-        ],
-    )
+    @pytest.mark.parametrize("factory", list(_DIRECT_CALL))
+    @pytest.mark.usefixtures("partitions")
     def test_bound_functional_reports_whether_it_follows_weights(
-        self, monkeypatch, serial_comm, factory, partitions
+        self, serial_comm, factory
     ):
         """The contract read off the object: only a Schrodinger plan pared against the operator's own
         coefficients refuses to follow a re-weight.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         for schrodinger in (False, True):
             mp = self._propagator(serial_comm, schrodinger=schrodinger, with_graph=True)
             for threshold in (None, self._PARE_THRESHOLD):
@@ -563,23 +531,16 @@ class TestFunctionalValidityTable:
                 # off what the front end returns.
                 assert getattr(mp, factory)(threshold).follows_weights is follows
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
     @pytest.mark.parametrize("pared", [False, True], ids=["exact", "pared"])
-    @pytest.mark.parametrize(
-        "functional_name",
-        [
-            "expectation_value_functional",
-            "expectation_value_and_gradient_functional",
-        ],
-    )
+    @pytest.mark.parametrize("functional_name", list(_DIRECT_CALL))
+    @pytest.mark.usefixtures("partitions")
     def test_reweighted_functional_matches_a_fresh_propagator(
-        self, monkeypatch, serial_comm, functional_name, pared, partitions
+        self, serial_comm, functional_name, pared
     ):
         """The refresh at full precision: a re-weighted propagator's functional must answer what a
         propagator built with those coefficients answers, to the last bit. Both run the same
         arithmetic over the same store order, so there is no rounding to hide behind.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         threshold = self._PARE_THRESHOLD if pared else None
         parameters = list(self._PARAMS)
 
@@ -600,16 +561,15 @@ class TestFunctionalValidityTable:
         _assert_answers_match(after, expected, exact=True)
         _assert_answers_differ(after, before)
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
+    @pytest.mark.usefixtures("partitions")
     def test_pared_schrodinger_functional_refuses_to_follow_a_reweight(
-        self, monkeypatch, serial_comm, partitions
+        self, serial_comm
     ):
         """Schrodinger thresholds its keep-set from the operator coefficients, so new coefficients
         select a different keep-set: the plan says so rather than replaying a paring nobody asked
         for. The unpared functional over the same propagator follows the re-weight, which is what
         makes the refusal the paring's and not the picture's.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=True, with_graph=True)
         parameters = list(self._PARAMS)
         pared = mp.expectation_value_functional(self._PARE_THRESHOLD)
@@ -622,16 +582,13 @@ class TestFunctionalValidityTable:
             pared(parameters)
         assert exact(parameters) == pytest.approx(mp.expval(parameters))
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
-    def test_no_op_mutators_keep_a_functional_valid(
-        self, monkeypatch, serial_comm, partitions
-    ):
+    @pytest.mark.usefixtures("partitions")
+    def test_no_op_mutators_keep_a_functional_valid(self, serial_comm):
         """A call that appends or folds nothing is not a mutation, on either partition setting.
 
         The facade decides that before it fans out, so ``off`` and ``auto`` must agree -- an
         unconditional bump on the fan-out is exactly the divergence this table exists to rule out.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=False)
         functional = mp.expectation_value_functional()
         before = functional([])
@@ -655,11 +612,9 @@ class TestFunctionalValidityTable:
     _PART_WAY_MAPPING = (0, 1, 2)
     _PART_WAY_COEFFS = (1.0, 1.0, 1.0)
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
     def test_part_way_build_graph_failure_invalidates_the_functional(
-        self, monkeypatch, serial_comm, partitions
+        self, serial_comm, partitions
     ):
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         functional = mp.expectation_value_functional()
         parameters = list(self._PARAMS)
@@ -751,15 +706,12 @@ class TestFunctionalValidityTable:
         mp.build_graph(extension, seed_parameters=[*parameters, 0.4])
         assert mp.graph_layers == 3
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
-    def test_part_way_propagate_failure_invalidates_the_functional(
-        self, monkeypatch, serial_comm, partitions
-    ):
+    @pytest.mark.usefixtures("partitions")
+    def test_part_way_propagate_failure_invalidates_the_functional(self, serial_comm):
         """propagate() folds into the operator instead of appending, so nothing counts the
         mutation: without the failure-path bump the functional would keep answering for
         coefficients that had moved.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=False)
         functional = mp.expectation_value_functional()
         functional([])
@@ -775,21 +727,14 @@ class TestFunctionalValidityTable:
         with pytest.raises(RuntimeError, match=r"propagate"):
             functional([])
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
-    @pytest.mark.parametrize(
-        "functional_name",
-        [
-            "expectation_value_functional",
-            "expectation_value_and_gradient_functional",
-        ],
-    )
+    @pytest.mark.parametrize("functional_name", list(_DIRECT_CALL))
+    @pytest.mark.usefixtures("partitions")
     def test_reweight_that_drops_the_core_term_zeroes_it(
-        self, monkeypatch, serial_comm, functional_name, partitions
+        self, serial_comm, functional_name
     ):
         """The identity row describes the dict that committed, like every other row: a re-weight
         that leaves it out zeroes it, which is what the store does with every row a dict omits.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         parameters = list(self._PARAMS)
         mp = self._propagator(
             serial_comm, schrodinger=False, with_graph=True, core_term=0.25
@@ -814,14 +759,11 @@ class TestFunctionalValidityTable:
         )
         _assert_answers_differ(after, before)
 
-    @pytest.mark.parametrize("partitions", ["off", "auto"])
-    def test_pared_functional_is_invalidated_by_build_graph(
-        self, monkeypatch, serial_comm, partitions
-    ):
+    @pytest.mark.usefixtures("partitions")
+    def test_pared_functional_is_invalidated_by_build_graph(self, serial_comm):
         """A pared plan owns its layers, so its layer count cannot move; the structure revision is
         what sees the appended layer.
         """
-        monkeypatch.setenv("monoprop_PARTITIONS", partitions)
         mp = self._propagator(serial_comm, schrodinger=False, with_graph=True)
         functional = mp.expectation_value_functional(self._PARE_THRESHOLD)
         parameters = list(self._PARAMS)

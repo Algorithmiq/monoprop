@@ -66,34 +66,47 @@ struct FunctionalControl {
     // Names the fan-out mutation that unwound part-way, or null while the facade is intact.
     std::atomic<const char *> partition_fault{nullptr};
 
-    // Record a structure change.
     auto bump(const char *site) -> void {
         last_structural_change.store(site);
         structure_revision.fetch_add(1);
     }
 };
 
-// Bumps the control block if a mutation throws after a possible state change.
-class [[nodiscard]] BumpOnUnwind {
+// Records one mutation on the control block when its scope exits, so a mutator states its site name
+// and its arming predicate once instead of once per exit path.
+class [[nodiscard]] MutationGuard {
 public:
-    BumpOnUnwind(FunctionalControl &control, const char *site, bool armed = true, const bool *facade_diverged = nullptr)
+    // `on_success` false leaves a completed mutation unrecorded, which is what a re-weight needs: a
+    // functional follows it, and only one that unwound part-way invalidates.
+    MutationGuard(FunctionalControl &control,
+                  const char *site,
+                  bool armed,
+                  bool on_success,
+                  const bool *facade_diverged)
         : control_(control),
           site_(site),
           armed_(armed),
+          on_success_(on_success),
           facade_diverged_(facade_diverged),
           uncaught_(std::uncaught_exceptions()) {}
 
-    BumpOnUnwind(const BumpOnUnwind &) = delete;
-    BumpOnUnwind(BumpOnUnwind &&) = delete;
-    auto operator=(const BumpOnUnwind &) -> BumpOnUnwind & = delete;
-    auto operator=(BumpOnUnwind &&) -> BumpOnUnwind & = delete;
+    MutationGuard(const MutationGuard &) = delete;
+    MutationGuard(MutationGuard &&) = delete;
+    auto operator=(const MutationGuard &) -> MutationGuard & = delete;
+    auto operator=(MutationGuard &&) -> MutationGuard & = delete;
 
-    ~BumpOnUnwind() {
-        if (armed_ && std::uncaught_exceptions() > uncaught_) {
-            control_.bump(site_);
-            if (facade_diverged_ != nullptr && *facade_diverged_) {
-                control_.partition_fault.store(site_);
-            }
+    ~MutationGuard() {
+        if (!armed_) {
+            return;
+        }
+        const bool unwinding = std::uncaught_exceptions() > uncaught_;
+        if (!unwinding && !on_success_) {
+            return;
+        }
+        control_.bump(site_);
+        // Only a mutation that stopped part-way can have left the partitions disagreeing.
+        if (unwinding && facade_diverged_ != nullptr && *facade_diverged_) {
+            control_.partition_fault.store(site_);
         }
     }
 
@@ -101,6 +114,7 @@ private:
     FunctionalControl &control_;
     const char *site_;
     bool armed_;
+    bool on_success_;
     const bool *facade_diverged_;
     int uncaught_;
 };

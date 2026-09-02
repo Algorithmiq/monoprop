@@ -353,9 +353,9 @@ protected:
 
     auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
 
-    // Throws if a fan-out mutation unwound part-way, leaving the partitions holding different state (see
-    // detail::BumpOnUnwind).
-    auto check_partition_fault_() const -> void;
+    // The one door onto the partitions: every fan-out helper reaches them through it, so none can skip
+    // the check that refuses a facade a mutation left part-way (see detail::MutationGuard).
+    auto partitions_() const -> detail::partition::PartitionGroup<NumModes> &;
 
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
@@ -391,16 +391,23 @@ private:
     // of a half-written operator costs a wrong number.
     auto bump_structure_(const char *site) const -> void { functional_control_->bump(site); }
 
-    // The failure-path half of the rule above: guard the mutation itself, so a mutator that throws
-    // after committing part of its work still invalidates. `armed` is false where the guarded call
-    // is a known no-op. See detail::BumpOnUnwind.
+    // The scoped form of the rule above, and the one every structural mutator uses: it records the
+    // change when the scope exits, so a mutator that throws after committing part of its work
+    // invalidates on the same terms as one that completed. `armed` is false where the guarded call is
+    // a known no-op. See detail::MutationGuard.
     // On a facade it also latches the fault, if the round it guards is the kind that leaves the
     // partitions disagreeing, so the two verdicts a part-way fan-out earns are decided together.
-    auto bump_structure_on_unwind_(const char *site, bool armed = true) const -> detail::BumpOnUnwind {
-        return detail::BumpOnUnwind(*functional_control_,
-                                    site,
-                                    armed,
-                                    partition_group_ ? partition_group_->diverged_flag() : nullptr);
+    auto bump_structure_scope_(const char *site, bool armed = true) const -> detail::MutationGuard {
+        return {*functional_control_, site, armed, /*on_success=*/true, facade_diverged_flag_()};
+    }
+
+    // A re-weight is followed rather than invalidated, so it records only the failure path.
+    auto bump_structure_on_unwind_(const char *site) const -> detail::MutationGuard {
+        return {*functional_control_, site, /*armed=*/true, /*on_success=*/false, facade_diverged_flag_()};
+    }
+
+    auto facade_diverged_flag_() const -> const bool * {
+        return partition_group_ ? partition_group_->diverged_flag() : nullptr;
     }
 
     // Hand the current initial-operator weights to every functional over this propagator, as one

@@ -242,6 +242,16 @@ static_assert(kMutatorTable.size() == Prop::num_mutating_methods && distinct_met
               "cpp/tests/functional_validity.cpp must carry one row per public mutating method of "
               "MonomialPropagator; see num_mutating_methods in MonomialPropagator.h.");
 
+// One predicate for every "the message says why" check below: the exception type is always
+// runtime_error, so the fragment is what distinguishes one verdict from another.
+auto reports(std::string_view fragment) {
+    return [fragment](const std::runtime_error &e) {
+        const std::string_view what(e.what());
+        BOOST_TEST_INFO("message: " << what);
+        return what.find(fragment) != std::string_view::npos;
+    };
+}
+
 // Both functional kinds behind one signature; the gradient kind is judged on its value component.
 auto make_call(Prop &prop, bool gradient, std::optional<double> pare_threshold) -> std::function<double(const VecD &)> {
     if (gradient) {
@@ -270,16 +280,10 @@ auto run_row(const MutatorRow &row, bool schrodinger, bool gradient, std::option
 
     switch (expected_outcome(row, schrodinger, pare_threshold)) {
         case Outcome::Stale:
-            BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, [](const std::runtime_error &e) {
-                BOOST_TEST_INFO("message: " << e.what());
-                return std::string_view(e.what()).find("MP object has been modified") != std::string_view::npos;
-            });
+            BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, reports("MP object has been modified"));
             return;
         case Outcome::RefusesRefresh:
-            BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, [](const std::runtime_error &e) {
-                BOOST_TEST_INFO("message: " << e.what());
-                return std::string_view(e.what()).find("cannot follow the new weights") != std::string_view::npos;
-            });
+            BOOST_CHECK_EXCEPTION(call(params), std::runtime_error, reports("cannot follow the new weights"));
             return;
         case Outcome::Answers: {
             // The plan replays its own snapshot, so the number cannot have moved.
@@ -391,9 +395,7 @@ BOOST_AUTO_TEST_CASE(functional_reports_a_destroyed_propagator) {
 
     prop.reset();
 
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
-        return std::string_view(e.what()).find("has been destroyed") != std::string_view::npos;
-    });
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("has been destroyed"));
 }
 
 // The functional objects report the axis they were built against, so a caller can size its parameter
@@ -435,9 +437,7 @@ BOOST_AUTO_TEST_CASE(fanned_out_functional_reports_a_destroyed_facade) {
 
     facade.reset();
 
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
-        return std::string_view(e.what()).find("has been destroyed") != std::string_view::npos;
-    });
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("has been destroyed"));
 }
 
 // The facade bumps its own revision as it fans a mutation out, so the error is reported on the calling
@@ -450,9 +450,7 @@ BOOST_AUTO_TEST_CASE(fanned_out_functional_is_invalidated_by_build_graph) {
 
     mutate_build_graph(facade);
 
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
-        return std::string_view(e.what()).find("build_graph()") != std::string_view::npos;
-    });
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("build_graph()"));
 }
 
 // The refresh, end to end and at full precision: a re-weighted propagator's functional must answer what
@@ -544,9 +542,7 @@ BOOST_AUTO_TEST_CASE(a_failed_reweight_invalidates_the_functional) {
     unknown_term[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
     BOOST_CHECK_THROW(prop.update_initial_operator(unknown_term), std::runtime_error);
 
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, [](const std::runtime_error &e) {
-        return std::string_view(e.what()).find("update_initial_operator()") != std::string_view::npos;
-    });
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("update_initial_operator()"));
 }
 
 // Building a second functional must not look like a re-weight to the first: both are built over the one
@@ -564,20 +560,30 @@ BOOST_AUTO_TEST_CASE(building_another_functional_is_not_a_reweight) {
     BOOST_TEST(call(kBaseParams) == before);
 }
 
-// The scope guard behind the failure-path rule, over a bare control block: a scope that returns
-// normally leaves the revision alone, and one that throws bumps it once, recording its site.
+// The scope guard behind the bump rule, over a bare control block. Two flavours: the unwind-only one
+// a re-weight uses, and the bump-on-exit one every structural mutator uses.
+namespace {
+auto unwind_only(detail::FunctionalControl &control, const char *site, bool armed = true) -> detail::MutationGuard {
+    return {control, site, armed, /*on_success=*/false, nullptr};
+}
+
+auto on_exit(detail::FunctionalControl &control, const char *site, bool armed = true) -> detail::MutationGuard {
+    return {control, site, armed, /*on_success=*/true, nullptr};
+}
+} // namespace
+
 BOOST_AUTO_TEST_CASE(bump_on_unwind_bumps_only_when_the_scope_throws) {
     detail::FunctionalControl control;
 
     {
-        auto guard = detail::BumpOnUnwind(control, "site()");
+        auto guard = unwind_only(control, "site()");
     }
     BOOST_TEST(control.structure_revision.load() == 0U);
     BOOST_TEST((control.last_structural_change.load() == nullptr));
 
     BOOST_CHECK_THROW(
         [&] {
-            auto guard = detail::BumpOnUnwind(control, "site()");
+            auto guard = unwind_only(control, "site()");
             throw std::runtime_error("part-way");
         }(),
         std::runtime_error);
@@ -587,11 +593,34 @@ BOOST_AUTO_TEST_CASE(bump_on_unwind_bumps_only_when_the_scope_throws) {
     // Disarmed is how a known no-op opts out, so it must stay silent on both paths.
     BOOST_CHECK_THROW(
         [&] {
-            auto guard = detail::BumpOnUnwind(control, "other()", /*armed=*/false);
+            auto guard = unwind_only(control, "other()", /*armed=*/false);
             throw std::runtime_error("part-way");
         }(),
         std::runtime_error);
     BOOST_TEST(control.structure_revision.load() == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(bump_on_exit_bumps_once_on_both_paths) {
+    detail::FunctionalControl control;
+
+    {
+        auto guard = on_exit(control, "site()");
+    }
+    BOOST_TEST(control.structure_revision.load() == 1U);
+    BOOST_TEST(std::string_view(control.last_structural_change.load()) == std::string_view("site()"));
+
+    BOOST_CHECK_THROW(
+        [&] {
+            auto guard = on_exit(control, "site()");
+            throw std::runtime_error("part-way");
+        }(),
+        std::runtime_error);
+    BOOST_TEST(control.structure_revision.load() == 2U);
+
+    {
+        auto guard = on_exit(control, "other()", /*armed=*/false);
+    }
+    BOOST_TEST(control.structure_revision.load() == 2U);
 }
 
 // A gate generator is bounds-checked only as the gate loop reaches it, so a bad one in a multi-gate
@@ -602,14 +631,6 @@ namespace {
 const std::vector<VecZ> kPartWayGates{VecZ{0}, VecZ{2 * kNumModes + 1}, VecZ{2}};
 const VecZ kPartWayMapping{0, 1, 2};
 const VecD kPartWayCoeffs{1.0, 1.0, 1.0};
-
-auto reports_site(std::string_view site) {
-    return [site](const std::runtime_error &e) {
-        const std::string_view what(e.what());
-        BOOST_TEST_INFO("message: " << what);
-        return what.find(site) != std::string_view::npos;
-    };
-}
 
 } // namespace
 
@@ -626,7 +647,7 @@ BOOST_AUTO_TEST_CASE(a_part_way_build_graph_failure_invalidates_the_functional) 
 
             // The graph grew, so the call did mutate on its way to the throw.
             BOOST_TEST(prop.graph_layers() > layers_before);
-            BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports_site("build_graph()"));
+            BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("build_graph()"));
         }
     }
 }
@@ -646,14 +667,14 @@ BOOST_AUTO_TEST_CASE(a_part_way_fan_out_failure_refuses_the_facade) {
     partly_unknown[VecZ{0, 2}] = std::complex<double>{0.0, 1.0};
     BOOST_CHECK_THROW(prop.update_initial_operator(partly_unknown), std::runtime_error);
 
-    const auto refuses = reports_site("update_initial_operator() failed part-way");
+    const auto refuses = reports("update_initial_operator() failed part-way");
     BOOST_CHECK_EXCEPTION(prop.graph_layers(), std::runtime_error, refuses);
     BOOST_CHECK_EXCEPTION(prop.size(), std::runtime_error, refuses);
     BOOST_CHECK_EXCEPTION(prop.expectation_value(kBaseParams), std::runtime_error, refuses);
     BOOST_CHECK_EXCEPTION(prop.expectation_value_functional(), std::runtime_error, refuses);
     // The functional built beforehand reports the mutation rather than the fault: its plan checks the
     // revision, which the same unwind bumped, before it reaches a partition.
-    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports_site("update_initial_operator()"));
+    BOOST_CHECK_EXCEPTION(call(kBaseParams), std::runtime_error, reports("update_initial_operator()"));
     // A copy carries the latch: it copies partitions that already disagree, so it can answer no better.
     auto copy = prop;
     BOOST_CHECK_EXCEPTION(copy.graph_layers(), std::runtime_error, refuses);
@@ -687,7 +708,7 @@ BOOST_AUTO_TEST_CASE(a_part_way_propagate_failure_invalidates_the_functional) {
             BOOST_CHECK_THROW(prop.propagate(kPartWayGates, kPartWayMapping, kPartWayCoeffs, VecD{0.3, 0.7, 0.5}),
                               std::runtime_error);
 
-            BOOST_CHECK_EXCEPTION(call(VecD{}), std::runtime_error, reports_site("propagate()"));
+            BOOST_CHECK_EXCEPTION(call(VecD{}), std::runtime_error, reports("propagate()"));
         }
     }
 }
