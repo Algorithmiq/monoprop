@@ -142,6 +142,8 @@ public:
         // leaves gate_scratch_bytes at 0 and only this level can fill it in.
         auto breakdown = detail::estimate_memory_usage(mp_op_);
         breakdown.gate_scratch_bytes = gate_scratch_.memory_bytes();
+        // Also propagator-owned, and stamped by the engine during the last call rather than measured now.
+        breakdown.gate_buffers_hwm_bytes = gate_scratch_.buffers_hwm_bytes;
         return breakdown;
     }
 

@@ -324,6 +324,10 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
     size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
+    // Not a subset of any field above: the per-gate exchange buffers are freed when the gate returns, so
+    // nothing resting can name them. Widest instant over the last call, so a sum over partitions is an
+    // upper bound rather than a simultaneous figure.
+    size_t gate_buffers_hwm_bytes{0uz};
     // of op_coeffs_bytes: capacity the coefficient array holds beyond its live rows. Reserved, faulted by
     // the growth that wrote the old buffer alongside the new one, and not returned until quiescence.
     size_t op_coeffs_slack_bytes{0uz};
@@ -356,6 +360,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        gate_buffers_hwm_bytes += o.gate_buffers_hwm_bytes;
         op_coeffs_slack_bytes += o.op_coeffs_slack_bytes;
         for (size_t i = 0; i < inverted_index_density_hist.size(); ++i) {
             inverted_index_density_hist[i] += o.inverted_index_density_hist[i];

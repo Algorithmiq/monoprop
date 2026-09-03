@@ -111,6 +111,9 @@ struct GateScratch {
     std::vector<PosT> partner;        // one partner's positions; sized 2*NumModes, the partner's upper bound
     std::vector<uint16_t> gen;        // the generator's ascending positions, the merge's second input
     ExchangeCounters counters;        // COMMPROF's per-call wire volume; reset by the caller, not per gate
+    // Widest instant of the per-gate transient buffers over the call, in bytes. Those buffers die with
+    // the gate, so no resting field can name them; reset by the caller alongside `counters`.
+    size_t buffers_hwm_bytes{0uz};
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return join.memory_bytes() + marks.memory_bytes() + (nz.capacity() * sizeof(EvenParityNzWord))

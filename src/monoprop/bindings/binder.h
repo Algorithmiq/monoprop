@@ -286,7 +286,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                            {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                                            {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
                                                            {"d_init_operator_entries", b.init_operator_entries},
-                                                           {"d_op_coeffs_slack_bytes", b.op_coeffs_slack_bytes}};
+                                                           {"d_op_coeffs_slack_bytes", b.op_coeffs_slack_bytes},
+                                                          {"d_gate_buffers_hwm_bytes", b.gate_buffers_hwm_bytes}};
 
         nb::dict out;
         for (const auto &[name, value] : scalars) {

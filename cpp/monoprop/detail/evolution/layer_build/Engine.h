@@ -230,6 +230,43 @@ struct ContractSink {
     }
 };
 
+// Capacity, not size, throughout the overloads below: what a buffer costs the process is what it
+// reserved, and several of these are deliberately sized to a bound and filled short (SelfQueryStage
+// says so of itself).
+
+template <typename Vector>
+[[nodiscard]] inline auto reserved_bytes(const Vector &v) -> size_t {
+    return v.capacity() * sizeof(typename Vector::value_type);
+}
+
+template <typename T>
+[[nodiscard]] inline auto reserved_bytes(const mpi::WindowVec<std::vector<T>> &wv) -> size_t {
+    size_t bytes = wv.size() * sizeof(std::vector<T>);
+    for (const auto &slot : wv) {
+        bytes += reserved_bytes(slot);
+    }
+    return bytes;
+}
+
+template <size_t NumModes>
+[[nodiscard]] inline auto reserved_bytes(const SelfQueryStage<NumModes> &stage) -> size_t {
+    return reserved_bytes(stage.pos_flat) + reserved_bytes(stage.pos_off) + reserved_bytes(stage.k_of)
+           + reserved_bytes(stage.phase_of) + reserved_bytes(stage.rot_of) + reserved_bytes(stage.val_of)
+           + reserved_bytes(stage.fp_of);
+}
+
+template <size_t NumModes>
+[[nodiscard]] inline auto reserved_bytes(const IncomingRecords<NumModes> &records) -> size_t {
+    return reserved_bytes(records.goff) + reserved_bytes(records.phase_of) + reserved_bytes(records.rot_of)
+           + reserved_bytes(records.val_of) + reserved_bytes(records.pos_flat) + reserved_bytes(records.pos_off)
+           + reserved_bytes(records.k_of) + reserved_bytes(records.fp_of);
+}
+
+template <size_t NumModes>
+[[nodiscard]] inline auto reserved_bytes(const MissStage<NumModes> &misses) -> size_t {
+    return reserved_bytes(misses.pos_flat) + reserved_bytes(misses.pos_off) + reserved_bytes(misses.k_of);
+}
+
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
 template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
@@ -353,6 +390,9 @@ struct LayerBuildEngine {
         }
         join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink, responses);
 
+        // Round 1 at its widest: the scan's arrays, the delivered records and the staged responses.
+        stamp_gate_buffers_(scan, incoming, pr, responses, /*extra=*/0);
+
         // Round 2 is the same verb with the response counts, posted before the inserts so the store's
         // growth overlaps the peers' answers. Its window is round 1's: the rank shift is an involution,
         // so the slot a record came from is a slot this one can send to.
@@ -368,6 +408,8 @@ struct LayerBuildEngine {
             if (answering.has_value()) {
                 mpi::WindowVec<VecZ> answers;
                 answering->wait_into(answers);
+                // Round 2 at its widest: round 1's buffers are all still in scope under the answers.
+                stamp_gate_buffers_(scan, incoming, pr, responses, reserved_bytes(answers));
                 apply_responses<NumModes>(marks, scan.sent, answers, sink);
             }
         }
@@ -383,6 +425,24 @@ struct LayerBuildEngine {
                 scratch.counters.responses += responses[mpi::WindowIndex{k}].size() / kResponseWords;
             }
         }
+    }
+
+    // The gate's transient buffers at one instant. Every one of them dies when the gate returns, so no
+    // resting field of the ledger can name them -- and on a wide gate they are the largest thing the call
+    // adds to RSS. That is why this is kept as a high-water mark over the call and not as a resting field.
+    //
+    // scan.cos_blocks is excluded deliberately: it is moved into the layer rather than freed, so the layer
+    // storage already prices it. `extra` carries round 2's answers, which are live only at the second
+    // sample.
+    auto stamp_gate_buffers_(const FusedScanResult<NumModes> &scan,
+                             const mpi::WindowVec<VecZ> &incoming,
+                             const IncomingRecords<NumModes> &pr,
+                             const mpi::WindowVec<VecZ> &responses,
+                             size_t extra) -> void {
+        const size_t bytes = extra + reserved_bytes(scan.queries) + reserved_bytes(scan.sent)
+                             + reserved_bytes(scan.sent_c0) + reserved_bytes(scan.self) + reserved_bytes(incoming)
+                             + reserved_bytes(pr) + reserved_bytes(responses) + reserved_bytes(misses);
+        scratch.buffers_hwm_bytes = std::max(scratch.buffers_hwm_bytes, bytes);
     }
 
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {

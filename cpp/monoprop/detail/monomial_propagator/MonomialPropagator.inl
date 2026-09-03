@@ -809,6 +809,7 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
     const size_t local_fails = any_local_term_fails_cutoff_() ? 1 : 0;
     over_cutoff_possible_ = upper_atol_.has_value() || mpi::allreduce_sum<size_t>(local_fails, comm_) != 0;
     gate_scratch_.counters = detail::ExchangeCounters{};
+    gate_scratch_.buffers_hwm_bytes = 0;
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
