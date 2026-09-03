@@ -68,13 +68,16 @@ public:
 
     /*! @brief Builds a pool whose chunks are at least @a chunk_bytes long.
      *
-     *  The request is rounded up to a whole number of pages, or to a multiple of kHugePageBytes once it
-     *  reaches that size, so the chunks tile the arena exactly. @a arena_bytes is a hint: the arena is
-     *  sized to a whole number of chunks and is never smaller than one.
+     *  The request is rounded up to a whole number of pages and no further, so the chunks tile the arena
+     *  exactly and a chunk never carries more slack than a page. Rounding a large chunk up to a whole
+     *  huge page instead would be a quarter of a 3 MiB row chunk, which is more than the growth slack
+     *  the chunking exists to remove; the arena is still placed on a huge-page boundary, so a chunk is
+     *  aligned to chunk_alignment() and long runs of it can still be backed by huge pages.
+     *  @a arena_bytes is a hint: the arena is sized to a whole number of chunks and is never smaller
+     *  than one.
      */
     explicit ChunkPool(size_t chunk_bytes, size_t arena_bytes = kArenaBytes)
-        : chunk_bytes_(round_up_(std::max(chunk_bytes, size_t{1}),
-                                 chunk_bytes >= kHugePageBytes ? kHugePageBytes : page_bytes_())),
+        : chunk_bytes_(round_up_(std::max(chunk_bytes, size_t{1}), page_bytes_())),
           chunks_per_arena_(std::max(size_t{1}, arena_bytes / chunk_bytes_)),
           arena_bytes_(chunks_per_arena_ * chunk_bytes_) {}
 
@@ -349,6 +352,9 @@ public:
     //! Elements from @a i to the end of its chunk: the length contiguous_at(i) is good for.
     [[nodiscard]] auto elems_left_in_chunk(size_t i) const noexcept -> size_t { return elems_per_chunk_ - (i & mask_); }
 
+    //! Makes room for @a n elements without changing size(). Chunks already held are kept.
+    auto reserve(size_t n) -> void { reserve_(n); }
+
     /*! @brief Grows to @a n elements, appending whole chunks. New elements are indeterminate.
      *  A request at or below the current size is ignored: the array is append-only.
      */
@@ -430,6 +436,146 @@ private:
     std::vector<T *> chunks_{}; //!< chunk c holds elements [c * elems_per_chunk_, (c+1) * elems_per_chunk_)
     size_t size_ = 0;
     size_t elems_per_chunk_ = 0;
+    size_t shift_ = 0;
+    size_t mask_ = 0;
+};
+
+/*! @brief A chunked array of fixed-width rows: chunk c holds `rows_per_chunk` rows of `stride` T each.
+ *
+ *  ChunkedArray addresses single elements and needs a power-of-two chunk length to do it with a shift
+ *  and a mask. A row store's element is a row of `stride` T, and the stride is a runtime width (one
+ *  popcount byte plus the inline positions), so `rows_per_chunk * stride` is not a power of two and the
+ *  element-indexed form cannot serve it. This keeps the power of two on the ROW index -- which is what
+ *  every caller has -- and multiplies by the stride inside the chunk.
+ *
+ *  A row never straddles a chunk, so a span over one row is contiguous and the callers that hold row
+ *  pointers (OperatorIndex::RowPositions) are unaffected by the chunking. Rows are default-initialized:
+ *  every freshly grown row is overwritten by its set() before any read.
+ */
+template <typename T>
+    requires std::is_trivially_copyable_v<T>
+class ChunkedRowArray {
+public:
+    ChunkedRowArray() noexcept = default;
+    ChunkedRowArray(const ChunkedRowArray &) = delete;
+    auto operator=(const ChunkedRowArray &) -> ChunkedRowArray & = delete;
+    ChunkedRowArray(ChunkedRowArray &&other) noexcept { swap_(other); }
+    auto operator=(ChunkedRowArray &&other) noexcept -> ChunkedRowArray & {
+        if (this != &other) {
+            reset();
+            swap_(other);
+        }
+        return *this;
+    }
+    ~ChunkedRowArray() { reset(); }
+
+    /*! @brief Binds an empty array to @a pool.
+     *  @pre The array holds no chunks, @a rows_per_chunk is a power of two, and @a pool's chunks are at
+     *  least rows_per_chunk * stride elements long.
+     */
+    auto attach(ChunkPool &pool, size_t rows_per_chunk, size_t stride) -> void {
+        assert(chunks_.empty() && "attach() rebinds only an empty array");
+        assert(std::has_single_bit(rows_per_chunk) && stride != 0);
+        assert(rows_per_chunk * stride * sizeof(T) <= pool.chunk_bytes());
+        pool_ = &pool;
+        rows_per_chunk_ = rows_per_chunk;
+        stride_ = stride;
+        shift_ = static_cast<size_t>(std::countr_zero(rows_per_chunk));
+        mask_ = rows_per_chunk - 1;
+    }
+
+    [[nodiscard]] auto attached() const noexcept -> bool { return pool_ != nullptr; }
+    //! Live rows: indices [0, size()) are readable.
+    [[nodiscard]] auto size() const noexcept -> size_t { return size_; }
+    //! Rows the chunks already hold room for: size() rounded up to a whole chunk.
+    [[nodiscard]] auto capacity() const noexcept -> size_t { return chunks_.size() * rows_per_chunk_; }
+    [[nodiscard]] auto stride() const noexcept -> size_t { return stride_; }
+    [[nodiscard]] auto rows_per_chunk() const noexcept -> size_t { return rows_per_chunk_; }
+    [[nodiscard]] auto chunk_count() const noexcept -> size_t { return chunks_.size(); }
+    //! Row index mask within a chunk: `row & row_mask()` is the row's offset in its own chunk.
+    [[nodiscard]] auto row_mask() const noexcept -> size_t { return mask_; }
+
+    //! Bytes held: the page-rounded chunks plus the chunk index that addresses them.
+    [[nodiscard]] auto bytes() const noexcept -> size_t {
+        return (pool_ == nullptr ? 0 : chunks_.size() * pool_->chunk_bytes()) + (chunks_.capacity() * sizeof(T *));
+    }
+    //! The tail of the last chunk that lies past size(): the array's whole growth slack.
+    [[nodiscard]] auto slack_bytes() const noexcept -> size_t { return (capacity() - size_) * stride_ * sizeof(T); }
+
+    //! First element of the chunk holding row @a row. @pre row < capacity().
+    [[nodiscard]] auto chunk_base(size_t row) noexcept -> T * { return chunks_[row >> shift_]; }
+    [[nodiscard]] auto chunk_base(size_t row) const noexcept -> const T * { return chunks_[row >> shift_]; }
+    //! Row @a row's `stride()` elements. @pre row < capacity().
+    [[nodiscard]] auto at(size_t row) noexcept -> T * { return chunks_[row >> shift_] + ((row & mask_) * stride_); }
+    [[nodiscard]] auto at(size_t row) const noexcept -> const T * {
+        return chunks_[row >> shift_] + ((row & mask_) * stride_);
+    }
+
+    //! Makes room for @a n rows without changing size().
+    auto reserve(size_t n) -> void { reserve_(n); }
+
+    //! Grows to @a n rows, appending whole chunks. New rows are indeterminate; shrinking is ignored.
+    auto grow(size_t n) -> void {
+        if (n <= size_) {
+            return;
+        }
+        reserve_(n);
+        size_ = n;
+    }
+
+    //! Releases every chunk back to the pool and empties the array, keeping it attached.
+    auto reset() noexcept -> void {
+        for (T *chunk : chunks_) {
+            pool_->deallocate(chunk);
+        }
+        chunks_.clear();
+        chunks_.shrink_to_fit();
+        size_ = 0;
+    }
+
+    /*! @brief A deep copy taking its chunks from @a pool, for an owner that carries its own pool.
+     *  @pre @a pool's chunks are at least as long as this array's.
+     */
+    [[nodiscard]] auto clone_into(ChunkPool &pool) const -> ChunkedRowArray {
+        ChunkedRowArray copy;
+        if (pool_ == nullptr) {
+            return copy;
+        }
+        copy.attach(pool, rows_per_chunk_, stride_);
+        copy.grow(size_);
+        // Chunk by chunk, and only the live prefix: the rows past size_ are indeterminate and copying
+        // them would report as a read of uninitialized memory.
+        for (size_t row = 0; row < size_; row += rows_per_chunk_) {
+            std::memcpy(copy.chunks_[row >> shift_],
+                        chunks_[row >> shift_],
+                        std::min(rows_per_chunk_, size_ - row) * stride_ * sizeof(T));
+        }
+        return copy;
+    }
+
+private:
+    auto reserve_(size_t n) -> void {
+        assert(pool_ != nullptr && "a ChunkedRowArray must be attached to a pool before it grows");
+        while (capacity() < n) {
+            chunks_.push_back(static_cast<T *>(pool_->allocate()));
+        }
+    }
+
+    auto swap_(ChunkedRowArray &other) noexcept -> void {
+        std::swap(pool_, other.pool_);
+        chunks_.swap(other.chunks_);
+        std::swap(size_, other.size_);
+        std::swap(rows_per_chunk_, other.rows_per_chunk_);
+        std::swap(stride_, other.stride_);
+        std::swap(shift_, other.shift_);
+        std::swap(mask_, other.mask_);
+    }
+
+    ChunkPool *pool_ = nullptr;
+    std::vector<T *> chunks_{}; //!< chunk c holds rows [c * rows_per_chunk_, (c+1) * rows_per_chunk_)
+    size_t size_ = 0;
+    size_t rows_per_chunk_ = 0;
+    size_t stride_ = 0;
     size_t shift_ = 0;
     size_t mask_ = 0;
 };

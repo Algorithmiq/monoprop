@@ -31,6 +31,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/operator/ChunkedArray.h"
 // For the per-row join key only: routing owns the fingerprint, and a second definition of it here would
 // be a second thing to keep in step with BucketJoin's tag.
 #include "monoprop/detail/mpi/Routing.h"
@@ -69,6 +70,13 @@ public:
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     static constexpr size_t kDefaultInlinePositions = 11;
+    /*! @brief Rows per chunk of the row and key stores: 2^18, so a chunk is 3 MiB at the default stride.
+     *
+     *  A multiple of 64, so the 64 rows an inverted-index word names always sit in one chunk and a
+     *  caller can resolve the chunk once per word (row_block()). A row never straddles a chunk either,
+     *  so a span over one row stays contiguous and RowAccess.h is unaffected.
+     */
+    static constexpr size_t kRowsPerChunk = size_t{1} << 18;
     // A weight-w Pauli needs 2w positions; 32 covers the common case inline at the supported Pauli
     // cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
@@ -89,6 +97,34 @@ public:
     //! Row i's join key. Maintained by every writer, so a gate stages its join without reading a row.
     [[nodiscard]] auto key(size_t i) const -> uint32_t { return keys_[i]; }
 
+    /*! @brief The row and key chunks holding the 64 rows starting at @a first_row, resolved once.
+     *
+     *  Row storage is chunked, so a per-row read costs a chunk lookup on top of the row itself. Every
+     *  caller that walks an inverted-index word already has 64 consecutive rows in hand, and a chunk
+     *  holds a whole number of those windows, so the lookup is hoisted out of the row loop: the block's
+     *  row is `rows + (i & mask) * stride` and its key is `keys[i & mask]`.
+     *
+     *  @pre first_row is a multiple of 64 and below capacity.
+     */
+    struct RowBlock {
+        const PosT *rows;
+        const uint32_t *keys;
+        size_t stride;
+        size_t mask; //!< row index & mask == the row's offset inside its chunk
+    };
+    [[nodiscard]] auto row_block(size_t first_row) const -> RowBlock {
+        assert(first_row % 64 == 0 && "a row block starts at an inverted-index word boundary");
+        return RowBlock{rows_.chunk_base(first_row), keys_.chunk_base(first_row), stride_, rows_.row_mask()};
+    }
+    //! Row @a i of @a block, which must be the block of a window containing i.
+    [[nodiscard]] static auto block_row(const RowBlock &block, size_t i) noexcept -> const PosT * {
+        return block.rows + ((i & block.mask) * block.stride);
+    }
+    //! Row @a i's join key, from @a block rather than from the store's own chunk lookup.
+    [[nodiscard]] static auto block_key(const RowBlock &block, size_t i) noexcept -> uint32_t {
+        return block.keys[i & block.mask];
+    }
+
     //! The compare tag of a 64-bit fingerprint: what a row's key is, and what BucketJoin tags a query with.
     [[nodiscard]] static auto join_tag(uint64_t fp) noexcept -> uint32_t {
         return static_cast<uint32_t>(routing::mix64(fp) >> 32U);
@@ -102,9 +138,20 @@ public:
         return join_tag(routing::linear_hash<2 * NumModes>(mono));
     }
 
-    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
+    /*! @brief An empty store.
+     *  @param rows_per_chunk A test knob: production always takes kRowsPerChunk, and a test drives the
+     *  chunk boundaries with a few hundred rows. A power of two and a multiple of 64.
+     */
+    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions, size_t rows_per_chunk = kRowsPerChunk)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_) {}
+          stride_(1 + inline_width_),
+          rows_per_chunk_(rows_per_chunk),
+          row_pool_(std::make_unique<ChunkPool>(rows_per_chunk * stride_ * sizeof(PosT))),
+          key_pool_(std::make_unique<ChunkPool>(rows_per_chunk * sizeof(uint32_t))) {
+        assert(std::has_single_bit(rows_per_chunk) && rows_per_chunk % 64 == 0);
+        rows_.attach(*row_pool_, rows_per_chunk, stride_);
+        keys_.attach(*key_pool_, rows_per_chunk);
+    }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -112,9 +159,10 @@ public:
 
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_);
-        out->rows_ = rows_;
-        out->keys_ = keys_;
+        auto out = std::make_unique<OperatorIndex>(inline_width_, rows_per_chunk_);
+        // Deep copies into the clone's own pools: the two stores share no chunk.
+        out->rows_ = rows_.clone_into(*out->row_pool_);
+        out->keys_ = keys_.clone_into(*out->key_pool_);
         out->size_ = size_;
         out->overflow_ = overflow_;
         return out;
@@ -126,22 +174,24 @@ public:
     [[nodiscard]] auto overflow_size() const -> size_t { return overflow_.size(); }
 
     auto reserve(size_t n) -> void { reserve_rows(n); }
-    // Returns the pre-growth size (the caller's insert base). Growth is geometric (1.5×), never
-    // exact-fit: an exact fit would realloc the whole operator every layer. Throws at the TermIndex
-    // ceiling: every structure indexed by row (inverted index, graph endpoints) is TermIndex-wide.
+    /*! @brief Grows by @a n rows and returns the pre-growth size, the caller's insert base.
+     *
+     *  Growth is exact now: the store appends whole chunks and never moves a row, so there is no
+     *  reallocation to amortise and none of the 1.5× overshoot the name still records -- what used to
+     *  be up to half the operator held as spare capacity, plus the old buffer alongside the new one at
+     *  the instant of the copy, is now at most one chunk's tail. Throws at the TermIndex ceiling: every
+     *  structure indexed by row (inverted index, graph endpoints) is TermIndex-wide.
+     *
+     *  Freshly grown rows are default-initialized, not zeroed: every one is overwritten by its set()
+     *  before any read, so a tail zero-fill would be wasted bandwidth.
+     */
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         if (n != 0) {
             check_index_fits(base + n - 1);
         }
-        if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
-        }
-        // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
-        // before any read, so a tail zero-fill would be wasted bandwidth.
-        rows_.resize((base + n) * stride_);
-        keys_.resize(base + n);
+        rows_.grow(base + n);
+        keys_.grow(base + n);
         size_ = base + n;
         return base;
     }
@@ -153,7 +203,7 @@ public:
     auto set(size_t i, const value_type &mono) -> void {
         const size_t c = mono.count();
         keys_[i] = key_of(mono);
-        PosT *row = &rows_[i * stride_];
+        PosT *row = rows_.at(i);
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
             overflow_[i] = mono;
@@ -178,7 +228,7 @@ public:
         const size_t count = pos.size();
         assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
         keys_[i] = key_of_positions(pos.data(), count);
-        PosT *row = &rows_[i * stride_];
+        PosT *row = rows_.at(i);
         if (count > inline_width_) {
             // The spill path has no position array, so build the dense form -- only here.
             row[0] = kOverflowMarker;
@@ -197,12 +247,13 @@ public:
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
-        const PosT c = rows_[i * stride_];
+        const PosT *const src = rows_.at(i);
+        const PosT c = src[0];
         if (c == kOverflowMarker) {
             return overflow_.at(i);
         }
         value_type mono;
-        const PosT *pos = &rows_[(i * stride_) + 1];
+        const PosT *pos = src + 1;
         for (size_t j = 0; j < c; ++j) {
             mono.set(pos[j]);
         }
@@ -210,7 +261,8 @@ public:
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        const PosT c = rows_[i * stride_];
+        const PosT *const src = rows_.at(i);
+        const PosT c = src[0];
         if (c == kOverflowMarker) {
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
@@ -218,13 +270,13 @@ public:
             }
             return;
         }
-        const PosT *pos = &rows_[(i * stride_) + 1];
+        const PosT *pos = src + 1;
         for (size_t j = 0; j < c; ++j) {
             fn(static_cast<size_t>(pos[j]));
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = rows_[i * stride_]; c != kOverflowMarker) {
+        if (const PosT c = rows_.at(i)[0]; c != kOverflowMarker) {
             return c;
         }
         return overflow_.at(i).count();
@@ -236,26 +288,31 @@ public:
         [[nodiscard]] auto inlined() const -> bool { return pos.data() != nullptr; }
     };
     [[nodiscard]] auto row_positions(size_t i) const -> RowPositions {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const PosT *const src = rows_.at(i);
+        if (src[0] == kOverflowMarker) {
             return {};
         }
-        return {std::span<const PosT>(&rows_[(i * stride_) + 1], static_cast<size_t>(c))};
+        return {std::span<const PosT>(src + 1, static_cast<size_t>(src[0]))};
     }
     // The rows themselves. The join keys are reported separately (row_keys_bytes) so the breakdown can
     // price them on their own; neither figure includes the other.
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
+        size_t total = rows_.bytes();
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
-    [[nodiscard]] auto row_keys_bytes() const -> size_t { return keys_.capacity() * sizeof(uint32_t); }
+    [[nodiscard]] auto row_keys_bytes() const -> size_t { return keys_.bytes(); }
 
-    // Every row in index order.
+    // Every row in index order, chunk by chunk so the chunk lookup happens once per chunk and not once
+    // per row.
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (size_t i = 0; i < size_; ++i) {
-            fn(row(i), i);
+        for (size_t first = 0; first < size_; first += rows_per_chunk_) {
+            const PosT *const base = rows_.chunk_base(first);
+            const size_t last = std::min(first + rows_per_chunk_, size_);
+            for (size_t i = first; i < last; ++i) {
+                fn(row_from(base + ((i - first) * stride_), i), i);
+            }
         }
     }
 
@@ -263,7 +320,8 @@ public:
     // first, so a mismatch usually costs one compare); a spilled row falls back to a dense compare. This
     // is the confirm behind every fingerprint match (BucketJoin::run).
     [[nodiscard]] auto row_eq_positions(size_t i, std::span<const PosT> q) const -> bool {
-        const PosT c = rows_[i * stride_];
+        const PosT *const src = rows_.at(i);
+        const PosT c = src[0];
         if (c == kOverflowMarker) {
             key_type mono;
             for (size_t j = 0; j < q.size(); ++j) {
@@ -274,17 +332,27 @@ public:
         if (q.size() != static_cast<size_t>(c)) {
             return false;
         }
-        return std::equal(q.begin(), q.end(), &rows_[(i * stride_) + 1]);
+        return std::equal(q.begin(), q.end(), src + 1);
     }
-    // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
-    [[nodiscard]] auto slack_bytes() const -> size_t {
-        return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
-    }
+    // Diagnostic: the part of memory_bytes() that is unused capacity -- the tail of the last chunk.
+    [[nodiscard]] auto slack_bytes() const -> size_t { return rows_.slack_bytes(); }
 
 private:
-    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
+    //! The dense form of a row already resolved to its storage, for the chunk-by-chunk walk.
+    [[nodiscard]] auto row_from(const PosT *src, size_t i) const -> value_type {
+        if (src[0] == kOverflowMarker) {
+            return overflow_.at(i);
+        }
+        value_type mono;
+        for (size_t j = 0; j < src[0]; ++j) {
+            mono.set(src[j + 1]);
+        }
+        return mono;
+    }
+
+    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity(); }
     auto reserve_rows(size_t n) -> void {
-        rows_.reserve(n * stride_);
+        rows_.reserve(n);
         keys_.reserve(n);
     }
 
@@ -301,13 +369,19 @@ private:
         }
     }
 
-    DefaultInitVector<PosT> rows_ = {};
-    // One join key per row, parallel to rows_. Default-init like rows_: a grown row's key is
-    // indeterminate until its set() writes both.
-    DefaultInitVector<uint32_t> keys_ = {};
-    size_t size_ = 0;
+    // Declared before the arrays: members are destroyed in reverse declaration order, so the pools
+    // outlive the stores whose chunks they own. One pool each, because the two size classes differ.
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
+    size_t rows_per_chunk_ = kRowsPerChunk;
+    std::unique_ptr<ChunkPool> row_pool_;
+    std::unique_ptr<ChunkPool> key_pool_;
+
+    ChunkedRowArray<PosT> rows_ = {};
+    // One join key per row, parallel to rows_. Default-init like rows_: a grown row's key is
+    // indeterminate until its set() writes both.
+    ChunkedArray<uint32_t> keys_ = {};
+    size_t size_ = 0;
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
 };

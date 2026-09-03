@@ -69,8 +69,15 @@ BOOST_AUTO_TEST_CASE(chunk_pool_tiles_its_arena_with_page_rounded_chunks) {
     BOOST_CHECK_EQUAL(pool.arena_count(), 0U); // nothing is mapped before the first allocation
     BOOST_CHECK_EQUAL(pool.mapped_bytes(), 0U);
 
-    // A chunk of at least a huge page is rounded to a multiple of one, so it can be huge-page-aligned.
-    ChunkPool huge(ChunkPool::kHugePageBytes + 1, 8 * ChunkPool::kHugePageBytes);
+    // A big chunk is rounded to a page and no further. Rounding it up to a whole huge page instead
+    // would waste a quarter of a 3 MiB row chunk -- more than the growth slack the chunking removes --
+    // so a chunk that is not a multiple of a huge page advertises only the alignment it does have.
+    ChunkPool over(ChunkPool::kHugePageBytes + 1, 8 * ChunkPool::kHugePageBytes);
+    BOOST_CHECK_EQUAL(over.chunk_bytes(), ChunkPool::kHugePageBytes + kChunkBytes);
+    BOOST_CHECK_EQUAL(over.chunk_alignment(), kChunkBytes);
+
+    // One that IS a multiple of a huge page still lands on one, because the arena does.
+    ChunkPool huge(2 * ChunkPool::kHugePageBytes, 8 * ChunkPool::kHugePageBytes);
     BOOST_CHECK_EQUAL(huge.chunk_bytes(), 2 * ChunkPool::kHugePageBytes);
     BOOST_CHECK_EQUAL(huge.chunk_alignment(), ChunkPool::kHugePageBytes);
 }

@@ -112,9 +112,12 @@ public:
         const uint32_t shift = filter_shift_;
         const uint64_t *const filter = filter_.data();
         for (const auto &w : nz) {
+            // The word's 64 rows share a chunk of the key store, so the chunk is resolved once here
+            // rather than once per row (OperatorIndex::row_block).
+            const auto block = store.row_block(w.base);
             for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                 const size_t row = w.base + static_cast<size_t>(std::countr_zero(m));
-                const uint32_t tag = store.key(row);
+                const uint32_t tag = OperatorIndex<NumModes>::block_key(block, row);
                 const uint32_t f = tag >> shift;
                 if (((filter[f >> 6U] >> (f & 63U)) & 1U) != 0U) {
                     rows_.push_back(Entry{.tag = tag, .v = static_cast<uint32_t>(row)});
