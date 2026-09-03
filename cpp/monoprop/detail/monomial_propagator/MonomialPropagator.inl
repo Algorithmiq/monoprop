@@ -537,6 +537,7 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
         coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
     }
     coeffs.resize(mp_op_.size(), 0.0);
+    mp_op_.observe_op_coeffs_slack();
 }
 
 template <size_t NumModes>
@@ -809,6 +810,7 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
     const size_t local_fails = any_local_term_fails_cutoff_() ? 1 : 0;
     over_cutoff_possible_ = upper_atol_.has_value() || mpi::allreduce_sum<size_t>(local_fails, comm_) != 0;
     gate_scratch_.counters = detail::ExchangeCounters{};
+    mp_op_.reset_op_coeffs_slack_hwm();
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
