@@ -56,6 +56,31 @@ struct SentRecord {
 // Two words, so the response round reuses the records' transport verb and buffer type.
 inline constexpr size_t kResponseWords = 2;
 
+// A wire buffer's smallest interesting slot, so the release rule below leaves tiny slots alone.
+inline constexpr size_t kWireFloorWords = 64;
+
+/*!
+ * @brief Re-window a wire buffer for a new gate, keeping the slot storage the last gate paid for.
+ *
+ * `WindowVec::reset` assigns an empty vector into each existing element, which CLEARS a slot but
+ * keeps its capacity -- so a buffer reused across gates never allocates again, and never gives a
+ * byte back either. That is the whole cost model of a buffer that must outlive its gate: the
+ * pair_exchange lifetime rule (PairExchange.h) forbids freeing it at the end of the gate that filled
+ * it, so without a rule one wide gate pins its peak for the rest of the call.
+ *
+ * The rule is the engine's usual one (BucketJoin::begin_rows): a slot whose capacity has run past 4x
+ * what it last held gives the storage back and re-earns it. The comparison uses the sizes still in
+ * place, so it must run BEFORE the reset that clears them.
+ */
+inline auto reuse_wire(mpi::WindowVec<VecZ> &wire, mpi::SlotWindow window) -> void {
+    for (VecZ &slot : wire) {
+        if (slot.capacity() > 4 * std::max(slot.size(), kWireFloorWords)) {
+            slot = VecZ{};
+        }
+    }
+    wire.reset(window);
+}
+
 // COMMPROF's tallies (MonomialPropagator::run_gate_loop_ prints them): the wire volume of one call's
 // gates, as this slot SENT it. Accumulated across the gates of a call, not reset per gate.
 struct ExchangeCounters {

@@ -321,7 +321,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
 
     FusedScanResult<NumModes> res;
     res.window = window;
-    res.queries.reset(window);
+    // The round-1 buffer comes out of the scratch and goes back in exchange_and_join: it must outlive
+    // the gate (PairExchange.h), and taking it here is also what keeps last gate's slot storage
+    // instead of allocating S vectors afresh. `reuse_wire` applies the release rule on the way in.
+    res.queries = std::move(scratch.wire_queries());
+    reuse_wire(res.queries, window);
     res.sent.reset(window);
     // Sized on the early-return paths below too, so the engine's per-slot access is always in bounds.
     if (state_mask != nullptr) {

@@ -388,13 +388,10 @@ struct LayerBuildEngine {
         // The queries live in the scratch pool from here on, not in `scan`: the peers of a pair exchange
         // read this buffer in place until this partition's NEXT call returns, which is past the end of
         // `scan`. The move keeps every slot's storage where it is, so nothing is copied to say so.
-        mpi::WindowVec<VecZ> *queries_p = &scan.queries;
-        if (pair_path) {
-            mpi::WindowVec<VecZ> &pooled = scratch.next_wire_buffer();
-            pooled = std::move(scan.queries);
-            queries_p = &pooled;
-        }
-        mpi::WindowVec<VecZ> &queries = *queries_p;
+        // The scan filled the scratch's buffer; put it back before anything can publish it, so the
+        // records outlive the gate whatever `scan` does. The parity moves on at the end of the gate.
+        mpi::WindowVec<VecZ> &queries = scratch.wire_queries();
+        queries = std::move(scan.queries);
         if (pair_path) {
             pr = decode_incoming_records<NumModes>(mpi::pair_exchange(comm, pair_shift, publish_(queries)).from,
                                                    window,
@@ -443,11 +440,14 @@ struct LayerBuildEngine {
 
         // Round 2's send buffer is claimed before the first push for the same lifetime reason, and it
         // is the OTHER slot of the pool: round 1's is still published to the peers.
-        mpi::WindowVec<VecZ> responses_local;
-        mpi::WindowVec<VecZ> &responses =
-            (pair_path && Sink::wants_responses) ? scratch.next_wire_buffer() : responses_local;
+        // Round 2's buffer has no twin: only the two-call fused sink stages responses, and its second
+        // call is bounded by the NEXT gate's first, so one buffer is already outlived. A sink that
+        // answers nothing keeps an empty local rather than naming the shared one, so the gate stamp
+        // never charges it what an earlier fused call left there.
+        mpi::WindowVec<VecZ> responses_none;
+        mpi::WindowVec<VecZ> &responses = Sink::wants_responses ? scratch.wire_r : responses_none;
         if constexpr (Sink::wants_responses) {
-            responses.reset(window);
+            reuse_wire(responses, window);
         }
         size_t answered_self = 0;
         if (n_self != 0) {
@@ -500,6 +500,9 @@ struct LayerBuildEngine {
             }
         }
         absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
+        // Past every read of this gate's queries, so the next gate's scan takes the OTHER buffer and
+        // this one stays intact for the peers that are still holding views into it.
+        ++scratch.wire_gate;
 
         scratch.counters.gates += 1;
         scratch.counters.records += n_sent;

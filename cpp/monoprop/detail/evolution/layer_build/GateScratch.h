@@ -184,6 +184,16 @@ private:
     std::vector<uint32_t> prefix_; // per row-word: silent rows in the words before it, this gate
 };
 
+namespace gate_scratch_detail {
+inline auto wire_slot_bytes(const mpi::WindowVec<VecZ> &wire) -> size_t {
+    size_t bytes = wire.size() * sizeof(VecZ);
+    for (const VecZ &slot : wire) {
+        bytes += slot.capacity() * sizeof(size_t);
+    }
+    return bytes;
+}
+} // namespace gate_scratch_detail
+
 template <size_t NumModes>
 struct GateScratch {
     using PosT = typename OperatorIndex<NumModes>::PosT;
@@ -201,15 +211,22 @@ struct GateScratch {
     // self-slot reserve is sized from (Scan.h). A hint only -- wrong in either direction it costs at most
     // a few pushes their geometric grow -- which is why it may cross gates although nothing else here does.
     size_t self_records_hint = 0;
-    // The two send buffers pair_exchange's lifetime rule needs, and the call counter that alternates
-    // them. Peers read a published buffer IN PLACE, and the first moment every peer is proved done with
-    // it is the return of this partition's next call, so a gate's records must outlive the gate --
-    // the second reason (with `self_records_hint`) something here crosses a gate boundary. Two is
-    // enough and one is not: a graph-sink gate makes one call, so its queries are still being read
-    // while the next gate's scan is already writing. `wire_spans` is the outer descriptor array, which
-    // the verb copies before its barrier and the caller may reuse on return.
-    std::array<mpi::WindowVec<VecZ>, 2> wire;
-    size_t wire_calls = 0;
+    // The send buffers pair_exchange's lifetime rule needs. Peers read a published buffer IN PLACE,
+    // and the first moment every peer is proved done with it is the return of this partition's next
+    // call, so a gate's records must outlive the gate -- the second reason (with `self_records_hint`)
+    // something here crosses a gate boundary.
+    //
+    // ONE buffer per round, not a shared pool alternated per call: sharing lets a round-2 staging
+    // inherit the capacity a round-1 gate left in the same slot (`reset` clears a slot but keeps its
+    // storage), which made the response buffer as wide as the query buffer and cost 4.4 GiB at the
+    // 8x16 ladder rung. Two query buffers because a graph-sink gate makes ONE call, so its queries are
+    // still being read while the next gate's scan is already writing; the response buffer needs no
+    // twin, since only the two-call fused sink stages responses at all.
+    std::array<mpi::WindowVec<VecZ>, 2> wire_q;
+    mpi::WindowVec<VecZ> wire_r;
+    size_t wire_gate = 0; // parity of `wire_q`; bumped once per gate that exchanges
+    // `wire_spans` is the outer descriptor array, which the verb copies before its barrier and the
+    // caller may reuse on return.
     std::vector<std::span<const size_t>> wire_spans;
     // Slot views of an alltoallv result, so the collective path reaches the same decode surface.
     std::vector<std::span<const size_t>> slot_views;
@@ -219,13 +236,19 @@ struct GateScratch {
     // alongside `counters`.
     size_t buffers_hwm_bytes{0uz};
 
-    //! The next send buffer of the pair_exchange pool. Called exactly once before each call.
-    auto next_wire_buffer() -> mpi::WindowVec<VecZ> & { return wire[(wire_calls++) & 1U]; }
+    //! This gate's round-1 buffer. The scan takes it, the engine puts it back and bumps the parity.
+    [[nodiscard]] auto wire_queries() -> mpi::WindowVec<VecZ> & { return wire_q[wire_gate & 1U]; }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return join.memory_bytes() + marks.memory_bytes() + silent.memory_bytes()
                + (nz.capacity() * sizeof(EvenParityNzWord)) + (partner.capacity() * sizeof(PosT))
-               + (gen.capacity() * sizeof(uint16_t)) + (pre_cos.capacity() * sizeof(double));
+               + (gen.capacity() * sizeof(uint16_t)) + (pre_cos.capacity() * sizeof(double)) + wire_bytes();
+    }
+
+    //! The wire buffers, which outlive their gate and so are NOT covered by the gate-buffer stamp.
+    [[nodiscard]] auto wire_bytes() const -> size_t {
+        using gate_scratch_detail::wire_slot_bytes;
+        return wire_slot_bytes(wire_q[0]) + wire_slot_bytes(wire_q[1]) + wire_slot_bytes(wire_r);
     }
 };
 
