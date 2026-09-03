@@ -67,9 +67,6 @@ jobs:
           '
 
   flake-result:
-    # A ruleset can only require a check by name, and the matrix above only ever
-    # reports per-runner names. This job publishes one stable name whose result is
-    # independent of the matrix dimensions.
     name: All flake checks
     if: always()
     needs: flake
