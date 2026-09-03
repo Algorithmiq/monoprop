@@ -418,8 +418,3 @@ a testbed has history these values should stay fixed: a new shape is a new rung,
 a verdict — measuring a change is the author's job, per "Benchmarking ladder" above. Every run
 uploads each rung's `bmf-<rung>.json` and raw result JSON as an artifact, so a failed Bencher
 upload does not take the measurement with it.
-
-The workflow is inert until a maintainer sets the `BENCH_BARE_METAL` repository variable to
-`true`; without a RunsOn stack behind the label the job would queue until it timed out, once per
-commit. There is no shared-runner series: a GitHub-hosted runner has about two physical cores, so
-L2a would be 1 × 2 and L2b 2 × 1 — restatements of L1 through a noise floor no threshold survives.
