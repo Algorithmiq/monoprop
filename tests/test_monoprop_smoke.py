@@ -262,7 +262,10 @@ def test_operator_memory_breakdown_keys_and_totals(problem, serial_comm):
     assert breakdown["total_bytes"] == core.operator_memory_bytes()
     assert breakdown["total_bytes"] > 0
 
-    # Capacity the coefficient array holds past its live rows, so it cannot exceed the whole array.
+    # The most capacity the coefficient array held past its live rows during the call just made. A
+    # high-water mark, not a reading of the array as it stands: the array is shrunk to fit when a call
+    # ends, which is the only moment a Python caller can ask, so a resting measurement would always be
+    # 0. Growth is bounded by the 1.5x policy, so the peak stays under the array it breaks down.
     assert breakdown["d_op_coeffs_slack_bytes"] <= breakdown["op_coeffs_bytes"]
 
     for key in _OPERATOR_HISTOGRAM_KEYS:

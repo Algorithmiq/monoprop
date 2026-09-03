@@ -119,9 +119,13 @@ gate's anticommuting set costs no row reads; it is reported separately as `row_k
 `operator_memory_breakdown`.
 
 Two further entries of `operator_memory_breakdown` sit outside `total_bytes()`, which stays the
-live-at-quiescence figure. `d_op_coeffs_slack_bytes` is the capacity the coefficient array holds
-beyond its live rows: it grows on the row store's own 1.5x policy and is handed back only at
-quiescence, so it is resident for the whole propagation. `d_invidx_density_hist` counts the
+live-at-quiescence figure. `d_op_coeffs_slack_bytes` is the most capacity the coefficient
+array held beyond its live rows at any point during the last `propagate` or `build_graph` call.
+It grows on the row store's own 1.5x policy and is handed back when the call ends, which is the
+only moment a caller can read the ledger -- so it is reported as a high-water mark taken at the
+growth sites rather than as a measurement of the array as it stands, which would always be 0.
+Across partitions the marks are summed rather than maxed: the partitions grow together within a
+call, so the sum is the figure a per-process footprint wants, and it errs high. `d_invidx_density_hist` counts the
 anticommutation index's columns in eight log-spaced occupancy buckets, bucket $i$ covering density
 $[2^{-(9-i)}, 2^{-(8-i)})$, so bucket 4 begins exactly at the $1/64$ threshold above which a column
 is stored as a full-height bitmap instead of a set-row list; `d_invidx_dense_density_hist` is the

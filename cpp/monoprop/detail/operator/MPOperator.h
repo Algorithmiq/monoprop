@@ -90,6 +90,10 @@ struct MPOperator {
     // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
     // it is the live coefficient vector evolution mutates in place.
     VecD state_coeffs;
+    // Peak of (capacity - size) * 8 over the current propagate/build_graph call, sampled at the growth
+    // sites. Kept here rather than derived in estimate_memory_usage() because the peak is transient: the
+    // shrink at the end of each call erases it.
+    size_t op_coeffs_slack_hwm_{0uz};
     MonomialMap<NumModes> init_op_map{};
     VecZ initial_state;
     // Set once at propagator construction.
@@ -103,6 +107,7 @@ struct MPOperator {
     MPOperator(const MPOperator &other)
         : store(other.store->clone()),
           op_coeffs(other.op_coeffs),
+          op_coeffs_slack_hwm_(other.op_coeffs_slack_hwm_),
           state_rows_(other.state_rows_),
           state_vals_(other.state_vals_),
           state_scored_rows_(other.state_scored_rows_),
@@ -113,6 +118,21 @@ struct MPOperator {
           inverted_index_(other.inverted_index_) {}
 
     auto size() const -> size_t { return store->size(); }
+
+    /*! @brief Records op_coeffs' current growth slack into the per-call high-water mark.
+     *
+     *  Called right after every growth of the array, because that is the only moment the slack exists to
+     *  be seen: the array is shrunk to fit at the end of each propagate or build_graph call, so a caller
+     *  reading the ledger between calls finds nothing left of it. Cheap enough to sit on the growth path
+     *  -- once per gate that adds terms, two loads and a compare.
+     */
+    auto observe_op_coeffs_slack() -> void {
+        op_coeffs_slack_hwm_ =
+            std::max(op_coeffs_slack_hwm_, (op_coeffs.capacity() - op_coeffs.size()) * sizeof(double));
+    }
+
+    //! Opens a new measurement window for observe_op_coeffs_slack(): one propagate or build_graph call.
+    auto reset_op_coeffs_slack_hwm() -> void { op_coeffs_slack_hwm_ = 0uz; }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
@@ -144,6 +164,7 @@ struct MPOperator {
         const size_t first_new = op_coeffs.size();
         reserve_coeffs_geometric(op_coeffs, size());
         op_coeffs.resize(size(), 0.0);
+        observe_op_coeffs_slack();
 
         if (init_op_map.empty()) {
             return op_coeffs;
@@ -324,8 +345,11 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
     size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
-    // of op_coeffs_bytes: capacity the coefficient array holds beyond its live rows. Reserved, faulted by
-    // the growth that wrote the old buffer alongside the new one, and not returned until quiescence.
+    // of op_coeffs_bytes: the most capacity the coefficient array held beyond its live rows at any point
+    // in the last propagate or build_graph call. A high-water mark, not a resting figure: the array is
+    // shrunk to fit at the end of every call, so measured at quiescence the slack is always 0 and says
+    // nothing about the bytes the call actually held. Reserved capacity is faulted by the growth that
+    // wrote the old buffer alongside the new one, so it is resident, not merely promised.
     size_t op_coeffs_slack_bytes{0uz};
     // Counts of inverted-index columns per log-spaced density bucket (see InvertedIndex::density_histogram):
     // every column, and the dense tier alone. The sparse tier is their elementwise difference.
@@ -356,6 +380,9 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        // Summed, not maxed, across partitions: the partitions grow together within a call, so their
+        // peaks are close to simultaneous and the sum is the figure a per-process footprint wants. It is
+        // an upper bound -- each partition's peak is over its own timeline -- and errs the safe way.
         op_coeffs_slack_bytes += o.op_coeffs_slack_bytes;
         for (size_t i = 0; i < inverted_index_density_hist.size(); ++i) {
             inverted_index_density_hist[i] += o.inverted_index_density_hist[i];
@@ -394,7 +421,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_dense_density_hist = hist[1];
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
-    breakdown.op_coeffs_slack_bytes = (op.op_coeffs.capacity() - op.op_coeffs.size()) * sizeof(double);
+    breakdown.op_coeffs_slack_bytes = op.op_coeffs_slack_hwm_;
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()
