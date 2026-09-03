@@ -135,3 +135,22 @@ jobs:
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true
+
+  tests:
+    # A ruleset can only require a check by name, and the matrix above only ever
+    # reports per-combination names. This job publishes one stable name whose result
+    # is independent of the matrix dimensions, so adding or dropping a lane does not
+    # require editing branch protection.
+    name: All tests
+    if: always()
+    needs: package-tests
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Report the matrix result
+        run: |
+          echo "package-tests: ${{ needs.package-tests.result }}"
+          case "${{ needs.package-tests.result }}" in
+            success|skipped) ;;
+            *) exit 1 ;;
+          esac

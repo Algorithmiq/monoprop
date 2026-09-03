@@ -65,3 +65,21 @@ jobs:
             pkg-config --modversion hwloc
             mpicc --version
           '
+
+  flake-result:
+    # A ruleset can only require a check by name, and the matrix above only ever
+    # reports per-runner names. This job publishes one stable name whose result is
+    # independent of the matrix dimensions.
+    name: All flake checks
+    if: always()
+    needs: flake
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Report the matrix result
+        run: |
+          echo "flake: ${{ needs.flake.result }}"
+          case "${{ needs.flake.result }}" in
+            success|skipped) ;;
+            *) exit 1 ;;
+          esac
