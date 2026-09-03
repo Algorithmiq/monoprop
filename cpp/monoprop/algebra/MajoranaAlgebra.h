@@ -139,8 +139,7 @@ auto monomial_from_selector(const std::vector<bool> &selector, size_t inactive_m
 }
 
 // How many monomials for_each_paired_monomial emits: sum over k in [0, min(max_ones, n)] of C(n, k).
-// Saturates at SIZE_MAX instead of wrapping — a caller sizing an allocation or rejecting an over-wide
-// cutoff must never be handed a modular residue that reads as small.
+// Saturates at SIZE_MAX instead of wrapping.
 inline auto paired_op_size(size_t max_ones, size_t logical_num_modes) -> size_t {
     constexpr auto saturated = std::numeric_limits<size_t>::max();
     max_ones = std::min(max_ones, logical_num_modes);
