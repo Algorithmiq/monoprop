@@ -202,6 +202,7 @@ public:
         update_setting_([&](MonomialPropagator &p) {
             p.cutoff_ = new_cutoff;
             p.regenerate_cutoff_fn_();
+            p.follow_cutoff_bound_();
         });
     }
 
@@ -210,6 +211,7 @@ public:
         update_setting_([&](MonomialPropagator &p) {
             p.cutoff_type_ = new_cutoff_type;
             p.regenerate_cutoff_fn_();
+            p.follow_cutoff_bound_();
         });
     }
 
@@ -219,6 +221,7 @@ public:
         update_setting_([&](MonomialPropagator &p) {
             p.basis_change_ = new_basis_change;
             p.regenerate_cutoff_fn_();
+            p.follow_cutoff_bound_();
         });
     }
 
@@ -317,6 +320,12 @@ protected:
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
     // structural position bound when it has one.
     auto packed_inline_width_() const -> size_t;
+    // The width to lay the rows at, which is under the bound wherever the model says most rows are.
+    // A wrong guess costs one restride, never a wrong answer.
+    auto predicted_inline_width_(const MonomialList<NumModes> &op, size_t wide_width) const -> size_t;
+    // Lets the row store's second tier follow a cutoff widened after construction, so the rows the new
+    // cutoff admits are laid out rather than spilled into the side-map an entry at a time.
+    auto follow_cutoff_bound_() -> void { mp_op_.store->raise_bound(packed_inline_width_()); }
 
     // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
     static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;

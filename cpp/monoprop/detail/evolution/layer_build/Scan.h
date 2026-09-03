@@ -459,12 +459,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // that reads EVERY anticommuting row rather than only the emitting ones.
         using RowBlock = typename OperatorIndex<NumModes>::RowBlock;
         auto read_row_in = [&](const RowBlock &block, size_t i) -> RowRead {
-            const RowPosT *const src = OperatorIndex<NumModes>::block_row(block, i);
-            if (src[0] == OperatorIndex<NumModes>::kOverflowMarker) {
-                return {RowPositions{}, ham.popcount(i)};
+            const RowPositions src = ham.positions_at(OperatorIndex<NumModes>::block_row(block, i));
+            if (src.inlined()) {
+                return {src, src.pos.size()};
             }
-            const size_t pop = static_cast<size_t>(src[0]);
-            return {RowPositions{std::span<const RowPosT>(src + 1, pop)}, pop};
+            return {src, ham.popcount(i)};
         };
         // The emitting tail of one anticommuting row: the row read, the partner product, the structural
         // cutoff and the record. Deliberately NOT inlined. It runs only behind the coefficient gate --

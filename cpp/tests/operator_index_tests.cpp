@@ -339,6 +339,171 @@ BOOST_AUTO_TEST_CASE(row_block_agrees_with_the_per_row_accessors) {
     }
 }
 
+namespace {
+
+// A term of exactly `slots` ascending positions, distinct per (i, slots).
+auto term_of_width(size_t i, size_t slots) -> MSet {
+    VecZ pos;
+    for (size_t j = 0; j < slots; ++j) {
+        pos.push_back((i * 3 + j * 5) % (2 * N));
+    }
+    std::sort(pos.begin(), pos.end());
+    pos.erase(std::unique(pos.begin(), pos.end()), pos.end());
+    for (size_t extra = 0; pos.size() < slots && extra < 2 * N; ++extra) {
+        if (std::find(pos.begin(), pos.end(), extra) == pos.end()) {
+            pos.push_back(extra);
+        }
+    }
+    std::sort(pos.begin(), pos.end());
+    return bs(pos);
+}
+
+} // namespace
+
+// A row wider than the inline slot but no wider than the structural bound goes to the fixed-stride wide
+// tier, not the side-map: it reads back the same through every accessor, and the side-map stays empty.
+BOOST_AUTO_TEST_CASE(wide_rows_go_to_the_second_tier_not_the_side_map) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 10;
+    Store s(kInline, kTinyChunkRows, kBound);
+    BOOST_REQUIRE_EQUAL(s.inline_width(), kInline);
+    BOOST_REQUIRE_EQUAL(s.wide_width(), kBound);
+
+    // Widths on both sides of the inline slot, and one over the bound so the side-map is still exercised.
+    const std::vector<size_t> widths = {1, kInline - 1, kInline, kInline + 1, kBound - 1, kBound, kBound + 1};
+    std::vector<MSet> want;
+    for (size_t i = 0; i < widths.size(); ++i) {
+        want.push_back(term_of_width(i, widths[i]));
+        s.push_back(want.back());
+    }
+    BOOST_CHECK_EQUAL(s.wide_size(), 3U);     // inline+1, bound-1, bound
+    BOOST_CHECK_EQUAL(s.overflow_size(), 1U); // only the row over the bound
+    BOOST_CHECK_EQUAL(s.restrides(), 0U);
+
+    for (size_t i = 0; i < widths.size(); ++i) {
+        BOOST_TEST_INFO("row " << i << " width " << widths[i]);
+        BOOST_CHECK(s.row(i) == want[i]);
+        BOOST_CHECK_EQUAL(s.popcount(i), widths[i]);
+        // Only the row past the bound loses its position array; a wide row keeps one.
+        const auto rp = s.row_positions(i);
+        BOOST_CHECK_EQUAL(rp.inlined(), widths[i] <= kBound);
+        if (rp.inlined()) {
+            BOOST_CHECK_EQUAL(rp.pos.size(), widths[i]);
+            BOOST_CHECK(s.row_eq_positions(i, rp.pos));
+            // and the block-resolved read agrees with the per-row one, tier or no tier.
+            const auto block = s.row_block(0);
+            const auto at = s.positions_at(Store::block_row(block, i));
+            BOOST_CHECK_EQUAL(at.pos.size(), rp.pos.size());
+            BOOST_CHECK(std::equal(at.pos.begin(), at.pos.end(), rp.pos.begin()));
+        }
+        std::vector<size_t> seen;
+        s.for_each_position(i, [&](size_t b) { seen.push_back(b); });
+        BOOST_CHECK_EQUAL(seen.size(), widths[i]);
+    }
+    // set_positions() takes the same two-tier route as set().
+    Store t(kInline, kTinyChunkRows, kBound);
+    t.grow_rows_geometric(widths.size());
+    for (size_t i = 0; i < widths.size(); ++i) {
+        const auto rp = s.row_positions(i);
+        if (rp.inlined()) {
+            t.set_positions(i, rp.pos);
+        }
+        else {
+            t.set(i, want[i]);
+        }
+    }
+    BOOST_CHECK_EQUAL(t.wide_size(), s.wide_size());
+    BOOST_CHECK_EQUAL(t.overflow_size(), s.overflow_size());
+    for (size_t i = 0; i < widths.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(t.row(i) == want[i]);
+        BOOST_CHECK_EQUAL(t.key(i), s.key(i));
+    }
+}
+
+// The policy: a tier under the threshold is left alone; over it the store re-lays itself at the bound,
+// once, keeping every row index and key. A store with no tier can never trigger it.
+BOOST_AUTO_TEST_CASE(a_store_restrides_once_when_the_wide_tier_grows_past_the_threshold) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 10;
+    constexpr size_t kRows = 400;
+
+    // One row in fifty is wide: 2 %, under the 3 % threshold, so the guess stands.
+    Store lean(kInline, kTinyChunkRows, kBound);
+    for (size_t i = 0; i < kRows; ++i) {
+        lean.push_back(term_of_width(i, i % 50 == 0 ? kBound : kInline));
+    }
+    BOOST_CHECK_EQUAL(lean.wide_size(), kRows / 50);
+    BOOST_CHECK(!lean.should_restride());
+
+    // One row in ten is wide: over the threshold, so the inline width was the wrong guess.
+    Store fat(kInline, kTinyChunkRows, kBound);
+    std::vector<MSet> want;
+    for (size_t i = 0; i < kRows; ++i) {
+        want.push_back(term_of_width(i, i % 10 == 0 ? kBound : kInline));
+        fat.push_back(want.back());
+    }
+    BOOST_REQUIRE(fat.should_restride());
+    const size_t keys_before = fat.row_keys_bytes();
+    std::vector<uint32_t> key_before;
+    for (size_t i = 0; i < kRows; ++i) {
+        key_before.push_back(fat.key(i));
+    }
+
+    fat.restride_to_bound();
+    BOOST_CHECK_EQUAL(fat.restrides(), 1U);
+    BOOST_CHECK_EQUAL(fat.inline_width(), kBound);
+    BOOST_CHECK_EQUAL(fat.wide_size(), 0U);
+    BOOST_CHECK(!fat.should_restride()); // the tier is gone, so it can never fire again
+    BOOST_CHECK_EQUAL(fat.size(), kRows);
+    BOOST_CHECK_EQUAL(fat.row_keys_bytes(), keys_before); // the keys were not touched
+
+    // Every row survives at its own index, which is what lets the inverted index stand.
+    for (size_t i = 0; i < kRows; ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(fat.row(i) == want[i]);
+        BOOST_CHECK_EQUAL(fat.key(i), key_before[i]);
+        BOOST_CHECK_EQUAL(fat.popcount(i), i % 10 == 0 ? kBound : kInline);
+        BOOST_CHECK(fat.row_eq_positions(i, fat.row_positions(i).pos));
+    }
+    // A restride is idempotent, and a store built at its bound has no tier to begin with.
+    fat.restride_to_bound();
+    BOOST_CHECK_EQUAL(fat.restrides(), 1U);
+    Store flat(kBound, kTinyChunkRows, kBound);
+    flat.push_back(term_of_width(0, kBound));
+    BOOST_CHECK_EQUAL(flat.wide_size(), 0U);
+    BOOST_CHECK(!flat.should_restride());
+}
+
+// A clone carries the tier, not just the narrow rows, and shares no storage with its source.
+BOOST_AUTO_TEST_CASE(a_clone_carries_the_wide_tier) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 10;
+    Store s(kInline, kTinyChunkRows, kBound);
+    for (size_t i = 0; i < 40; ++i) {
+        s.push_back(term_of_width(i, i % 4 == 0 ? kBound : kInline));
+    }
+    BOOST_REQUIRE_EQUAL(s.wide_size(), 10U);
+
+    const auto copy = s.clone();
+    BOOST_CHECK_EQUAL(copy->wide_size(), s.wide_size());
+    BOOST_CHECK_EQUAL(copy->inline_width(), s.inline_width());
+    BOOST_CHECK_EQUAL(copy->wide_width(), s.wide_width());
+    for (size_t i = 0; i < s.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(copy->row(i) == s.row(i));
+        BOOST_CHECK_EQUAL(copy->key(i), s.key(i));
+    }
+    // Restriding the copy must not disturb the original's tier.
+    copy->restride_to_bound();
+    BOOST_CHECK_EQUAL(copy->wide_size(), 0U);
+    BOOST_CHECK_EQUAL(s.wide_size(), 10U);
+    for (size_t i = 0; i < s.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(copy->row(i) == s.row(i));
+    }
+}
+
 // The chunk length is a storage decision and nothing else: the same writes must produce the same store,
 // row for row and key for key, at 64 rows per chunk and at the production ceiling of 2^18.
 BOOST_AUTO_TEST_CASE(chunk_size_does_not_change_the_store) {

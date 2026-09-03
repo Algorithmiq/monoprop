@@ -194,6 +194,9 @@ _OPERATOR_DIAGNOSTIC_KEYS = (
     "d_init_operator_entries",
     "d_op_coeffs_slack_bytes",
     "d_gate_buffers_hwm_bytes",
+    "d_row_wide_rows",
+    "d_row_inline_width",
+    "d_row_restrides",
 )
 # The only non-scalar entries: fixed-length lists, so an A/B subtracts them bucket by bucket.
 _OPERATOR_HISTOGRAM_KEYS = ("d_invidx_density_hist", "d_invidx_dense_density_hist")
