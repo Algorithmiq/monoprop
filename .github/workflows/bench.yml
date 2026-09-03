@@ -1,8 +1,6 @@
 name: Benchmark
 
 # Shared body of the Bencher runs; the caller names the machine and the benches/LADDER.md rungs.
-# Every rung runs on the same runner from the same MPI-enabled build and uploads to its own
-# testbed, because Bencher keys history on (branch, testbed, benchmark, measure).
 
 on:
   workflow_call:
@@ -46,8 +44,6 @@ jobs:
         with:
           cache-suffix: benchmark
 
-      # uv's `cache-keys` cover neither `SKBUILD_*` nor `monoprop_ENABLE_MPI`, so without the
-      # reinstall the warm cache above can hand back an MPI-off wheel and every rung still pass.
       - name: Install package
         env:
           SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF

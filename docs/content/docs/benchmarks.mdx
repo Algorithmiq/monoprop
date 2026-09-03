@@ -397,10 +397,7 @@ Peak 19.11 GiB at L2a and 23.71 GiB/node at L2b, in 135 s and 90 s. `~GiB/node` 
 the node's ranks — it errs high, because a page shared between ranks is charged to each, so it is
 the number to provision against and the wrong number to divide.
 
-`--obs-terms=2500000` is **the largest measured point that fits**, not an interpolation: the next
-step tried, 3.5M, reaches 35.49 GiB/node, past the 32 GiB the instance has. A two-point fit over
-1.5M and 2.5M predicted 31.1 GiB there and under-called it by 3.9, so this axis is read off
-measured points rather than interpolated.
+`--obs-terms=2500000` is **the largest measured point that fits**.
 
 The term count is identical at both shapes, which is the geometry-independence check. L2b's node
 sum is 1.24x L2a's peak at this size — the per-rank cost paid four times on one node — against
