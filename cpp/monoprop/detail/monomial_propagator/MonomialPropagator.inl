@@ -23,8 +23,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <format>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
