@@ -542,24 +542,17 @@ class MonomialPropagator(ABC, Generic[T_op]):
     def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
         """Encode one operator term into the raw index tuple the engine keys terms by.
 
-        The front-end counterpart to the decode ``evolved_operator`` performs. Not abstract, so
-        that a front-end which has no term encoding still constructs; it only has to provide this
-        to support [evolved_operator_coefficients][].
-
-        Terms must be canonical -- the engine's encode is order-insensitive, so a non-canonical
-        product would resolve to the canonical term's row and lose the sign of the reordering -- so
-        an implementation validates rather than normalizes: it has no coefficient to put the sign
-        on yet.
+        The front-end counterpart to the decode ``evolved_operator`` performs; a default rather than
+        an abstract method, so a front-end with no term encoding still constructs and only needs
+        this for [evolved_operator_coefficients][]. Implementations *validate* canonical terms
+        rather than normalizing them: the encode is order-insensitive, and a normalizing encode has
+        no coefficient to put the reordering's sign on.
 
         Args:
             term: A single term in this front-end's own vocabulary.
 
         Returns:
-            The term's engine index tuple (Majorana indices, or symplectic slots in the Pauli
-            basis).
-
-        Raises:
-            NotImplementedError: If this front-end does not encode terms.
+            The term's engine index tuple: Majorana indices, or symplectic slots in the Pauli basis.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not implement _term_slots, so it cannot look up "
@@ -574,27 +567,16 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """Return the coefficients of ``terms`` alone in the evolved operator, in the order given.
 
         A cheaper
-        [evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator]
-        for when only a few terms are wanted. The graph contraction is identical -- and still the
-        dominant cost -- but the operator index is *probed* with these terms rather than
-        enumerated, so the decode and the term dictionary cost one entry per term *requested*
-        instead of one per term the evolved operator carries. Reading a handful of amplitudes out
-        of an evolved state (Schrodinger picture) is the motivating case.
+        [evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator] when
+        only a few terms are wanted: the contraction is identical and still dominant, but the index
+        is *probed* with these terms rather than enumerated, so the decode costs one entry per term
+        *requested* rather than one per term the evolved operator carries.
 
-        A term the evolved operator does not carry reads back as ``0``. There is deliberately no
-        ``atol``: the caller named the terms it wants, so magnitude filtering would silently zero
-        some of them -- threshold the returned array instead.
-
-        Terms must be canonical, and a non-canonical one is rejected rather than normalized: the
-        anticommutation sign of the reordering belongs on the coefficient, which is what this is
-        about to look up. Repeating a term simply answers it twice.
-
-        The empty (identity) term agrees with ``evolved_operator`` too: it is the core term in the
-        Heisenberg picture, where the identity is held apart from the operator index, and the
-        state's identity amplitude in the Schrodinger picture, where it is an ordinary term.
-
-        Rank-local, as ``evolved_operator`` is: under MPI each rank answers for the terms it owns,
-        and a term another rank owns reads back as ``0``.
+        A term the operator does not carry reads back as ``0``, and there is deliberately no
+        ``atol`` -- the caller named its terms, so magnitude filtering would silently zero some of
+        them. Terms must be canonical; for a Majorana product that is not, use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
+        returns. A repeated term is answered once per occurrence.
 
         Args:
             terms: The terms to look up, in this front-end's own vocabulary.

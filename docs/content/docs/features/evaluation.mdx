@@ -107,12 +107,10 @@ simulator — use [MajoranaPropagator.evolved_operator][majorana_propagator.Majo
 
 [MajoranaPropagator.evolved_operator][majorana_propagator.MajoranaPropagator.evolved_operator]
 decodes the *whole* evolved operator: it enumerates the operator index,
-materialises a key per surviving term, and hands back a term dictionary. When
-only a handful of terms are wanted — reading a few amplitudes out of an evolved
-state in the Schrödinger picture, say — use
-[evolved_operator_coefficients][monoprop.monomial_propagator.MonomialPropagator.evolved_operator_coefficients]
-instead. It *probes* the index with the terms you name, so the work scales with
-the terms you asked for rather than with the terms the operator carries:
+materialises a key per surviving term, and hands back a term dictionary.
+Use [evolved_operator_coefficients][monoprop.monomial_propagator.MonomialPropagator.evolved_operator_coefficients]
+when only a handful of terms are wanted; reading a few amplitudes out of an evolved
+state in the Schrödinger picture, for example.
 
 ```python notest
 # The coefficients of these three terms alone, in this order.
@@ -120,38 +118,10 @@ terms = [Majorana(0, 1), Majorana(2, 3), Majorana(0, 3)]
 coeffs = sim.evolved_operator_coefficients(terms, parameters)
 ```
 
-The terms are given in the front-end's own vocabulary — [Majorana][] terms (or
-raw index tuples) for [MajoranaPropagator][], [Pauli][] terms for
-[PauliPropagator][] — and the returned NumPy array carries one coefficient per
+The terms are given in the front-end's own vocabulary: [Majorana][] terms (or
+raw index tuples) for [MajoranaPropagator][]; [Pauli][] terms for
+[PauliPropagator][]. The returned NumPy array carries one coefficient per
 requested term, in the order requested.
-
-Three contracts are worth knowing:
-
-- **A term the evolved operator does not carry reads back as `0`.** There is
-  deliberately no `atol`: you named the terms you want, so filtering by
-  magnitude would silently zero some of them. Threshold the returned array
-  instead.
-- **Terms must be canonical, and a non-canonical one raises.** The engine keys
-  its terms by an order-insensitive bitset, so a raw `(1, 0)` would resolve to
-  the row of `(0, 1)` — and reordering Majorana indices anticommutes them, so
-  its coefficient carries a sign that a lookup has nowhere to put. Raw tuples
-  are therefore validated, not normalized: sort with
-  [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply
-  the sign it hands back yourself. The `terms` keys of a
-  [MajoranaOperator][] are already canonical, as are the qubits of a
-  [Pauli][].
-- **It is rank-local, exactly as
-  [evolved_operator][majorana_propagator.MajoranaPropagator.evolved_operator]
-  is.** Under MPI each rank answers only for the terms in its own hash
-  partition, and a term another rank owns reads back as `0`; sum across the
-  communicator to reassemble the operator.
-
-The empty (identity) term agrees with
-[evolved_operator][majorana_propagator.MajoranaPropagator.evolved_operator]
-either way: it is the core term in the Heisenberg picture, where the identity is
-held apart from the operator index, and the state's identity amplitude in the
-Schrödinger picture, where it is an ordinary term. Repeating a term in one query
-simply answers it twice.
 
 This does **not** make the evolution faster. The graph contraction is identical
 and still the dominant cost; what disappears is the decode and dictionary build

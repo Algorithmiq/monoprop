@@ -124,25 +124,16 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
     def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
         """Encode a Majorana term into the engine's index tuple.
 
-        Majorana indices *are* the engine's keys, so this only unwraps the term. A raw sequence is
-        round-tripped through [Majorana][monoprop.majorana.Majorana] to reject a non-canonical
-        product: the engine's encode is order-insensitive, so ``(1, 0)`` would resolve to the row
-        of ``(0, 1)`` and read back its coefficient without the anticommutation sign, which this
-        cannot apply to a coefficient it has yet to look up. Canonicalize first with
-        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
-        returns yourself; the ``terms`` keys of a
-        [MajoranaOperator][monoprop.majorana.MajoranaOperator] are already canonical.
+        Majorana indices *are* the engine's keys, so this only unwraps the term. A raw sequence goes
+        through [Majorana][monoprop.majorana.Majorana], which rejects a non-canonical product rather
+        than drop the anticommutation sign a lookup cannot carry; for one of those, use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply its sign.
 
         Args:
-            term: A [Majorana][monoprop.majorana.Majorana] term, or a raw index sequence
-                (a tuple, or an index array).
+            term: A [Majorana][monoprop.majorana.Majorana] term, or a raw index sequence.
 
         Returns:
             The term's Majorana indices.
-
-        Raises:
-            TypeError: If the term is neither a Majorana term nor an iterable of indices.
-            ValueError: If a raw sequence is not sorted, or holds a negative or repeated index.
         """
         if isinstance(term, Majorana):
             return term.indices
