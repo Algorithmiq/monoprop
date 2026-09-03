@@ -20,35 +20,112 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/operator/ChunkedArray.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
+
+//! Fold words per block: an 8 KB block, L1-resident (bench knee). Every fold walks its word range in
+//! blocks of this size starting at word 0, so a block boundary is always a multiple of it.
+inline constexpr size_t kColumnBlockWords = 1024;
 
 // Lazy transposed operator storage: one bit-vector per column (bit position), bit r set iff term r touches
 // that column. XOR-combining a generator G's columns yields |M ∩ G| mod 2 per term M -- the anticommutation
 // bit for an even generator; odd generators add a per-row parity(|M|) correction, so both parities are
 // served. Columns are stored in two tiers, bit-identical to all-dense: dense (density ≥
 // 1/kPromoteDensityInv) full-height uint64 vectors; sparse an ascending set-row list scatter-expanded at
-// scan time. Promotion is one-way (the operator is append-only).
+// scan time. Dense columns are held in pooled chunks (ChunkedArray.h) rather than one vector each: at a
+// billion terms a column is 125 MB, and a vector's doubling reserve plus the doubled copy it holds while
+// reallocating cost more than the columns' own slack ever did. Promotion is one-way (the operator is
+// append-only).
 template <size_t NumModes>
 struct InvertedIndex {
     static constexpr size_t kNumColumns = Monomial<NumModes>::size();
     static constexpr size_t kPromoteDensityInv = 64;
     // Buckets of the diagnostic density histogram below. Log-spaced, one bucket per halving.
     static constexpr size_t kDensityBuckets = 8;
+    // Words per chunk of a dense column: 128 KiB, and exactly eight fold blocks. A column grown a chunk
+    // at a time never reallocates, so it holds neither a growth overshoot nor a doubled copy of itself
+    // mid-growth -- at 91 full-height columns and a billion terms those two together were 3 GiB and the
+    // whole run-to-run spread of the index's footprint.
+    static constexpr size_t kWordsPerChunk = size_t{1} << 14;
 
+    /*! @brief One column of the transpose: the rows that touch this bit position, in one of two tiers. */
     struct Column {
-        std::vector<uint64_t> words; // full-height bit-vector; used iff is_dense
+        //! Full-height bit-vector, chunked; used iff is_dense. Words past words() are slack, never read.
+        ChunkedArray<uint64_t> words;
         // Ascending set-row indices (used iff !is_dense). must stay ascending: combine_columns_block
         // lower_bounds these to a word range, and every fill path appends in row order.
         std::vector<TermIndex> set_rows;
-        bool is_dense = false;
+        bool is_dense = false; //!< which of the two tiers holds this column
     };
+
+    /*! @brief An empty index whose dense columns take @a words_per_chunk words per chunk.
+     *
+     *  @pre A power of two and a multiple of kColumnBlockWords, so no fold block ever straddles a chunk
+     *  boundary and dense_column_block() can hand the fold a bare pointer.
+     *
+     *  The parameter is a test knob: production always takes kWordsPerChunk, and a test drives the chunk
+     *  boundaries with a few hundred rows instead of a billion.
+     */
+    explicit InvertedIndex(size_t words_per_chunk = kWordsPerChunk)
+        : pool_(std::make_unique<ChunkPool>(words_per_chunk * sizeof(uint64_t))),
+          words_per_chunk_(words_per_chunk) {
+        assert(std::has_single_bit(words_per_chunk) && words_per_chunk % kColumnBlockWords == 0);
+        for (auto &col : cols) {
+            col.words.attach(*pool_, words_per_chunk);
+        }
+    }
+
+    //! Deep copy: the clone takes its chunks from its own pool, so the two indices share no storage.
+    InvertedIndex(const InvertedIndex &other) : InvertedIndex(other.words_per_chunk_) {
+        row_count = other.row_count;
+        row_parity_ = other.row_parity_;
+        for (size_t c = 0; c < kNumColumns; ++c) {
+            cols[c].is_dense = other.cols[c].is_dense;
+            cols[c].set_rows = other.cols[c].set_rows;
+            cols[c].words = other.cols[c].words.clone_into(*pool_);
+        }
+    }
+
+    // Defaulted: the pool is held by pointer, so it keeps its address and the moved-to columns' bare
+    // pointers into it stay good.
+    InvertedIndex(InvertedIndex &&) noexcept = default;
+
+    /*! @brief Move assignment, which cannot be defaulted: members are assigned in declaration order, so
+     *  a defaulted one would destroy this index's pool while its own columns still held chunks from it.
+     */
+    auto operator=(InvertedIndex &&other) noexcept -> InvertedIndex & {
+        if (this != &other) {
+            for (auto &col : cols) {
+                col.words.reset(); // hand the chunks back while the pool that owns them is still alive
+            }
+            pool_ = std::move(other.pool_);
+            words_per_chunk_ = other.words_per_chunk_;
+            cols = std::move(other.cols);
+            row_count = other.row_count;
+            row_parity_ = std::move(other.row_parity_);
+        }
+        return *this;
+    }
+
+    auto operator=(const InvertedIndex &other) -> InvertedIndex & {
+        if (this != &other) {
+            *this = InvertedIndex(other);
+        }
+        return *this;
+    }
+
+    // Declared before `cols`: members are destroyed in reverse declaration order, so the pool outlives
+    // the columns whose chunks it owns.
+    std::unique_ptr<ChunkPool> pool_; //!< the columns' chunk arenas; one size class, one owner
+    size_t words_per_chunk_ = kWordsPerChunk;
 
     std::array<Column, kNumColumns> cols{};
     size_t row_count = 0;
@@ -86,12 +163,24 @@ struct InvertedIndex {
     auto words() const -> size_t { return (row_count + 63) / 64; }
 
     auto column_is_dense(size_t c) const -> bool { return cols[c].is_dense; }
-    auto dense_column_data(size_t c) const -> const uint64_t * { return cols[c].words.data(); }
+    /*! @brief Dense column @a c over fold words [@a bb, @a be), as a plain pointer to word @a bb.
+     *
+     *  Valid for be-bb words and no further. A fold block starts at a multiple of kColumnBlockWords and
+     *  a chunk holds a whole number of blocks, so the requested range never crosses a chunk boundary --
+     *  which is what keeps the fold's memcpy and XOR loops on contiguous memory. Ask per block; there is
+     *  no pointer to the whole column any more.
+     */
+    auto dense_column_block(size_t c, size_t bb, [[maybe_unused]] size_t be) const -> const uint64_t * {
+        assert(be >= bb && be - bb <= cols[c].words.elems_left_in_chunk(bb)
+               && "a fold block must not straddle a chunk");
+        return cols[c].words.contiguous_at(bb);
+    }
     auto sparse_column_rows(size_t c) const -> const std::vector<TermIndex> & { return cols[c].set_rows; }
 
     auto promote_to_dense(size_t c) -> void {
         Column &col = cols[c];
-        col.words.assign(words(), 0);
+        col.words.reset(); // a promoted column has no dense storage yet; grow it chunk by chunk
+        col.words.grow_zeroed(words());
         for (TermIndex r : col.set_rows) {
             col.words[r >> 6] |= uint64_t{1} << (r & 63U);
         }
@@ -111,7 +200,7 @@ struct InvertedIndex {
         const size_t required_words = (new_total_rows + 63) / 64;
         for (auto &col : cols) {
             if (col.is_dense && col.words.size() < required_words) {
-                col.words.resize(required_words, 0);
+                col.words.grow_zeroed(required_words);
             }
         }
         for (size_t row_idx = base; row_idx < new_total_rows; ++row_idx) {
@@ -140,8 +229,7 @@ struct InvertedIndex {
     auto rebuild(const Rows &op) -> void {
         const size_t size = op.size();
         for (auto &col : cols) {
-            col.words.clear();
-            col.words.shrink_to_fit();
+            col.words.reset();
             col.set_rows.clear();
             col.set_rows.shrink_to_fit();
             col.is_dense = false;
@@ -165,7 +253,7 @@ struct InvertedIndex {
             Column &col = cols[c];
             if (count * kPromoteDensityInv >= size) {
                 col.is_dense = true;
-                col.words.assign(required_words, 0);
+                col.words.grow_zeroed(required_words);
             }
             else if (count != 0) {
                 col.set_rows.reserve(count);
@@ -198,7 +286,7 @@ struct InvertedIndex {
     auto memory_bytes() const -> size_t {
         size_t total = 0;
         for (const auto &col : cols) {
-            total += col.words.capacity() * sizeof(uint64_t);
+            total += col.words.bytes();
             total += col.set_rows.capacity() * sizeof(TermIndex);
         }
         total += row_parity_.capacity() * sizeof(uint64_t);
@@ -209,7 +297,7 @@ struct InvertedIndex {
     auto tier_memory_bytes() const -> std::array<size_t, 3> {
         std::array<size_t, 3> out{0, 0, 0};
         for (const auto &col : cols) {
-            out[0] += col.words.capacity() * sizeof(uint64_t);
+            out[0] += col.words.bytes();
             out[1] += col.set_rows.capacity() * sizeof(TermIndex);
             out[2] += static_cast<size_t>(col.is_dense);
         }
@@ -233,8 +321,8 @@ struct InvertedIndex {
             size_t set_rows = col.set_rows.size();
             if (col.is_dense) {
                 set_rows = 0;
-                for (const uint64_t word : col.words) {
-                    set_rows += static_cast<size_t>(std::popcount(word));
+                for (size_t w = 0; w < col.words.size(); ++w) {
+                    set_rows += static_cast<size_t>(std::popcount(col.words[w]));
                 }
             }
             const size_t bucket = density_bucket_(set_rows, row_count);
@@ -259,8 +347,6 @@ struct InvertedIndex {
         return bucket;
     }
 };
-
-inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
 
 // Reusable fold blocks (thread_local: each partition master owns its copy). Two independent scratches
 // because the build scan needs the generator fold and a sparse pivot column expanded simultaneously.
@@ -299,7 +385,7 @@ template <size_t NumModes>
         }
     }
     if (dense_init < cols.size()) {
-        std::memcpy(blk, sc.dense_column_data(cols[dense_init]) + bb, nb * sizeof(uint64_t));
+        std::memcpy(blk, sc.dense_column_block(cols[dense_init], bb, be), nb * sizeof(uint64_t));
     }
     else {
         std::memset(blk, 0, nb * sizeof(uint64_t));
@@ -313,9 +399,10 @@ template <size_t NumModes>
         }
         const size_t c = cols[ci];
         if (sc.column_is_dense(c)) {
-            const uint64_t *d = sc.dense_column_data(c);
-            for (size_t wi = bb; wi < be; ++wi) {
-                blk[wi - bb] ^= d[wi];
+            // Block-local: the column is chunked, so the pointer is good for this block and no further.
+            const uint64_t *d = sc.dense_column_block(c, bb, be);
+            for (size_t wi = 0; wi < nb; ++wi) {
+                blk[wi] ^= d[wi];
             }
         }
         else {
