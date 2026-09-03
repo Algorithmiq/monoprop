@@ -345,6 +345,12 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
     size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
+    // The row store's two tiers: how many rows are too wide for the inline slot, the inline width they
+    // are measured against, and how often the store has had to re-lay itself at a wider one. Together
+    // they say whether the width guessed from the model's cutoff held.
+    size_t row_wide_rows{0uz};
+    size_t row_inline_width{0uz};
+    size_t row_restrides{0uz};
     // Not a subset of any field above: the per-gate buffers are freed when the gate returns, or resized
     // under the next one, so nothing resting can name them. Widest instant over the last call, so a sum
     // over partitions is an upper bound rather than a simultaneous figure.
@@ -384,6 +390,10 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        row_wide_rows += o.row_wide_rows;
+        row_restrides += o.row_restrides;
+        // Every partition sizes its rows from the same cutoff, so the width is shared, not summed.
+        row_inline_width = std::max(row_inline_width, o.row_inline_width);
         gate_buffers_hwm_bytes += o.gate_buffers_hwm_bytes;
         // Summed, not maxed, across partitions: the partitions grow together within a call, so their
         // peaks are close to simultaneous and the sum is the figure a per-process footprint wants. It is
@@ -404,6 +414,9 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.row_keys_bytes = op.store->row_keys_bytes();
+    breakdown.row_wide_rows = op.store->wide_size();
+    breakdown.row_inline_width = op.store->inline_width();
+    breakdown.row_restrides = op.store->restrides();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)

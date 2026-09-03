@@ -171,7 +171,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     const size_t expected_local_terms = std::max<size_t>(1, op.size() / std::max<size_t>(1, num_ranks));
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
+    const size_t wide_width = packed_inline_width_();
+    mp_op_.store =
+        std::make_unique<detail::OperatorIndex<NumModes>>(predicted_inline_width_(op, wide_width), 0, wide_width);
     mp_op_.store->reserve(expected_local_terms);
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
@@ -342,6 +344,43 @@ auto MonomialPropagator<NumModes>::partitioned_operator_memory_usage_() const
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown {
     return sum_partitions_([](const MonomialPropagator &s) { return s.graph_memory_usage(); });
+}
+
+/*! @brief The inline width to build the row store at: the width most rows are expected to need.
+ *
+ *  packed_inline_width_() is the structural *bound*, which real operators sit well under, and the row
+ *  is paid for by every row while the wide tier is paid for only by the rows in it. Measured on this
+ *  machine on 2026-09-03, evolved_operator(atol=0.0) over the whole term set:
+ *
+ *    Hubbard, Majorana, cutoff 7, 9.26M terms: every row 6 slots or fewer, bound 7
+ *    kicked Ising, Pauli, cutoff 8,  223k terms: P50 10, P90 13, P99 14, P100 15, bound 16
+ *    kicked Ising, Pauli, cutoff 12, 2.88M terms: P50 14, P90 18, P99 20, P100 23, bound 24
+ *    kicked Ising, Pauli, cutoff 14, 5.13M terms: P50 16, P90 20, P99 22, P100 26, bound 28
+ *
+ *  Majorana rows are even-parity when the initial operator is and the generators preserve it, so the
+ *  bound is one slot loose at every odd cutoff -- worth a whole byte a row at cutoff 7. For Pauli the
+ *  P99 runs at 0.79-0.88 of the bound; 0.79 takes the largest cut and is deliberately optimistic at
+ *  the smaller cutoffs, where it lands just inside the tier's own restride threshold.
+ *
+ *  Either guess being wrong costs one restride and nothing else: the store spills to its wide tier and
+ *  re-lays itself at the bound the first time the tier passes kRestridePercent of the rows.
+ */
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::predicted_inline_width_(const MonomialList<NumModes> &op, size_t wide_width) const
+    -> size_t {
+    constexpr size_t kPauliP99Numerator = 79;
+    if (schrodinger_ || wide_width == 0) {
+        return wide_width;
+    }
+    if (basis_ == Basis::Pauli) {
+        return std::max<size_t>(1, (wide_width * kPauliP99Numerator + 99) / 100);
+    }
+    for (size_t r = 0; r < op.size(); ++r) {
+        if (materialize_row<NumModes>(op, r).count() % 2 != 0) {
+            return wide_width;
+        }
+    }
+    return std::max<size_t>(1, 2 * (wide_width / 2));
 }
 
 template <size_t NumModes>
@@ -817,6 +856,11 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &mono = majoranas[idx];
         evolution_func(mono, only_rotate_len_k, i);
+        // Between gates, never inside one: a gate holds spans into the rows it is reading, and the
+        // restride moves every one of them. Row indices survive it, so nothing else has to be rebuilt.
+        if (mp_op_.store->should_restride()) {
+            mp_op_.store->restride_to_bound();
+        }
     }
     report_comm_profile_();
 

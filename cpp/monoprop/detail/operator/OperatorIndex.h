@@ -97,11 +97,17 @@ public:
     // cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
     static constexpr PosT kOverflowMarker = std::numeric_limits<PosT>::max();
+    //! Header of a row held in the wide tier; its inline bytes carry the tier slot instead of positions.
+    static constexpr PosT kWideMarker = static_cast<PosT>(std::numeric_limits<PosT>::max() - 1);
+    //! A wide row's slot is a uint32 written over the inline positions, so the narrow row needs 4 of them.
+    static constexpr size_t kMinInlineForWideTier = sizeof(uint32_t);
+    //! Wide rows above this share of the store and the inline width was guessed too narrow: restride.
+    static constexpr size_t kRestridePercent = 3;
 
     static_assert((2 * NumModes) - 1 <= std::numeric_limits<PosT>::max(),
                   "OperatorIndex PosT too narrow for 2*NumModes positions");
-    static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max(),
-                  "kOverflowMarker sentinel must not collide with a valid popcount");
+    static_assert(kMaxInlinePositions < std::numeric_limits<PosT>::max() - 1,
+                  "the marker sentinels must not collide with a valid popcount");
 
     // Valid term indices are < kIndexCeiling (check_index_fits throws at the ceiling), so the all-ones
     // TermIndex is free as a sentinel wherever a row index is optional.
@@ -162,12 +168,82 @@ public:
      *  length. A power of two and a multiple of 64. The parameter is a test knob: it drives the chunk
      *  boundaries with a few hundred rows instead of a million.
      */
-    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions, size_t forced_rows_per_chunk = 0)
+    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions,
+                           size_t forced_rows_per_chunk = 0,
+                           size_t wide_width = 0)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_),
+          wide_width_(std::clamp<size_t>(wide_width, inline_width_, kMaxInlinePositions)),
           forced_rows_per_chunk_(forced_rows_per_chunk) {
         assert(forced_rows_per_chunk == 0
                || (std::has_single_bit(forced_rows_per_chunk) && forced_rows_per_chunk % 64 == 0));
+    }
+
+    //! Rows wider than the inline width but within the structural bound: the second tier's population.
+    [[nodiscard]] auto wide_size() const -> size_t { return wide_size_; }
+    [[nodiscard]] auto inline_width() const -> size_t { return inline_width_; }
+    [[nodiscard]] auto wide_width() const -> size_t { return wide_width_; }
+    //! How many times this store has re-laid its rows at a wider inline width.
+    [[nodiscard]] auto restrides() const -> size_t { return restrides_; }
+
+    /*! @brief Whether the inline width was guessed too narrow to be worth keeping.
+     *
+     *  The inline saving is paid by every row and the tier only by the rows in it, so a few per cent of
+     *  wide rows is the price of a much narrower row for the rest; past kRestridePercent it is not. Only
+     *  ever true while a tier exists, so a store restrides at most once.
+     */
+    [[nodiscard]] auto should_restride() const -> bool {
+        return wide_tier_live_() && wide_size_ * 100 > kRestridePercent * size_;
+    }
+
+    /*! @brief Widens the structural bound, so rows the new cutoff admits get a tier instead of the map.
+     *
+     *  A cutoff raised between calls lets through rows the old bound forbade, which would otherwise all
+     *  land in the side-map at some eighty bytes each. Draining the current tier first leaves the rows
+     *  laid out at the old bound and a fresh tier spanning old bound to new, which is exactly the shape
+     *  a store built at the new cutoff would have taken. Rows already in the side-map stay there: they
+     *  are stored losslessly, and update_cutoff does not re-truncate existing terms either.
+     */
+    auto raise_bound(size_t new_wide_width) -> void {
+        if (new_wide_width <= wide_width_) {
+            return;
+        }
+        restride_to_bound();
+        wide_width_ = std::clamp<size_t>(new_wide_width, inline_width_, kMaxInlinePositions);
+    }
+
+    /*! @brief Re-lays every row at the structural bound, emptying the wide tier. Between calls only.
+     *
+     *  Only the byte layout of the row store changes: row indices, join keys, the overflow map and every
+     *  TermIndex the rest of the engine holds are untouched, so no index has to be rebuilt.
+     */
+    auto restride_to_bound() -> void {
+        if (!wide_tier_live_()) {
+            return;
+        }
+        const size_t new_stride = 1 + wide_width_;
+        auto new_pool = std::make_unique<ChunkPool>(rows_.rows_per_chunk() * new_stride * sizeof(PosT));
+        ChunkedRowArray<PosT> new_rows;
+        new_rows.attach(*new_pool, rows_.rows_per_chunk(), new_stride);
+        new_rows.grow(size_);
+        for (size_t i = 0; i < size_; ++i) {
+            PosT *const dst = new_rows.at(i);
+            const StoredRow src = stored_(rows_.at(i));
+            if (src.pos == nullptr) {
+                dst[0] = kOverflowMarker; // stays in the side-map: it is over the bound, not under it
+                continue;
+            }
+            dst[0] = static_cast<PosT>(src.count);
+            std::copy_n(src.pos, src.count, dst + 1);
+        }
+        rows_ = std::move(new_rows);
+        row_pool_ = std::move(new_pool);
+        inline_width_ = wide_width_;
+        stride_ = new_stride;
+        wide_ = {};
+        wide_pool_.reset();
+        wide_size_ = 0;
+        ++restrides_;
     }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
@@ -176,7 +252,13 @@ public:
 
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_, forced_rows_per_chunk_);
+        auto out = std::make_unique<OperatorIndex>(inline_width_, forced_rows_per_chunk_, wide_width_);
+        if (wide_.attached()) {
+            out->attach_wide_();
+            out->wide_ = wide_.clone_into(*out->wide_pool_);
+            out->wide_size_ = wide_size_;
+        }
+        out->restrides_ = restrides_;
         if (rows_.attached()) {
             // The clone takes this store's settled length, not one re-derived from its size: the two
             // must agree row for row, and attach_(0) would round a small store down differently.
@@ -228,13 +310,19 @@ public:
         keys_[i] = key_of(mono);
         PosT *row = rows_.at(i);
         if (c > inline_width_) {
-            row[0] = kOverflowMarker;
-            overflow_[i] = mono;
+            PosT *const wide = spill_(row, c);
+            if (wide == nullptr) {
+                overflow_[i] = mono;
+                return;
+            }
+            PosT *w = wide + 1;
+            for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
+                *w++ = static_cast<PosT>(b);
+            }
+            drop_stale_overflow_(i);
             return;
         }
-        if (!overflow_.empty()) {
-            overflow_.erase(i);
-        }
+        drop_stale_overflow_(i);
         row[0] = static_cast<PosT>(c);
         PosT *out = row + 1;
         for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
@@ -253,8 +341,13 @@ public:
         keys_[i] = key_of_positions(pos.data(), count);
         PosT *row = rows_.at(i);
         if (count > inline_width_) {
-            // The spill path has no position array, so build the dense form -- only here.
-            row[0] = kOverflowMarker;
+            if (PosT *const wide = spill_(row, count); wide != nullptr) {
+                std::copy_n(pos.data(), count, wide + 1);
+                drop_stale_overflow_(i);
+                return;
+            }
+            // Over the structural bound, so the side-map takes it. Only this path has no position
+            // array to hand it, so it is the one place that builds the dense form.
             value_type mono;
             for (size_t j = 0; j < count; ++j) {
                 mono.set(pos[j]);
@@ -262,47 +355,29 @@ public:
             overflow_[i] = mono;
             return;
         }
-        if (!overflow_.empty()) {
-            overflow_.erase(i);
-        }
+        drop_stale_overflow_(i);
         row[0] = static_cast<PosT>(count);
         std::copy_n(pos.data(), count, row + 1);
     }
 
-    [[nodiscard]] auto row(size_t i) const -> value_type {
-        const PosT *const src = rows_.at(i);
-        const PosT c = src[0];
-        if (c == kOverflowMarker) {
-            return overflow_.at(i);
-        }
-        value_type mono;
-        const PosT *pos = src + 1;
-        for (size_t j = 0; j < c; ++j) {
-            mono.set(pos[j]);
-        }
-        return mono;
-    }
+    [[nodiscard]] auto row(size_t i) const -> value_type { return row_from(rows_.at(i), i); }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        const PosT *const src = rows_.at(i);
-        const PosT c = src[0];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) {
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
                 fn(b);
             }
             return;
         }
-        const PosT *pos = src + 1;
-        for (size_t j = 0; j < c; ++j) {
-            fn(static_cast<size_t>(pos[j]));
+        for (size_t j = 0; j < r.count; ++j) {
+            fn(static_cast<size_t>(r.pos[j]));
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = rows_.at(i)[0]; c != kOverflowMarker) {
-            return c;
-        }
-        return overflow_.at(i).count();
+        const StoredRow r = stored_(rows_.at(i));
+        return r.pos == nullptr ? overflow_.at(i).count() : r.count;
     }
     /*! @brief The row's stored ascending positions, empty for a spilled row. Invalidated by any insert. */
     struct RowPositions {
@@ -311,16 +386,27 @@ public:
         [[nodiscard]] auto inlined() const -> bool { return pos.data() != nullptr; }
     };
     [[nodiscard]] auto row_positions(size_t i) const -> RowPositions {
-        const PosT *const src = rows_.at(i);
-        if (src[0] == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) {
             return {};
         }
-        return {std::span<const PosT>(src + 1, static_cast<size_t>(src[0]))};
+        return {std::span<const PosT>(r.pos, r.count)};
     }
-    // The rows themselves. The join keys are reported separately (row_keys_bytes) so the breakdown can
-    // price them on their own; neither figure includes the other.
+    /*! @brief The stored positions of a row already resolved to its narrow slot (block_row()).
+     *  Empty, as row_positions(), for a row that is over the bound and lives in the side-map.
+     */
+    [[nodiscard]] auto positions_at(const PosT *src) const noexcept -> RowPositions {
+        const StoredRow r = stored_(src);
+        if (r.pos == nullptr) {
+            return {};
+        }
+        return {std::span<const PosT>(r.pos, r.count)};
+    }
+
+    // The rows themselves, both tiers. The join keys are reported separately (row_keys_bytes) so the
+    // breakdown can price them on their own; neither figure includes the other.
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.bytes();
+        size_t total = rows_.bytes() + wide_.bytes();
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
@@ -345,32 +431,99 @@ public:
     // first, so a mismatch usually costs one compare); a spilled row falls back to a dense compare. This
     // is the confirm behind every fingerprint match (BucketJoin::run).
     [[nodiscard]] auto row_eq_positions(size_t i, std::span<const PosT> q) const -> bool {
-        const PosT *const src = rows_.at(i);
-        const PosT c = src[0];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) [[unlikely]] {
             key_type mono;
             for (size_t j = 0; j < q.size(); ++j) {
                 mono.set(q[j]);
             }
             return overflow_.at(i) == mono;
         }
-        if (q.size() != static_cast<size_t>(c)) {
+        if (q.size() != r.count) {
             return false;
         }
-        return std::equal(q.begin(), q.end(), src + 1);
+        return std::equal(q.begin(), q.end(), r.pos);
     }
     // Diagnostic: the part of memory_bytes() that is unused capacity -- the tail of the last chunk.
     [[nodiscard]] auto slack_bytes() const -> size_t { return rows_.slack_bytes(); }
 
 private:
+    /*! @brief A row's stored positions, whichever tier holds them.
+     *
+     *  One compare carries the common case: a header at or below the inline width is the row's own
+     *  popcount and its positions follow it. Both sentinels are above kMaxInlinePositions, so the
+     *  branch is a single unsigned compare against the width and never a table lookup or a hash.
+     *  `pos == nullptr` means the row is over the structural bound and lives in the side-map.
+     */
+    struct StoredRow {
+        const PosT *pos;
+        size_t count;
+    };
+    [[nodiscard]] auto stored_(const PosT *src) const noexcept -> StoredRow {
+        const size_t c = src[0];
+        if (c <= inline_width_) [[likely]] {
+            return {src + 1, c};
+        }
+        if (c == kWideMarker) {
+            const PosT *const w = wide_.at(wide_slot_(src));
+            return {w + 1, static_cast<size_t>(w[0])};
+        }
+        return {nullptr, 0};
+    }
+    //! A wide row's tier slot, written unaligned over the narrow row's inline positions.
+    [[nodiscard]] static auto wide_slot_(const PosT *src) noexcept -> size_t {
+        uint32_t slot = 0;
+        std::memcpy(&slot, src + 1, sizeof(slot));
+        return slot;
+    }
+    //! The tier is worth having only while it is narrower than the bound and the slot fits inline.
+    [[nodiscard]] auto wide_tier_live_() const noexcept -> bool {
+        return wide_width_ > inline_width_ && inline_width_ >= kMinInlineForWideTier;
+    }
+    auto attach_wide_() -> void {
+        if (!wide_.attached()) {
+            wide_pool_ = std::make_unique<ChunkPool>(kWideRowsPerChunk * (1 + wide_width_) * sizeof(PosT));
+            wide_.attach(*wide_pool_, kWideRowsPerChunk, 1 + wide_width_);
+        }
+    }
+
+    /*! @brief Marks @a row as wide and returns its tier row, or nullptr if it belongs in the side-map.
+     *
+     *  Slots are appended, never reclaimed: a row is written once in every engine path, and a store
+     *  whose tier grows past kRestridePercent is re-laid wide anyway, which frees the tier entirely.
+     */
+    auto spill_(PosT *row, size_t count) -> PosT * {
+        if (count > wide_width_ || !wide_tier_live_()) {
+            row[0] = kOverflowMarker;
+            return nullptr;
+        }
+        attach_wide_();
+        const auto slot = static_cast<uint32_t>(wide_.size());
+        wide_.grow(wide_.size() + 1);
+        ++wide_size_;
+        row[0] = kWideMarker;
+        std::memcpy(row + 1, &slot, sizeof(slot));
+        PosT *const out = wide_.at(slot);
+        out[0] = static_cast<PosT>(count);
+        return out;
+    }
+
+    //! Drops a side-map entry left by a previous value at @a i; the map is empty on every hot path.
+    auto drop_stale_overflow_(size_t i) -> void {
+        if (!overflow_.empty()) {
+            overflow_.erase(i);
+        }
+    }
+
     //! The dense form of a row already resolved to its storage, for the chunk-by-chunk walk.
-    [[nodiscard]] auto row_from(const PosT *src, size_t i) const -> value_type {
-        if (src[0] == kOverflowMarker) {
+    [[nodiscard]] auto row_from(const PosT *src_row, size_t i) const -> value_type {
+        const StoredRow r = stored_(src_row);
+        if (r.pos == nullptr) {
             return overflow_.at(i);
         }
         value_type mono;
-        for (size_t j = 0; j < src[0]; ++j) {
-            mono.set(src[j + 1]);
+        for (size_t j = 0; j < r.count; ++j) {
+            mono.set(r.pos[j]);
         }
         return mono;
     }
@@ -456,16 +609,27 @@ private:
     // outlive the stores whose chunks they own. One pool each, because the two size classes differ.
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
-    size_t forced_rows_per_chunk_ = 0; //!< 0 == size the chunks from the first height asked for
+    size_t wide_width_ = kMaxInlinePositions; //!< the structural bound: the second tier's fixed width
+    size_t forced_rows_per_chunk_ = 0;        //!< 0 == size the chunks from the first height asked for
     std::unique_ptr<ChunkPool> row_pool_;
     std::unique_ptr<ChunkPool> key_pool_;
+    std::unique_ptr<ChunkPool> wide_pool_;
 
     ChunkedRowArray<PosT> rows_ = {};
     // One join key per row, parallel to rows_. Default-init like rows_: a grown row's key is
     // indeterminate until its set() writes both.
     ChunkedArray<uint32_t> keys_ = {};
     size_t size_ = 0;
-    // Lossless side-map for rows whose popcount exceeds inline_width_.
+    /*! @brief Rows wider than the inline width but no wider than the structural bound, at a fixed
+     *  stride of 1 + wide_width_. A few thousand rows per chunk: the tier is a few per cent of the
+     *  store by construction, and past kRestridePercent the store re-lays itself and drops it.
+     */
+    ChunkedRowArray<PosT> wide_ = {};
+    static constexpr size_t kWideRowsPerChunk = size_t{1} << 12;
+    size_t wide_size_ = 0;
+    size_t restrides_ = 0;
+    // Lossless side-map for rows over the structural bound: impossible while the cutoff holds, and
+    // kept so that a raised one is still stored losslessly until the next restride.
     std::unordered_map<size_t, value_type> overflow_ = {};
 };
 
