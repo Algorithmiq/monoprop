@@ -127,6 +127,7 @@ public:
         queries_.clear();
         queries_.reserve(n_queries);
         hit_.assign(n_queries, kMissingRow);
+        hits_ = 0;
     }
 
     // Enters query `q` under the fingerprint of the monomial it is looking for (fp(M) ^ fp(G) at the
@@ -176,6 +177,8 @@ public:
 
     [[nodiscard]] auto rows() const -> size_t { return rows_.size(); }
     [[nodiscard]] auto queries() const -> size_t { return queries_.size(); }
+    //! Queries a row confirmed, valid once run() has returned: queries() - hits() is the mint upper bound.
+    [[nodiscard]] auto hits() const -> size_t { return hits_; }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return ((rows_.capacity() + row_buckets_.capacity() + queries_.capacity() + query_buckets_.capacity()
@@ -285,6 +288,7 @@ private:
                 if (store.row_eq_positions(row, pos_of(q))) {
                     assert(hit_[q] == kMissingRow && "two rows confirmed the same query key");
                     hit_[q] = static_cast<TermIndex>(row);
+                    ++hits_;
                     break;
                 }
             }
@@ -301,6 +305,7 @@ private:
     std::vector<uint32_t> query_offsets_;
     std::vector<uint32_t> fill_;         // bucketize_'s write cursors
     DefaultInitVector<uint64_t> filter_; // stage_rows()' bitmap over the query tags' high bits
+    size_t hits_ = 0;                    // queries a row confirmed this gate: what the resolve phase sizes by
     uint32_t filter_shift_ = 0;          // 32 - filter bits: what a tag is shifted by to index filter_
 };
 

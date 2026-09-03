@@ -122,6 +122,8 @@ struct SelfQueryStage {
         pos_n_ = 0;
     }
 
+    //! Sizes the arrays for `n_queries` records of `positions_per_query` positions each. Capacity only:
+    //! size() is unchanged, so a reserve that turns out short only costs the pushes that outrun it a grow_.
     auto reserve(size_t n_queries, size_t positions_per_query) -> void {
         if (pos_off.size() < n_queries) {
             pos_off.resize(n_queries);

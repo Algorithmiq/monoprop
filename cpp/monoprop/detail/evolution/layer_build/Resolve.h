@@ -45,6 +45,8 @@ namespace monoprop::detail {
 // and, iff `Sink::wants_responses`, the round-2 pair:
 //   silent_value(row) -> double         row's pre-gate coefficient, the payload of a response
 //   answer(slot, row, v, phase)         a response arrived for this slot's row: its half is −phase·v
+// plus, once per gate before any of them:
+//   reserve_halves(n)                   at most n of the recording calls above will follow this gate
 // `slot` is always the flat slot of the peer the record came from / went to.
 //
 // How a partner is found is entirely BucketJoin's business: the join reads `join.hit(q)` and nothing
@@ -151,6 +153,11 @@ struct MissStage {
     std::vector<uint32_t> k_of;
 
     [[nodiscard]] auto size() const -> size_t { return k_of.size(); }
+    //! Sizes the per-miss arrays to the join's exact mint upper bound, so push() never reallocates them.
+    auto reserve(size_t n) -> void {
+        pos_off.reserve(n);
+        k_of.reserve(n);
+    }
     auto clear() -> void {
         pos_flat.clear();
         pos_off.clear();

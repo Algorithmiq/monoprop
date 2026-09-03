@@ -44,8 +44,9 @@ namespace monoprop::detail {
 // worth of bits. Rows inserted by the gate's own mints are past the pre-gate size and carry no state.
 class RowMarks {
 public:
-    // Sizes the bitsets to `n_rows` and clears the words `nz` names. Must run after the fold's pass 1
-    // (which produces `nz`) and before the emit pass sets a bit.
+    // Sizes the bitsets to `n_rows`, rebinds the five bases, and clears the words `nz` names. Must run
+    // after the fold's pass 1 (which produces `nz`) and before the emit pass sets a bit -- and it is the
+    // only place the vectors can move, which is what makes the bases good for the whole gate.
     auto begin(size_t n_rows, std::span<const EvenParityNzWord> nz) -> void {
         const size_t words = (n_rows + 63) / 64;
         for (auto *bits : arrays_()) {
@@ -53,11 +54,21 @@ public:
                 bits->resize(words, 0);
             }
         }
+        bind_();
+        // The five bases in registers for the whole clear: `arrays_()` used to rebuild its pointer array
+        // inside this loop, once per anticommuting word.
+        uint64_t *const rot = rot_;
+        uint64_t *const foll = foll_;
+        uint64_t *const received = received_;
+        uint64_t *const partner_rot = partner_rot_;
+        uint64_t *const answered = answered_;
         for (const auto &w : nz) {
             const size_t wi = w.base / 64;
-            for (auto *bits : arrays_()) {
-                (*bits)[wi] = 0;
-            }
+            rot[wi] = 0;
+            foll[wi] = 0;
+            received[wi] = 0;
+            partner_rot[wi] = 0;
+            answered[wi] = 0;
         }
     }
 
@@ -88,22 +99,37 @@ public:
     }
 
 private:
-    static auto set_(std::vector<uint64_t> &bits, size_t row) -> void { bits[row >> 6U] |= uint64_t{1} << (row & 63U); }
-    static auto get_(const std::vector<uint64_t> &bits, size_t row) -> bool {
-        return ((bits[row >> 6U] >> (row & 63U)) & 1U) != 0;
+    static auto set_(uint64_t *bits, size_t row) -> void { bits[row >> 6U] |= uint64_t{1} << (row & 63U); }
+    static auto get_(const uint64_t *bits, size_t row) -> bool { return ((bits[row >> 6U] >> (row & 63U)) & 1U) != 0; }
+    auto bind_() -> void {
+        rot_ = rot_words_.data();
+        foll_ = foll_words_.data();
+        received_ = received_words_.data();
+        partner_rot_ = partner_rot_words_.data();
+        answered_ = answered_words_.data();
     }
     auto arrays_() -> std::array<std::vector<uint64_t> *, 5> {
-        return {&rot_, &foll_, &received_, &partner_rot_, &answered_};
+        return {&rot_words_, &foll_words_, &received_words_, &partner_rot_words_, &answered_words_};
     }
     auto arrays_() const -> std::array<const std::vector<uint64_t> *, 5> {
-        return {&rot_, &foll_, &received_, &partner_rot_, &answered_};
+        return {&rot_words_, &foll_words_, &received_words_, &partner_rot_words_, &answered_words_};
     }
 
-    std::vector<uint64_t> rot_;
-    std::vector<uint64_t> foll_;
-    std::vector<uint64_t> received_;
-    std::vector<uint64_t> partner_rot_;
-    std::vector<uint64_t> answered_;
+    std::vector<uint64_t> rot_words_;
+    std::vector<uint64_t> foll_words_;
+    std::vector<uint64_t> received_words_;
+    std::vector<uint64_t> partner_rot_words_;
+    std::vector<uint64_t> answered_words_;
+    // The bitsets' bases, rebound by begin() and valid for the gate it opened. A single load off `this`
+    // instead of a load of the owning vector's data pointer, on every mark this gate sets or reads;
+    // null until the first begin(), which every path that touches a mark runs first. A copy of a
+    // GateScratch would carry the source's bases, so the propagator's copy constructor default-builds
+    // its scratch rather than copying it (MonomialPropagator.inl).
+    uint64_t *rot_ = nullptr;
+    uint64_t *foll_ = nullptr;
+    uint64_t *received_ = nullptr;
+    uint64_t *partner_rot_ = nullptr;
+    uint64_t *answered_ = nullptr;
 };
 
 // Where a silent anticommuting row's pre-cos coefficient sits in the scan's `pre_cos` stream.
@@ -125,12 +151,17 @@ public:
             silent_.resize(words, 0);
             prefix_.resize(words, 0);
         }
+        // Both bases out of the loop for the same reason RowMarks holds its own: the two stores are
+        // otherwise assumed to reach the vectors' own data pointers.
+        uint64_t *const silent = silent_.data();
+        uint32_t *const prefix = prefix_.data();
         size_t total = 0;
         for (const auto &w : nz) {
             const size_t wi = w.base / 64;
-            silent_[wi] = w.overlap & ~marks.rot_word(wi);
-            prefix_[wi] = static_cast<uint32_t>(total);
-            total += static_cast<size_t>(std::popcount(silent_[wi]));
+            const uint64_t word = w.overlap & ~marks.rot_word(wi);
+            silent[wi] = word;
+            prefix[wi] = static_cast<uint32_t>(total);
+            total += static_cast<size_t>(std::popcount(word));
         }
         return total;
     }
@@ -165,6 +196,10 @@ struct GateScratch {
     // The pre-cos coefficient of each silent anticommuting row, in scan order: what a round-2 response
     // sends back. Only the fused sweep fills it; sized to the fold's tally under the same 4× release rule.
     DefaultInitVector<double> pre_cos;
+    // How many records the previous gate of this partition staged for itself: what the next gate's
+    // self-slot reserve is sized from (Scan.h). A hint only -- wrong in either direction it costs at most
+    // a few pushes their geometric grow -- which is why it may cross gates although nothing else here does.
+    size_t self_records_hint = 0;
     ExchangeCounters counters; // COMMPROF's per-call wire volume; reset by the caller, not per gate
 
     [[nodiscard]] auto memory_bytes() const -> size_t {

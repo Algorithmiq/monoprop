@@ -90,16 +90,23 @@ struct PartnerAcc {
 // μ = ν ⊕ G, applied as op[local_idx] += sin·phase_signed·v_partner with v_partner the partner's pre-cos
 // coefficient off the wire. Each slot is touched by exactly one add per gate (a term has one partner),
 // so the order of the records is irrelevant to the result.
+// Two words rather than three in the default build: the index is a row, so it is TermIndex-wide like every
+// other row in the engine, and the phase is ternary. One gate's halves are pushed and then drained as two
+// sequential streams over a buffer the join sizes exactly, so a third off the record is a third off the
+// memory traffic of both passes.
 struct HalfRotationRec {
-    size_t local_idx = 0;     // the slot this rank owns
-    double v_partner = 0.0;   // partner's pre-cos coefficient: v_rec for a hit or mint, the answering row's
-                              // own coefficient for a response, c0(μ) for an absence
-    int32_t phase_signed = 0; // +φ_rec for a hit or mint, −φ_own for an absent partner: pre-signed so the
-                              // apply never negates
+    TermIndex local_idx = 0; // the slot this rank owns
+    int8_t phase_signed = 0; // +φ_rec for a hit or mint, −φ_own for an absent partner: pre-signed so the
+                             // apply never negates
     // A mint writes a slot inserted this gate (after the fused cos sweep), so the apply folds the gate's
     // cos in (c = cos·c + sin·φ·v) instead of a plain add. False for every pre-gate term.
     bool is_insert = false;
+    double v_partner = 0.0; // partner's pre-cos coefficient: v_rec for a hit or mint, the answering row's
+                            // own coefficient for a response, c0(μ) for an absence
 };
+// Only the default 32-bit TermIndex can hold the layout; monoprop_WIDE_TERM_INDEX pays a word for it.
+static_assert(sizeof(TermIndex) != sizeof(uint32_t) || sizeof(HalfRotationRec) == 16,
+              "the apply streams these, so the packing is the point");
 
 // Sink threaded through build_layer's fused branch (ContractImmediately); a non-null FusedContract*
 // selects the fused path. Drained by apply_fused_contract.

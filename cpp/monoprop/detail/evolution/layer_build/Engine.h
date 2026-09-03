@@ -139,6 +139,9 @@ struct GraphSink {
     auto out_unanswered(size_t slot, size_t row, double /*c0*/, int phase) -> void {
         acc[slot].out_unanswered.push_back({row, phase});
     }
+    // Nothing to size: the four lists are per peer slot, and a bound over the whole gate says nothing
+    // about how the halves split between the slots.
+    auto reserve_halves(size_t /*upper_bound*/) -> void {}
 
     // Drains the per-slot accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
     // see cross_rank_sin_recv_index): sin_send = [in…, out…], sin_recv = [(out, −φ)…, (in, +φ)…]. cos
@@ -203,7 +206,7 @@ struct ContractSink {
     const double *pre_cos = nullptr;
 
     auto hit(size_t /*slot*/, size_t row, double v, int phase, bool /*foll*/) -> void {
-        fc.halves.push_back(HalfRotationRec{row, v, static_cast<int32_t>(phase), /*is_insert=*/false});
+        push_half_(HalfRotationRec{row_of_(row), static_cast<int8_t>(phase), /*is_insert=*/false, v});
     }
     [[nodiscard]] auto silent_value(size_t row) const -> double {
         return (pre_cos != nullptr) ? pre_cos[silent->ordinal(row)] : pre_gate_coeffs[row];
@@ -211,18 +214,21 @@ struct ContractSink {
     // ν's half of an asymmetric pair, from the response its partner sent (or, on the self slot, from the
     // silent hit directly): −φ_ν · v_μ, the same add the symmetric case gets off μ's own record.
     auto answer(size_t /*slot*/, size_t row, double v, int phase) -> void {
-        fc.halves.push_back(HalfRotationRec{row, v, static_cast<int32_t>(-phase), /*is_insert=*/false});
+        push_half_(HalfRotationRec{row_of_(row), static_cast<int8_t>(-phase), /*is_insert=*/false, v});
     }
     auto mint(size_t /*slot*/, size_t idx, double v, int phase) -> void {
-        fc.halves.push_back(HalfRotationRec{idx, v, static_cast<int32_t>(phase), /*is_insert=*/true});
+        push_half_(HalfRotationRec{row_of_(idx), static_cast<int8_t>(phase), /*is_insert=*/true, v});
     }
     auto out_pair(size_t /*slot*/, size_t /*row*/, int /*phase*/) -> void {}
     // Pushed in Heisenberg too, where c0 = 0, so the branch is one rule rather than two. Adding ±0.0
     // cannot change a nonzero coefficient; its only effect is on a coefficient that is exactly -0.0,
     // which the add can turn into +0.0.
     auto out_unanswered(size_t /*slot*/, size_t row, double c0, int phase) -> void {
-        fc.halves.push_back(HalfRotationRec{row, c0, static_cast<int32_t>(-phase), /*is_insert=*/false});
+        push_half_(HalfRotationRec{row_of_(row), static_cast<int8_t>(-phase), /*is_insert=*/false, c0});
     }
+    // One allocation per gate instead of a doubling chain: `fc` is built fresh for each gate, so every
+    // half used to move once per reallocation. The bound is the caller's (Engine.h exchange_and_join).
+    auto reserve_halves(size_t upper_bound) -> void { fc.halves.reserve(upper_bound); }
 
     // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
     // endpoints so the immediate cos scale covers them; the fused cos sweep covers them in-place instead.
@@ -233,6 +239,20 @@ struct ContractSink {
             *out_cos = std::move(cos_all);
         }
         return nullptr;
+    }
+
+private:
+    // Every slot a half names is a row of this rank's own operator, and those are TermIndex-wide
+    // throughout the engine (the join's own entries carry them as uint32 too).
+    static auto row_of_(size_t row) -> TermIndex {
+        assert(row <= std::numeric_limits<TermIndex>::max() && "a half named a slot past the TermIndex ceiling");
+        return static_cast<TermIndex>(row);
+    }
+    // Holds the reserve honest: a bound that ever came out short would silently reintroduce the doubling
+    // chain rather than fail, so it is asserted at the only place that can notice.
+    auto push_half_(HalfRotationRec rec) -> void {
+        assert(fc.halves.size() < fc.halves.capacity() && "more halves than reserve_halves() was sized for");
+        fc.halves.push_back(rec);
     }
 };
 
@@ -344,6 +364,19 @@ struct LayerBuildEngine {
             return (q < n_self) ? scan.self.positions_at(q) : pr.positions_at(q - n_self);
         });
 
+        // Both output buffers of the resolve phase are sized here, before the first push, because the
+        // join has just settled the two counts they depend on. Every sink call is keyed on either a
+        // distinct query -- a hit pushes at most one half, a miss mints at most one -- or a distinct
+        // record this slot sent, since a record is answered (round 2, or a self silent hit) or absent
+        // but never both, and a row sends exactly one record because it has exactly one partner. So
+        // |Q| + |sent| bounds the gate's halves, and |Q| - |hits| bounds its mints exactly.
+        size_t n_sent = 0;
+        for (size_t k = 0; k < window.count; ++k) {
+            n_sent += scan.sent[mpi::WindowIndex{k}].size();
+        }
+        sink.reserve_halves(join.queries() + n_sent);
+        misses.reserve(join.queries() - join.hits());
+
         mpi::WindowVec<VecZ> responses;
         if constexpr (Sink::wants_responses) {
             responses.reset(window);
@@ -383,9 +416,7 @@ struct LayerBuildEngine {
         absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
 
         scratch.counters.gates += 1;
-        for (size_t k = 0; k < window.count; ++k) {
-            scratch.counters.records += scan.sent[mpi::WindowIndex{k}].size();
-        }
+        scratch.counters.records += n_sent;
         if constexpr (Sink::wants_responses) {
             scratch.counters.responses += answered_self;
             for (size_t k = 0; k < window.count; ++k) {

@@ -42,6 +42,10 @@
 
 namespace monoprop::detail {
 
+// Floor of the self-slot reserve, so a gate that follows a silent one still starts with room: below this
+// the estimate is not worth having and push()'s own first growth step (PartnerMerge.h grow_) is the same size.
+inline constexpr size_t kSelfReserveFloor = 64;
+
 inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &atol,
                                                   std::optional<std::reference_wrapper<const VecD>> local_coeffs,
                                                   const std::optional<double> &upper_atol,
@@ -347,6 +351,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
         // very array the reads come from and cover the full operator.
         assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
+        // The value path answers a silent hit out of `coeffs` -- Engine.h's ContractSink reads
+        // pre_gate_coeffs[row] for any anticommuting row it did not rotate -- so it already requires one
+        // coefficient per pre-gate row. The hot arm below leans on that same contract to load a
+        // coefficient with no per-row bound; the other two arms run where the picture may carry none.
+        assert((!capture_values || coeffs.size() >= n) && "the value path needs a coefficient per pre-gate row");
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
@@ -526,11 +535,20 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // sized to the tally; before the emit pass, which is what fills both.
         marks.begin(n, nz);
         scratch.join.begin_rows(n_anti);
+        // The self-slot buffers are sized to what this gate will EMIT, not to the fold's tally. Reserving
+        // |Anti(G)| filled them to ~1.7 % of themselves in the lower_atol regime -- 95 MB and 21 MB held
+        // for 45 643 records on the widest gate of a 9.26 M-term Hubbard run, together 82 % of the
+        // per-gate transient peak at one partition. Dropping the reserve outright is not the answer
+        // either: the geometric growth it left behind cost 1.4 % of propagate. The previous gate's
+        // emitted count with a margin is a good enough estimate to leave one allocation, is capped by
+        // the fold's own bound, and when it falls short push() doubles as it always has.
         if (rank_count == 1) {
-            // A hint only; wider terms grow the buffer as needed.
-            res.self.reserve(n_anti, QueryWire<NumModes>::kReservePositionsPerQuery);
-            res.sent.at_slot(my_rank).reserve(n_anti);
+            const size_t hint = scratch.self_records_hint;
+            const size_t want = std::min(n_anti, std::max(kSelfReserveFloor, hint + (hint / 4)));
+            res.self.reserve(want, QueryWire<NumModes>::kReservePositionsPerQuery);
+            res.sent.at_slot(my_rank).reserve(want);
         }
+
         // The pre-cos values of this gate's silent rows, written straight through in scan order. Sized to
         // the fold's tally (its upper bound) under the join's own 4× release rule, so one huge gate does
         // not pin the buffer.
@@ -548,6 +566,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const CutoffContext cut = cut_st;
         const double *const coeff_ptr = coeffs.data();
         const size_t coeff_n = coeffs.size();
+        // `use_coeff_checks` is fixed for the whole scan, so it rides the value as a mask rather than a
+        // per-row branch: clearing the sign bit is std::abs exactly, and a zero mask is the +0.0 the
+        // `false` arm produced. The branch cost three instructions on every anticommuting row.
+        const uint64_t abs_mask = cut.use_coeff_checks ? ~(uint64_t{1} << 63U) : uint64_t{0};
         double *const sweep = fused_scale_coeffs;
         const double sweep_cos = fused_scale_cos;
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
@@ -565,8 +587,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
-                    const double v_src = (i < coeff_n) ? coeff_ptr[i] : 0.0;
-                    const double abs_c = cut.use_coeff_checks ? std::abs(v_src) : 0.0;
+                    const double v_src = coeff_ptr[i];
+                    const double abs_c = std::bit_cast<double>(std::bit_cast<uint64_t>(v_src) & abs_mask);
                     // E(ν) factorises: this half reads the coefficient alone, the other needs the
                     // partner's digest. A record is silent iff this half already fails, so the whole
                     // partner product -- the row read, the merge, the cutoff, the encoding -- is skipped
@@ -591,7 +613,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
                     const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
-                    const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
+                    const double abs_c = std::bit_cast<double>(std::bit_cast<uint64_t>(c) & abs_mask);
                     const RowRead row = read_row(i);
                     if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
                         cos_b.push_index(i);
@@ -615,11 +637,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
                     const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
-                    const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
+                    const double abs_c = std::bit_cast<double>(std::bit_cast<uint64_t>(c) & abs_mask);
                     emit_row(i, nullptr, capture_values ? c : 0.0, abs_c, rotation_coeff_gate(cut, abs_c));
                 }
             }
         }
+        // After the emit pass, so it is the count this gate actually staged.
+        scratch.self_records_hint = res.self.size();
         res.cos_blocks.push_back(cos_b.finish());
         if (fused_scale_coeffs != nullptr) {
             // `rot` is final now, so the silent set is: the join can turn a silent row into its slot in

@@ -80,6 +80,8 @@ struct RecordingSink {
     auto out_unanswered(size_t slot, size_t row, double c0, int phase) -> void {
         recs.push_back({"out_unanswered", slot, row, c0, phase, false});
     }
+    //! The engine's per-gate bound on the four surfaces above; here it only pre-sizes the log.
+    auto reserve_halves(size_t upper_bound) -> void { recs.reserve(upper_bound); }
 };
 
 // The same, for the value path: it answers a hit on a silent row, and its response payload names the row
