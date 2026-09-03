@@ -37,13 +37,14 @@
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/operator/CoeffKeyStore.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
 namespace monoprop::detail {
 
 inline auto build_majorana_evolution_cutoff_state(const std::optional<double> &atol,
-                                                  std::optional<std::reference_wrapper<const VecD>> local_coeffs,
+                                                  std::optional<CoeffSpan> local_coeffs,
                                                   const std::optional<double> &upper_atol,
                                                   const std::optional<double> &param) -> CutoffContext {
     const bool check_atol = atol.has_value() && local_coeffs.has_value() && param.has_value();
@@ -279,7 +280,7 @@ struct FusedScanResult {
 // join is streamed over `scratch.nz` against a table of the records (BucketJoin.h), so the only per-term
 // row work the scan does is the partner merge every record needs anyway.
 //
-// `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales the anticommuting coeffs in
+// `fused_scale_coeffs` (no length cap only; must alias `coeffs`) scales the anticommuting coeffs in
 // place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built; the value a record carries
 // is the PRE-cos coefficient, read before the store. EVERY anticommuting row is scaled here, in the one
 // pass that already has its value in a register. A silent row's pre-cos value is what the join owes a
@@ -292,7 +293,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
                             const CutoffContext &cut_st,
-                            const VecD &coeffs,
+                            CoeffSpan coeffs,
                             std::optional<size_t> only_rotate_len_k,
                             bool over_cutoff_possible,
                             mpi::SlotWindow window,
@@ -300,7 +301,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const routing::Router &router,
                             GateScratch<NumModes> &scratch,
                             bool capture_values = false,
-                            double *fused_scale_coeffs = nullptr,
+                            MutCoeffSpan fused_scale_coeffs = {},
                             double fused_scale_cos = 1.0,
                             const Monomial<NumModes> *state_mask = nullptr) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
@@ -312,6 +313,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     // The value path is exactly the path that answers silent hits with a response (Engine.h,
     // ContractSink::wants_responses), and so the path whose send predicate is E(M) alone.
     const bool answer_silent_hits = capture_values;
+    // The fused cos sweep is on iff the caller handed a writable span; it aliases `coeffs`.
+    const bool sweep_on = fused_scale_coeffs.base != nullptr;
 
     FusedScanResult<NumModes> res;
     res.window = window;
@@ -346,7 +349,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const size_t n = op.store->size();
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
         // very array the reads come from and cover the full operator.
-        assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
+        assert(
+            !sweep_on
+            || (fused_scale_coeffs.base == coeffs.base && fused_scale_coeffs.stride == coeffs.stride && coeffs.n >= n));
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
@@ -480,8 +485,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 // The fused cos sweep for an emitting row: the scale lands now, while v_src is still in a
                 // register, and nothing will ask this row for its pre-gate value. The caller scales the
                 // silent rows the same way, keeping their pre-cos value in the `pre_cos` stream.
-                if (fused_scale_coeffs != nullptr) {
-                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
+                if (sweep_on) {
+                    fused_scale_coeffs.set(i, v_src * fused_scale_cos);
                 }
             }
             if (p.sign_pending) {
@@ -535,7 +540,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // the fold's tally (its upper bound) under the join's own 4× release rule, so one huge gate does
         // not pin the buffer.
         double *pre_cos_cur = nullptr;
-        if (fused_scale_coeffs != nullptr) {
+        if (sweep_on) {
             if (scratch.pre_cos.capacity() > 4 * std::max<size_t>(n_anti, size_t{16})) {
                 scratch.pre_cos = DefaultInitVector<double>{};
             }
@@ -546,9 +551,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // Everything the per-row loops read on every anticommuting row, hoisted out of them: through a
         // closure these are reloaded per row, which is a third of the silent path's instructions.
         const CutoffContext cut = cut_st;
-        const double *const coeff_ptr = coeffs.data();
-        const size_t coeff_n = coeffs.size();
-        double *const sweep = fused_scale_coeffs;
+        // The coefficient array is addressed by base and byte stride, not as double[]: the picture's own
+        // array is contiguous (stride 8) but the packed operator cells put the row's join key in the same
+        // 12-byte cell, which is what makes the join's later key read free. The sweep aliases the reads, so
+        // one stride serves both.
+        const std::byte *const coeff_base = coeffs.base;
+        const size_t coeff_stride = coeffs.stride;
+        const size_t coeff_n = coeffs.n;
+        std::byte *const sweep = fused_scale_coeffs.base;
         const double sweep_cos = fused_scale_cos;
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         // No orbital gate and no fused sweep: the whole word goes into the cosine set in one push.
@@ -565,7 +575,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
-                    const double v_src = (i < coeff_n) ? coeff_ptr[i] : 0.0;
+                    const double v_src = (i < coeff_n) ? load_coeff(coeff_base + (i * coeff_stride)) : 0.0;
                     const double abs_c = cut.use_coeff_checks ? std::abs(v_src) : 0.0;
                     // E(ν) factorises: this half reads the coefficient alone, the other needs the
                     // partner's digest. A record is silent iff this half already fails, so the whole
@@ -576,7 +586,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     }
                     if (sweep != nullptr) {
                         *pre_cos_cur++ = v_src;
-                        sweep[i] = v_src * sweep_cos;
+                        store_coeff(sweep + (i * coeff_stride), v_src * sweep_cos);
                     }
                 }
             }
@@ -590,7 +600,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 marks.set_foll_word(w.base / 64, w.foll);
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
-                    const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
+                    const double c = (i < coeff_n) ? load_coeff(coeff_base + (i * coeff_stride)) : 0.0;
                     const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
                     const RowRead row = read_row(i);
                     if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
@@ -614,14 +624,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
-                    const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
+                    const double c = (i < coeff_n) ? load_coeff(coeff_base + (i * coeff_stride)) : 0.0;
                     const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
                     emit_row(i, nullptr, capture_values ? c : 0.0, abs_c, rotation_coeff_gate(cut, abs_c));
                 }
             }
         }
         res.cos_blocks.push_back(cos_b.finish());
-        if (fused_scale_coeffs != nullptr) {
+        if (sweep_on) {
             // `rot` is final now, so the silent set is: the join can turn a silent row into its slot in
             // the stream this pass just wrote.
             [[maybe_unused]] const size_t n_silent = scratch.silent.build(nz, marks, n);

@@ -255,8 +255,9 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
     dict[VecZ{4, 6}] = cd(2.5, 0.0); // in init_op_map -> stays pending
 
     const auto grad = op.update_initial_operator(dict, /*schrodinger=*/false);
-    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
+    const auto coeffs = op.get_operator();
+    BOOST_REQUIRE_EQUAL(coeffs.size(), 1U);
+    BOOST_CHECK_EQUAL(coeffs[0], encode_pauli_coeff(cd(1.5, 0.0))); // Pauli encode path
     BOOST_CHECK(op.init_op_map.find(indices_to_bitset<8>({4, 6})) != op.init_op_map.end());
     BOOST_CHECK(op.init_op_map.find(present) == op.init_op_map.end());
     BOOST_CHECK_EQUAL(grad.first.size(), 2U); // every supplied term recorded in the grad arrays
@@ -289,9 +290,10 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
     OperatorDict dict;
     dict[VecZ{}] = cd(2.75, 0.0);
     op.update_initial_operator(dict, /*schrodinger=*/false);
-    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), 1U);
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
-    BOOST_CHECK_EQUAL(op.op_coeffs[0], 2.75);
+    const auto coeffs = op.get_operator();
+    BOOST_REQUIRE_EQUAL(coeffs.size(), 1U);
+    BOOST_CHECK_EQUAL(coeffs[0], algebra_encode_coeff<8>(Basis::Majorana, cd(2.75, 0.0), identity));
+    BOOST_CHECK_EQUAL(coeffs[0], 2.75);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {

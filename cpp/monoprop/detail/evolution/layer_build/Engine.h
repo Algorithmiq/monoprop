@@ -198,7 +198,7 @@ struct ContractSink {
     // pre-gate, so the picture's own array answers. With it, every anticommuting row is already scaled
     // and the pre-cos value of a silent one is in `pre_cos`, at the slot `silent` names -- the same
     // double the scan read, so the answer is bit-identical either way.
-    const double *pre_gate_coeffs = nullptr;
+    CoeffSpan pre_gate_coeffs;
     const SilentIndex *silent = nullptr;
     const double *pre_cos = nullptr;
 
@@ -399,9 +399,8 @@ struct LayerBuildEngine {
     }
 };
 
-static inline auto empty_coeffs() -> const VecD & {
-    static const VecD coeffs;
-    return coeffs;
+static inline auto empty_coeffs() -> CoeffSpan {
+    return CoeffSpan{};
 }
 
 // Primary-path layer builder: one fused scan, one exchange, one join into the chosen sink. See LayerBuilder.h.
@@ -413,7 +412,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
                  const CutoffFn<NumModes> &cutoff_fn,
                  const std::optional<double> &atol,
-                 std::optional<std::reference_wrapper<const VecD>> local_coeffs,
+                 std::optional<CoeffSpan> local_coeffs,
                  const std::optional<double> &upper_atol,
                  const std::optional<double> &param,
                  std::optional<size_t> only_rotate_len_k,
@@ -423,7 +422,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  CosMask *out_cos = nullptr,
                  FusedContract *fused_contract = nullptr,
                  bool schrodinger = false,
-                 VecD *fused_scale_coeffs = nullptr,
+                 MutCoeffSpan fused_scale_coeffs = {},
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
@@ -443,20 +442,22 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
-    const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
+    const CoeffSpan coeffs = local_coeffs.value_or(empty_coeffs());
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
     // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. No length cap
     // only (a popcount>k term is outside the per-index cos set) and cos!=0 (else the two-pass fallback).
     // cos is even, so the sweep's cos(2·build_angle) matches the apply's cos(2·apply_angle) bit-for-bit.
     const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
-    const bool fused_scale = use_fused && !only_rotate_len_k.has_value() && fused_scale_coeffs != nullptr
+    const bool fused_scale = use_fused && !only_rotate_len_k.has_value() && fused_scale_coeffs.base != nullptr
                              && param.has_value() && cos_build != 0.0;
     // build_layer is the single authority for this decision; the fused caller must drive its apply from it.
     if (fused_scale_out != nullptr) {
         *fused_scale_out = fused_scale;
     }
-    assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
+    assert(fused_scale_coeffs.base == nullptr
+           || (local_coeffs && local_coeffs->base == fused_scale_coeffs.base
+               && local_coeffs->stride == fused_scale_coeffs.stride));
 
     // An identity generator anticommutes with nothing: the scan returns on its empty fold-column set
     // with no record, no cosine block and no coefficient swept, and the exchange would carry no payload.
@@ -471,7 +472,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     scratch.nz.clear();
     scratch.join.clear_rows();
     if (!identity_gen) {
-        double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
+        const MutCoeffSpan sweep = fused_scale ? fused_scale_coeffs : MutCoeffSpan{};
         // The fresh partner's pre-gate coefficient is state-scored only in the Schrödinger picture, and
         // only the fused path needs it on the sender side (graph replay reads it off the extended vector).
         std::optional<Monomial<NumModes>> state_mask;
@@ -491,7 +492,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        router,
                                                        scratch,
                                                        /*capture_values=*/use_fused,
-                                                       sweep_ptr,
+                                                       sweep,
                                                        cos_build,
                                                        state_mask ? &*state_mask : nullptr);
         });
@@ -529,7 +530,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
         const bool swept = fused_scale && !identity_gen;
         storage = run(ContractSink<NumModes>{.fc = *fused_contract,
                                              .fused_scale = fused_scale,
-                                             .pre_gate_coeffs = coeffs.data(),
+                                             .pre_gate_coeffs = coeffs,
                                              .silent = swept ? &scratch.silent : nullptr,
                                              .pre_cos = swept ? scratch.pre_cos.data() : nullptr});
     }

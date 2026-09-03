@@ -31,6 +31,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/operator/CoeffKeyStore.h"
 // For the per-row join key only: routing owns the fingerprint, and a second definition of it here would
 // be a second thing to keep in step with BucketJoin's tag.
 #include "monoprop/detail/mpi/Routing.h"
@@ -56,8 +57,13 @@ public:
 // What IS kept per row is its 4-byte join key -- the top 32 bits of the mixed routing fingerprint, which
 // is exactly BucketJoin's compare tag. Every gate stages its whole anticommuting set into that join, and
 // folding the key there meant reading each row's positions once per gate; holding it costs 4 B/term once
-// and turns pass 1 into a sequential read of keys_. It is NOT the 64-bit fingerprint: that is
+// and turns pass 1 into a sequential read of the keys. It is NOT the 64-bit fingerprint: that is
 // GF(2)-linear, the mixed key is not, so a partner's key still comes from the partner's own positions.
+//
+// The key lives in CoeffKeyStore beside the row's coefficient rather than in an array of its own, because
+// the pass that reads the key (BucketJoin::stage_rows) runs right behind the pass that reads the
+// coefficient (the scan) over the very same rows -- one cell, one cache line, one DRAM stream. The store
+// owns the cells because every writer here has to maintain the key anyway.
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -87,7 +93,13 @@ public:
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
     //! Row i's join key. Maintained by every writer, so a gate stages its join without reading a row.
-    [[nodiscard]] auto key(size_t i) const -> uint32_t { return keys_[i]; }
+    [[nodiscard]] auto key(size_t i) const -> uint32_t { return cells_.key(i); }
+    //! The join's hoisted row-side reader, so its per-row pass costs one strided load and no call.
+    [[nodiscard]] auto key_reader() const -> CoeffKeyStore::KeyReader { return cells_.key_reader(); }
+
+    //! The per-row cells: the keys above, and the operator coefficients once a picture materializes them.
+    [[nodiscard]] auto cells() -> CoeffKeyStore & { return cells_; }
+    [[nodiscard]] auto cells() const -> const CoeffKeyStore & { return cells_; }
 
     //! The compare tag of a 64-bit fingerprint: what a row's key is, and what BucketJoin tags a query with.
     [[nodiscard]] static auto join_tag(uint64_t fp) noexcept -> uint32_t {
@@ -114,7 +126,7 @@ public:
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
         auto out = std::make_unique<OperatorIndex>(inline_width_);
         out->rows_ = rows_;
-        out->keys_ = keys_;
+        out->cells_ = cells_;
         out->size_ = size_;
         out->overflow_ = overflow_;
         return out;
@@ -141,7 +153,7 @@ public:
         // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
         // before any read, so a tail zero-fill would be wasted bandwidth.
         rows_.resize((base + n) * stride_);
-        keys_.resize(base + n);
+        cells_.resize(base + n);
         size_ = base + n;
         return base;
     }
@@ -152,7 +164,7 @@ public:
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
         const size_t c = mono.count();
-        keys_[i] = key_of(mono);
+        cells_.set_key(i, key_of(mono));
         PosT *row = &rows_[i * stride_];
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
@@ -177,7 +189,7 @@ public:
     auto set_positions(size_t i, std::span<const PosT> pos) -> void {
         const size_t count = pos.size();
         assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
-        keys_[i] = key_of_positions(pos.data(), count);
+        cells_.set_key(i, key_of_positions(pos.data(), count));
         PosT *row = &rows_[i * stride_];
         if (count > inline_width_) {
             // The spill path has no position array, so build the dense form -- only here.
@@ -249,7 +261,7 @@ public:
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
-    [[nodiscard]] auto row_keys_bytes() const -> size_t { return keys_.capacity() * sizeof(uint32_t); }
+    [[nodiscard]] auto row_keys_bytes() const -> size_t { return cells_.key_bytes(); }
 
     // Every row in index order.
     template <typename Func>
@@ -285,7 +297,7 @@ private:
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
     auto reserve_rows(size_t n) -> void {
         rows_.reserve(n * stride_);
-        keys_.reserve(n);
+        cells_.reserve(n);
     }
 
     // The label table, bound through a local static so the per-term path does not re-enter routing's guard.
@@ -302,9 +314,9 @@ private:
     }
 
     DefaultInitVector<PosT> rows_ = {};
-    // One join key per row, parallel to rows_. Default-init like rows_: a grown row's key is
-    // indeterminate until its set() writes both.
-    DefaultInitVector<uint32_t> keys_ = {};
+    // One cell per row, parallel to rows_. Default-init like rows_ on the key side: a grown row's key is
+    // indeterminate until its set() writes both. The coefficient side, when present, is zero-filled.
+    CoeffKeyStore cells_ = {};
     size_t size_ = 0;
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;

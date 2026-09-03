@@ -45,6 +45,7 @@
 #include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/operator/CoeffKeyStore.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
 namespace monoprop {
@@ -421,8 +422,14 @@ private:
 
     auto initialize_operator_caches_() -> void;
 
-    auto current_picture_coeffs_() -> const VecD &;
+    // Materialize the picture's own coefficient array over every row, and hand it out. The span is
+    // invalidated by any store growth, so a gate loop re-derives it around each gate's inserts.
+    auto ensure_current_picture_coeffs_() -> void;
+    auto current_picture_span_() -> detail::MutCoeffSpan;
+    //! A contiguous copy of the picture's coefficients, for the callers that own the vector they get.
+    auto current_picture_coeffs_() -> VecD;
 
+    //! Extend a private copy (graph mode's evolving vector) to cover rows the store has grown since.
     auto extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void;
 
     auto evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
@@ -473,21 +480,21 @@ private:
 
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,
-                        std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
+                        std::optional<detail::CoeffSpan> coeffs = std::nullopt,
                         std::optional<double> param = std::nullopt,
                         size_t param_index = 0,
                         double gen_coeff = 0.0,
                         size_t gate_index = 0) -> void;
 
-    // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the uncapped
+    // fused_scale_coeffs (ContractImmediately only): the picture's mutable coefficients for the uncapped
     // fused cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
     auto build_evolve_result_(const VecZ &gen_vec,
                               std::optional<size_t> only_rotate_len_k,
-                              std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
+                              std::optional<detail::CoeffSpan> coeffs = std::nullopt,
                               std::optional<double> param = std::nullopt,
                               CosMask *out_cos = nullptr,
                               detail::FusedContract *fused_contract = nullptr,
-                              VecD *fused_scale_coeffs = nullptr,
+                              detail::MutCoeffSpan fused_scale_coeffs = {},
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
     template <typename Fn,

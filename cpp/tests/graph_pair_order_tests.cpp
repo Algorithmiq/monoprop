@@ -174,7 +174,7 @@ auto run_slot(mpi::Comm comm, size_t my_rank, const Problem &p, std::optional<do
                                     p.gates[g],
                                     cutoff_fn,
                                     lower_atol,
-                                    std::cref(res.coeffs_fused),
+                                    detail::CoeffSpan(res.coeffs_fused),
                                     std::nullopt,
                                     theta,
                                     std::nullopt,
@@ -184,10 +184,10 @@ auto run_slot(mpi::Comm comm, size_t my_rank, const Problem &p, std::optional<do
                                     &cos,
                                     &fc,
                                     /*schrodinger=*/false,
-                                    &res.coeffs_fused,
+                                    detail::MutCoeffSpan(res.coeffs_fused),
                                     &fused_scale);
             res.coeffs_fused.resize(op_f.store->size(), 0.0);
-            detail::apply_fused_contract(fc, res.coeffs_fused, cos, theta, fused_scale);
+            detail::apply_fused_contract(fc, detail::MutCoeffSpan(res.coeffs_fused), cos, theta, fused_scale);
         }
         // Graph arm, as evolve_mode_graph_with_coeffs_ drives it: build, extend, replay.
         {
@@ -196,7 +196,7 @@ auto run_slot(mpi::Comm comm, size_t my_rank, const Problem &p, std::optional<do
                                                 p.gates[g],
                                                 cutoff_fn,
                                                 lower_atol,
-                                                std::cref(res.coeffs_graph),
+                                                detail::CoeffSpan(res.coeffs_graph),
                                                 std::nullopt,
                                                 theta,
                                                 std::nullopt,

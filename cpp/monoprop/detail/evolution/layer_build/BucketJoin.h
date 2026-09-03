@@ -93,9 +93,10 @@ public:
     // the query tags: a confirm needs two equal 32-bit tags and the bitmap is indexed by a PREFIX of the
     // tag, so dropping a row whose prefix no query carries drops nothing that could have matched.
     //
-    // Both inputs are sequential -- one bitmap word per nz word, one 4-byte key per anticommuting row --
-    // so nothing here reads a row, and the rows that survive are proportional to the records rather than
-    // to |Anti(G)|.
+    // Both inputs are sequential -- one bitmap word per nz word, one key per anticommuting row -- so
+    // nothing here reads a row, and the rows that survive are proportional to the records rather than to
+    // |Anti(G)|. The key comes out of the row's cell, which the scan's coefficient pass has just pulled
+    // into cache when the picture's coefficients are packed there (CoeffKeyStore).
     auto stage_rows(const OperatorIndex<NumModes> &store, std::span<const EvenParityNzWord> nz) -> void {
         rows_.clear();
         if (queries_.empty()) {
@@ -104,10 +105,11 @@ public:
         build_filter_();
         const uint32_t shift = filter_shift_;
         const uint64_t *const filter = filter_.data();
+        const auto row_key = store.key_reader();
         for (const auto &w : nz) {
             for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                 const size_t row = w.base + static_cast<size_t>(std::countr_zero(m));
-                const uint32_t tag = store.key(row);
+                const uint32_t tag = row_key(row);
                 const uint32_t f = tag >> shift;
                 if (((filter[f >> 6U] >> (f & 63U)) & 1U) != 0U) {
                     rows_.push_back(Entry{.tag = tag, .v = static_cast<uint32_t>(row)});

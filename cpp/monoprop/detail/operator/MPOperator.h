@@ -29,6 +29,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/operator/CoeffKeyStore.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/TermLookup.h"
@@ -65,7 +66,20 @@ struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
     // itself cheaply movable). Always non-null.
     std::unique_ptr<OperatorIndex<NumModes>> store{std::make_unique<OperatorIndex<NumModes>>()};
-    VecD op_coeffs;
+    // The evolved operator's coefficients have two homes and exactly one is live.
+    //
+    //   unpacked (default)  op_coeffs_, a plain vector, materialized lazily by ensure_operator_coeffs()
+    //   packed              the store's cells, each coefficient sharing a cache line with its row's join key
+    //
+    // promote_operator_coeffs() moves them into the cells, once, and only the picture that reads them per
+    // anticommuting row asks for it (Heisenberg ContractImmediately). Everything else -- build_graph above
+    // all, which never materializes a coefficient past the initial operator -- keeps the lazy vector, so no
+    // path pays for a coefficient field it does not use. Both homes cost 8 B/term beside the cells' 4 B/term
+    // key, so B/term is the same either way; what changes is whether the key rides the coefficient's line.
+    VecD op_coeffs_;
+    // Rows [0, op_coeffs_len_) have had their coefficient reconciled against init_op_map. The cells cover
+    // every row from the moment they are packed, so the watermark, not the array length, is what is lazy.
+    size_t op_coeffs_len_{0uz};
     // Only fully-paired terms score nonzero (see score_new_state_rows_), which on production models is
     // ~0.07% of the rows -- a dense vector here is 99.9% zeros. state_rows_ is strictly ascending: rows are
     // scored in ascending order and the set is only ever appended to.
@@ -87,7 +101,8 @@ struct MPOperator {
 
     MPOperator(const MPOperator &other)
         : store(other.store->clone()),
-          op_coeffs(other.op_coeffs),
+          op_coeffs_(other.op_coeffs_),
+          op_coeffs_len_(other.op_coeffs_len_),
           state_rows_(other.state_rows_),
           state_vals_(other.state_vals_),
           state_scored_rows_(other.state_scored_rows_),
@@ -118,19 +133,37 @@ struct MPOperator {
         return *inverted_index_;
     }
 
-    // erase/clear keep bucket_count(), which init_operator_bytes reports, so drained buckets must be released.
-    // A pending term was absent from every row the last drain saw, so only the rows grown since then can
-    // hold it: the lookup is built over those alone.
-    auto get_operator() -> const VecD & {
-        if (size() == op_coeffs.size()) {
-            return op_coeffs;
-        }
+    //! Is the operator's coefficient live in the store's cells rather than in op_coeffs_?
+    [[nodiscard]] auto operator_coeffs_packed() const -> bool { return store->cells().has_coeffs(); }
 
-        const size_t first_new = op_coeffs.size();
-        op_coeffs.resize(size(), 0.0);
+    // Moves the coefficients into the cells so each one shares a line with its row's join key. Idempotent,
+    // and one-way: nothing demotes. Call it from the picture whose scan reads a coefficient per
+    // anticommuting row, right before the gate loop -- the join reads the key of every row it scans.
+    auto promote_operator_coeffs() -> void {
+        ensure_operator_coeffs();
+        if (operator_coeffs_packed()) {
+            return;
+        }
+        store->cells().assign_coeffs(op_coeffs_);
+        op_coeffs_ = VecD{};
+    }
+
+    // Grows the live home to cover every row and drains the initial-operator terms that have landed on a
+    // row since the last call: a pending term was absent from every row the last drain saw, so only the
+    // rows grown since then can hold it, and the lookup is built over those alone. erase/clear keep
+    // bucket_count(), which init_operator_bytes reports, so drained buckets must be released.
+    auto ensure_operator_coeffs() -> void {
+        if (op_coeffs_len_ == size() && (operator_coeffs_packed() || op_coeffs_.size() == size())) {
+            return;
+        }
+        const size_t first_new = op_coeffs_len_;
+        if (!operator_coeffs_packed()) {
+            op_coeffs_.resize(size(), 0.0);
+        }
+        op_coeffs_len_ = size();
 
         if (init_op_map.empty()) {
-            return op_coeffs;
+            return;
         }
 
         const auto lookup = build_term_lookup<NumModes>(*store, first_new, size());
@@ -138,15 +171,57 @@ struct MPOperator {
         erase_if(init_op_map, [this, &lookup](const auto &kv) {
             const auto found = lookup.find(kv.first);
             if (found != lookup.end()) {
-                op_coeffs[found->second] = kv.second;
+                set_operator_coeff(found->second, kv.second);
             }
             return found != lookup.end();
         });
         if (init_op_map.size() != before) {
             init_op_map.rehash(0);
         }
+    }
 
-        return op_coeffs;
+    //! The evolved operator's coefficients, as the hot loops address them. Valid until the store grows.
+    [[nodiscard]] auto operator_coeff_span() -> CoeffSpan {
+        ensure_operator_coeffs();
+        return operator_coeffs_packed() ? store->cells().coeff_span() : CoeffSpan(op_coeffs_);
+    }
+    [[nodiscard]] auto operator_mut_coeff_span() -> MutCoeffSpan {
+        ensure_operator_coeffs();
+        return operator_coeffs_packed() ? store->cells().mut_coeff_span() : MutCoeffSpan(op_coeffs_);
+    }
+    auto set_operator_coeff(size_t i, double v) -> void {
+        if (operator_coeffs_packed()) {
+            store->cells().set_coeff(i, v);
+        }
+        else {
+            op_coeffs_[i] = v;
+        }
+    }
+    //! Replaces every coefficient; `values` is expected to cover the operator, and rows past it read 0.0.
+    auto assign_operator_coeffs(std::span<const double> values) -> void {
+        if (operator_coeffs_packed()) {
+            store->cells().assign_coeffs(values);
+        }
+        else {
+            op_coeffs_.assign(values.begin(), values.end());
+            op_coeffs_.resize(size(), 0.0);
+        }
+        op_coeffs_len_ = size();
+    }
+    auto shrink_operator_coeffs_to_fit() -> void {
+        if (operator_coeffs_packed()) {
+            store->cells().shrink_to_fit();
+        }
+        else {
+            op_coeffs_.shrink_to_fit();
+        }
+    }
+
+    // A contiguous copy. Every caller either hands it on as a vector or mutates its own copy, so the copy
+    // costs nothing a reference would have saved; the packed home has no contiguous form to lend out.
+    auto get_operator() -> VecD {
+        ensure_operator_coeffs();
+        return operator_coeffs_packed() ? store->cells().coeffs_to_vector() : op_coeffs_;
     }
 
     struct SparseState {
@@ -234,7 +309,7 @@ struct MPOperator {
         }
 
         init_op_map = std::move(new_op_map);
-        op_coeffs = std::move(new_op_coeffs);
+        assign_operator_coeffs(new_op_coeffs);
         return new_grad_op;
     }
 
@@ -289,7 +364,8 @@ inline auto unordered_flat_map_storage_bytes(const FlatMap &map) -> size_t {
 template <size_t NumModes>
 struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_bytes{0uz};
-    // The store's per-row join keys (OperatorIndex::key): 4 B/term, separate from the rows they key.
+    // The store's per-row join keys (OperatorIndex::key): 4 B/term, separate from the rows they key and
+    // priced apart from op_coeffs_bytes even when the two share a cell (CoeffKeyStore).
     size_t row_keys_bytes{0uz};
     size_t op_coeffs_bytes{0uz};
     size_t state_coeffs_bytes{0uz};
@@ -342,7 +418,8 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
     breakdown.row_keys_bytes = op.store->row_keys_bytes();
-    breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
+    breakdown.op_coeffs_bytes =
+        op.operator_coeffs_packed() ? op.store->cells().coeff_bytes() : op.op_coeffs_.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)

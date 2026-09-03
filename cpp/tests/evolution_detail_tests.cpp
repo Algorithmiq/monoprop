@@ -370,7 +370,7 @@ BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) 
         0,
         sc.scratch,
         6,
-        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .pre_gate_coeffs = coeffs.data()});
+        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .pre_gate_coeffs = detail::CoeffSpan(coeffs)});
     eng.exchange_and_join(sc.value_scan());
     BOOST_REQUIRE_EQUAL(fc.halves.size(), 6U);
     const auto expect = [&](size_t k, size_t idx, double v, int phase, bool insert) {
@@ -730,7 +730,8 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
     const VecD coeffs(rows.size(), 1.0);
     const CutoffFn<kM> fn = detail::LengthCutoff<kM>{2 * kM, kM};
     const detail::CutoffEvaluator<kM> eval(fn);
-    const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt, std::cref(coeffs), std::nullopt, 0.3);
+    const auto cut =
+        detail::build_majorana_evolution_cutoff_state(std::nullopt, detail::CoeffSpan(coeffs), std::nullopt, 0.3);
     const auto router = routing::Router::splitmix(1);
     const mpi::SlotWindow window{.base = 0, .count = 1};
     const auto mask = initial_state_mask<kM>(VecZ{1});
@@ -739,7 +740,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                            gen,
                                                            eval,
                                                            cut,
-                                                           coeffs,
+                                                           detail::CoeffSpan(coeffs),
                                                            std::nullopt,
                                                            /*over_cutoff_possible=*/false,
                                                            window,
@@ -747,7 +748,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                            router,
                                                            scratch,
                                                            /*capture_values=*/true,
-                                                           nullptr,
+                                                           detail::MutCoeffSpan{},
                                                            1.0,
                                                            &mask);
     // All three rows anticommute; the join's row side is built later, from these words.
@@ -780,7 +781,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                             gen,
                                                             eval,
                                                             cut,
-                                                            coeffs,
+                                                            detail::CoeffSpan(coeffs),
                                                             std::nullopt,
                                                             false,
                                                             window,
@@ -788,7 +789,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                             router,
                                                             scratch_h,
                                                             true,
-                                                            nullptr,
+                                                            detail::MutCoeffSpan{},
                                                             1.0,
                                                             nullptr);
     BOOST_TEST(heis.sent_c0.size() == 0U);

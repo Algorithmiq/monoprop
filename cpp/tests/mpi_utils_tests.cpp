@@ -211,7 +211,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                 const mpi::SlotWindow window = plan.window(my_rank, ranks, /*parts=*/1);
                 VecD coeffs(op.store->size(), 1.0);
                 const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt,
-                                                                               std::cref(coeffs),
+                                                                               detail::CoeffSpan(coeffs),
                                                                                std::nullopt,
                                                                                std::optional<double>{0.3});
                 detail::GateScratch<kN> scratch;
@@ -219,7 +219,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          gen,
                                                                                          eval,
                                                                                          cut,
-                                                                                         coeffs,
+                                                                                         detail::CoeffSpan(coeffs),
                                                                                          std::nullopt,
                                                                                          /*over_cutoff_possible=*/false,
                                                                                          window,
@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          router,
                                                                                          scratch,
                                                                                          false,
-                                                                                         nullptr,
+                                                                                         detail::MutCoeffSpan{},
                                                                                          1.0);
                 // The fold found anticommuting rows: they are what the join's row side is built from.
                 BOOST_REQUIRE(!scratch.nz.empty());

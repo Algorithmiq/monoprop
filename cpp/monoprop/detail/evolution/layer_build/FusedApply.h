@@ -19,6 +19,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/operator/CoeffKeyStore.h"
 
 namespace monoprop::detail {
 
@@ -28,22 +29,36 @@ namespace monoprop::detail {
 //   • fused_scale (no length cap, default): the scan already scaled every anticommuting coeff, so no cos
 //     pass runs here; slots born after that sweep (mints) fold cos in via their insert arm below.
 //   • two-pass (length cap / cos==0 fallback): scale_cos_mask runs here, then every half is a plain add.
-inline auto apply_fused_contract(FusedContract &fc, VecD &op_coeffs, const CosMask &cos, double param, bool fused_scale)
-    -> void {
+inline auto apply_fused_contract(FusedContract &fc,
+                                 MutCoeffSpan op_coeffs,
+                                 const CosMask &cos,
+                                 double param,
+                                 bool fused_scale) -> void {
     const double cos_val = std::cos(2 * param);
     const double sin_val = std::sin(2 * param);
-    double *const c = op_coeffs.data();
+    std::byte *const c = op_coeffs.base;
+    const size_t stride = op_coeffs.stride;
     if (!fused_scale) {
-        scale_cos_mask(c, cos, cos_val);
+        // scale_cos_mask's strided twin: the packed cells have no double[] to hand it.
+        for (const auto &block : cos.blocks) {
+            const auto [base, bits] = block;
+            for_each_cos_index(base, bits, [c, stride, cos_val](size_t i) {
+                std::byte *const cell = c + (i * stride);
+                store_coeff(cell, load_coeff(cell) * cos_val);
+            });
+        }
     }
     // Each op slot is touched by exactly one half (one partner per term, ⊕G-injective mints), which is
     // what makes the plain += safe in any order.
+    // The two arithmetic expressions are kept textually as they were when the coefficients were a plain
+    // double[]: any regrouping is free to land a different FMA contraction, and the golden check is 0 ULP.
     for (const HalfRotationRec &h : fc.halves) {
+        std::byte *const cell = c + (h.local_idx * stride);
         if (fused_scale && h.is_insert) {
-            c[h.local_idx] = cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
+            store_coeff(cell, cos_val * load_coeff(cell) + sin_val * static_cast<double>(h.phase_signed) * h.v_partner);
         }
         else {
-            c[h.local_idx] += sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
+            store_coeff(cell, load_coeff(cell) + sin_val * static_cast<double>(h.phase_signed) * h.v_partner);
         }
     }
 }
