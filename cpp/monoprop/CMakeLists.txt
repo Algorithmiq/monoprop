@@ -21,6 +21,7 @@ target_compile_definitions(
   monoprop-objs
   PUBLIC
     $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
+    monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
 )
 
 # flags to prepend
@@ -98,6 +99,7 @@ target_compile_definitions(
   monoprop
   INTERFACE
     $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
+    monoprop_SPARSE_ROW_MIN_MODES=${monoprop_SPARSE_ROW_MIN_MODES}
 )
 
 target_compile_features(monoprop INTERFACE cxx_std_23)

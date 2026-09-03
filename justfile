@@ -57,6 +57,16 @@ diff-baseline AGAINST='golden':
     just capture-baseline candidate
     diff -rq "{{ baseline_dir }}/{{ AGAINST }}" "{{ baseline_dir }}/candidate"
 
+# Capture with the support-form row backend forced (monoprop_ROW_STORE=sparse) and check it against a
+# stored capture as term *sets* plus a relative tolerance. Not a byte diff: the sparse rows hash
+# differently, so they accumulate in a different order on purpose. This is how the two backends are
+# held equivalent on the fixtures, every one of which is below the automatic crossover.
+
+diff-baseline-sparse AGAINST='golden' TOL='1e-10':
+    rm -rf "{{ baseline_dir }}/sparse"
+    monoprop_ROW_STORE=sparse uv run --no-sync python tools/capture-baseline.py --out "{{ baseline_dir }}/sparse"
+    uv run --no-sync python tools/capture-baseline.py --compare "{{ baseline_dir }}/{{ AGAINST }}" "{{ baseline_dir }}/sparse" --tol "{{ TOL }}"
+
 # Report what the installed extension was actually built as.
 
 info:
@@ -71,6 +81,12 @@ test: build test-py test-cpp
 test-py LABEL='':
     uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
         {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
+
+# The Python suite with the support-form row backend forced, the counterpart of ctest's
+# `-L sparse-rows` variants.
+
+test-sparse-rows:
+    monoprop_ROW_STORE=sparse uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0
 
 test-cpp LABEL='':
     ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-exclude mpi \
