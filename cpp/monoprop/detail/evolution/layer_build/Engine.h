@@ -38,6 +38,7 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/PairExchange.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -315,6 +316,8 @@ struct LayerBuildEngine {
     mpi::PeerPlan plan;
     Sink sink;
     MissStage<NumModes> misses; // this gate's mints, in join order
+    bool pair_path = false;     // this gate's exchange is one rank pair: mpi::pair_exchange carries it
+    int pair_shift = 0;         // the rank shift it names; 0 is the in-rank exchange
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      mpi::Comm comm_,
@@ -335,6 +338,13 @@ struct LayerBuildEngine {
         const auto geom = mpi::geometry(comm);
         window = plan.window(my_rank, static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
         assert(window.stop() <= R && window.count != 0);
+        // pair_exchange addresses ONE rank pair, so it covers exactly the gates whose window is one
+        // rank's partitions: linear routing (the peer rank is my_rank ^ shift) and every single-rank
+        // world (the peer is this rank, shift 0). Dense routing over several ranks reaches a window of
+        // ranks x partitions, which only the collective can carry.
+        pair_path = R > 1 && window.count == static_cast<size_t>(geom.partitions);
+        pair_shift = plan.sparse ? plan.shift : 0;
+        assert((!pair_path || plan.sparse || geom.ranks == 1) && "a dense multi-rank gate cannot pair");
     }
 
     // The round and a half: exchange the scan's records, match every record against this slot's
@@ -362,22 +372,39 @@ struct LayerBuildEngine {
         // names another rank outright and the scan cannot have staged a self-owned partner. The self block
         // of the wire array is empty either way (staged, never encoded), so the exchange never sends to
         // self.
-        std::optional<mpi::PendingAlltoallv<size_t>> pending;
-        if (R > 1) {
-            pending.emplace(
-                mpi::begin_alltoallv(scan.queries, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
-        }
         if (window.contains(my_rank)) {
             assert(scan.queries.at_slot(my_rank).empty() && "self-owned records are staged, never encoded");
         }
         else {
             assert(scan.self.size() == 0 && "a self-owned partner outside this generator's peer window");
         }
+        std::optional<mpi::PendingAlltoallv<size_t>> pending;
+        if (R > 1 && !pair_path) {
+            pending.emplace(
+                mpi::begin_alltoallv(scan.queries, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
+        }
         mpi::WindowVec<VecZ> incoming;
         IncomingRecords<NumModes> pr;
-        if (pending.has_value()) {
+        // The queries live in the scratch pool from here on, not in `scan`: the peers of a pair exchange
+        // read this buffer in place until this partition's NEXT call returns, which is past the end of
+        // `scan`. The move keeps every slot's storage where it is, so nothing is copied to say so.
+        mpi::WindowVec<VecZ> *queries_p = &scan.queries;
+        if (pair_path) {
+            mpi::WindowVec<VecZ> &pooled = scratch.next_wire_buffer();
+            pooled = std::move(scan.queries);
+            queries_p = &pooled;
+        }
+        mpi::WindowVec<VecZ> &queries = *queries_p;
+        if (pair_path) {
+            pr = decode_incoming_records<NumModes>(mpi::pair_exchange(comm, pair_shift, publish_(queries)).from,
+                                                   window,
+                                                   sink.incoming_form());
+        }
+        else if (pending.has_value()) {
             pending->wait_into(incoming);
-            pr = decode_incoming_records<NumModes>(incoming, sink.incoming_form());
+            pr = decode_incoming_records<NumModes>(slot_streams(incoming, scratch.slot_views),
+                                                   incoming.window(),
+                                                   sink.incoming_form());
         }
         // The response staging indexes the response buffers by the SOURCE window's index, so the two
         // windows must be the one window -- a mismatch would answer the wrong peer.
@@ -414,7 +441,11 @@ struct LayerBuildEngine {
         sink.reserve_halves(join.queries() + n_sent);
         misses.reserve(join.queries() - join.hits());
 
-        mpi::WindowVec<VecZ> responses;
+        // Round 2's send buffer is claimed before the first push for the same lifetime reason, and it
+        // is the OTHER slot of the pool: round 1's is still published to the peers.
+        mpi::WindowVec<VecZ> responses_local;
+        mpi::WindowVec<VecZ> &responses =
+            (pair_path && Sink::wants_responses) ? scratch.next_wire_buffer() : responses_local;
         if constexpr (Sink::wants_responses) {
             responses.reset(window);
         }
@@ -433,26 +464,39 @@ struct LayerBuildEngine {
         join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink, responses);
 
         // Round 1 at its widest: the scan's arrays, the delivered records and the staged responses.
-        stamp_gate_buffers_(scan, incoming, pr, responses, /*extra=*/0);
+        stamp_gate_buffers_(scan, queries, incoming, pr, responses, /*extra=*/0);
 
         // Round 2 is the same verb with the response counts, posted before the inserts so the store's
         // growth overlaps the peers' answers. Its window is round 1's: the rank shift is an involution,
         // so the slot a record came from is a slot this one can send to.
         std::optional<mpi::PendingAlltoallv<size_t>> answering;
         if constexpr (Sink::wants_responses) {
-            if (R > 1) {
+            if (R > 1 && !pair_path) {
                 answering.emplace(
                     mpi::begin_alltoallv(responses, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
             }
         }
+        // The inserts move ahead of the pair exchange rather than under it: pair_exchange is synchronous,
+        // so there is no post to overlap, and the store's growth is independent of the answers either way
+        // (mint indices were assigned against `base` before this line). Their order against
+        // apply_responses is what the result depends on, and that is unchanged.
         insert_misses<NumModes>(local_op, misses, base);
         if constexpr (Sink::wants_responses) {
-            if (answering.has_value()) {
+            if (pair_path) {
+                const auto answers = mpi::pair_exchange(comm, pair_shift, publish_(responses)).from;
+                // Round 2 at its widest: round 1's buffers are all still in scope under the answers.
+                stamp_gate_buffers_(scan, queries, incoming, pr, responses, /*extra=*/0);
+                apply_responses<NumModes>(marks, scan.sent, answers, window, sink);
+            }
+            else if (answering.has_value()) {
                 mpi::WindowVec<VecZ> answers;
                 answering->wait_into(answers);
-                // Round 2 at its widest: round 1's buffers are all still in scope under the answers.
-                stamp_gate_buffers_(scan, incoming, pr, responses, reserved_bytes(answers));
-                apply_responses<NumModes>(marks, scan.sent, answers, sink);
+                stamp_gate_buffers_(scan, queries, incoming, pr, responses, reserved_bytes(answers));
+                apply_responses<NumModes>(marks,
+                                          scan.sent,
+                                          slot_streams(answers, scratch.slot_views),
+                                          answers.window(),
+                                          sink);
             }
         }
         absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
@@ -465,6 +509,19 @@ struct LayerBuildEngine {
                 scratch.counters.responses += responses[mpi::WindowIndex{k}].size() / kResponseWords;
             }
         }
+    }
+
+    /*! @brief The gate's S send descriptors, for pair_exchange.
+     *
+     *  The verb copies the outer array before its barrier, so one reusable array serves both rounds.
+     *  The BUFFERS it names are the ones the lifetime rule binds, and those are the scratch pool's.
+     */
+    auto publish_(const mpi::WindowVec<VecZ> &buf) -> mpi::SubStreams {
+        scratch.wire_spans.resize(window.count);
+        for (size_t k = 0; k < window.count; ++k) {
+            scratch.wire_spans[k] = std::span<const size_t>(buf[mpi::WindowIndex{k}]);
+        }
+        return mpi::SubStreams{scratch.wire_spans};
     }
 
     /*! @brief Stamps the gate's per-gate buffers at one instant into the call's high-water mark.
@@ -485,15 +542,15 @@ struct LayerBuildEngine {
      *  the layer storage already prices it.
      */
     auto stamp_gate_buffers_(const FusedScanResult<NumModes> &scan,
+                             const mpi::WindowVec<VecZ> &queries,
                              const mpi::WindowVec<VecZ> &incoming,
                              const IncomingRecords<NumModes> &pr,
                              const mpi::WindowVec<VecZ> &responses,
                              size_t extra) -> void {
-        const size_t bytes = extra + reserved_bytes(scan.queries) + reserved_bytes(scan.sent)
-                             + reserved_bytes(scan.sent_c0) + reserved_bytes(scan.self) + reserved_bytes(incoming)
-                             + reserved_bytes(pr) + reserved_bytes(responses) + reserved_bytes(misses)
-                             + reserved_bytes(scratch.pre_cos) + scratch.silent.memory_bytes()
-                             + scratch.join.filter_bytes();
+        const size_t bytes = extra + reserved_bytes(queries) + reserved_bytes(scan.sent) + reserved_bytes(scan.sent_c0)
+                             + reserved_bytes(scan.self) + reserved_bytes(incoming) + reserved_bytes(pr)
+                             + reserved_bytes(responses) + reserved_bytes(misses) + reserved_bytes(scratch.pre_cos)
+                             + scratch.silent.memory_bytes() + scratch.join.filter_bytes();
         scratch.buffers_hwm_bytes = std::max(scratch.buffers_hwm_bytes, bytes);
     }
 

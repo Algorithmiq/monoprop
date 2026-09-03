@@ -268,7 +268,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
 
     auto op = make_op<NumModes>(seed_terms);
     AllRowsGate<NumModes> gate(op);
-    const auto pr = detail::decode_incoming_records<NumModes>(incoming, form);
+    std::vector<std::span<const size_t>> views;
+    const auto pr =
+        detail::decode_incoming_records<NumModes>(detail::slot_streams(incoming, views), incoming.window(), form);
     gate.match(op, pr);
     BOOST_REQUIRE_EQUAL(pr.window.base, window.base);
     BOOST_REQUIRE_EQUAL(pr.window.count, window.count);

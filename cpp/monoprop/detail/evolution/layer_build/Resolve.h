@@ -53,6 +53,11 @@ namespace monoprop::detail {
 // else, so replacing the matching structure leaves the receiver rule, the mint order and the absence
 // pass untouched.
 
+// One read-only record stream per sender slot, ascending. Both producers of a gate's incoming
+// records reach the decode through it: pair_exchange hands back views that alias the peers' own send
+// buffers, and the collective path views the slots of the WindowVec it received into.
+using WireStreams = std::span<const std::span<const size_t>>;
+
 // The records one exchange delivered, decoded. Record g belongs to the sender at window index k iff
 // goff[k] <= g < goff[k+1]; within a sender they are in the sender's stream order.
 template <size_t NumModes>
@@ -87,17 +92,19 @@ struct IncomingRecords {
 // against the rows the scan staged, because a tracked partner of an anticommuting term is itself
 // anticommuting (BucketJoin.h).
 template <size_t NumModes>
-auto decode_incoming_records(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
+auto decode_incoming_records(WireStreams incoming, // one read-only stream per sender slot, ascending
+                             mpi::SlotWindow window,
                              QueryForm form) -> IncomingRecords<NumModes> {
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingRecords<NumModes>::PosT;
     IncomingRecords<NumModes> pr;
-    pr.window = incoming.window();
+    pr.window = window;
     const size_t senders = pr.window.count;
+    assert(incoming.size() == senders && "one incoming stream per window slot");
 
     pr.goff.assign(senders + 1, 0);
     for (size_t k = 0; k < senders; ++k) {
-        pr.goff[k + 1] = pr.goff[k] + QW::count_queries(incoming[mpi::WindowIndex{k}], form);
+        pr.goff[k + 1] = pr.goff[k] + QW::count_queries(incoming[k], form);
     }
     pr.nq_total = pr.goff[senders];
     if (pr.nq_total == 0) {
@@ -116,7 +123,7 @@ auto decode_incoming_records(const mpi::WindowVec<VecZ> &incoming, // serialized
     // A hint only, so this stays one allocation for the common case.
     pr.pos_flat.reserve(pr.nq_total * QW::kReservePositionsPerQuery);
     for (size_t si = 0; si < senders; ++si) {
-        const VecZ &buf = incoming[mpi::WindowIndex{si}];
+        const std::span<const size_t> buf = incoming[si];
         size_t off = 0;
         for (size_t g = pr.goff[si]; g < pr.goff[si + 1]; ++g) {
             const size_t k = QW::k_at(buf, off);
@@ -311,6 +318,17 @@ auto join_incoming(const IncomingRecords<NumModes> &pr,
     }
 }
 
+//! Views of a WindowVec's slots, ascending, into caller-owned storage: the collective path's adapter.
+template <typename T>
+auto slot_streams(const mpi::WindowVec<std::vector<T>> &wv, std::vector<std::span<const T>> &into)
+    -> std::span<const std::span<const T>> {
+    into.resize(wv.size());
+    for (size_t k = 0; k < wv.size(); ++k) {
+        into[k] = std::span<const T>(wv[mpi::WindowIndex{k}]);
+    }
+    return {into};
+}
+
 // Round 2's arrival: response j from slot q names one of the records THIS slot sent to q, by its
 // position in that stream, and carries the answering row's pre-gate coefficient. ν's half is
 // −φ_ν · v_μ, φ_ν being the phase the sender kept in `sent` -- the record itself carried no row, and
@@ -318,12 +336,13 @@ auto join_incoming(const IncomingRecords<NumModes> &pr,
 template <size_t NumModes, typename Sink>
 auto apply_responses(RowMarks &marks,
                      const mpi::WindowVec<std::vector<SentRecord>> &sent,
-                     const mpi::WindowVec<VecZ> &responses,
+                     WireStreams responses,
+                     mpi::SlotWindow w,
                      Sink &sink) -> void {
-    const mpi::SlotWindow w = responses.window();
+    assert(responses.size() == w.count && "one answer stream per window slot");
     for (size_t k = 0; k < w.count; ++k) {
         const mpi::WindowIndex wi{k};
-        const VecZ &buf = responses[wi];
+        const std::span<const size_t> buf = responses[k];
         const std::vector<SentRecord> &records = sent[wi];
         const size_t slot = w.slot(wi);
         for (size_t off = 0; off + kResponseWords <= buf.size(); off += kResponseWords) {

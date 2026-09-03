@@ -414,7 +414,9 @@ BOOST_AUTO_TEST_CASE(one_and_half_round_response_names_the_record_and_the_sender
     QW::push(peer, positions_of(sc.terms[2]), -1, /*rot=*/true);
     QW::push_value(peer, 1.5);
 
-    const auto pr = detail::decode_incoming_records<kN>(wire, detail::QueryForm::Fused);
+    std::vector<std::span<const size_t>> views;
+    const auto pr =
+        detail::decode_incoming_records<kN>(detail::slot_streams(wire, views), window, detail::QueryForm::Fused);
     BOOST_REQUIRE_EQUAL(pr.nq_total, 2U);
     sc.scratch.join.begin_queries(pr.nq_total);
     for (size_t g = 0; g < pr.nq_total; ++g) {
@@ -441,7 +443,7 @@ BOOST_AUTO_TEST_CASE(one_and_half_round_response_names_the_record_and_the_sender
     answers.reset(window);
     detail::push_response(answers.at_slot(1), 1, 7.5);
     sink.recs.clear();
-    detail::apply_responses<kN>(sc.scratch.marks, sent, answers, sink);
+    detail::apply_responses<kN>(sc.scratch.marks, sent, detail::slot_streams(answers, views), answers.window(), sink);
     BOOST_REQUIRE_EQUAL(sink.recs.size(), 1U);
     BOOST_TEST(sink.recs[0].kind == "answer");
     BOOST_TEST(sink.recs[0].slot == 1U);

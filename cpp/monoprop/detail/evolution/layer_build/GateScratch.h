@@ -29,6 +29,7 @@
 
 #include "monoprop/detail/evolution/layer_build/BucketJoin.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 namespace monoprop::detail {
@@ -200,11 +201,26 @@ struct GateScratch {
     // self-slot reserve is sized from (Scan.h). A hint only -- wrong in either direction it costs at most
     // a few pushes their geometric grow -- which is why it may cross gates although nothing else here does.
     size_t self_records_hint = 0;
+    // The two send buffers pair_exchange's lifetime rule needs, and the call counter that alternates
+    // them. Peers read a published buffer IN PLACE, and the first moment every peer is proved done with
+    // it is the return of this partition's next call, so a gate's records must outlive the gate --
+    // the second reason (with `self_records_hint`) something here crosses a gate boundary. Two is
+    // enough and one is not: a graph-sink gate makes one call, so its queries are still being read
+    // while the next gate's scan is already writing. `wire_spans` is the outer descriptor array, which
+    // the verb copies before its barrier and the caller may reuse on return.
+    std::array<mpi::WindowVec<VecZ>, 2> wire;
+    size_t wire_calls = 0;
+    std::vector<std::span<const size_t>> wire_spans;
+    // Slot views of an alltoallv result, so the collective path reaches the same decode surface.
+    std::vector<std::span<const size_t>> slot_views;
     ExchangeCounters counters; // COMMPROF's per-call wire volume; reset by the caller, not per gate
     // Widest instant of the gate's per-gate buffers over the call, in bytes. Those buffers die with the
     // gate or are resized under it, so no resting field can name their peak; reset by the caller
     // alongside `counters`.
     size_t buffers_hwm_bytes{0uz};
+
+    //! The next send buffer of the pair_exchange pool. Called exactly once before each call.
+    auto next_wire_buffer() -> mpi::WindowVec<VecZ> & { return wire[(wire_calls++) & 1U]; }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return join.memory_bytes() + marks.memory_bytes() + silent.memory_bytes()
