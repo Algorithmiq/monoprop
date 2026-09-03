@@ -135,3 +135,18 @@ jobs:
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true
+
+  tests:
+    name: All tests
+    if: always()
+    needs: package-tests
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Report the matrix result
+        run: |
+          echo "package-tests: ${{ needs.package-tests.result }}"
+          case "${{ needs.package-tests.result }}" in
+            success|skipped) ;;
+            *) exit 1 ;;
+          esac

@@ -65,3 +65,18 @@ jobs:
             pkg-config --modversion hwloc
             mpicc --version
           '
+
+  flake-result:
+    name: All flake checks
+    if: always()
+    needs: flake
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Report the matrix result
+        run: |
+          echo "flake: ${{ needs.flake.result }}"
+          case "${{ needs.flake.result }}" in
+            success|skipped) ;;
+            *) exit 1 ;;
+          esac
