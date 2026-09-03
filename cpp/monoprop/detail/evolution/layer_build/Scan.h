@@ -446,6 +446,17 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             return {src, ham.popcount(i)};
         };
+        // The same read with the row store's chunk already resolved for i's 64-row window, for the loop
+        // that reads EVERY anticommuting row rather than only the emitting ones.
+        using RowBlock = typename OperatorIndex<NumModes>::RowBlock;
+        auto read_row_in = [&](const RowBlock &block, size_t i) -> RowRead {
+            const RowPosT *const src = OperatorIndex<NumModes>::block_row(block, i);
+            if (src[0] == OperatorIndex<NumModes>::kOverflowMarker) {
+                return {RowPositions{}, ham.popcount(i)};
+            }
+            const size_t pop = static_cast<size_t>(src[0]);
+            return {RowPositions{std::span<const RowPosT>(src + 1, pop)}, pop};
+        };
         // The emitting tail of one anticommuting row: the row read, the partner product, the structural
         // cutoff and the record. Deliberately NOT inlined. It runs only behind the coefficient gate --
         // about a fifth of Anti(G) on the value path, and the baseline's own emit sits behind the same
@@ -590,11 +601,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             assert(sweep == nullptr && "the fused sweep does not run with an orbital gate");
             for (const auto &w : nz) {
                 marks.set_foll_word(w.base / 64, w.foll);
+                const auto block = ham.row_block(w.base);
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
                     const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
                     const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
-                    const RowRead row = read_row(i);
+                    const RowRead row = read_row_in(block, i);
                     if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
                         cos_b.push_index(i);
                     }

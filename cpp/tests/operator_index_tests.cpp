@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -205,4 +206,191 @@ BOOST_AUTO_TEST_CASE(operator_index_row_key_matches_the_fingerprint_of_the_row) 
     t.push_back(bs({0, 1}));
     BOOST_TEST(t.key(t.size() - 1) == key_from_dense(bs({0, 1})));
     BOOST_TEST(t.row_keys_bytes() >= t.size() * sizeof(uint32_t));
+}
+
+namespace {
+
+// The smallest legal chunk: 64 rows, so a few hundred rows cross several boundaries. Production takes
+// Store::kRowsPerChunk, which no unit test can afford to cross.
+constexpr size_t kTinyChunkRows = 64;
+constexpr size_t kBoundaryTestRows = 200;
+
+// Distinct terms, with the four-position ones landing on and around the chunk boundaries so the spill
+// path is exercised exactly where a row changes chunk.
+auto boundary_term(size_t i) -> MSet {
+    const size_t a = i % 61;
+    const size_t b = (i * 7) % 59;
+    const size_t c = (i * 13) % 53;
+    VecZ pos{a};
+    if (b != a) {
+        pos.push_back(b);
+    }
+    if (c != a && c != b) {
+        pos.push_back(c);
+    }
+    // Rows at and next to every chunk boundary get a fourth position, which spills at inline width 3.
+    const size_t off = i % kTinyChunkRows;
+    if (off == 0 || off == 1 || off == kTinyChunkRows - 1) {
+        for (size_t extra = 17; extra < 2 * N; ++extra) {
+            if (extra != a && extra != b && extra != c) {
+                pos.push_back(extra);
+                break;
+            }
+        }
+    }
+    std::sort(pos.begin(), pos.end());
+    return bs(pos);
+}
+
+auto fill_boundary_store(Store &s) -> void {
+    s.grow_rows_geometric(kBoundaryTestRows);
+    for (size_t i = 0; i < kBoundaryTestRows; ++i) {
+        s.set(i, boundary_term(i));
+    }
+}
+
+} // namespace
+
+// Every read path has to keep working when the row it wants is in a different chunk from the one before
+// it -- and a row must never straddle, or the span row_positions() hands out would run off the end of a
+// chunk into unrelated memory.
+BOOST_AUTO_TEST_CASE(chunked_rows_read_back_across_chunk_boundaries) {
+    Store s(3, kTinyChunkRows); // inline width 3, so the boundary rows spill
+    fill_boundary_store(s);
+    BOOST_REQUIRE_GT(kBoundaryTestRows, 3 * kTinyChunkRows); // really is multi-chunk
+    BOOST_REQUIRE_GT(s.overflow_size(), 0U);                 // and really does spill
+
+    for (size_t i = 0; i < kBoundaryTestRows; ++i) {
+        BOOST_TEST_INFO("row " << i);
+        const MSet want = boundary_term(i);
+        BOOST_CHECK(s.row(i) == want);
+        BOOST_CHECK_EQUAL(s.popcount(i), want.count());
+        BOOST_CHECK_EQUAL(s.key(i), Store::join_tag(routing::linear_hash<2 * N>(want)));
+
+        std::vector<size_t> seen;
+        s.for_each_position(i, [&](size_t b) { seen.push_back(b); });
+        std::vector<size_t> expected;
+        for (size_t b = want.find_first(); b < want.size(); b = want.find_next(b)) {
+            expected.push_back(b);
+        }
+        BOOST_CHECK_EQUAL_COLLECTIONS(seen.begin(), seen.end(), expected.begin(), expected.end());
+
+        // An inline row's span is the row and nothing more: it must lie inside one chunk, which is what
+        // "a row never straddles" buys the callers that hold these pointers.
+        const auto rp = s.row_positions(i);
+        if (rp.inlined()) {
+            BOOST_CHECK_EQUAL(rp.pos.size(), want.count());
+            BOOST_CHECK(s.row_eq_positions(i, rp.pos));
+        }
+        else {
+            BOOST_CHECK_GT(want.count(), 3U); // only a spilled row has no span
+        }
+    }
+}
+
+// The confirm behind every fingerprint match, at the rows most likely to be resolved to the wrong chunk.
+BOOST_AUTO_TEST_CASE(row_eq_positions_holds_at_chunk_boundaries) {
+    Store s(3, kTinyChunkRows);
+    fill_boundary_store(s);
+    const std::vector<size_t> edges{0, 1, 62, 63, 64, 65, 126, 127, 128, 129, 191, 192, 193, 199};
+    for (const size_t i : edges) {
+        BOOST_TEST_INFO("row " << i);
+        std::vector<Store::PosT> pos;
+        const MSet want = boundary_term(i);
+        for (size_t b = want.find_first(); b < want.size(); b = want.find_next(b)) {
+            pos.push_back(static_cast<Store::PosT>(b));
+        }
+        BOOST_CHECK(s.row_eq_positions(i, std::span<const Store::PosT>(pos)));
+        // A neighbour's positions must not confirm, or the chunk arithmetic is off by a row.
+        const MSet other = boundary_term((i + 1) % kBoundaryTestRows);
+        if (other != want) {
+            std::vector<Store::PosT> other_pos;
+            for (size_t b = other.find_first(); b < other.size(); b = other.find_next(b)) {
+                other_pos.push_back(static_cast<Store::PosT>(b));
+            }
+            BOOST_CHECK(!s.row_eq_positions(i, std::span<const Store::PosT>(other_pos)));
+        }
+    }
+}
+
+// The hoist the chunking exists to make cheap: one chunk lookup per 64-row window, used by
+// BucketJoin::stage_rows and by the scan's orbital-gate loop. It has to agree with the per-row door.
+BOOST_AUTO_TEST_CASE(row_block_agrees_with_the_per_row_accessors) {
+    Store s(3, kTinyChunkRows);
+    fill_boundary_store(s);
+    for (size_t first = 0; first < kBoundaryTestRows; first += 64) {
+        const auto block = s.row_block(first);
+        for (size_t i = first; i < std::min(first + 64, kBoundaryTestRows); ++i) {
+            BOOST_TEST_INFO("row " << i);
+            BOOST_CHECK_EQUAL(Store::block_key(block, i), s.key(i));
+            const Store::PosT *const row = Store::block_row(block, i);
+            const auto rp = s.row_positions(i);
+            if (rp.inlined()) {
+                BOOST_CHECK_EQUAL(static_cast<size_t>(row[0]), rp.pos.size());
+                BOOST_CHECK(row + 1 == rp.pos.data());
+            }
+            else {
+                BOOST_CHECK_EQUAL(row[0], Store::kOverflowMarker);
+            }
+        }
+    }
+}
+
+// The chunk length is a storage decision and nothing else: the same writes must produce the same store,
+// row for row and key for key, at 64 rows per chunk and at the production 2^18.
+BOOST_AUTO_TEST_CASE(chunk_size_does_not_change_the_store) {
+    Store tiny(3, kTinyChunkRows);
+    Store production(3, Store::kRowsPerChunk);
+    fill_boundary_store(tiny);
+    fill_boundary_store(production);
+
+    BOOST_REQUIRE_EQUAL(tiny.size(), production.size());
+    BOOST_CHECK_EQUAL(tiny.overflow_size(), production.overflow_size());
+    for (size_t i = 0; i < tiny.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(tiny.row(i) == production.row(i));
+        BOOST_CHECK_EQUAL(tiny.key(i), production.key(i));
+        BOOST_CHECK_EQUAL(tiny.popcount(i), production.popcount(i));
+        const auto rp = production.row_positions(i);
+        BOOST_CHECK_EQUAL(tiny.row_positions(i).inlined(), rp.inlined());
+        if (rp.inlined()) {
+            BOOST_CHECK(tiny.row_eq_positions(i, rp.pos));
+        }
+    }
+    // And the chunk-by-chunk walk keeps index order across boundaries.
+    std::vector<size_t> order_tiny;
+    std::vector<size_t> order_prod;
+    tiny.for_each([&](const MSet &, size_t i) { order_tiny.push_back(i); });
+    production.for_each([&](const MSet &, size_t i) { order_prod.push_back(i); });
+    BOOST_CHECK_EQUAL_COLLECTIONS(order_tiny.begin(), order_tiny.end(), order_prod.begin(), order_prod.end());
+    BOOST_CHECK_EQUAL(order_tiny.size(), kBoundaryTestRows);
+}
+
+// The point of the lever: growth appends chunks instead of reallocating, so the store never holds more
+// spare than one chunk's tail -- where the 1.5x reserve held up to half the operator, and held the old
+// buffer alongside the new one while it copied.
+BOOST_AUTO_TEST_CASE(chunked_growth_bounds_the_slack_by_one_chunk) {
+    Store s(3, kTinyChunkRows);
+    fill_boundary_store(s);
+    const size_t stride_bytes = 4 * sizeof(Store::PosT); // 1 popcount byte + 3 inline positions
+    BOOST_CHECK_LT(s.slack_bytes(), kTinyChunkRows * stride_bytes);
+
+    // A row that lands exactly on a boundary leaves no slack at all.
+    Store exact(3, kTinyChunkRows);
+    exact.grow_rows_geometric(2 * kTinyChunkRows);
+    BOOST_CHECK_EQUAL(exact.slack_bytes(), 0U);
+    // And one row past it costs one chunk, not one reallocation of everything.
+    exact.grow_rows_geometric(1);
+    BOOST_CHECK_EQUAL(exact.slack_bytes(), (kTinyChunkRows - 1) * stride_bytes);
+
+    // A clone takes its own chunks: writing through one must not be visible in the other.
+    const auto copy = s.clone();
+    BOOST_REQUIRE_EQUAL(copy->size(), s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(copy->row(i) == s.row(i));
+        BOOST_CHECK_EQUAL(copy->key(i), s.key(i));
+    }
+    s.set(65, bs({0, 2, 4})); // a row in the second chunk
+    BOOST_CHECK(copy->row(65) == boundary_term(65));
 }
