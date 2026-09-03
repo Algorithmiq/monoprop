@@ -472,23 +472,36 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_op_coeffs_slack_out_of_total) {
     BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
 }
 
-// It has to be shown to MOVE, and to be exactly the capacity the array holds past its live rows.
-BOOST_AUTO_TEST_CASE(mp_operator_breakdown_op_coeffs_slack_is_the_unused_capacity) {
+// A high-water mark over the measurement window, not a reading of the array as it stands: it has to
+// survive the shrink that ends every call, and to reset when a new window opens.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_op_coeffs_slack_is_a_high_water_mark) {
     detail::MPOperator<8> op;
     BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U); // nothing allocated
 
     for (size_t k = 0; k < kLadderTerms; ++k) {
         op.append_term(distinct_term(k));
     }
+    // The first growth reserves exactly (1.5 * 0 + 1 is below the request), so it leaves no slack.
     (void)op.get_operator();
-    op.op_coeffs.reserve(op.op_coeffs.size() + 64);
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U);
 
-    const auto b = detail::estimate_memory_usage<8>(op);
-    BOOST_CHECK_EQUAL(b.op_coeffs_slack_bytes, (op.op_coeffs.capacity() - op.op_coeffs.size()) * sizeof(double));
-    BOOST_CHECK_GE(b.op_coeffs_slack_bytes, 64U * sizeof(double));
-    BOOST_CHECK_LT(b.op_coeffs_slack_bytes, b.op_coeffs_bytes); // a subset of the field it breaks down
+    // The second does grow geometrically, and the mark records what it left over.
+    op.append_term(distinct_term(kLadderTerms));
+    (void)op.get_operator();
+    const auto grown = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(grown.op_coeffs_slack_bytes, (op.op_coeffs.capacity() - op.op_coeffs.size()) * sizeof(double));
+    BOOST_CHECK_GT(grown.op_coeffs_slack_bytes, 0U);
+    BOOST_CHECK_LT(grown.op_coeffs_slack_bytes, grown.op_coeffs_bytes); // a subset of the field it breaks down
 
+    // It holds the peak: handing the capacity back does not lower it, which is the whole point -- every
+    // call ends in a shrink_to_fit, and the field read 0 for exactly that reason before.
+    const size_t peak = grown.op_coeffs_slack_bytes;
     op.op_coeffs.shrink_to_fit();
+    op.observe_op_coeffs_slack();
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, peak);
+
+    // And a new window starts from nothing.
+    op.reset_op_coeffs_slack_hwm();
     BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U);
 }
 
