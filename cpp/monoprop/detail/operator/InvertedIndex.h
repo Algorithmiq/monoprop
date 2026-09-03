@@ -50,11 +50,32 @@ struct InvertedIndex {
     static constexpr size_t kPromoteDensityInv = 64;
     // Buckets of the diagnostic density histogram below. Log-spaced, one bucket per halving.
     static constexpr size_t kDensityBuckets = 8;
-    // Words per chunk of a dense column: 128 KiB, and exactly eight fold blocks. A column grown a chunk
-    // at a time never reallocates, so it holds neither a growth overshoot nor a doubled copy of itself
-    // mid-growth -- at 91 full-height columns and a billion terms those two together were 3 GiB and the
-    // whole run-to-run spread of the index's footprint.
-    static constexpr size_t kWordsPerChunk = size_t{1} << 14;
+    // Chunk length of a dense column, in words, between one fold block (8 KiB) and eight (128 KiB). A
+    // column grown a chunk at a time never reallocates, so it holds neither a growth overshoot nor a
+    // doubled copy of itself mid-growth -- at 91 full-height columns and a billion terms those two
+    // together were 3 GiB and the whole run-to-run spread of the index's footprint.
+    static constexpr size_t kMinWordsPerChunk = kColumnBlockWords;
+    static constexpr size_t kMaxWordsPerChunk = size_t{1} << 14;
+    //! One chunk size class per power of two in [kMinWordsPerChunk, kMaxWordsPerChunk], and a pool each.
+    static constexpr size_t kChunkSizeClasses =
+        static_cast<size_t>(std::countr_zero(kMaxWordsPerChunk) - std::countr_zero(kMinWordsPerChunk)) + 1;
+
+    /*! @brief Chunk length in words for a dense column first built at @a rows rows.
+     *
+     *  A quarter of the column's height, rounded *down* to a power of two and clamped to the size
+     *  classes. The quarter is what bounds the waste, and rounding down is what makes the bound hold
+     *  strictly: a column overshoots by at most one chunk and a chunk is at most a quarter of it, so
+     *  its slack is under a quarter of the column once the column clears four minimum chunks, and
+     *  under 8 KiB outright below that -- where one fixed 128 KiB chunk was 1.8x the whole column at
+     *  half a million rows and a plain vector's doubling reserve was 2x at any size. Rounding down
+     *  costs only chunk count, which is pooled and never below one fold block.
+     *  It reaches kMaxWordsPerChunk at 4M rows and stops there, so a column's slack is never more than
+     *  128 KiB however large the operator grows.
+     */
+    static auto chunk_words_for_rows(size_t rows) noexcept -> size_t {
+        const size_t quarter = ((rows + 63) / 64) / 4;
+        return std::clamp(std::bit_floor(std::max(quarter, size_t{1})), kMinWordsPerChunk, kMaxWordsPerChunk);
+    }
 
     /*! @brief One column of the transpose: the rows that touch this bit position, in one of two tiers. */
     struct Column {
@@ -66,31 +87,33 @@ struct InvertedIndex {
         bool is_dense = false; //!< which of the two tiers holds this column
     };
 
-    /*! @brief An empty index whose dense columns take @a words_per_chunk words per chunk.
+    /*! @brief An empty index. Its dense columns size their chunks from the height they are built at.
      *
-     *  @pre A power of two and a multiple of kColumnBlockWords, so no fold block ever straddles a chunk
-     *  boundary and dense_column_block() can hand the fold a bare pointer.
+     *  @param forced_words_per_chunk 0 to size every column by chunk_words_for_rows(), or a fixed
+     *  length for every column: a power of two and a multiple of kColumnBlockWords, so no fold block
+     *  ever straddles a chunk boundary and dense_column_block() can hand the fold a bare pointer.
      *
-     *  The parameter is a test knob: production always takes kWordsPerChunk, and a test drives the chunk
-     *  boundaries with a few hundred rows instead of a billion.
+     *  The parameter is a test knob: production always passes 0, and a test pins a length so it can
+     *  drive the chunk boundaries with a few hundred thousand rows instead of hundreds of millions.
      */
-    explicit InvertedIndex(size_t words_per_chunk = kWordsPerChunk)
-        : pool_(std::make_unique<ChunkPool>(words_per_chunk * sizeof(uint64_t))),
-          words_per_chunk_(words_per_chunk) {
-        assert(std::has_single_bit(words_per_chunk) && words_per_chunk % kColumnBlockWords == 0);
-        for (auto &col : cols) {
-            col.words.attach(*pool_, words_per_chunk);
-        }
+    explicit InvertedIndex(size_t forced_words_per_chunk = 0) : forced_words_per_chunk_(forced_words_per_chunk) {
+        assert(forced_words_per_chunk == 0
+               || (std::has_single_bit(forced_words_per_chunk) && forced_words_per_chunk >= kColumnBlockWords
+                   && forced_words_per_chunk % kColumnBlockWords == 0));
     }
 
-    //! Deep copy: the clone takes its chunks from its own pool, so the two indices share no storage.
-    InvertedIndex(const InvertedIndex &other) : InvertedIndex(other.words_per_chunk_) {
+    /*! @brief Deep copy. Each column keeps its own chunk length, taking its chunks from this index's
+     *  pool for that size class, so the two indices share no storage.
+     */
+    InvertedIndex(const InvertedIndex &other) : forced_words_per_chunk_(other.forced_words_per_chunk_) {
         row_count = other.row_count;
         row_parity_ = other.row_parity_;
         for (size_t c = 0; c < kNumColumns; ++c) {
             cols[c].is_dense = other.cols[c].is_dense;
             cols[c].set_rows = other.cols[c].set_rows;
-            cols[c].words = other.cols[c].words.clone_into(*pool_);
+            if (other.cols[c].words.attached()) {
+                cols[c].words = other.cols[c].words.clone_into(pool_for_(other.cols[c].words.elems_per_chunk()));
+            }
         }
     }
 
@@ -106,8 +129,8 @@ struct InvertedIndex {
             for (auto &col : cols) {
                 col.words.reset(); // hand the chunks back while the pool that owns them is still alive
             }
-            pool_ = std::move(other.pool_);
-            words_per_chunk_ = other.words_per_chunk_;
+            pools_ = std::move(other.pools_);
+            forced_words_per_chunk_ = other.forced_words_per_chunk_;
             cols = std::move(other.cols);
             row_count = other.row_count;
             row_parity_ = std::move(other.row_parity_);
@@ -122,10 +145,31 @@ struct InvertedIndex {
         return *this;
     }
 
-    // Declared before `cols`: members are destroyed in reverse declaration order, so the pool outlives
-    // the columns whose chunks it owns.
-    std::unique_ptr<ChunkPool> pool_; //!< the columns' chunk arenas; one size class, one owner
-    size_t words_per_chunk_ = kWordsPerChunk;
+    // Declared before `cols`: members are destroyed in reverse declaration order, so the pools outlive
+    // the columns whose chunks they own.
+    //! One pool per chunk size class, made on first use: a pool serves a single size, and two columns
+    //! built at different heights ask for different ones.
+    std::array<std::unique_ptr<ChunkPool>, kChunkSizeClasses> pools_{};
+    size_t forced_words_per_chunk_ = 0; //!< 0 == size every column from its height (production)
+
+    //! The pool for chunks of @a words_per_chunk words, made on first use. @pre A legal size class.
+    auto pool_for_(size_t words_per_chunk) -> ChunkPool & {
+        assert(std::has_single_bit(words_per_chunk) && words_per_chunk >= kMinWordsPerChunk
+               && words_per_chunk <= kMaxWordsPerChunk);
+        const auto klass = static_cast<size_t>(std::countr_zero(words_per_chunk) - std::countr_zero(kMinWordsPerChunk));
+        if (pools_[klass] == nullptr) {
+            pools_[klass] = std::make_unique<ChunkPool>(words_per_chunk * sizeof(uint64_t));
+        }
+        return *pools_[klass];
+    }
+
+    /*! @brief Binds @a col's dense storage to the pool for the chunk length @a rows asks for.
+     *  @pre The column holds no chunks: a column's chunk length is fixed for as long as it holds any.
+     */
+    auto attach_column_(Column &col, size_t rows) -> void {
+        const size_t w = forced_words_per_chunk_ != 0 ? forced_words_per_chunk_ : chunk_words_for_rows(rows);
+        col.words.attach(pool_for_(w), w);
+    }
 
     std::array<Column, kNumColumns> cols{};
     size_t row_count = 0;
@@ -179,7 +223,10 @@ struct InvertedIndex {
 
     auto promote_to_dense(size_t c) -> void {
         Column &col = cols[c];
-        col.words.reset(); // a promoted column has no dense storage yet; grow it chunk by chunk
+        // A promoted column has no dense storage yet, so this is where its chunk length is chosen and
+        // where it grows chunk by chunk from.
+        col.words.reset();
+        attach_column_(col, row_count);
         col.words.grow_zeroed(words());
         for (TermIndex r : col.set_rows) {
             col.words[r >> 6] |= uint64_t{1} << (r & 63U);
@@ -253,6 +300,7 @@ struct InvertedIndex {
             Column &col = cols[c];
             if (count * kPromoteDensityInv >= size) {
                 col.is_dense = true;
+                attach_column_(col, size);
                 col.words.grow_zeroed(required_words);
             }
             else if (count != 0) {
