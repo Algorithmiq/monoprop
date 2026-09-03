@@ -67,12 +67,20 @@ public:
     // This is where the 4× release rule applies -- one gate with a very large anticommuting set (a
     // single-qubit Pauli generator) must not pin its footprint.
     auto begin_rows(size_t n_anti) -> void {
-        if (rows_.capacity() > 4 * std::max<size_t>(n_anti, kMinSlots)) {
+        // Sized by what the LAST gate staged, not by this one's fold tally. stage_rows() rejects every
+        // anticommuting row whose key no record names, and the query-tag filter is selective enough that
+        // what survives is ~10 % of |Anti(G)| -- so both the reserve and the release rule read n_anti as
+        // roughly ten times what the gate will hold, which made rows_/row_buckets_ the largest single
+        // line of the per-gate peak at every layout measured (50-54 MB world, S = 1 through 8x16). Same
+        // shape as the self-stage hint in Scan.h: the previous gate's count with a margin, capped by the
+        // fold's own bound so it can never over-reserve, and push_back doubles if it falls short.
+        const size_t want = std::min(n_anti, std::max(kMinSlots, staged_hint_ + (staged_hint_ / 4)));
+        if (rows_.capacity() > 4 * std::max(want, kMinSlots)) {
             rows_ = std::vector<Entry>{};
             row_buckets_ = DefaultInitVector<Entry>{};
         }
         rows_.clear();
-        rows_.reserve(n_anti);
+        rows_.reserve(want);
     }
 
     // Resets the row side without releasing anything: the paths that stage no rows at all (an identity
@@ -117,6 +125,7 @@ public:
                 }
             }
         }
+        staged_hint_ = rows_.size(); // what the NEXT gate's begin_rows() sizes by
     }
 
     // The record side, in Q order (self-staged then incoming, as the join applies them). Sizes the hit
@@ -316,7 +325,11 @@ private:
     std::vector<uint32_t> fill_;         // bucketize_'s write cursors
     DefaultInitVector<uint64_t> filter_; // stage_rows()' bitmap over the query tags' high bits
     size_t hits_ = 0;                    // queries a row confirmed this gate: what the resolve phase sizes by
-    uint32_t filter_shift_ = 0;          // 32 - filter bits: what a tag is shifted by to index filter_
+    // Rows the previous gate's stage_rows() kept. A hint only -- wrong in either direction it costs at
+    // most a few pushes their geometric grow -- which is why it may cross gates although the buffers it
+    // sizes do not.
+    size_t staged_hint_ = 0;
+    uint32_t filter_shift_ = 0; // 32 - filter bits: what a tag is shifted by to index filter_
 };
 
 } // namespace monoprop::detail
