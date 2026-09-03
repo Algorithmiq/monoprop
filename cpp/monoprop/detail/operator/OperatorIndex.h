@@ -20,6 +20,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -70,13 +71,28 @@ public:
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     static constexpr size_t kDefaultInlinePositions = 11;
-    /*! @brief Rows per chunk of the row and key stores: 2^18, so a chunk is 3 MiB at the default stride.
+    /*! @brief Rows per chunk of the row and key stores, chosen from the height the store is built at.
      *
-     *  A multiple of 64, so the 64 rows an inverted-index word names always sit in one chunk and a
-     *  caller can resolve the chunk once per word (row_block()). A row never straddles a chunk either,
-     *  so a span over one row stays contiguous and RowAccess.h is unaffected.
+     *  Both bounds are powers of two and multiples of 64, so every chunk length is: the 64 rows an
+     *  inverted-index word names always sit in one chunk and a caller can resolve the chunk once per
+     *  word (row_block()). A row never straddles a chunk either, so a span over one row stays
+     *  contiguous and RowAccess.h is unaffected.
      */
-    static constexpr size_t kRowsPerChunk = size_t{1} << 18;
+    static constexpr size_t kMinRowsPerChunk = size_t{1} << 12;
+    static constexpr size_t kMaxRowsPerChunk = size_t{1} << 18;
+
+    /*! @brief The chunk length for a store of @a rows rows: a quarter of it, rounded down to a power
+     *  of two and clamped to [kMinRowsPerChunk, kMaxRowsPerChunk].
+     *
+     *  The store overshoots by at most one chunk, so a quarter bounds its slack under a quarter of
+     *  itself once it clears four minimum chunks, and under one 4096-row chunk below that. One fixed
+     *  2^18-row chunk was 98 B/term at 45 000 terms -- 4.25 MiB of tail on a 0.8 MiB store -- while
+     *  rounding down costs only chunk count, which is pooled. It reaches kMaxRowsPerChunk at 1M rows
+     *  and stops, so the tail is never more than 2^18 rows however large the operator grows.
+     */
+    static auto chunk_rows_for_rows(size_t rows) noexcept -> size_t {
+        return std::clamp(std::bit_floor(std::max(rows / 4, size_t{1})), kMinRowsPerChunk, kMaxRowsPerChunk);
+    }
     // A weight-w Pauli needs 2w positions; 32 covers the common case inline at the supported Pauli
     // cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
@@ -138,19 +154,20 @@ public:
         return join_tag(routing::linear_hash<2 * NumModes>(mono));
     }
 
-    /*! @brief An empty store.
-     *  @param rows_per_chunk A test knob: production always takes kRowsPerChunk, and a test drives the
-     *  chunk boundaries with a few hundred rows. A power of two and a multiple of 64.
+    /*! @brief An empty store. Its chunk length is settled by the first reserve() or growth, from the
+     *  height asked for there -- a store is built once and grown to a known size, so that first call
+     *  is the best estimate available and the length is fixed for the store's life thereafter.
+     *
+     *  @param forced_rows_per_chunk 0 to size the chunks from that height (production), or a fixed
+     *  length. A power of two and a multiple of 64. The parameter is a test knob: it drives the chunk
+     *  boundaries with a few hundred rows instead of a million.
      */
-    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions, size_t rows_per_chunk = kRowsPerChunk)
+    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions, size_t forced_rows_per_chunk = 0)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
           stride_(1 + inline_width_),
-          rows_per_chunk_(rows_per_chunk),
-          row_pool_(std::make_unique<ChunkPool>(rows_per_chunk * stride_ * sizeof(PosT))),
-          key_pool_(std::make_unique<ChunkPool>(rows_per_chunk * sizeof(uint32_t))) {
-        assert(std::has_single_bit(rows_per_chunk) && rows_per_chunk % 64 == 0);
-        rows_.attach(*row_pool_, rows_per_chunk, stride_);
-        keys_.attach(*key_pool_, rows_per_chunk);
+          forced_rows_per_chunk_(forced_rows_per_chunk) {
+        assert(forced_rows_per_chunk == 0
+               || (std::has_single_bit(forced_rows_per_chunk) && forced_rows_per_chunk % 64 == 0));
     }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
@@ -159,10 +176,15 @@ public:
 
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_, rows_per_chunk_);
-        // Deep copies into the clone's own pools: the two stores share no chunk.
-        out->rows_ = rows_.clone_into(*out->row_pool_);
-        out->keys_ = keys_.clone_into(*out->key_pool_);
+        auto out = std::make_unique<OperatorIndex>(inline_width_, forced_rows_per_chunk_);
+        if (rows_.attached()) {
+            // The clone takes this store's settled length, not one re-derived from its size: the two
+            // must agree row for row, and attach_(0) would round a small store down differently.
+            out->attach_(rows_.rows_per_chunk());
+            // Deep copies into the clone's own pools: the two stores share no chunk.
+            out->rows_ = rows_.clone_into(*out->row_pool_);
+            out->keys_ = keys_.clone_into(*out->key_pool_);
+        }
         out->size_ = size_;
         out->overflow_ = overflow_;
         return out;
@@ -190,6 +212,7 @@ public:
         if (n != 0) {
             check_index_fits(base + n - 1);
         }
+        ensure_capacity_(base + n);
         rows_.grow(base + n);
         keys_.grow(base + n);
         size_ = base + n;
@@ -307,9 +330,11 @@ public:
     // per row.
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
-        for (size_t first = 0; first < size_; first += rows_per_chunk_) {
+        // size_ > 0 implies the array is attached, so its settled length is the one to step by.
+        const size_t per_chunk = size_ == 0 ? 1 : rows_.rows_per_chunk();
+        for (size_t first = 0; first < size_; first += per_chunk) {
             const PosT *const base = rows_.chunk_base(first);
-            const size_t last = std::min(first + rows_per_chunk_, size_);
+            const size_t last = std::min(first + per_chunk, size_);
             for (size_t i = first; i < last; ++i) {
                 fn(row_from(base + ((i - first) * stride_), i), i);
             }
@@ -352,8 +377,66 @@ private:
 
     [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity(); }
     auto reserve_rows(size_t n) -> void {
+        ensure_capacity_(n);
         rows_.reserve(n);
         keys_.reserve(n);
+    }
+
+    /*! @brief Makes the pools and binds both arrays at @a rows_per_chunk. @pre Not yet attached. */
+    auto attach_(size_t rows_per_chunk) -> void {
+        assert(!rows_.attached() && "attach_ binds an unbound store");
+        row_pool_ = std::make_unique<ChunkPool>(rows_per_chunk * stride_ * sizeof(PosT));
+        key_pool_ = std::make_unique<ChunkPool>(rows_per_chunk * sizeof(uint32_t));
+        rows_.attach(*row_pool_, rows_per_chunk, stride_);
+        keys_.attach(*key_pool_, rows_per_chunk);
+    }
+
+    /*! @brief Re-lays the live rows into chunks of @a new_rows_per_chunk and drops the old pools.
+     *
+     *  Only the chunk geometry moves: row indices, keys and the overflow map are untouched, so every
+     *  TermIndex the rest of the engine holds stays valid. @a new_rows_per_chunk is a multiple of the
+     *  current length (both are powers of two and it only ever grows), so one old chunk lands whole
+     *  inside one new chunk and each move is a single memcpy.
+     */
+    auto rechunk_(size_t new_rows_per_chunk) -> void {
+        const size_t old_rows_per_chunk = rows_.rows_per_chunk();
+        assert(new_rows_per_chunk > old_rows_per_chunk && new_rows_per_chunk % old_rows_per_chunk == 0);
+        auto new_row_pool = std::make_unique<ChunkPool>(new_rows_per_chunk * stride_ * sizeof(PosT));
+        auto new_key_pool = std::make_unique<ChunkPool>(new_rows_per_chunk * sizeof(uint32_t));
+        ChunkedRowArray<PosT> new_rows;
+        ChunkedArray<uint32_t> new_keys;
+        new_rows.attach(*new_row_pool, new_rows_per_chunk, stride_);
+        new_keys.attach(*new_key_pool, new_rows_per_chunk);
+        new_rows.grow(size_);
+        new_keys.grow(size_);
+        for (size_t first = 0; first < size_; first += old_rows_per_chunk) {
+            const size_t n = std::min(old_rows_per_chunk, size_ - first);
+            std::memcpy(new_rows.at(first), rows_.at(first), n * stride_ * sizeof(PosT));
+            std::memcpy(&new_keys[first], &keys_[first], n * sizeof(uint32_t));
+        }
+        // Each array releases its chunks to its own pool before that pool is replaced.
+        rows_ = std::move(new_rows);
+        keys_ = std::move(new_keys);
+        row_pool_ = std::move(new_row_pool);
+        key_pool_ = std::move(new_key_pool);
+    }
+
+    /*! @brief Keeps the chunk length in step with the height the store is heading for.
+     *
+     *  The store cannot be told its final height -- the propagator reserves the *initial* operator's
+     *  size, which is a handful of terms even for a run that ends at millions -- so the length is
+     *  re-derived on every growth instead. It only ever rises and stops at kMaxRowsPerChunk, so a
+     *  store crossing 2^20 rows migrates six times and copies about 2M rows in total, once, while a
+     *  store that stays small keeps chunks proportional to it. A forced length never moves.
+     */
+    auto ensure_capacity_(size_t rows) -> void {
+        const size_t want = forced_rows_per_chunk_ != 0 ? forced_rows_per_chunk_ : chunk_rows_for_rows(rows);
+        if (!rows_.attached()) {
+            attach_(want);
+        }
+        else if (want > rows_.rows_per_chunk()) {
+            rechunk_(want);
+        }
     }
 
     // The label table, bound through a local static so the per-term path does not re-enter routing's guard.
@@ -373,7 +456,7 @@ private:
     // outlive the stores whose chunks they own. One pool each, because the two size classes differ.
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
-    size_t rows_per_chunk_ = kRowsPerChunk;
+    size_t forced_rows_per_chunk_ = 0; //!< 0 == size the chunks from the first height asked for
     std::unique_ptr<ChunkPool> row_pool_;
     std::unique_ptr<ChunkPool> key_pool_;
 
