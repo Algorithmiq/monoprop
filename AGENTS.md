@@ -2,7 +2,7 @@
 
 A C++23/Python library for Majorana and Pauli propagation. `MonomialPropagator<NumModes>` is the
 shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `MajoranaPropagator` and
-`PauliPropagator`. `monoprop_MAX_NUM_MODES` is the compile-time mode limit (default 250).
+`PauliPropagator`. `monoprop_MAX_NUM_MODES` is the compile-time mode limit (default 1024).
 
 ## Rules
 
