@@ -93,13 +93,15 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     nz.clear();
     n_anti = 0;
     const bool pivot_dense = sc.column_is_dense(pivot_col);
-    const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
     std::vector<uint64_t> &blk = column_block_scratch();
     // A dense pivot is read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a
     // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
     // to eager expansion.
     auto fold_range = [&](size_t bb, size_t be) {
         combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
+        // Block-scoped: a dense column is stored in chunks, so its words are contiguous only within one
+        // fold block (InvertedIndex::dense_column_block).
+        const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_block(pivot_col, bb, be) : nullptr;
         const size_t nz_block_start = nz.size();
         for (size_t wi = bb; wi < be; ++wi) {
             uint64_t overlap = blk[wi - bb];
@@ -113,7 +115,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                 continue;
             }
             n_anti += static_cast<size_t>(std::popcount(overlap));
-            const uint64_t foll = pivot_dense ? (overlap & pivot_dense_ptr[wi]) : uint64_t{0};
+            const uint64_t foll = pivot_dense ? (overlap & pivot_dense_ptr[wi - bb]) : uint64_t{0};
             nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
         }
         if (pivot_dense || nz.size() == nz_block_start) {
