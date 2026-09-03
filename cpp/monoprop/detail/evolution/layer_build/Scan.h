@@ -347,6 +347,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
         // very array the reads come from and cover the full operator.
         assert(fused_scale_coeffs == nullptr || (fused_scale_coeffs == coeffs.data() && coeffs.size() >= n));
+        // The value path answers a silent hit out of `coeffs` -- Engine.h's ContractSink reads
+        // pre_gate_coeffs[row] for any anticommuting row it did not rotate -- so it already requires one
+        // coefficient per pre-gate row. The hot arm below leans on that same contract to load a
+        // coefficient with no per-row bound; the other two arms run where the picture may carry none.
+        assert((!capture_values || coeffs.size() >= n) && "the value path needs a coefficient per pre-gate row");
 
         const size_t last_word = word_count - 1;
         const uint64_t last_word_mask = (n % 64 == 0) ? ~uint64_t{0} : ((uint64_t{1} << (n % 64)) - 1);
@@ -548,6 +553,10 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const CutoffContext cut = cut_st;
         const double *const coeff_ptr = coeffs.data();
         const size_t coeff_n = coeffs.size();
+        // `use_coeff_checks` is fixed for the whole scan, so it rides the value as a mask rather than a
+        // per-row branch: clearing the sign bit is std::abs exactly, and a zero mask is the +0.0 the
+        // `false` arm produced. The branch cost three instructions on every anticommuting row.
+        const uint64_t abs_mask = cut.use_coeff_checks ? ~(uint64_t{1} << 63U) : uint64_t{0};
         double *const sweep = fused_scale_coeffs;
         const double sweep_cos = fused_scale_cos;
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
@@ -565,8 +574,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 }
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
-                    const double v_src = (i < coeff_n) ? coeff_ptr[i] : 0.0;
-                    const double abs_c = cut.use_coeff_checks ? std::abs(v_src) : 0.0;
+                    const double v_src = coeff_ptr[i];
+                    const double abs_c = std::bit_cast<double>(std::bit_cast<uint64_t>(v_src) & abs_mask);
                     // E(ν) factorises: this half reads the coefficient alone, the other needs the
                     // partner's digest. A record is silent iff this half already fails, so the whole
                     // partner product -- the row read, the merge, the cutoff, the encoding -- is skipped
@@ -591,7 +600,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
                     const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
-                    const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
+                    const double abs_c = std::bit_cast<double>(std::bit_cast<uint64_t>(c) & abs_mask);
                     const RowRead row = read_row(i);
                     if (row.pop <= static_cast<size_t>(*only_rotate_len_k)) {
                         cos_b.push_index(i);
@@ -615,7 +624,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
                     const double c = (i < coeff_n) ? coeff_ptr[i] : 0.0;
-                    const double abs_c = cut.use_coeff_checks ? std::abs(c) : 0.0;
+                    const double abs_c = std::bit_cast<double>(std::bit_cast<uint64_t>(c) & abs_mask);
                     emit_row(i, nullptr, capture_values ? c : 0.0, abs_c, rotation_coeff_gate(cut, abs_c));
                 }
             }
