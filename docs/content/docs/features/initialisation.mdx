@@ -25,10 +25,10 @@ For second-quantized Hamiltonians and usual Fermionic circuits coming from varia
 quantum computing, under length truncation the two pictures agree when
 `schrodinger_cutoff = cutoff + 2` (see Appendix of [@chakraborty2026scalablequantumcircuitgeneration]).
 
-`schrodinger_cutoff` also sizes the initial basis, and does so superexponentially: the
+`schrodinger_cutoff` also sizes the initial basis, and can grow extremely quickly: the
 state starts as every fully paired monomial of up to `pairs = ceil(schrodinger_cutoff / 2)`
-pairs, so $\sum_{k \le \mathrm{pairs}} \binom{n}{k}$ monomials over $n$ modes. Raising it
-by one is not a small step -- at 142 modes, `schrodinger_cutoff = 8` gives 16.7M initial
+pairs, so $\sum_{k \le \mathrm{pairs}} \binom{n}{k}$ monomials over $n$ modes (upper-bounded by $2^n$).
+Raising it by one is not a small step -- at 142 modes, `schrodinger_cutoff = 8` gives 16.7M initial
 terms and `10` gives 465M. A value approaching `2 * num_modes` (`num_qubits` for
 [PauliPropagator][]) makes the basis $2^n$ and is refused at construction with a
 `RuntimeError` naming the setting, rather than started.

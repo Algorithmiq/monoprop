@@ -66,11 +66,11 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             schrodinger_cutoff: ``None`` (default) keeps the Heisenberg picture; an integer selects
                 the Schrodinger picture and bounds the evolved state -- including its initialization
                 from ``initial_state`` -- by the same notion as ``cutoff_type``. Choose it at least
-                as large as ``cutoff`` for comparable accuracy. It also sizes the initial paired
-                basis, which holds ``sum(C(num_modes, k) for k in range(pairs + 1))`` monomials for
-                ``pairs = ceil(schrodinger_cutoff / 2)`` -- superexponential in the cutoff, so a
-                value approaching ``2 * num_modes`` is rejected with a ``RuntimeError`` rather than
-                started.
+as large as ``cutoff`` for comparable accuracy. It also sizes the initial paired
+basis, which holds ``sum(C(num_modes, k) for k in range(pairs + 1))`` monomials for
+``pairs = ceil(schrodinger_cutoff / 2)`` — combinatorial in the cutoff and
+upper-bounded by ``2**num_modes``, so a value approaching ``2 * num_modes`` is
+rejected with a ``RuntimeError`` rather than started.
             cutoff_type: ``"length"`` (default) bounds the number of Majorana operators in a
                 monomial; ``"support"`` bounds the distinct orbitals it acts on. The fully-paired
                 exception applies on top of either.
