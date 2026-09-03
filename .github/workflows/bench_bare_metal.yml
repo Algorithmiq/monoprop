@@ -1,9 +1,6 @@
 name: Track benchmarks (bare metal)
 
 # monoprop's continuous benchmarking, on a dedicated EC2 node provisioned per run by RunsOn.
-# The point is the noise floor: nothing else is scheduled on the machine, so these testbeds can
-# carry thresholds tight enough to gate on. The node exists only for the run, so cost tracks the
-# number of commits to main rather than wall-clock time.
 
 on:
   workflow_dispatch:
@@ -25,9 +22,6 @@ jobs:
       # The `runner=bench` shape is defined in .github/runs-on.yml; run_id namespaces it.
       runner: runs-on=${{ github.run_id }}/runner=bench
       label: ci-bare-metal
-      # Three rungs of benches/LADDER.md on one node from one build. L1 is that document's own L1
-      # rows; L2a and L2b share one problem sized to ~25 GiB of the instance's 32 GiB and differ
-      # only in shape. See docs/content/docs/benchmarks.mdx for the tables and the 4x2 choice.
       rungs: |
         L1  1 1        3 | -k "(test_model_propagate and (hubbard or pauli)) or (test_random_gradient and heisenberg)" --hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 --pauli-cutoff=12 --pauli-lower-atol=1.22e-04 --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000
         L2a 1 per-rank 1 | -k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
