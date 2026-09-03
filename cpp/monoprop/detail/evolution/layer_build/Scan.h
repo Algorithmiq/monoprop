@@ -553,12 +553,27 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         // No orbital gate and no fused sweep: the whole word goes into the cosine set in one push.
         const bool build_cos_words = word_aligned_cos && sweep == nullptr;
+        // Indexed rather than ranged, so each arm can warm the coefficient lines of the word it will
+        // reach kNzPrefetchWords words from now (Common.h has why the hardware cannot).
+        const EvenParityNzWord *const nz_p = nz.data();
+        const size_t nz_count = nz.size();
         CosineWordBuilder cos_b;
         if (answer_silent_hits && word_aligned_cos) {
             // The hot shape: the value path with no orbital gate. The coefficient alone decides whether
             // this row is read at all, so a silent row costs one load, an abs, a compare, and — with the
             // sweep on — one in-place scale and one sequential write of its pre-cos value.
-            for (const auto &w : nz) {
+            for (size_t wi = 0; wi < nz_count; ++wi) {
+                const EvenParityNzWord &w = nz_p[wi];
+                if (wi + kNzPrefetchWords < nz_count) {
+                    // Read-modify-write when the sweep is on, so ask for the line exclusive; read-only
+                    // otherwise. The test is loop-invariant, one branch per word rather than per row.
+                    if (sweep != nullptr) {
+                        prefetch_nz_word<true>(sweep, nz_p[wi + kNzPrefetchWords]);
+                    }
+                    else {
+                        prefetch_nz_word<false>(coeff_ptr, nz_p[wi + kNzPrefetchWords]);
+                    }
+                }
                 marks.set_foll_word(w.base / 64, w.foll);
                 if (build_cos_words) {
                     cos_b.push_word(w.base, w.overlap);
@@ -586,7 +601,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // row it needs is the row the emit reads. A capped term still sends (with rot=0) on the graph
             // path, since its partner may rotate it. The fused sweep is off here by construction.
             assert(sweep == nullptr && "the fused sweep does not run with an orbital gate");
-            for (const auto &w : nz) {
+            for (size_t wi = 0; wi < nz_count; ++wi) {
+                const EvenParityNzWord &w = nz_p[wi];
+                if (wi + kNzPrefetchWords < nz_count) {
+                    prefetch_nz_word<false>(coeff_ptr, nz_p[wi + kNzPrefetchWords]);
+                }
                 marks.set_foll_word(w.base / 64, w.foll);
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                     const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
@@ -609,7 +628,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // term still sends its rot=0 record, since its partner may rotate it -- so every
             // anticommuting row goes through the emit, and the value path's sweep is off.
             assert(sweep == nullptr && "the fused sweep is a value-path sweep");
-            for (const auto &w : nz) {
+            for (size_t wi = 0; wi < nz_count; ++wi) {
+                const EvenParityNzWord &w = nz_p[wi];
+                if (wi + kNzPrefetchWords < nz_count) {
+                    prefetch_nz_word<false>(coeff_ptr, nz_p[wi + kNzPrefetchWords]);
+                }
                 marks.set_foll_word(w.base / 64, w.foll);
                 cos_b.push_word(w.base, w.overlap);
                 for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {

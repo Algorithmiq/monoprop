@@ -38,7 +38,20 @@ inline auto apply_fused_contract(FusedContract &fc, VecD &op_coeffs, const CosMa
     }
     // Each op slot is touched by exactly one half (one partner per term, ⊕G-injective mints), which is
     // what makes the plain += safe in any order.
-    for (const HalfRotationRec &h : fc.halves) {
+    //
+    // `halves` is sequential but `local_idx` is not: every add is a read-modify-write of one double
+    // somewhere in the operator, and by the time this runs the exchange and the join have evicted
+    // whatever the scan warmed. The indices are in the array itself, so the loop can ask for the lines
+    // ahead of itself -- the same lever as the scan's and the join's sparse streams (Common.h).
+    constexpr size_t kApplyPrefetch = 16;
+    const size_t n_halves = fc.halves.size();
+    for (size_t j = 0; j < n_halves; ++j) {
+        const HalfRotationRec &h = fc.halves[j];
+#if defined(__GNUC__) || defined(__clang__)
+        if (j + kApplyPrefetch < n_halves) {
+            __builtin_prefetch(c + fc.halves[j + kApplyPrefetch].local_idx, 1, 3);
+        }
+#endif
         if (fused_scale && h.is_insert) {
             c[h.local_idx] = cos_val * c[h.local_idx] + sin_val * static_cast<double>(h.phase_signed) * h.v_partner;
         }

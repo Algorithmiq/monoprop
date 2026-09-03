@@ -89,6 +89,10 @@ public:
     //! Row i's join key. Maintained by every writer, so a gate stages its join without reading a row.
     [[nodiscard]] auto key(size_t i) const -> uint32_t { return keys_[i]; }
 
+    //! The key column's base, for the join's one streaming pass over it (BucketJoin::stage_rows reads
+    //! the rows the fold's `nz` names, and prefetches their lines ahead of itself).
+    [[nodiscard]] auto key_data() const -> const uint32_t * { return keys_.data(); }
+
     //! The compare tag of a 64-bit fingerprint: what a row's key is, and what BucketJoin tags a query with.
     [[nodiscard]] static auto join_tag(uint64_t fp) noexcept -> uint32_t {
         return static_cast<uint32_t>(routing::mix64(fp) >> 32U);

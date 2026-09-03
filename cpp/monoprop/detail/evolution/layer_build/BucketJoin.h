@@ -104,10 +104,20 @@ public:
         build_filter_();
         const uint32_t shift = filter_shift_;
         const uint64_t *const filter = filter_.data();
-        for (const auto &w : nz) {
+        const uint32_t *const keys = store.key_data();
+        const size_t nz_count = nz.size();
+        for (size_t wi = 0; wi < nz_count; ++wi) {
+            const EvenParityNzWord &w = nz[wi];
+            if (wi + kNzPrefetchWords < nz_count) {
+                // 4 bytes per set bit, ~2.7 of them to a line: the same sparse-stream shape as the
+                // scan's coefficients, and the same fix. The filter word the key then indexes is
+                // data-dependent and cannot be prefetched, but the filter is 2^21 bits at its ceiling
+                // and normally far below, so it is L2-resident by construction.
+                prefetch_nz_word<false>(keys, nz[wi + kNzPrefetchWords]);
+            }
             for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
                 const size_t row = w.base + static_cast<size_t>(std::countr_zero(m));
-                const uint32_t tag = store.key(row);
+                const uint32_t tag = keys[row];
                 const uint32_t f = tag >> shift;
                 if (((filter[f >> 6U] >> (f & 63U)) & 1U) != 0U) {
                     rows_.push_back(Entry{.tag = tag, .v = static_cast<uint32_t>(row)});

@@ -42,6 +42,48 @@ struct EvenParityNzWord {
     uint64_t foll;
 };
 
+// How far ahead the passes that walk `nz` warm the whole-operator array they index by row.
+//
+// Two of them do that -- the scan's coefficient stream and the join's key stream -- and both are sparse
+// streams over an array far larger than L3: about one row in six anticommutes, so a 64-byte line holds
+// two or three of the elements a pass will touch, and the gaps between them are neither constant nor
+// short. The hardware prefetcher cannot follow that, and past L3 each line is a demand miss on the
+// critical path (28.1 M LL read misses on the key stream alone at 2.4 M terms). Software can follow it:
+// `nz` IS the access pattern in compressed form, so the loop knows every line it will touch long before
+// it reaches it. This is what the hash-free design bought -- the baseline's hash probes were random DRAM
+// reads that nothing could have prefetched.
+//
+// The distance is in `nz` words rather than rows because that is what the loops step: one word is ~11
+// touched rows of work. 4, 8 and 16 were measured on an exclusive dev-x86 node; see the `pf-` block of
+// scratch/hashfree/one-round-logs/GATES.txt.
+inline constexpr size_t kNzPrefetchWords = 8;
+
+//! Warms every 64-byte line of `base[w.base .. w.base + 63]` that `w.overlap` names, once per line.
+//! `ForWrite` asks for the line in exclusive state, for a pass that stores back into it. Prefetches
+//! neither read nor write, so nothing here can change a result; an address past the end is harmless.
+template <bool ForWrite, typename T>
+inline auto prefetch_nz_word([[maybe_unused]] const T *base, [[maybe_unused]] const EvenParityNzWord &w)
+    -> void {
+#if defined(__GNUC__) || defined(__clang__)
+    static_assert(sizeof(T) <= 64 && 64 % sizeof(T) == 0, "the line arithmetic assumes a divisor of a line");
+    const T *const row0 = base + w.base;
+    for (uint64_t m = w.overlap; m != 0U;) {
+        const size_t b = static_cast<size_t>(std::countr_zero(m));
+        if constexpr (ForWrite) {
+            __builtin_prefetch(row0 + b, 1, 3);
+        }
+        else {
+            __builtin_prefetch(row0 + b, 0, 3);
+        }
+        // Clear this bit and every higher one sharing its line, so a line is asked for once however many
+        // of its elements the word names. Off the address, not the index: `base` is not line-aligned.
+        const size_t rest = (64 - (reinterpret_cast<uintptr_t>(row0 + b) & 63U)) / sizeof(T);
+        const uint64_t line_bits = (rest >= 64 - b) ? ~uint64_t{0} : ((uint64_t{1} << rest) - 1);
+        m &= ~(line_bits << b);
+    }
+#endif
+}
+
 // One record this slot sent for a gate, in stream order (ascending source row): the source row and the
 // emit phase φ of that source. The absence pass walks these, so the row is carried rather than looked
 // up -- there are no per-gate ordinals to index a phase array by.
