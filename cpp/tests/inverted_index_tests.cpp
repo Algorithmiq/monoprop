@@ -315,7 +315,7 @@ auto build_chunk_test_op() -> std::vector<MSet> {
 BOOST_AUTO_TEST_CASE(dense_columns_fold_identically_across_chunk_boundaries) {
     const auto op = build_chunk_test_op();
     Sc chunked(kSmallChunkWords);
-    Sc whole(Sc::kWordsPerChunk);
+    Sc whole(Sc::kMaxWordsPerChunk);
     chunked.rebuild(op);
     whole.rebuild(op);
 
@@ -355,7 +355,7 @@ BOOST_AUTO_TEST_CASE(dense_columns_fold_identically_across_chunk_boundaries) {
 BOOST_AUTO_TEST_CASE(make_fold_cache_is_blocked_and_bit_identical_across_chunk_sizes) {
     const auto op = build_chunk_test_op();
     Sc chunked(kSmallChunkWords);
-    Sc whole(Sc::kWordsPerChunk);
+    Sc whole(Sc::kMaxWordsPerChunk);
     chunked.rebuild(op);
     whole.rebuild(op);
 
@@ -448,4 +448,154 @@ BOOST_AUTO_TEST_CASE(copying_an_index_deep_copies_its_chunked_columns) {
     const auto got = rows_of(*moved, c0);
     const auto want = rows_of(original, c0);
     BOOST_CHECK_EQUAL_COLLECTIONS(got.begin(), got.end(), want.begin(), want.end());
+}
+
+namespace {
+
+// Column 1 is empty for the first batch and dense by the end of the second, so it is built at a height
+// in a different chunk size class from column 0, which is dense from the first batch. Column 2 stays
+// sparse with a set row in every chunk, so the fold's scatter path crosses boundaries too.
+constexpr size_t kMixedFirstRows = 400'000;
+constexpr size_t kMixedRows = 600'000;
+
+auto build_mixed_chunk_op() -> std::vector<MSet> {
+    std::vector<MSet> op;
+    op.reserve(kMixedRows);
+    for (size_t i = 0; i < kMixedRows; ++i) {
+        VecZ pos;
+        if (i % 3 == 0) {
+            pos.push_back(0);
+        }
+        if (i >= kMixedFirstRows && i % 2 == 0) {
+            pos.push_back(1);
+        }
+        if (i % 40'009 == 5) {
+            pos.push_back(2);
+        }
+        if (pos.empty()) {
+            pos.push_back(3); // keep every row non-empty
+        }
+        op.push_back(bs(pos));
+    }
+    return op;
+}
+
+} // namespace
+
+// The chunk length is chosen from the height the column is built at, so that a column shorter than one
+// 128 KiB chunk is not rounded up to one and a billion-row column is not addressed by a hundred
+// thousand pointers.
+BOOST_AUTO_TEST_CASE(chunk_words_follow_the_column_height_and_stop_at_the_ceiling) {
+    const std::vector<std::pair<size_t, size_t>> table{
+        {0, Sc::kMinWordsPerChunk},
+        {1, Sc::kMinWordsPerChunk},
+        {65'536, Sc::kMinWordsPerChunk},
+        {262'144, Sc::kMinWordsPerChunk}, // 4096 words: a quarter is exactly one minimum chunk
+        {300'000, Sc::kMinWordsPerChunk}, // 4688 words: a quarter rounds *down*, so still one
+        {524'288, 2 * Sc::kMinWordsPerChunk},
+        {1'048'576, 4 * Sc::kMinWordsPerChunk},
+        {2'097'152, 8 * Sc::kMinWordsPerChunk},
+        {4'194'304, Sc::kMaxWordsPerChunk}, // the ceiling, first reached at 4M rows
+        {1'000'000'000, Sc::kMaxWordsPerChunk},
+    };
+    for (const auto &[rows, want] : table) {
+        BOOST_TEST_INFO("rows " << rows);
+        BOOST_CHECK_EQUAL(Sc::chunk_words_for_rows(rows), want);
+    }
+
+    // Every choice is a whole number of fold blocks -- which is what keeps a block from straddling a
+    // chunk -- monotone in the height, and never more than a quarter of the column it serves. Since the
+    // overshoot is under one chunk, that is the slack bound: a quarter of the column, or one minimum
+    // chunk on a column too short to have quarters worth taking, rather than a fixed 128 KiB.
+    size_t previous = 0;
+    for (size_t rows = 0; rows < 40'000'000; rows = rows + 1 + rows / 3) {
+        const size_t chunk = Sc::chunk_words_for_rows(rows);
+        const size_t words = (rows + 63) / 64;
+        const size_t chunks = (words + chunk - 1) / chunk;
+        BOOST_TEST_INFO("rows " << rows);
+        BOOST_CHECK(std::has_single_bit(chunk));
+        BOOST_CHECK_EQUAL(chunk % kColumnBlockWords, 0U);
+        BOOST_CHECK_GE(chunk, previous);
+        BOOST_CHECK_LE(chunk, std::max(Sc::kMinWordsPerChunk, words / 4));
+        BOOST_CHECK_LT(chunks * chunk - words, std::max(Sc::kMinWordsPerChunk, words / 4));
+        previous = chunk;
+    }
+}
+
+// Two dense columns of one index can now hold different chunk lengths, because they were promoted at
+// different heights. Nothing in the fold may assume they agree: it asks each column for its own block.
+BOOST_AUTO_TEST_CASE(columns_of_different_chunk_sizes_fold_identically) {
+    const auto op = build_mixed_chunk_op();
+    Sc adaptive;                  // production sizing: each column from the height it is built at
+    Sc uniform(kSmallChunkWords); // every column pinned to one fold block per chunk
+    for (Sc *sc : {&adaptive, &uniform}) {
+        sc->append_rows(op, 0, kMixedFirstRows);
+        sc->append_rows(op, kMixedFirstRows, kMixedRows - kMixedFirstRows);
+    }
+    BOOST_REQUIRE_EQUAL(adaptive.rows(), kMixedRows);
+
+    const size_t c0 = col_of(0);
+    const size_t c1 = col_of(1);
+    BOOST_REQUIRE(adaptive.column_is_dense(c0));
+    BOOST_REQUIRE(adaptive.column_is_dense(c1));
+    BOOST_REQUIRE(!adaptive.column_is_dense(col_of(2)));
+    // The premise of the case: one index, two dense columns, two different chunk lengths.
+    const size_t w0 = adaptive.cols[c0].words.elems_per_chunk();
+    const size_t w1 = adaptive.cols[c1].words.elems_per_chunk();
+    BOOST_CHECK_EQUAL(w0, Sc::chunk_words_for_rows(kMixedFirstRows));
+    BOOST_CHECK_EQUAL(w1, Sc::chunk_words_for_rows(kMixedRows));
+    BOOST_REQUIRE_NE(w0, w1);
+
+    const size_t words = (kMixedRows + 63) / 64;
+    const std::vector<size_t> cols{c0, c1, col_of(2)};
+    std::vector<uint64_t> a(words, 0xdeadbeefULL);
+    std::vector<uint64_t> b(words, 0xfeedfaceULL);
+    for (size_t bb = 0; bb < words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, words);
+        combine_columns_block<N>(adaptive, cols, a.data() + bb, bb, be);
+        combine_columns_block<N>(uniform, cols, b.data() + bb, bb, be);
+    }
+    BOOST_CHECK_EQUAL_COLLECTIONS(a.begin(), a.end(), b.begin(), b.end());
+
+    std::vector<uint64_t> expected(words, 0);
+    for (size_t r = 0; r < kMixedRows; ++r) {
+        const bool in_0 = r % 3 == 0;
+        const bool in_1 = r >= kMixedFirstRows && r % 2 == 0;
+        const bool in_2 = r % 40'009 == 5;
+        if (in_0 != (in_1 != in_2)) { // three-way XOR
+            expected[r >> 6] |= uint64_t{1} << (r & 63U);
+        }
+    }
+    BOOST_CHECK_EQUAL_COLLECTIONS(a.begin(), a.end(), expected.begin(), expected.end());
+
+    // A copy has to carry each column's own length across, not one length for the index.
+    const Sc copy = adaptive;
+    BOOST_CHECK_EQUAL(copy.cols[c0].words.elems_per_chunk(), w0);
+    BOOST_CHECK_EQUAL(copy.cols[c1].words.elems_per_chunk(), w1);
+    for (size_t c = 0; c < Sc::kNumColumns; ++c) {
+        BOOST_TEST_INFO("column " << c);
+        const auto got = rows_of(copy, c);
+        const auto want = rows_of(adaptive, c);
+        BOOST_CHECK_EQUAL_COLLECTIONS(got.begin(), got.end(), want.begin(), want.end());
+    }
+}
+
+// The reason for sizing at all: a fixed 128 KiB chunk is bigger than the whole column on the operators
+// most runs actually have, and rounded the ledger's dense figure up rather than down.
+BOOST_AUTO_TEST_CASE(adaptive_chunks_beat_the_fixed_ceiling_on_a_small_operator) {
+    const auto op = build_chunk_test_op();
+    Sc adaptive;
+    Sc fixed_ceiling(Sc::kMaxWordsPerChunk);
+    adaptive.rebuild(op);
+    fixed_ceiling.rebuild(op);
+
+    const auto tuned = adaptive.tier_memory_bytes();
+    const auto fixed = fixed_ceiling.tier_memory_bytes();
+    BOOST_REQUIRE_GT(tuned[2], 0U);
+    BOOST_REQUIRE_EQUAL(tuned[2], fixed[2]); // the same columns are dense either way
+
+    const size_t live = adaptive.words() * sizeof(uint64_t) * tuned[2];
+    BOOST_CHECK_LT(tuned[0], fixed[0]);
+    BOOST_CHECK_GE(tuned[0], live);
+    BOOST_CHECK_LT(tuned[0] - live, live); // slack is a fraction of the columns, not a multiple of them
 }
