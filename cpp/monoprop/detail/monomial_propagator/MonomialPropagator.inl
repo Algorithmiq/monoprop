@@ -170,18 +170,12 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     size_t max_pairs = 0;
     size_t expected_local_terms = std::max<size_t>(1, local_heisenberg_terms.size());
     if (schrodinger_) {
-        // schrodinger_ is schrodinger_cutoff.has_value(), set in the member-init list, so the deref holds.
         const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
         max_pairs = sc / 2 + sc % 2;
         const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
         // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
         const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
         const size_t share = global_terms / std::max<size_t>(1, num_ranks);
-        // A cutoff near the mode count makes the basis 2^logical_num_modes. Two independent ways that
-        // is hopeless, and both are needed: the count does not fit size_t at all, which is
-        // rank-independent because every slot walks the whole global basis however the rows are
-        // divided; or the slot's share of rows cannot be addressed by a term index. Rejected here by
-        // name rather than as a walk that does not finish.
         if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
             const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
             const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
@@ -215,7 +209,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         }
     };
     if (schrodinger_) {
-        // Enumerated, never listed: PartitionGroup constructs the S partitions concurrently on their own
+        // PartitionGroup constructs the S partitions concurrently on their own
         // masters, so a list here would hold P full copies of the global basis at one instant.
         for_each_paired_monomial<NumModes>(max_pairs, logical_num_modes_, keep_if_owned);
     }
