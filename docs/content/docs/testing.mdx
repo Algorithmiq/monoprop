@@ -89,6 +89,13 @@ ctest -S tools/ctest-mpi-matrix.cmake -VV
 CI gives every compiler and MPI combination a distinct setup-uv cache suffix,
 because uv's cache key does not include build environment variables.
 
+A matrix job reports one check per combination, so its check names change whenever a
+lane is added or removed. Each matrix workflow therefore ends with a small aggregation
+job — `All tests` in `test.yml`, `All flake checks` in `nix.yml` — that runs with
+`if: always()`, depends on the matrix, and fails unless the matrix succeeded or was
+skipped. Branch protection requires those stable names, so the matrix dimensions can
+change without touching the ruleset.
+
 CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
 (default) skips that probe for the single-process `serial` variants only; multi-rank variants
@@ -119,6 +126,34 @@ atomic gcov counters. The `code-coverage-collect` and
 the combined reports to Codecov and SonarQube. MPI collection requires covered
 lines in multiple `detail/mpi` sources so a silently serial build cannot pass as
 MPI coverage.
+
+### Golden baselines
+
+A refactor that is meant to change no result is checked against a captured
+baseline rather than by reading the diff. `tools/capture-baseline.py` propagates
+every `tests/data/*.msgpack` fixture at a spread of cutoffs and cutoff types,
+plus a few hand-written qubit problems, and dumps each run's term count, its
+full `(monomial indices, coefficient)` set and its expectation value:
+
+```bash
+just capture-baseline golden   # seed, once, on an unmodified tree
+just diff-baseline             # rebuild, re-capture, diff against the golden
+```
+
+Terms are dumped in the engine's own returned order, not sorted, and
+`diff-baseline` is a byte-wise `diff`. That is deliberate: the order runs from
+`SplitmixHash` through probe order, MPI owner routing and insertion order into
+floating-point accumulation order, so a silent reorder is a regression, not an
+implementation detail.
+
+For a change that reorders terms *on purpose*, `--compare REF CAND --tol` holds
+the term set and the term count exactly and compares coefficients and energies to
+a relative tolerance instead. Reach for it only when the reordering is the point;
+it is not a way to wave through a diff that was supposed to be stable.
+
+The capture is rank-local, so under `mpiexec` each rank writes its own
+`manifest-rank<r>.json`. Output lands in `.baseline-capture/`, which is
+gitignored.
 
 
 ## Adding tests

@@ -25,6 +25,7 @@
 #include "PauliTestOracle.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 // Intra-process partition equivalence: a propagator with partitions>1 (S partition propagators over an in-process
@@ -48,6 +49,24 @@ auto majorana_sim(const CaseData &data, size_t partitions, std::optional<double>
                                          std::nullopt,
                                          MPI_COMM_SELF,
                                          lower_atol,
+                                         std::nullopt,
+                                         CutoffType::Length,
+                                         std::nullopt,
+                                         kNumModes,
+                                         Basis::Majorana,
+                                         partitions);
+}
+
+// Schrodinger's initial rows are the GLOBAL paired basis, hash-partitioned across the partitions --
+// the only construction input that is not already slot-local, and so the only one a mis-sharded seed
+// can break. At kNumModes=8 with sc=kCutoff+2 that is sum C(8,0..3) = 93 terms.
+auto majorana_schrodinger_sim(const CaseData &data, size_t partitions) -> MonomialPropagator<kNumModes> {
+    return MonomialPropagator<kNumModes>(data.hamiltonian,
+                                         kCutoff,
+                                         data.initial_state,
+                                         /*schrodinger_cutoff=*/kCutoff + 2,
+                                         MPI_COMM_SELF,
+                                         std::nullopt,
                                          std::nullopt,
                                          CutoffType::Length,
                                          std::nullopt,
@@ -314,4 +333,36 @@ BOOST_AUTO_TEST_CASE(partition_factory_exception_propagates_without_terminate) {
                                                     /*partitions=*/4),
                       std::runtime_error);
     BOOST_CHECK_NO_THROW(majorana_sim(data, 4));
+}
+
+// Reads the constructor's output with no graph in between: the aggregate initial basis must be every
+// paired term exactly once at any partition count. This is what a seed that keeps the wrong share, or
+// that generates the global set per partition and then over- or under-filters, gets wrong.
+BOOST_AUTO_TEST_CASE(partition_schrodinger_initial_basis_is_partition_count_invariant) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    constexpr unsigned int kSchrodingerCutoff = kCutoff + 2;
+    const size_t expected = paired_op_size(kSchrodingerCutoff / 2 + kSchrodingerCutoff % 2, kNumModes);
+
+    for (const size_t S : {size_t{1}, size_t{2}, size_t{4}}) {
+        BOOST_TEST_CONTEXT("partitions=" << S) {
+            BOOST_CHECK_EQUAL(majorana_schrodinger_sim(data, S).size(), expected);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(partition_schrodinger_energy_matches_across_partition_counts) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    auto ref = majorana_schrodinger_sim(data, 1);
+    ref.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const double e1 = ref.expectation_value(data.parameters);
+
+    for (const size_t S : {size_t{2}, size_t{4}}) {
+        auto sim = majorana_schrodinger_sim(data, S);
+        sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+        const double e = sim.expectation_value(data.parameters);
+        BOOST_TEST_CONTEXT("partitions=" << S << " e=" << e << " ref=" << e1) {
+            BOOST_TEST(near(e1, e));
+        }
+        BOOST_CHECK_EQUAL(ref.size(), sim.size());
+    }
 }
