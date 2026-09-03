@@ -290,11 +290,14 @@ BOOST_AUTO_TEST_CASE(mpi_utils_paired_enumeration_partitions_by_find_rank) {
     BOOST_REQUIRE_EQUAL(full.size(), paired_op_size(kMaxPairs, kLogical));
 
     for (const size_t slots : {size_t{1}, size_t{2}, size_t{3}, size_t{8}, size_t{128}}) {
+        // A Schrodinger slot is not an MPI rank, so the flat splitmix router is the right owner map:
+        // it carries no power-of-two condition and so covers the 3-slot case too.
+        const auto router = routing::Router::splitmix(slots);
         size_t total = 0;
         for (size_t slot = 0; slot < slots; ++slot) {
             MonomialList<kN> kept;
             for_each_paired_monomial<kN>(kMaxPairs, kLogical, [&](const Monomial<kN> &mono) {
-                if (find_rank<kN>(mono, slots) == slot) {
+                if (find_rank<kN>(mono, router) == slot) {
                     kept.push_back(mono);
                 }
             });
