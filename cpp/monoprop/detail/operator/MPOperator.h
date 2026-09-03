@@ -107,11 +107,11 @@ struct MPOperator {
     MPOperator(const MPOperator &other)
         : store(other.store->clone()),
           op_coeffs(other.op_coeffs),
-          op_coeffs_slack_hwm_(other.op_coeffs_slack_hwm_),
           state_rows_(other.state_rows_),
           state_vals_(other.state_vals_),
           state_scored_rows_(other.state_scored_rows_),
           state_coeffs(other.state_coeffs),
+          op_coeffs_slack_hwm_(other.op_coeffs_slack_hwm_),
           init_op_map(other.init_op_map),
           initial_state(other.initial_state),
           basis(other.basis),
