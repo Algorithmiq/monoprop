@@ -177,6 +177,13 @@ public:
     [[nodiscard]] auto rows() const -> size_t { return rows_.size(); }
     [[nodiscard]] auto queries() const -> size_t { return queries_.size(); }
 
+    /*! @brief Bytes held by the query-tag filter alone, a part of memory_bytes().
+     *
+     *  Broken out because the filter is sized from the gate's query count, so the widest gate's filter
+     *  is not what a resting read of memory_bytes() finds -- Engine.h's high-water mark wants it apart.
+     */
+    [[nodiscard]] auto filter_bytes() const -> size_t { return filter_.capacity() * sizeof(uint64_t); }
+
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return ((rows_.capacity() + row_buckets_.capacity() + queries_.capacity() + query_buckets_.capacity()
                  + table_.capacity())

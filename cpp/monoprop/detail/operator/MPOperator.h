@@ -345,6 +345,10 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
     size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
+    // Not a subset of any field above: the per-gate buffers are freed when the gate returns, or resized
+    // under the next one, so nothing resting can name them. Widest instant over the last call, so a sum
+    // over partitions is an upper bound rather than a simultaneous figure.
+    size_t gate_buffers_hwm_bytes{0uz};
     // of op_coeffs_bytes: the most capacity the coefficient array held beyond its live rows at any point
     // in the last propagate or build_graph call. A high-water mark, not a resting figure: the array is
     // shrunk to fit at the end of every call, so measured at quiescence the slack is always 0 and says
@@ -380,6 +384,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        gate_buffers_hwm_bytes += o.gate_buffers_hwm_bytes;
         // Summed, not maxed, across partitions: the partitions grow together within a call, so their
         // peaks are close to simultaneous and the sum is the figure a per-process footprint wants. It is
         // an upper bound -- each partition's peak is over its own timeline -- and errs the safe way.

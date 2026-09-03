@@ -133,6 +133,19 @@ same count over the columns that took that promotion, and the two differ by the 
 slack is a subset of `op_coeffs_bytes` and the histograms are counts, so folding either into the
 total would double-count.
 
+`d_gate_buffers_hwm_bytes` is outside the total for the opposite reason: it is not a subset of any
+field but a quantity no resting field can hold. The records a gate puts on the wire, the ones it
+receives, the responses it stages and the answers it applies are all freed when the gate returns, so
+by the time a caller can ask, nothing of them is left to measure — yet on a wide gate they are the
+largest thing the call adds to resident memory. The engine therefore stamps their combined size at
+the two instants where the set is widest, and the field carries the maximum over the gates of the
+last `propagate` or `build_graph`. Three of the scan's own buffers are stamped with them for a
+related reason — the pre-cos stream, the silent index and the join's query-tag filter are sized per
+gate and reused under the next one, so `gate_scratch_bytes` at rest reports the last gate's figure
+rather than the widest gate's; the rest of the gate scratch only grows, so its resting figure is
+already its peak. Across partitions the values are summed, which is an upper bound rather than a
+simultaneous figure: each partition's peak is over its own timeline.
+
 Every gate is then one exchange round for the terms that rotate. A term $M$ that
 anticommutes with $G$ and passes the rotation gate sends one record — the partner's
 positions, the rotation phase $\varphi(M, G)$, one bit saying whether $M$'s own side
