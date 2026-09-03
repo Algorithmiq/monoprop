@@ -43,12 +43,18 @@ from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from typing import Self
 
     from mpi4py import MPI
 
+    from .majorana import Majorana
+    from .pauli import Pauli
+
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
+    # A single operator term in a front-end's own vocabulary: a Pauli, a Majorana, or the raw
+    # index sequence either engine keys its terms by.
+    OperatorTerm = Majorana | Pauli | Sequence[int] | np.ndarray
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +538,83 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
+
+    def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
+        """Encode one operator term into the raw index tuple the engine keys terms by.
+
+        The front-end counterpart to the decode ``evolved_operator`` performs. Not abstract, so
+        that a front-end which has no term encoding still constructs; it only has to provide this
+        to support [evolved_operator_coefficients][].
+
+        Terms must be canonical -- the engine's encode is order-insensitive, so a non-canonical
+        product would resolve to the canonical term's row and lose the sign of the reordering -- so
+        an implementation validates rather than normalizes: it has no coefficient to put the sign
+        on yet.
+
+        Args:
+            term: A single term in this front-end's own vocabulary.
+
+        Returns:
+            The term's engine index tuple (Majorana indices, or symplectic slots in the Pauli
+            basis).
+
+        Raises:
+            NotImplementedError: If this front-end does not encode terms.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement _term_slots, so it cannot look up "
+            "individual evolved coefficients."
+        )
+
+    def evolved_operator_coefficients(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the coefficients of ``terms`` alone in the evolved operator, in the order given.
+
+        A cheaper
+        [evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator]
+        for when only a few terms are wanted. The graph contraction is identical -- and still the
+        dominant cost -- but the operator index is *probed* with these terms rather than
+        enumerated, so the decode and the term dictionary cost one entry per term *requested*
+        instead of one per term the evolved operator carries. Reading a handful of amplitudes out
+        of an evolved state (Schrodinger picture) is the motivating case.
+
+        A term the evolved operator does not carry reads back as ``0``. There is deliberately no
+        ``atol``: the caller named the terms it wants, so magnitude filtering would silently zero
+        some of them -- threshold the returned array instead.
+
+        Terms must be canonical, and a non-canonical one is rejected rather than normalized: the
+        anticommutation sign of the reordering belongs on the coefficient, which is what this is
+        about to look up. Repeating a term simply answers it twice.
+
+        The empty (identity) term agrees with ``evolved_operator`` too: it is the core term in the
+        Heisenberg picture, where the identity is held apart from the operator index, and the
+        state's identity amplitude in the Schrodinger picture, where it is an ordinary term.
+
+        Rank-local, as ``evolved_operator`` is: under MPI each rank answers for the terms it owns,
+        and a term another rank owns reads back as ``0``.
+
+        Args:
+            terms: The terms to look up, in this front-end's own vocabulary.
+            parameters: Variational parameter values (see [expectation_value][]).
+
+        Returns:
+            A complex NumPy array, one coefficient per requested term, in the order requested.
+
+        Raises:
+            TypeError: If a term is not in this front-end's vocabulary.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: If a term index lies outside the propagator's own system.
+        """
+        slots = [self._term_slots(term) for term in terms]
+        return np.asarray(
+            self._simulator.evolved_operator_coefficients(
+                self._bind(parameters), slots
+            ),
+            dtype=complex,
+        )
 
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:

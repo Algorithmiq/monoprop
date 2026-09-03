@@ -283,6 +283,21 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
+    /// Coefficients of the requested monomials only, in query order; a term the operator does not
+    /// carry yields 0. The same contraction and decode as evolved_operator_terms(), but the index is
+    /// probed with the caller's keys rather than enumerated, so nothing is materialised per surviving
+    /// term. No atol: the caller named the terms it wants, so magnitude filtering would silently zero
+    /// some of them. The empty term resolves to core_term() in the Heisenberg picture, where the
+    /// identity is held apart from the index, and through the probe in the Schrodinger picture, where
+    /// it is an ordinary index row (the state's identity amplitude) -- so on every key this agrees
+    /// with what evolved_operator_terms()'s callers publish, the core term they re-add included.
+    /// Keys must be canonical monomials, as the constructor's initial_operator keys must be: the
+    /// encode is order-insensitive, so a repeated or unsorted index would resolve to the canonical
+    /// term's row and lose the sign of the reordering.
+    /// Contracts non-inplace. Rank-local, as evolved_operator_terms() is.
+    auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+        -> std::vector<std::complex<double>>;
+
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:

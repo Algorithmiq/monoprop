@@ -16,19 +16,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
-from .majorana import MajoranaOperator
+from .majorana import Majorana, MajoranaOperator
 from .monomial_propagator import MonomialPropagator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import ParameterValues
+    from .monomial_propagator import OperatorTerm, ParameterValues
     from .quantum_data import IQuantumOperator
 
 
@@ -121,6 +120,39 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         """
         terms = self._simulator.evolved_operator(self._bind(parameters), atol)
         return MajoranaOperator(terms, self.num_modes)
+
+    def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
+        """Encode a Majorana term into the engine's index tuple.
+
+        Majorana indices *are* the engine's keys, so this only unwraps the term. A raw sequence is
+        round-tripped through [Majorana][monoprop.majorana.Majorana] to reject a non-canonical
+        product: the engine's encode is order-insensitive, so ``(1, 0)`` would resolve to the row
+        of ``(0, 1)`` and read back its coefficient without the anticommutation sign, which this
+        cannot apply to a coefficient it has yet to look up. Canonicalize first with
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
+        returns yourself; the ``terms`` keys of a
+        [MajoranaOperator][monoprop.majorana.MajoranaOperator] are already canonical.
+
+        Args:
+            term: A [Majorana][monoprop.majorana.Majorana] term, or a raw index sequence
+                (a tuple, or an index array).
+
+        Returns:
+            The term's Majorana indices.
+
+        Raises:
+            TypeError: If the term is neither a Majorana term nor an iterable of indices.
+            ValueError: If a raw sequence is not sorted, or holds a negative or repeated index.
+        """
+        if isinstance(term, Majorana):
+            return term.indices
+        # Iterable rather than Sequence: a NumPy array of indices is not a Sequence.
+        if not isinstance(term, Iterable):
+            raise TypeError(
+                "Majorana terms are Majorana objects or index sequences; got "
+                f"{type(term).__name__}."
+            )
+        return Majorana(*term).indices
 
     def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
         """Replace the *initial operator* (existing terms only).
