@@ -32,6 +32,12 @@
 // fingerprint is GF(2)-linear, so keys differing by the per-gate constant fp(G) would otherwise share a
 // bucket wholesale). And every tag match is confirmed against the query's positions -- the fingerprint
 // maps 2*NumModes bits onto 64, so a false match would silently merge two distinct terms.
+//
+// The row side is built HERE, once the records are all in (stage_rows), not by the scan: a bitmap over
+// the query tags' high bits rejects the rows no record can name before they cost a bucket entry, and in
+// the `lower_atol` regime that is most of Anti(G). The rejection is exact -- a confirm needs the full
+// 32-bit tags to be equal, and the bitmap is indexed by a prefix of the tag, so a row whose prefix no
+// query carries cannot share a tag with any of them.
 
 #include <algorithm>
 #include <bit>
@@ -43,6 +49,7 @@
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -56,10 +63,9 @@ public:
     //! "No row matched this query". Valid rows are below the TermIndex ceiling, so the sentinel is free.
     static constexpr size_t kMissing = static_cast<size_t>(std::numeric_limits<TermIndex>::max());
 
-    // The anticommuting side, staged by the scan while it has each row in hand (Scan.h): the key is
-    // folded once there, off positions the merge has just read, rather than in a second pass over the
-    // rows. `n_anti` is pass 1's tally, so this is where the 4× release rule applies -- one gate with a
-    // very large anticommuting set (a single-qubit Pauli generator) must not pin its footprint.
+    // Sizes the anticommuting side for a gate whose fold tallied `n_anti` rows; stage_rows() fills it.
+    // This is where the 4× release rule applies -- one gate with a very large anticommuting set (a
+    // single-qubit Pauli generator) must not pin its footprint.
     auto begin_rows(size_t n_anti) -> void {
         if (rows_.capacity() > 4 * std::max<size_t>(n_anti, kMinSlots)) {
             rows_ = std::vector<Entry>{};
@@ -77,10 +83,37 @@ public:
     //! One anticommuting row under its own fingerprint. Order is irrelevant: the buckets reorder anyway.
     auto add_row(uint64_t fp, size_t row) -> void { rows_.push_back(entry_of(fp, row)); }
 
-    // The same, from the key the store already holds for that row (OperatorIndex::key): the scan stages
-    // its whole anticommuting set this way, so pass 1 never touches a row.
+    //! The same, from the key the store already holds for that row (OperatorIndex::key).
     auto add_row_key(uint32_t key, size_t row) -> void {
         rows_.push_back(Entry{.tag = key, .v = static_cast<uint32_t>(row)});
+    }
+
+    // Builds the gate's row side from the fold's `nz` words and the store's per-row keys, keeping only
+    // the rows some record could name. Runs after every add_query, because the filter is a bitmap over
+    // the query tags: a confirm needs two equal 32-bit tags and the bitmap is indexed by a PREFIX of the
+    // tag, so dropping a row whose prefix no query carries drops nothing that could have matched.
+    //
+    // Both inputs are sequential -- one bitmap word per nz word, one 4-byte key per anticommuting row --
+    // so nothing here reads a row, and the rows that survive are proportional to the records rather than
+    // to |Anti(G)|.
+    auto stage_rows(const OperatorIndex<NumModes> &store, std::span<const EvenParityNzWord> nz) -> void {
+        rows_.clear();
+        if (queries_.empty()) {
+            return; // nothing to answer: every row would be rejected anyway
+        }
+        build_filter_();
+        const uint32_t shift = filter_shift_;
+        const uint64_t *const filter = filter_.data();
+        for (const auto &w : nz) {
+            for (uint64_t m = w.overlap; m != 0U; m &= m - 1) {
+                const size_t row = w.base + static_cast<size_t>(std::countr_zero(m));
+                const uint32_t tag = store.key(row);
+                const uint32_t f = tag >> shift;
+                if (((filter[f >> 6U] >> (f & 63U)) & 1U) != 0U) {
+                    rows_.push_back(Entry{.tag = tag, .v = static_cast<uint32_t>(row)});
+                }
+            }
+        }
     }
 
     // The record side, in Q order (self-staged then incoming, as the join applies them). Sizes the hit
@@ -148,7 +181,7 @@ public:
         return ((rows_.capacity() + row_buckets_.capacity() + queries_.capacity() + query_buckets_.capacity()
                  + table_.capacity())
                 * sizeof(Entry))
-               + (hit_.capacity() * sizeof(TermIndex))
+               + (hit_.capacity() * sizeof(TermIndex)) + (filter_.capacity() * sizeof(uint64_t))
                + ((row_offsets_.capacity() + query_offsets_.capacity() + fill_.capacity()) * sizeof(uint32_t));
     }
 
@@ -165,11 +198,33 @@ private:
     static constexpr size_t kMinSlots = 16;
     static constexpr size_t kMinBucketBits = 4;
     static constexpr size_t kMaxBucketBits = 10;
+    // The query-tag filter: >= 8 bits per query (so a row's chance of surviving on a foreign query's bit
+    // stays around a tenth), never below one cache line, never past 2^21 bits = 256 KiB so it stays in L2.
+    static constexpr int kMinFilterBits = 9;
+    static constexpr int kMaxFilterBits = 21;
 
     // One definition of the tag, in the store (OperatorIndex::join_tag), so a row's stored key and a
     // query's tag cannot drift apart.
     static auto entry_of(uint64_t fp, size_t v) -> Entry {
         return Entry{.tag = OperatorIndex<NumModes>::join_tag(fp), .v = static_cast<uint32_t>(v)};
+    }
+
+    // One bit per distinct high-`bits` prefix of a tag, set for every query. Sized from the query count
+    // alone, so stage_rows() can run before the bucket geometry is known, and cleared by rewriting the
+    // words it uses (that is O(|Q|/4) words, cheaper than tracking which ones were touched).
+    auto build_filter_() -> void {
+        const int want = static_cast<int>(std::bit_width(queries_.size())) + 3;
+        const size_t bits = static_cast<size_t>(std::clamp(want, kMinFilterBits, kMaxFilterBits));
+        filter_shift_ = static_cast<uint32_t>(32 - bits);
+        const size_t words = (size_t{1} << bits) / 64;
+        if (filter_.size() < words) {
+            filter_.resize(words);
+        }
+        std::fill_n(filter_.begin(), words, uint64_t{0});
+        for (const Entry e : queries_) {
+            const uint32_t f = e.tag >> filter_shift_;
+            filter_[f >> 6U] |= uint64_t{1} << (f & 63U);
+        }
     }
 
     // Counting sort of `in` into `out` by the tag's top bits, with `offsets` left as the bucket bounds
@@ -244,7 +299,9 @@ private:
     std::vector<TermIndex> hit_;     // query -> matching row, kMissingRow until a row confirms it
     std::vector<uint32_t> row_offsets_;
     std::vector<uint32_t> query_offsets_;
-    std::vector<uint32_t> fill_; // bucketize_'s write cursors
+    std::vector<uint32_t> fill_;         // bucketize_'s write cursors
+    DefaultInitVector<uint64_t> filter_; // stage_rows()' bitmap over the query tags' high bits
+    uint32_t filter_shift_ = 0;          // 32 - filter bits: what a tag is shifted by to index filter_
 };
 
 } // namespace monoprop::detail

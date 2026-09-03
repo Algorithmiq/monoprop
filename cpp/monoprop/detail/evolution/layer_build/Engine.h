@@ -79,8 +79,9 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 //            supplies ν's half symmetrically and nothing more is needed. If μ is SILENT it sent no
 //            record, so this slot stages a response (the record's position in the sender's stream, plus
 //            μ's pre-gate coefficient) back to ν's slot -- the half round. Values stay pre-cos on both
-//            sides: a silent row is not swept by the scan (Scan.h scale_silent_anti_coeffs), so no
-//            ×1/cos recovery of a stored value is needed anywhere.
+//            sides: the scan streams every silent row's pre-cos coefficient to `scratch.pre_cos` as it
+//            sweeps (Scan.h, GateScratch.h SilentIndex), so no ×1/cos recovery of a stored value is
+//            needed anywhere.
 //   • miss → μ absent everywhere: the record mints μ at base + j (join order) with the same half.
 //   • round 2 delivers the responses; each applies ν's half, −φ_ν·v_μ, and marks ν answered.
 //   • absence pass over the records ν sent: only the owner of μ can send key ν or answer it, so
@@ -193,15 +194,20 @@ struct ContractSink {
 
     FusedContract &fc;
     bool fused_scale; // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
-    // The picture's coefficients as the scan left them. A SILENT row still holds its pre-gate value
-    // there (Scan.h sweeps only the rows that emit), which is exactly what a response owes the
-    // partner that rotated it, so no per-row copy of the pre-cos values is kept.
+    // Where a response's payload comes from. Without the fused sweep the scan leaves every coefficient
+    // pre-gate, so the picture's own array answers. With it, every anticommuting row is already scaled
+    // and the pre-cos value of a silent one is in `pre_cos`, at the slot `silent` names -- the same
+    // double the scan read, so the answer is bit-identical either way.
     const double *pre_gate_coeffs = nullptr;
+    const SilentIndex *silent = nullptr;
+    const double *pre_cos = nullptr;
 
     auto hit(size_t /*slot*/, size_t row, double v, int phase, bool /*foll*/) -> void {
         fc.halves.push_back(HalfRotationRec{row, v, static_cast<int32_t>(phase), /*is_insert=*/false});
     }
-    [[nodiscard]] auto silent_value(size_t row) const -> double { return pre_gate_coeffs[row]; }
+    [[nodiscard]] auto silent_value(size_t row) const -> double {
+        return (pre_cos != nullptr) ? pre_cos[silent->ordinal(row)] : pre_gate_coeffs[row];
+    }
     // ν's half of an asymmetric pair, from the response its partner sent (or, on the self slot, from the
     // silent hit directly): −φ_ν · v_μ, the same add the symmetric case gets off μ's own record.
     auto answer(size_t /*slot*/, size_t row, double v, int phase) -> void {
@@ -331,6 +337,9 @@ struct LayerBuildEngine {
         for (size_t g = 0; g < pr.nq_total; ++g) {
             join.add_query(n_self + g, pr.fp_of[g]);
         }
+        // The row side is built now, not by the scan: every record this gate must answer is staged, so
+        // the join can reject the anticommuting rows no record can name before they cost anything.
+        join.stage_rows(*local_op.store, scratch.nz);
         join.run(*local_op.store, [&](size_t q) -> std::span<const RowPosT> {
             return (q < n_self) ? scan.self.positions_at(q) : pr.positions_at(q - n_self);
         });
@@ -517,20 +526,16 @@ auto build_layer(MPOperator<NumModes> &local_op,
 
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
+        const bool swept = fused_scale && !identity_gen;
         storage = run(ContractSink<NumModes>{.fc = *fused_contract,
                                              .fused_scale = fused_scale,
-                                             .pre_gate_coeffs = coeffs.data()});
+                                             .pre_gate_coeffs = coeffs.data(),
+                                             .silent = swept ? &scratch.silent : nullptr,
+                                             .pre_cos = swept ? scratch.pre_cos.data() : nullptr});
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});
     }
-    // The other half of the fused sweep, and it has to be here: the responses above read a silent row's
-    // pre-gate coefficient, so its cos factor can only land once the join is done with it. The halves are
-    // applied later still (apply_fused_contract), so they see the scaled value either way.
-    if (fused_scale) {
-        scale_silent_anti_coeffs(scratch.nz, scratch.marks, fused_scale_coeffs->data(), cos_build);
-    }
-
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
     // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
     // bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.

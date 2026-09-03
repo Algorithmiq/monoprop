@@ -14,13 +14,16 @@
 
 // The per-gate bucketed join (BucketJoin.h): the algebraic fact it rests on, hit/miss against an
 // unordered_map oracle over rows that include spilled and fully paired ones, the position confirm behind
-// an engineered key collision, and the per-row marks a gate leaves behind (GateScratch.h).
+// an engineered key collision, the query-tag bitmap stage_rows() filters the row side with, and the
+// per-row marks a gate leaves behind (GateScratch.h).
 
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <random>
 #include <set>
 #include <span>
@@ -503,4 +506,155 @@ BOOST_AUTO_TEST_CASE(bucket_join_stored_row_keys_join_like_folded_ones) {
     }
     BOOST_TEST(hits == staged.size());
     BOOST_TEST(store.overflow_size() > 0U); // the spilled rows were part of it
+}
+
+namespace {
+
+// One `nz` word set covering rows [0, n): what a fold whose whole operator anticommutes would produce.
+auto nz_over_rows(size_t n) -> std::vector<detail::EvenParityNzWord> {
+    std::vector<detail::EvenParityNzWord> nz;
+    for (size_t base = 0; base < n; base += 64) {
+        const size_t width = std::min<size_t>(64, n - base);
+        const uint64_t overlap = (width == 64) ? ~uint64_t{0} : ((uint64_t{1} << width) - 1);
+        nz.push_back(detail::EvenParityNzWord{.base = base, .overlap = overlap, .foll = 0});
+    }
+    return nz;
+}
+
+} // namespace
+
+// stage_rows() builds the row side from the fold's words and the store's keys instead of taking it from
+// the scan, and drops the rows whose tag prefix no query carries. The filter is a prefilter only, so the
+// answers must be exactly the ones an unfiltered staging of the same rows gives.
+BOOST_AUTO_TEST_CASE(bucket_join_staged_rows_answer_like_an_unfiltered_row_side) {
+    constexpr size_t kN = 48;
+    using PosT = detail::OperatorIndex<kN>::PosT;
+    std::mt19937_64 rng(20260910);
+    constexpr size_t kRows = 4000;
+    const auto terms = draw_distinct<kN>(rng, kRows);
+    detail::OperatorIndex<kN> store(5); // narrow inline width, so the wider rows spill
+    store.grow_rows_geometric(kRows);
+    for (size_t i = 0; i < kRows; ++i) {
+        store.set(i, terms[i]);
+    }
+    BOOST_REQUIRE(store.overflow_size() > 0U);
+
+    // Every row anticommutes; only every 17th is asked for, plus terms absent from the store entirely.
+    const auto nz = nz_over_rows(kRows);
+    std::vector<std::vector<PosT>> queries;
+    std::vector<uint64_t> query_fp;
+    std::vector<size_t> want_row;
+    for (size_t i = 0; i < kRows; i += 17) {
+        queries.push_back(positions_of<kN>(terms[i]));
+        query_fp.push_back(fp_of<kN>(terms[i]));
+        want_row.push_back(i);
+    }
+    for (const auto &m : draw_distinct<kN>(rng, 40)) {
+        if (std::ranges::find(terms, m) != terms.end()) {
+            continue;
+        }
+        queries.push_back(positions_of<kN>(m));
+        query_fp.push_back(fp_of<kN>(m));
+        want_row.push_back(detail::BucketJoin<kN>::kMissing);
+    }
+
+    detail::BucketJoin<kN> join;
+    join.begin_rows(kRows);
+    join.begin_queries(queries.size());
+    for (size_t q = 0; q < queries.size(); ++q) {
+        join.add_query(q, query_fp[q]);
+    }
+    join.stage_rows(store, nz);
+    // The point of the filter: the row side is a small multiple of the queries, not of Anti(G).
+    BOOST_REQUIRE(join.rows() >= queries.size() - 40);
+    BOOST_TEST(join.rows() < kRows / 2);
+    join.run(store, [&](size_t q) { return std::span<const PosT>(queries[q]); });
+
+    std::vector<size_t> staged(kRows);
+    std::iota(staged.begin(), staged.end(), size_t{0});
+    const auto unfiltered = run_join_from_keys<kN>(store, staged, queries, query_fp);
+    for (size_t q = 0; q < queries.size(); ++q) {
+        BOOST_REQUIRE_EQUAL(join.hit(q), want_row[q]);
+        BOOST_REQUIRE_EQUAL(join.hit(q), unfiltered.hit(q));
+    }
+}
+
+// The three ways a row meets the bitmap, on rows whose tag prefixes are chosen for it: a prefix no query
+// carries is dropped, a prefix shared with a query survives but still has to confirm (a bitmap hit is
+// never a match), and the row the query actually names is found.
+BOOST_AUTO_TEST_CASE(bucket_join_tag_bitmap_drops_only_rows_no_query_can_name) {
+    constexpr size_t kN = 48;
+    using PosT = detail::OperatorIndex<kN>::PosT;
+    // One query ⇒ the smallest filter, 2^9 bits, so a tag's top 9 bits are what the bitmap sees.
+    constexpr uint32_t kPrefixShift = 32 - 9;
+    std::mt19937_64 rng(20260911);
+    // `wanted` is the query's target. `shadow` shares its 9-bit prefix but is a different term; `other`
+    // does not share it. Drawn rather than constructed: the tag is a mixed fingerprint, not a free choice.
+    std::optional<Monomial<kN>> wanted;
+    std::optional<Monomial<kN>> shadow;
+    std::optional<Monomial<kN>> other;
+    std::unordered_map<uint32_t, Monomial<kN>> by_prefix;
+    for (size_t tries = 0; tries < 400000 && !shadow.has_value(); ++tries) {
+        const auto m = random_monomial<kN>(rng, 2 + (tries % 6));
+        const uint32_t tag = detail::OperatorIndex<kN>::join_tag(fp_of<kN>(m));
+        const auto [it, fresh] = by_prefix.try_emplace(tag >> kPrefixShift, m);
+        if (!fresh && !(it->second == m) && detail::OperatorIndex<kN>::join_tag(fp_of<kN>(it->second)) != tag) {
+            wanted = it->second;
+            shadow = m;
+        }
+    }
+    BOOST_REQUIRE(shadow.has_value());
+    const uint32_t wanted_prefix = detail::OperatorIndex<kN>::join_tag(fp_of<kN>(*wanted)) >> kPrefixShift;
+    for (const auto &[prefix, m] : by_prefix) {
+        if (prefix != wanted_prefix) {
+            other = m;
+            break;
+        }
+    }
+    BOOST_REQUIRE(other.has_value());
+
+    detail::OperatorIndex<kN> store(6);
+    store.grow_rows_geometric(3);
+    store.set(0, *wanted);
+    store.set(1, *shadow); // same bitmap bit as row 0, a different 32-bit tag
+    store.set(2, *other);  // a bitmap bit no query sets
+
+    detail::BucketJoin<kN> join;
+    join.begin_rows(3);
+    const std::vector<std::vector<PosT>> queries = {positions_of<kN>(*wanted)};
+    join.begin_queries(1);
+    join.add_query(0, fp_of<kN>(*wanted));
+    join.stage_rows(store, nz_over_rows(3));
+    // Rows 0 and 1 share the query's bitmap bit; row 2 cannot match and never reaches a bucket.
+    BOOST_REQUIRE_EQUAL(join.rows(), 2U);
+    join.run(store, [&](size_t q) { return std::span<const PosT>(queries[q]); });
+    BOOST_TEST(join.hit(0) == 0U); // the shadow row's bitmap hit did not become a join hit
+
+    // The same rows with the query pointed at a term that is absent from the store: its prefix is row 0's
+    // and row 1's, so both survive the bitmap, and both must still miss.
+    const auto absent = indices_to_bitset<kN>({1, 3, 5, 7, 9, 11, 13});
+    BOOST_REQUIRE(!(absent == *wanted) && !(absent == *shadow));
+    detail::BucketJoin<kN> miss_join;
+    miss_join.begin_rows(3);
+    const std::vector<std::vector<PosT>> miss_queries = {positions_of<kN>(absent)};
+    miss_join.begin_queries(1);
+    miss_join.add_query(0, fp_of<kN>(*wanted)); // the row's key, another term's positions
+    miss_join.stage_rows(store, nz_over_rows(3));
+    BOOST_REQUIRE_EQUAL(miss_join.rows(), 2U);
+    miss_join.run(store, [&](size_t q) { return std::span<const PosT>(miss_queries[q]); });
+    BOOST_TEST(miss_join.hit(0) == detail::BucketJoin<kN>::kMissing);
+}
+
+// A gate that has to answer nothing stages no row at all: the filter would reject every one of them.
+BOOST_AUTO_TEST_CASE(bucket_join_stages_no_rows_when_a_gate_has_no_queries) {
+    constexpr size_t kN = 16;
+    detail::OperatorIndex<kN> store(4);
+    store.grow_rows_geometric(2);
+    store.set(0, indices_to_bitset<kN>({0, 3}));
+    store.set(1, indices_to_bitset<kN>({1, 5}));
+    detail::BucketJoin<kN> join;
+    join.begin_rows(2);
+    join.begin_queries(0);
+    join.stage_rows(store, nz_over_rows(2));
+    BOOST_TEST(join.rows() == 0U);
 }

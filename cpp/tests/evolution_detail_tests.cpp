@@ -19,6 +19,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -143,6 +144,9 @@ struct Scenario {
             terms.push_back(indices_to_bitset<kN>({i, i + 8}));
         }
         op = indexed_op(terms);
+        // The engine builds the join's row side from the gate's own words, so the scan's product has to
+        // include them; the explicit staging below is for the cases that drive BucketJoin directly.
+        scratch.nz = nz;
         scratch.marks.begin(terms.size(), nz);
         scratch.join.begin_rows(terms.size());
         for (size_t i = 0; i < terms.size(); ++i) {
@@ -746,7 +750,12 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                            nullptr,
                                                            1.0,
                                                            &mask);
-    BOOST_REQUIRE_EQUAL(scratch.join.rows(), 3U);
+    // All three rows anticommute; the join's row side is built later, from these words.
+    size_t n_anti = 0;
+    for (const auto &w : scratch.nz) {
+        n_anti += static_cast<size_t>(std::popcount(w.overlap));
+    }
+    BOOST_REQUIRE_EQUAL(n_anti, 3U);
     BOOST_REQUIRE_EQUAL(res.self.size(), 3U); // R = 1: every record is self-addressed and staged
     const auto &sent = res.sent.at_slot(0);
     const auto &c0 = res.sent_c0.at_slot(0);

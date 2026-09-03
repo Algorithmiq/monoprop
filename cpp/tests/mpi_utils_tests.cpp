@@ -229,8 +229,8 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                                          false,
                                                                                          nullptr,
                                                                                          1.0);
-                // Every anticommuting row is staged for the join, emitted or not.
-                BOOST_REQUIRE(scratch.join.rows() > 0U);
+                // The fold found anticommuting rows: they are what the join's row side is built from.
+                BOOST_REQUIRE(!scratch.nz.empty());
                 BOOST_REQUIRE_EQUAL(res.queries.size(), window.count);
                 BOOST_REQUIRE_EQUAL(res.sent.size(), window.count);
                 if (window.contains(my_rank)) {
