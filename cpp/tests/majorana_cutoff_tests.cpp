@@ -21,7 +21,10 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <random>
+#include <unordered_set>
+#include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
@@ -263,5 +266,79 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_op_saturates_at_one_pair_per_mode) {
         for (size_t i = 0; i < full.size(); ++i) {
             BOOST_TEST(clamped[i] == full[i]);
         }
+    }
+}
+
+// The emission order IS the row numbering of a Schrodinger propagator's store, so it is pinned
+// literally: ascending pair count, then ascending lexicographic order of the selected modes' tuple.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_enumeration_order_is_pinned) {
+    constexpr size_t N = 32;
+    constexpr size_t kLogical = 3;
+
+    const std::vector<VecZ> want_tuples = {{}, {0}, {1}, {2}, {0, 1}, {0, 2}, {1, 2}, {0, 1, 2}};
+    MonomialList<N> want;
+    for (const auto &tuple : want_tuples) {
+        std::vector<bool> selector(kLogical, false);
+        for (const size_t mode : tuple) {
+            selector[mode] = true;
+        }
+        want.push_back(monomial_from_selector<N>(selector, N - kLogical));
+    }
+
+    MonomialList<N> seen;
+    for_each_paired_monomial<N>(kLogical, kLogical, [&](const Monomial<N> &mono) { seen.push_back(mono); });
+
+    BOOST_REQUIRE_EQUAL(seen.size(), want.size());
+    for (size_t i = 0; i < want.size(); ++i) {
+        BOOST_TEST_CONTEXT("position " << i) {
+            BOOST_TEST(seen[i] == want[i]);
+        }
+    }
+}
+
+// paired_op_size is the only input to the store reserve and to the over-wide-cutoff guard, neither of
+// which may enumerate to find out. It has to agree with the walk exactly, over-ask included.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_op_size_agrees_with_the_enumeration) {
+    constexpr size_t N = 32;
+
+    for (const size_t logical : {size_t{1}, size_t{5}, size_t{9}}) {
+        for (size_t max_ones = 0; max_ones <= logical + 2; ++max_ones) {
+            size_t count = 0;
+            size_t previous_pairs = 0;
+            std::unordered_set<Monomial<N>, MonomialHash<N>, MonomialEqual<N>> distinct;
+            for_each_paired_monomial<N>(max_ones, logical, [&](const Monomial<N> &mono) {
+                const size_t pairs = mono.count() / 2;
+                BOOST_TEST(mono.count() % 2 == 0U);               // fully paired
+                BOOST_TEST(pairs <= std::min(max_ones, logical)); // clamped in pairs, not bits
+                BOOST_TEST(pairs >= previous_pairs);              // grouped by pair count, ascending
+                previous_pairs = pairs;
+                distinct.insert(mono);
+                ++count;
+            });
+            BOOST_TEST_CONTEXT("logical=" << logical << " max_ones=" << max_ones) {
+                BOOST_TEST(count == paired_op_size(max_ones, logical));
+                BOOST_TEST(distinct.size() == count); // duplicate-free: the covering argument needs it
+            }
+        }
+    }
+
+    // A cutoff at the mode count admits 2^logical terms: the size must saturate, not wrap to something
+    // small that the guard would then wave through.
+    BOOST_TEST(paired_op_size(64, 64) == std::numeric_limits<size_t>::max());
+    BOOST_TEST(paired_op_size(250, 250) == std::numeric_limits<size_t>::max());
+}
+
+// The materializing wrapper is the other tests' oracle for the walk, so it must emit exactly it.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_generate_paired_op_matches_the_enumeration) {
+    constexpr size_t N = 32;
+    constexpr size_t kLogical = 7;
+
+    MonomialList<N> seen;
+    for_each_paired_monomial<N>(4, kLogical, [&](const Monomial<N> &mono) { seen.push_back(mono); });
+    const auto listed = generate_paired_op<N>(4, kLogical);
+
+    BOOST_REQUIRE_EQUAL(listed.size(), seen.size());
+    for (size_t i = 0; i < seen.size(); ++i) {
+        BOOST_TEST(listed[i] == seen[i]);
     }
 }
