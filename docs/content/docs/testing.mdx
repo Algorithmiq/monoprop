@@ -89,6 +89,13 @@ ctest -S tools/ctest-mpi-matrix.cmake -VV
 CI gives every compiler and MPI combination a distinct setup-uv cache suffix,
 because uv's cache key does not include build environment variables.
 
+A matrix job reports one check per combination, so its check names change whenever a
+lane is added or removed. Each matrix workflow therefore ends with a small aggregation
+job — `All tests` in `test.yml`, `All flake checks` in `nix.yml` — that runs with
+`if: always()`, depends on the matrix, and fails unless the matrix succeeded or was
+skipped. Branch protection requires those stable names, so the matrix dimensions can
+change without touching the ruleset.
+
 CTest runs each Boost case as its own process, so an MPI build's `MPI_Init` probes every
 fabric device per case, whether or not the test sends anything. `monoprop_TEST_EXCLUDE_MPI_FABRIC=ON`
 (default) skips that probe for the single-process `serial` variants only; multi-rank variants
