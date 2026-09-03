@@ -203,3 +203,45 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
     BOOST_TEST(checked > 500U);
     BOOST_TEST(self_checked > 200U);
 }
+
+// A Schrodinger propagator seeds a slot by walking the whole paired basis and keeping find_rank ==
+// my_slot, on every slot independently. Two properties make that a partition of the basis: the kept
+// sets are disjoint and covering, and each slot's kept sequence is a SUBSEQUENCE of the one global
+// walk, so a term's row index is fixed by its owning slot alone. Neither call site can check this.
+BOOST_AUTO_TEST_CASE(mpi_utils_paired_enumeration_partitions_by_find_rank) {
+    constexpr size_t kN = 32;
+    constexpr size_t kLogical = 9;
+    constexpr size_t kMaxPairs = 4;
+
+    MonomialList<kN> full;
+    for_each_paired_monomial<kN>(kMaxPairs, kLogical, [&](const Monomial<kN> &mono) { full.push_back(mono); });
+    BOOST_REQUIRE_EQUAL(full.size(), paired_op_size(kMaxPairs, kLogical));
+
+    for (const size_t slots : {size_t{1}, size_t{2}, size_t{3}, size_t{8}, size_t{128}}) {
+        size_t total = 0;
+        for (size_t slot = 0; slot < slots; ++slot) {
+            MonomialList<kN> kept;
+            for_each_paired_monomial<kN>(kMaxPairs, kLogical, [&](const Monomial<kN> &mono) {
+                if (find_rank<kN>(mono, slots) == slot) {
+                    kept.push_back(mono);
+                }
+            });
+            total += kept.size();
+
+            // kept[r] == full[j_r] with j_0 < j_1 < ... : row r's monomial follows from the global order.
+            size_t cursor = 0;
+            for (const auto &mono : kept) {
+                while (cursor < full.size() && !(full[cursor] == mono)) {
+                    ++cursor;
+                }
+                BOOST_REQUIRE_LT(cursor, full.size());
+                ++cursor;
+            }
+        }
+        // The walk is duplicate-free (pinned in majorana_cutoff_tests), so equal counts mean the slots'
+        // kept sets are disjoint AND cover every term exactly once.
+        BOOST_TEST_CONTEXT("slots=" << slots) {
+            BOOST_CHECK_EQUAL(total, full.size());
+        }
+    }
+}
