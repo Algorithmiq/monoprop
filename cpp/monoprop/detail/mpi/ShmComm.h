@@ -26,6 +26,7 @@
 
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/PairSlots.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
 
 // In-process shared-memory SPMD transport: S partition-master threads each call the same collective
@@ -38,7 +39,7 @@ namespace monoprop::mpi {
 
 class ShmComm {
 public:
-    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)), barrier_(n) {}
+    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)), pair_(n), barrier_(n) {}
 
     ShmComm(const ShmComm &) = delete;
     auto operator=(const ShmComm &) -> ShmComm & = delete;
@@ -167,6 +168,15 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
+    // The in-rank gate exchange; PairExchange.h states the contract. ONE barrier, unlike the verbs above:
+    // the gather after it reads peers' buffers in place and no copy is made, so the moment a peer may
+    // reuse its buffer is proved by the NEXT gate's barrier rather than by a second one here.
+    auto pair_exchange(int rank, SubStreams send) -> PairRecv {
+        pair_.publish(rank, send);
+        sync();
+        return pair_.gather_in_rank(rank);
+    }
+
     // See PartitionBarrier::poison / ::reset for when each is legal to call.
     auto poison() -> void { barrier_.poison(); }
 
@@ -188,6 +198,7 @@ private:
 
     int n_;
     std::vector<Slot> slots_;
+    PairSlots pair_;
     PartitionBarrier barrier_;
 };
 

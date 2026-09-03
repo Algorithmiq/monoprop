@@ -124,7 +124,11 @@ name and cannot address suite-nested cases, tests use flat
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
 - **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
-  (MPI-only), `partition_equivalence_tests.cpp`,
+  (MPI-only), `pair_exchange_tests.cpp` (the one-round gate exchange over
+  ShmComm, HybridComm and a raw communicator: every (u -> t) block, ascending
+  source order, back-to-back gates under the buffer-alternation rule, argument
+  rejection and poison; the cross-rank cases self-skip below two ranks),
+  `partition_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
   (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
   Majorana + native Pauli; self-skips at world size 1).
