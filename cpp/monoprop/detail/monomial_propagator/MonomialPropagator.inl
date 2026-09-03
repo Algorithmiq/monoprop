@@ -1169,4 +1169,62 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
     return concat_partitions_(collect);
 }
 
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    std::vector<Monomial<NumModes>> keys;
+    keys.reserve(terms.size());
+    for (const auto &term : terms) {
+        // Checked: these are user-supplied indices, and the unchecked encode would write out of bounds.
+        keys.push_back(indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_));
+    }
+
+    // `p` is always unpartitioned here (a partition, or *this), so indexing() is available.
+    const auto probe = [&](MonomialPropagator &p) -> std::vector<std::complex<double>> {
+        const VecD evolved = p.contract_partially(parameters, false);
+        std::vector<size_t> rows(keys.size());
+        p.indexing().find_batch(keys.data(), keys.size(), rows.data());
+        std::vector<std::complex<double>> found(keys.size());
+        for (size_t q = 0; q < keys.size(); ++q) {
+            if (rows[q] >= evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+                continue;
+            }
+            found[q] = algebra_decode_coeff<NumModes>(basis_, evolved[rows[q]], keys[q]);
+        }
+        return found;
+    };
+
+    std::vector<std::complex<double>> out(terms.size());
+    if (!partition_group_) {
+        out = probe(*this);
+    }
+    else {
+        // The partitions probe concurrently on their own master threads, so each fills its own
+        // vector and the merge happens here. They are disjoint, so at most one contributes per key.
+        for (const auto &partition_found : map_partitions_(probe)) {
+            for (size_t q = 0; q < out.size(); ++q) {
+                out[q] += partition_found[q];
+            }
+        }
+    }
+
+    // Match evolved_operator_terms(): round off the anti-hermitian numerical noise.
+    for (auto &coeff : out) {
+        coeff = {std::round(coeff.real() * 1e12) / 1e12, std::round(coeff.imag() * 1e12) / 1e12};
+    }
+
+    // Heisenberg only: the empty monomial is diverted to core_term_ instead of indexed, so the probe
+    // cannot have found it. Assigned after the rounding, so the value is bit-for-bit the core_term()
+    // that evolved_operator's callers publish under the empty key.
+    if (!schrodinger_) {
+        const auto core = core_term();
+        for (size_t q = 0; q < terms.size(); ++q) {
+            if (terms[q].empty()) {
+                out[q] = {core, 0.0};
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace monoprop

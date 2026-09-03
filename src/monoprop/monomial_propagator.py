@@ -43,12 +43,18 @@ from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from typing import Self
 
     from mpi4py import MPI
 
+    from .majorana import Majorana
+    from .pauli import Pauli
+
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
+    # A single operator term in a front-end's own vocabulary: a Pauli, a Majorana, or the raw
+    # index sequence either engine keys its terms by.
+    OperatorTerm = Majorana | Pauli | Sequence[int] | np.ndarray
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +538,65 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
+
+    def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
+        """Encode one operator term into the raw index tuple the engine keys terms by.
+
+        The front-end counterpart to the decode ``evolved_operator`` performs; a default rather than
+        an abstract method, so a front-end with no term encoding still constructs and only needs
+        this for [evolved_operator_coefficients][]. Implementations *validate* canonical terms
+        rather than normalizing them: the encode is order-insensitive, and a normalizing encode has
+        no coefficient to put the reordering's sign on.
+
+        Args:
+            term: A single term in this front-end's own vocabulary.
+
+        Returns:
+            The term's engine index tuple: Majorana indices, or symplectic slots in the Pauli basis.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement _term_slots, so it cannot look up "
+            "individual evolved coefficients."
+        )
+
+    def evolved_operator_coefficients(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the coefficients of ``terms`` alone in the evolved operator, in the order given.
+
+        A cheaper
+        [evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator] when
+        only a few terms are wanted: the contraction is identical and still dominant, but the index
+        is *probed* with these terms rather than enumerated, so the decode costs one entry per term
+        *requested* rather than one per term the evolved operator carries.
+
+        A term the operator does not carry reads back as ``0``, and there is deliberately no
+        ``atol`` -- the caller named its terms, so magnitude filtering would silently zero some of
+        them. Terms must be canonical; for a Majorana product that is not, use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
+        returns. A repeated term is answered once per occurrence.
+
+        Args:
+            terms: The terms to look up, in this front-end's own vocabulary.
+            parameters: Variational parameter values (see [expectation_value][]).
+
+        Returns:
+            A complex NumPy array, one coefficient per requested term, in the order requested.
+
+        Raises:
+            TypeError: If a term is not in this front-end's vocabulary.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: If a term index lies outside the propagator's own system.
+        """
+        slots = [self._term_slots(term) for term in terms]
+        return np.asarray(
+            self._simulator.evolved_operator_coefficients(
+                self._bind(parameters), slots
+            ),
+            dtype=complex,
+        )
 
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:

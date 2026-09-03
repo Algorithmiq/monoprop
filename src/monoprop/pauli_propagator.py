@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .conversion_utils import _local_slots_to_pauli
+from .conversion_utils import _local_slots_to_pauli, _pauli_to_local_slots
 from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import ParameterValues
+    from .monomial_propagator import OperatorTerm, ParameterValues
 
 
 class PauliPropagator(MonomialPropagator[PauliOperator]):
@@ -119,6 +119,24 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
         }
         return PauliOperator(terms, self.num_qubits)
+
+    def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
+        """Encode a qubit Pauli term into the engine's symplectic slots.
+
+        Slots are an engine-internal encoding, so only [Pauli][monoprop.pauli.Pauli] terms are
+        accepted; a raw slot sequence is rejected rather than passed through.
+
+        Args:
+            term: A [Pauli][monoprop.pauli.Pauli] term.
+
+        Returns:
+            The term's symplectic slot indices.
+        """
+        if not isinstance(term, Pauli):
+            raise TypeError(
+                f"Pauli terms are Pauli objects; got {type(term).__name__}."
+            )
+        return _pauli_to_local_slots(term.string, term.qubits)
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
