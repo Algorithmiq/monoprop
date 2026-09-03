@@ -201,6 +201,10 @@ struct GateScratch {
     // a few pushes their geometric grow -- which is why it may cross gates although nothing else here does.
     size_t self_records_hint = 0;
     ExchangeCounters counters; // COMMPROF's per-call wire volume; reset by the caller, not per gate
+    // Widest instant of the gate's per-gate buffers over the call, in bytes. Those buffers die with the
+    // gate or are resized under it, so no resting field can name their peak; reset by the caller
+    // alongside `counters`.
+    size_t buffers_hwm_bytes{0uz};
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return join.memory_bytes() + marks.memory_bytes() + silent.memory_bytes()
