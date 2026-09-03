@@ -137,10 +137,6 @@ jobs:
           fail_ci_if_error: true
 
   tests:
-    # A ruleset can only require a check by name, and the matrix above only ever
-    # reports per-combination names. This job publishes one stable name whose result
-    # is independent of the matrix dimensions, so adding or dropping a lane does not
-    # require editing branch protection.
     name: All tests
     if: always()
     needs: package-tests
