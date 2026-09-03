@@ -455,6 +455,50 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_gate_scratch_nonzero_after_a_gate) {
     BOOST_CHECK_EQUAL(live.total_bytes() - without.total_bytes(), live.gate_scratch_bytes);
 }
 
+// The exchange buffers are gone by the time anything can be measured, so this high-water mark is the only
+// field that can report them: zero before any gate, nonzero after one, and never inside total_bytes().
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_gate_buffers_hwm_after_a_gate) {
+    constexpr size_t kModes = 2;
+    OperatorDict ham;
+    ham[VecZ{0, 1}] = cd{0.0, 1.0};
+    VecZ initial_state{0, 1};
+    auto sim = MonomialPropagator<kModes>(ham,
+                                          2 * kModes,
+                                          initial_state,
+                                          std::nullopt,
+                                          MPI_COMM_SELF,
+                                          std::nullopt,
+                                          std::nullopt,
+                                          CutoffType::Length,
+                                          std::nullopt);
+    BOOST_CHECK_EQUAL(sim.operator_memory_usage().gate_buffers_hwm_bytes, 0U); // no gate applied yet
+
+    const std::vector<VecZ> monos{{0}};
+    sim.build_graph(monos, VecZ{0}, VecD{1.0});
+
+    const auto live = sim.operator_memory_usage();
+    BOOST_CHECK_GT(live.gate_buffers_hwm_bytes, 0U);
+
+    auto without = live;
+    without.gate_buffers_hwm_bytes = 0;
+    BOOST_CHECK_EQUAL(live.total_bytes(), without.total_bytes());
+}
+
+// Summed by operator+= for the facade, which makes the facade's figure an upper bound: each partition's
+// peak is over its own timeline, and they need not have coincided.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_accumulates_gate_buffers_hwm) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.gate_buffers_hwm_bytes = 7;
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.gate_buffers_hwm_bytes = 3;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.gate_buffers_hwm_bytes, 10U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
+}
+
 // The coefficient slack is a subset of op_coeffs_bytes, so it accumulates under += like the other d_
 // fields and must never reach total_bytes().
 BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_op_coeffs_slack_out_of_total) {

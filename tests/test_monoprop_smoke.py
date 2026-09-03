@@ -193,6 +193,7 @@ _OPERATOR_DIAGNOSTIC_KEYS = (
     "d_state_coeffs_nonzero",
     "d_init_operator_entries",
     "d_op_coeffs_slack_bytes",
+    "d_gate_buffers_hwm_bytes",
 )
 # The only non-scalar entries: fixed-length lists, so an A/B subtracts them bucket by bucket.
 _OPERATOR_HISTOGRAM_KEYS = ("d_invidx_density_hist", "d_invidx_dense_density_hist")
@@ -267,6 +268,10 @@ def test_operator_memory_breakdown_keys_and_totals(problem, serial_comm):
     # ends, which is the only moment a Python caller can ask, so a resting measurement would always be
     # 0. Growth is bounded by the 1.5x policy, so the peak stays under the array it breaks down.
     assert breakdown["d_op_coeffs_slack_bytes"] <= breakdown["op_coeffs_bytes"]
+
+    # The exchange buffers are freed per gate, so this is the only field that ever saw them; the
+    # circuit above applied gates, so it must have moved.
+    assert breakdown["d_gate_buffers_hwm_bytes"] > 0
 
     for key in _OPERATOR_HISTOGRAM_KEYS:
         assert len(breakdown[key]) == _DENSITY_BUCKETS
