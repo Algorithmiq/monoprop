@@ -270,13 +270,21 @@ auto check_against_oracle(size_t n_terms, size_t n_queries, uint64_t seed) -> vo
 } // namespace
 
 // The oracle check across the sizes that select every bucket count the formula can produce, from the
-// 16-bucket floor to a run whose rows and queries both spill L2.
+// unbucketed single join through the 16-bucket floor to a run whose rows and queries both spill L2.
 BOOST_AUTO_TEST_CASE(bucket_join_hits_and_misses_match_a_map_oracle) {
     check_against_oracle<96>(/*n_terms=*/1, /*n_queries=*/0, 20260902);
     check_against_oracle<96>(/*n_terms=*/4, /*n_queries=*/1, 20260903);
     check_against_oracle<96>(/*n_terms=*/22, /*n_queries=*/7, 20260904);
     check_against_oracle<96>(/*n_terms=*/3000, /*n_queries=*/1000, 20260905);
     check_against_oracle<40>(/*n_terms=*/150000, /*n_queries=*/200000, 20260906);
+}
+
+// The two sides of kMaxUnbucketedSlots, which decides whether run() takes the counting sorts at all.
+// Every third term is staged, so 68,811 terms table 22,937 rows -- the largest side that still fits the
+// 32 Ki-slot table -- and 68,814 terms table one row more, which does not. The answers must not care.
+BOOST_AUTO_TEST_CASE(bucket_join_answers_alike_on_both_sides_of_the_bucket_threshold) {
+    check_against_oracle<40>(/*n_terms=*/68811, /*n_queries=*/30000, 20260912);
+    check_against_oracle<40>(/*n_terms=*/68814, /*n_queries=*/30000, 20260913);
 }
 
 // Both position widths, since the store's PosT narrows below 129 modes and the confirm compares raw

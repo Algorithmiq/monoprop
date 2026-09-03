@@ -22,11 +22,16 @@
 // that NEITHER side of the join is the random-access side.
 //
 // Under the exact one-round protocol a term below `lower_atol` whose partner passes the structural cutoff
-// still sends a rot=0 value record, so the records a slot must answer number |Q| ≈ 0.85 |Anti(G)| in that
-// regime -- a table over the records is as large as a table over Anti(G), and either way one side pays a
-// random insert or probe into a structure far past L2. So both sides are written sequentially into
-// buckets of the mixed key's top bits (~4 K entries each) and each bucket is joined inside L1, with a
-// tiny open-addressing table over the smaller of the two.
+// still sends a rot=0 value record, so a slot can be asked to answer a large fraction of |Anti(G)| and
+// neither side is safe to make the random-access one. So both sides can be written sequentially into
+// buckets of the mixed key's top bits (~4 K entries each) and each bucket joined inside L1, with a tiny
+// open-addressing table over the smaller of the two.
+//
+// That split is not always earned. Measured on the Hubbard ladder the records are 15-17 % of |Anti(G)|
+// per gate, the filter below cuts the row side to about 1.4x the records, and the smaller side's table is
+// then a few tens of KiB -- L2-resident whole, so the two counting-sort passes over both sides buy
+// nothing. run() skips them below kMaxUnbucketedSlots and keeps them above it, where the table would
+// leave L2 and the split is what puts it back.
 //
 // Two things stay load-bearing. The bucket and the compare tag come from the MIXED fingerprint (the
 // fingerprint is GF(2)-linear, so keys differing by the per-gate constant fp(G) would otherwise share a
@@ -34,10 +39,12 @@
 // maps 2*NumModes bits onto 64, so a false match would silently merge two distinct terms.
 //
 // The row side is built HERE, once the records are all in (stage_rows), not by the scan: a bitmap over
-// the query tags' high bits rejects the rows no record can name before they cost a bucket entry, and in
+// the query tags' high bits rejects the rows no record can name before they cost a join entry, and in
 // the `lower_atol` regime that is most of Anti(G). The rejection is exact -- a confirm needs the full
 // 32-bit tags to be equal, and the bitmap is indexed by a prefix of the tag, so a row whose prefix no
-// query carries cannot share a tag with any of them.
+// query carries cannot share a tag with any of them. Its false-positive rate is the bitmap's fill, so it
+// is bought with bits per query and nothing else: at 8 bits/query 7.1-7.4 % of Anti(G) was staged
+// spuriously against 13.6-15.2 % staged for cause, and 32 bits/query is where that stops paying.
 
 #include <algorithm>
 #include <bit>
@@ -123,6 +130,9 @@ public:
             queries_ = std::vector<Entry>{};
             query_buckets_ = DefaultInitVector<Entry>{};
             hit_ = std::vector<TermIndex>{};
+            // Unbucketed, the probe table is sized from a whole side rather than from one bucket, so a
+            // single large gate would otherwise pin kMaxUnbucketedSlots entries for the rest of the run.
+            table_ = DefaultInitVector<Entry>{};
         }
         queries_.clear();
         queries_.reserve(n_queries);
@@ -146,6 +156,13 @@ public:
     auto run(const OperatorIndex<NumModes> &store, PosOf &&pos_of) -> void {
         if (rows_.empty() || queries_.empty()) {
             return; // nothing to answer, or nothing to answer with
+        }
+        // The split costs two passes over both sides and buys locality for the probe table alone. Once
+        // the filter has cut the row side down to a multiple of the records, the smaller side's table
+        // usually fits L2 whole, and then the passes buy nothing -- join the two sides where they lie.
+        if (slots_for_(std::min(rows_.size(), queries_.size())) <= kMaxUnbucketedSlots) {
+            join_bucket_(store, rows_, queries_, pos_of);
+            return;
         }
         const size_t big = std::max(rows_.size(), queries_.size());
         // ~4 K entries per bucket: the two sides of one bucket plus its table stay inside the core's own
@@ -201,8 +218,13 @@ private:
     static constexpr size_t kMinSlots = 16;
     static constexpr size_t kMinBucketBits = 4;
     static constexpr size_t kMaxBucketBits = 10;
-    // The query-tag filter: >= 8 bits per query (so a row's chance of surviving on a foreign query's bit
-    // stays around a tenth), never below one cache line, never past 2^21 bits = 256 KiB so it stays in L2.
+    // Below this many probe slots the table is L2-resident on its own and run() skips the bucket split.
+    // 32 Ki slots is a 256 KiB table, half of one zen2 core's L2, which the streamed side shares.
+    static constexpr size_t kMaxUnbucketedSlots = size_t{1} << 15;
+    // The query-tag filter: 2^kFilterQueryBitsLog2 bits per query, so a row's chance of surviving on a
+    // foreign query's bit is about 2^-kFilterQueryBitsLog2. Never below one cache line, never past
+    // 2^21 bits = 256 KiB so it stays in L2 alongside the join's own table.
+    static constexpr int kFilterQueryBitsLog2 = 5;
     static constexpr int kMinFilterBits = 9;
     static constexpr int kMaxFilterBits = 21;
 
@@ -216,7 +238,7 @@ private:
     // alone, so stage_rows() can run before the bucket geometry is known, and cleared by rewriting the
     // words it uses (that is O(|Q|/4) words, cheaper than tracking which ones were touched).
     auto build_filter_() -> void {
-        const int want = static_cast<int>(std::bit_width(queries_.size())) + 3;
+        const int want = static_cast<int>(std::bit_width(queries_.size())) + kFilterQueryBitsLog2;
         const size_t bits = static_cast<size_t>(std::clamp(want, kMinFilterBits, kMaxFilterBits));
         filter_shift_ = static_cast<uint32_t>(32 - bits);
         const size_t words = (size_t{1} << bits) / 64;
@@ -251,6 +273,11 @@ private:
         }
     }
 
+    //! Probe slots for a tabled side of `n` entries: a power of two at a ~70 % load factor.
+    static auto slots_for_(size_t n) -> size_t {
+        return std::bit_ceil(std::max<size_t>(kMinSlots, ((n * 10) / 7) + 1));
+    }
+
     // One bucket: the smaller side goes into a linear-probe table, the larger streams against it. The
     // home slot takes the tag's LOW bits, which the bucket split has not spent.
     template <typename PosOf>
@@ -261,7 +288,7 @@ private:
         const bool table_holds_queries = queries.size() <= rows.size();
         const std::span<const Entry> tabled = table_holds_queries ? queries : rows;
         const std::span<const Entry> streamed = table_holds_queries ? rows : queries;
-        const size_t slots = std::bit_ceil(std::max<size_t>(kMinSlots, ((tabled.size() * 10) / 7) + 1));
+        const size_t slots = slots_for_(tabled.size());
         const size_t mask = slots - 1;
         if (table_.size() < slots) {
             table_.resize(slots);
