@@ -390,7 +390,7 @@ struct LayerBuildEngine {
         // `scan`. The move keeps every slot's storage where it is, so nothing is copied to say so.
         // The scan filled the scratch's buffer; put it back before anything can publish it, so the
         // records outlive the gate whatever `scan` does. The parity moves on at the end of the gate.
-        mpi::WindowVec<VecZ> &queries = scratch.wire_queries();
+        mpi::WindowVec<VecZ> &queries = scratch.wire_queries(Sink::wants_responses);
         queries = std::move(scan.queries);
         if (pair_path) {
             pr = decode_incoming_records<NumModes>(mpi::pair_exchange(comm, pair_shift, publish_(queries)).from,

@@ -324,7 +324,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     // The round-1 buffer comes out of the scratch and goes back in exchange_and_join: it must outlive
     // the gate (PairExchange.h), and taking it here is also what keeps last gate's slot storage
     // instead of allocating S vectors afresh. `reuse_wire` applies the release rule on the way in.
-    res.queries = std::move(scratch.wire_queries());
+    // `capture_values` selects the fused sink downstream, which is exactly the sink that answers, so
+    // it is also the flag that says whether the round-1 buffer needs a twin (GateScratch).
+    res.queries = std::move(scratch.wire_queries(capture_values));
     reuse_wire(res.queries, window);
     res.sent.reset(window);
     // Sized on the early-return paths below too, so the engine's per-slot access is always in bounds.

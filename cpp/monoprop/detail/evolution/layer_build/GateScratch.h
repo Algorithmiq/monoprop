@@ -236,8 +236,19 @@ struct GateScratch {
     // alongside `counters`.
     size_t buffers_hwm_bytes{0uz};
 
-    //! This gate's round-1 buffer. The scan takes it, the engine puts it back and bumps the parity.
-    [[nodiscard]] auto wire_queries() -> mpi::WindowVec<VecZ> & { return wire_q[wire_gate & 1U]; }
+    /*!
+     * @brief This gate's round-1 buffer. The scan takes it, the engine puts it back.
+     *
+     * `two_rounds` is the sink's `wants_responses`: a sink that answers needs no twin, because its
+     * OWN round-2 call is the one the lifetime rule measures the queries against, and that call is
+     * inside the same gate. A sink that makes one call per gate does need the twin -- its queries are
+     * still published when the next gate's scan starts writing -- so it alternates. Charging the twin
+     * to the two-round path would retain a whole extra gate's records for nothing: 15.5 % of the
+     * per-gate peak at 2 x 16 (wire-logs/breakdown-2.md).
+     */
+    [[nodiscard]] auto wire_queries(bool two_rounds) -> mpi::WindowVec<VecZ> & {
+        return wire_q[two_rounds ? 0U : (wire_gate & 1U)];
+    }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
         return join.memory_bytes() + marks.memory_bytes() + silent.memory_bytes()
