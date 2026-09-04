@@ -1,0 +1,212 @@
+#!/bin/bash -l
+# Rebuild one worktree from its CURRENT source and gate its C++ suite in a STANDALONE build tree.
+#
+#   TREE=$PROJ/src/mp-candidate TAG=candidate \
+#       sbatch -A "$MONOPROP_SLURM_ACCOUNT" hpc/deucalion/sbatch/ctest-worktree.sh
+#
+# Knobs: TREE (required), TAG (build-dir suffix, default the tree's basename), SYNC (1),
+# MONOPROP_MAX_NUM_MODES (1024), BUILD_JOBS (32) -- build.sh's names, so one chain has one name
+# per knob. MAX_NUM_MODES / JOBS still work as aliases; setting both to different values aborts.
+#
+# Complements sbatch/mpi-tests-worktree.sh rather than replacing it. That script runs the MPI layouts
+# and the Python suite against `build/editable/Release-$TAG/cpp/tests`, which only exists when
+# scikit-build-core has just built the tree and needs no regeneration. This one configures its own
+# tree, so it works on any checkout and after any source edit -- which is what an A/B arm needs before
+# it is measured.
+#
+# Why the rebuild is not optional bookkeeping: arm identity in this project is the INSTALLED
+# _core.so's md5 and nothing else. `monoprop.__version__` reports HEAD for every editable arm, and the
+# dist-info stamp is written at install time and never rewritten by a later cmake rebuild -- both
+# version identifiers go stale together. Rebuild, print the md5, and every measurement afterwards
+# refers to a binary that matches the source.
+#
+#SBATCH --job-name=mp-ctest-wt
+#SBATCH --partition=dev-x86
+#SBATCH --nodes=1
+#SBATCH --exclusive
+#SBATCH --mem=0
+#SBATCH --time=1:30:00
+#SBATCH --output=%x-%j.out
+#SBATCH --error=%x-%j.err
+
+set -uo pipefail
+cd "${SLURM_SUBMIT_DIR:-$PWD}"
+
+[ -n "${TREE:-}" ] || { echo "refusing: set TREE to the worktree to gate" >&2; exit 2; }
+[ -d "$TREE" ] || { echo "refusing: TREE=$TREE is not a directory" >&2; exit 2; }
+TAG="${TAG:-$(basename "$TREE")}"
+
+export MONOPROP_SRC="$TREE"
+source hpc/deucalion/env.sh
+cd "$TREE"
+
+# ONE NAME PER KNOB, ACROSS THE WHOLE CHAIN. build.sh reads MONOPROP_MAX_NUM_MODES and
+# BUILD_JOBS; this script read MAX_NUM_MODES and JOBS for the SAME two cmake settings. Run
+# build-worktree.sh -> build.sh and then this script, which `uv sync --reinstall-package`s the
+# venv again and therefore produces the binary that actually gets measured -- so a
+# MONOPROP_MAX_NUM_MODES=250 build was silently replaced by a 1024-mode one, measuring a
+# configuration nobody asked for. Accept build.sh's name, keep the old one as an alias, and
+# refuse rather than pick when the two disagree -- a knob that silently defaults is this
+# project's recurring defect.
+for _pair in "MONOPROP_MAX_NUM_MODES MAX_NUM_MODES" "BUILD_JOBS JOBS"; do
+    read -r _canon _alias <<<"$_pair"
+    if [ -n "${!_canon:-}" ] && [ -n "${!_alias:-}" ] && [ "${!_canon}" != "${!_alias}" ]; then
+        echo "refusing: $_canon=${!_canon} but $_alias=${!_alias}; they are one knob" >&2
+        echo "  ($_canon is build.sh's name and wins everywhere else -- set only that one.)" >&2
+        exit 2
+    fi
+done
+MAX_NUM_MODES="${MONOPROP_MAX_NUM_MODES:-${MAX_NUM_MODES:-1024}}"
+JOBS="${BUILD_JOBS:-${JOBS:-32}}"
+
+# PROFILE=ON compiles the monoprop_PROFILE instrument (PR #253's monoprop_ENABLE_PROFILE), which is the
+# only configuration in which comm_profile_tests exists. OFF is the cmake default, so passing it
+# explicitly changes nothing for every existing caller.
+#
+# ONE TREE PER VALUE, and this is not advice. pyproject's [tool.uv] cache-keys covers neither SKBUILD_*
+# nor config-settings, so flipping this inside a tree that already has a venv does NOT trigger a
+# rebuild -- uv serves the other configuration's wheel and the Python half of the run measures a
+# binary that does not match the define. TAG carries the value so at least the C++ build dir separates.
+PROFILE="${PROFILE:-OFF}"
+case "$PROFILE" in
+    ON | OFF) ;;
+    *)
+        echo "refusing: PROFILE=$PROFILE; expected ON or OFF" >&2
+        exit 2
+        ;;
+esac
+[ "$PROFILE" = ON ] && TAG="$TAG-prof"
+
+# SYMMETRY=ON compiles monoprop_CHECK_EXCHANGE_SYMMETRY, the collective audit behind the claim that a
+# layer's recv layout equals its send layout. OFF is the cmake default, so every existing caller is
+# unaffected. It is needed because this script's own cmake line decides what the C++ tests see: a tree
+# whose VENV was built ON still gated its ctest binary with the audit compiled OUT, and the case that
+# exercises the throw is #ifdef'd on this define. TAG carries the value so the build dirs separate.
+SYMMETRY="${SYMMETRY:-OFF}"
+case "$SYMMETRY" in
+    ON | OFF) ;;
+    *)
+        echo "refusing: SYMMETRY=$SYMMETRY; expected ON or OFF" >&2
+        exit 2
+        ;;
+esac
+[ "$SYMMETRY" = ON ] && TAG="$TAG-sym"
+
+echo "=== tree   : $TREE ==="
+echo "=== commit : $(git log --oneline -1) ==="
+echo "=== dirty  : $(git status --porcelain | wc -l) files ==="
+echo "=== build  : tag=$TAG max_num_modes=$MAX_NUM_MODES jobs=$JOBS profile=$PROFILE symmetry=$SYMMETRY ==="
+
+# --reinstall-package + --no-cache are mandatory: pyproject's [tool.uv] cache-keys does not include
+# SKBUILD_* or config-settings, so uv otherwise serves a cached build of a different configuration --
+# classically an MPI-OFF one, after which every rank silently holds the whole operator.
+#
+# --group test is mandatory too: pytest lives in a dependency GROUP, and `--all-extras` covers extras,
+# so without it uv prunes pytest out of the venv and the next test run fails with "No module named
+# pytest", looking exactly like a venv that was never set up.
+#
+# build-dir is tagged per arm. pyproject's default `build/{state}/{build_type}` encodes neither the
+# cmake defines nor the venv, so every configuration of a worktree shares ONE directory: two
+# concurrently submitted jobs once raced on it, 3 of 4 arms died with `configure_file: No such file or
+# directory`, and ctest still reported 262/262 passed against the half-written tree.
+if [ "${SYNC:-1}" = 1 ]; then
+    export monoprop_ENABLE_MPI=ON # monoprop#314: config-settings cannot trigger the override
+    uv sync --all-extras --group test --group bench \
+        --reinstall-package monoprop --no-cache \
+        --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" \
+        --config-settings-package="monoprop:cmake.define.monoprop_MAX_NUM_MODES=${MAX_NUM_MODES}" \
+        --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_PROFILE=${PROFILE}" \
+        --config-settings-package="monoprop:build-dir=build/{state}/{build_type}-$TAG" \
+        --config-settings-package="monoprop:build.tool-args=-j${JOBS}" \
+        || { echo "!! uv sync FAILED"; exit 1; }
+fi
+
+# Exactly one match, never `head -1`: scipy ships optimize/_highspy/_core.cpython-*.so, and a loose
+# glob has made two genuinely different arms compare byte-identical.
+mapfile -t sos < <(ls "$TREE"/.venv/lib/python*/site-packages/monoprop/_core*.so 2>/dev/null)
+[ "${#sos[@]}" -eq 1 ] || { echo "!! matched ${#sos[@]} monoprop/_core*.so, need exactly 1"; exit 1; }
+ARM_MD5_BEFORE=$(md5sum "${sos[0]}" | cut -d' ' -f1)
+echo "=== ARM IDENTITY md5=$ARM_MD5_BEFORE so=${sos[0]} ==="
+"$TREE/.venv/bin/python" -c "import monoprop as m; print('has_mpi =', m.has_mpi, ' MAX_NUM_MODES =', m.MAX_NUM_MODES)"
+
+# Three defines a plain `cmake -S . -B ...` does not supply, each failing late and unhelpfully:
+#
+#   Python_EXECUTABLE            the module env puts /bin/python3 (3.6.8) first on PATH, FindPython
+#                                picks it, and the >=3.11 requirement then fails.
+#   SKBUILD_PROJECT_VERSION_FULL cpp/CMakeLists.txt passes it to write_basic_package_version_file, and
+#                                only scikit-build-core ever sets it. Any value does for a test build;
+#                                it only names the generated monopropConfigVersion.cmake.
+#   nanobind_DIR                 CMakeLists.txt adds src/monoprop/bindings unconditionally and that
+#                                needs nanobind's cmake package. nanobind is a BUILD dependency, so it
+#                                is absent from the runtime venv uv sync produces. Installing it there
+#                                is safe: it is never imported at run time and does not touch
+#                                _core.so, which is what identifies the arm.
+#
+# Reusing build/editable/Release instead does NOT work: its cache pins the build-isolation interpreter
+# to a scikit-build-core temp dir that no longer exists, so ninja fails while regenerating build.ninja.
+# The skbuild-* presets only adopt the tree and set no cache variables, so they inherit the failure.
+"$TREE/.venv/bin/python" -c "import nanobind" 2>/dev/null \
+    || uv pip install --python "$TREE/.venv/bin/python" nanobind \
+    || { echo "!! nanobind install FAILED"; exit 1; }
+NB_DIR=$("$TREE/.venv/bin/python" -m nanobind --cmake_dir)
+
+BUILD="build/ctest-$TAG"
+rm -rf "$BUILD"
+cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release \
+    -DPython_EXECUTABLE="$TREE/.venv/bin/python" \
+    -DSKBUILD_PROJECT_VERSION_FULL=0.0.0 \
+    -Dnanobind_DIR="$NB_DIR" \
+    -Dmonoprop_ENABLE_MPI=ON -Dmonoprop_MAX_NUM_MODES="$MAX_NUM_MODES" \
+    -Dmonoprop_ENABLE_PROFILE="$PROFILE" \
+    -Dmonoprop_CHECK_EXCHANGE_SYMMETRY="$SYMMETRY" \
+    -Dmonoprop_ENABLE_CXX_UNIT_TESTS=ON \
+    || { echo "!! cmake configure FAILED"; exit 1; }
+# ABORT on a failed build; never fall through to ctest, which will happily run the previous tree and
+# report a meaningless pass.
+cmake --build "$BUILD" -j"$JOBS" || { echo "!! cmake build FAILED"; exit 1; }
+
+echo "=== ctest labels: $(ctest --test-dir "$BUILD" --print-labels 2>/dev/null | tr '\n' ' ') ==="
+# Both gates. `-L serial` is the gate; `-L unit` is its superset and is run too so numbers stay
+# comparable across a measurement series. `-L mpi` is not run HERE, and the reason is this script, not the
+# branch: the label needs PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe (the OpenMPI 5
+# spelling -- the OpenMPI 4 OMPI_MCA_rmaps_* name is silently ignored) exported inside a real batch
+# allocation, which this script does not do. Without it shm_comm_oversubscribed aborts at 2 ranks,
+# because S = clamp(2*hardware_concurrency, 8, 64) threads per rank cannot be placed. With it the
+# label passes: job 1828158 got x_mpi_2 Passed in 6.36 s. mpi-tests-worktree.sh sets it, runs the
+# label and COUNTS it. An earlier comment here said "-L mpi fails on main as well"; that was wrong,
+# it was conditioned on the missing policy, and it is withdrawn.
+#
+# A slow run here is MPI_Init, not the tests: it initialises every fabric device present, PER CASE,
+# because ctest runs each Boost case as its own process. On dev-x86 that is 2.03 s/case unexcluded
+# against 0.61 s/case with monoprop_TEST_EXCLUDE_MPI_FABRIC (jobs 1828023 and 1828011). The much
+# larger 8.8 s/case in section 12 of the README is a LOGIN-node figure and does not apply here. The
+# tell is wall time with no CPU behind it.
+ctest --test-dir "$BUILD" -L unit --output-on-failure
+rc_unit=$?
+echo "=== ctest unit rc=$rc_unit ==="
+ctest --test-dir "$BUILD" -L serial --output-on-failure
+rc_serial=$?
+echo "=== ctest serial rc=$rc_serial ==="
+
+# ONE FAILURE IS NOT A RATE. At least one case here asserts on allocator behaviour rather than on
+# library behaviour -- `lazy_fold_survives_operator_growth` requires a reallocated buffer to land at a
+# NEW address, and malloc is free to hand the freed block straight back. The same binary has failed it
+# under `-L serial` and passed it under `-L unit` in one job, then passed 180/180 in a controlled
+# rerun. Before treating a single failure as a regression, re-run the case with:
+#
+#   CASES=<case> BUILDS="$TREE/build/ctest-$TAG" sbatch hpc/deucalion/sbatch/ctest-repeat.sh
+# The other half of the narrowed SYNC=0 guard above: assert that this run left the arm alone, rather
+# than trusting that it did. A green gate that silently re-based the binary it gated is the exact
+# failure the guard exists to prevent, and it would otherwise be invisible -- the version stamp does
+# not move when the binary does.
+ARM_MD5_AFTER=$(md5sum "${sos[0]}" | cut -d' ' -f1)
+if [ "$ARM_MD5_AFTER" != "$ARM_MD5_BEFORE" ]; then
+    echo "!! this gate CHANGED the arm: $ARM_MD5_BEFORE -> $ARM_MD5_AFTER ($sos)" >&2
+    echo "   every result standing on that binary is now measured against something else." >&2
+    exit 1
+fi
+if [ "$rc_unit" -ne 0 ] || [ "$rc_serial" -ne 0 ]; then
+    echo "!! a gate failed -- re-run the failing case with ctest-repeat.sh before calling it a regression"
+    exit 1
+fi
+echo "########## BOTH GATES PASSED (arm md5 unchanged: $ARM_MD5_AFTER) ##########"
