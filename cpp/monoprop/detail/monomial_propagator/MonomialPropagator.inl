@@ -122,6 +122,35 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             "Partition count differs across MPI ranks — every rank must resolve the same "
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
+
+    // Validate the global paired basis before starting partition workers. A child throwing after its
+    // siblings enter a collective poisons the shared-memory transport and masks this configuration error.
+    size_t max_pairs = 0;
+    size_t expected_schrodinger_local_terms = 1;
+    if (schrodinger_) {
+        const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
+        max_pairs = sc / 2 + sc % 2;
+        const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
+        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
+        const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
+        const size_t world_slots = n_partitions * static_cast<size_t>(mpi::size(comm));
+        const size_t share = global_terms / std::max<size_t>(1, world_slots);
+        if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
+            const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
+            const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
+            throw PropagatorConfigError(
+                std::format("schrodinger_cutoff ({}) admits {} paired basis terms over {} active modes, "
+                            "about {} per world slot — more than can be walked or addressed. Lower "
+                            "schrodinger_cutoff, or raise the rank x partition count (currently {}).",
+                            *schrodinger_cutoff,
+                            how_many,
+                            logical_num_modes_,
+                            per_slot,
+                            world_slots));
+        }
+        expected_schrodinger_local_terms = std::max<size_t>(1, share);
+    }
+
     if (n_partitions > 1) {
         PartitionChildFactory factory =
             child_factory ? std::move(child_factory) : PartitionChildFactory{[=](mpi::Comm partition_comm) {
@@ -144,7 +173,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         return;
     }
 
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
     check_routing_agreement(comm_); // a disagreement here would hang the first exchange, not corrupt it
     const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() can hit MPI, so never per term
@@ -169,30 +197,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // Schrodinger's initial rows are the global paired basis, hash-partitioned over the P = R*S world
     // slots; Heisenberg's local_heisenberg_terms was already filtered to this slot's share above. Hence the
     // two reserves: a global count needs its 1/P share, a local one already is the share.
-    size_t max_pairs = 0;
-    size_t expected_local_terms = std::max<size_t>(1, local_heisenberg_terms.size());
-    if (schrodinger_) {
-        const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
-        max_pairs = sc / 2 + sc % 2;
-        const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
-        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
-        const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
-        const size_t share = global_terms / std::max<size_t>(1, num_ranks);
-        if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
-            const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
-            const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
-            throw PropagatorConfigError(
-                std::format("schrodinger_cutoff ({}) admits {} paired basis terms over {} active modes, "
-                            "about {} per world slot — more than can be walked or addressed. Lower "
-                            "schrodinger_cutoff, or raise the rank x partition count (currently {}).",
-                            *schrodinger_cutoff,
-                            how_many,
-                            logical_num_modes_,
-                            per_slot,
-                            num_ranks));
-        }
-        expected_local_terms = std::max<size_t>(1, share);
-    }
+    const size_t expected_local_terms =
+        schrodinger_ ? expected_schrodinger_local_terms : std::max<size_t>(1, local_heisenberg_terms.size());
 
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
