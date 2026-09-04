@@ -53,60 +53,73 @@ struct PeerLayout {
     }
 };
 
-// A variable all-to-all as point-to-point over `plan`'s peers: one Irecv/Isend pair each, the self peer
-// copied in place. Counts and displacements are in ELEMENTS of `dt`, whose extent must be `elem`.
-// `reqs` is caller storage, grown then INDEXED: MPI holds these pointers until the wait, so a
-// reallocating push_back would dangle them.
+// Complete description of one point-to-point all-to-all post.
+struct SparsePairwiseArgs {
+    PeerPlan plan;
+    int me;
+    int num_ranks;
+    MPI_Comm comm;
+    int tag;
+    MPI_Datatype datatype;
+    size_t elem;
+    const std::byte *send;
+    PeerLayout send_layout;
+    std::byte *recv;
+    PeerLayout recv_layout;
+};
+
+// A variable all-to-all as point-to-point over `args.plan`'s peers: one Irecv/Isend pair each, the self
+// peer copied in place. Counts and displacements are in elements of `args.datatype`, whose extent must
+// be `args.elem`. `reqs` is caller storage, grown then indexed: MPI holds these pointers until the wait,
+// so a reallocating push_back would dangle them.
 //
-// POSTS ONLY, and returns how many of `reqs` are live. The caller waits, so `send`, `recv` and `reqs`
-// must all outlive that wait -- which is what lets a caller hold the round open (PendingAlltoallv) the
-// same way the dense branch holds an MPI_Ialltoallv.
-//
-// `active_legs` is an UPPER BOUND on the peers that will post, for a caller that already knows it (a
-// dense plan over a mostly-empty layout sizes `reqs` at 2 * n_ranks otherwise); negative means "assume
-// every peer posts". Too small an upper bound is caught by the assert below, not silently.
-[[nodiscard]] inline auto sparse_pairwise(PeerPlan plan,
-                                          int me,
-                                          int n_ranks,
-                                          MPI_Comm comm,
-                                          int tag,
-                                          MPI_Datatype dt,
-                                          size_t elem,
-                                          const std::byte *send,
-                                          PeerLayout send_lay,
-                                          std::byte *recv,
-                                          PeerLayout recv_lay,
+// POSTS ONLY, and returns how many of `reqs` are live. The caller waits, so the buffers and `reqs` must
+// all outlive that wait. `active_legs` is an upper bound on peers that post; negative means every peer.
+[[nodiscard]] inline auto sparse_pairwise(const SparsePairwiseArgs &args,
                                           std::vector<MPI_Request> &reqs,
                                           int active_legs = -1) -> int {
-    const int f = plan.count(n_ranks);
-    const auto cap = static_cast<size_t>(2 * (active_legs < 0 || active_legs > f ? f : active_legs));
-    if (reqs.size() < cap) {
-        reqs.resize(cap);
+    const int num_peers = args.plan.count(args.num_ranks);
+    const int legs = active_legs < 0 || active_legs > num_peers ? num_peers : active_legs;
+    if (const auto capacity = size_t{2} * static_cast<size_t>(legs); reqs.size() < capacity) {
+        reqs.resize(capacity);
     }
-    int n_req = 0;
-    for (int k = 0; k < f; ++k) {
-        const int b = plan.peer(me, k);
-        const int sc = send_lay.count(b);
-        const int rc = recv_lay.count(b);
-        std::byte *rbuf = recv + recv_lay.displ(b) * elem;
-        const std::byte *sbuf = send + send_lay.displ(b) * elem;
-        if (b == me) {
+    int num_requests = 0;
+    for (int k = 0; k < num_peers; ++k) {
+        const int peer = args.plan.peer(args.me, k);
+        const int send_count = args.send_layout.count(peer);
+        const int recv_count = args.recv_layout.count(peer);
+        if (peer == args.me) {
             // The self slot is a copy, not a message: its two counts are each other's transpose.
-            assert(sc == rc);
-            if (rc != 0) {
-                std::memcpy(rbuf, sbuf, static_cast<size_t>(rc) * elem);
+            assert(send_count == recv_count);
+            if (recv_count != 0) {
+                std::memcpy(args.recv + (args.recv_layout.displ(peer) * args.elem),
+                            args.send + (args.send_layout.displ(peer) * args.elem),
+                            static_cast<size_t>(recv_count) * args.elem);
             }
             continue;
         }
-        assert(static_cast<size_t>(n_req) + 2 <= reqs.size() || (rc == 0 && sc == 0)); // active_legs too small
-        if (rc != 0) {
-            MPI_Irecv(rbuf, rc, dt, b, tag, comm, &reqs[static_cast<size_t>(n_req++)]);
+        assert(static_cast<size_t>(num_requests) + 2 <= reqs.size()
+               || (recv_count == 0 && send_count == 0)); // active_legs too small
+        if (recv_count != 0) {
+            MPI_Irecv(args.recv + (args.recv_layout.displ(peer) * args.elem),
+                      recv_count,
+                      args.datatype,
+                      peer,
+                      args.tag,
+                      args.comm,
+                      &reqs[static_cast<size_t>(num_requests++)]);
         }
-        if (sc != 0) {
-            MPI_Isend(sbuf, sc, dt, b, tag, comm, &reqs[static_cast<size_t>(n_req++)]);
+        if (send_count != 0) {
+            MPI_Isend(args.send + (args.send_layout.displ(peer) * args.elem),
+                      send_count,
+                      args.datatype,
+                      peer,
+                      args.tag,
+                      args.comm,
+                      &reqs[static_cast<size_t>(num_requests++)]);
         }
     }
-    return n_req;
+    return num_requests;
 }
 
 } // namespace monoprop::mpi

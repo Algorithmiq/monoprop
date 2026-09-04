@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <vector>
 
-#if defined(monoprop_ENABLE_MPI)
+#ifdef monoprop_ENABLE_MPI
 #include <mpi.h>
 #else
 // Fallback MPI types for non-MPI builds (single process).
@@ -47,7 +47,7 @@ struct Comm {
     int shm_rank = 0;             // this participant's local partition index; valid iff kind == Shm | Hybrid
 
     constexpr Comm() = default;
-    constexpr Comm(MPI_Comm c) : mpi(c) {} // implicit on purpose (see above)
+    constexpr Comm(MPI_Comm c) : mpi(c) {} // NOLINT(google-explicit-constructor): implicit on purpose (see above)
 
     static auto make_shm(ShmComm *group, int rank) -> Comm {
         Comm c;

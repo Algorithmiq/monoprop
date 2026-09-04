@@ -71,7 +71,7 @@ inline auto parse_uint64(std::string_view name, const char *text) -> std::option
         return std::nullopt;
     }
     // strtoull WRAPS a negative literal to a huge unsigned rather than failing, so '-' is rejected here.
-    if (std::string_view{text}.find('-') != std::string_view::npos) {
+    if (std::string_view{text}.contains('-')) {
         reject_env(name, text, "a decimal uint64");
     }
     errno = 0;
@@ -94,7 +94,7 @@ inline auto parse_routing_mode(std::string_view name, const char *text) -> std::
     if (value == "linear") {
         return RoutingMode::Linear;
     }
-    reject_env(name, text, "one of \"splitmix\" or \"linear\"");
+    reject_env(name, text, R"(one of "splitmix" or "linear")");
 }
 
 } // namespace detail

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <span>
 #include <utility>
@@ -33,9 +34,10 @@ namespace monoprop::mpi {
 auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void;
 
 // Legs carrying a payload in either direction, i.e. an upper bound on what the pairwise path posts.
-[[nodiscard]] inline auto active_leg_count(const int *send_counts, const int *recv_counts, int num_ranks) -> int {
+[[nodiscard]] inline auto active_leg_count(std::span<const int> send_counts, std::span<const int> recv_counts) -> int {
+    assert(send_counts.size() == recv_counts.size());
     int legs = 0;
-    for (int i = 0; i < num_ranks; ++i) {
+    for (size_t i = 0; i < send_counts.size(); ++i) {
         legs += static_cast<int>(send_counts[i] != 0 || recv_counts[i] != 0);
     }
     return legs;
@@ -142,22 +144,24 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
         // value. The plan stays DENSE -- it walks all N and posts only the non-zero legs, which is
         // exactly that -- so a mis-derived shift cannot drop a block here; `wire_bits` only chooses the
         // transport. `legs` sizes the request vector, which a dense plan would otherwise take to 2N.
-        const int legs = active_leg_count(args.send_counts, args.recv_counts, num_ranks);
+        const int legs = active_leg_count(std::span{args.send_counts, static_cast<size_t>(num_ranks)},
+                                          std::span{args.recv_counts, static_cast<size_t>(num_ranks)});
         std::vector<MPI_Request> requests;
-        const int posted = sparse_pairwise(PeerPlan{},
-                                           rank(comm),
-                                           num_ranks,
-                                           comm.mpi,
-                                           kFlatReplayTag,
-                                           datatype<T>::get(),
-                                           sizeof(T),
-                                           reinterpret_cast<const std::byte *>(args.send),
-                                           PeerLayout{.counts = args.send_counts, .displs = args.send_displs},
-                                           reinterpret_cast<std::byte *>(args.recv),
-                                           PeerLayout{.counts = args.recv_counts, .displs = args.recv_displs},
-                                           requests,
-                                           legs);
-        return Ticket(std::move(requests), posted);
+        const SparsePairwiseArgs pairwise{
+            .plan = {},
+            .me = rank(comm),
+            .num_ranks = num_ranks,
+            .comm = comm.mpi,
+            .tag = kFlatReplayTag,
+            .datatype = datatype<T>::get(),
+            .elem = sizeof(T),
+            .send = reinterpret_cast<const std::byte *>(args.send),
+            .send_layout = {.counts = args.send_counts, .displs = args.send_displs},
+            .recv = reinterpret_cast<std::byte *>(args.recv),
+            .recv_layout = {.counts = args.recv_counts, .displs = args.recv_displs},
+        };
+        const int posted = sparse_pairwise(pairwise, requests, legs);
+        return {std::move(requests), posted};
     }
     MPI_Request request = MPI_REQUEST_NULL;
     MPI_Ialltoallv(args.send,
@@ -170,7 +174,7 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
                    datatype<T>::get(),
                    comm.mpi,
                    &request);
-    return Ticket(request);
+    return Ticket{request};
 #else
     for (int i = 0; i < num_ranks; ++i) {
         const int c = args.recv_counts[i];

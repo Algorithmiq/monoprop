@@ -80,12 +80,12 @@ BOOST_AUTO_TEST_CASE(flat_exchange_active_legs_take_either_side) {
     constexpr int n = 8;
     std::vector<int> send(static_cast<size_t>(n), 0);
     std::vector<int> recv(static_cast<size_t>(n), 0);
-    BOOST_CHECK_EQUAL(active_leg_count(send.data(), recv.data(), n), 0);
+    BOOST_CHECK_EQUAL(active_leg_count(send, recv), 0);
     send[1] = 4;
     recv[6] = 4;
-    BOOST_CHECK_EQUAL(active_leg_count(send.data(), recv.data(), n), 2);
+    BOOST_CHECK_EQUAL(active_leg_count(send, recv), 2);
     recv[1] = 4; // same leg, both sides
-    BOOST_CHECK_EQUAL(active_leg_count(send.data(), recv.data(), n), 2);
+    BOOST_CHECK_EQUAL(active_leg_count(send, recv), 2);
 }
 
 // The self leg is a copy, not a message, so a one-rank world posts nothing at all and wait() is a no-op.

@@ -36,7 +36,7 @@ auto init(int *argc, char ***argv) -> void {
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
         if (provided < required) {
-            auto comm = MPI_COMM_WORLD;
+            MPI_Comm comm = MPI_COMM_WORLD;
             std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
                        "by the partition/MPI hybrid transport.\n");
             MPI_Abort(comm, 1);
@@ -139,18 +139,20 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm,
         // Eager by contract: recv_counts is caller memory the caller reads on return, so unlike the
         // payload round this one cannot be handed on in a handle.
         std::vector<MPI_Request> reqs;
-        const int posted = sparse_pairwise(plan,
-                                           me,
-                                           n,
-                                           comm.mpi,
-                                           kFlatCountTag,
-                                           MPI_INT,
-                                           sizeof(int),
-                                           reinterpret_cast<const std::byte *>(send_counts),
-                                           one,
-                                           reinterpret_cast<std::byte *>(recv_counts),
-                                           one,
-                                           reqs);
+        const SparsePairwiseArgs pairwise{
+            .plan = plan,
+            .me = me,
+            .num_ranks = n,
+            .comm = comm.mpi,
+            .tag = kFlatCountTag,
+            .datatype = MPI_INT,
+            .elem = sizeof(int),
+            .send = reinterpret_cast<const std::byte *>(send_counts),
+            .send_layout = one,
+            .recv = reinterpret_cast<std::byte *>(recv_counts),
+            .recv_layout = one,
+        };
+        const int posted = sparse_pairwise(pairwise, reqs);
         MPI_Waitall(posted, reqs.data(), MPI_STATUSES_IGNORE);
         return;
     }

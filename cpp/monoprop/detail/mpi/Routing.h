@@ -63,7 +63,7 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-inline constexpr auto mix64(uint64_t x) noexcept -> uint64_t {
+constexpr auto mix64(uint64_t x) noexcept -> uint64_t {
     x += 0x9E37'79B9'7F4A'7C15ULL;
     x = (x ^ (x >> 30)) * 0xBF58'476D'1CE4'E5B9ULL;
     x = (x ^ (x >> 27)) * 0x94D0'49BB'1331'11EBULL;
@@ -141,7 +141,10 @@ inline auto linear_planes() -> const std::array<uint64_t, kLinearPlanes * kPlane
 // Measured: rank 32 for the 60-site Hubbard's 416 distinct shifts, against the 7 bits R = 128 needs.
 [[nodiscard]] inline auto gf2_rank(std::vector<uint64_t> vectors) noexcept -> size_t {
     size_t rank = 0;
-    for (size_t bit = 0; bit < 64 && rank < vectors.size(); ++bit) {
+    for (size_t bit = 0; bit < 64; ++bit) {
+        if (rank == vectors.size()) {
+            break;
+        }
         const uint64_t probe = uint64_t{1} << bit;
         size_t pivot = vectors.size();
         for (size_t i = rank; i < vectors.size(); ++i) {
@@ -179,7 +182,7 @@ public:
     }
 
     // Today's routing: one flat world, full avalanche, no linear bits. Width-free: no plane is read.
-    static constexpr auto splitmix(size_t flat_world) noexcept -> Router { return Router{flat_world, 1, false}; }
+    static constexpr auto splitmix(size_t flat_world) -> Router { return Router{flat_world, 1, false}; }
 
     [[nodiscard]] constexpr auto ranks() const noexcept -> size_t { return ranks_; }
     [[nodiscard]] constexpr auto partitions() const noexcept -> size_t { return parts_; }
@@ -200,11 +203,11 @@ public:
 
     // Flat destination slot in [0, flat_world). Branch is on a member, so it is perfectly predicted.
     template <size_t NumModes>
-    [[nodiscard]] [[gnu::always_inline]] inline auto dest(const Monomial<NumModes> &mono) const noexcept -> size_t {
+    [[nodiscard]] [[gnu::always_inline]] auto dest(const Monomial<NumModes> &mono) const noexcept -> size_t {
         if (!linear_) {
             return static_cast<size_t>(monomial_hash<NumModes>(mono) % flat_); // bit-for-bit today's `hash % P`
         }
-        const size_t rank = static_cast<size_t>(linear_low_<NumModes>(mono));
+        const auto rank = static_cast<size_t>(linear_low_<NumModes>(mono));
         if (parts_ == 1) {
             return rank; // q % 1 == 0 for every q, so S == 1 owes the hash nothing
         }
@@ -217,9 +220,9 @@ public:
     // generator's rank_shift, or ownership moves silently -- the same precondition mpi::PeerPlan carries.
     // Splitmix has no such identity and falls back to dest(), bit for bit.
     template <size_t NumModes>
-    [[nodiscard]] [[gnu::always_inline]] inline auto dest_from_shift(const Monomial<NumModes> &mono,
-                                                                     size_t my_flat,
-                                                                     size_t shift) const noexcept -> size_t {
+    [[nodiscard]] [[gnu::always_inline]] auto dest_from_shift(const Monomial<NumModes> &mono,
+                                                              size_t my_flat,
+                                                              size_t shift) const noexcept -> size_t {
         if (!linear_) {
             return dest<NumModes>(mono);
         }
@@ -258,7 +261,7 @@ private:
 
     // q % S. Every production layout has S in {1,2,4,8,16}, where the modulo is a mask -- and parts_ is a
     // runtime member, so the compiler cannot strength-reduce it on our behalf. Identical bit for bit.
-    [[nodiscard]] [[gnu::always_inline]] inline auto part_of_(uint64_t q) const noexcept -> size_t {
+    [[nodiscard]] [[gnu::always_inline]] auto part_of_(uint64_t q) const noexcept -> size_t {
         if (parts_pow2_) {
             assert(static_cast<size_t>(q & parts_mask_) == static_cast<size_t>(q % parts_));
             return static_cast<size_t>(q & parts_mask_);
@@ -267,7 +270,7 @@ private:
     }
 
     // Flat slot -> rank index. Flat slots are rank * S + partition (mpi::rank under the hybrid comm).
-    [[nodiscard]] [[gnu::always_inline]] inline auto rank_of_slot_(size_t flat_slot) const noexcept -> size_t {
+    [[nodiscard]] [[gnu::always_inline]] auto rank_of_slot_(size_t flat_slot) const noexcept -> size_t {
         if (parts_pow2_) {
             assert((flat_slot >> parts_log2_) == flat_slot / parts_);
             return flat_slot >> parts_log2_;
@@ -279,16 +282,15 @@ private:
     // words with XOR before the popcount is the same parity (popcount(x)+popcount(y) == popcount(x^y)
     // mod 2) for one popcount per bit instead of one per word. A non-linear router reads no plane.
     template <size_t NumModes>
-    [[nodiscard]] [[gnu::always_inline]] inline auto linear_low_(const Monomial<NumModes> &m) const noexcept
-        -> uint64_t {
-        constexpr size_t kW = kPlaneWords<2 * NumModes>;
+    [[nodiscard]] [[gnu::always_inline]] auto linear_low_(const Monomial<NumModes> &m) const noexcept -> uint64_t {
+        constexpr auto num_words = kPlaneWords<2 * NumModes>;
         const size_t bits = linear_bits();
-        assert(bits == 0 || (planes_ != nullptr && plane_words_ == kW)); // bound at a different width
+        assert(bits == 0 || (planes_ != nullptr && plane_words_ == num_words)); // bound at a different width
         uint64_t acc = 0;
         for (size_t j = 0; j < bits; ++j) {
-            const uint64_t *plane = planes_ + (j * kW);
+            const uint64_t *plane = planes_ + (j * num_words);
             uint64_t fold = 0;
-            for (size_t w = 0; w < kW; ++w) {
+            for (size_t w = 0; w < num_words; ++w) {
                 fold ^= m.word(w) & plane[w];
             }
             acc |= static_cast<uint64_t>(std::popcount(fold) & 1) << j;
