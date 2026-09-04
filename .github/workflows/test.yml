@@ -111,7 +111,7 @@ jobs:
 
       - name: Run Python tests under MPI
         if: matrix.mpi == 'on'
-        run: just test-py-mpi 2
+        run: just test-py-mpi 2 --unmute-ranks
 
       - name: Run Python MPI marker rank matrix
         if: matrix.mpi == 'on'
