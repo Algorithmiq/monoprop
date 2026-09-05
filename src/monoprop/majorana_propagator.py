@@ -132,8 +132,9 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         Re-weights the initial operator the graph is evaluated against, without touching
         the evolution graph or rebuilding the simulator. Only the initial operator is
         affected -- the gates and their generator coefficients are unchanged. Functionals created
-        earlier are invalidated; see
-        [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator].
+        earlier follow the new coefficients rather than being invalidated; see
+        [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]
+        for the exception and the price.
 
         Args:
             new_operator: A [MajoranaOperator][monoprop.majorana.MajoranaOperator] whose terms
