@@ -55,7 +55,7 @@ Render the artifacts of a run:
 
 ```bash
 monoprop-bench-report benches/results             # writes REPORT.md
-monoprop-bench-bmf benches/results ci-linux       # BMF JSON on stdout
+monoprop-bench-bmf benches/results ci-bare-metal-L1   # BMF JSON on stdout
 ```
 
 Both read the two files a run leaves in the results directory:

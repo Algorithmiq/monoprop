@@ -404,15 +404,10 @@ bench-smoke:
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
-# Deliberately keeps the `bench` default sizes rather than inventing a second set
-# to keep in sync: they run in well under a minute yet leave the heavier
-# Schrödinger operations in the 50 ms - 1 s range, where runner noise does not
-# swamp the signal. Only the slow fixed models are dropped; they run nightly.
-# More rounds than a local run, because CI reports the mean.
-#
-# The marker expression and round count come from the environment so a caller can
-# pass values containing spaces, or an empty marker to select everything:
-#   monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal
+# Keeps the `bench` default sizes rather than a second set to keep in sync. The marker expression
+# and round count come from the environment so a caller can pass a value containing spaces, or an
+# empty marker to select everything:
+#   monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal-L1
 
 # Run the continuous-benchmarking profile tracked by Bencher.
 bench-ci LABEL *ARGS:
@@ -424,12 +419,142 @@ bench-ci LABEL *ARGS:
         -m "${monoprop_BENCH_MARKERS-not slow}" \
         --bench-rounds "${monoprop_BENCH_ROUNDS:-5}" "$@"
 
+# `bench-ci` on RANKS ranks. Needs an MPI build and `monoprop_PARTITIONS`, which also sizes the
+# pinning -- unpinned ranks vary by more than the effects being tracked. ARGS go to pytest:
+#   monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-ci-mpi ci-bare-metal-L2b 4 -k heisenberg
+
+# Run the continuous-benchmarking profile on RANKS ranks.
+bench-ci-mpi LABEL RANKS *ARGS:
+    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.has_mpi else 'monoprop was built without MPI; run just bench-build-mpi first')"
+    @mkdir -p "{{ bench_results }}"
+    : "${monoprop_PARTITIONS:?bench-ci-mpi needs monoprop_PARTITIONS; it sizes --map-by slot:PE}"
+    label="$1"; ranks="$2"; shift 2; \
+    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
+        uv run --no-sync mpiexec -n "$ranks" \
+        --map-by "slot:PE=$monoprop_PARTITIONS" --bind-to core \
+        -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS \
+        -x monoprop_PARTITIONS -x monoprop_NUM_THREADS \
+        python -m pytest benches -o filterwarnings=default \
+        --benchmark-json="{{ bench_results }}/time-$label.json" \
+        -m "${monoprop_BENCH_MARKERS-not slow}" \
+        --bench-rounds "${monoprop_BENCH_ROUNDS:-5}" "$@"
+
 # Convert one LABEL's artifacts into Bencher Metric Format JSON on stdout, e.g.
-#   just bench-ci ci-linux && just bench-bmf ci-linux > bmf.json
+#   just bench-ci ci-bare-metal-L1 && just bench-bmf ci-bare-metal-L1 > bmf-L1.json
 
 # Emit LABEL's results as Bencher Metric Format JSON.
 bench-bmf LABEL:
     uv run --no-sync monoprop-bench-bmf "{{ bench_results }}" "$1"
+
+# Record the benchmark runner's physical core count for subsequent workflow steps.
+bench-ci-resolve-cores:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    uv run --no-sync python - <<'PY'
+    import os
+    import sys
+
+    import psutil
+
+    import monoprop
+
+    if not monoprop.has_mpi:
+        sys.exit("monoprop was built without MPI; every rung shares this binary")
+
+    # PHYSICAL cores: that is what the engine enumerates, and sizing from the logical
+    # count would cross the `partitions > visible cores` threshold on any SMT machine.
+    cores = psutil.cpu_count(logical=False)
+    if not cores:
+        sys.exit("cannot determine the physical core count on this runner")
+
+    print("variant ", monoprop.__variant__)
+    print("cores   ", cores, "physical,", psutil.cpu_count(logical=True), "logical")
+    print("affinity", len(os.sched_getaffinity(0)))
+    with open(os.environ["GITHUB_ENV"], "a") as env:
+        print(f"BENCH_CORES={cores}", file=env)
+    PY
+
+# Run every newline-delimited rung in RUNGS under the requested rank and partition shape.
+bench-ci-rungs LABEL:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bench_label="$1"
+    echo "physical cores: $BENCH_CORES"
+    # fd 3, because mpiexec forwards its own stdin to rank 0 and would eat the rung list.
+    while IFS='|' read -r head args <&3; do
+      IFS=$' \t' read -r rung ranks partitions rounds <<<"$head"
+      case "${rung:-}" in '' | '#'*) continue ;; esac
+      # A missing field would otherwise fall through to a default and measure something else.
+      case "${rounds:-}" in '' | *[!0-9]*) echo "::error::rung $rung has no round count"; exit 1 ;; esac
+      if [[ "$partitions" == per-rank ]]; then
+        partitions=$((BENCH_CORES / ranks))
+      fi
+      # Oversubscription reports a plausible wall time and would silently corrupt the testbed.
+      if ((partitions < 1 || ranks * partitions > BENCH_CORES)); then
+        echo "::error::rung $rung wants ${ranks}x${partitions} on $BENCH_CORES physical cores"
+        exit 1
+      fi
+      # xargs honours quotes in `-k "a and b"` without evaluating the input.
+      argv=()
+      if [[ -n "${args//[[:space:]]/}" ]]; then
+        if ! parsed=$(printf '%s\n' "$args" | xargs printf '%s\n') || [[ -z "$parsed" ]]; then
+          echo "::error::rung $rung: could not parse its pytest args"
+          exit 1
+        fi
+        readarray -t argv <<< "$parsed"
+      fi
+      label="$bench_label-$rung"
+      echo "::group::$rung: ${ranks}x${partitions}, $rounds rounds -> $label"
+      export monoprop_PARTITIONS="$partitions" monoprop_NUM_THREADS="$partitions"
+      export monoprop_BENCH_ROUNDS="$rounds"
+      if ((ranks == 1)); then
+        just bench-ci "$label" "${argv[@]}"
+      else
+        just bench-ci-mpi "$label" "$ranks" "${argv[@]}"
+      fi
+      just bench-bmf "$label" > "bmf-$rung.json"
+      uv run --no-sync python .github/workflows/scripts/check_shape.py \
+        "benches/results/$label.json" "$ranks" "$partitions"
+      echo "::endgroup::"
+    done 3<<< "$RUNGS"
+
+# Upload every rung's BMF artifact to the silicon- and shape-specific Bencher testbed.
+bench-ci-track:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    files=(bmf-*.json)
+    if ((${#files[@]} == 0)); then
+      echo "::error::no rung produced a bmf-*.json"
+      exit 1
+    fi
+    slug=$(uv run --no-sync python .github/workflows/scripts/cpu_slug.py)
+    case "$slug" in '' | *[!a-z0-9-]*) echo "::error::bad cpu slug: '$slug'"; exit 1 ;; esac
+    echo "cpu slug: $slug"
+    for file in "${files[@]}"; do
+      rung="${file#bmf-}"
+      rung="${rung%.json}"
+      BENCHER_TESTBED="$slug-${BENCH_CORES}c-$rung" bencher run \
+        --adapter json \
+        --file "$file" \
+        --github-actions "$GITHUB_TOKEN" \
+        --thresholds-reset \
+        --threshold-measure latency \
+        --threshold-test t_test \
+        --threshold-max-sample-size 64 \
+        --threshold-lower-boundary _ \
+        --threshold-upper-boundary 0.99 \
+        --threshold-measure peak-memory \
+        --threshold-test percentage \
+        --threshold-max-sample-size 64 \
+        --threshold-lower-boundary _ \
+        --threshold-upper-boundary 0.10 \
+        --threshold-measure terms \
+        --threshold-test percentage \
+        --threshold-max-sample-size 1 \
+        --threshold-lower-boundary 0.0 \
+        --threshold-upper-boundary 0.0
+    done
 
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 
