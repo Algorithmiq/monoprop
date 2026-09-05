@@ -14,9 +14,14 @@
 
 #include "monoprop/detail/mpi/Exchange.h"
 
+#include <algorithm>
 #include <format>
 #include <print>
 #include <stdexcept>
+
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/Pairwise.h"
+#endif
 
 namespace monoprop::mpi {
 
@@ -31,7 +36,7 @@ auto init(int *argc, char ***argv) -> void {
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
         if (provided < required) {
-            auto comm = MPI_COMM_WORLD;
+            MPI_Comm comm = MPI_COMM_WORLD;
             std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
                        "by the partition/MPI hybrid transport.\n");
             MPI_Abort(comm, 1);
@@ -84,6 +89,20 @@ auto size(const Comm &comm) -> int {
 #endif
 }
 
+auto geometry(const Comm &comm) -> Geometry {
+    if (comm.kind == Comm::Kind::Shm) {
+        return {.ranks = 1, .partitions = comm.shm->size()};
+    }
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return {.ranks = comm.hyb->ranks(), .partitions = comm.hyb->partitions()};
+    }
+    return {.ranks = size(comm), .partitions = 1};
+#else
+    return {.ranks = 1, .partitions = 1};
+#endif
+}
+
 auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
@@ -100,19 +119,47 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
+auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
         return;
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts, plan);
+        return;
+    }
+    if (!plan.dense()) {
+        // S == 1 world: exchange one int with each reachable peer; the rest of the row is zero by
+        // definition, so it must be cleared rather than left from a previous round.
+        int me = 0;
+        MPI_Comm_rank(comm.mpi, &me);
+        std::fill(recv_counts, recv_counts + n, 0);
+        const PeerLayout one{.block = 1};
+        // Eager by contract: recv_counts is caller memory the caller reads on return, so unlike the
+        // payload round this one cannot be handed on in a handle.
+        std::vector<MPI_Request> reqs;
+        const SparsePairwiseArgs pairwise{
+            .plan = plan,
+            .me = me,
+            .num_ranks = n,
+            .comm = comm.mpi,
+            .tag = kFlatCountTag,
+            .datatype = MPI_INT,
+            .elem = sizeof(int),
+            .send = reinterpret_cast<const std::byte *>(send_counts),
+            .send_layout = one,
+            .recv = reinterpret_cast<std::byte *>(recv_counts),
+            .recv_layout = one,
+        };
+        const int posted = sparse_pairwise(pairwise, reqs);
+        MPI_Waitall(posted, reqs.data(), MPI_STATUSES_IGNORE);
         return;
     }
     (void)n;
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
+    (void)plan; // single participant: nothing to narrow
     for (int i = 0; i < n; ++i) {
         recv_counts[i] = send_counts[i];
     }
