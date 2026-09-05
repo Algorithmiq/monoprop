@@ -115,6 +115,16 @@ bit for bit. It therefore requires $R$ to be a power of two; any other rank coun
 XOR structure to route by and is raised at propagator construction rather than silently
 routed. $R = 1$ is a power of two, takes no rank bit, and so is the dense case already.
 
+Fanout 1 also shortens the exchange itself. A dense all-to-all has to agree the per-rank
+counts before it can lay out a receive buffer, which is a round trip of its own ahead of
+every payload. With a single known peer there is nothing to agree: the query round posts its
+payload and then reads the incoming size off that message's own envelope with a matched
+probe (`MPI_Mprobe`, `MPI_Get_count`, `MPI_Imrecv`), so a gate costs one message each way
+instead of two. Empty blocks are sent as empty messages rather than skipped — a skipped send
+is a probe that never matches. The response round already knows its layout, the query counts
+transposed, and stays a plain non-blocking send/receive pair. At $S > 1$ the count round is
+not removed but overlapped with packing inside the hybrid transport.
+
 A related distributed scheme maps an index by summing its $k$-bit blocks modulo the rank
 count [@Broers2025-or]. That sum is additive modulo that count while the gate acts by XOR,
 so the carries make $f(I \oplus J)$ differ from $f(I)$ by $\pm 2^{J_j \bmod k}$ terms whose

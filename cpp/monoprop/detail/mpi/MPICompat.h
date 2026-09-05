@@ -330,8 +330,9 @@ inline auto begin_alltoallv(const Blocks &send_data,
                                                .recv_counts = h.recv_counts.data(),
                                                .recv_displs = h.recv_displs.data()};
     // Fused fast path (query round, recv layout unknown): resolve recv counts AND move payload in one
-    // in-process verb, folding away the count exchange's barriers (Shm 4→2, Hybrid 6→4). It fills
-    // recv_counts/recv_displs and resizes recv_buffer; known-layout and pure-MPI paths fall through.
+    // verb, folding away the count exchange's barriers (Shm 4→2, Hybrid 6→4) or, on the sparse wire, the
+    // count round itself. Each arm fills recv_counts/recv_displs and resizes recv_buffer; the
+    // known-layout and dense paths fall through.
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoallv_resolve<T>(comm.shm_rank, resolve_args);
         return h;
@@ -339,6 +340,27 @@ inline auto begin_alltoallv(const Blocks &send_data,
 #ifdef monoprop_ENABLE_MPI
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Hybrid) {
         comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get(), plan);
+        return h;
+    }
+    if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Mpi && !plan.dense()) {
+        // The same fusion for the S == 1 wire, where there is no in-process level to hide a count round
+        // behind: matched probe reads the recv count off the peer's payload envelope, so the round that
+        // alltoall_counts would expose ahead of the payload is not sent at all. The payload itself stays
+        // in flight in the handle, exactly as the pairwise arm below leaves it.
+        assert(h.window.count == 1 && "Kind::Mpi has one partition per rank, so a sparse window is one slot");
+        const size_t peer_slot = h.window.slot(WindowIndex{0});
+        const ProbeExchangeArgs<T> probe{.me = me,
+                                         .peer = static_cast<int>(peer_slot),
+                                         .comm = comm.mpi,
+                                         .tag = kFlatPayloadTag,
+                                         .datatype = datatype<T>::get(),
+                                         .send = h.send_buffer.data() + h.send_displs[peer_slot],
+                                         .send_count = h.send_counts[peer_slot],
+                                         .recv = &h.recv_buffer};
+        const auto probed = probe_pairwise(probe, h.requests);
+        h.recv_counts[peer_slot] = probed.recv_count;
+        h.recv_displs[peer_slot] = 0; // the window is one slot, so the peer's block starts the buffer
+        h.posted = probed.posted;
         return h;
     }
 #endif
@@ -384,10 +406,10 @@ inline auto begin_alltoallv(const Blocks &send_data,
                            &h.request);
         }
         else {
-            // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer, left
-            // in flight in the handle exactly as MPI_Ialltoallv is. The buffers MPI holds live in `h`
-            // and travel with it: a vector move keeps its heap block, so returning `h` moves nothing
-            // MPI is reading.
+            // S == 1 world with the recv layout already known -- an unknown one took the matched-probe
+            // arm above. Same pairing as the Hybrid path, one message per reachable peer, left in flight
+            // in the handle exactly as MPI_Ialltoallv is. The buffers MPI holds live in `h` and travel
+            // with it: a vector move keeps its heap block, so returning `h` moves nothing MPI is reading.
             const SparsePairwiseArgs pairwise{
                 .plan = plan,
                 .me = rank(comm),

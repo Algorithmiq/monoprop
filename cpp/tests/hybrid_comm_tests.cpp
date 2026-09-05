@@ -609,6 +609,91 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
     }
 }
 
+// The S == 1 sparse query round takes its recv size off the peer's payload envelope (MPI_Mprobe +
+// MPI_Get_count), so nothing is exchanged ahead of the payload. Two things the vanished count round used
+// to provide must still hold: a length only the SENDER knows arrives whole, and an EMPTY block arrives
+// as an empty block -- the send is unconditional, because a skipped send is a probe that never matches.
+//
+// `posted` is the observable: two requests (the send and the matched receive) whatever the counts, zero
+// when the shift names this rank itself, and never the third and fourth a count round would add.
+BOOST_AUTO_TEST_CASE(hybrid_comm_matched_probe_sizes_the_recv_without_a_count_round) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    Comm c{MPI_COMM_WORLD};
+    // Sender-decided and not derivable by the receiver, zero for some rank in every pairing.
+    const auto len_of = [](int r) { return r % 4 == 1 ? 0 : ((r * 3) % 7) + 1; };
+    for (int shift = 0; shift < R; ++shift) {
+        const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
+        const int me = world_rank();
+        const int peer = plan.peer(me, 0);
+        std::vector<std::vector<int>> send(static_cast<size_t>(R));
+        for (int j = 0; j < len_of(me); ++j) {
+            send[static_cast<size_t>(peer)].push_back((me * 1000) + j);
+        }
+        auto h = monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan);
+        BOOST_CHECK_EQUAL(h.posted, peer == me ? 0 : 2);
+        std::vector<std::vector<int>> out;
+        h.wait_into(out);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+        for (int src = 0; src < R; ++src) {
+            const auto &blk = out[static_cast<size_t>(src)];
+            if (src != peer) {
+                BOOST_CHECK(blk.empty());
+                continue;
+            }
+            BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), len_of(peer));
+            for (int j = 0; j < len_of(peer); ++j) {
+                BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], (peer * 1000) + j);
+            }
+        }
+    }
+}
+
+// Engine::run_exchange posts a probed query round and a known-layout response round back to back under
+// ONE tag, so the empty messages the probe arm now always sends share an envelope with the response
+// round's receives. What keeps them apart is that each round posts the same number of messages at both
+// ends and the query round is waited out before the response round posts; a cross-match would surface
+// here as a query value in a response block, a wrong length, or a hang.
+BOOST_AUTO_TEST_CASE(hybrid_comm_matched_probe_rounds_do_not_cross_match) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    Comm c{MPI_COMM_WORLD};
+    const int me = world_rank();
+    for (int round = 0; round < 8; ++round) {
+        const auto len_of = [round](int r) { return (r + round) % 3; }; // includes 0
+        const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = 1 + (round % (R - 1))};
+        const int peer = plan.peer(me, 0);
+
+        std::vector<std::vector<int>> queries(static_cast<size_t>(R));
+        for (int j = 0; j < len_of(me); ++j) {
+            queries[static_cast<size_t>(peer)].push_back((me * 1000) + (round * 10) + j);
+        }
+        std::vector<std::vector<int>> inc_q;
+        monoprop::mpi::begin_alltoallv(queries, c, false, nullptr, plan).wait_into(inc_q);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(inc_q[static_cast<size_t>(peer)].size()), len_of(peer));
+
+        // One answer per query received, so the response counts are the query counts transposed -- the
+        // known layout that sends the response round down the pairwise arm instead of the probe arm.
+        std::vector<std::vector<int>> responses(static_cast<size_t>(R));
+        for (const int q : inc_q[static_cast<size_t>(peer)]) {
+            responses[static_cast<size_t>(peer)].push_back(500000 + q);
+        }
+        std::vector<int> known(static_cast<size_t>(R), 0);
+        known[static_cast<size_t>(peer)] = len_of(me);
+        std::vector<std::vector<int>> inc_r;
+        monoprop::mpi::begin_alltoallv(responses, c, false, &known, plan).wait_into(inc_r);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(inc_r[static_cast<size_t>(peer)].size()), len_of(me));
+        for (int j = 0; j < len_of(me); ++j) {
+            BOOST_CHECK_EQUAL(inc_r[static_cast<size_t>(peer)][static_cast<size_t>(j)],
+                              500000 + (me * 1000) + (round * 10) + j);
+        }
+    }
+}
+
 // known_recv_counts is CALLER-supplied, so it can carry a count for a rank the plan does not name --
 // the response round's transpose is only as masked as whatever produced it. No receive is ever posted
 // for a non-peer, so an unmasked count sizes recv_buffer for bytes nothing writes and wait_into would
