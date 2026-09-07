@@ -493,8 +493,16 @@ bench-ci-rungs LABEL:
     while IFS='|' read -r head args <&3; do
       IFS=$' \t' read -r rung ranks partitions rounds <<<"$head"
       case "${rung:-}" in '' | '#'*) continue ;; esac
-      # A missing field would otherwise fall through to a default and measure something else.
-      case "${rounds:-}" in '' | *[!0-9]*) echo "::error::rung $rung has no round count"; exit 1 ;; esac
+      # A missing field would otherwise fall through to a default and measure something else,
+      # and a non-numeric one reaches the arithmetic below as an unset name, so worth 0.
+      for field in ranks partitions rounds; do
+        case "${!field:-}" in
+          '') echo "::error::rung $rung has no $field"; exit 1 ;;
+          *[!0-9]*)
+            [[ "$field" == partitions && "${!field}" == per-rank ]] && continue
+            echo "::error::rung $rung has a non-numeric $field: '${!field}'"; exit 1 ;;
+        esac
+      done
       if [[ "$partitions" == per-rank ]]; then
         partitions=$((BENCH_CORES / ranks))
       fi
