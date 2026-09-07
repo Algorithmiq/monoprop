@@ -68,6 +68,18 @@ ALLOWED: dict[tuple[str, str], str] = {
         "deploy.yml",
         "Build sdist and wheel",
     ): "release packaging was deliberately left in the workflow",
+    (
+        "bench.yml",
+        "Resolve the core count",
+    ): "the benchmarking ladder is only meaningful in CI, so it lives in the workflow",
+    (
+        "bench.yml",
+        "Run the ladder rungs",
+    ): "the benchmarking ladder is only meaningful in CI, so it lives in the workflow",
+    (
+        "bench.yml",
+        "Track benchmarks with Bencher",
+    ): "the benchmarking ladder is only meaningful in CI, so it lives in the workflow",
 }
 
 # Version and help queries are not builds.

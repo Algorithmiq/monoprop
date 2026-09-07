@@ -316,16 +316,18 @@ appears at one rung and not the one below it names its own cause.
 
 The `bench_bare_metal.yml` workflow benchmarks every commit on `main` on a dedicated
 [RunsOn](https://runs-on.com/) EC2 node, one per run. [Bencher](https://bencher.dev/) records the
-time series and reports threshold violations. The workflow invokes the same recipes available
-locally:
+time series and reports threshold violations. The ladder itself -- rung parsing, the pytest and
+`mpiexec` invocations, and the Bencher upload -- lives in `bench.yml`, because it is only
+meaningful in CI. Reproducing one rung locally is `just bench` (or `just bench-mpi`) with that
+rung's shape and flags:
 
 ```bash
 export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1     # the shape, declared
-just bench-ci ci-bare-metal-L1       # 1 rank, 1 partition
-just bench-bmf ci-bare-metal-L1      # the same results as Bencher Metric Format JSON
+just bench ci-bare-metal-L1 --bench-rounds 3 -k "test_model_propagate and hubbard"
 
-export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # `bench-ci` under mpiexec; P sizes the pinning
-just bench-ci-mpi ci-bare-metal-L2b 4 -k heisenberg
+export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # P sizes the pinning
+just bench-mpi ci-bare-metal-L2b 4 --map-by slot:PE=2 --bind-to core
+monoprop-bench-bmf benches/results ci-bare-metal-L2b    # results as Bencher Metric Format JSON
 ```
 
 `monoprop-bench-bmf` combines both artifacts because each Bencher upload accepts one adapter. The
@@ -353,8 +355,8 @@ MPI-enabled build, so the edges between them move the shape and nothing else.
 
 | rung | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
 |---|---|---|---:|---:|
-| L1 | 1 × 1 | `just bench-ci` | 1 | 3 |
-| L2a | 1 × 8 | `just bench-ci` | 8 | 1 |
+| L1 | 1 × 1 | `pytest benches` | 1 | 3 |
+| L2a | 1 × 8 | `pytest benches` | 8 | 1 |
 | L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
 
 `R × P` = 8 at L2a and L2b. L2b is 4 × 2 because the per-rank cost is paid `R` times on one node,
