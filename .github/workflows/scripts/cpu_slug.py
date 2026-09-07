@@ -38,7 +38,15 @@ def main() -> str | None:
     paths = sorted(Path("benches/results").glob("time-*.json"))
     if not paths:
         return "::error::no timing artifact to read the CPU from"
-    brand = json.loads(paths[0].read_text())["machine_info"]["cpu"]["brand_raw"]
+    path = paths[0]
+    # A truncated artifact or a pytest-benchmark schema change must name itself in the log,
+    # not arrive as a traceback around the one field this reads.
+    try:
+        brand = json.loads(path.read_text())["machine_info"]["cpu"]["brand_raw"]
+    except json.JSONDecodeError as exc:
+        return f"::error::{path} is not valid JSON: {exc}"
+    except (KeyError, TypeError):
+        return f"::error::{path} has no machine_info.cpu.brand_raw"
     print(slugify(str(brand)))
     return None
 

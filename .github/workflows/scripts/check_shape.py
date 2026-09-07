@@ -51,7 +51,7 @@ def main(argv: list[str]) -> str | None:
     if int(partitions) > 1 and threads and not placed:
         return (
             f"::error::{path.stem} placed no thread on a CPU of its own. "
-            "partitions above the rank's visible cores returns an empty placement order."
+            "partitions above the rank's visible cores return an empty placement order."
         )
     return None
 

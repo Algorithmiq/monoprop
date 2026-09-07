@@ -470,15 +470,24 @@ bench-ci-resolve-cores:
     print("variant ", monoprop.__variant__)
     print("cores   ", cores, "physical,", psutil.cpu_count(logical=True), "logical")
     print("affinity", len(os.sched_getaffinity(0)))
-    with open(os.environ["GITHUB_ENV"], "a") as env:
-        print(f"BENCH_CORES={cores}", file=env)
+    # Outside Actions there is no GITHUB_ENV to hand the next step: print the assignment
+    # instead, so a local caller can `export` it and run the rungs by hand.
+    if path := os.environ.get("GITHUB_ENV"):
+        with open(path, "a") as env:
+            print(f"BENCH_CORES={cores}", file=env)
+    else:
+        print(f"BENCH_CORES={cores}")
     PY
+
+# RUNGS is one rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`; BENCH_CORES
+# comes from `bench-ci-resolve-cores`, which prints the assignment when run outside Actions.
 
 # Run every newline-delimited rung in RUNGS under the requested rank and partition shape.
 bench-ci-rungs LABEL:
     #!/usr/bin/env bash
     set -euo pipefail
     bench_label="$1"
+    : "${BENCH_CORES:?bench-ci-rungs needs BENCH_CORES; run just bench-ci-resolve-cores first}"
     echo "physical cores: $BENCH_CORES"
     # fd 3, because mpiexec forwards its own stdin to rank 0 and would eat the rung list.
     while IFS='|' read -r head args <&3; do
