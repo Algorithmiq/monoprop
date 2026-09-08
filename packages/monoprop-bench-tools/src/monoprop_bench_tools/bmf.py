@@ -34,7 +34,8 @@ Three measures are emitted:
 ``terms`` (count)
     Terms in the evolved operator. Deterministic for a fixed seed and problem
     size, so it is held to an exact match: it is the only check that a timing
-    win is not an accuracy change.
+    win is not an accuracy change. Recorded on the benchmark that owns the
+    operator, or under ``operator[<picture>]`` where several operations share one.
 
 Usage::
 
@@ -57,8 +58,8 @@ _NS_PER_S = 1e9
 # describe a built operator rather than one timed call.
 _OPERATOR = "operator"
 
-# ``opsize`` is also keyed by pytest node id (``::``, as report.py reads it) for a
-# private A/B harness; those are not operators, so they are skipped here.
+# ``opsize`` is keyed by picture where operations share one operator, and by pytest node
+# id (``::``, as report.py reads it) where a benchmark holds its own.
 _NODE_ID_SEP = "::"
 
 Metric = dict[str, float]
@@ -126,9 +127,13 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
     for benchmark, peak in results.get("memhwm", {}).items():
         measure(benchmark, "peak-memory", peak)
 
+    # A node-id key names the benchmark that built the operator, so its count belongs on
+    # that benchmark, beside the latency and peak memory of the same call. Where a shared
+    # operator is also counted per picture the two agree by construction, and a run where
+    # they disagree is exactly what the exact-match threshold exists to catch.
     for key, size in results.get("opsize", {}).items():
-        if _NODE_ID_SEP not in key:
-            measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
+        name = key if _NODE_ID_SEP in key else f"{_OPERATOR}[{key}]"
+        measure(name, "terms", size["terms"])
 
     return bmf
 

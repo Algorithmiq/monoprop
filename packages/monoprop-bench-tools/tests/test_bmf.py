@@ -93,7 +93,9 @@ def test_operator_metrics_are_grouped_per_picture_and_model(tmp_path: Path) -> N
     assert result["operator[hubbard]"] == {"terms": {"value": 12.0}}
 
 
-def test_operator_metrics_skip_node_id_keyed_entries(tmp_path: Path) -> None:
+def test_operator_metrics_land_on_the_benchmark_that_owns_the_operator(
+    tmp_path: Path,
+) -> None:
     build_graph = "bench_random.py::test_random_build_graph[heisenberg]"
     _write(
         tmp_path,
@@ -101,14 +103,24 @@ def test_operator_metrics_skip_node_id_keyed_entries(tmp_path: Path) -> None:
     )
     result = bmf.build_bmf(tmp_path, "ci")
 
-    # record_opsize keys by node id for a private A/B harness; Bencher's history keys
-    # on the name forever, so those entries must not reach it under any name at all.
-    assert set(result) == {_ENERGY, "operator[heisenberg]"}
-    assert result == {
-        _ENERGY: {
-            "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9}
-        },
-        "operator[heisenberg]": {"terms": {"value": 12.0}},
+    # A node-id key names a benchmark holding its own operator, so dropping it leaves that
+    # operator's term count untracked -- at L1 that is both fixed-model `propagate` rows.
+    assert set(result) == {_ENERGY, "operator[heisenberg]", build_graph}
+    assert result[build_graph] == {"terms": {"value": 34.0}}
+    assert result["operator[heisenberg]"] == {"terms": {"value": 12.0}}
+
+
+def test_operator_metrics_join_the_timings_of_the_same_benchmark(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, opsize={_ENERGY: {"terms": 34}})
+    result = bmf.build_bmf(tmp_path, "ci")
+
+    # One benchmark, both measures: Bencher keys history on (benchmark, measure), so the
+    # count has to share the name its latency is recorded under.
+    assert result[_ENERGY] == {
+        "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9},
+        "terms": {"value": 34.0},
     }
 
 
