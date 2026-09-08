@@ -336,7 +336,7 @@ measures are recorded:
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
-| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99 |
+| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
 | `peak-memory` | bytes | per-operation peak RSS (`VmHWM`), summed over ranks | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
@@ -367,6 +367,14 @@ more than one partition inside each rank, which 8 × 1 would not.
 
 Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before releasing round
 *k*'s, so a second round holds two — a memory setting here, not a statistics setting.
+
+Rounds would not buy stability anyway. Across two runs of identical work — same operator to the
+byte, same placement, same peak — `build_graph` moved 14.5% at L2a and 14.8% at L2b, in the same
+direction, while `energy` and `gradient` stayed inside 2.2%. It is the only operation of the three
+that allocates, and `c7i.4xlarge` is not a metal instance: the node is the run's alone but its host
+is not, so a first-touch-heavy phase is exposed to bandwidth it does not control. That variance is
+between runs, so averaging within one cannot see it, which is why `latency` waits for 12 samples
+before its t-test is allowed to alert.
 
 #### L1 — LADDER.md's own rows, one thread
 
