@@ -69,6 +69,10 @@ This package deliberately holds no benchmarks. monoprop's own suite lives in the
 repository's `benches/` directory, because its benchmark names are the key
 Bencher's history is stored under and must not move with a library release.
 
+`bmf.benchmark_name` maps a pytest node id to the name a metric is exported
+under, so that mapping is history-bearing for the same reason: changing it
+renames every series it touches.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

@@ -42,7 +42,11 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: benchmark
+          # A cache filled by a non-MPI build would restore a monoprop without MPI, which every
+          # rung below then shares.
+          cache-suffix: benchmark-mpi
+          # The build below requires MPI::MPI_CXX, and the multi-rank rungs need mpiexec.
+          mpi: "on"
 
       - name: Install package
         env:
@@ -177,6 +181,7 @@ jobs:
               --thresholds-reset \
               --threshold-measure latency \
               --threshold-test t_test \
+              --threshold-min-sample-size 12 \
               --threshold-max-sample-size 64 \
               --threshold-lower-boundary _ \
               --threshold-upper-boundary 0.99 \

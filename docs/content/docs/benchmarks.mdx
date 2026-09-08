@@ -336,7 +336,7 @@ measures are recorded:
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
-| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99 |
+| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
 | `peak-memory` | bytes | per-operation peak RSS (`VmHWM`), summed over ranks | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
@@ -350,14 +350,16 @@ Bencher keys history on `(branch, testbed, benchmark, measure)`, so a testbed de
 *and* one shape and the name carries both: `<cpu>-<cores>c-<rung>`, where `<cpu>` is `brand_raw`
 slugified and `<cores>` the physical core count read off the machine. On the pinned `c7i.4xlarge` —
 16 vCPU / **8 physical cores**, 32 GiB nominal (~30 usable), no swap — that gives
-`intel-xeon-platinum-8488c-8c-L1` and `-L2a`, `-L2b`. All three rungs run on one node from one
-MPI-enabled build, so the edges between them move the shape and nothing else.
+`intel-xeon-platinum-8488c-8c-L1` and `-L2a`, `-L2b`, `-L2c`, `-L2d`. Every rung runs on one node
+from one MPI-enabled build, so the edges between them move the shape and nothing else.
 
 | rung | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
 |---|---|---|---:|---:|
 | L1 | 1 × 1 | `pytest benches` | 1 | 3 |
 | L2a | 1 × 8 | `pytest benches` | 8 | 1 |
 | L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
+| L2c | 1 × 8 | `pytest benches` | 8 | 1 |
+| L2d | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
 
 `R × P` = 8 at L2a and L2b. L2b is 4 × 2 because the per-rank cost is paid `R` times on one node,
 which makes it the memory-worst rung and so the one the size ceiling is set against; `P` = 2 keeps
@@ -404,6 +406,24 @@ the number to provision against and the wrong number to divide.
 The term count is identical at both shapes, which is the geometry-independence check. L2b's node
 sum is 1.24x L2a's peak at this size — the per-rank cost paid four times on one node — against
 1.29x at 1.5M, so the multiplier falls as the operator grows.
+
+#### L2c and L2d — `propagate`, at the same two shapes
+
+`propagate` builds an operator of its own instead of reading the graph `build_graph` publishes, so
+it cannot share L2a and L2b's process: there the rung's peak is the *max* over three operations on
+one operator, and adding a fourth that holds its own would make it a *sum*. At this size that sum
+does not fit — `propagate` is roughly 100 bytes per term at `LADDER.md`'s L2a point, so ~17 GiB for
+this rung's 167M terms, on top of L2a's 18.4 GiB against ~30 usable.
+
+So it takes the same two shapes in processes of its own, which is also what keeps L2a and L2b's
+`terms` equality meaningful: three operations, one operator, one count.
+
+`-k "test_random_propagate and heisenberg"` with L2a and L2b's flags, so the problem is the one
+those rungs measure and only the operation differs.
+
+Only the random Heisenberg row is here. `LADDER.md`'s fixed-model `propagate` rows at their L2
+cutoffs are 60 GiB (hubbard) and 80 GiB (pauli), an order of magnitude past this node, and at L1
+sizes they would only repeat L1.
 
 #### Inputs
 
