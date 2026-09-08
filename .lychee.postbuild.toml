@@ -1,5 +1,9 @@
 # Post-build check over exported HTML with external links enabled.
 
+root_dir = "docs/out"
+fallback_extensions = ["html"]
+no_progress = true
+
 # Avoid noisy/generated dependency paths if ever passed as inputs.
 exclude_path = ["docs/node_modules/**"]
 

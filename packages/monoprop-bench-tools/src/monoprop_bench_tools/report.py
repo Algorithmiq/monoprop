@@ -172,8 +172,12 @@ def _picture_of(op_key: str) -> str:
 def _display_op(op_key: str) -> str:
     """Turn a node id into a ``group / op`` label, dropping the picture tag.
 
-    ``...::test_random_energy[heisenberg]`` -> ``random / energy``;
-    ``...::test_model[hubbard]``            -> ``model / hubbard``.
+    ``...::test_random_energy[heisenberg]``  -> ``random / energy``;
+    ``...::test_model_propagate[hubbard]``   -> ``hubbard / propagate``.
+
+    A parameter that is not a picture names the model, and it replaces the group: the
+    fixed-model tests are all called ``test_model_*``, so dropping it would label the
+    hubbard and the pauli row identically and the two would be indistinguishable.
     """
     _file, _, test = op_key.partition("::")
     base, _, param = test.removeprefix("test_").partition("[")
@@ -181,9 +185,9 @@ def _display_op(op_key: str) -> str:
     if param in _PICTURES:
         param = ""  # the section header already states the picture
     group, _, op = base.partition("_")
-    if not op:  # parametrized-only name, e.g. "model" + param "hubbard"
-        return f"{group} / {param}" if param else group
-    return f"{group} / {op}"
+    if param:
+        group = param
+    return f"{group} / {op}" if op else group
 
 
 def _fmt_cpus(meta: dict) -> str:
@@ -272,10 +276,9 @@ def build_report(results_dir: Path) -> str:
     def sec(name: str) -> dict[str, dict]:
         return {lbl: results.get(lbl, {}).get(name, {}) for lbl in labels}
 
-    params, opsize, memrest, memory, memory_max = (
+    params, opsize, memory, memory_max = (
         sec("params"),
         sec("opsize"),
-        sec("memrest"),
         sec("memhwm"),
         sec("memhwm_max"),
     )
@@ -360,15 +363,6 @@ def build_report(results_dir: Path) -> str:
             lambda lbl, p: (
                 f"{opsize[lbl][p]['terms']:,}" if p in opsize.get(lbl, {}) else "—"
             ),
-        ),
-        *_section(
-            "Operator resting footprint (RSS)",
-            "Settled resident memory of the built operator + graph, after the "
-            "build's transient buffers are freed (`gc.collect()` + `heap_trim`).",
-            "Picture",
-            [(p, _PICTURE_NAMES[p]) for p in _pictures_present(memrest, labels)],
-            labels,
-            lambda lbl, p: _fmt_mem(memrest.get(lbl, {}).get(p)),
         ),
         *_model_config_section(labels, results),
         *ops_section("Heisenberg", "heisenberg"),

@@ -25,10 +25,8 @@ Run one group per pytest process: build_graph/propagate and energy/gradient do n
 from __future__ import annotations
 
 import os
-from typing import Any
 
 import pytest
-from monoprop_bench_tools.memory.cpu import resting_rss_bytes
 from monoprop_bench_tools.models import MODELS, barrier_setup, barriered
 
 # `build_graph` extends the graph, so a driver that re-applies its circuit retains one layer-set per step
@@ -43,47 +41,6 @@ def skip_if_graph_will_not_fit(model: str, steps: int) -> None:
             f"{model}: {steps} successive build_graph calls retain {steps} layer-sets, "
             f"measured to exceed 242 GiB. Set monoprop_BENCH_ALLOW_BIG_GRAPH=1 to run it."
         )
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("model", list(MODELS))
-def test_model(
-    benchmark,
-    bench_comm,
-    model_configs,
-    model,
-    record_model_config,
-    record_model_stats,
-):
-    """Benchmark a fixed in-place model simulation (Heisenberg picture)."""
-    _config_cls, build_fn, steps_fn = MODELS[model]
-    config = model_configs[model]
-    steps = steps_fn(config)
-    record_model_config(model, config)
-
-    state: dict[str, Any] = {}
-
-    def setup():
-        state["baseline_rss"] = resting_rss_bytes()
-        state["built"] = build_fn(config, comm=bench_comm)
-        return (state["built"], steps), {}
-
-    def run(built, n_steps):
-        propagator, circuit = built
-        for _ in range(n_steps):
-            propagator.propagate(circuit)
-        return propagator.expectation_value()
-
-    result = benchmark.pedantic(
-        barriered(run, bench_comm),
-        setup=barrier_setup(bench_comm, setup),
-        rounds=1,
-        iterations=1,
-    )
-    assert isinstance(result, float)
-
-    propagator, _circuit = state["built"]
-    record_model_stats(model, propagator, state["baseline_rss"])
 
 
 @pytest.mark.slow
@@ -173,12 +130,19 @@ def test_model_propagate(
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
 def test_model_energy(
-    benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
+    benchmark,
+    model_graph,
+    model,
+    model_configs,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating a fixed model's expectation-value functional."""
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
-    functional = propagator.expectation_value_functional()
+    functional = propagator.expectation_value_functional(pare_threshold)
     op_memory.open()
     result = benchmark.pedantic(
         barriered(functional, bench_comm),
@@ -194,12 +158,19 @@ def test_model_energy(
 @pytest.mark.slow
 @pytest.mark.parametrize("model", list(MODELS))
 def test_model_gradient(
-    benchmark, model_graph, model, model_configs, bench_comm, bench_rounds, op_memory
+    benchmark,
+    model_graph,
+    model,
+    model_configs,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating a fixed model's expectation-value-and-gradient functional."""
     skip_if_graph_will_not_fit(model, MODELS[model][2](model_configs[model]))
     propagator, parameters = model_graph(model)
-    functional = propagator.expectation_value_and_gradient_functional()
+    functional = propagator.expectation_value_and_gradient_functional(pare_threshold)
     op_memory.open()
     _value, gradient = benchmark.pedantic(
         barriered(functional, bench_comm),

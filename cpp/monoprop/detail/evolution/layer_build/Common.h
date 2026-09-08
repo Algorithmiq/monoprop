@@ -104,25 +104,6 @@ struct FusedContract {
     std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
 };
 
-// Queries ride flat VecZ buffers: kQueryWords elements per query (W monomial words + one ±1 phase word).
-// The source index is not in the payload — the resolver answers by position; the querier holds src_idx_r[r][q].
-template <size_t NumModes>
-inline constexpr size_t kQueryWords = mpi_detail::kWords<NumModes> + 1;
-
-// Fused query+value record width (R>1): the plain query record plus one trailing word holding the source's
-// pre-cos coeff (v_src, bit-cast from double), so query + value ride a single alltoallv instead of two.
-template <size_t NumModes>
-inline constexpr size_t kQueryWordsFused = kQueryWords<NumModes> + 1;
-
-// The unsigned-int intermediate normalizes the ±1 sign bit into a fixed 32-bit pattern so the round-trip
-// is exact for any VecZ element width. Edit encode/decode as a pair.
-inline auto encode_phase(int phase) -> size_t {
-    return static_cast<size_t>(static_cast<unsigned int>(phase));
-}
-inline auto decode_phase(size_t word) -> int {
-    return static_cast<int>(static_cast<unsigned int>(word));
-}
-
 // bit_cast, not a conversion, so v_src arrives over the wire bit-identical.
 static_assert(sizeof(size_t) == sizeof(double), "fused query value word assumes 64-bit VecZ element");
 inline auto encode_value(double v) -> size_t {
@@ -130,47 +111,6 @@ inline auto encode_value(double v) -> size_t {
 }
 inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
-}
-
-template <size_t NumModes>
-inline auto query_push(VecZ &buf, const Monomial<NumModes> &mono, int phase) -> void {
-    mpi_detail::append_monomial_words<NumModes>(mono, buf);
-    buf.push_back(encode_phase(phase));
-}
-
-// The mono + phase words occupy the same leading offsets in the plain and fused record, so readers differ
-// only in the per-record stride QW (defaulted to the plain width).
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_read(const VecZ &buf, size_t q, Monomial<NumModes> &mono_out, int &phase_out) -> void {
-    const size_t base = q * QW;
-    mono_out = mpi_detail::read_monomial_from_words<NumModes>(buf, base);
-    phase_out = decode_phase(buf[base + mpi_detail::kWords<NumModes>]);
-}
-
-// No monomial reconstruction: process_responses needs only the phase.
-template <size_t NumModes, size_t QW = kQueryWords<NumModes>>
-inline auto query_phase(const VecZ &buf, size_t q) -> int {
-    return decode_phase(buf[q * QW + mpi_detail::kWords<NumModes>]);
-}
-
-template <size_t NumModes>
-inline auto query_value(const VecZ &buf, size_t q) -> double {
-    return decode_value(buf[q * kQueryWordsFused<NumModes> + mpi_detail::kWords<NumModes> + 1]);
-}
-
-// Requires v.size() == q.size()/kQueryWords: exactly one value per query record.
-template <size_t NumModes>
-inline auto build_fused_query_value(const VecZ &q, const std::vector<double> &v, VecZ &out) -> void {
-    constexpr size_t W = kQueryWords<NumModes>;
-    const size_t nq = q.empty() ? 0 : q.size() / W;
-    out.clear();
-    out.reserve(nq * kQueryWordsFused<NumModes>);
-    for (size_t i = 0; i < nq; ++i) {
-        out.insert(out.end(),
-                   q.begin() + static_cast<std::ptrdiff_t>(i * W),
-                   q.begin() + static_cast<std::ptrdiff_t>((i + 1) * W));
-        out.push_back(encode_value(v[i]));
-    }
 }
 
 } // namespace monoprop::detail

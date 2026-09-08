@@ -68,11 +68,9 @@ public:
 private:
     size_t length_ = 0;
     bool is_dense_ = false;
-    /// Widened from TermIndex, whose width is a build knob (monoprop_WIDE_TERM_INDEX) that has no
-    /// business in an exported signature.
-    VecZ rows_ = {};
+    VecZ rows_;
     /// sparse: parallel to rows_; dense: the whole vector
-    VecD values_ = {};
+    VecD values_;
 };
 
 monoprop_EXPORT auto map_params(const VecD &parameters,

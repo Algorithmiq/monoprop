@@ -1,0 +1,3 @@
+# Homebrew equivalent of tools/packages/apt-mpi.txt.
+
+open-mpi                # MPI::MPI_CXX, mpiexec, and the mpi4py build headers

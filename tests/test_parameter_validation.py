@@ -54,6 +54,27 @@ class TestConstructorValidation:
                 comm=serial_comm,
             )
 
+    def test_schrodinger_cutoff_beyond_the_term_index_raises(self, serial_comm):
+        """A Schrodinger cutoff near the mode count admits 2**num_modes paired basis terms.
+
+        The basis is enumerated, not listed, so an over-wide cutoff is no longer an
+        allocation failure but a walk that does not finish. It has to be refused up front,
+        naming the setting responsible rather than the ceiling it happens to trip.
+
+        64 modes deliberately: 2**64 does not fit ``size_t``, so the rejection holds
+        whatever the ``TermIndex`` width and however many partitions divide the rows.
+        """
+        num_modes = 64
+        operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=num_modes)
+        with pytest.raises(RuntimeError, match="schrodinger_cutoff"):
+            MajoranaPropagator(
+                operator,
+                [],
+                cutoff=4,
+                schrodinger_cutoff=2 * num_modes,
+                comm=serial_comm,
+            )
+
 
 class TestGraphAndParameterValidation:
     def test_build_graph_accumulates_layers(self, serial_comm):

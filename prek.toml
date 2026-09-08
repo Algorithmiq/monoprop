@@ -88,6 +88,14 @@ hooks = [
 ]
 
 [[repos]]
+repo = "local"
+hooks = [
+    { id = "check-workflow-commands", name = "check workflows call recipes", language = "python", entry = "python tools/check-workflow-commands.py", files = "^\\.github/workflows/.*\\.ya?ml$", pass_filenames = true, additional_dependencies = [
+        "PyYAML",
+    ] },
+]
+
+[[repos]]
 repo = "https://github.com/python-jsonschema/check-jsonschema"
 rev = "0.37.4"
 hooks = [

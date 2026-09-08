@@ -2,9 +2,12 @@ FROM ghcr.io/astral-sh/uv:latest AS uv
 
 FROM mcr.microsoft.com/devcontainers/base:ubuntu26.04
 
-# install needed packages
+COPY tools/packages/apt.txt tools/packages/apt-mpi.txt /tmp/packages/
+
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
-    && apt-get -y install \
+    && sed -e 's/#.*//' -e 's/[[:space:]]*$//' /tmp/packages/*.txt \
+    | grep -v '^$' \
+    | xargs apt-get -y install \
     clang \
     clang-tidy \
     clang-format \
@@ -17,12 +20,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     lcov \
     ninja-build \
     python3 \
-    openmpi-bin \
-    libboost-dev \
-    libboost-test-dev \
-    libhwloc-dev \
-    libmsgpack-cxx-dev \
-    libopenmpi-dev \
+    && rm -rf /tmp/packages \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*

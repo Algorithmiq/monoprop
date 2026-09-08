@@ -1,9 +1,10 @@
 # Link-time export-visibility probe: unlike monoprop_unit_tests.x (linked against monoprop-objs, the
 # plain OBJECT library, which never crosses a dynamic-visibility boundary), this target links against
 # the installed "monoprop" SHARED target -- exactly as an external find_package(monoprop CONFIG)
-# consumer would. "-Wl,--no-undefined" (GNU ld) / "-Wl,-undefined,error" (Apple ld64) makes the link
-# step itself fail on any symbol the shared library does not export, instead of deferring the failure
-# to a client's runtime load.
+# consumer would. "-Wl,--no-undefined" (GNU ld) makes the link step itself fail on any symbol the
+# shared library does not export, instead of deferring the failure to a client's runtime load. Apple
+# ld64 errors on undefined symbols by default, so no flag is needed there ("-Wl,-undefined,error" is
+# accepted but deprecated, and warns).
 
 add_executable(monoprop_link_export_probe.x link_export_probe.cpp)
 
@@ -19,13 +20,7 @@ target_link_libraries(
     monoprop
 )
 
-if(APPLE)
-  target_link_options(
-    monoprop_link_export_probe.x
-    PRIVATE
-      "-Wl,-undefined,error"
-  )
-else()
+if(NOT APPLE)
   target_link_options(monoprop_link_export_probe.x PRIVATE "-Wl,--no-undefined")
 endif()
 

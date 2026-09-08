@@ -203,13 +203,21 @@ struct SupportCutoff {
     }
 };
 
+// std::function::target, out of line on purpose: GCC cannot see that the function's manager writes
+// the _Any_data scratch before target() reads it back, so inlining the read into the caller yields a
+// bogus -Wmaybe-uninitialized. The lookup runs once per evaluator, never inside a scan loop.
+template <typename T, typename Fn>
+[[gnu::noinline]] auto cutoff_target(const Fn &cutoff_fn) -> const T * {
+    return cutoff_fn.template target<T>();
+}
+
 template <size_t NumModes>
 class CutoffEvaluator {
 public:
     explicit CutoffEvaluator(const CutoffFn<NumModes> &cutoff_fn)
         : cutoff_fn_(cutoff_fn),
-          length_cutoff_(cutoff_fn.template target<LengthCutoff<NumModes>>()),
-          support_cutoff_(cutoff_fn.template target<SupportCutoff<NumModes>>()) {}
+          length_cutoff_(cutoff_target<LengthCutoff<NumModes>>(cutoff_fn)),
+          support_cutoff_(cutoff_target<SupportCutoff<NumModes>>(cutoff_fn)) {}
 
     auto length_cutoff() const -> const LengthCutoff<NumModes> * { return length_cutoff_; }
 

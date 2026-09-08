@@ -45,11 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 import pytest
-from monoprop_bench_tools.memory.cpu import (
-    HighWaterMark,
-    pinned_thread_summary,
-    resting_rss_bytes,
-)
+from monoprop_bench_tools.memory.cpu import HighWaterMark, pinned_thread_summary
 from monoprop_bench_tools.models import (
     MODELS,
     RandomProblem,
@@ -127,24 +123,28 @@ def _spread(comm: Any, value: int) -> dict[str, int]:
     return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
 
 
+# (name, type, default, help).
 _RANDOM_OPTIONS = (
-    ("gen-length", 4, "Majorana operators per generator."),
-    ("obs-terms", 10000, "Observable terms."),
-    ("num-generators", 100, "Random generators (circuit gates)."),
-    ("num-modes", 128, "Fermionic modes."),
-    ("cutoff", 6, "Truncation cutoff."),
-    ("seed", 0, "Random seed."),
-    ("bench-rounds", 1, "Fixed timing rounds (MPI-safe)."),
+    ("gen-length", int, 4, "Majorana operators per generator."),
+    ("obs-terms", int, 10000, "Observable terms."),
+    ("num-generators", int, 100, "Random generators (circuit gates)."),
+    ("num-modes", int, 128, "Fermionic modes."),
+    ("cutoff", int, 6, "Truncation cutoff."),
+    ("seed", int, 0, "Random seed."),
+    ("bench-rounds", int, 1, "Fixed timing rounds (MPI-safe)."),
+    ("pare-threshold", float, None, "Edge-retention cutoff for the graph functionals."),
 )
+
+# Picture -> built graph, so one process can time build_graph, then energy, then gradient
+# against the graph it just built rather than building a second one.
+_GRAPH_CACHE: dict[str, Any] = {}
 
 _RESULTS: dict[str, Any] = {
     "meta": {},  # run configuration (ranks, threads, host, ...)
     "params": {},  # resolved random-problem hyperparameters
-    "memhwm": {},  # node id -> summed peak RSS, whole test, setup() included
-    "memhwm_max": {},  # node id -> worst-rank peak RSS, whole test, setup() included
+    "memhwm": {},  # pytest node id -> summed-over-ranks peak RSS, whole test, setup() included
+    "memhwm_max": {},  # pytest node id -> worst-rank peak RSS, whole test, setup() included
     "opsize": {},  # picture / model / node id -> {"terms": n}
-    "memrest": {},  # picture / model -> resting RSS bytes
-    "membase": {},  # fixed model -> resting RSS bytes before the model is built
     "configs": {},  # fixed model -> config dataclass fields
     "opmem": {},  # fixed model -> per-field operator memory split (bytes)
     # Timed call only (see ``OpMemory``), each {"sum", "max"}.
@@ -174,8 +174,8 @@ def _results_path() -> Path | None:
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Register benchmark configuration options for the random benchmarks."""
     group = parser.getgroup("monoprop-bench", "monoprop random benchmark sizing")
-    for name, default, help_text in _RANDOM_OPTIONS:
-        group.addoption(f"--{name}", type=int, default=default, help=help_text)
+    for name, kind, default, help_text in _RANDOM_OPTIONS:
+        group.addoption(f"--{name}", type=kind, default=default, help=help_text)
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
     for model, (config_cls, _builder, _steps) in MODELS.items():
@@ -232,9 +232,8 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
     }
     # No nanobind property exposes the engine's resolved partition count (see bindings/binder.h),
     # so record the requested env var under its own name rather than claim it is the effective value.
-    partitions_env = os.environ.get("monoprop_PARTITIONS")  # noqa: SIM112
-    if partitions_env is not None:
-        meta["partitions_env"] = partitions_env
+    # Recorded even when absent: "unset" and a missing field render identically in the report.
+    meta["partitions_env"] = os.environ.get("monoprop_PARTITIONS", "unset")  # noqa: SIM112
     return meta
 
 
@@ -242,8 +241,26 @@ def _params(config: pytest.Config) -> dict[str, Any]:
     """Return the resolved random-problem hyperparameters (defaults included)."""
     return {
         name.replace("-", "_"): config.getoption(f"--{name}")
-        for name, _default, _help in _RANDOM_OPTIONS
+        for name, _kind, _default, _help in _RANDOM_OPTIONS
     }
+
+
+def _require_shape() -> None:
+    """Fail a multi-rank run that has not declared its partition count.
+
+    ``resolve_partition_count_`` defaults to ``ranks == 1 ? cores : 1``, so an unset knob
+    under MPI measures one partition per rank -- a single-threaded run at a plausible wall
+    time, with nothing in the timing to say so. Every rank raises, so no rank is left in a
+    collective. Serial runs take the engine default and are unaffected.
+    """
+    if _size() > 1 and not os.environ.get("monoprop_PARTITIONS"):  # noqa: SIM112
+        msg = (
+            "monoprop_PARTITIONS is unset on a run of "
+            f"{_size()} ranks. The engine would use one partition per rank. Export the "
+            "shape you intend, e.g. `export monoprop_PARTITIONS=16 monoprop_NUM_THREADS=16` "
+            "for 8 ranks per 128-core node."
+        )
+        raise pytest.UsageError(msg)
 
 
 @pytest.hookimpl(trylast=True)
@@ -254,6 +271,7 @@ def pytest_configure(config: pytest.Config) -> None:
     ``trylast`` so the terminal reporter exists before non-root ranks unregister it.
     """
     nodes, ranks_per_node = _nodes()  # collective; every rank must call this
+    _require_shape()
     if _rank() == 0:
         _RESULTS["meta"] = _meta(nodes, ranks_per_node)
         _RESULTS["params"] = _params(config)
@@ -293,6 +311,12 @@ def bench_comm() -> Any:
 def bench_rounds(request: pytest.FixtureRequest) -> int:
     """Return the fixed round count for the random benchmarks."""
     return int(request.config.getoption("--bench-rounds"))
+
+
+@pytest.fixture(scope="session")
+def pare_threshold(request: pytest.FixtureRequest) -> float | None:
+    """Return the edge-retention cutoff for the graph functionals (``None`` keeps the exact graph)."""
+    return request.config.getoption("--pare-threshold")
 
 
 @pytest.fixture(scope="session")
@@ -348,10 +372,8 @@ def record_model_config() -> Callable[[str, Any], None]:
     return _do
 
 
-def _record_model_stats(
-    comm: Any, key: str, propagator: Any, baseline_rss: int | None = None
-) -> None:
-    """Record term count, operator memory breakdown and footprint under ``key``."""
+def _record_model_stats(comm: Any, key: str, propagator: Any) -> None:
+    """Record term count and operator memory breakdown under ``key``."""
     _record("opsize", key, {"terms": _reduce_sum(comm, propagator.size())})
 
     # Placement is only observable while the propagator's threads are alive.
@@ -365,25 +387,6 @@ def _record_model_stats(
             key,
             {k: _reduce_sum(comm, v) for k, v in breakdown().items()},
         )
-
-    resting = _reduce_sum(comm, resting_rss_bytes())
-    if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
-        _record("memrest", key, resting)
-
-    if baseline_rss is not None:
-        baseline = _reduce_sum(comm, baseline_rss)
-        if baseline:
-            _record("membase", key, baseline)
-
-
-@pytest.fixture
-def record_model_stats(bench_comm: Any) -> Callable[..., None]:
-    """Return ``record(model, propagator, baseline_rss)`` for fixed-model runs."""
-
-    def _do(model: str, propagator: Any, baseline_rss: int) -> None:
-        _record_model_stats(bench_comm, model, propagator, baseline_rss)
-
-    return _do
 
 
 class OpMemory:
@@ -472,9 +475,12 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     """Record ``memhwm`` (summed peak RSS) and ``memhwm_max`` (the worst rank's peak RSS).
 
     It spans ``setup``, so it predicts an OOM kill but is the wrong number for comparing
-    operations -- ``opmemdelta`` is that. The sum alone has inverted per-rank readings here
-    before, so ``memhwm_max`` is recorded alongside it, never in place of it. Both reduces
-    are collective; only rank 0 records.
+    operations -- ``opmemdelta`` is that. Spanning ``setup`` relies on windows nesting: the
+    ``op_memory`` window opens inside ``setup``, after construction, and resets the same
+    per-process kernel field, so without the fold in ``reset_peak_rss`` this figure would
+    silently start at that reset and omit the construction transient entirely. The sum alone
+    has inverted per-rank readings here before, so ``memhwm_max`` is recorded alongside it,
+    never in place of it. Both reduces are collective; only rank 0 records.
     """
     with HighWaterMark() as window:
         yield
@@ -541,11 +547,12 @@ def built_graph(
     """Return a propagator whose graph has been built (no coefficients contracted).
 
     Session-scoped per picture so the graph is built once and shared across the
-    read-only graph benchmarks (``pare``, ``energy``, ``gradient``).
-
-    Also records the operator size and resting footprint for this picture while the
-    graph is resident.
+    read-only graph benchmarks (``energy``, ``gradient``), and records the operator
+    size for this picture while the graph is resident.
     """
+    if picture in _GRAPH_CACHE:
+        return _GRAPH_CACHE[picture]
+
     mp, circuit = build_random_propagator(
         random_problem, comm=bench_comm, schrodinger=picture == "schrodinger"
     )
@@ -554,13 +561,23 @@ def built_graph(
     # Under MPI the operator is partitioned, so sum the partitions.
     _record("opsize", picture, {"terms": _reduce_sum(bench_comm, mp.size())})
 
-    # Settled RSS once the build's transients are released -- the persistent
-    # footprint the per-operation peak cannot see.
-    resting = _reduce_sum(bench_comm, resting_rss_bytes())
-    if resting:  # 0 => /proc unavailable; skip rather than record 0 MiB
-        _record("memrest", picture, resting)
-
+    _GRAPH_CACHE[picture] = mp
     return mp
+
+
+@pytest.fixture(scope="session")
+def publish_graph(picture: str) -> Callable[[Any, int], None]:
+    """Return ``publish(propagator, terms)``, handing a timed build to ``built_graph``.
+
+    Takes the term count rather than recomputing it: ``record_opsize`` has already
+    reduced it, and a second collective reduce over a 1B-term operator is not free.
+    """
+
+    def _publish(mp: Any, terms: int) -> None:
+        _GRAPH_CACHE[picture] = mp
+        _record("opsize", picture, {"terms": terms})
+
+    return _publish
 
 
 @pytest.fixture(scope="session")

@@ -35,11 +35,7 @@ using VecI = std::vector<int>;
 
 using VecZ = std::vector<size_t>;
 
-#if defined(monoprop_WIDE_TERM_INDEX)
-using TermIndex = std::uint64_t;
-#else
-using TermIndex = std::uint32_t;
-#endif
+using TermIndex = std::uint32_t; // Max number of terms per partition
 
 // resize() leaves new trivial elements uninitialized; see the default_init_allocator caveat.
 template <typename T>

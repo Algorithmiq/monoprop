@@ -18,9 +18,6 @@ from __future__ import annotations
 
 from monoprop_bench_tools.models import barrier_setup, barriered
 
-PARE_THRESHOLD = 1e-10
-INPLACE_LOWER_ATOL = 1e-5
-
 
 def test_random_build_graph(
     benchmark,
@@ -29,6 +26,7 @@ def test_random_build_graph(
     bench_rounds,
     op_memory,
     record_opsize,
+    publish_graph,
 ):
     """Benchmark building the propagation graph from a fresh propagator."""
     last = []
@@ -50,8 +48,11 @@ def test_random_build_graph(
         iterations=1,
     )
     op_memory.close(last[0])
-    assert record_opsize(last[0]) > 0
+    terms = record_opsize(last[0])
+    assert terms > 0
     assert last[0].graph_layers > 0
+    # Hands the timed graph to energy/gradient, so one process builds once.
+    publish_graph(last[0], terms)
 
 
 def test_random_propagate(
@@ -85,27 +86,17 @@ def test_random_propagate(
     assert record_opsize(last[0]) > 0
 
 
-def test_random_pare(benchmark, built_graph, bench_comm, bench_rounds):
-    """Benchmark paring the graph."""
-
-    def pare():
-        return built_graph.expectation_value_and_gradient_functional(
-            pare_threshold=PARE_THRESHOLD,
-        )
-
-    benchmark.pedantic(
-        barriered(pare, bench_comm),
-        setup=barrier_setup(bench_comm),
-        rounds=bench_rounds,
-        iterations=1,
-    )
-
-
 def test_random_energy(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+    benchmark,
+    built_graph,
+    random_problem,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating the expectation-value functional."""
-    functional = built_graph.expectation_value_functional()
+    functional = built_graph.expectation_value_functional(pare_threshold)
     op_memory.open()
 
     # The entry barrier must stay untimed, so it lives in a setup, and a setup that returns args forbids args=.
@@ -123,10 +114,16 @@ def test_random_energy(
 
 
 def test_random_gradient(
-    benchmark, built_graph, random_problem, bench_comm, bench_rounds, op_memory
+    benchmark,
+    built_graph,
+    random_problem,
+    bench_comm,
+    bench_rounds,
+    op_memory,
+    pare_threshold,
 ):
     """Benchmark evaluating the expectation-value-and-gradient functional."""
-    functional = built_graph.expectation_value_and_gradient_functional()
+    functional = built_graph.expectation_value_and_gradient_functional(pare_threshold)
     op_memory.open()
 
     def setup():
@@ -140,23 +137,3 @@ def test_random_gradient(
     )
     op_memory.close(built_graph)
     assert len(gradient) == len(random_problem.parameters)
-
-
-def test_random_inplace(benchmark, make_random_propagator, bench_comm, bench_rounds):
-    """Benchmark in-place evolution + expectation value (no graph stored)."""
-
-    def setup():
-        return (make_random_propagator(lower_atol=INPLACE_LOWER_ATOL),), {}
-
-    def run(built):
-        propagator, circuit = built
-        propagator.propagate(circuit)
-        return propagator.expectation_value()
-
-    result = benchmark.pedantic(
-        barriered(run, bench_comm),
-        setup=barrier_setup(bench_comm, setup),
-        rounds=bench_rounds,
-        iterations=1,
-    )
-    assert isinstance(result, float)

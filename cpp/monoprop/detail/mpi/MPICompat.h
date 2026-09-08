@@ -41,8 +41,8 @@
 namespace monoprop::mpi {
 
 #ifdef monoprop_ENABLE_MPI
-auto init(int *argc = nullptr, char ***argv = nullptr) -> void;
-auto finalize() -> void;
+monoprop_EXPORT auto init(int *argc = nullptr, char ***argv = nullptr) -> void;
+monoprop_EXPORT auto finalize() -> void;
 
 namespace detail {
 template <class>

@@ -4,7 +4,6 @@ set(
   CACHE STRING
   "Semicolon-separated list of ranks for MPI test variants"
 )
-
 set(_monoprop_mpiexec "${MPIEXEC_EXECUTABLE}")
 if(NOT _monoprop_mpiexec)
   find_program(

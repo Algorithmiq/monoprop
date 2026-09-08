@@ -86,14 +86,10 @@ def test_operator_metrics_are_grouped_per_picture_and_model(tmp_path: Path) -> N
     _write(
         tmp_path,
         opsize={"heisenberg": {"terms": 51450866}, "hubbard": {"terms": 12}},
-        memrest={"heisenberg": 4096},
     )
     result = bmf.build_bmf(tmp_path, "ci")
 
-    assert result["operator[heisenberg]"] == {
-        "terms": {"value": 51450866.0},
-        "resting-memory": {"value": 4096.0},
-    }
+    assert result["operator[heisenberg]"] == {"terms": {"value": 51450866.0}}
     assert result["operator[hubbard]"] == {"terms": {"value": 12.0}}
 
 
@@ -102,7 +98,6 @@ def test_operator_metrics_skip_node_id_keyed_entries(tmp_path: Path) -> None:
     _write(
         tmp_path,
         opsize={"heisenberg": {"terms": 12}, build_graph: {"terms": 34}},
-        memrest={"heisenberg": 4096, build_graph: 8192},
     )
     result = bmf.build_bmf(tmp_path, "ci")
 
@@ -113,10 +108,7 @@ def test_operator_metrics_skip_node_id_keyed_entries(tmp_path: Path) -> None:
         _ENERGY: {
             "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9}
         },
-        "operator[heisenberg]": {
-            "terms": {"value": 12.0},
-            "resting-memory": {"value": 4096.0},
-        },
+        "operator[heisenberg]": {"terms": {"value": 12.0}},
     }
 
 

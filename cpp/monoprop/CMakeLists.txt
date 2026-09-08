@@ -20,8 +20,7 @@ target_sources(
 target_compile_definitions(
   monoprop-objs
   PUBLIC
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
-    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
 )
 
 # flags to prepend
@@ -50,7 +49,7 @@ target_link_libraries(
     monoprop-sanitizers
     Boost::boost
     Threads::Threads
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
+    $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
   PRIVATE
     PkgConfig::HWLOC
 )
@@ -98,18 +97,18 @@ target_sources(
 target_compile_definitions(
   monoprop
   INTERFACE
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:monoprop_ENABLE_MPI>
-    $<$<BOOL:${monoprop_WIDE_TERM_INDEX}>:monoprop_WIDE_TERM_INDEX>
+    $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
 )
 
 target_compile_features(monoprop INTERFACE cxx_std_23)
 
 target_link_libraries(
   monoprop
+  PUBLIC
+    $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
   INTERFACE
     Boost::boost
     Threads::Threads
-    $<$<TARGET_EXISTS:MPI::MPI_CXX>:MPI::MPI_CXX>
   PRIVATE
     # Keep the non-exported sanitizer target out of monopropTargets.
     $<BUILD_INTERFACE:monoprop-sanitizers>

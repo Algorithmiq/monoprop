@@ -17,9 +17,14 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <complex>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <random>
+#include <unordered_set>
+#include <vector>
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
@@ -27,6 +32,60 @@
 
 using namespace monoprop;
 using cd = std::complex<double>;
+
+namespace {
+
+// Bit-by-bit reference for cutoff_sums(const Monomial&, size_t): sums over the active window only, mode
+// m owning raw bits (active_bit_offset + 2m, active_bit_offset + 2m + 1).
+template <size_t N>
+auto reference_cutoff_sums(const Monomial<N> &mono, size_t logical_num_modes) -> CutoffSums {
+    const size_t active_bit_offset = 2 * (N - logical_num_modes);
+    size_t xor_sum = 0;
+    size_t popcount_sum = 0;
+    size_t or_sum = 0;
+    for (size_t m = 0; m < logical_num_modes; ++m) {
+        const size_t bit0 = active_bit_offset + (2 * m);
+        const bool a = mono.test(bit0);
+        const bool b = mono.test(bit0 + 1);
+        xor_sum += static_cast<size_t>(a != b);
+        popcount_sum += static_cast<size_t>(a) + static_cast<size_t>(b);
+        or_sum += static_cast<size_t>(a || b);
+    }
+    return {xor_sum, popcount_sum, or_sum};
+}
+
+template <size_t N>
+auto check_cutoff_sums_width(std::mt19937_64 &rng, size_t logical) -> void {
+    std::uniform_int_distribution<size_t> bit(2 * (N - logical), (2 * N) - 1);
+    for (size_t weight = 1; weight <= std::min<size_t>(2 * logical, 20); ++weight) {
+        for (int rep = 0; rep < 20; ++rep) {
+            Monomial<N> mono;
+            for (size_t k = 0; k < weight; ++k) {
+                mono.set(bit(rng));
+            }
+            const auto got = cutoff_sums<N>(mono, logical);
+            const auto want = reference_cutoff_sums<N>(mono, logical);
+            BOOST_REQUIRE_EQUAL(got.xor_sum, want.xor_sum);
+            BOOST_REQUIRE_EQUAL(got.popcount_sum, want.popcount_sum);
+            BOOST_REQUIRE_EQUAL(got.or_sum, want.or_sum);
+        }
+    }
+}
+
+} // namespace
+
+// cutoff_sums(const Monomial&, size_t) directly, differentially against a bit-by-bit reference, across
+// widths spanning the single-word (with and without an active offset), multi-word-not-a-multiple-of-64,
+// exactly-two-word and production-scale paths.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_sums_matches_bitwise_reference_across_widths) {
+    std::mt19937_64 rng(0xD16E57U);
+    check_cutoff_sums_width<32>(rng, 32); // W = 64, one word, no active offset
+    check_cutoff_sums_width<32>(rng, 30); // W = 64, active_bit_offset = 4
+    check_cutoff_sums_width<48>(rng, 45); // W = 96 -- not a multiple of 64
+    check_cutoff_sums_width<64>(rng, 64); // W = 128, exactly two words
+    check_cutoff_sums_width<128>(rng, 120);
+    check_cutoff_sums_width<256>(rng, 250); // the production shape
+}
 
 // Raw bits {0,1} and {4,5} are two complete pairs.
 BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_kept_unconditionally) {
@@ -207,5 +266,79 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_op_saturates_at_one_pair_per_mode) {
         for (size_t i = 0; i < full.size(); ++i) {
             BOOST_TEST(clamped[i] == full[i]);
         }
+    }
+}
+
+// The emission order IS the row numbering of a Schrodinger propagator's store, so it is pinned
+// literally: ascending pair count, then ascending lexicographic order of the selected modes' tuple.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_enumeration_order_is_pinned) {
+    constexpr size_t N = 32;
+    constexpr size_t kLogical = 3;
+
+    const std::vector<VecZ> want_tuples = {{}, {0}, {1}, {2}, {0, 1}, {0, 2}, {1, 2}, {0, 1, 2}};
+    MonomialList<N> want;
+    for (const auto &tuple : want_tuples) {
+        std::vector<bool> selector(kLogical, false);
+        for (const size_t mode : tuple) {
+            selector[mode] = true;
+        }
+        want.push_back(monomial_from_selector<N>(selector, N - kLogical));
+    }
+
+    MonomialList<N> seen;
+    for_each_paired_monomial<N>(kLogical, kLogical, [&](const Monomial<N> &mono) { seen.push_back(mono); });
+
+    BOOST_REQUIRE_EQUAL(seen.size(), want.size());
+    for (size_t i = 0; i < want.size(); ++i) {
+        BOOST_TEST_CONTEXT("position " << i) {
+            BOOST_TEST(seen[i] == want[i]);
+        }
+    }
+}
+
+// paired_op_size is the only input to the store reserve and to the over-wide-cutoff guard, neither of
+// which may enumerate to find out. It has to agree with the walk exactly, over-ask included.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_paired_op_size_agrees_with_the_enumeration) {
+    constexpr size_t N = 32;
+
+    for (const size_t logical : {size_t{1}, size_t{5}, size_t{9}}) {
+        for (size_t max_ones = 0; max_ones <= logical + 2; ++max_ones) {
+            size_t count = 0;
+            size_t previous_pairs = 0;
+            std::unordered_set<Monomial<N>, MonomialHash<N>, MonomialEqual<N>> distinct;
+            for_each_paired_monomial<N>(max_ones, logical, [&](const Monomial<N> &mono) {
+                const size_t pairs = mono.count() / 2;
+                BOOST_TEST(mono.count() % 2 == 0U);               // fully paired
+                BOOST_TEST(pairs <= std::min(max_ones, logical)); // clamped in pairs, not bits
+                BOOST_TEST(pairs >= previous_pairs);              // grouped by pair count, ascending
+                previous_pairs = pairs;
+                distinct.insert(mono);
+                ++count;
+            });
+            BOOST_TEST_CONTEXT("logical=" << logical << " max_ones=" << max_ones) {
+                BOOST_TEST(count == paired_op_size(max_ones, logical));
+                BOOST_TEST(distinct.size() == count); // duplicate-free: the covering argument needs it
+            }
+        }
+    }
+
+    // A cutoff at the mode count admits 2^logical terms: the size must saturate, not wrap to something
+    // small that the guard would then wave through.
+    BOOST_TEST(paired_op_size(64, 64) == std::numeric_limits<size_t>::max());
+    BOOST_TEST(paired_op_size(250, 250) == std::numeric_limits<size_t>::max());
+}
+
+// The materializing wrapper is the other tests' oracle for the walk, so it must emit exactly it.
+BOOST_AUTO_TEST_CASE(majorana_cutoff_generate_paired_op_matches_the_enumeration) {
+    constexpr size_t N = 32;
+    constexpr size_t kLogical = 7;
+
+    MonomialList<N> seen;
+    for_each_paired_monomial<N>(4, kLogical, [&](const Monomial<N> &mono) { seen.push_back(mono); });
+    const auto listed = generate_paired_op<N>(4, kLogical);
+
+    BOOST_REQUIRE_EQUAL(listed.size(), seen.size());
+    for (size_t i = 0; i < seen.size(); ++i) {
+        BOOST_TEST(listed[i] == seen[i]);
     }
 }

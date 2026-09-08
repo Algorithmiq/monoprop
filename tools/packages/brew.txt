@@ -1,0 +1,5 @@
+# Homebrew equivalents of tools/packages/apt.txt. See that file for the format.
+
+boost                   # Boost.Unordered and Boost.Test
+msgpack-cxx             # reads the tests/data/*.msgpack fixtures
+hwloc                   # CpuTopology.cpp: core discovery and partition pinning

@@ -117,9 +117,8 @@ struct CrossRankOccupiedSlot final {
     TermIndex sin_send_count = 0;
     TermIndex in_count = 0;
 };
-// A width-independent rule, so it is checked on both TermIndex widths.
-inline constexpr size_t kOccupiedSlotIdField = std::max(sizeof(uint32_t), alignof(TermIndex));
-static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + 2 * sizeof(TermIndex),
+inline constexpr size_t kOccupiedSlotIdField = sizeof(uint32_t);
+static_assert(sizeof(CrossRankOccupiedSlot) == kOccupiedSlotIdField + (2 * sizeof(TermIndex)),
               "the occupied-slot record is the graph's P coefficient: it must carry no padding beyond the "
               "alignment slot its u32 id already occupies.");
 static_assert(alignof(CrossRankOccupiedSlot) == alignof(TermIndex),
