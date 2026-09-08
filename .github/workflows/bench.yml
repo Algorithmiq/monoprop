@@ -134,6 +134,8 @@ jobs:
             fi
             # One BMF file per rung: each Bencher upload accepts one adapter.
             uv run --no-sync monoprop-bench-bmf benches/results "$label" > "bmf-$rung.json"
+            # To the log too: a rung that OOMs the instance takes the artifact with it.
+            cat "bmf-$rung.json"
             uv run --no-sync python .github/workflows/scripts/check_shape.py \
               "benches/results/$label.json" "$ranks" "$partitions"
             echo "::endgroup::"

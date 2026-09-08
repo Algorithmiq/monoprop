@@ -29,9 +29,11 @@ jobs:
         L2a 1 per-rank 1 | -k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
         L2b 4 per-rank 1 | -k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
         # `propagate` owns an operator rather than sharing L2a/L2b's, so it gets the same two
-        # shapes in processes of its own; in theirs the peak would be a sum, not a max.
-        L2c 1 per-rank 1 | -k "test_random_propagate and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
-        L2d 4 per-rank 1 | -k "test_random_propagate and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
+        # shapes in processes of its own; in theirs the peak would be a sum, not a max. Its
+        # three models do share a process: each releases its operator at the end of its row.
+        # The two atols are the largest measured points that fit -- see benchmarks.mdx.
+        L2c 1 per-rank 1 | -k "test_model_propagate or (test_random_propagate and heisenberg)" --hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05 --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
+        L2d 4 per-rank 1 | -k "test_model_propagate or (test_random_propagate and heisenberg)" --hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05 --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
     secrets: inherit
     permissions:
       contents: read
