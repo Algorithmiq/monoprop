@@ -1,8 +1,6 @@
 name: Benchmark
 
-# Shared body of the Bencher continuous-benchmarking runs. Callers choose the
-# machine and the Bencher testbed; everything downstream is identical, so the
-# testbeds stay comparable in shape even though their absolute numbers are not.
+# Shared body of the Bencher runs; the caller names the machine and the benches/LADDER.md rungs.
 
 on:
   workflow_call:
@@ -11,24 +9,17 @@ on:
         description: Value for the job's `runs-on`.
         required: true
         type: string
-      testbed:
-        description: Bencher testbed. Must change whenever the hardware does.
-        required: true
-        type: string
       label:
-        description: Benchmark label, used to name the result artifacts.
+        description: Result-artifact prefix; each rung uploads as `<label>-<rung>`.
         required: true
         type: string
-      bench-markers:
-        description: pytest marker expression. Empty selects every benchmark.
-        required: false
+      rungs:
+        description: >-
+          One rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`.
+          `partitions` is an integer or `per-rank` for (physical cores / ranks).
+          Blank lines and `#` comments are ignored.
+        required: true
         type: string
-        default: not slow
-      bench-rounds:
-        description: Fixed timing rounds per benchmark.
-        required: false
-        type: string
-        default: "5"
 
 env:
   FORCE_COLOR: 3
@@ -41,6 +32,7 @@ jobs:
     # Skips forks, which have no BENCHER_API_KEY.
     if: ${{ github.repository == 'Algorithmiq/monoprop' }}
     runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -55,21 +47,93 @@ jobs:
       - name: Install package
         env:
           SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+          monoprop_ENABLE_MPI: "ON"
         run: just build --group bench
 
-      - name: Run benchmarks
-        env:
-          BENCHER_LABEL: ${{ inputs.label }}
-          monoprop_BENCH_MARKERS: ${{ inputs.bench-markers }}
-          monoprop_BENCH_ROUNDS: ${{ inputs.bench-rounds }}
-        run: |
-          just bench-ci "$BENCHER_LABEL"
+      # This step and the two below run their commands inline rather than through a recipe:
+      # the ladder is only meaningful in CI, so it lives with the workflow that defines it.
+      # `tools/check-workflow-commands.py` exempts these three by name.
+      - name: Resolve the core count
+        run: uv run --no-sync python .github/workflows/scripts/resolve_cores.py
 
-      - name: Convert results to Bencher Metric Format
+      - name: Run the ladder rungs
         env:
-          BENCHER_LABEL: ${{ inputs.label }}
+          BENCH_LABEL: ${{ inputs.label }}
+          RUNGS: ${{ inputs.rungs }}
+          # Empty, so a rung's `-k` is the only selector and the slow fixed models are reachable.
+          monoprop_BENCH_MARKERS: ""
+          # The RunsOn images run as root, and OpenMPI refuses to launch there without these.
+          OMPI_ALLOW_RUN_AS_ROOT: "1"
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
         run: |
-          just bench-bmf "$BENCHER_LABEL" > bmf.json
+          set -euo pipefail
+          : "${BENCH_CORES:?the 'Resolve the core count' step did not export it}"
+          echo "physical cores: $BENCH_CORES"
+          mkdir -p benches/results
+          # fd 3, because mpiexec forwards its own stdin to rank 0 and would eat the rung list.
+          while IFS='|' read -r head args <&3; do
+            IFS=$' \t' read -r rung ranks partitions rounds <<<"$head"
+            case "${rung:-}" in '' | '#'*) continue ;; esac
+            # A missing field would otherwise fall through to a default and measure something
+            # else; a non-numeric one reaches the arithmetic below as an unset name, so worth 0;
+            # `0` divides by zero at per-rank and reaches `mpiexec -n 0` otherwise; and `08` is
+            # an invalid octal literal there. Rejecting leading zeros keeps that arithmetic
+            # base 10.
+            for field in ranks partitions rounds; do
+              value="${!field:-}"
+              [[ "$field" == partitions && "$value" == per-rank ]] && continue
+              case "$value" in
+                '') echo "::error::rung $rung has no $field"; exit 1 ;;
+                *[!0-9]* | 0*)
+                  echo "::error::rung $rung needs a positive decimal $field, not '$value'"
+                  exit 1 ;;
+              esac
+            done
+            if [[ "$partitions" == per-rank ]]; then
+              partitions=$((BENCH_CORES / ranks))
+            fi
+            # Oversubscription reports a plausible wall time and would silently corrupt the
+            # testbed.
+            if ((partitions < 1 || ranks * partitions > BENCH_CORES)); then
+              echo "::error::rung $rung wants ${ranks}x${partitions} on $BENCH_CORES physical cores"
+              exit 1
+            fi
+            # xargs honours quotes in `-k "a and b"` without evaluating the input.
+            argv=()
+            if [[ -n "${args//[[:space:]]/}" ]]; then
+              if ! parsed=$(printf '%s\n' "$args" | xargs printf '%s\n') || [[ -z "$parsed" ]]; then
+                echo "::error::rung $rung: could not parse its pytest args"
+                exit 1
+              fi
+              readarray -t argv <<< "$parsed"
+            fi
+            label="$BENCH_LABEL-$rung"
+            echo "::group::$rung: ${ranks}x${partitions}, $rounds rounds -> $label"
+            # `monoprop_PARTITIONS` also sizes the pinning below -- unpinned ranks vary by more
+            # than the effects being tracked.
+            export monoprop_PARTITIONS="$partitions" monoprop_NUM_THREADS="$partitions"
+            export monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS=benches/results
+            if ((ranks == 1)); then
+              uv run --no-sync python -m pytest benches -o filterwarnings=default \
+                --benchmark-json="benches/results/time-$label.json" \
+                -m "${monoprop_BENCH_MARKERS-not slow}" \
+                --bench-rounds "$rounds" "${argv[@]}"
+            else
+              uv run --no-sync mpiexec -n "$ranks" \
+                --map-by "slot:PE=$monoprop_PARTITIONS" --bind-to core \
+                -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS \
+                -x monoprop_PARTITIONS -x monoprop_NUM_THREADS \
+                python -m pytest benches -o filterwarnings=default \
+                --benchmark-json="benches/results/time-$label.json" \
+                -m "${monoprop_BENCH_MARKERS-not slow}" \
+                --bench-rounds "$rounds" "${argv[@]}"
+            fi
+            # One BMF file per rung: each Bencher upload accepts one adapter.
+            uv run --no-sync monoprop-bench-bmf benches/results "$label" > "bmf-$rung.json"
+            uv run --no-sync python .github/workflows/scripts/check_shape.py \
+              "benches/results/$label.json" "$ranks" "$partitions"
+            echo "::endgroup::"
+          done 3<<< "$RUNGS"
 
       - name: Upload the raw measurement
         if: always()
@@ -77,39 +141,53 @@ jobs:
         with:
           name: bench-${{ inputs.label }}
           path: |
-            bmf.json
+            bmf-*.json
             benches/results/*.json
           if-no-files-found: warn
 
       - uses: bencherdev/bencher@v0.6.12
 
-      # The project slug and API key go through the environment rather than the
-      # command line: `bencher` reads BENCHER_PROJECT / BENCHER_API_KEY natively,
-      # and it keeps a maintainer-set variable out of the shell's parsing.
+      # The project slug and API key go through the environment: `bencher` reads
+      # BENCHER_PROJECT / BENCHER_API_KEY natively, and it keeps a maintainer-set
+      # variable out of the shell's parsing.
       - name: Track benchmarks with Bencher
         env:
           BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'monoprop' }}
           BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
-          BENCHER_TESTBED: ${{ inputs.testbed }}
+          BENCHER_BRANCH: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          bencher run \
-            --branch main \
-            --adapter json \
-            --file bmf.json \
-            --github-actions "${{ secrets.GITHUB_TOKEN }}" \
-            --thresholds-reset \
-            --threshold-measure latency \
-            --threshold-test t_test \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.99 \
-            --threshold-measure peak-memory \
-            --threshold-test percentage \
-            --threshold-max-sample-size 64 \
-            --threshold-lower-boundary _ \
-            --threshold-upper-boundary 0.10 \
-            --threshold-measure terms \
-            --threshold-test percentage \
-            --threshold-max-sample-size 1 \
-            --threshold-lower-boundary 0.0 \
-            --threshold-upper-boundary 0.0
+          set -euo pipefail
+          shopt -s nullglob
+          files=(bmf-*.json)
+          if ((${#files[@]} == 0)); then
+            echo "::error::no rung produced a bmf-*.json"
+            exit 1
+          fi
+          slug=$(uv run --no-sync python .github/workflows/scripts/cpu_slug.py)
+          case "$slug" in '' | *[!a-z0-9-]*) echo "::error::bad cpu slug: '$slug'"; exit 1 ;; esac
+          echo "cpu slug: $slug"
+          for file in "${files[@]}"; do
+            rung="${file#bmf-}"
+            rung="${rung%.json}"
+            BENCHER_TESTBED="$slug-${BENCH_CORES}c-$rung" bencher run \
+              --adapter json \
+              --file "$file" \
+              --github-actions "$GITHUB_TOKEN" \
+              --thresholds-reset \
+              --threshold-measure latency \
+              --threshold-test t_test \
+              --threshold-max-sample-size 64 \
+              --threshold-lower-boundary _ \
+              --threshold-upper-boundary 0.99 \
+              --threshold-measure peak-memory \
+              --threshold-test percentage \
+              --threshold-max-sample-size 64 \
+              --threshold-lower-boundary _ \
+              --threshold-upper-boundary 0.10 \
+              --threshold-measure terms \
+              --threshold-test percentage \
+              --threshold-max-sample-size 1 \
+              --threshold-lower-boundary 0.0 \
+              --threshold-upper-boundary 0.0
+          done
