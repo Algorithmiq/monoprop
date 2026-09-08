@@ -25,7 +25,9 @@ from monoprop_bench_tools import bmf
 if TYPE_CHECKING:
     from pathlib import Path
 
+# The node id conftest and pytest-benchmark record, and the name it is exported under.
 _ENERGY = "bench_random.py::test_random_energy[heisenberg]"
+_ENERGY_NAME = "random/energy[heisenberg]"
 
 
 def _write(results_dir: Path, label: str = "ci", **sections: object) -> None:
@@ -44,7 +46,7 @@ def _write(results_dir: Path, label: str = "ci", **sections: object) -> None:
 
 def test_latency_is_nanoseconds_with_stddev_bounds(tmp_path: Path) -> None:
     _write(tmp_path)
-    latency = bmf.build_bmf(tmp_path, "ci")[_ENERGY]["latency"]
+    latency = bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]["latency"]
 
     assert latency == {
         "value": 0.5e9,
@@ -59,7 +61,7 @@ def test_latency_omits_bounds_without_spread(tmp_path: Path) -> None:
     timings["benchmarks"][0]["stats"]["stddev"] = 0.0
     (tmp_path / "time-ci.json").write_text(json.dumps(timings))
 
-    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY]["latency"] == {"value": 0.5e9}
+    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]["latency"] == {"value": 0.5e9}
 
 
 def test_latency_lower_bound_floors_at_zero(tmp_path: Path) -> None:
@@ -68,7 +70,7 @@ def test_latency_lower_bound_floors_at_zero(tmp_path: Path) -> None:
     timings["benchmarks"][0]["stats"]["stddev"] = 2.0
     (tmp_path / "time-ci.json").write_text(json.dumps(timings))
 
-    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY]["latency"]["lower_value"] == 0.0
+    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]["latency"]["lower_value"] == 0.0
 
 
 def test_memory_joins_the_benchmark_of_the_same_operation(tmp_path: Path) -> None:
@@ -76,7 +78,7 @@ def test_memory_joins_the_benchmark_of_the_same_operation(tmp_path: Path) -> Non
 
     # conftest keys memhwm by the same node id pytest-benchmark reports, so both
     # measures must land on one benchmark rather than splitting into two.
-    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY] == {
+    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME] == {
         "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9},
         "peak-memory": {"value": 1024.0},
     }
@@ -97,6 +99,7 @@ def test_operator_metrics_land_on_the_benchmark_that_owns_the_operator(
     tmp_path: Path,
 ) -> None:
     build_graph = "bench_random.py::test_random_build_graph[heisenberg]"
+    build_graph_name = "random/build_graph[heisenberg]"
     _write(
         tmp_path,
         opsize={"heisenberg": {"terms": 12}, build_graph: {"terms": 34}},
@@ -105,8 +108,8 @@ def test_operator_metrics_land_on_the_benchmark_that_owns_the_operator(
 
     # A node-id key names a benchmark holding its own operator, so dropping it leaves that
     # operator's term count untracked -- at L1 that is both fixed-model `propagate` rows.
-    assert set(result) == {_ENERGY, "operator[heisenberg]", build_graph}
-    assert result[build_graph] == {"terms": {"value": 34.0}}
+    assert set(result) == {_ENERGY_NAME, "operator[heisenberg]", build_graph_name}
+    assert result[build_graph_name] == {"terms": {"value": 34.0}}
     assert result["operator[heisenberg]"] == {"terms": {"value": 12.0}}
 
 
@@ -118,7 +121,7 @@ def test_operator_metrics_join_the_timings_of_the_same_benchmark(
 
     # One benchmark, both measures: Bencher keys history on (benchmark, measure), so the
     # count has to share the name its latency is recorded under.
-    assert result[_ENERGY] == {
+    assert result[_ENERGY_NAME] == {
         "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9},
         "terms": {"value": 34.0},
     }
@@ -127,7 +130,7 @@ def test_operator_metrics_join_the_timings_of_the_same_benchmark(
 def test_missing_sections_are_skipped(tmp_path: Path) -> None:
     _write(tmp_path)
 
-    assert set(bmf.build_bmf(tmp_path, "ci")) == {_ENERGY}
+    assert set(bmf.build_bmf(tmp_path, "ci")) == {_ENERGY_NAME}
 
 
 def test_missing_artifact_is_fatal(tmp_path: Path) -> None:
@@ -141,3 +144,24 @@ def test_malformed_artifact_is_fatal(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit, match="malformed artifact"):
         bmf.build_bmf(tmp_path, "ci")
+
+
+@pytest.mark.parametrize(
+    ("node_id", "expected"),
+    [
+        ("bench_models.py::test_model_propagate[hubbard]", "model/propagate[hubbard]"),
+        (
+            "bench_random.py::test_random_build_graph[heisenberg]",
+            "random/build_graph[heisenberg]",
+        ),
+        # Not a parameterised pytest id: left alone rather than rewritten into a name
+        # Bencher would then key its history on forever.
+        ("operator[heisenberg]", "operator[heisenberg]"),
+        ("bench_x.py::helper_thing", "bench_x.py::helper_thing"),
+        ("no_separator_at_all", "no_separator_at_all"),
+    ],
+)
+def test_benchmark_name_drops_the_module_and_test_prefix(
+    node_id: str, expected: str
+) -> None:
+    assert bmf.benchmark_name(node_id) == expected

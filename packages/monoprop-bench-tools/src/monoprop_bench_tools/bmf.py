@@ -62,6 +62,9 @@ _OPERATOR = "operator"
 # id (``::``, as report.py reads it) where a benchmark holds its own.
 _NODE_ID_SEP = "::"
 
+# Stripped from a node id's test name; what follows it is ``<family>_<operation>``.
+_TEST_PREFIX = "test_"
+
 Metric = dict[str, float]
 Bmf = dict[str, dict[str, Metric]]
 
@@ -100,6 +103,28 @@ def _latency(stats: dict[str, float]) -> Metric:
     }
 
 
+def benchmark_name(node_id: str) -> str:
+    """Return the Bencher benchmark name for a pytest ``node_id``.
+
+    ``bench_models.py::test_model_propagate[hubbard]`` becomes
+    ``model/propagate[hubbard]``: a plot legend shows this name, and the module, the
+    ``test_`` prefix and the repeated family word carry nothing a reader of one rung's
+    plot needs. The family is kept as a path segment because it is the only thing
+    separating a fixed model's operation from a random problem's once the parameter
+    alone is left, and Bencher keys history on the name forever.
+
+    Anything not shaped like a parameterised pytest id is returned unchanged, so a
+    name from another producer is never silently rewritten.
+    """
+    _, separator, test = node_id.partition(_NODE_ID_SEP)
+    if not separator or not test.startswith(_TEST_PREFIX):
+        return node_id
+    family, _, operation = test[len(_TEST_PREFIX) :].partition("_")
+    if not operation:
+        return node_id
+    return f"{family}/{operation}"
+
+
 def _timings(results_dir: Path, label: str) -> Iterator[tuple[str, Metric]]:
     """Yield ``(benchmark, latency)`` from ``time-<label>.json``.
 
@@ -109,7 +134,7 @@ def _timings(results_dir: Path, label: str) -> Iterator[tuple[str, Metric]]:
     """
     data = _read_json(results_dir / f"time-{label}.json")
     for bench in data.get("benchmarks", []):
-        yield bench["fullname"].split("/")[-1], _latency(bench["stats"])
+        yield benchmark_name(bench["fullname"].split("/")[-1]), _latency(bench["stats"])
 
 
 def build_bmf(results_dir: Path, label: str) -> Bmf:
@@ -125,14 +150,14 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
 
     # ``memhwm`` is the kernel's exact peak RSS per operation, summed over ranks under MPI.
     for benchmark, peak in results.get("memhwm", {}).items():
-        measure(benchmark, "peak-memory", peak)
+        measure(benchmark_name(benchmark), "peak-memory", peak)
 
     # A node-id key names the benchmark that built the operator, so its count belongs on
     # that benchmark, beside the latency and peak memory of the same call. Where a shared
     # operator is also counted per picture the two agree by construction, and a run where
     # they disagree is exactly what the exact-match threshold exists to catch.
     for key, size in results.get("opsize", {}).items():
-        name = key if _NODE_ID_SEP in key else f"{_OPERATOR}[{key}]"
+        name = benchmark_name(key) if _NODE_ID_SEP in key else f"{_OPERATOR}[{key}]"
         measure(name, "terms", size["terms"])
 
     return bmf
