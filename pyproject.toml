@@ -236,6 +236,7 @@ exclude = [
   "packages/monoprop-bench-tools/src/monoprop_bench_tools/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
+  ".github/workflows/scripts/*.py",
 ]
 
 target-version = "py311"
