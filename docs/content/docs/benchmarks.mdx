@@ -336,7 +336,7 @@ measures are recorded:
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
-| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99 |
+| `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
 | `peak-memory` | bytes | per-operation peak RSS (`VmHWM`), summed over ranks | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
