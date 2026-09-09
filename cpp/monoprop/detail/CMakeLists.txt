@@ -8,6 +8,7 @@ target_sources(
 )
 
 add_subdirectory(evolution)
+add_subdirectory(functional)
 add_subdirectory(graph)
 add_subdirectory(graph_encoding)
 add_subdirectory(monomial_propagator)

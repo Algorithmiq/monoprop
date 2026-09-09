@@ -32,6 +32,25 @@ the term counts, with the operator left as it was, rather than a silent wrap. Th
 is more partitions or more MPI ranks — both divide the terms per partition — or a
 larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
 
+Partitioning also changes what a *failed* mutation leaves behind. A call refused
+outright changes nothing, and retrying it after a fix works exactly as it does
+unpartitioned — every such refusal is decided before the call fans out, so the two
+settings cannot disagree. That includes a re-weight carrying a term the operator does
+not hold, which only one partition can see: every partition gives a verdict on the
+whole dict before any of them writes, so it is refused everywhere or applied
+everywhere.
+
+A call that fails only once it is already under way is different: the partitions it
+reached applied it and the rest never will, and nothing can reconcile the two. A gate
+generator too large for the system does that, since each is bounds-checked only as the
+gate loop reaches it — one partition can poison the collective its siblings are still
+inside, so which of them committed depends on the race. Rather than answer for a state
+that is neither, the propagator latches that and refuses every later call with a
+`RuntimeError` naming the operation that broke it. Build a new propagator; there is
+nothing to salvage in the old one. Running with `monoprop_PARTITIONS=off` keeps the
+single-partition behaviour, where a part-way failure leaves the partially applied
+change in place and the propagator usable.
+
 ## Runtime environment variables
 
 | Variable | Default | Meaning |

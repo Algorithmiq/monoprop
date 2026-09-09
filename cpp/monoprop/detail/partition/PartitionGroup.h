@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -118,6 +120,8 @@ public:
             for (auto &e : errs_) {
                 e = nullptr;
             }
+            any_poisoned_.store(false);
+            diverged_ = false;
             job_ = &body;
             done_count_ = 0;
             ++job_gen_;
@@ -127,6 +131,7 @@ public:
             std::unique_lock lk(m_);
             cv_done_.wait(lk, [&] { return done_count_ == n_; });
         }
+        classify_round_();
         for (auto &e : errs_) {
             if (e) {
                 std::rethrow_exception(e);
@@ -134,7 +139,26 @@ public:
         }
     }
 
+    // Whether the last round left the partitions holding different state, for the facade's mutation
+    // guard to read while the round's exception unwinds. A pointer because the guard is handed one once
+    // and reads it on destruction; the group outlives it. Every round resets it, and a round that
+    // diverged always throws, so the value the guard reads belongs to the round that is unwinding --
+    // which holds only as long as a mutator lets that throw out rather than swallowing it and running
+    // another round under the same guard.
+    auto diverged_flag() const -> const bool * { return &diverged_; }
+
 private:
+    // Every partition runs the same body, so a round that throws on all of them and poisoned none threw
+    // before it changed anything: each master rejected the call identically, up front, and none was
+    // released from a collective part-way. Anything else -- a poisoned peer, or a mix of throws and
+    // completions -- means the masters stopped at different points and their states no longer agree.
+    auto classify_round_() -> void {
+        const auto errored = [](const std::exception_ptr &e) { return e != nullptr; };
+        const bool any_error = std::ranges::any_of(errs_, errored);
+        const bool all_errored = std::ranges::all_of(errs_, errored);
+        diverged_ = any_error && (!all_errored || any_poisoned_.load());
+    }
+
     // Poison first so a master parked in a barrier is released rather than joined-on forever.
     auto stop_and_join_() noexcept -> void {
         transport_poison_();
@@ -293,6 +317,13 @@ private:
             try {
                 (*job)(rank);
             }
+            catch (const mpi::ShmCommPoisoned &) {
+                // Released from a collective a peer never joined: this master stopped mid-body, so
+                // whatever the peers went on to commit, it did not. See classify_round_().
+                any_poisoned_.store(true);
+                errs_[static_cast<size_t>(rank)] = std::current_exception();
+                transport_poison_();
+            }
             catch (...) {
                 errs_[static_cast<size_t>(rank)] = std::current_exception();
                 transport_poison_();
@@ -316,6 +347,10 @@ private:
 #endif
     std::vector<std::unique_ptr<MonomialPropagator<NumModes>>> partitions_;
     std::vector<std::exception_ptr> errs_;
+    // Set by any master released from a collective its peers never joined; only ever read as "did
+    // anyone", so one flag rather than one slot per partition.
+    std::atomic<bool> any_poisoned_{false};
+    bool diverged_ = false; // facade thread only: written in run_on_all, read by the mutation guard
     std::vector<monoprop::detail::partition::CpuSet> cpusets_;
     std::vector<std::thread> masters_;
 
