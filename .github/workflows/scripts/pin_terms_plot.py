@@ -29,7 +29,11 @@ Usage::
 
     pin_terms_plot.py <project> [--title TITLE] [--measure terms] [--branch main]
 
-Reads `BENCHER_API_KEY` from the environment, and `BENCHER_HOST` for a self-hosted API.
+Needs a *user*-scoped credential, which is not the one `bencher run` uploads with: the plots
+endpoint resolves a bearer to a user, accepting a `bencher_user_*` API key or a JWT, while a
+project key (`BENCHER_API_KEY`) authenticates report submission down another path and is
+rejected here. So this reads `BENCHER_USER_KEY` or `BENCHER_API_TOKEN`, and skips when neither
+is set. `BENCHER_HOST` overrides the API host.
 """
 
 from __future__ import annotations
@@ -44,6 +48,9 @@ import urllib.request
 from typing import Any
 
 DEFAULT_HOST = "https://api.bencher.dev"
+
+# Bencher tells a user key from a project key by this prefix, and parses anything else as a JWT.
+USER_KEY_PREFIX = "bencher_user_"
 
 # One data point per commit on one branch, so a year of main is a readable width.
 WINDOW_SECONDS = 365 * 24 * 60 * 60
@@ -128,9 +135,22 @@ def main(argv: list[str] | None = None) -> str | None:
     parser.add_argument("--branch", default="main")
     args = parser.parse_args(argv)
 
-    token = os.environ.get("BENCHER_API_KEY")
+    token = os.environ.get("BENCHER_USER_KEY") or os.environ.get("BENCHER_API_TOKEN")
     if not token:
-        return "::error::BENCHER_API_KEY is not set"
+        warn(
+            "no user-scoped credential, so the pinned plot is left alone. Set "
+            "BENCHER_USER_KEY to a `bencher_user_*` key, or BENCHER_API_TOKEN to a JWT: "
+            "the project key that uploads reports cannot write a plot."
+        )
+        return None
+    if not token.startswith(USER_KEY_PREFIX) and token.count(".") != 2:
+        # Neither prefix nor JWT shape: the server would parse it as a JWT and reject it, which
+        # is what a project key pasted into BENCHER_USER_KEY looks like.
+        warn(
+            f"the credential is neither a `{USER_KEY_PREFIX}*` key nor a JWT, so the plots "
+            "endpoint would reject it; leaving the pinned plot alone"
+        )
+        return None
     base = os.environ.get("BENCHER_HOST", DEFAULT_HOST).rstrip("/")
 
     measures = collection(base, args.project, "measures", token)
