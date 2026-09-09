@@ -1,0 +1,19 @@
+# paper_plots/ is a figure-generation harness, not library code: standalone scripts run by
+# hand, whose output channel is stdout and whose prose carries typographic characters from
+# the captions. It follows the sibling packages/bench-third-party in taking a looser lint
+# than src/monoprop, but extends the repository configuration rather than starting from
+# ruff's defaults, so every rule that catches an actual defect still applies.
+extend = "../pyproject.toml"
+
+[lint]
+extend-ignore = [
+  "ANN",    # flake8-annotations: plotting helpers pass around axes and record dicts
+  "D",      # pydocstyle: script-local helpers, not a documented API
+  "EXE001", # shebang-not-executable: the drivers are run as `python <script>`
+  "FBT",    # flake8-boolean-trap: matplotlib's own API is full of boolean positionals
+  "INP001", # implicit-namespace-package: deliberately not a package
+  "RUF001", # ambiguous-unicode-character-string: en dashes and x/division signs in labels
+  "RUF002", # ...-docstring
+  "RUF003", # ...-comment
+  "T20",    # flake8-print: stdout is how a sweep driver reports
+]
