@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -62,6 +63,84 @@ struct Comm {
         c.hyb = group;
         c.shm_rank = local_partition;
         return c;
+    }
+};
+
+/*!
+ * @brief A window-relative index. Distinct from a flat slot on purpose: the two are the same number
+ * only when the window starts at 0, so a swap addresses the wrong peer while staying in bounds.
+ */
+struct WindowIndex {
+    size_t value = 0;
+
+    constexpr WindowIndex() = default;
+    explicit constexpr WindowIndex(size_t v) noexcept : value(v) {}
+};
+
+/*!
+ * @brief The contiguous run of flat destination slots a round can reach.
+ *
+ * Slots are rank-major (slot = rank * S + partition), so one rank's S partitions are contiguous and
+ * the single peer sparse routing leaves is exactly one such run; dense is the count == P value of the
+ * same run, not a second shape. See PeerPlan::window.
+ */
+struct SlotWindow {
+    size_t base = 0;  //!< First reachable flat slot.
+    size_t count = 0; //!< Slots in the run.
+
+    [[nodiscard]] constexpr auto stop() const -> size_t { return base + count; }
+    [[nodiscard]] constexpr auto contains(size_t slot) const -> bool { return slot >= base && slot < stop(); }
+    //! @brief The one flat-slot door: it asserts membership, so a slot from outside cannot become
+    //! another's entry.
+    [[nodiscard]] constexpr auto index(size_t slot) const -> WindowIndex {
+        assert(contains(slot) && "flat slot outside the window it is being re-based into");
+        return WindowIndex{slot - base};
+    }
+    [[nodiscard]] constexpr auto slot(WindowIndex i) const -> size_t {
+        assert(i.value < count);
+        return base + i.value;
+    }
+};
+
+/*!
+ * @brief Which destination RANKS a round can touch, when the caller knows.
+ *
+ * Two states, matching routing::Router: dense, or sparse over the single peer GF(2)-linear routing
+ * implies. Sparse means the destination rank of every block is determined by the generator -- this
+ * rank's own index XOR `shift`, so `peer = me ^ shift` with `count == 1`. XOR is an involution, so
+ * the pairing is symmetric and every rank derives it with no communication; that is what lets a verb
+ * replace a dense collective with point-to-point. Linear routing takes ALL log2(ranks) rank bits, so
+ * there is no intermediate fanout to express here.
+ *
+ * Dense is the default: `peer(k) == k` and `count == ranks`, so the same loops walk every rank and the
+ * verbs take their collective path. Every single-rank run is dense (Router::is_linear is false at
+ * R == 1), so the collectives are the common case rather than a fallback.
+ *
+ * Two distinct failure modes if `shift` is wrong, which is why the plan is derived in one place. Ranks
+ * that DISAGREE deadlock: the pairing stops being symmetric and someone waits on a send never posted.
+ * Ranks that all agree on the same wrong shift stay symmetric and never hang -- they silently DROP the
+ * blocks outside the peer set, because every staging sweep only ever touches peers. HybridStaging's
+ * pack_count_matrix asserts the non-peer remainder is empty to catch that one.
+ */
+struct PeerPlan {
+    bool sparse = false;
+    int shift = 0;
+
+    [[nodiscard]] constexpr auto dense() const -> bool { return !sparse; }
+    [[nodiscard]] constexpr auto count(int ranks) const -> int { return sparse ? 1 : ranks; }
+    //! @brief `k` indexes the peer set, which is a singleton when sparse.
+    [[nodiscard]] constexpr auto peer(int me, int k) const -> int { return sparse ? (me ^ shift) : k; }
+    [[nodiscard]] constexpr auto contains(int me, int b) const -> bool { return !sparse || b == (me ^ shift); }
+    /*!
+     * @brief The flat slots reachable from @a me_flat over a @a ranks x @a parts world.
+     *
+     * One expression per field: sparse names the peer rank's `parts` slots, dense is the same with peer
+     * rank 0 and count(ranks) == ranks, i.e. the whole world.
+     */
+    [[nodiscard]] constexpr auto window(size_t me_flat, size_t ranks, size_t parts) const -> SlotWindow {
+        const size_t peer_rank = sparse ? ((me_flat / parts) ^ static_cast<size_t>(shift)) : 0;
+        return SlotWindow{.base = peer_rank * parts,
+                          .count = static_cast<size_t>(count(static_cast<int>(ranks))) * parts};
     }
 };
 

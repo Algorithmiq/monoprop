@@ -187,6 +187,12 @@ public:
         return is_flat_linear() ? linear_bits() + parts_log2_ : linear_bits();
     }
 
+    //! @brief The same number for a geometry alone, with no monomial width to bind: it IS the private
+    //! constructor, so the resolution and the non-power-of-two throw cannot drift from a router's.
+    [[nodiscard]] static auto bits_for(size_t ranks, bool linear) -> size_t {
+        return Router{ranks, 1, linear}.linear_bits();
+    }
+
     /*!
      * @brief Flat destination slot in [0, flat_world) for a dense monomial. The branch is on a member,
      * so it is perfectly predicted; the splitmix arm is bit-for-bit `monomial_hash % P`.
@@ -268,6 +274,11 @@ private:
 //! @brief The mode, before any geometry: linear unless monoprop_ROUTING asks for splitmix.
 inline auto linear_requested() -> bool {
     return config::get().routing_mode.value_or(config::RoutingMode::Linear) == config::RoutingMode::Linear;
+}
+
+//! @brief Resolved rank bits for a geometry, without a router: the replay transport gates on the number.
+inline auto linear_bits_for(size_t ranks) -> size_t {
+    return Router::bits_for(ranks, linear_requested());
 }
 
 //! @brief The router a geometry resolves to under the environment's mode.

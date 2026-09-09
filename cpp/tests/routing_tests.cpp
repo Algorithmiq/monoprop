@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "monoprop/algebra/AlgebraCommon.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/mpi/Routing.h"
 
@@ -264,6 +265,80 @@ BOOST_AUTO_TEST_CASE(routing_fanout_is_one_rank_when_partitions_are_not_a_power_
             BOOST_TEST(dest_parts.size() > 1U); // partitions keep full avalanche
         }
     }
+}
+
+// mpi::PeerPlan::window -- the slots a plan can reach, which is what lets a round address one peer
+// rank's partitions instead of the whole P = R*S world. Dense is the count == P value of the same two
+// expressions, so it is checked against the same formula rather than against a second one.
+BOOST_AUTO_TEST_CASE(routing_slot_window_is_the_peer_ranks_partition_run) {
+    for (const auto &[r, s] : {std::pair<size_t, size_t>{8, 16}, {128, 16}, {16, 1}, {1, 1}, {4, 3}}) {
+        const size_t p = r * s;
+        for (size_t me = 0; me < p; ++me) {
+            const mpi::SlotWindow dense = mpi::PeerPlan{}.window(me, r, s);
+            BOOST_REQUIRE_EQUAL(dense.base, 0U);
+            BOOST_REQUIRE_EQUAL(dense.count, p);
+            BOOST_REQUIRE(dense.contains(me));
+
+            for (size_t shift = 0; shift < r; ++shift) {
+                const mpi::PeerPlan plan{.sparse = true, .shift = static_cast<int>(shift)};
+                const mpi::SlotWindow w = plan.window(me, r, s);
+                BOOST_REQUIRE_EQUAL(w.count, s);
+                BOOST_REQUIRE_EQUAL(w.base, ((me / s) ^ shift) * s);
+                // Every slot in the run belongs to the one peer rank the plan names, and no other.
+                for (size_t k = 0; k < w.count; ++k) {
+                    const size_t slot = w.slot(mpi::WindowIndex{k});
+                    BOOST_REQUIRE(w.contains(slot));
+                    BOOST_REQUIRE_EQUAL(w.index(slot).value, k);
+                    BOOST_REQUIRE_EQUAL(slot / s, ((me / s) ^ shift));
+                    BOOST_REQUIRE(plan.contains(static_cast<int>(me / s), static_cast<int>(slot / s)));
+                }
+                BOOST_REQUIRE(!w.contains(w.stop()));
+                // Self is reachable only at shift 0; the exchange's self leg is a copy on exactly those.
+                BOOST_REQUIRE_EQUAL(w.contains(me), shift == 0);
+            }
+        }
+    }
+}
+
+// The window must be symmetric, or the two ends of one exchange size different arrays: XOR is an
+// involution, so the peer's own window points back at this rank's run.
+BOOST_AUTO_TEST_CASE(routing_slot_window_pairing_is_symmetric) {
+    constexpr size_t kRanks = 32;
+    constexpr size_t kParts = 8;
+    for (size_t me = 0; me < kRanks * kParts; me += 3) {
+        for (size_t shift = 0; shift < kRanks; ++shift) {
+            const mpi::PeerPlan plan{.sparse = true, .shift = static_cast<int>(shift)};
+            const mpi::SlotWindow mine = plan.window(me, kRanks, kParts);
+            const mpi::SlotWindow theirs = plan.window(mine.base, kRanks, kParts);
+            BOOST_REQUIRE_EQUAL(theirs.base, (me / kParts) * kParts);
+            BOOST_REQUIRE_EQUAL(theirs.count, kParts);
+        }
+    }
+}
+
+// The property a windowed round rests on: every destination the emit path can produce for one generator
+// lies inside that generator's window, whichever router the geometry resolves to.
+BOOST_AUTO_TEST_CASE(routing_every_dest_lands_inside_the_generators_window) {
+    const auto terms = random_monomials(600, 6, 0x5107500DULL);
+    const auto gens = random_monomials(20, 4, 0x1CE0FF1CEULL);
+    const std::vector<std::pair<size_t, size_t>> geometries{{8, 16}, {16, 1}, {32, 4}, {1, 14}, {4, 3}};
+    size_t checked = 0;
+    for (const auto &[r, s] : geometries) {
+        for (const bool linear : {false, true}) {
+            const auto router = Router::for_modes<kN>(r, s, linear);
+            for (const auto &g : gens) {
+                const auto shift = static_cast<int>(router.rank_shift<kN>(g));
+                const mpi::PeerPlan plan{.sparse = router.is_linear(), .shift = shift};
+                for (const auto &m : terms) {
+                    const size_t me = router.dest<kN>(m);
+                    BOOST_REQUIRE(plan.window(me, r, s).contains(router.dest<kN>(m ^ g)));
+                    ++checked;
+                }
+            }
+        }
+    }
+    BOOST_TEST_MESSAGE("window containment checks: " << checked);
+    BOOST_TEST(checked >= 100000U);
 }
 
 // Without a power-of-two rank count there is no XOR structure to exploit, and there is no partial dial
