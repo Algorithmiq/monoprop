@@ -43,14 +43,12 @@ struct RecordingSink {
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
 
-// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
+// Rows in through the engine's growth door, so the operator's term table follows them.
 auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<8>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<8>(*op.store, base + k, terms[k]);
+    });
     return op;
 }
 

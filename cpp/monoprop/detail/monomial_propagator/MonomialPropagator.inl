@@ -201,16 +201,15 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                           0,
                                                           wide_width);
     mp_op_.store->reserve(expected_local_terms);
-    // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
+    // Store replaced: drop the stale lazy indices so they rebuild against the new store.
     mp_op_.inverted_index_.reset();
+    mp_op_.term_table_.reset();
 
-    size_t i = 0;
-    // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here. A row
-    // index is a position in the kept subsequence, so the enumeration order below is load-bearing.
+    // A row index is a position in the kept subsequence, so the enumeration order below is load-bearing.
+    // The rows are appended only: the term table is built lazily, at the first gate that probes it.
     const auto keep_if_owned = [&](const Monomial<NumModes> &mono) {
         if (my_rank == find_rank<NumModes>(mono, router)) {
             mp_op_.append_term(mono);
-            mp_op_.store->emplace(mono, i++);
         }
     };
     if (schrodinger_) {

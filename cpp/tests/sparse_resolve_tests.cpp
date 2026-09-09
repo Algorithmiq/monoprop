@@ -30,6 +30,8 @@
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/RowKey.h"
+#include "monoprop/detail/operator/TermTable.h"
 
 using namespace monoprop;
 
@@ -77,11 +79,9 @@ auto make_op(const std::vector<Monomial<NumModes>> &terms) -> detail::MPOperator
     if (terms.empty()) {
         return op;
     }
-    detail::insert_absent_terms<NumModes>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<NumModes> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<NumModes>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<NumModes>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<NumModes>(*op.store, base + k, terms[k]);
+    });
     return op;
 }
 
@@ -151,7 +151,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
             key.push_back(m.word(w));
         }
-        // A repeat would violate bulk_insert's precondition; the engine gets distinctness from ^G.
+        // A repeat would break the one-index-per-miss contract; the engine gets distinctness from ^G.
         if (!queried.insert(key).second) {
             continue;
         }
@@ -224,6 +224,8 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     BOOST_TEST(hits_seen > 0);
     BOOST_TEST(wide_seen > 0);
 
+    // The miss list, term for term and index for index: miss j is the j-th absent query in
+    // (sender, record) order and takes row base+j, which is the assignment the insert writes at.
     BOOST_REQUIRE_EQUAL(pr.miss_g.size(), expected_misses.size());
     for (size_t j = 0; j < pr.miss_g.size(); ++j) {
         BOOST_TEST((expect_mono[pr.miss_g[j]] == expected_misses[j]));
@@ -234,11 +236,9 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
 
     // The second implementation: the dense Monomial-keyed path, sharing no code with set_positions.
     auto ref = make_op<NumModes>(seed_terms);
-    detail::insert_absent_terms<NumModes>(
-        ref,
-        expected_misses.size(),
-        [&](size_t j) -> const Monomial<NumModes> & { return expected_misses[j]; },
-        [&](size_t j, size_t base) { assign_row<NumModes>(*ref.store, base + j, expected_misses[j]); });
+    detail::insert_absent_terms<NumModes>(ref, expected_misses.size(), [&](size_t j, size_t base) {
+        assign_row<NumModes>(*ref.store, base + j, expected_misses[j]);
+    });
 
     BOOST_REQUIRE_EQUAL(op.store->size(), ref.store->size());
     BOOST_TEST(op.store->size() > pr.base);
@@ -252,15 +252,12 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     }
     BOOST_TEST(overflow_seen > 0);
 
-    // The index, not just the rows: a wrong hash leaves the row correct and unfindable.
+    // The term table, not just the rows: an unindexed row is correct and unfindable, and the next gate
+    // would mint a duplicate of it.
     for (size_t i = 0; i < ref.store->size(); ++i) {
-        const auto key = ref.store->row(i);
-        const auto in_op = op.store->find(key);
-        const auto in_ref = ref.store->find(key);
-        BOOST_REQUIRE(in_ref.has_value());
-        BOOST_REQUIRE(in_op.has_value());
-        BOOST_TEST(*in_op == *in_ref);
-        BOOST_TEST(*in_ref == i);
+        const auto want = ref.store->row(i);
+        BOOST_TEST(op.term_table().find(*op.store, want) == i);
+        BOOST_TEST(ref.term_table().find(*ref.store, want) == i);
     }
 }
 
@@ -326,59 +323,58 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_set_positions_matches_set) {
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
-    // The hash identity, isolated: fold_hash_positions differing from fold_hash misses, and legally.
+    // The key identity, isolated: a key folded off decoded positions must equal the one folded off the
+    // dense term the row was written from, or the probe misses a row that is there -- and legally.
     constexpr size_t kN = 250;
+    using PosT = detail::OperatorIndex<kN>::PosT;
     std::mt19937_64 rng(20260819);
     const auto terms = draw_distinct<kN>(rng, 300);
     auto op = make_op<kN>(terms);
 
-    std::vector<detail::OperatorIndex<kN>::PosT> flat;
+    std::vector<PosT> flat;
     std::vector<size_t> off;
     std::vector<uint32_t> kk;
     for (const auto &m : terms) {
         off.push_back(flat.size());
-        size_t k = 0;
-        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-            flat.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
-            ++k;
-        }
-        kk.push_back(static_cast<uint32_t>(k));
+        const auto pos = positions_of<kN>(m);
+        flat.insert(flat.end(), pos.begin(), pos.end());
+        kk.push_back(static_cast<uint32_t>(pos.size()));
     }
-    std::vector<size_t> out(terms.size(), 0);
-    std::vector<uint32_t> hashes(terms.size(), 0);
-    op.store->find_batch_positions(flat, off, kk, out, hashes);
+    const auto key_at = [&](size_t q) { return detail::key_of_positions<2 * kN>(flat.data() + off[q], kk[q]); };
+    const auto pos_at = [&](size_t q) { return std::span<const PosT>(flat).subspan(off[q], kk[q]); };
 
-    std::vector<size_t> out_dense(terms.size(), 0);
-    op.store->find_batch(terms.data(), terms.size(), out_dense.data());
+    std::vector<size_t> out(terms.size(), 0);
+    op.term_table().find_batch(*op.store, terms.size(), key_at, pos_at, std::span<size_t>(out));
     for (size_t i = 0; i < terms.size(); ++i) {
-        BOOST_REQUIRE(out[i] != detail::OperatorIndex<kN>::kNotFound);
+        BOOST_TEST_INFO("term " << i);
+        BOOST_REQUIRE(out[i] != detail::TermTable::kNotFound);
         BOOST_TEST(out[i] == i);
-        BOOST_TEST(out[i] == out_dense[i]);
-        BOOST_TEST(hashes[i]
-                   == detail::OperatorIndex<kN>::fold_hash_positions(
-                       std::span<const detail::OperatorIndex<kN>::PosT>(flat).subspan(off[i], kk[i])));
+        BOOST_TEST(key_at(i) == detail::key_of<2 * kN>(terms[i]));
+        BOOST_TEST(op.term_table().find(*op.store, terms[i]) == i); // and by value
     }
 
     const auto absent = draw_distinct<kN>(rng, 50);
-    std::vector<detail::OperatorIndex<kN>::PosT> aflat;
+    std::vector<PosT> aflat;
     std::vector<size_t> aoff;
     std::vector<uint32_t> akk;
     for (const auto &m : absent) {
         aoff.push_back(aflat.size());
-        size_t k = 0;
-        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-            aflat.push_back(static_cast<detail::OperatorIndex<kN>::PosT>(b));
-            ++k;
-        }
-        akk.push_back(static_cast<uint32_t>(k));
+        const auto pos = positions_of<kN>(m);
+        aflat.insert(aflat.end(), pos.begin(), pos.end());
+        akk.push_back(static_cast<uint32_t>(pos.size()));
     }
     std::vector<size_t> aout(absent.size(), 0);
-    op.store->find_batch_positions(aflat, aoff, akk, aout);
+    op.term_table().find_batch(
+        *op.store,
+        absent.size(),
+        [&](size_t q) { return detail::key_of_positions<2 * kN>(aflat.data() + aoff[q], akk[q]); },
+        [&](size_t q) { return std::span<const PosT>(aflat).subspan(aoff[q], akk[q]); },
+        std::span<size_t>(aout));
     size_t genuinely_absent = 0;
     for (size_t i = 0; i < absent.size(); ++i) {
         // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.
-        if (!op.store->find(absent[i]).has_value()) {
-            BOOST_TEST(aout[i] == detail::OperatorIndex<kN>::kNotFound);
+        if (op.term_table().find(*op.store, absent[i]) == detail::TermTable::kNotFound) {
+            BOOST_TEST(aout[i] == detail::TermTable::kNotFound);
             ++genuinely_absent;
         }
     }

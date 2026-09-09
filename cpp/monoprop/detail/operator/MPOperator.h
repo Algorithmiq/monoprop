@@ -31,6 +31,7 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/TermTable.h"
 
 // Forward-declared to break an include cycle with algebra/Algebra.h.
 namespace monoprop {
@@ -98,6 +99,10 @@ struct MPOperator {
     // Set once at propagator construction.
     Basis basis{Basis::Majorana};
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_{std::nullopt};
+    // The join key -> row table the gate probe reads (TermTable.h). Lazy and kept in step exactly as
+    // the inverted index is: materialised by the first term_table(), appended by reindex_after_growth,
+    // and rebuilt by its staleness guard after any growth that bypassed that door.
+    mutable std::optional<TermTable> term_table_{std::nullopt};
 
     MPOperator() noexcept = default;
     MPOperator(MPOperator &&) noexcept = default;
@@ -114,7 +119,8 @@ struct MPOperator {
           init_op_map(other.init_op_map),
           initial_state(other.initial_state),
           basis(other.basis),
-          inverted_index_(other.inverted_index_) {}
+          inverted_index_(other.inverted_index_),
+          term_table_(other.term_table_) {}
 
     auto size() const -> size_t { return store->size(); }
 
@@ -136,10 +142,14 @@ struct MPOperator {
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
     auto append_term(const Monomial<NumModes> &mono) -> void { store->push_back(mono); }
 
-    // Resync the inverted index after a bulk growth of `store`, preserving has_value() ⟹ rows()==store.size().
+    // Resync the inverted index and the term table after a bulk growth of `store`, preserving
+    // has_value() ⟹ rows()==store.size() for both.
     auto reindex_after_growth(size_t base, size_t n) -> void {
         if (inverted_index_.has_value()) {
             inverted_index_->append_rows(*store, base, n);
+        }
+        if (term_table_.has_value()) {
+            term_table_->append_rows(*store, base, n);
         }
     }
 
@@ -149,6 +159,15 @@ struct MPOperator {
             inverted_index_->rebuild(*store);
         }
         return *inverted_index_;
+    }
+
+    //! The join key -> row table over every stored row, built or caught up on first use like the above.
+    auto term_table() const -> const TermTable & {
+        if (!term_table_.has_value() || term_table_->rows() != store->size()) {
+            term_table_.emplace();
+            term_table_->rebuild(*store);
+        }
+        return *term_table_;
     }
 
     // erase/clear keep bucket_count(), which init_operator_bytes reports, so drained buckets must be released.
@@ -166,12 +185,13 @@ struct MPOperator {
         }
 
         const auto before = init_op_map.size();
-        erase_if(init_op_map, [this](const auto &kv) {
-            const auto found = store->find(kv.first);
-            if (found) {
-                op_coeffs[*found] = kv.second;
+        const TermTable &table = term_table();
+        erase_if(init_op_map, [this, &table](const auto &kv) {
+            const size_t found = table.find(*store, kv.first);
+            if (found != TermTable::kNotFound) {
+                op_coeffs[found] = kv.second;
             }
-            return found.has_value();
+            return found != TermTable::kNotFound;
         });
         if (init_op_map.size() != before) {
             init_op_map.rehash(0);
@@ -230,11 +250,13 @@ struct MPOperator {
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
+        const TermTable &table = term_table();
 
         for (const auto &[k, v] : op_dict) {
             // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
             const auto mono = indices_to_bitset<NumModes>(k);
-            const auto rank_evolved_op = store->find(mono);
+            const size_t rank_evolved_op = table.find(*store, mono);
+            const bool in_evolved_op = rank_evolved_op != TermTable::kNotFound;
             const auto rank_init_op = init_op_map.find(mono);
             const auto coeff = algebra_encode_coeff<NumModes>(basis, v, mono);
 
@@ -242,8 +264,8 @@ struct MPOperator {
                 if (rank_init_op != init_op_map.end()) {
                     new_op_map[mono] = coeff;
                 }
-                else if (rank_evolved_op) {
-                    new_op_coeffs[*rank_evolved_op] = coeff;
+                else if (in_evolved_op) {
+                    new_op_coeffs[rank_evolved_op] = coeff;
                 }
                 else {
                     const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
@@ -251,8 +273,8 @@ struct MPOperator {
                 }
             }
             else {
-                if (rank_evolved_op) {
-                    new_op_coeffs[*rank_evolved_op] = coeff;
+                if (in_evolved_op) {
+                    new_op_coeffs[rank_evolved_op] = coeff;
                 }
                 else {
                     new_op_map[mono] = coeff;
@@ -297,16 +319,15 @@ struct MPOperator {
     }
 };
 
-// Callers must pass pairwise-distinct, currently-absent keys: bulk_insert then skips duplicate probes and
-// slot k deterministically lands at base+k. Call after any pass that reads pre-insert op state
-// (op.size() must equal the returned base).
-template <size_t NumModes, typename KeyAt, typename PerSlot>
-inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, KeyAt &&key_at, PerSlot &&per_slot) -> size_t {
+// Callers must pass pairwise-distinct, currently-absent terms: slot k deterministically lands at base+k
+// and nothing checks for a duplicate. Call after any pass that reads pre-insert op state (op.size() must
+// equal the returned base). per_slot(k, base) writes row base+k.
+template <size_t NumModes, typename PerSlot>
+inline auto insert_absent_terms(MPOperator<NumModes> &op, size_t n, PerSlot &&per_slot) -> size_t {
     const size_t base = op.store->grow_rows_geometric(n);
     for (size_t k = 0; k < n; ++k) {
         per_slot(k, base);
     }
-    op.store->bulk_insert(n, base, std::forward<KeyAt>(key_at));
     op.reindex_after_growth(base, n);
     return base;
 }
@@ -321,6 +342,8 @@ struct MPOperatorMemoryBreakdown final {
     size_t operator_terms_bytes{0uz};
     size_t op_coeffs_bytes{0uz};
     size_t state_coeffs_bytes{0uz};
+    // The join key -> row table (TermTable): 4-byte slots at a load of 0.35-0.7, so 5.7-11.4 B/term
+    // depending on where the row count sits between two doublings. 0 while the table is unmaterialised.
     size_t indexing_bytes{0uz};
     size_t init_operator_bytes{0uz};
     size_t initial_state_bytes{0uz};
@@ -411,7 +434,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
                                    + op.state_rows_.capacity() * sizeof(TermIndex)
                                    + op.state_vals_.capacity() * sizeof(double);
-    breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
+    breakdown.indexing_bytes = op.term_table_.has_value() ? op.term_table_->memory_bytes() : 0uz;
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.init_operator_entries = op.init_op_map.size();
     breakdown.initial_state_bytes = op.initial_state.capacity() * sizeof(size_t);
