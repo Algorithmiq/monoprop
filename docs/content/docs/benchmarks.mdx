@@ -323,43 +323,65 @@ rung's shape and flags:
 
 ```bash
 export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1     # the shape, declared
-just bench ci-bare-metal-L1 --bench-rounds 3 -k "test_model_propagate and hubbard"
+just bench ci-bare-metal-L1.propagate --bench-rounds 3 -k "test_model_propagate and hubbard"
 
 export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # P sizes the pinning
-just bench-mpi ci-bare-metal-L2b 4 --map-by slot:PE=2 --bind-to core
-monoprop-bench-bmf benches/results ci-bare-metal-L2b    # results as Bencher Metric Format JSON
+just bench-mpi ci-bare-metal-L2b.ops 4 --map-by slot:PE=2 --bind-to core
+monoprop-bench-bmf benches/results ci-bare-metal-L2b.ops  # results as Bencher Metric Format JSON
 ```
 
 `monoprop-bench-bmf` combines both artifacts because each Bencher upload accepts one adapter. The
-standard `python_pytest` adapter includes timings but omits memory and operator metrics. Three
+standard `python_pytest` adapter includes timings but omits memory and operator metrics. Four
 measures are recorded:
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
 | `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
-| `peak-memory` | bytes | per-operation peak RSS (`VmHWM`), summed over ranks | +10% |
+| `peak-memory` | bytes | the process's peak RSS (`VmHWM`) while the row ran, summed over ranks | +10% |
+| `operation-memory` | bytes | what the timed call added above its own floor, summed over ranks | +10% |
 | `terms` | count | terms in the evolved operator | any change |
+
+The two memory measures answer different questions, and mixing them up is easy. `peak-memory`
+spans `setup` and its window starts at the RSS already resident, so it is the footprint to
+provision against and the figure that predicts an OOM kill — but a row that runs after another
+one in the same process carries whatever that row left behind. `operation-memory` opens its
+window inside `setup`, after construction, so it is the row's own cost and is the one to compare
+between the rows of a plot. The `~GiB` columns below are `peak-memory`.
 
 For a fixed seed and problem size, `terms` is deterministic; any change therefore indicates an
 algorithmic change. It is tracked for that reason alone: it is the only check that a timing win is
 not an accuracy change. Timing alerts are recorded but do not fail the build.
 
+Because what matters about `terms` is only whether anything moved, every one of its series is
+gathered onto a single pinned plot in the Bencher console rather than read rung by rung. A pinned
+plot enumerates UUIDs instead of matching names, so `pin_terms_plot.py` rewrites its membership
+after each upload; a rung or row added today joins it on the next run.
+
+`random energy` and `random gradient` carry no `terms` series of their own: they evaluate the
+graph `random build_graph` published rather than building an operator, and re-reducing a count
+over a 100M+ term operator to say so is not free. The count that covers all three is
+`operator[heisenberg]`.
+
 #### The rungs
 
 Bencher keys history on `(branch, testbed, benchmark, measure)`, so a testbed denotes one machine
-*and* one shape and the name carries both: `<cpu>-<cores>c-<rung>`, where `<cpu>` is `brand_raw`
-slugified and `<cores>` the physical core count read off the machine. On the pinned `c7i.4xlarge` —
-16 vCPU / **8 physical cores**, 32 GiB nominal (~30 usable), no swap — that gives
-`intel-xeon-platinum-8488c-8c-L1` and `-L2a`, `-L2b`, `-L2c`, `-L2d`. Every rung runs on one node
-from one MPI-enabled build, so the edges between them move the shape and nothing else.
+*and* one shape. A rung name may carry a `.suffix`, and the testbed is the part before the first
+`.`: `<cpu>-<cores>c-<prefix>`, where `<cpu>` is `brand_raw` slugified and `<cores>` the physical
+core count read off the machine. On the pinned `c7i.4xlarge` — 16 vCPU / **8 physical cores**,
+32 GiB nominal (~30 usable), no swap — that gives three testbeds,
+`intel-xeon-platinum-8488c-8c-L1`, `-L2a` and `-L2b`.
 
-| rung | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
-|---|---|---|---:|---:|
-| L1 | 1 × 1 | `pytest benches` | 1 | 3 |
-| L2a | 1 × 8 | `pytest benches` | 8 | 1 |
-| L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
-| L2c | 1 × 8 | `pytest benches` | 8 | 1 |
-| L2d | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
+Each shape is measured by two processes reporting to that one testbed: `<shape>.ops` for the three
+operations that share an operator, and `<shape>.propagate` for the three that each build their
+own. So all six rows of a shape land on one plot, and every row's memory means the same thing at
+every rung. Every rung runs on one node from one MPI-enabled build, so the edges between them move
+the shape and nothing else.
+
+| rungs | testbed | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
+|---|---|---|---|---:|---:|
+| `L1.ops`, `L1.propagate` | L1 | 1 × 1 | `pytest benches` | 1 | 3 |
+| `L2a.ops`, `L2a.propagate` | L2a | 1 × 8 | `pytest benches` | 8 | 1 |
+| `L2b.ops`, `L2b.propagate` | L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
 
 `R × P` = 8 at L2a and L2b. L2b is 4 × 2 because the per-rank cost is paid `R` times on one node,
 which makes it the memory-worst rung and so the one the size ceiling is set against; `P` = 2 keeps
@@ -371,9 +393,23 @@ Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before r
 #### L1 — every row, one thread
 
 The six rows the L2 rungs measure, at sizes one thread can carry, so each of them has a baseline
-one rung down.
+one rung down. Two processes, split the same way as L2 and for the same reason, at a size where
+both would have fitted in one.
 
-`-k "test_model_propagate or ((test_random_build_graph or test_random_energy or test_random_gradient or test_random_propagate) and heisenberg)"`
+`L1.ops`, the three operations that share an operator:
+
+`-k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg"`
+`--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000`
+
+| row | terms | ~s | ~GiB |
+|---|---:|---:|---:|
+| random `build_graph` | 19,902,244 | 47 | 2.53 |
+| random `energy` | 19,902,244 | 3.1 | 2.32 |
+| random `gradient` | 19,902,244 | 8.6 | 2.46 |
+
+`L1.propagate`, the three that each build their own, which is what adds the model flags:
+
+`-k "test_model_propagate or (test_random_propagate and heisenberg)"`
 `--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 --pauli-cutoff=12 --pauli-lower-atol=1.22e-04`
 `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000`
 
@@ -381,57 +417,56 @@ one rung down.
 |---|---:|---:|---:|
 | hubbard `propagate` | 9,953,109 | 23 | 0.72 |
 | pauli `propagate` | 10,069,308 | 21 | 0.90 |
-| random `build_graph` | 19,902,244 | 47 | 2.53 |
-| random `energy` | 19,902,244 | 3.1 | 2.32 |
-| random `gradient` | 19,902,244 | 8.6 | 2.46 |
-| random `propagate` | 19,902,244 | 49 | 3.91 |
+| random `propagate` | 19,902,244 | 49 | ~1.4 |
 
-One process, one selector: the three flag sets use disjoint options, so they union. Whole-rung peak
-3.91 GiB in 7:41 at three rounds. That row is the only one above the operator it measures: the
-graph `build_graph` published is still resident while `propagate` builds its own, which at L1 sizes
-is 1.4 GiB the rung can afford and at L2 sizes is why `propagate` runs at rungs of its own.
+L1 is split because `peak-memory` has to mean the same thing here as it does at L2, or L1 is not a
+baseline for it. When all six shared one process they ran in collection order, so `build_graph`
+had already published its graph by the time `random propagate` was measured: that row read 3.91
+GiB, its own ~1.4 on top of ~2.5 GiB of graph it never touches. Its own cost is what the table
+above carries, and the first bare-metal run after the split is what pins the figure down.
 
 LADDER.md's pared L1 row — the same gradient at `--pare-threshold=1e-10` — is not here, because
 that option is session-wide and cannot share a process with the unpared row.
 
-#### L2a and L2b — one operator, three operations, ~25 GiB
+#### `L2a.ops` and `L2b.ops` — one operator, three operations, ~25 GiB
 
 `build_graph` publishes the graph `energy` and `gradient` evaluate, so the three share one operator
-and the peak is the max over them. `propagate` is excluded: it holds its own. Both rungs take the
+and the peak is the max over them. `propagate` is excluded: it holds its own. Both shapes take the
 same flags, so the term counts must match — that is the geometry-independence check, and the
 `terms` measure holds it to 0%.
 
 `-k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg"`
 `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000`
 
-| row | terms | ~s | ~GiB L2a | ~s | ~GiB/node L2b | ~GiB worst rank |
+| row | terms | ~s 1 × 8 | ~GiB 1 × 8 | ~s 4 × 2 | ~GiB/node 4 × 2 | ~GiB worst rank |
 |---|---:|---:|---:|---:|---:|---:|
 | random `build_graph` | 167,515,463 | 83 | 19.11 | 68 | 23.71 | 6.14 |
 | random `energy` | 167,515,463 | 13 | 17.54 | 6 | 20.36 | 5.17 |
 | random `gradient` | 167,515,463 | 39 | 18.85 | 16 | 21.68 | 5.50 |
 
-Peak 19.11 GiB at L2a and 23.71 GiB/node at L2b, in 135 s and 90 s. `~GiB/node` is the sum over
+Peak 19.11 GiB at 1 × 8 and 23.71 GiB/node at 4 × 2, in 135 s and 90 s. `~GiB/node` is the sum over
 the node's ranks — it errs high, because a page shared between ranks is charged to each, so it is
 the number to provision against and the wrong number to divide.
 
 `--obs-terms=2500000` is **the largest measured point that fits**.
 
-The term count is identical at both shapes, which is the geometry-independence check. L2b's node
-sum is 1.24x L2a's peak at this size — the per-rank cost paid four times on one node — against
+The term count is identical at both shapes, which is the geometry-independence check. The 4 × 2
+node sum is 1.24x the 1 × 8 peak at this size — the per-rank cost paid four times on one node — against
 1.29x at 1.5M, so the multiplier falls as the operator grows.
 
-#### L2c and L2d — `propagate`, three models, at the same two shapes
+#### `L2a.propagate` and `L2b.propagate` — three models, at the same two shapes
 
 `propagate` builds an operator of its own instead of reading the graph `build_graph` publishes, so
-it cannot share L2a and L2b's process: there the rung's peak is the *max* over three operations on
+it cannot share the `.ops` process: there the rung's peak is the *max* over three operations on
 one operator, and adding a fourth that holds its own would make it a *sum*. At this size that sum
-does not fit: the random row alone is 15.02 GiB on top of L2a's 18.35 GiB, against ~30 usable.
+does not fit: the random row alone is 15.02 GiB on top of `L2a.ops`'s 18.35 GiB, against ~30 usable.
 
-So it takes the same two shapes in processes of its own, which is also what keeps L2a and L2b's
+So it takes the same two shapes in processes of its own — reporting to the same two testbeds —
+which is also what keeps the `.ops` rungs'
 `terms` equality meaningful: three operations, one operator, one count.
 
 All three models run here, in one process. Each `propagate` row releases its operator when its
-test ends, so the rung's peak is the max down the column, not the sum — the same reason L2a's
+test ends, so the rung's peak is the max down the column, not the sum — the same reason the `.ops` rung's
 three operations fit and a fourth would not.
 
 `-k "test_model_propagate or (test_random_propagate and heisenberg)"`
@@ -440,13 +475,14 @@ three operations fit and a fourth would not.
 
 The random row keeps L2a and L2b's flags, so only the operation differs from those rungs.
 
-| row | terms | ~s | ~GiB L2c | ~s | ~GiB/node L2d | ~GiB worst rank |
+| row | terms | ~s 1 × 8 | ~GiB 1 × 8 | ~s 4 × 2 | ~GiB/node 4 × 2 | ~GiB worst rank |
 |---|---:|---:|---:|---:|---:|---:|
 | hubbard `propagate` | 345,519,120 | 217 | 17.95 | 217 | 18.72 | 4.68 |
 | pauli `propagate` | 253,933,183 | 119 | 21.11 | 120 | 22.15 | 5.67 |
 | random `propagate` | 167,515,463 | 58 | 15.02 | 58 | 17.29 | 4.33 |
 
-Peak 21.11 GiB at L2c and 22.15 GiB/node at L2d, in 6:57 and 6:59.
+Peak 21.11 GiB at 1 × 8 and 22.15 GiB/node at 4 × 2, in 6:57 and 6:59. That is this process's
+peak; the `.ops` process on the same testbed has its own, and neither is a sum over the two.
 
 The two atols are the largest measured points that fit, swept at the 4 × 2 shape one point per
 process: hubbard 8.8e-06, 7.0e-06 and 6.2e-06 are 9.96, 16.19 and 18.72 GiB/node, and pauli
@@ -460,10 +496,12 @@ instance rather than the process, which loses the artifact upload as well — he
 #### Inputs
 
 `rungs` is one rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`, where
-`partitions` is an integer or `per-rank` for one per physical core of the rank's share. A shape
+`partitions` is an integer or `per-rank` for one per physical core of the rank's share. A `.suffix`
+on the name picks the process within a shape; everything before the first `.` is the testbed. A shape
 that does not fit is refused rather than oversubscribed, and every rung reads its `ranks`,
 `partitions_env` and thread placement back out of its result JSON before the next one starts. Once
-a testbed has history these values should stay fixed: a new shape is a new rung, so a new testbed.
+a testbed has history these values should stay fixed: a new shape is a new name prefix, so a new
+testbed.
 
 **No benchmark workflow gates a pull request.** It tracks `main`, and a threshold is a report, not
 a verdict — measuring a change is the author's job, per "Benchmarking ladder" above. Every run
