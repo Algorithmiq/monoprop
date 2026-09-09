@@ -277,6 +277,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_row_inline_width", b.row_inline_width},
                                              {"d_row_restrides", b.row_restrides},
                                              {"d_pool_mapped_bytes", b.pool_mapped_bytes},
+                                             {"d_wire_staging_bytes", b.wire_staging_bytes},
                                              {"d_pool_free_chunk_bytes", b.pool_free_chunk_bytes}};
     });
 

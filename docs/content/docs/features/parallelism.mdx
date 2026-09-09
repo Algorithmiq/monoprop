@@ -80,6 +80,15 @@ than as a measurement of the array as it stands, which would always be 0. Across
 are summed rather than maxed: the partitions grow together within a call, so the sum is the figure a
 per-process footprint wants, and it errs high.
 
+`d_wire_staging_bytes` is not the operator's memory at all but the transport's, which is why it is
+outside the total: the in-process transports keep a payload staging buffer per direction, grown to
+the widest message the run has needed and never shrunk, plus the count and displacement tables that
+are fixed by the rank and partition counts. On a run whose widest gate came early those buffers are
+resident for the whole of it while nothing resting names them. One transport serves all the
+partitions of a rank, so it is a per-rank figure: exactly one partition reports it and a sum over
+partitions counts a rank's staging once. A pure-MPI rank reports 0, because there its payload
+buffers belong to the in-flight exchange handle and die with the gate that opened the round.
+
 ### Peak memory of large runs: pin glibc's `mmap` threshold
 
 Every gate allocates and frees a few large transient buffers: the records it stages, sends, receives

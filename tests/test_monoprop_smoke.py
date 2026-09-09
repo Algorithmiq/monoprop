@@ -196,6 +196,7 @@ _OPERATOR_DIAGNOSTIC_KEYS = (
     "d_row_inline_width",
     "d_row_restrides",
     "d_pool_mapped_bytes",
+    "d_wire_staging_bytes",
     "d_pool_free_chunk_bytes",
 )
 

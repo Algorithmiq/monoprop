@@ -141,6 +141,9 @@ public:
         // leaves matched_scratch_bytes at 0 and only this level can fill it in.
         auto breakdown = detail::estimate_memory_usage(mp_op_);
         breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
+        // The transport is shared by all S partitions of this rank, so only partition 0 reports it and
+        // the facade's sum over partitions counts the rank's staging exactly once.
+        breakdown.wire_staging_bytes = comm_.shm_rank == 0 ? mpi::staging_bytes(comm_) : 0uz;
         return breakdown;
     }
 

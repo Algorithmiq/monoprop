@@ -80,6 +80,17 @@ public:
     auto partitions() const -> int { return s_; }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
+    /*! @brief Bytes this rank's transport holds: the grow-only payload staging plus the fixed tables.
+     *
+     *  Diagnostic only. The two payload buffers are sized to the widest message the run has needed and
+     *  never shrink, so on a run whose widest gate came early they are resident for the whole of it
+     *  while nothing resting names them. One HybridComm serves all S partitions of a rank, so this is
+     *  a per-RANK figure: a caller summing over partitions must ask exactly one of them.
+     */
+    [[nodiscard]] auto staging_bytes() const -> size_t {
+        return staging_->bytes() + slots_.capacity() * sizeof(Slot) + red_vec_.capacity() * sizeof(double);
+    }
+
     auto alltoall_counts(int local_partition,
                          const int *send_counts /*[P]*/,
                          int *recv_counts /*[P]*/,

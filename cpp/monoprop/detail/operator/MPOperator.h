@@ -345,6 +345,14 @@ struct MPOperatorMemoryBreakdown final {
     // so these bytes are what the kernel charges even where no named field prices them.
     size_t pool_mapped_bytes{0uz};
     size_t pool_free_chunk_bytes{0uz};
+    /*! @brief The transport's persistent staging: the in-process transports' grow-only payload buffers
+     *  and their (R, S)-fixed tables. Zero for plain MPI, whose payload buffers are the gate's own.
+     *
+     *  A per-RANK figure, so exactly one partition reports it and the sum over partitions counts a
+     *  rank's transport once (MonomialPropagator::operator_memory_usage). Not in total_bytes(): it is
+     *  the comm's memory, not the operator's, and total_bytes() is an operator figure.
+     */
+    size_t wire_staging_bytes{0uz};
     // of op_coeffs_bytes: the most capacity the coefficient array held beyond its live rows at any
     // point in the last propagate or build_graph call. A high-water mark, not a resting figure: the
     // array is shrunk to fit at the end of every call, so measured at quiescence the slack is always 0.
@@ -378,6 +386,8 @@ struct MPOperatorMemoryBreakdown final {
         row_inline_width = std::max(row_inline_width, o.row_inline_width);
         pool_mapped_bytes += o.pool_mapped_bytes;
         pool_free_chunk_bytes += o.pool_free_chunk_bytes;
+        // Summed although it is per-rank, because only one partition reports a nonzero: see the field.
+        wire_staging_bytes += o.wire_staging_bytes;
         // Summed, not maxed, across partitions: the partitions grow together within a call, so the sum
         // is the figure a per-process footprint wants. An upper bound, and it errs the safe way.
         op_coeffs_slack_bytes += o.op_coeffs_slack_bytes;

@@ -126,6 +126,23 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 
 monoprop_EXPORT auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
+/*! @brief Bytes the transport behind @a comm holds, for the memory ledger's diagnostics.
+ *
+ *  Only the in-process transports own buffers of their own; Kind::Mpi has none, because its payload
+ *  buffers belong to the in-flight PendingAlltoallv handle and die with the gate that opened the round.
+ */
+inline auto staging_bytes(Comm comm) -> size_t {
+    if (comm.kind == Comm::Kind::Shm) {
+        return comm.shm->staging_bytes();
+    }
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return comm.hyb->staging_bytes();
+    }
+#endif
+    return 0;
+}
+
 // `n` is the comm size. `plan` narrows the exchange to the destination ranks it can reach (see
 // PeerPlan); the default is dense, i.e. today's collective.
 monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan = {})
