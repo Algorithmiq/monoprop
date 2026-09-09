@@ -404,32 +404,6 @@ bench-smoke:
         -m "not slow" --num-generators 8 --num-modes 8 --cutoff 6 --obs-terms 16
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
-# Deliberately keeps the `bench` default sizes rather than inventing a second set
-# to keep in sync: they run in well under a minute yet leave the heavier
-# Schrödinger operations in the 50 ms - 1 s range, where runner noise does not
-# swamp the signal. Only the slow fixed models are dropped; they run nightly.
-# More rounds than a local run, because CI reports the mean.
-#
-# The marker expression and round count come from the environment so a caller can
-# pass values containing spaces, or an empty marker to select everything:
-#   monoprop_BENCH_MARKERS= monoprop_BENCH_ROUNDS=3 just bench-ci ci-bare-metal
-
-# Run the continuous-benchmarking profile tracked by Bencher.
-bench-ci LABEL *ARGS:
-    @mkdir -p "{{ bench_results }}"
-    label="$1"; shift; \
-    monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
-        uv run --no-sync python -m pytest benches -o filterwarnings=default \
-        --benchmark-json="{{ bench_results }}/time-$label.json" \
-        -m "${monoprop_BENCH_MARKERS-not slow}" \
-        --bench-rounds "${monoprop_BENCH_ROUNDS:-5}" "$@"
-
-# Convert one LABEL's artifacts into Bencher Metric Format JSON on stdout, e.g.
-#   just bench-ci ci-linux && just bench-bmf ci-linux > bmf.json
-
-# Emit LABEL's results as Bencher Metric Format JSON.
-bench-bmf LABEL:
-    uv run --no-sync monoprop-bench-bmf "{{ bench_results }}" "$1"
 
 # Execute the tutorial notebooks and convert them to Markdown. Notebook
 

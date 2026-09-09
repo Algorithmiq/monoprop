@@ -55,7 +55,7 @@ Render the artifacts of a run:
 
 ```bash
 monoprop-bench-report benches/results             # writes REPORT.md
-monoprop-bench-bmf benches/results ci-linux       # BMF JSON on stdout
+monoprop-bench-bmf benches/results ci-bare-metal-L1   # BMF JSON on stdout
 ```
 
 Both read the two files a run leaves in the results directory:
@@ -68,6 +68,10 @@ operator sizes, configuration). The schema is documented in the repository's
 This package deliberately holds no benchmarks. monoprop's own suite lives in the
 repository's `benches/` directory, because its benchmark names are the key
 Bencher's history is stored under and must not move with a library release.
+
+`bmf.benchmark_name` maps a pytest node id to the name a metric is exported
+under, so that mapping is history-bearing for the same reason: changing it
+renames every series it touches.
 
 ## License
 
