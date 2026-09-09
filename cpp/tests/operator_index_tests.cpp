@@ -19,6 +19,7 @@
 #include <bit>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -455,4 +456,190 @@ BOOST_AUTO_TEST_CASE(chunked_growth_bounds_the_slack_by_one_chunk) {
     }
     s.set(65, bs({0, 2, 4})); // a row in the second chunk
     BOOST_CHECK(copy->row(65) == boundary_term(65));
+}
+
+namespace {
+
+// A term of exactly `slots` ascending positions, distinct per (i, slots).
+auto term_of_width(size_t i, size_t slots) -> MSet {
+    VecZ pos;
+    for (size_t j = 0; j < slots; ++j) {
+        pos.push_back((i * 3 + j * 5) % (2 * N));
+    }
+    std::sort(pos.begin(), pos.end());
+    pos.erase(std::unique(pos.begin(), pos.end()), pos.end());
+    for (size_t extra = 0; pos.size() < slots && extra < 2 * N; ++extra) {
+        if (std::find(pos.begin(), pos.end(), extra) == pos.end()) {
+            pos.push_back(extra);
+        }
+    }
+    std::sort(pos.begin(), pos.end());
+    return bs(pos);
+}
+
+} // namespace
+
+// A row wider than the inline slot but no wider than the structural bound goes to the fixed-stride wide
+// tier, not the side-map: it reads back the same through every accessor, and the side-map stays empty.
+BOOST_AUTO_TEST_CASE(wide_rows_go_to_the_second_tier_not_the_side_map) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 10;
+    Store s(kInline, kTinyChunkRows, kBound);
+    BOOST_REQUIRE_EQUAL(s.inline_width(), kInline);
+    BOOST_REQUIRE_EQUAL(s.wide_width(), kBound);
+
+    // Widths on both sides of the inline slot, and one over the bound so the side-map is still used.
+    const std::vector<size_t> widths = {1, kInline - 1, kInline, kInline + 1, kBound - 1, kBound, kBound + 1};
+    std::vector<MSet> want;
+    for (size_t i = 0; i < widths.size(); ++i) {
+        want.push_back(term_of_width(i, widths[i]));
+        s.push_back(want.back());
+    }
+    BOOST_CHECK_EQUAL(s.wide_size(), 3U);     // inline+1, bound-1, bound
+    BOOST_CHECK_EQUAL(s.overflow_size(), 1U); // only the row over the bound
+    BOOST_CHECK_EQUAL(s.restrides(), 0U);
+
+    for (size_t i = 0; i < widths.size(); ++i) {
+        BOOST_TEST_INFO("row " << i << " width " << widths[i]);
+        BOOST_CHECK(s.row(i) == want[i]);
+        BOOST_CHECK_EQUAL(s.popcount(i), widths[i]);
+        // Only the row past the bound loses its position array; a wide row keeps one.
+        const auto rp = s.row_positions(i);
+        BOOST_CHECK_EQUAL(rp.inlined(), widths[i] <= kBound);
+        if (rp.inlined()) {
+            BOOST_CHECK_EQUAL(rp.pos.size(), widths[i]);
+        }
+        std::vector<size_t> seen;
+        s.for_each_position(i, [&](size_t b) { seen.push_back(b); });
+        BOOST_CHECK_EQUAL(seen.size(), widths[i]);
+    }
+
+    // set_positions() takes the same two-tier route as set(), and the index finds either tier.
+    Store t(kInline, kTinyChunkRows, kBound);
+    t.grow_rows_geometric(widths.size());
+    for (size_t i = 0; i < widths.size(); ++i) {
+        const auto rp = s.row_positions(i);
+        if (rp.inlined()) {
+            t.set_positions(i, rp.pos);
+        }
+        else {
+            t.set(i, want[i]);
+        }
+        t.emplace(want[i], i);
+    }
+    BOOST_CHECK_EQUAL(t.wide_size(), s.wide_size());
+    BOOST_CHECK_EQUAL(t.overflow_size(), s.overflow_size());
+    for (size_t i = 0; i < widths.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(t.row(i) == want[i]);
+        BOOST_CHECK(t.find(want[i]) == std::optional<size_t>{i});
+    }
+}
+
+// The policy: a tier under the threshold is left alone; over it the store re-lays itself at the bound,
+// once. A store with no tier can never trigger it.
+BOOST_AUTO_TEST_CASE(a_store_restrides_once_when_the_wide_tier_grows_past_the_threshold) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 10;
+    constexpr size_t kRows = 400;
+
+    // One row in fifty is wide: 2 %, under the 3 % threshold, so the guess stands.
+    Store lean(kInline, kTinyChunkRows, kBound);
+    for (size_t i = 0; i < kRows; ++i) {
+        lean.push_back(term_of_width(i, i % 50 == 0 ? kBound : kInline));
+    }
+    BOOST_CHECK_EQUAL(lean.wide_size(), kRows / 50);
+    BOOST_CHECK(!lean.should_restride());
+
+    // One row in ten is wide: over the threshold, so the inline width was the wrong guess.
+    Store fat(kInline, kTinyChunkRows, kBound);
+    std::vector<MSet> want;
+    for (size_t i = 0; i < kRows; ++i) {
+        want.push_back(term_of_width(i, i % 10 == 0 ? kBound : kInline));
+        fat.push_back(want.back());
+        fat.emplace(want.back(), i);
+    }
+    BOOST_REQUIRE(fat.should_restride());
+
+    fat.restride_to_bound();
+    BOOST_CHECK_EQUAL(fat.restrides(), 1U);
+    BOOST_CHECK_EQUAL(fat.inline_width(), kBound);
+    BOOST_CHECK_EQUAL(fat.wide_size(), 0U);
+    BOOST_CHECK(!fat.should_restride()); // the tier is gone, so it can never fire again
+    BOOST_CHECK_EQUAL(fat.size(), kRows);
+
+    // Index-preserving: every row survives at its own index, and the hash index -- which keys on the
+    // row's value, not on its layout -- still resolves each term to the row it was inserted at. This is
+    // what lets the inverted index and the graph's endpoints stand across a restride.
+    for (size_t i = 0; i < kRows; ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(fat.row(i) == want[i]);
+        BOOST_CHECK_EQUAL(fat.popcount(i), i % 10 == 0 ? kBound : kInline);
+        BOOST_CHECK(fat.find(want[i]) == std::optional<size_t>{i});
+    }
+    // A restride is idempotent, and a store built at its bound has no tier to begin with.
+    fat.restride_to_bound();
+    BOOST_CHECK_EQUAL(fat.restrides(), 1U);
+    Store flat(kBound, kTinyChunkRows, kBound);
+    flat.push_back(term_of_width(0, kBound));
+    BOOST_CHECK_EQUAL(flat.wide_size(), 0U);
+    BOOST_CHECK(!flat.should_restride());
+}
+
+// raise_bound follows a cutoff widened after construction: it drains the tier first, so the rows the
+// old bound forbade are laid out rather than spilled into the side-map an entry at a time.
+BOOST_AUTO_TEST_CASE(raising_the_bound_drains_the_tier_and_widens_it) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 8;
+    Store s(kInline, kTinyChunkRows, kBound);
+    std::vector<MSet> want;
+    for (size_t i = 0; i < 40; ++i) {
+        want.push_back(term_of_width(i, i % 4 == 0 ? kBound : kInline));
+        s.push_back(want.back());
+    }
+    BOOST_REQUIRE_EQUAL(s.wide_size(), 10U);
+
+    s.raise_bound(12);
+    BOOST_CHECK_EQUAL(s.wide_width(), 12U);
+    BOOST_CHECK_EQUAL(s.inline_width(), kBound); // the drain re-laid the rows at the old bound
+    BOOST_CHECK_EQUAL(s.wide_size(), 0U);
+    for (size_t i = 0; i < want.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(s.row(i) == want[i]);
+    }
+    // A row the old bound would have spilled now takes the fresh tier.
+    s.push_back(term_of_width(100, 11));
+    BOOST_CHECK_EQUAL(s.wide_size(), 1U);
+    BOOST_CHECK_EQUAL(s.overflow_size(), 0U);
+    // Narrowing is a no-op: the rows are already laid out wider than that.
+    s.raise_bound(2);
+    BOOST_CHECK_EQUAL(s.wide_width(), 12U);
+}
+
+// A clone carries the tier, not just the narrow rows, and shares no storage with its source.
+BOOST_AUTO_TEST_CASE(a_clone_carries_the_wide_tier) {
+    constexpr size_t kInline = 6;
+    constexpr size_t kBound = 10;
+    Store s(kInline, kTinyChunkRows, kBound);
+    for (size_t i = 0; i < 40; ++i) {
+        s.push_back(term_of_width(i, i % 4 == 0 ? kBound : kInline));
+    }
+    BOOST_REQUIRE_EQUAL(s.wide_size(), 10U);
+
+    const auto copy = s.clone();
+    BOOST_CHECK_EQUAL(copy->wide_size(), s.wide_size());
+    BOOST_CHECK_EQUAL(copy->inline_width(), s.inline_width());
+    BOOST_CHECK_EQUAL(copy->wide_width(), s.wide_width());
+    for (size_t i = 0; i < s.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(copy->row(i) == s.row(i));
+    }
+    // Restriding the copy must not disturb the original's tier.
+    copy->restride_to_bound();
+    BOOST_CHECK_EQUAL(copy->wide_size(), 0U);
+    BOOST_CHECK_EQUAL(s.wide_size(), 10U);
+    for (size_t i = 0; i < s.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        BOOST_CHECK(copy->row(i) == s.row(i));
+    }
 }
