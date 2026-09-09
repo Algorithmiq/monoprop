@@ -71,7 +71,12 @@ def test_high_water_mark_window_is_reset_per_block() -> None:
 def test_peak_rss_never_below_current_rss() -> None:
     if peak_rss_bytes() == 0:
         pytest.skip("/proc/self/status VmHWM unavailable (non-Linux)")
-    assert peak_rss_bytes() >= rss_bytes()
+    # Sample the current figure first. The two come from separate reads of
+    # /proc/self/status and VmHWM only ever rises, so a peak read afterwards cannot be
+    # below an RSS read before it. The other order fails whenever the interpreter gains a
+    # page between the two reads -- rare normally, routine under a sanitizer runtime.
+    current = rss_bytes()
+    assert peak_rss_bytes() >= current
 
 
 def _under_sanitizer() -> bool:

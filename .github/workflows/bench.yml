@@ -17,7 +17,10 @@ on:
         description: >-
           One rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`.
           `partitions` is an integer or `per-rank` for (physical cores / ranks).
-          Blank lines and `#` comments are ignored.
+          Blank lines and `#` comments are ignored. A name may carry a `.suffix`: the
+          Bencher testbed is the part before the first `.`, so rungs sharing a prefix
+          share a plot, which is how one shape measured by two processes keeps its rows
+          together.
         required: true
         type: string
 
@@ -78,6 +81,14 @@ jobs:
           while IFS='|' read -r head args <&3; do
             IFS=$' \t' read -r rung ranks partitions rounds <<<"$head"
             case "${rung:-}" in '' | '#'*) continue ;; esac
+            # The name reaches a result filename, a Bencher testbed and the prefix split
+            # below, so hold it to what all three accept. A leading `.` would split to an
+            # empty testbed.
+            case "$rung" in
+              *[!A-Za-z0-9.-]* | .*)
+                echo "::error::rung name '$rung' must be [A-Za-z0-9.-] and cannot start with '.'"
+                exit 1 ;;
+            esac
             # A missing field would otherwise fall through to a default and measure something
             # else; a non-numeric one reaches the arithmetic below as an unset name, so worth 0;
             # `0` divides by zero at per-rank and reaches `mpiexec -n 0` otherwise; and `08` is
@@ -134,6 +145,8 @@ jobs:
             fi
             # One BMF file per rung: each Bencher upload accepts one adapter.
             uv run --no-sync monoprop-bench-bmf benches/results "$label" > "bmf-$rung.json"
+            # To the log too: a rung that OOMs the instance takes the artifact with it.
+            cat "bmf-$rung.json"
             uv run --no-sync python .github/workflows/scripts/check_shape.py \
               "benches/results/$label.json" "$ranks" "$partitions"
             echo "::endgroup::"
@@ -174,7 +187,11 @@ jobs:
           for file in "${files[@]}"; do
             rung="${file#bmf-}"
             rung="${rung%.json}"
-            BENCHER_TESTBED="$slug-${BENCH_CORES}c-$rung" bencher run \
+            # Rungs sharing a prefix share a testbed: `L2a.ops` and `L2a.propagate` are one
+            # shape in two processes, and Bencher keys history on the testbed, so this is
+            # what puts their rows on one plot.
+            testbed="${rung%%.*}"
+            BENCHER_TESTBED="$slug-${BENCH_CORES}c-$testbed" bencher run \
               --adapter json \
               --file "$file" \
               --github-actions "$GITHUB_TOKEN" \
@@ -186,6 +203,11 @@ jobs:
               --threshold-lower-boundary _ \
               --threshold-upper-boundary 0.99 \
               --threshold-measure peak-memory \
+              --threshold-test percentage \
+              --threshold-max-sample-size 64 \
+              --threshold-lower-boundary _ \
+              --threshold-upper-boundary 0.10 \
+              --threshold-measure operation-memory \
               --threshold-test percentage \
               --threshold-max-sample-size 64 \
               --threshold-lower-boundary _ \
