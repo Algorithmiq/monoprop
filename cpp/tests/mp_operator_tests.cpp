@@ -81,6 +81,20 @@ auto sparse_state_equals(const detail::MPOperator<8>::SparseState &sparse, const
            && std::ranges::equal(sparse.values, expected.second);
 }
 
+// Pairwise-distinct two-position monomials over the 16 slots of Monomial<8>, in colexicographic order.
+// Enough for a capacity ladder that crosses several growth steps.
+inline constexpr size_t kLadderTerms = 100;
+
+auto distinct_term(size_t k) -> Monomial<8> {
+    constexpr size_t kSlots = Monomial<8>::size();
+    size_t first = 0;
+    while (k >= kSlots - 1 - first) {
+        k -= kSlots - 1 - first;
+        ++first;
+    }
+    return indices_to_bitset<8>(VecZ{first, first + 1 + k});
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_paired_terms_majorana_and_pauli) {
@@ -416,4 +430,128 @@ BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     copy.append_term(indices_to_bitset<8>({4, 5}));
     BOOST_CHECK_EQUAL(op.size(), 2U);
     BOOST_CHECK_EQUAL(copy.size(), 3U);
+}
+
+// The coefficient array parallels the row store, so it must grow on the store's 1.5x policy and not on
+// std::vector's doubling. Only capacity is at stake -- the ladder is checked alongside the values.
+BOOST_AUTO_TEST_CASE(mp_operator_get_operator_grows_coeffs_at_the_row_store_policy) {
+    detail::MPOperator<8> op;
+
+    size_t prev_cap = op.op_coeffs.capacity();
+    for (size_t step = 1; step <= kLadderTerms; ++step) {
+        op.append_term(distinct_term(step - 1));
+        const auto &coeffs = op.get_operator();
+        BOOST_REQUIRE_EQUAL(coeffs.size(), op.size());
+
+        const size_t cap = op.op_coeffs.capacity();
+        BOOST_CHECK_GE(cap, coeffs.size());
+        BOOST_CHECK_LE(cap, std::max(coeffs.size(), prev_cap + (prev_cap / 2) + 1));
+        BOOST_CHECK_EQUAL(coeffs.back(), 0.0); // every new slot is written 0.0 before use
+        prev_cap = cap;
+
+        op.op_coeffs[step - 1] = static_cast<double>(step);
+    }
+
+    // Growth never disturbs an already-written coefficient.
+    BOOST_REQUIRE_EQUAL(op.op_coeffs.size(), kLadderTerms);
+    for (size_t i = 0; i < kLadderTerms; ++i) {
+        BOOST_CHECK_EQUAL(op.op_coeffs[i], static_cast<double>(i + 1));
+    }
+}
+
+// dense_state() extends the same way, and its already-scored prefix must survive the growth too.
+BOOST_AUTO_TEST_CASE(mp_operator_dense_state_grows_coeffs_at_the_row_store_policy) {
+    const VecZ initial_state{0, 1};
+    detail::MPOperator<8> op;
+    op.basis = Basis::Majorana;
+    op.initial_state = initial_state;
+
+    size_t prev_cap = op.state_coeffs.capacity();
+    for (size_t step = 1; step <= kLadderTerms; ++step) {
+        op.append_term(distinct_term(step - 1));
+        const auto &state = op.dense_state();
+        BOOST_REQUIRE_EQUAL(state.size(), op.size());
+
+        const size_t cap = op.state_coeffs.capacity();
+        BOOST_CHECK_GE(cap, state.size());
+        BOOST_CHECK_LE(cap, std::max(state.size(), prev_cap + (prev_cap / 2) + 1));
+        prev_cap = cap;
+    }
+
+    BOOST_CHECK(op.dense_state() == expected_state(op, Basis::Majorana, initial_state));
+}
+
+// The coefficient slack is a subset of op_coeffs_bytes, so it accumulates under += like the other d_
+// fields and must never reach total_bytes().
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_op_coeffs_slack_out_of_total) {
+    detail::MPOperatorMemoryBreakdown<8> acc;
+    acc.op_coeffs_bytes = 100;
+    acc.op_coeffs_slack_bytes = 24;
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 100U);
+
+    detail::MPOperatorMemoryBreakdown<8> other;
+    other.op_coeffs_bytes = 20;
+    other.op_coeffs_slack_bytes = 8;
+
+    acc += other;
+    BOOST_CHECK_EQUAL(acc.op_coeffs_slack_bytes, 32U);
+    BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
+}
+
+// A high-water mark over the measurement window, not a reading of the array as it stands: it has to
+// survive the shrink that ends every call, and to reset when a new window opens.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_op_coeffs_slack_is_a_high_water_mark) {
+    detail::MPOperator<8> op;
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U); // nothing allocated
+
+    for (size_t k = 0; k < kLadderTerms; ++k) {
+        op.append_term(distinct_term(k));
+    }
+    // The first growth reserves exactly (1.5 * 0 + 1 is below the request), so it leaves no slack.
+    (void)op.get_operator();
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U);
+
+    // The second does grow geometrically, and the mark records what it left over.
+    op.append_term(distinct_term(kLadderTerms));
+    (void)op.get_operator();
+    const auto grown = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(grown.op_coeffs_slack_bytes, (op.op_coeffs.capacity() - op.op_coeffs.size()) * sizeof(double));
+    BOOST_CHECK_GT(grown.op_coeffs_slack_bytes, 0U);
+    BOOST_CHECK_LT(grown.op_coeffs_slack_bytes, grown.op_coeffs_bytes); // a subset of the field it breaks down
+
+    // It holds the peak: handing the capacity back does not lower it, which is the whole point -- every
+    // call ends in a shrink_to_fit, so a resting measurement would always read 0.
+    const size_t peak = grown.op_coeffs_slack_bytes;
+    op.op_coeffs.shrink_to_fit();
+    op.observe_op_coeffs_slack();
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, peak);
+
+    // And a new window starts from nothing.
+    op.reset_op_coeffs_slack_hwm();
+    BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(op).op_coeffs_slack_bytes, 0U);
+}
+
+// The two-tier row layout and the chunk pools are reported so an A/B can tell a width that held from
+// one that did not, and so the mapped bytes the kernel charges are named somewhere in the ledger.
+BOOST_AUTO_TEST_CASE(mp_operator_breakdown_reports_the_row_tiers_and_the_pools) {
+    detail::MPOperator<8> op;
+    const auto empty = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(empty.row_wide_rows, 0U);
+    BOOST_CHECK_EQUAL(empty.row_restrides, 0U);
+    BOOST_CHECK_EQUAL(empty.pool_mapped_bytes, 0U); // nothing has grown, so nothing is mapped
+
+    for (size_t k = 0; k < kLadderTerms; ++k) {
+        op.append_term(distinct_term(k));
+    }
+    (void)op.inverted_index();
+    const auto grown = detail::estimate_memory_usage<8>(op);
+    BOOST_CHECK_EQUAL(grown.row_inline_width, op.store->inline_width());
+    BOOST_CHECK_EQUAL(grown.row_wide_rows, op.store->wide_size());
+    BOOST_CHECK_GT(grown.pool_mapped_bytes, 0U);
+    BOOST_CHECK_LE(grown.pool_free_chunk_bytes, grown.pool_mapped_bytes);
+    // Both are outside total_bytes(): the mapping is not a subset of any named field.
+    auto without = grown;
+    without.pool_mapped_bytes = 0;
+    without.pool_free_chunk_bytes = 0;
+    BOOST_CHECK_EQUAL(grown.total_bytes(), without.total_bytes());
 }
