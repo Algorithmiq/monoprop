@@ -1,6 +1,8 @@
+# 4 as well as 2: at R = 2 the peer plan can only ever resolve one peer, so every `for k in [0, f)` in
+# the sparse transport stays a single iteration and the f > 1 cases never run.
 set(
   monoprop_MPI_TEST_PROCS
-  "2"
+  "2;4"
   CACHE STRING
   "Semicolon-separated list of ranks for MPI test variants"
 )
