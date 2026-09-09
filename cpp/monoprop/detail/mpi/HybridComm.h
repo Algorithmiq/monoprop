@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -79,27 +80,43 @@ public:
     auto partitions() const -> int { return s_; }
     auto global_rank(int local_partition) const -> int { return mpi_rank_ * s_ + local_partition; }
 
-    auto alltoall_counts(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
-        guard_partition0_(local_partition, "alltoall_counts", [this, local_partition, send_counts, recv_counts] {
-            alltoall_counts_impl_(local_partition, send_counts, recv_counts);
+    auto alltoall_counts(int local_partition,
+                         const int *send_counts /*[P]*/,
+                         int *recv_counts /*[P]*/,
+                         PeerPlan plan = {}) -> void {
+        guard_partition0_(local_partition, "alltoall_counts", [this, local_partition, send_counts, recv_counts, plan] {
+            alltoall_counts_impl_(local_partition, send_counts, recv_counts, plan);
         });
     }
 
     // See AlltoallvArgs for the send-buffer lifetime and the element-vs-byte convention; `dt` is the MPI
     // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
     // with the non-MPI-capable transport.
-    auto alltoallv(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
-        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt] {
-            alltoallv_impl_(local_partition, args, dt);
+    //
+    // `derive_wire_bits` > 0 asks partition 0 to narrow the WIRE itself, to that many linear bits, from
+    // the destination ranks the whole rank actually uses. A caller cannot supply that plan: only
+    // partition 0 reaches MPI, and its own row may be the empty one while a sibling partition has the
+    // rank's only traffic. Legal only for a SYMMETRIC layout (the recv counts are the send counts),
+    // which is what lets the peer set be read off the published recv rows; asserted against the send rows.
+    auto alltoallv(int local_partition,
+                   const AlltoallvArgs &args,
+                   MPI_Datatype dt,
+                   PeerPlan plan = {},
+                   int derive_wire_bits = 0) -> void {
+        guard_partition0_(local_partition, "alltoallv", [this, local_partition, &args, dt, plan, derive_wire_bits] {
+            alltoallv_impl_(local_partition, args, dt, plan, derive_wire_bits);
         });
     }
 
     // See AlltoallvResolveArgs: the recv side is an output, and args.recv is resized here.
     template <typename T>
-    auto alltoallv_resolve(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+    auto alltoallv_resolve(int local_partition,
+                           const AlltoallvResolveArgs<T> &args,
+                           MPI_Datatype dt,
+                           PeerPlan plan = {}) -> void {
         // `args` by reference, not by value: the impl resizes args.recv and then writes through it.
-        guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt] {
-            alltoallv_resolve_impl_<T>(local_partition, args, dt);
+        guard_partition0_(local_partition, "alltoallv_resolve", [this, local_partition, &args, dt, plan] {
+            alltoallv_resolve_impl_<T>(local_partition, args, dt, plan);
         });
     }
 
@@ -151,17 +168,24 @@ private:
     }
 
     // recv_counts[g] = amount global partition g sends to this partition. 2 barriers + one count round.
-    auto alltoall_counts_impl_(int local_partition, const int *send_counts /*[P]*/, int *recv_counts /*[P]*/) -> void {
+    auto alltoall_counts_impl_(int local_partition,
+                               const int *send_counts /*[P]*/,
+                               int *recv_counts /*[P]*/,
+                               PeerPlan plan) -> void {
         staging_->publish_counts_row(local_partition, send_counts);
         sync();
         if (local_partition == 0) {
-            staging_->pack_count_matrix();
-            staging_->exchange_count_blocks();
+            staging_->fill_peers(plan);
+            staging_->pack_count_matrix(plan);
+            staging_->exchange_count_blocks(plan);
         }
         sync();
         // Partition t extracts its row: recv from (rank a, partition su) is contiguous per source rank a.
+        // Under a plan only the peer ranks were exchanged, so the rest of the row is zero by definition
+        // (a non-peer cannot own the partner of any term this rank owns).
         const int t = local_partition;
-        for (int a = 0; a < r_; ++a) {
+        std::fill(recv_counts, recv_counts + static_cast<size_t>(r_) * static_cast<size_t>(s_), 0);
+        for (const int a : staging_->peers()) {
             for (int su = 0; su < s_; ++su) {
                 recv_counts[a * s_ + su] = staging_->count_from(a, t, su);
             }
@@ -172,16 +196,28 @@ private:
     }
 
     // Flat variable all-to-all over caller-owned buffers; see AlltoallvArgs for the conventions.
-    auto alltoallv_impl_(int local_partition, const AlltoallvArgs &args, MPI_Datatype dt) -> void {
+    auto alltoallv_impl_(int local_partition,
+                         const AlltoallvArgs &args,
+                         MPI_Datatype dt,
+                         PeerPlan plan,
+                         int derive_wire_bits) -> void {
         Slot &me = slots_[static_cast<size_t>(local_partition)];
         me.ptr = args.send;
         me.send_displs = args.send_displs;
         staging_->publish_counts_row(local_partition, args.send_counts);
-        staging_->publish_recv_rows(local_partition, args.recv_counts);
+        staging_->publish_recv_rows(local_partition, args.recv_counts, plan);
         sync(); // B1
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into it.
         if (local_partition == 0) {
+            // Written here, read again in the B3->B4 window: partition 0 is this member's only toucher.
+            wire_plan_ = plan;
+            if (derive_wire_bits > 0) {
+                wire_plan_ = staging_->derived_wire_plan(derive_wire_bits);
+                // The recv rows it was read off against the send rows: the symmetry the parameter needs.
+                assert(staging_->narrowing_is_lossless(wire_plan_));
+            }
+            staging_->fill_peers(wire_plan_);
             staging_->size_send(args.elem);
             staging_->fill_recv_col([this](int a, int t) { return staging_->published_recv(a, t); });
             staging_->size_recv(args.elem);
@@ -194,7 +230,7 @@ private:
 
         // B4: partition 0 moves the payload while peers park at the barrier.
         if (local_partition == 0) {
-            staging_->exchange_payload(dt);
+            staging_->exchange_payload(dt, args.elem, wire_plan_);
         }
         sync(); // B4
 
@@ -203,10 +239,18 @@ private:
     }
 
     // Fused count-resolve + payload alltoallv: folds the standalone count exchange into this verb's
-    // B1→B2 window (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are outputs.
-    // Bit-identical to alltoall_counts + alltoallv.
+    // barriered windows (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are
+    // outputs. Bit-identical to alltoall_counts + alltoallv.
+    //
+    // The count round is POSTED in B1→B2 and only waited on in B3→B4, so the whole B2→B3 packing runs
+    // underneath it. Split, not fused, because nothing before fill_recv_col reads the count blocks: the
+    // send side sizes from the locally published rows, and pack_send from that sizing. The dense arm is
+    // MPI_Alltoall, blocking, and completes inside post_count_blocks regardless.
     template <typename T>
-    auto alltoallv_resolve_impl_(int local_partition, const AlltoallvResolveArgs<T> &args, MPI_Datatype dt) -> void {
+    auto alltoallv_resolve_impl_(int local_partition,
+                                 const AlltoallvResolveArgs<T> &args,
+                                 MPI_Datatype dt,
+                                 PeerPlan plan) -> void {
         // Typed verb: element bytes are sizeof(T) by construction, so they are derived rather than passed.
         constexpr size_t elem = sizeof(T);
         Slot &me = slots_[static_cast<size_t>(local_partition)];
@@ -214,22 +258,40 @@ private:
         // never reconstructs T, so the slot stays type-erased for the untyped alltoallv_impl_ above.
         me.ptr = reinterpret_cast<const std::byte *>(args.send);
         me.send_displs = args.send_displs;
-        // Count row only: the recv counts do not exist until the count round in B1→B2.
+        // Count row only: the recv counts do not exist until the count round is drained in B3→B4.
         staging_->publish_counts_row(local_partition, args.send_counts);
         sync(); // B1
 
         if (local_partition == 0) {
-            staging_->pack_count_matrix();
-            staging_->exchange_count_blocks();
+            staging_->fill_peers(plan);
+            staging_->pack_count_matrix(plan);
+            staging_->post_count_blocks(plan);
             staging_->size_send(elem);
-            staging_->fill_recv_col([this](int a, int t) { return staging_->block_sum(a, t); });
-            staging_->size_recv(elem);
         }
         sync(); // B2
 
+        // B3: each partition packs its own blocks into the send staging, the count round in flight.
+        pack_send_(local_partition, elem);
+        sync(); // B3
+
+        // B4: the counts land here -- fill_recv_col is their first reader -- then the payload moves.
+        if (local_partition == 0) {
+            staging_->wait_count_blocks();
+            staging_->fill_recv_col([this](int a, int t) { return staging_->block_sum(a, t); });
+            staging_->size_recv(elem);
+            staging_->exchange_payload(dt, elem, plan);
+        }
+        sync(); // B4
+
+        // Past B4 now, not before B3: the count blocks do not exist until the wait above. Partition 0
+        // cannot rewrite them before a later verb's B1→B2 window, unreachable until every reader here
+        // has arrived at that verb's B1.
         const int t = local_partition;
         long long total = 0;
-        for (int a = 0; a < r_; ++a) {
+        const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
+        std::fill(args.recv_counts, args.recv_counts + p, 0);
+        std::fill(args.recv_displs, args.recv_displs + p, 0);
+        for (const int a : staging_->peers()) {
             for (int su = 0; su < s_; ++su) {
                 const int g = a * s_ + su;
                 const int c = staging_->count_from(a, t, su);
@@ -239,14 +301,6 @@ private:
             }
         }
         args.recv.resize(static_cast<size_t>(checked_mpi_count(total, "Total recv count")));
-
-        pack_send_(local_partition, elem);
-        sync(); // B3
-
-        if (local_partition == 0) {
-            staging_->exchange_payload(dt);
-        }
-        sync(); // B4
 
         staging_->scatter_recv(local_partition,
                                reinterpret_cast<std::byte *>(args.recv.data()), // after the resize: it may realloc
@@ -353,6 +407,8 @@ private:
     double red_f64_ = 0.0;
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
+    // alltoallv's wire plan, partition 0 only: written in B1->B2, read in B3->B4. See derived_wire_plan.
+    PeerPlan wire_plan_;
 
     PartitionBarrier barrier_;
 };

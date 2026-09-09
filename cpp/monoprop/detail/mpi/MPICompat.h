@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -32,6 +33,7 @@
 #include "monoprop/detail/mpi/ShmComm.h"
 #ifdef monoprop_ENABLE_MPI
 #include "monoprop/detail/mpi/HybridComm.h"
+#include "monoprop/detail/mpi/Pairwise.h"
 #endif
 
 // These includes are here on purpose and should not be moved to the top
@@ -124,8 +126,10 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 
 monoprop_EXPORT auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
-// `n` is the comm size.
-monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void;
+// `n` is the comm size. `plan` narrows the exchange to the destination ranks it can reach (see
+// PeerPlan); the default is dense, i.e. today's collective.
+monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan = {})
+    -> void;
 
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
@@ -133,6 +137,8 @@ monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, i
 template <typename T>
 struct PendingAlltoallv {
     int num_ranks = 0;
+    // The slots this round touches; counts and displs are zero outside it. Set by begin_alltoallv.
+    SlotWindow window;
     std::vector<int> send_counts;
     std::vector<int> send_displs;
     std::vector<int> recv_counts;
@@ -140,7 +146,10 @@ struct PendingAlltoallv {
     std::vector<T> send_buffer;
     std::vector<T> recv_buffer;
 #ifdef monoprop_ENABLE_MPI
-    MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi async path
+    MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi dense async path
+    std::vector<MPI_Request> requests;      // the Kind::Mpi sparse path's pairs; `posted` of them live
+    int posted = 0;                         // MPI reads send_buffer/recv_buffer until these complete,
+                                            // and both move with the handle, so the pointers hold
 #endif
 
     auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
@@ -149,14 +158,33 @@ struct PendingAlltoallv {
             MPI_Wait(&request, MPI_STATUS_IGNORE);
             request = MPI_REQUEST_NULL;
         }
+        if (posted != 0) {
+            MPI_Waitall(posted, requests.data(), MPI_STATUSES_IGNORE);
+            posted = 0;
+        }
 #endif
-        recv_data.resize(static_cast<size_t>(num_ranks));
-        for (int i = 0; i < num_ranks; ++i) {
-            const auto lo = recv_buffer.begin() + recv_displs[static_cast<size_t>(i)];
-            recv_data[static_cast<size_t>(i)].assign(lo, lo + recv_counts[static_cast<size_t>(i)]);
+        // Full-world shape whatever the window was: a non-peer's block is empty, not absent.
+        recv_data.assign(static_cast<size_t>(num_ranks), std::vector<T>{});
+        for (size_t k = 0; k < window.count; ++k) {
+            const size_t i = window.slot(WindowIndex{k});
+            const auto lo = recv_buffer.begin() + recv_displs[i];
+            recv_data[i].assign(lo, lo + recv_counts[i]);
         }
     }
 };
+
+// Debug-only: a caller may supply the whole [P] array under a sparse plan, and anything it left outside
+// the window is DROPPED rather than refused -- the silent failure mode a wrong-but-agreed shift produces.
+template <typename T>
+inline auto assert_outside_window_is_empty_([[maybe_unused]] const std::vector<std::vector<T>> &send_data,
+                                            [[maybe_unused]] SlotWindow window) -> void {
+#ifndef NDEBUG
+    for (size_t i = 0; i < send_data.size(); ++i) {
+        assert((window.contains(i) || send_data[i].empty())
+               && "a block outside the plan's peer window would be dropped in silence");
+    }
+#endif
+}
 
 // The count exchange runs eagerly (recv_counts known on return); the Kind::Mpi payload is non-blocking
 // (wait_into completes it), Shm / single-process transfer here.
@@ -167,8 +195,11 @@ template <typename T>
 inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
                             Comm comm,
                             bool skip_self = false,
-                            const std::vector<int> *known_recv_counts = nullptr) -> PendingAlltoallv<T> {
+                            const std::vector<int> *known_recv_counts = nullptr,
+                            PeerPlan plan = {}) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
+    const int me = rank(comm);
+    const auto geom = geometry(comm);
     if (static_cast<int>(send_data.size()) != num_ranks) {
         throw CollectiveArgumentError(
             std::format("begin_alltoallv: send_data size ({}) must equal number of ranks ({})",
@@ -177,37 +208,41 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
     PendingAlltoallv<T> h;
     h.num_ranks = num_ranks;
-    h.send_counts.resize(static_cast<size_t>(num_ranks));
-    h.send_displs.resize(static_cast<size_t>(num_ranks));
-    h.recv_displs.resize(static_cast<size_t>(num_ranks));
+    // The plan IS the mask, dense included -- it is the count == P value of the same window. The caller
+    // still hands a whole [P] array; assert_outside_window_is_empty_ catches what it leaves outside,
+    // which is the silent drop a wrong-but-agreed shift produces.
+    h.window =
+        plan.window(static_cast<size_t>(me), static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
+    assert(h.window.stop() <= static_cast<size_t>(num_ranks));
+    assert_outside_window_is_empty_(send_data, h.window);
+    h.send_counts.assign(static_cast<size_t>(num_ranks), 0);
+    h.send_displs.assign(static_cast<size_t>(num_ranks), 0);
+    h.recv_displs.assign(static_cast<size_t>(num_ranks), 0);
 
-    const int self = skip_self ? rank(comm) : -1;
+    const int self = skip_self ? me : -1;
+    // Counts and their prefix in ONE sweep over the window; the rest stay zero from the assign above.
     // Wide accumulator + checked narrowing: a wrapped count would size send_buffer short and then feed
     // MPI a negative count/displacement.
-    long long total_send = 0;
-    for (int i = 0; i < num_ranks; ++i) {
-        const size_t n = (i == self) ? 0 : send_data[static_cast<size_t>(i)].size();
-        const int c = checked_mpi_count(n, "Send count");
-        h.send_counts[static_cast<size_t>(i)] = c;
-        total_send += c;
-    }
     long long running_send = 0;
-    for (int i = 0; i < num_ranks; ++i) {
-        h.send_displs[static_cast<size_t>(i)] = checked_mpi_count(running_send, "Send displacement");
-        running_send += h.send_counts[static_cast<size_t>(i)];
+    for (size_t k = 0; k < h.window.count; ++k) {
+        const size_t i = h.window.slot(WindowIndex{k});
+        const size_t n = (static_cast<int>(i) == self) ? 0 : send_data[i].size();
+        const int c = checked_mpi_count(n, "Send count");
+        h.send_counts[i] = c;
+        h.send_displs[i] = checked_mpi_count(running_send, "Send displacement");
+        running_send += c;
     }
-    h.send_buffer.resize(static_cast<size_t>(checked_mpi_count(total_send, "Total send count")));
-    for (int i = 0; i < num_ranks; ++i) {
-        const int c = h.send_counts[static_cast<size_t>(i)];
+    h.send_buffer.resize(static_cast<size_t>(checked_mpi_count(running_send, "Total send count")));
+    for (size_t k = 0; k < h.window.count; ++k) {
+        const size_t i = h.window.slot(WindowIndex{k});
+        const int c = h.send_counts[i];
         if (c == 0) {
             continue;
         }
-        std::copy(send_data[static_cast<size_t>(i)].begin(),
-                  send_data[static_cast<size_t>(i)].begin() + c,
-                  h.send_buffer.begin() + h.send_displs[static_cast<size_t>(i)]);
+        std::copy(send_data[i].begin(), send_data[i].begin() + c, h.send_buffer.begin() + h.send_displs[i]);
     }
 
-    h.recv_counts.resize(static_cast<size_t>(num_ranks));
+    h.recv_counts.assign(static_cast<size_t>(num_ranks), 0);
 
     const AlltoallvResolveArgs<T> resolve_args{.send = h.send_buffer.data(),
                                                .send_counts = h.send_counts.data(),
@@ -224,29 +259,36 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get());
+        comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get(), plan);
         return h;
     }
 #endif
 
     if (known_recv_counts != nullptr) {
-        std::copy(
-            known_recv_counts->begin(),
-            known_recv_counts->begin() + std::min<size_t>(known_recv_counts->size(), static_cast<size_t>(num_ranks)),
-            h.recv_counts.begin());
+        // The caller's array is FLAT [P]; the window is the mask, as alltoall_counts already masks the
+        // counts it exchanges. No receive is ever posted for a non-peer, so a non-zero count there sizes
+        // recv_buffer for bytes nothing writes and wait_into hands the caller uninitialised memory.
+        const size_t avail = known_recv_counts->size();
+        for (size_t k = 0; k < h.window.count; ++k) {
+            const size_t i = h.window.slot(WindowIndex{k});
+            if (i < avail) {
+                h.recv_counts[i] = (*known_recv_counts)[i];
+            }
+        }
         if (self >= 0) {
             h.recv_counts[static_cast<size_t>(self)] = 0;
         }
     }
     else {
-        alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm);
+        alltoall_counts(h.send_counts.data(), h.recv_counts.data(), num_ranks, comm, plan);
     }
 
     // Wide accumulator + checked narrowing: see checked_mpi_count.
     long long running = 0;
-    for (int i = 0; i < num_ranks; ++i) {
-        h.recv_displs[static_cast<size_t>(i)] = checked_mpi_count(running, "Recv displacement");
-        running += h.recv_counts[static_cast<size_t>(i)];
+    for (size_t k = 0; k < h.window.count; ++k) {
+        const size_t i = h.window.slot(WindowIndex{k});
+        h.recv_displs[i] = checked_mpi_count(running, "Recv displacement");
+        running += h.recv_counts[i];
     }
     h.recv_buffer.resize(static_cast<size_t>(checked_mpi_count(running, "Total recv count")));
 
@@ -270,21 +312,41 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     }
 #ifdef monoprop_ENABLE_MPI
     else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get());
+        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get(), plan);
     }
 #endif
     else {
 #ifdef monoprop_ENABLE_MPI
-        MPI_Ialltoallv(h.send_buffer.data(),
-                       h.send_counts.data(),
-                       h.send_displs.data(),
-                       datatype<T>::get(),
-                       h.recv_buffer.data(),
-                       h.recv_counts.data(),
-                       h.recv_displs.data(),
-                       datatype<T>::get(),
-                       comm.mpi,
-                       &h.request);
+        if (plan.dense()) {
+            MPI_Ialltoallv(h.send_buffer.data(),
+                           h.send_counts.data(),
+                           h.send_displs.data(),
+                           datatype<T>::get(),
+                           h.recv_buffer.data(),
+                           h.recv_counts.data(),
+                           h.recv_displs.data(),
+                           datatype<T>::get(),
+                           comm.mpi,
+                           &h.request);
+        }
+        else {
+            // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer, left in
+            // flight in the handle exactly as MPI_Ialltoallv is. The buffers MPI holds live in `h` and
+            // travel with it: a vector move keeps its heap block, so returning `h` moves nothing MPI is
+            // reading.
+            h.posted = sparse_pairwise(plan,
+                                       me,
+                                       num_ranks,
+                                       comm.mpi,
+                                       kFlatPayloadTag,
+                                       datatype<T>::get(),
+                                       sizeof(T),
+                                       reinterpret_cast<const std::byte *>(h.send_buffer.data()),
+                                       PeerLayout{.counts = h.send_counts.data(), .displs = h.send_displs.data()},
+                                       reinterpret_cast<std::byte *>(h.recv_buffer.data()),
+                                       PeerLayout{.counts = h.recv_counts.data(), .displs = h.recv_displs.data()},
+                                       h.requests);
+        }
 #else
         h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
 #endif

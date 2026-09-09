@@ -12,6 +12,7 @@ target_sources(
         "HybridStaging.h"
         "MPICompat.h"
         "MPIUtils.h"
+        "Pairwise.h"
         "PartitionBarrier.h"
         "Routing.h"
         "ShmComm.h"
