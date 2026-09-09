@@ -253,15 +253,16 @@ regression at one and not the one below names its own cause.
 
 `bench_bare_metal.yml` benchmarks every commit on `main` on a dedicated
 [RunsOn](https://runs-on.com/) EC2 node; [Bencher](https://bencher.dev/) records the series and
-reports threshold violations. The ladder itself lives in `bench.yml`. To reproduce a rung locally:
+reports threshold violations. The ladder itself lives in `bench.yml`. To reproduce a rung locally,
+declare its shape and take its selector and flags from the tables below — the label is your own:
 
 ```bash
 export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1     # the shape, declared
-just bench ci-bare-metal-L1.propagate --bench-rounds 3 -k "test_model_propagate and hubbard"
+just bench l1-hubbard --bench-rounds 3 -k "test_model_propagate and hubbard"
 
 export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # P sizes the pinning
-just bench-mpi ci-bare-metal-L2b.ops 4 --map-by slot:PE=2 --bind-to core
-monoprop-bench-bmf benches/results ci-bare-metal-L2b.ops  # results as Bencher Metric Format JSON
+just bench-mpi l2b 4 --map-by slot:PE=2 --bind-to core
+monoprop-bench-bmf benches/results l2b    # results as Bencher Metric Format JSON
 ```
 
 `monoprop-bench-bmf` merges both artifacts: each upload accepts one adapter, and the stock
