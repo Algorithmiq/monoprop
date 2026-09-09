@@ -321,15 +321,15 @@ L1, at sizes one thread carries, so every L2 row has a baseline below it:
 
 | row | process | terms | ~s | ~GiB |
 |---|---|---:|---:|---:|
-| random `build_graph` | `.ops` | 19,902,244 | 47 | 2.53 |
-| random `energy` | `.ops` | 19,902,244 | 3.1 | 2.32 |
-| random `gradient` | `.ops` | 19,902,244 | 8.6 | 2.46 |
-| hubbard `propagate` | `.propagate` | 9,953,109 | 23 | 0.72 |
-| pauli `propagate` | `.propagate` | 10,069,308 | 21 | 0.90 |
-| random `propagate` | `.propagate` | 19,902,244 | 49 | ~1.4 |
+| random `build_graph` | `.ops` | 19,902,244 | 54 | 2.56 |
+| random `energy` | `.ops` | 19,902,244 | 5.0 | 2.33 |
+| random `gradient` | `.ops` | 19,902,244 | 13 | 2.48 |
+| hubbard `propagate` | `.propagate` | 9,953,109 | 33 | 0.72 |
+| pauli `propagate` | `.propagate` | 10,069,308 | 25 | 0.92 |
+| random `propagate` | `.propagate` | 19,902,244 | 56 | 2.10 |
 
-Before L1 was split that last row read 3.91 GiB — its own ~1.4 on top of ~2.5 GiB of
-`build_graph`'s graph — so `peak-memory` did not mean at L1 what it means at L2.
+Before L1 was split that last row read 3.91 GiB, measured while `build_graph`'s graph was still
+resident; on a floor of its own it is 2.10, so `peak-memory` now means at L1 what it means at L2.
 
 `L2a.ops` and `L2b.ops`, ~25 GiB:
 
