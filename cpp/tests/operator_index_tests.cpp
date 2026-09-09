@@ -560,6 +560,13 @@ BOOST_AUTO_TEST_CASE(a_store_restrides_once_when_the_wide_tier_grows_past_the_th
         fat.emplace(want.back(), i);
     }
     BOOST_REQUIRE(fat.should_restride());
+    // What the index answered before the layout moved. term_of_width repeats a term every 64 rows, so
+    // these are not all distinct -- which is beside the point: the claim is that the index answers
+    // exactly as it did, whatever it answered.
+    std::vector<size_t> found_before;
+    for (size_t i = 0; i < kRows; ++i) {
+        found_before.push_back(fat.find(want[i]).value_or(Store::kNotFound));
+    }
 
     fat.restride_to_bound();
     BOOST_CHECK_EQUAL(fat.restrides(), 1U);
@@ -575,7 +582,7 @@ BOOST_AUTO_TEST_CASE(a_store_restrides_once_when_the_wide_tier_grows_past_the_th
         BOOST_TEST_INFO("row " << i);
         BOOST_CHECK(fat.row(i) == want[i]);
         BOOST_CHECK_EQUAL(fat.popcount(i), i % 10 == 0 ? kBound : kInline);
-        BOOST_CHECK(fat.find(want[i]) == std::optional<size_t>{i});
+        BOOST_CHECK_EQUAL(fat.find(want[i]).value_or(Store::kNotFound), found_before[i]);
     }
     // A restride is idempotent, and a store built at its bound has no tier to begin with.
     fat.restride_to_bound();
