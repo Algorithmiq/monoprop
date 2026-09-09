@@ -9,6 +9,7 @@ target_sources(
         "CpuRelax.h"
         "Exchange.h"
         "HybridComm.h"
+        "HybridStaging.h"
         "MPICompat.h"
         "MPIUtils.h"
         "PartitionBarrier.h"
