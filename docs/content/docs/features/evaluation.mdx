@@ -13,7 +13,42 @@ parameter-index order (`values[i]` is the angle for gates carrying `param == i`,
 mapped by `Circuit.resolved_mapping`), or as the `Circuit` itself (its
 `parameters` are used). To evaluate two independently-authored circuit halves
 together, compose them with `+` and build the combined circuit in one
-`MajoranaPropagator.build_graph` call.
+`MajoranaPropagator.build_graph` call — that keeps the gate order explicit rather
+than leaving it to the picture.
+
+## Extending a graph across several calls
+
+[build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] can also grow
+one graph a block of gates at a time, as an ADAPT-style loop does. Which circuit that adds
+up to is decided by the [simulation mode](/concepts/simulation_modes), because the
+Heisenberg picture consumes each call's gates back-to-front:
+
+```python notest
+sim.build_graph(a)
+sim.build_graph(b)   # Heisenberg: the circuit b + a;  Schrödinger: a + b
+```
+
+The parameter axis follows that equivalent circuit, not the order the calls were made in,
+so the incremental build and the one-call build of the composition are interchangeable —
+same [parameter_mapping][monoprop.monomial_propagator.MonomialPropagator.parameter_mapping],
+same expectation value and gradient anywhere. In Heisenberg each extension therefore takes
+the low indices and lifts the ones already in the graph by `circuit.n_parameters`.
+
+<Callout type="warn">
+  An index or a gradient vector held across a `build_graph` call thus changes meaning in
+  the Heisenberg picture. Read the axis back from
+  [parameter_mapping][monoprop.monomial_propagator.MonomialPropagator.parameter_mapping]
+  after extending rather than remembering it. Schrödinger appends layers and indices
+  alike, so nothing is renumbered there.
+</Callout>
+
+`seed_parameters` is read on that same post-call axis, which makes it the parameter vector
+of the equivalent composed circuit. It matters only while extending a non-empty graph with
+coefficient-informed truncation (`lower_atol` / `upper_atol`, see
+[Truncation and cutoffs](/features/cutoff)) active: seeded there, the extension truncates
+against the coefficients the existing layers really carry and reproduces the one-call build
+exactly. On the pre-call axis the two blocks' angles swap places, which nothing raises on —
+the graph just keeps a different set of terms.
 
 ## Expectation value and gradient
 

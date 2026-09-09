@@ -64,8 +64,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     Note:
         Heisenberg evolution consumes each [build_graph][] / [propagate][] call's gates
-        back-to-front, so splitting one circuit across several calls is *not* equivalent to a
-        single call; in the Schrodinger picture (front-to-back) it is.
+        back-to-front, so ``build_graph(a); build_graph(b)`` builds ``b + a``; Schrodinger
+        (front-to-back) builds ``a + b``. [build_graph][] numbers the axis to match either way.
     """
 
     _comm: MPI.Comm | None
@@ -209,16 +209,20 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Builds (or extends) the reusable evolution graph, recording each layer's driving parameter
         and generator coefficient so later evaluation takes only ``parameters``. A circuit's angle
-        indices are local (``0``-based) and shift onto the accumulated axis when extending.
+        indices are local (``0``-based) and join the accumulated axis in the order of the
+        equivalent single circuit (see the class note), so an extension is numbered exactly like
+        the matching one-call build. In Heisenberg that renumbers the existing layers, lifting
+        their indices by ``circuit.n_parameters``; Schrodinger leaves them where they are.
 
         Args:
             circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
-            seed_parameters: Full parameter vector for the whole accumulated graph; regenerates the
-                coefficient seed (by contracting the existing graph) so truncation sees realistic
-                coefficients. Needed only when extending a non-empty graph *with*
-                coefficient-informed truncation. Defaults to the circuit's own parameters on the
-                first call; omitted while extending, the new layers are built structurally. The
-                engine validates the length of an explicit seed.
+            seed_parameters: Full parameter vector for the whole accumulated graph, on the axis
+                the graph has *after* this call; regenerates the coefficient seed (by contracting
+                the existing graph) so truncation sees realistic coefficients. Needed only when
+                extending a non-empty graph *with* coefficient-informed truncation. Defaults to
+                the circuit's own parameters on the first call; omitted while extending, the new
+                layers are built structurally. The engine validates the length of an explicit
+                seed.
             only_rotate_len_k: If given, apply gates to monomials of length <= k even where they
                 anticommute -- useful ahead of expectation-value estimation in the Schrodinger
                 picture with many free-fermionic (length-2 Majorana) generators.
@@ -227,12 +231,22 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._check_circuit_width(circuit)
         self._validate_only_rotate_len_k(only_rotate_len_k)
 
+        num_new = circuit.n_parameters
+        # Heisenberg puts the appended gates first in the equivalent circuit, so index order only
+        # tracks circuit order if the axis rotates; Schrodinger appends layers and indices alike.
+        rotate_axis = not self.schrodinger and self._n_params > 0 and num_new > 0
+
         if seed_parameters is not None:
             seed = seed_parameters
         elif self.graph_layers == 0:
             seed = circuit.parameters
         else:
             seed = None
+        # The C++ build reads the seed against the axis the graph still has, so the caller's
+        # post-call ordering has to be undone first.
+        if rotate_axis and seed is not None:
+            bound_seed = self._bind(seed)
+            seed = bound_seed[num_new:] + bound_seed[:num_new]
         gates = self._circuit_gates(circuit)
         num_qubits = self._system_size
         mapping = [self._n_params + m for m in circuit.resolved_mapping]
@@ -253,6 +267,13 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # Advance the axis only once the graph owns the layers: expand_monomials, _bind and the C++
         # validation all raise, and a retry after such a failure must reuse the same indices.
         self._n_params += circuit.n_parameters
+        if rotate_axis:
+            # Cyclic in the index *values*, not a shift: the mapping must stay a bijection of
+            # 0..n-1 at every step, and a shift would leave 0 unused. Assigning the per-layer
+            # form (length graph_layers) keeps `_n_params` correct.
+            self._simulator.parameter_mapping = [
+                (m + num_new) % self._n_params for m in self.parameter_mapping
+            ]
 
     def propagate(
         self, circuit: Circuit, *, only_rotate_len_k: int | None = None
@@ -308,6 +329,20 @@ class MonomialPropagator(ABC, Generic[T_op]):
         the same order as the parameter vector passed to [expectation_value][]. This is the graph's
         native per-monomial mapping, finer-grained than the per-gate mapping of the authoring
         [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
+
+        The layers run in the order of the equivalent single circuit (see [build_graph][]), which
+        in Heisenberg puts the most recent extension first -- not the order the gates arrived in.
+
+        Warning:
+            Assigning to this property takes either a per-layer or a per-gate mapping, tells them
+            apart by length alone, but indexes them differently: per-layer in the
+            equivalent-circuit order read back here, per-gate in gate-arrival order. A graph
+            whose gates each carry one monomial has ``graph_layers == n_gates``, so a per-gate
+            mapping is silently read per layer -- and on an incrementally built Heisenberg graph
+            those orders differ. Permute what this getter returns instead.
+
+            ``list(range(n))`` is no reset either: read per layer it wires layer ``i`` to
+            parameter ``i``, and on a multi-monomial graph splits one gate's layers apart.
         """
         return list(self._simulator.parameter_mapping)
 
@@ -319,6 +354,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         [graph_layers][], in parameter-vector order) or per gate (length [n_gates][],
         expanded so a multi-term gate's layers stay tied); when the two lengths coincide the
         per-layer reading wins. Functionals created earlier keep the mapping they were built with.
+
+        The two forms are indexed differently -- see the warning on [parameter_mapping][].
         """
         resolved = [int(m) for m in mapping]
         n_layers, n_gates = self.graph_layers, self.n_gates
