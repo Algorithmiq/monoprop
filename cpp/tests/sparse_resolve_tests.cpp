@@ -28,6 +28,7 @@
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
@@ -118,15 +119,17 @@ auto positions_of(const Monomial<NumModes> &m) -> std::vector<uint16_t> {
 }
 
 template <size_t NumModes>
-auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused) -> std::vector<VecZ> {
-    std::vector<VecZ> incoming(queries.size());
+auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused, mpi::SlotWindow window)
+    -> mpi::WindowVec<VecZ> {
+    mpi::WindowVec<VecZ> incoming(window);
     for (size_t s = 0; s < queries.size(); ++s) {
+        VecZ &buf = incoming[mpi::WindowIndex{s}];
         for (size_t q = 0; q < queries[s].size(); ++q) {
             const int phase = ((q % 2) == 0) ? 1 : -1;
             const auto pos = positions_of<NumModes>(queries[s][q]);
-            detail::QueryWire<NumModes>::push(incoming[s], pos, phase);
+            detail::QueryWire<NumModes>::push(buf, pos, phase);
             if (fused) {
-                detail::QueryWire<NumModes>::push_value(incoming[s], 0.5 + static_cast<double>(q));
+                detail::QueryWire<NumModes>::push_value(buf, 0.5 + static_cast<double>(q));
             }
         }
     }
@@ -134,8 +137,14 @@ auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool
 }
 
 template <size_t NumModes>
-auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t n_query, size_t rank_count, bool fused)
-    -> void {
+auto check_probe_matches_the_queries(std::mt19937_64 &rng,
+                                     size_t n_seed,
+                                     size_t n_query,
+                                     size_t rank_count,
+                                     bool fused,
+                                     size_t window_base = 0) -> void {
+    // A non-zero base is the case a re-basing bug survives: sender_slot must still name the flat slot.
+    const mpi::SlotWindow window{.base = window_base, .count = rank_count};
     const auto seed_terms = draw_distinct<NumModes>(rng, n_seed);
     const auto fresh_terms = draw_distinct<NumModes>(rng, n_query);
 
@@ -172,11 +181,13 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         }
     }
 
-    const auto incoming = serialize<NumModes>(queries, fused);
+    const auto incoming = serialize<NumModes>(queries, fused, window);
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, rank_count, form);
+    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, form);
+    BOOST_REQUIRE_EQUAL(pr.window.base, window.base);
+    BOOST_REQUIRE_EQUAL(pr.window.count, window.count);
 
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
     BOOST_REQUIRE(pr.nq_total > 0);
@@ -199,7 +210,8 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         BOOST_TEST((pr.mono_at(g) == want));
         BOOST_TEST(pr.k_of[g] == want.count());
         BOOST_TEST(pr.phase_of[g] == expect_phase[g]);
-        BOOST_TEST(pr.sender_of[g] == expect_sender[g]);
+        BOOST_TEST(pr.sender_index(g).value == expect_sender[g]);
+        BOOST_TEST(pr.sender_slot(g) == window.base + expect_sender[g]);
         BOOST_TEST(pr.is_paired_at(g) == monoprop::is_paired<NumModes>(want));
 
         std::vector<uint64_t> key;
@@ -277,12 +289,22 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_narrow_positions) {
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_wide_positions) {
     std::mt19937_64 rng(20260815);
     static_assert(sizeof(detail::OperatorIndex<250>::PosT) == 2, "this case exists to cover the wide store");
-    check_probe_matches_the_queries<250>(rng, /*n_seed=*/60, /*n_query=*/140, /*rank_count=*/4, /*fused=*/false);
+    check_probe_matches_the_queries<250>(rng,
+                                         /*n_seed=*/60,
+                                         /*n_query=*/140,
+                                         /*rank_count=*/4,
+                                         /*fused=*/false,
+                                         /*window_base=*/16);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_fused_layout) {
     std::mt19937_64 rng(20260816);
-    check_probe_matches_the_queries<250>(rng, /*n_seed=*/50, /*n_query=*/120, /*rank_count=*/2, /*fused=*/true);
+    check_probe_matches_the_queries<250>(rng,
+                                         /*n_seed=*/50,
+                                         /*n_query=*/120,
+                                         /*rank_count=*/2,
+                                         /*fused=*/true,
+                                         /*window_base=*/6);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_single_sender) {

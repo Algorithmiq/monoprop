@@ -33,6 +33,7 @@
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -206,26 +207,36 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 
 template <size_t NumModes>
 struct FusedScanResult {
-    std::vector<CosMask> cos_blocks;               // ascending, disjoint, chunk order
-    std::vector<VecZ> leader_queries;              // size R: serialized leader queries per owner rank
-    std::vector<std::vector<size_t>> leader_src;   // size R: parallel to leader_queries (source op idx)
-    std::vector<VecZ> follower_queries;            // size R: serialized follower queries per owner rank
-    std::vector<std::vector<size_t>> follower_src; // size R: parallel to follower_queries
+    std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
+    // The six arrays below are indexed by DESTINATION SLOT through WindowVec::at_slot, and cover only
+    // the slots this generator can reach: S of the P=R*S world under linear routing, all P under
+    // splitmix. See mpi::PeerPlan::window.
+    mpi::SlotWindow window;
+    mpi::WindowVec<VecZ> leader_queries;              // serialized leader queries per owner slot
+    mpi::WindowVec<std::vector<size_t>> leader_src;   // parallel to leader_queries (source op idx)
+    mpi::WindowVec<VecZ> follower_queries;            // serialized follower queries per owner slot
+    mpi::WindowVec<std::vector<size_t>> follower_src; // parallel to follower_queries
     // Fused-contraction only (capture_values): signed pre-cos source coeff (v_src) parallel to
     // leader_src / follower_src. Empty when capture_values is false.
-    std::vector<std::vector<double>> leader_val;
-    std::vector<std::vector<double>> follower_val;
-    // Self-owned queries, staged as positions instead of queued to the wire and resolved inline.
-    // Order must match leader_src[my_rank] / follower_src[my_rank], or resolution attributes the wrong source.
+    mpi::WindowVec<std::vector<double>> leader_val;
+    mpi::WindowVec<std::vector<double>> follower_val;
+    // Self-owned queries, staged as positions instead of encoded into the window's self slot, and resolved
+    // inline. Order must match that slot's leader_src / follower_src, or resolution attributes the wrong
+    // source. Empty unless the window contains my_rank, i.e. unless this generator's rank shift is zero.
     SelfQueryStage<NumModes> leader_self;
     SelfQueryStage<NumModes> follower_self;
 };
 
 // Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
-// M'=M⊕G (hash%R; self at R==1) in ascending source-index order, so resolve and index assignment are
+// M'=M⊕G (routing::Router; self at R==1) in ascending source-index order, so resolve and index assignment are
 // deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
+//
+// `gen_shift` is router.rank_shift(gen), and `op` must hold only terms `my_rank` owns -- then the owner of
+// M⊕G is rank(M) ^ gen_shift and the linear planes never run per term. Both are what mpi::PeerPlan
+// already assumes; a violation moves ownership silently, so the fast path asserts against dest().
+// `window` must be that plan's window for `my_rank`: it is what the six query arrays are sized to.
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -233,25 +244,30 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
                             std::optional<size_t> only_rotate_len_k,
-                            size_t rank_count,
+                            mpi::SlotWindow window,
                             size_t my_rank,
+                            const routing::Router &router,
+                            size_t gen_shift,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
+    const size_t rank_count = router.flat_world();
     const auto ectx = A::make_gen_context(gen);
+    assert(window.stop() <= rank_count && window.count != 0);
 
     FusedScanResult<NumModes> res;
-    res.leader_queries.assign(rank_count, VecZ{});
-    res.leader_src.assign(rank_count, std::vector<size_t>{});
-    res.follower_queries.assign(rank_count, VecZ{});
-    res.follower_src.assign(rank_count, std::vector<size_t>{});
-    // Sized to R even on the early-return paths below so the fused engine's per-rank src_val_r access
-    // is always in bounds (parallel to leader_src / follower_src).
+    res.window = window;
+    res.leader_queries.reset(window);
+    res.leader_src.reset(window);
+    res.follower_queries.reset(window);
+    res.follower_src.reset(window);
+    // Sized on the early-return paths below too, so the fused engine's per-slot src_val_r access is
+    // always in bounds (parallel to leader_src / follower_src).
     if (capture_values) {
-        res.leader_val.assign(rank_count, std::vector<double>{});
-        res.follower_val.assign(rank_count, std::vector<double>{});
+        res.leader_val.reset(window);
+        res.follower_val.reset(window);
     }
 
     {
@@ -322,21 +338,24 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         double v_src,
                         bool is_follower) {
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            // Must be the same function find_rank computes (MPIUtils.h) or a term is placed and queried
-            // on different ranks, which duplicates a row silently; mpi_utils_tests.cpp asserts it.
+            // routing::Router is the only owner function; find_rank (MPIUtils.h) must stay in step with it
+            // or a term is placed and queried on different ranks, which duplicates a row silently.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
-                r_prime = monomial_hash<NumModes>(dense) % rank_count;
+                r_prime = router.dest_from_shift<NumModes>(dense, my_rank, gen_shift);
+                assert(r_prime == router.dest<NumModes>(dense)); // an identity, not an approximation
             }
+            // at_slot is the only re-basing door and asserts membership: a destination outside this
+            // generator's window means the shift is wrong, and would otherwise land on another peer.
             if (r_prime == my_rank) {
                 (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
             }
             else {
-                QueryWire<NumModes>::push(is_follower ? fq[r_prime] : lq[r_prime], pos, phase);
+                QueryWire<NumModes>::push(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime), pos, phase);
             }
-            (is_follower ? fs[r_prime] : ls[r_prime]).push_back(i);
+            (is_follower ? fs : ls).at_slot(r_prime).push_back(i);
             if (capture_values) {
-                (is_follower ? fv[r_prime] : lv[r_prime]).push_back(v_src);
+                (is_follower ? fv : lv).at_slot(r_prime).push_back(v_src);
             }
         };
 
@@ -386,9 +405,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             // A hint only; wider terms grow the buffer as needed.
             const size_t pq = QueryWire<NumModes>::kReservePositionsPerQuery;
             res.leader_self.reserve(n_anti - n_foll, pq);
-            ls[my_rank].reserve(n_anti - n_foll);
+            ls.at_slot(my_rank).reserve(n_anti - n_foll);
             res.follower_self.reserve(n_foll, pq);
-            fs[my_rank].reserve(n_foll);
+            fs.at_slot(my_rank).reserve(n_foll);
         }
         auto derive_coeff = [&](size_t i) -> std::pair<double, double> {
             if (capture_values) {
