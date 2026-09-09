@@ -218,19 +218,3 @@ jobs:
               --threshold-lower-boundary 0.0 \
               --threshold-upper-boundary 0.0
           done
-
-      # A pinned plot enumerates branch, testbed, benchmark and measure UUIDs rather than
-      # matching them by name, so a rung or row added today would never join it on its own.
-      # Rewriting it after each upload is what keeps one `terms` plot whole. Warnings only:
-      # the measurement is already in Bencher by here.
-      - name: Pin the terms plot
-        env:
-          BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'monoprop' }}
-          # A plot is written as a user, not as the project key that uploads the reports; the
-          # step skips with a warning until a maintainer sets one of these.
-          BENCHER_USER_KEY: ${{ secrets.BENCHER_USER_KEY }}
-          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          uv run --no-sync python .github/workflows/scripts/pin_terms_plot.py \
-            "$BENCHER_PROJECT"

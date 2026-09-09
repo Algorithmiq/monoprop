@@ -275,10 +275,8 @@ monoprop-bench-bmf benches/results ci-bare-metal-L2b.ops  # results as Bencher M
 | `terms` | count | terms in the evolved operator | any change |
 
 The `~GiB` columns below are `peak-memory`. `terms` is deterministic for a fixed seed and size, so
-any change is an algorithmic one — the only check that a timing win is not an accuracy change; all of
-its series sit on one pinned plot, maintained by `pin_terms_plot.py` — which needs a
-user-scoped Bencher credential, not the project key the reports upload with. Timing alerts do not fail the
-build.
+any change is an algorithmic one — the only check that a timing win is not an accuracy change.
+Timing alerts do not fail the build.
 
 #### The rungs
 
