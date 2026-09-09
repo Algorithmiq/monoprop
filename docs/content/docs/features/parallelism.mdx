@@ -71,6 +71,10 @@ one *restride* -- the store re-lays every row at the bound between gates, keepin
 and never a wrong answer. A nonzero `d_row_restrides` says the prediction was too narrow for this
 model; a wide-row count that is a large share of the term count says the same before it happens.
 
+`indexing_bytes` is the key -> row table over the stored terms: four-byte slots at a load of at most
+0.7, so 5.7-11.4 bytes per term depending on where the term count sits between two doublings, and 0
+until the first gate materialises it. See [Rank routing](#rank-routing) for the key it hashes.
+
 `d_op_coeffs_slack_bytes` is the most capacity the coefficient array held beyond its live rows at any
 point in the last [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or
 [build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] call. The array grows at
@@ -198,6 +202,23 @@ $$
 With $S$ not a power of two only the rank level has that structure: the partition is the
 mixed fingerprint modulo $S$, balance only, and a generator's queries from one partition
 land on the $S$ partitions of one peer rank.
+
+The fingerprint serves one more purpose. Its top 32 bits are the *join key*,
+$\mathrm{key}(M) = h(M) \gg 32$, which a persistent open-addressing table over every stored
+term is hashed by (`indexing_bytes`: four-byte slots holding a row index below a hash
+prefilter, at a load of at most 0.7). No key is resident: the table folds a row's key off the
+row's own positions when it indexes it -- streaming the store on a rebuild, and reading the rows
+a gate has just minted on an append. A gate's queries are answered by one batched,
+prefetch-pipelined probe per query, with every key match confirmed against the row's positions.
+
+Taking the key as a plain projection rather than a mixed one keeps it linear,
+$\mathrm{key}(M \oplus G) = \mathrm{key}(M) \oplus \mathrm{key}(G)$, so a rank folds the same
+number off positions it decoded from the wire that the sender would fold off the term itself. It
+projects the *high* half because the low bits are the routing bits, so a partition's rows do not
+share a key prefix. Collisions become structured -- two terms share a key exactly when their
+symmetric difference has key zero -- but the labels are `mix64` outputs, so the projection is
+uniform, and a key match was never more than a prefilter: the confirm against the positions is
+what decides a partner, so a collision costs a compare and never a wrong answer.
 
 Linear routing is a switch and not a dial: the rank index takes every bit of $h$ or none of
 them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)` bit for
