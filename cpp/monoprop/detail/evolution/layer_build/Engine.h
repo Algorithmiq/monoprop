@@ -36,6 +36,7 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -580,6 +581,10 @@ auto build_layer(MPOperator<NumModes> &local_op,
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
+    // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
+    // Hoisted here because mpi::geometry can reach the communicator, so it must never run per term.
+    const routing::Router router = router_for<NumModes>(comm);
+    assert(router.flat_world() == R);
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
@@ -608,7 +613,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        cut_st,
                                                        coeffs,
                                                        only_rotate_len_k,
-                                                       R,
+                                                       router,
                                                        my_rank,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
