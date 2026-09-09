@@ -382,6 +382,8 @@ private:
     // Immutable after construction.
     Basis basis_{Basis::Majorana};
 
+    bool routing_coverage_reported_{false}; // report_routing_coverage_ speaks once per propagator
+
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
     std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
@@ -462,6 +464,10 @@ private:
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,
                         std::optional<size_t> only_rotate_len_k,
                         EvolutionFunc evolution_func) -> void;
+
+    // Do this call's generator shifts span log2(R)? If not, ranks receive nothing (routing::gf2_rank).
+    // Not beside check_routing_agreement: at construction the gate list does not exist yet.
+    auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
 
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,
