@@ -80,8 +80,20 @@ plt.rcParams.update(
 
 # Okabe–Ito, CVD-safe, assigned to cutoff in fixed order (never cycled).
 CUTOFF_COLORS = {2: "#0072B2", 4: "#E69F00", 6: "#009E73", 8: "#CC79A7", 10: "#D55E00"}
-ENGINE_STYLE = {"monoprop": ("-", "o"), "julia": ("--", "o")}
-ENGINE_LABEL = {"monoprop": "monoprop", "julia": "PauliPropagation.jl"}
+# One mark per engine, shared with make_single_thread_figure.py so an engine looks the same
+# in every figure of the paper. Identity is never colour-alone: colour carries the cutoff.
+ENGINE_STYLE = {
+    "monoprop": ("-", "o"),
+    "julia": ("--", "o"),
+    "ppvm": ((0, (1, 1.6)), "^"),
+}
+# The JSONL `engine` field -> the style/label key above.
+ENGINE_FAMILY = {"monoprop": "monoprop", "julia_pauli": "julia", "ppvm": "ppvm"}
+ENGINE_LABEL = {
+    "monoprop": "monoprop",
+    "julia": "PauliPropagation.jl",
+    "ppvm": "QuEra ppvm",
+}
 
 # Shared mark spec — a package is drawn identically in EVERY figure (monoprop =
 # solid line / filled circle, PauliPropagation.jl = dashed line / open square), so
@@ -129,7 +141,7 @@ def load(paths: list[Path]) -> list[dict]:
             if not line:
                 continue
             r = json.loads(line)
-            r["engine_family"] = "monoprop" if r["engine"] == "monoprop" else "julia"
+            r["engine_family"] = ENGINE_FAMILY.get(r["engine"], "julia")
             r["memory_mb"] = r["memory_bytes"] / 1024**2
             records.append(r)
     return records

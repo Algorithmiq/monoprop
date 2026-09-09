@@ -128,6 +128,89 @@ one panel-of-four is preferred over two separate figures.
 > overhead grows as a power law and turns super-linear past the key-width cliff at
 > $N\approx512$.
 
+## Fig. 5 — the single-thread per-term figure, and a better test than the lattice
+
+Figs. 1–4 measure the full-width kicked-Ising chain. That is the realistic workload, but it
+is the wrong instrument for a claim about *per-term* cost: the term count K, the gate count
+and the mode-space width N all grow together, so every exponent in those figures is a
+mixture of three N-dependencies and none can be read off alone. In particular there is no
+way to vary N at fixed K at all.
+
+**The idle-spectator sweep fixes that.** `--active-window M` confines the whole model — every
+gate and every observable term — to qubits `0…M-1`, and pads the register to N with qubits
+nothing ever touches. K, the gate count, the term supports *and the expectation value* are
+then identical at every N, so the only variable left is the width of the mode space and the
+curve measures per-term cost in N and nothing else. The invariance is checked, not assumed:
+`make_single_thread_figure.py` refuses to plot a sweep whose terms, gates or expectation
+value move, since a drift in any of them means a gate reached a spectator qubit.
+
+It also makes the comparison exact in a way Figs. 1–4 cannot. At `M=32` all three engines
+report the **same term count and the same expectation value** at every N and every cutoff
+(188 / 10 122 / 119 280 terms at cutoff 2 / 4 / 6), so dividing by K is fair by construction
+and no engine can be accused of winning by keeping fewer terms.
+
+### Result
+
+Fitted log-log exponent of **time per term** against N, over N = 32…1024 at `M=32`, one
+thread, `busy_cores` measured at 0.99–1.01 on every row:
+
+| cutoff | K | monoprop | QuEra ppvm | PauliPropagation.jl |
+|---|---|---|---|---|
+| 2 | 188 | `N^+0.14` (1.4× over a 32× rise in N) | `N^+0.19` (2.2×) | `N^+1.77` (120×) |
+| 4 | 10 122 | `N^+0.24` (2.2×) | `N^+0.42` (5.5×) | `N^+1.54` (68×) |
+| 6 | 119 280 | `N^+0.15` (1.8×) | `N^+0.55` (8.8×) | `N^+1.48` (58×) |
+
+monoprop's per-term cost is essentially flat in N: a term is an entropy-packed position list
+whose width comes from the cutoff rather than from N, and the commute/anticommute decision
+for 64 terms is one word operation against a transposed index. The other two carry a
+2-bits-per-qubit packed key per term and pay for the width they declare. So the totals are
+`K` against `K·N`, and per gate — where a gate reaches only the ~K/N of the operator that
+touches its modes — `K/N` against `K`. Panel (b) shows that per-gate view on the full-width
+model, where the operator really is spread over all N modes.
+
+The residual `N^+0.15…0.24` for monoprop is not noise and should not be reported as flat:
+the emit path still materialises the dense partner and folds every word for the hash, which
+is `O(N/32)` work on the branching fraction.
+
+### Reproduce
+
+Needs all three engines on one host. `ppvm` installs from the git pin in
+`packages/bench-third-party/pyproject.toml`; the Julia project pins PauliPropagation 0.7.3
+and wants Julia 1.10.
+
+```bash
+export monoprop_NUM_THREADS=1 RAYON_NUM_THREADS=1 JULIA_NUM_THREADS=1
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+
+# (a) idle-spectator: fixed operator, widening register
+for C in 2 4 6; do for N in $(seq 32 32 1024); do
+  "$PYTHON" scripts/monoprop_single_layer.py --basis pauli --num-qubits "$N" \
+    --active-window 32 --cutoff "$C" --layers 5 --lower-atol 0 --rounds 3 \
+    --out data/monoprop_pauli_spectator.jsonl
+  "$PPVM_PYTHON" scripts/ppvm_single_layer.py --num-qubits "$N" \
+    --active-window 32 --cutoff "$C" --layers 5 --lower-atol 0 --rounds 3 \
+    --out data/ppvm_pauli_spectator.jsonl
+  "$JULIA" --project=scripts scripts/julia_pauli_single_layer.jl --num-qubits "$N" \
+    --active-window 32 --cutoff "$C" --layers 5 --lower-atol 0 --rounds 3 \
+    --out data/julia_pauli_spectator.jsonl
+done; done
+
+# (b) full-width, all three engines: drop --active-window, N capped where Julia stays
+# affordable on one thread (its cost is ~N^2.5-2.8 here)
+for C in 2 4 6; do for N in $(seq 32 32 512); do ... ; done; done
+
+python make_single_thread_figure.py \
+  --spectator data/{monoprop,ppvm,julia}_pauli_spectator.jsonl \
+  --lattice   data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
+  --outdir figures
+```
+
+The Fig. 5 data was taken on a 10-core workstation, not on Leonardo, and every record says
+so — `host`, `library_version`, `cpu_seconds` and `busy_cores` are all recorded. It is a
+*shape* measurement (an exponent in N), which is what makes a workstation acceptable here
+where it would not be for Figs. 1–4's absolute times; the two datasets are kept in separate
+files and never plotted in the same panel.
+
 ## Reproduce
 
 Figures from the shipped data (matplotlib only; no monoprop build, no Julia):
@@ -176,12 +259,17 @@ compute-node jobs.
 ## Files
 
 ```
-make_paper_figures.py     publication figure script (PDF + PNG)
+make_paper_figures.py     Figs. 1-4 (PDF + PNG)
+make_single_thread_figure.py  Fig. 5, the single-thread per-term figure
 ruff.toml                 lint scope for this package (extends the repository config)
-data/*.jsonl              merged, validated benchmark data (N=32..1024)
+data/*_pauli.jsonl        Figs. 1-4, Leonardo, N=32..1024
+data/*_spectator.jsonl    Fig. 5a, idle-spectator sweep at M=32, three engines
+data/*_lattice.jsonl      Fig. 5b, full-width sweep, three engines
 scripts/                  reproduction drivers (copies of the canonical study files)
-  monoprop_single_layer.py, julia_pauli_single_layer.jl, Project.toml, Manifest.toml
+  monoprop_single_layer.py, julia_pauli_single_layer.jl, ppvm_single_layer.py,
+  Project.toml, Manifest.toml
 figures/                  fig1_absolute_scaling, fig2_divergence_scaling,
-                          fig3_per_term_memory, fig4_scaling_and_divergence
+                          fig3_per_term_memory, fig4_scaling_and_divergence,
+                          fig5_single_thread_per_term
                           (each .pdf + .png); captions.txt (LaTeX-ready captions)
 ```

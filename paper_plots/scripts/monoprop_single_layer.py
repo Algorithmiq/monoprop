@@ -33,10 +33,12 @@ import argparse
 import json
 import math
 import os
+import socket
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, process_time
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator, Pauli, PauliPropagator
+from monoprop import __version__ as monoprop_version
 from monoprop.fermi import FermiOperator
 from monoprop.pauli import PauliOperator
 
@@ -163,16 +165,41 @@ def build_majorana(
 
 
 def build_pauli(
-    num_qubits: int, cutoff: int, lower_atol: float, observable: str, comm=None
+    num_qubits: int,
+    cutoff: int,
+    lower_atol: float,
+    observable: str,
+    comm=None,
+    active_window: int | None = None,
 ):
     """Return (propagator_factory, circuit) for a one-layer kicked-Ising chain.
 
     ``observable`` is ``"extensive"`` (sum_i Z_i -> O(N) terms after one layer)
     or ``"local"`` (single mid-chain Z).
 
+    ``active_window`` confines the whole model -- every gate and every observable term --
+    to qubits ``0..active_window-1``, while the register stays ``num_qubits`` wide. The
+    remaining qubits are idle spectators: nothing acts on them and nothing in the operator
+    ever touches them. That holds the term count, the gate count, the term supports and the
+    expectation value *exactly* fixed as ``num_qubits`` grows, so a sweep over
+    ``num_qubits`` at fixed ``active_window`` measures per-term cost in the width of the
+    mode space and nothing else.
+
+    This is the point of the knob. In the full-width model both the term count and the gate
+    count grow with ``num_qubits``, so a runtime exponent there mixes three different
+    N-dependencies and cannot isolate the per-term one. It also gives a free correctness
+    check: the expectation value is an invariant of the sweep, so a drift in it means the
+    padding is not actually idle.
+
     See :func:`build_majorana` for the ``comm`` semantics -- in particular that
     ``None`` means ``MPI_COMM_WORLD`` in an MPI build.
     """
+    active = num_qubits if active_window is None else active_window
+    if not 1 <= active <= num_qubits:
+        msg = (
+            f"active_window must be in 1..num_qubits, got {active} with N={num_qubits}"
+        )
+        raise ValueError(msg)
     # Angle convention, stated once because the two engines differ and getting it wrong is
     # silent: PauliPropagation.jl's PauliRotation(P) at angle t is exp(-i t/2 P), while
     # monoprop's ExpGate(P) with parameter a is exp(+i a P). Matching Julia therefore means
@@ -180,14 +207,14 @@ def build_pauli(
     # angle, so the two engines propagated different circuits.)
     theta = math.pi / 4
     coupling = math.pi / 4
-    edges = [(i, i + 1) for i in range(num_qubits - 1)]
+    edges = [(i, i + 1) for i in range(active - 1)]
 
     gate_angles: list[tuple[ExpGate, float]] = [
         (
             ExpGate(PauliOperator({Pauli("X", (i,)): 1.0}, num_qubits=num_qubits)),
             -theta / 2,
         )
-        for i in range(num_qubits)
+        for i in range(active)
     ]
     gate_angles += [
         (
@@ -208,10 +235,10 @@ def build_pauli(
 
     if observable == "extensive":
         observable_op = PauliOperator(
-            {_z(i): 1.0 for i in range(num_qubits)}, num_qubits=num_qubits
+            {_z(i): 1.0 for i in range(active)}, num_qubits=num_qubits
         )
     else:
-        observable_op = PauliOperator({_z(num_qubits // 2): 1.0}, num_qubits=num_qubits)
+        observable_op = PauliOperator({_z(active // 2): 1.0}, num_qubits=num_qubits)
 
     def factory():
         return PauliPropagator(
@@ -248,6 +275,14 @@ def main() -> None:
     )
     parser.add_argument("--lower-atol", type=float, default=1e-8)
     parser.add_argument(
+        "--active-window",
+        type=int,
+        default=None,
+        help="confine the model to qubits 0..M-1 and pad the register to --num-qubits with "
+        "idle spectator qubits, holding terms, gates and the expectation value fixed as N "
+        "grows (Pauli basis only; default: the full width)",
+    )
+    parser.add_argument(
         "--rounds",
         type=int,
         default=3,
@@ -258,22 +293,34 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    builder = build_majorana if args.basis == "majorana" else build_pauli
-    factory, circuit = builder(
-        args.num_qubits, args.cutoff, args.lower_atol, args.observable
-    )
+    if args.basis == "majorana":
+        if args.active_window is not None:
+            parser.error("--active-window is implemented for the Pauli basis only")
+        factory, circuit = build_majorana(
+            args.num_qubits, args.cutoff, args.lower_atol, args.observable
+        )
+    else:
+        factory, circuit = build_pauli(
+            args.num_qubits,
+            args.cutoff,
+            args.lower_atol,
+            args.observable,
+            active_window=args.active_window,
+        )
 
     best = float("inf")
+    best_cpu = float("nan")
     num_terms = 0
     memory_bytes = 0
     expectation = float("nan")
     for _ in range(max(1, args.rounds)):
         sim = factory()  # fresh operator each round (propagate mutates in place)
-        t0 = perf_counter()
+        c0, t0 = process_time(), perf_counter()
         for _ in range(args.layers):
             sim.propagate(circuit)
-        dt = perf_counter() - t0
-        best = min(best, dt)
+        dt, cpu = perf_counter() - t0, process_time() - c0
+        if dt < best:
+            best, best_cpu = dt, cpu
         num_terms = sim.size()
         memory_bytes = sim._simulator.operator_memory_bytes()
         expectation = float(sim.expectation_value())
@@ -293,6 +340,15 @@ def main() -> None:
         "bytes_per_term": (memory_bytes / num_terms) if num_terms else 0.0,
         "seconds": best,
         "expectation": expectation,
+        # Provenance. The shipped Leonardo data carries none of this, so a record from it
+        # cannot be audited or told apart from a workstation run; every new record can.
+        "active_window": args.active_window,
+        "gates": len(circuit.gates) * args.layers,
+        "cpu_seconds": best_cpu,
+        "busy_cores": (best_cpu / best) if best else float("nan"),
+        "host": socket.gethostname(),
+        "monoprop_version": monoprop_version,
+        "library_version": monoprop_version,
     }
     print(
         f"[monoprop/{args.basis}] N={args.num_qubits} cutoff={args.cutoff} "
