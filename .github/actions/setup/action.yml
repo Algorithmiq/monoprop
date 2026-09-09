@@ -60,7 +60,8 @@ runs:
         # Derive the package from CXX, so a matrix lane needs no list of its own.
         if [[ -n "${CXX:-}" ]] && ! command -v "$CXX" > /dev/null; then
           case "$CXX" in
-            clang++*) packages+=("clang${CXX#clang++}") ;;
+            # libomp is a separate package for Clang, and -fopenmp does not work without it.
+            clang++*) packages+=("clang${CXX#clang++}" "libomp${CXX#clang++}-dev") ;;
             g++*) packages+=("g++${CXX#g++}") ;;
             *)
               echo "CXX=$CXX is not installed and no package name can be derived from it" >&2

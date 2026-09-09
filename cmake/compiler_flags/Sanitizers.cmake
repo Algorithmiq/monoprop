@@ -24,13 +24,32 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR "monoprop_SANITIZER requires Linux")
 endif()
 
-# CI uses GCC, matching the wheel and gcov coverage builds. Clang is also supported; its
-# -fsanitize-ignorelist= can exempt named nanobind casters, whereas GCC only supports
-# translation-unit-wide -fno-sanitize=.
+# CI sanitizes with Clang: -fsanitize-ignorelist= can exempt individual nanobind casters, where
+# GCC can only disable a sanitizer for a whole translation unit. GCC still builds asan-ubsan.
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   message(
     FATAL_ERROR
     "monoprop_SANITIZER requires a GNU or Clang compiler, got ${CMAKE_CXX_COMPILER_ID}"
+  )
+endif()
+
+# TSan cannot see OpenMP synchronization through GCC's libgomp, so every barrier looks like a race.
+# LLVM's libomp has the annotations (Archer) that TSan needs.
+if(
+  monoprop_SANITIZER
+    STREQUAL
+    "tsan"
+  AND
+    NOT
+      CMAKE_CXX_COMPILER_ID
+        MATCHES
+        "Clang"
+)
+  message(
+    FATAL_ERROR
+    "monoprop_SANITIZER=tsan requires Clang and its OpenMP runtime, got "
+    "${CMAKE_CXX_COMPILER_ID}: libgomp has no ThreadSanitizer annotations, so every OpenMP "
+    "barrier reports as a data race. Build with CC=clang CXX=clang++."
   )
 endif()
 

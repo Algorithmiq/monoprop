@@ -124,8 +124,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  gcc-asan-ubsan:
-    name: GCC ASan+LSan+UBSan
+  clang-asan-ubsan:
+    name: Clang ASan+LSan+UBSan
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -133,6 +133,8 @@ jobs:
     env:
       SKBUILD_CMAKE_BUILD_TYPE: "AsanUbsan"
       SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=asan-ubsan"
+      CC: clang
+      CXX: clang++
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -142,7 +144,7 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: gcc-asan-ubsan
+          cache-suffix: clang-asan-ubsan
 
       - name: Install package
         run: just build --group workspace-test
@@ -157,16 +159,19 @@ jobs:
         if: failure()
         run: just sanitizer-reports
 
-  gcc-tsan:
+  clang-tsan:
     # TSan cannot load instrumented _core into stock CPython; Python coverage needs an
     # instrumented interpreter. C++ tests cover the relevant partition and ShmComm paths.
-    name: GCC ThreadSanitizer (C++)
+    # Clang, because TSan reports false races on OpenMP barriers under GCC's libgomp.
+    name: Clang ThreadSanitizer (C++)
     runs-on: ubuntu-26.04
     permissions:
       contents: read
     env:
       SKBUILD_CMAKE_BUILD_TYPE: "Tsan"
       SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=tsan"
+      CC: clang
+      CXX: clang++
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -176,7 +181,7 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: gcc-tsan
+          cache-suffix: clang-tsan
 
       - name: Install package
         run: just build --group workspace-test

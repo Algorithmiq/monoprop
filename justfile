@@ -120,17 +120,39 @@ test-find-package BUILD_DIR='build/find-package-smoke':
     "$build_dir/smoke"
 
 # The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
-# Tsan) and the matching monoprop_SANITIZER define.
+# Tsan), the matching monoprop_SANITIZER define, and CC=clang CXX=clang++. TSan needs Clang;
+# ASan uses it too so both legs test the same build.
 #
 # Only the C++ binary is fully instrumented, so the option sets differ per leg and cannot
 # be hoisted to the environment.
 
 ubsan_options := "halt_on_error=1:print_stacktrace=1"
+
+
+# Without this, TSan reports a false race in pthread_mutex_lock at every OpenMP team startup,
+# because the libraries libomp calls into are not instrumented.
+
+tsan_openmp_options := "ignore_noninstrumented_modules=1"
 sanitizer_log := project_source_dir / "sanitizer-log"
 
 
+# The compiler that built the sanitizer tree, which may differ from $CXX. It decides which
+# sanitizer runtime to preload and which checks apply.
+
+_sanitizer-cxx:
+    @sed -n 's/^set(CMAKE_CXX_COMPILER "\(.*\)")$/\1/p' {{ build_dir }}/CMakeFiles/*/CMakeCXXCompiler.cmake
+
 test-cpp-asan:
-    ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=1:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Under Clang, detect_invalid_pointer_pairs gives a false positive before main in every test
+    # binary (on a std::initializer_list built during static initialization), so it is GCC-only.
+    pointer_pairs=1
+    cxx=$({{ just_executable() }} --justfile {{ justfile() }} _sanitizer-cxx)
+    if [[ "$("$cxx" --version)" == *clang* ]]; then
+      pointer_pairs=0
+    fi
+    ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=$pointer_pairs:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
     LSAN_OPTIONS="suppressions={{ project_source_dir }}/.github/lsan.supp" \
     UBSAN_OPTIONS="{{ ubsan_options }}" \
       ctest --test-dir {{ build_dir }} --output-on-failure
@@ -139,9 +161,19 @@ test-cpp-asan:
 # here; the C++ leg covers those. ASan needs libstdc++ preloaded too, or its __cxa_throw
 # interceptor does not resolve. pytest replaces stderr, so the reports go to log files.
 # Limit this instrumented run to monoprop's suite rather than collecting workspace packages.
+# The preloaded ASan runtime must match the compiler that built the extension.
 
 test-py-asan:
-    LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cxx=$({{ just_executable() }} --justfile {{ justfile() }} _sanitizer-cxx)
+    if [[ "$("$cxx" --version)" == *clang* ]]; then
+      runtime=$("$cxx" -print-file-name=libclang_rt.asan-"$(uname -m)".so)
+    else
+      runtime=$("$cxx" -print-file-name=libasan.so)
+    fi
+    # Clang does not ship libstdc++, so ask GCC for it either way.
+    LD_PRELOAD="$runtime:$(g++ -print-file-name=libstdc++.so.6)" \
     ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
     UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
       uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
@@ -167,7 +199,7 @@ sanitizer-reports:
 # restricted to the concurrent partition and shared-memory paths.
 
 test-cpp-tsan:
-    TSAN_OPTIONS="halt_on_error=1:history_size=4" \
+    TSAN_OPTIONS="halt_on_error=1:history_size=4:{{ tsan_openmp_options }}" \
       ctest --test-dir {{ build_dir }} --output-on-failure -R "(partition_|shm_comm_)"
 
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build

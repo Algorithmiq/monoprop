@@ -8,10 +8,14 @@
   cmake,
   ninja,
   pkg-config,
+  clang,
   clang-tools,
   gdb,
   lcov,
   doxygen,
+
+  # LLVM's OpenMP runtime, which ThreadSanitizer needs (see Sanitizers.cmake).
+  llvmPackages,
 
   # C++ dependencies
   boost,
@@ -31,6 +35,7 @@ mkShell {
     cmake
     ninja
     pkg-config
+    clang
     clang-tools
     gdb
     lcov
@@ -48,6 +53,7 @@ mkShell {
     boost
     hwloc
     openmpi
+    llvmPackages.openmp
   ];
 
   shellHook = ''

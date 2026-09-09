@@ -234,8 +234,9 @@ ctest --test-dir build/editable/Debug
 ### Sanitizer trees
 
 The QA workflow builds two sanitizer profiles, selected with `monoprop_SANITIZER`
-(`none`, `asan-ubsan`, or `tsan`). Both require Linux and either GCC or Clang;
-CI uses the default system GCC, which is what builds the released wheels.
+(`none`, `asan-ubsan`, or `tsan`). Both require Linux. CI builds both with Clang:
+`tsan` requires it, and `asan-ubsan` uses it so both legs test the same build.
+`asan-ubsan` also works with GCC. Released wheels are still built with GCC.
 
 Sanitizer trees intentionally skip the `_core.pyi` typing stubs — generating them
 means importing the instrumented extension, which is not worth arranging for a
@@ -244,6 +245,7 @@ tree that is never packaged.
 #### ASan + LSan + UBSan
 
 ```bash
+CC=clang CXX=clang++ \
 SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan \
 SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" \
 uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
@@ -283,6 +285,10 @@ exceptions, so that affects a large part of the suite.
 Leak detection is off here because LSan cannot get a clean baseline from an
 uninstrumented interpreter — the C++ leg above is what covers leaks.
 
+Both recipes take the compiler from the build tree, not from `$CXX`, and pick the
+sanitizer runtime and checks to match. Under Clang, `detect_invalid_pointer_pairs`
+is turned off because it reports a false positive before `main`.
+
 <Callout title="Sanitizer reports are hidden by pytest" type="warn">
 pytest replaces the stderr file descriptor, so a sanitizer report printed from
 native code is swallowed and the run looks like a bare exit code 1 with no
@@ -299,6 +305,7 @@ The QA workflow runs that recipe on failure.
 #### ThreadSanitizer
 
 ```bash
+CC=clang CXX=clang++ \
 SKBUILD_CMAKE_BUILD_TYPE=Tsan \
 SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=tsan" \
 uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
@@ -308,6 +315,17 @@ just test-cpp-tsan
 
 TSan is scoped to the concurrency surface — the partition and `ShmComm` tests —
 which is where its reports are worth the runtime cost.
+
+<Callout title="ThreadSanitizer needs Clang's OpenMP runtime" type="warn">
+ThreadSanitizer cannot see the synchronization in GCC's OpenMP runtime (libgomp),
+so it reports every OpenMP barrier as a data race and the real races get lost
+among them. LLVM's runtime (libomp) includes the annotations TSan needs, so
+configuring `monoprop_SANITIZER=tsan` with GCC is a CMake error.
+
+`just test-cpp-tsan` also sets `ignore_noninstrumented_modules=1`. Without it,
+TSan reports a false race inside `pthread_mutex_lock` whenever OpenMP starts its
+threads.
+</Callout>
 
 There is no ThreadSanitizer equivalent of the ASan Python leg. TSan does not
 support `dlopen` of instrumented libraries, so loading an instrumented `_core`
