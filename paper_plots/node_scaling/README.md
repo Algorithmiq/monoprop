@@ -7,17 +7,30 @@ Publication-ready, self-contained figure package for the node-scaling study of m
 
 ## Result
 
-**The strong-scaling wall is set by the load a node carries, not by a core count, and it moves
-right as the problem grows.** At 1.57e9 terms the curve bottoms out at 4096 cores (16.13 s) and
-then *reverses* to 23.99 s at 8192; at 6.13e9 it is still flattening at 8192 (38.09 → 36.95 s);
-at 24.42e9 it is still descending at 1.60× per doubling (471.0 → 235.2 → 127.1 → 79.6 s) with no
-turn in sight. Parallel efficiency at 8192 cores is 14% / 38% / 74% for the three sizes, and the
-departure from ideal moves from ~512 to ~1024 to ~2048 cores as the size grows.
+> These numbers are read off `data/SCALE-CELLS.tsv` with the same loader the figures use.
+> The percentages match `figures/captions.txt`, which `captions.py` computes from the plotted
+> rows; if this section and that file ever disagree, that file is right.
 
-Weak scaling says the same thing from the other side: efficiency at 8192 cores is **29.4%** at
-96M terms/node, **59.7%** at 385M, and **83.9%** at 1529M. At roughly 1.5e9 terms per node
-monoprop weak-scales close to ideal all the way to 8192 cores — the operator is not
-latency-limited at scale, it is starved when the per-node load is small.
+**The strong-scaling wall is set by the load a node carries, not by a core count, and it moves
+right as the problem grows.** Every strong curve is monotone — none turns back up. At 1.57e9
+terms the time falls 212.1 → 6.9 s from 128 to 8192 cores, but the last doubling buys almost
+nothing (7.4 → 6.9 s): the curve has flattened, not reversed. At 6.13e9 terms it is still
+halving cleanly to 4096 and gives up only the last step (28.4 → 17.0 s), and at 24.42e9 it is
+still descending near-ideally at 8192 (453.8 → 225.6 → 110.2 → 57.3 s) with no turn in sight.
+Parallel efficiency at 8192 cores is **48% / 81% / 99%** for the three sizes, and the departure
+from ideal moves right with the problem: the 1.57e9 curve holds ≥97% to 2048 cores and breaks at
+4096 (89%), the 6.13e9 curve holds ≥96% to 4096, and the 24.42e9 curve has not departed by 8192.
+
+What that break tracks is the per-node load, not the core count. At 8192 cores the three sizes
+leave each node holding 24.5M, 95.7M and 381.6M terms respectively — and that is the order of
+the efficiencies.
+
+Weak scaling says the same thing from the other side: efficiency at 8192 cores is **61%** at
+96M terms/node, **81%** at 385M, and **94%** at 1529M. At roughly 1.5e9 terms per node monoprop
+weak-scales close to ideal all the way to 8192 cores — the operator is not latency-limited at
+scale, it is starved when the per-node load is small. (The weak percentages are measured against
+a single-node baseline across a 64× span, so they are not directly comparable to the strong ones
+at the same per-node load; each family is internally consistent.)
 
 ## Method
 
@@ -38,9 +51,9 @@ latency-limited at scale, it is starved when the per-node load is small.
 - **Gating.** Every rep re-checks the installed `_core.so` md5, the environment, and the
   resulting term count before its time is kept; `MALLOC_ARENA_MAX` is left unset and that is
   verified *from inside the python process*, not from the submitting shell (setting it to the
-  partition count costs ~16% of wall). 208 reps across these 38 rungs were kept with **zero**
-  gate failures (`data/SCALE-CELLS.tsv` carries 252 gate-clean rows in total; the rest belong to
-  a curve not plotted here).
+  partition count costs ~16% of wall). 197 reps across these 38 rungs were kept with **zero**
+  gate failures (`data/SCALE-CELLS.tsv` carries 239 gate-clean reps over 45 rungs in total; the
+  other 42 reps over 7 rungs are the `strong_s5` curve, which is not plotted here).
 
 ### Coverage
 
@@ -151,9 +164,8 @@ scripts/                  campaign drivers (copies of the canonical files)
 figures/                  fig-strong-time, fig-strong-efficiency, fig-weak-time,
                           fig-weak-efficiency, fig-scaling-2x2 (each .pdf + .png);
                           captions.txt
-  retired/                superseded figure sets, kept as the record of what was shown before
-  ab-supporting/          the A/B routing figures; not part of the scaling story
 ```
 
-The prose results document is `harness/RESULTS-296-scaling.md`; the A/B routing record it
-deliberately excludes is `harness/RESULTS-296-ab-routing-2026-08-27.md`.
+The `retired/` and `ab-supporting/` figure sets and the `harness/RESULTS-296-*.md` prose
+documents this file used to point at were never part of the package and are not in the
+repository; the Result section above is the record.
