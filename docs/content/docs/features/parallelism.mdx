@@ -44,6 +44,61 @@ larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
 export monoprop_NUM_THREADS=8
 ```
 
+### Where the operator's bytes are
+
+`operator_memory_breakdown()` names the resident bytes of one rank's operator. `total_bytes()` sums
+the fields that are live at quiescence; the `d_` keys are counts, subsets of a field, or quantities
+no resting field can hold, so folding one into the total would double-count.
+
+The row store and the anticommutation index's dense columns are held as fixed-size chunks taken from
+a pool, not as vectors: growth appends a chunk, nothing is copied, and the only slack is the tail of
+the last chunk. Four keys describe that storage. `d_terms_slack_bytes` is that tail.
+`d_pool_mapped_bytes` is what the pools have *mapped* -- a pool maps whole arenas and keeps one as
+long as a single chunk in it is live, so it sits at or above what the chunk-counting fields price,
+and `d_pool_free_chunk_bytes` is the part of it not currently handed out. Those bytes are faulted
+only as they are written, but the mapping is what the kernel's high-water mark is charged for once
+they have been, which is why the ledger's total can sit below the resident set with nothing missing
+from any named field.
+
+`d_row_wide_rows`, `d_row_inline_width` and `d_row_restrides` describe the row layout. A row is a
+popcount slot followed by its set positions, at one width paid for by every row; rows wider than that
+but still within the cutoff's structural bound go to a second tier at a fixed wider stride, and rows
+over the bound to a lossless side-map. The width is predicted from the model, so a wrong guess costs
+one *restride* -- the store re-lays every row at the bound between gates, keeping every row index --
+and never a wrong answer. A nonzero `d_row_restrides` says the prediction was too narrow for this
+model; a wide-row count that is a large share of the term count says the same before it happens.
+
+`d_op_coeffs_slack_bytes` is the most capacity the coefficient array held beyond its live rows at any
+point in the last [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or
+[build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] call. The array grows at
+the row store's own 1.5x policy and is shrunk to fit when the call ends, which is the only moment a
+caller can read the ledger -- so it is reported as a high-water mark taken at the growth sites rather
+than as a measurement of the array as it stands, which would always be 0. Across partitions the marks
+are summed rather than maxed: the partitions grow together within a call, so the sum is the figure a
+per-process footprint wants, and it errs high.
+
+### Peak memory of large runs: pin glibc's `mmap` threshold
+
+Every gate allocates and frees a few large transient buffers: the records it stages, sends, receives
+and answers. glibc's allocator reacts to the first free of such a buffer by raising its dynamic `mmap`
+threshold (up to 32 MiB) and its trim threshold, so from then on the widest gate's transients are
+served from the heap and kept on free lists the allocator cannot return to the kernel. On a 250 M-term
+Hubbard run that retention is about a fifth of the resident set. Pinning the threshold disables the
+escalation, so every transient above it is a private mapping that is unmapped on free:
+
+```bash
+export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=1048576   # 1 MiB
+mpirun -x GLIBC_TUNABLES ...                                # MPI ranks must inherit it
+```
+
+Measured on a 16-core workstation at 250 M terms (paired interleaved repetitions): peak resident
+high-water mark 0.95x in-process with 16 partitions and 0.91x (ranks summed) at 4 ranks x 4
+partitions, for about 1 % more wall time; a 128 KiB threshold takes a further 2 % of memory for 2-4 %
+more time. The cost is page faults on the re-mapped transients, so the setting pays only when a gate's
+compute amortises them: use it at or above ~10^8 terms with several partitions, and not on small
+single-core runs, where it costs ~20 % time. Results are bit-identical either way -- this changes
+where bytes live, not what is computed.
+
 ## Placement report
 
 Building a propagator writes one `COMMPLACE` line per rank to stderr, naming the
