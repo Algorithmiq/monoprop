@@ -144,7 +144,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         return;
     }
 
-    check_routing_agreement(comm_); // a disagreement here would hang the first exchange, not corrupt it
     const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() reaches the comm
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
@@ -229,6 +228,15 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     core_term_ = core_term;
 
     initialize_operator_caches_();
+
+    // LAST, after every validation this constructor can fail on: it is a collective, and a partition
+    // that throws while its peers are inside one poisons the in-process comm, so the caller is told the
+    // comm is poisoned instead of which setting was wrong. Deterministic errors (the schrodinger_cutoff
+    // ceiling above, the tolerance and mode-count checks) are raised by every partition, which is
+    // exactly the race -- tests/test_parameter_validation.py pins the message at S > 1. Placing it here
+    // still puts it before the first exchange, and seeding needs no agreement: it communicates nothing,
+    // so a rank that resolved a different router has merely claimed the wrong share when this throws.
+    check_routing_agreement(comm_); // a disagreement would hang the first exchange, not corrupt it
 }
 
 template <size_t NumModes>
