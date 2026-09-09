@@ -107,13 +107,16 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
 
     // One combine over [0, mask_words): words >= mask_words are never read, so dropping them is exact.
+    // Blocked like every other fold, because a dense column is chunked and no pointer into it spans
+    // more than one fold block. XOR is associative, so the split is bit-identical to a full-width one.
     p.combined.resize(p.fold.mask_words); // combine_columns_block zero-fills
-    if (p.fold.mask_words != 0) {
+    for (size_t bb = 0; bb < p.fold.mask_words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, p.fold.mask_words);
         combine_columns_block<NumModes>(sc,
                                         {gen_columns.indices.data(), gen_columns.count},
-                                        p.combined.data(),
-                                        0,
-                                        p.fold.mask_words);
+                                        p.combined.data() + bb,
+                                        bb,
+                                        be);
     }
     return p;
 }
