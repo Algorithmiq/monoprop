@@ -20,6 +20,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <limits>
 #include <memory>
@@ -32,6 +33,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/operator/ChunkedArray.h"
 
 namespace monoprop::detail {
 
@@ -40,11 +42,16 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// Operator-term store: entropy-packed position-list rows plus a keyless open-addressing hash index over
-// those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
-// ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
-// inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
-// Single-writer: one partition, one thread; parallelism is cross-partition.
+/*! @brief Operator-term store: entropy-packed position-list rows in pooled chunks, plus a keyless
+ *  open-addressing hash index over those rows.
+ *
+ *  Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c = ascending
+ *  set-bit positions. inline_width_ is a free parameter -- any width is correct, over-long rows spill
+ *  losslessly to overflow. Rows live in ChunkedRowArray chunks, so growth appends a chunk and never
+ *  moves a row; row indices are handed out consecutively by grow_rows_geometric and never change.
+ *
+ *  Single-writer: one partition, one thread; parallelism is cross-partition.
+ */
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -56,6 +63,26 @@ public:
         conditional_t<(2 * NumModes <= 256), uint8_t, std::conditional_t<(2 * NumModes <= 65536), uint16_t, uint32_t>>;
 
     static constexpr size_t kDefaultInlinePositions = 11;
+    /*! @brief Rows per chunk of the row store, chosen from the height the store is built at.
+     *
+     *  Both bounds are powers of two and multiples of 64, so every chunk length is: the 64 rows an
+     *  inverted-index word names always sit in one chunk. A row never straddles a chunk either, so a
+     *  span over one row stays contiguous.
+     */
+    static constexpr size_t kMinRowsPerChunk = size_t{1} << 12;
+    static constexpr size_t kMaxRowsPerChunk = size_t{1} << 18;
+
+    /*! @brief The chunk length for a store of @a rows rows: a quarter of it, rounded down to a power
+     *  of two and clamped to [kMinRowsPerChunk, kMaxRowsPerChunk].
+     *
+     *  The store overshoots by at most one chunk, so a quarter bounds its slack under a quarter of
+     *  itself once it clears four minimum chunks, and under one 4096-row chunk below that. Rounding
+     *  down costs only chunk count, which is pooled. It reaches kMaxRowsPerChunk at 1M rows and stops,
+     *  so the tail is never more than 2^18 rows however large the operator grows.
+     */
+    static auto chunk_rows_for_rows(size_t rows) noexcept -> size_t {
+        return std::clamp(std::bit_floor(std::max(rows / 4, size_t{1})), kMinRowsPerChunk, kMaxRowsPerChunk);
+    }
     // A weight-w Pauli needs 2w positions; 32 covers the common case inline at the supported Pauli
     // cutoffs (2*cutoff <= 32 for cutoff <= 16).
     static constexpr size_t kMaxInlinePositions = 32;
@@ -74,9 +101,20 @@ public:
     // operator store must not depend on evolution headers).
     static constexpr size_t kNotFound = std::numeric_limits<size_t>::max();
 
-    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions)
+    /*! @brief An empty store. Its chunk length is settled by the first reserve() or growth, from the
+     *  height asked for there, and rises with the store thereafter.
+     *
+     *  @param forced_rows_per_chunk 0 to size the chunks from that height (production), or a fixed
+     *  length: a power of two and a multiple of 64. A test knob, so chunk boundaries can be driven
+     *  with a few hundred rows instead of a million.
+     */
+    explicit OperatorIndex(size_t inline_width = kDefaultInlinePositions, size_t forced_rows_per_chunk = 0)
         : inline_width_(std::clamp<size_t>(inline_width, 1, kMaxInlinePositions)),
-          stride_(1 + inline_width_) {}
+          stride_(1 + inline_width_),
+          forced_rows_per_chunk_(forced_rows_per_chunk) {
+        assert(forced_rows_per_chunk == 0
+               || (std::has_single_bit(forced_rows_per_chunk) && forced_rows_per_chunk % 64 == 0));
+    }
     OperatorIndex(const OperatorIndex &) = delete;
     OperatorIndex &operator=(const OperatorIndex &) = delete;
     OperatorIndex(OperatorIndex &&) = delete;
@@ -84,8 +122,13 @@ public:
 
     // Called only on an idle store, so it needs no synchronization.
     [[nodiscard]] auto clone() const -> std::unique_ptr<OperatorIndex> {
-        auto out = std::make_unique<OperatorIndex>(inline_width_);
-        out->rows_ = rows_;
+        auto out = std::make_unique<OperatorIndex>(inline_width_, forced_rows_per_chunk_);
+        if (rows_.attached()) {
+            // The clone takes this store's settled length, not one re-derived from its size: the two
+            // must agree row for row, and attach_(0) would round a small store down differently.
+            out->attach_(rows_.rows_per_chunk());
+            out->rows_ = rows_.clone_into(*out->row_pool_); // a deep copy; the two share no chunk
+        }
         out->size_ = size_;
         out->overflow_ = overflow_;
         out->reserve_index(table_.count);
@@ -106,18 +149,20 @@ public:
         reserve_rows(n);
         reserve_index(n);
     }
-    // Returns the pre-growth size (the caller's insert base). Growth is geometric (1.5×), never
-    // exact-fit: an exact fit would realloc the whole operator every layer.
+    /*! @brief Grows by @a n rows and returns the pre-growth size, the caller's insert base.
+     *
+     *  Indices are consecutive from that base and are never reassigned: the store appends whole chunks
+     *  and never moves a row, so there is no reallocation to amortise and the only slack is one
+     *  chunk's tail. Refused at the TermIndex ceiling before anything grows.
+     *
+     *  Freshly grown rows are default-initialized, not zeroed: every one is overwritten by its set()
+     *  before any read.
+     */
     auto grow_rows_geometric(size_t n) -> size_t {
         const size_t base = size_;
         check_append_fits(base, n);
-        if (capacity() < base + n) {
-            const size_t cap = capacity();
-            reserve_rows(std::max(base + n, cap + (cap / 2) + 1));
-        }
-        // Default-init grow, not a zeroing resize: every freshly grown row is overwritten by set()
-        // before any read, so a tail zero-fill would be wasted bandwidth.
-        rows_.resize((base + n) * stride_);
+        ensure_capacity_(base + n);
+        rows_.grow(base + n);
         size_ = base + n;
         return base;
     }
@@ -128,15 +173,13 @@ public:
     // (freshly grown headers are indeterminate); a stale overflow entry at i, if any, is dropped.
     auto set(size_t i, const value_type &mono) -> void {
         const size_t c = mono.count();
-        PosT *row = &rows_[i * stride_];
+        PosT *row = rows_.at(i);
         if (c > inline_width_) {
             row[0] = kOverflowMarker;
             overflow_[i] = mono;
             return;
         }
-        if (!overflow_.empty()) {
-            overflow_.erase(i);
-        }
+        drop_stale_overflow_(i);
         row[0] = static_cast<PosT>(c);
         PosT *out = row + 1;
         for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
@@ -152,7 +195,7 @@ public:
     auto set_positions(size_t i, std::span<const PosT> pos) -> void {
         const size_t count = pos.size();
         assert((count == 0 || static_cast<size_t>(pos[count - 1]) < 2 * NumModes) && "row position out of range");
-        PosT *row = &rows_[i * stride_];
+        PosT *row = rows_.at(i);
         if (count > inline_width_) {
             // The spill path has no position array, so build the dense form -- only here.
             row[0] = kOverflowMarker;
@@ -163,45 +206,39 @@ public:
             overflow_[i] = mono;
             return;
         }
-        if (!overflow_.empty()) {
-            overflow_.erase(i);
-        }
+        drop_stale_overflow_(i);
         row[0] = static_cast<PosT>(count);
         std::copy_n(pos.data(), count, row + 1);
     }
 
     [[nodiscard]] auto row(size_t i) const -> value_type {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) {
             return overflow_.at(i);
         }
         value_type mono;
-        const PosT *pos = &rows_[(i * stride_) + 1];
-        for (size_t j = 0; j < c; ++j) {
-            mono.set(pos[j]);
+        for (size_t j = 0; j < r.count; ++j) {
+            mono.set(r.pos[j]);
         }
         return mono;
     }
     template <typename Fn>
     auto for_each_position(size_t i, Fn &&fn) const -> void {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) {
             const auto &m = overflow_.at(i);
             for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
                 fn(b);
             }
             return;
         }
-        const PosT *pos = &rows_[(i * stride_) + 1];
-        for (size_t j = 0; j < c; ++j) {
-            fn(static_cast<size_t>(pos[j]));
+        for (size_t j = 0; j < r.count; ++j) {
+            fn(static_cast<size_t>(r.pos[j]));
         }
     }
     [[nodiscard]] auto popcount(size_t i) const -> size_t {
-        if (const PosT c = rows_[i * stride_]; c != kOverflowMarker) {
-            return c;
-        }
-        return overflow_.at(i).count();
+        const StoredRow r = stored_(rows_.at(i));
+        return r.pos == nullptr ? overflow_.at(i).count() : r.count;
     }
     /*! @brief The row's stored ascending positions, empty for a spilled row. Invalidated by any insert. */
     struct RowPositions {
@@ -210,14 +247,14 @@ public:
         [[nodiscard]] auto inlined() const -> bool { return pos.data() != nullptr; }
     };
     [[nodiscard]] auto row_positions(size_t i) const -> RowPositions {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) {
             return {};
         }
-        return {std::span<const PosT>(&rows_[(i * stride_) + 1], static_cast<size_t>(c))};
+        return {std::span<const PosT>(r.pos, r.count)};
     }
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t total = rows_.capacity() * sizeof(PosT);
+        size_t total = rows_.bytes();
         total += overflow_.size() * (sizeof(value_type) + sizeof(size_t) + 24);
         return total;
     }
@@ -261,7 +298,7 @@ public:
                 }
                 cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
                 if (cand[j] != kEmptySlot) {
-                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
+                    __builtin_prefetch(rows_.at(static_cast<size_t>(cand[j])), 0, 0);
                 }
             }
             for (size_t j = 0; j < g; ++j) {
@@ -308,7 +345,7 @@ public:
                 }
                 cand[j] = probe_hash_match_(hh[j], sp[j] & table_.mask);
                 if (cand[j] != kEmptySlot) {
-                    __builtin_prefetch(&rows_[static_cast<size_t>(cand[j]) * stride_], 0, 0);
+                    __builtin_prefetch(rows_.at(static_cast<size_t>(cand[j])), 0, 0);
                 }
             }
             for (size_t j = 0; j < g; ++j) {
@@ -390,9 +427,21 @@ public:
             }
         }
     }
-    // Diagnostic: the part of memory_bytes() that is unused geometric-growth capacity.
-    [[nodiscard]] auto slack_bytes() const -> size_t {
-        return (rows_.capacity() * sizeof(PosT)) - (std::min(rows_.capacity(), size_ * stride_) * sizeof(PosT));
+    // Diagnostic: the part of memory_bytes() that is unused capacity -- the tail of the last chunk.
+    [[nodiscard]] auto slack_bytes() const -> size_t { return rows_.slack_bytes(); }
+
+    /*! @brief What this store's pool has MAPPED, free chunks included.
+     *
+     *  memory_bytes() prices the chunks the array holds; a pool maps whole arenas and keeps one as
+     *  long as a single chunk in it is live, so the two differ by whatever a partly used arena has not
+     *  handed out. Not a subset of any other field.
+     */
+    [[nodiscard]] auto pool_mapped_bytes() const -> size_t {
+        return row_pool_ == nullptr ? 0 : row_pool_->mapped_bytes();
+    }
+    //! Of pool_mapped_bytes(): the arenas' chunks that are not currently handed out.
+    [[nodiscard]] auto pool_free_chunk_bytes() const -> size_t {
+        return row_pool_ == nullptr ? 0 : row_pool_->mapped_bytes() - row_pool_->live_bytes();
     }
 
     auto index_estimated_memory_bytes() const -> size_t {
@@ -400,6 +449,30 @@ public:
     }
 
 private:
+    /*! @brief A row's stored positions. @a pos == nullptr means the row spilled to the side-map.
+     *
+     *  One unsigned compare carries the common case: a header at or below the inline width is the
+     *  row's own popcount and its positions follow it. The sentinel is above kMaxInlinePositions.
+     */
+    struct StoredRow {
+        const PosT *pos;
+        size_t count;
+    };
+    [[nodiscard]] auto stored_(const PosT *src) const noexcept -> StoredRow {
+        const size_t c = src[0];
+        if (c <= inline_width_) [[likely]] {
+            return {src + 1, c};
+        }
+        return {nullptr, 0};
+    }
+
+    //! Drops a side-map entry left by a previous value at @a i; the map is empty on every hot path.
+    auto drop_stale_overflow_(size_t i) -> void {
+        if (!overflow_.empty()) {
+            overflow_.erase(i);
+        }
+    }
+
     struct Slot {
         TermIndex idx = kEmptySlot;
         uint32_t h = 0;
@@ -474,8 +547,59 @@ private:
     // Slot count for `n` entries at ≤0.7 load.
     static auto slots_for_(size_t n) -> size_t { return std::bit_ceil(std::max<size_t>(kMinSlots, (n * 10 / 7) + 1)); }
 
-    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity() / stride_; }
-    auto reserve_rows(size_t n) -> void { rows_.reserve(n * stride_); }
+    [[nodiscard]] auto capacity() const -> size_t { return rows_.capacity(); }
+    auto reserve_rows(size_t n) -> void {
+        ensure_capacity_(n);
+        rows_.reserve(n);
+    }
+
+    /*! @brief Makes the pool and binds the row array at @a rows_per_chunk. @pre Not yet attached. */
+    auto attach_(size_t rows_per_chunk) -> void {
+        assert(!rows_.attached() && "attach_ binds an unbound store");
+        row_pool_ = std::make_unique<ChunkPool>(rows_per_chunk * stride_ * sizeof(PosT));
+        rows_.attach(*row_pool_, rows_per_chunk, stride_);
+    }
+
+    /*! @brief Re-lays the live rows into chunks of @a new_rows_per_chunk and drops the old pool.
+     *
+     *  Only the chunk geometry moves: row indices and the overflow map are untouched, so every
+     *  TermIndex the rest of the engine holds stays valid. @a new_rows_per_chunk is a multiple of the
+     *  current length (both are powers of two and it only ever grows), so one old chunk lands whole
+     *  inside one new chunk and each move is a single memcpy.
+     */
+    auto rechunk_(size_t new_rows_per_chunk) -> void {
+        const size_t old_rows_per_chunk = rows_.rows_per_chunk();
+        assert(new_rows_per_chunk > old_rows_per_chunk && new_rows_per_chunk % old_rows_per_chunk == 0);
+        auto new_pool = std::make_unique<ChunkPool>(new_rows_per_chunk * stride_ * sizeof(PosT));
+        ChunkedRowArray<PosT> new_rows;
+        new_rows.attach(*new_pool, new_rows_per_chunk, stride_);
+        new_rows.grow(size_);
+        for (size_t first = 0; first < size_; first += old_rows_per_chunk) {
+            const size_t n = std::min(old_rows_per_chunk, size_ - first);
+            std::memcpy(new_rows.at(first), rows_.at(first), n * stride_ * sizeof(PosT));
+        }
+        // The array releases its chunks to its own pool before that pool is replaced.
+        rows_ = std::move(new_rows);
+        row_pool_ = std::move(new_pool);
+    }
+
+    /*! @brief Keeps the chunk length in step with the height the store is heading for.
+     *
+     *  The store cannot be told its final height -- the propagator reserves the *initial* operator's
+     *  size, a handful of terms even for a run that ends at millions -- so the length is re-derived on
+     *  every growth. It only ever rises and stops at kMaxRowsPerChunk, so a store crossing 2^20 rows
+     *  migrates six times, while one that stays small keeps chunks proportional to it. A forced length
+     *  never moves.
+     */
+    auto ensure_capacity_(size_t rows) -> void {
+        const size_t want = forced_rows_per_chunk_ != 0 ? forced_rows_per_chunk_ : chunk_rows_for_rows(rows);
+        if (!rows_.attached()) {
+            attach_(want);
+        }
+        else if (want > rows_.rows_per_chunk()) {
+            rechunk_(want);
+        }
+    }
     auto reserve_index(size_t n) -> void { table_.rehash_to(slots_for_(n + 1)); }
 
     // Insert (idx, h) into the table with no duplicate probe — callers on this path insert provably distinct
@@ -493,16 +617,15 @@ private:
     // Compare row i against key q without materializing the row (the find confirm). Reads the
     // popcount byte first, so a false h prefilter match usually costs one byte compare.
     [[nodiscard]] auto row_eq_key(size_t i, const key_type &q) const -> bool {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) [[unlikely]] {
             return overflow_.at(i) == q;
         }
-        if (q.count() != static_cast<size_t>(c)) {
+        if (q.count() != r.count) {
             return false;
         }
-        const PosT *pos = &rows_[(i * stride_) + 1];
-        for (size_t j = 0; j < c; ++j) {
-            if (!q.test(pos[j])) {
+        for (size_t j = 0; j < r.count; ++j) {
+            if (!q.test(r.pos[j])) {
                 return false;
             }
         }
@@ -511,18 +634,18 @@ private:
 
     // Compare row i against an ascending position list; a spilled row falls back to a dense compare.
     [[nodiscard]] auto row_eq_positions(size_t i, std::span<const PosT> q) const -> bool {
-        const PosT c = rows_[i * stride_];
-        if (c == kOverflowMarker) {
+        const StoredRow r = stored_(rows_.at(i));
+        if (r.pos == nullptr) [[unlikely]] {
             key_type mono;
             for (size_t j = 0; j < q.size(); ++j) {
                 mono.set(q[j]);
             }
             return overflow_.at(i) == mono;
         }
-        if (q.size() != static_cast<size_t>(c)) {
+        if (q.size() != r.count) {
             return false;
         }
-        return std::equal(q.begin(), q.end(), &rows_[(i * stride_) + 1]);
+        return std::equal(q.begin(), q.end(), r.pos);
     }
 
     // find()'s chain walk for a position-list key, hash already folded; only the collision arm reaches it.
@@ -561,10 +684,15 @@ private:
         }
     }
 
-    DefaultInitVector<PosT> rows_ = {};
-    size_t size_ = 0;
+    // Declared before the array: members are destroyed in reverse declaration order, so the pool
+    // outlives the store whose chunks it owns.
     size_t inline_width_ = kMaxInlinePositions;
     size_t stride_ = 1 + kMaxInlinePositions;
+    size_t forced_rows_per_chunk_ = 0; //!< 0 == size the chunks from the first height asked for
+    std::unique_ptr<ChunkPool> row_pool_;
+
+    ChunkedRowArray<PosT> rows_ = {};
+    size_t size_ = 0;
     // Lossless side-map for rows whose popcount exceeds inline_width_.
     std::unordered_map<size_t, value_type> overflow_ = {};
     Table table_ = {};
