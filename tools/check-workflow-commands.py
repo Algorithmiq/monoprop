@@ -80,6 +80,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "bench.yml",
         "Track benchmarks with Bencher",
     ): "the benchmarking ladder is only meaningful in CI, so it lives in the workflow",
+    (
+        "bench.yml",
+        "Pin the terms plot",
+    ): "the benchmarking ladder is only meaningful in CI, so it lives in the workflow",
 }
 
 # Version and help queries are not builds.
