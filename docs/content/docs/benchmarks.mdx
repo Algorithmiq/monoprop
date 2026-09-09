@@ -3,8 +3,8 @@ title: Benchmarks
 description: Comparisons against other propagation engines and internal regression benchmarks.
 ---
 
-This page reports two sets of benchmarks: comparisons with other open-source Pauli and Majorana
-propagation engines, and an internal pytest suite for detecting performance regressions.
+Comparisons with other open-source Pauli and Majorana propagation engines, and an internal pytest
+suite for detecting regressions.
 
 ## Results
 
@@ -12,28 +12,25 @@ propagation engines, and an internal pytest suite for detecting performance regr
 ![Time per step for monoprop against other Pauli and Majorana propagation engines](/benchmarks/headline_runtime.png)
 
 <Caption>
-  Wall-clock time per propagation step on a logarithmic scale. At the final Pauli step, the
-  runtime ratios relative to `monoprop` are 267-325× for the other CPU implementations and 7.8×
-  for the GPU implementation. Over the complete Majorana evolution, the runtime ratio for
-  `MajoranaPropagation.jl 0.4.1` is 27.7×.
+  Wall-clock time per step, logarithmic. Final Pauli step, ratios to `monoprop`: 267-325× for the
+  other CPU implementations, 7.8× for the GPU one. Complete Majorana evolution: 27.7× for
+  `MajoranaPropagation.jl 0.4.1`.
 </Caption>
 </Figure>
 
-All results were obtained on
-[Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html); the experimental conditions are
-specified under [Methods](#methods).
+All results are from exclusive nodes on
+[Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html); conditions under
+[Methods](#methods).
 
 ### Pauli propagation
 
-The Pauli benchmark simulates the Trotterized time evolution of a two-dimensional transverse-field
-Ising model and evaluates a `ZZ` correlator on a fixed pair of qubits. One experiment varies the
-circuit depth at fixed lattice size; the other varies the lattice size at fixed depth.
+Trotterized evolution of a 2D transverse-field Ising model, evaluating a `ZZ` correlator on a fixed
+qubit pair. One experiment varies depth, the other lattice size.
 
 #### Fixed lattice, increasing depth
 
-This experiment uses a 12×12 lattice (144 qubits), 28 Trotter points, `dt = 0.05`, a coefficient
-threshold of `1e-6`, and no weight cutoff. The final operator contains approximately 33 million
-terms.
+12×12 lattice (144 qubits), 28 Trotter points, `dt = 0.05`, coefficient threshold `1e-6`, no weight
+cutoff; ~33 million terms at the end.
 
 | Engine | Final step | VS `monoprop` | Peak RSS | VS `monoprop` |
 | --- | ---: | ---: | ---: | ---: |
@@ -43,48 +40,40 @@ terms.
 | `PauliPropagation.jl` | 433.16 s | 277× | 11102 MB | 2.6× |
 | `Qiskit pauli-prop` | 507.74 s | 325× | 34270 MB | 8.0× |
 
-The observables produced by the coefficient-threshold implementations differ by at most 3.8e-4.
-`Qiskit pauli-prop`, which truncates by term count instead, differs by 2.8e-3. The `cuPauliProp`
-operator resides in GPU memory; consequently, the table reports its peak GPU allocation rather
-than the host RSS (which we measured at 552 MB).
+Observables differ by at most 3.8e-4 among the coefficient-threshold implementations; 2.8e-3 for
+`Qiskit pauli-prop`, which truncates by term count instead. `cuPauliProp`'s column is peak device
+allocation, its operator being on the GPU; its host RSS was 552 MB.
 
 <Figure>
 ![Runtime and peak RSS per Trotter step for five Pauli propagation engines](/benchmarks/pauli_results.png)
 
 <Caption>
-  Runtime and peak RSS per Trotter step. Peak RSS is measured by the same procedure for every CPU
-  implementation; `cuPauliProp` reports peak GPU allocation.
+  Per Trotter step; `cuPauliProp` reports peak GPU allocation.
 </Caption>
 </Figure>
 
 #### Increasing lattice size
 
-This experiment holds the circuit depth and truncation threshold fixed while increasing the lattice
-from 6×6 (36 qubits) to 18×18 (324 qubits). Each model size and implementation runs in a separate
-subprocess with a 300 s limit.
+Depth and threshold fixed, lattice 6×6 (36 qubits) to 18×18 (324 qubits), one subprocess per (size,
+implementation) under a 300 s limit. That limit — not the implementations — excludes `QuEra ppvm` and
+`Qiskit pauli-prop` everywhere, `PauliPropagation.jl` above 10×10.
 
 <Figure>
 ![Total runtime versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_runtime.png)
 
 <Caption>
-  At the selected coefficient threshold, the operator size saturates at approximately 55.0
-  million terms above 100 qubits. Beyond this point, the experiment primarily measures the cost
-  per retained term. Across the full range, `monoprop` runtime increases from 6.35 s to 14.1 s
-  (2.2×), while the qubit count increases 9×.
+  The operator saturates at ~55.0 million terms above 100 qubits, so beyond that this measures cost
+  per retained term. `monoprop`: 6.35 s to 14.1 s (2.2×) over a 9× rise in qubits.
 </Caption>
 </Figure>
-
-The 300 s limit excludes `QuEra ppvm` and `Qiskit pauli-prop` at all lattice sizes, and excludes
-`PauliPropagation.jl` above 10×10. We remark that this is not an implementation limit for the packages but a consequence of the timeout limit.
 
 <Figure>
 ![Peak working memory versus lattice size, monoprop, PauliPropagation.jl and cuPauliProp](/benchmarks/pauli_scaling_memory_working_set.png)
 
 <Caption>
-  Working memory denotes peak host RSS for CPU implementations and peak device allocation for
-  `cuPauliProp`. Across the full range, `monoprop` increases from 5045 MB to 7835 MB (1.55×),
-  while `cuPauliProp` increases from 7.6 GB to 34.4 GB. At 324 qubits, the latter is 4.5× the
-  `monoprop` host footprint and occupies more than half of the A100's 64 GB device memory.
+  Working memory: peak host RSS for CPU, peak device allocation for `cuPauliProp`. `monoprop` 5045
+  MB to 7835 MB (1.55×), `cuPauliProp` 7.6 GB to 34.4 GB. At 324 qubits the latter is 4.5× the
+  `monoprop` host footprint, over half of the A100's 64 GB.
 </Caption>
 </Figure>
 
@@ -92,27 +81,23 @@ The 300 s limit excludes `QuEra ppvm` and `Qiskit pauli-prop` at all lattice siz
 ![Bar chart of monoprop's speed-up over each engine, grouped by qubit count](/benchmarks/pauli_speedup.png)
 
 <Caption>
-  Relative to `monoprop`, the runtime ratio increases from 14× to 31× for
-  `PauliPropagation.jl` over its completed points, and from 4.2× to 20× for `cuPauliProp` over
-  the full range. A missing bar denotes a run that exceeded the 300 s limit.
+  Ratios to `monoprop`: 14× to 31× for `PauliPropagation.jl` over its completed points, 4.2× to 20×
+  for `cuPauliProp` over the full range. A missing bar is a run past the 300 s limit.
 </Caption>
 </Figure>
 
 ### Majorana propagation
 
-The Majorana benchmark simulates 20 Trotter layers of a one-dimensional Fermi-Hubbard model with
-60 spinful sites. Runtime, expectation value, term count, and memory are recorded after each layer.
-Both implementations use 24 threads.
+20 Trotter layers of a 1D Fermi-Hubbard model, 60 spinful sites, 24 threads both sides; runtime,
+expectation value, term count and memory recorded per layer.
 
 <Figure>
 ![Term count, expectation value, runtime and peak RSS versus layer, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_results.png)
 
 <Caption>
-  The expectation values differ by at most 2.0e-6 at every layer. At equal truncation,
-  `monoprop` retains 109.4 million terms, compared with 79.4 million for
-  `MajoranaPropagation.jl`. The complete evolution takes 57.1 s and 1583.7 s, respectively, a
-  runtime ratio of 27.7×. At the final layer, the corresponding times are 22.9 s and 639.4 s
-  (27.9×). Peak RSS is 8.8 GB and 17.5 GB, respectively.
+  Expectation values differ by at most 2.0e-6 at every layer. At equal truncation `monoprop` retains
+  109.4 million terms against 79.4 million. Complete evolution 57.1 s against 1583.7 s (27.7×);
+  final layer 22.9 s against 639.4 s (27.9×). Peak RSS 8.8 GB and 17.5 GB.
 </Caption>
 </Figure>
 
@@ -120,91 +105,60 @@ Both implementations use 24 threads.
 ![Runtime versus circuit depth on linear axes, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_runtime.png)
 
 <Caption>
-  The linear scale preserves the absolute runtime ratio. The annotation gives the upper bound of
-  the `monoprop` curve, which otherwise lies close to the horizontal axis.
+  Linear scale. The annotation bounds the `monoprop` curve, which otherwise lies near the axis.
 </Caption>
 </Figure>
 
 ### Caveats
 
-- **CPU parallelism differs among implementations.** `QuEra ppvm` and Qiskit's `pauli-prop` use
-  one core during propagation (0.99 measured active cores), whereas `monoprop` and
-  `PauliPropagation.jl` use multiple cores. The `ppvm` Python bindings expose the serial
-  `indexmap` variant rather than the Rayon-parallel `config::dashmap` variant; Qiskit's
-  `_accelerate` extension has no parallel propagation path. Runtime ratios are therefore
-  wall-clock ratios, not per-core ratios.
-- **The Julia benchmarks use the fastest documented containers.** These are `VectorPauliSum`
-  with `Performance.propagate!` (development branch 0.8.0 or later) and `VectorMajoranaSum` with
-  AcceleratedKernels. Their dictionary-backed alternatives are serial. The vector Pauli path does
-  not merge duplicate strings, so its reported term count is a storage count rather than the
-  number of distinct operator terms.
-- **The CPU and GPU measurements use different node types.** Each scaling curve is obtained on a
-  single node. The
-  `cuPauliProp` runtime comparison nevertheless includes both hardware and implementation effects.
+- **CPU parallelism differs**, so these are wall-clock ratios, not per-core ones. `QuEra ppvm` and
+  `Qiskit pauli-prop` propagate on one core (0.99 measured active cores); the `ppvm` bindings expose
+  the serial `indexmap` variant rather than the Rayon-parallel `config::dashmap`, and Qiskit's
+  `_accelerate` has no parallel propagation path.
+- **The Julia benchmarks use the fastest documented containers**: `VectorPauliSum` with
+  `Performance.propagate!` (development branch 0.8.0 or later) and `VectorMajoranaSum` with
+  AcceleratedKernels; the dictionary-backed alternatives are serial. The vector Pauli path does not
+  merge duplicate strings, so its term count is a storage count.
+- **CPU and GPU use different node types**, so the `cuPauliProp` comparison includes hardware as
+  well as implementation effects.
 
 ## Methods
 
-The benchmark drivers are maintained in
+Drivers:
 [`packages/bench-third-party`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party),
-a standalone `uv` project with its own lockfile. It is excluded from the repository workspace
-because it requires CUDA-specific wheels and a narrower Python version range than `monoprop`.
+a standalone `uv` project, outside the workspace because it needs CUDA-specific wheels and a
+narrower Python range.
 
 ### Hardware
 
-The measurements use exclusive nodes on
-[Leonardo (CINECA)](https://docs.hpc.cineca.it/hpc/leonardo.html). CPU and GPU measurements use
-different partitions because Leonardo's DCGP nodes do not contain GPUs.
+Different partitions for CPU and GPU, because Leonardo's DCGP nodes have no GPUs.
 
 | Partition | Hardware | Engines |
 | --- | --- | --- |
 | DCGP (CPU) | 2× Intel Xeon Platinum 8480+, 112 cores, ~480 GB RAM | `monoprop` `0.8.1.dev61+gcb9a033aa` (56 threads), `PauliPropagation.jl` `0.8.2` on Julia `1.12.6` (28 threads), `QuEra ppvm` `0.1.0`, `Qiskit pauli-prop` `0.2.0` |
 | Booster (GPU) | NVIDIA A100-SXM-64GB, 8 host cores | `cuPauliProp` via `cuquantum-python-cu12` `26.6.0` |
 
-The benchmarks use each engine's best known configuration. `monoprop` uses all 56 cores of one
-socket; `PauliPropagation.jl` uses 28 threads because higher thread counts reduce its throughput.
-
-Each result record includes `host`, `threads`, and `library_version`; the plotting scripts report
-these fields alongside derived metrics.
+Best known configuration each: `monoprop` on all 56 cores of one socket, `PauliPropagation.jl` on 28
+threads, more reducing its throughput. Every record carries `host`, `threads`, `library_version`.
 
 ### How memory is measured
 
-CPU memory denotes **peak resident set size (RSS)**, obtained from the Linux kernel's `VmHWM`
-counter. RSS is the physical memory resident for one process; pages shared with other processes
-are counted in full. For `cuPauliProp`, whose operator resides on the GPU, working memory
-instead denotes peak device allocation.
-
-- **The measurement is exact.** The kernel updates `VmHWM` whenever RSS
-  increases, including during native code that does not hold the Python GIL.
-- **The measurement interval is reset for each step.** Before resetting `VmHWM`, the harness runs
-  `gc.collect()` and `malloc_trim` for Python, or `GC.gc()` and `malloc_trim` for Julia. The
-  resulting value excludes peaks retained from earlier steps.
-- **All CPU implementations use the same measurement procedure** over the timed region.
-
-RSS includes the interpreter and loaded libraries. Comparisons of growth across steps therefore
-carry less fixed overhead than comparisons of absolute values.
-
-Implementation-specific estimates are also recorded as `native_memory`: `operator_memory_bytes()`
-for `monoprop`, `Base.summarysize` for `PauliPropagation.jl`, and device-pool usage for
-`cuPauliProp`. These estimates cover different allocations and are therefore suitable only for
-comparison within a single implementation.
+**Peak resident set size**, from the kernel's `VmHWM`, with shared pages counted in full; peak
+device allocation for `cuPauliProp` instead. Exact, and identical for every CPU implementation over
+the timed region, reset per step behind `gc.collect()` + `malloc_trim` (`GC.gc()` for Julia).
+`native_memory` additionally records each implementation's own estimate, comparable only within one
+implementation.
 
 ### Reproducing
-
-The Python implementations share one `uv` environment:
 
 ```bash
 cd packages/bench-third-party
 uv sync    # monoprop (editable), qiskit, ppvm, pauli-prop, cuquantum-python-cu12
-```
 
-Julia is required only for the Julia comparisons:
-
-```bash
+# Julia only for the Julia comparisons
 curl -fsSL https://install.julialang.org | sh          # juliaup + latest stable Julia
 julia -e 'using Pkg; Pkg.add(["JSON", "ProgressMeter"])'
 ```
-
-The benchmark and plotting commands are:
 
 ```bash
 # Pauli, fixed lattice; edit settings.json to change the model
@@ -234,28 +188,20 @@ monoprop_NUM_THREADS=24 JULIA_NUM_THREADS=24 bash run_benchmarks.sh
 cd .. && uv run python plot_headline.py
 ```
 
-CPU and GPU scaling results are stored separately and combined during plotting. If an
-implementation occurs in more than one input, the first input takes precedence; placing the CPU
-file first ensures that the `monoprop` curve contains only CPU-node measurements.
-`plot_scaling.py` warns when a curve contains multiple hosts and does not label an axis as host RSS
-unless all included records use that metric.
-
-All Pauli model parameters are defined in
-[`settings.json`](https://github.com/Algorithmiq/monoprop/blob/main/packages/bench-third-party/pauli_prop/settings.json)
-and are shared by all implementations. Output schemas, field definitions, and implementation-specific
-limitations are documented in
+Model parameters:
+[`settings.json`](https://github.com/Algorithmiq/monoprop/blob/main/packages/bench-third-party/pauli_prop/settings.json).
+Output schemas and per-implementation limitations:
 [`packages/bench-third-party/README.md`](https://github.com/Algorithmiq/monoprop/tree/main/packages/bench-third-party).
 
 ## Internal benchmarks
 
-The internal pytest benchmark suite measures the runtime and peak RSS of core `monoprop`
-operations. It is separate from the functional test suite and runs with `just bench`.
+A pytest suite measuring runtime and peak RSS of core operations, separate from the functional tests
+and run with `just bench`.
 
 ### Running
 
-Each run requires a `label`, which identifies its column in `results/REPORT.md`. This permits
-direct comparison of serial, threaded, and MPI configurations. Additional arguments are forwarded
-to pytest.
+Each run takes a `label`, naming its column in `results/REPORT.md`, so configurations sit side by
+side. Extra arguments go to pytest.
 
 ```bash
 uv sync --group bench                          # once
@@ -269,35 +215,28 @@ monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
 uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
 
-Both groups measure the same four operations -- `build_graph`, `propagate`, `energy` and
-`gradient` -- so a number means the same thing whichever problem produced it:
+Both groups measure the same four operations — `build_graph`, `propagate`, `energy`, `gradient`:
 
-- `bench_random.py` runs them on a random problem, in both the Heisenberg and the Schrödinger
-  picture. Configurable with `--gen-length` (4), `--obs-terms` (10000), `--num-generators`
-  (100), `--num-modes` (128), `--cutoff` (6), `--seed` (0) and `--bench-rounds` (1); defaults in
-  parentheses.
-- `bench_models.py` runs them on two fixed models marked `slow`, Heisenberg only: a 120-qubit
-  Fermi-Hubbard 29-step Trotter run (`[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers
-  (`[pauli]`). Override any config field with `--<model>-<field>`, e.g. `--pauli-num-layers 30`;
-  `just bench --help` lists them all.
+- `bench_random.py`: a random problem, both pictures. `--gen-length` (4), `--obs-terms` (10000),
+  `--num-generators` (100), `--num-modes` (128), `--cutoff` (6), `--seed` (0), `--bench-rounds` (1);
+  defaults in parentheses.
+- `bench_models.py`: two fixed models marked `slow`, Heisenberg only — a 120-qubit Fermi-Hubbard
+  29-step Trotter run (`[hubbard]`) and a 127-qubit kicked-Ising run over 20 layers (`[pauli]`).
+  Override any config field with `--<model>-<field>`, e.g. `--pauli-num-layers 30`; `just bench
+  --help` lists them.
 
-Run one group per process at scale: `build_graph`/`propagate` and `energy`/`gradient` each hold
-their own operator, and running all four together holds two per rank.
-
-Each run writes pytest-benchmark timings to `results/time-<label>.json` and the remaining metrics
-to `<label>.json`. `monoprop-bench-report` combines all labels in `results/REPORT.md`.
+One group per process at scale: `build_graph`/`propagate` and `energy`/`gradient` each hold their own
+operator, so all four together hold two per rank. Timings go to `results/time-<label>.json`, the rest
+to `<label>.json`.
 
 ### MPI
 
-For MPI benchmarks, barriers delimit each timed operation; runtime is therefore the **makespan**
-across ranks. Memory is the sum of the per-rank peak RSS values. This is an upper bound on the
-job-wide peak: shared pages are counted once per rank, and rank-local peaks are summed even when
-they occur at different times.
+Barriers delimit each timed operation, so runtime is the **makespan** across ranks. Memory is the sum
+of per-rank peak RSS: an upper bound, shared pages counted once per rank and rank-local peaks summed
+even when they never coexisted.
 
-Above one rank, `monoprop_PARTITIONS` is mandatory: the engine's own default is
-`ranks == 1 ? cores : 1`, so an unset knob would silently measure one partition per rank, and the
-benchmark session refuses to start without it. The shape it declares is recorded in each run's
-`meta` and shown in the report's configuration table.
+`monoprop_PARTITIONS` is mandatory above one rank — the engine's default is `ranks == 1 ? cores : 1`,
+which would silently measure one partition per rank — and the declared shape is recorded in `meta`.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
@@ -306,166 +245,128 @@ monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot
 
 ### Benchmarking ladder
 
-`benches/LADDER.md` holds the ladder used for large-scale MPI benchmarking during development: five
-groups of configurations, the flags and `-k` selector that produce each row, and the shapes to run
-them at. Each rung differs from the one below it in exactly one thing -- partitions (L1 to L2a),
-processes (L2a to L2b), the network (L2b to L3), then node count (L3 to L4) -- so a regression that
-appears at one rung and not the one below it names its own cause.
+`benches/LADDER.md` holds the development ladder: five groups of configurations, each row's flags
+and selector, and the shapes to run them at. Consecutive rungs differ in exactly one thing, so a
+regression at one and not the one below names its own cause.
 
 ### Continuous benchmarking
 
-The `bench_bare_metal.yml` workflow benchmarks every commit on `main` on a dedicated
-[RunsOn](https://runs-on.com/) EC2 node, one per run. [Bencher](https://bencher.dev/) records the
-time series and reports threshold violations. The ladder itself -- rung parsing, the pytest and
-`mpiexec` invocations, and the Bencher upload -- lives in `bench.yml`, because it is only
-meaningful in CI. Reproducing one rung locally is `just bench` (or `just bench-mpi`) with that
-rung's shape and flags:
+`bench_bare_metal.yml` benchmarks every commit on `main` on a dedicated
+[RunsOn](https://runs-on.com/) EC2 node; [Bencher](https://bencher.dev/) records the series and
+reports threshold violations. The ladder itself lives in `bench.yml`. To reproduce a rung locally,
+declare its shape and take its selector and flags from the tables below — the label is your own:
 
 ```bash
 export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1     # the shape, declared
-just bench ci-bare-metal-L1 --bench-rounds 3 -k "test_model_propagate and hubbard"
+just bench l1-hubbard --bench-rounds 3 -k "test_model_propagate and hubbard"
 
 export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # P sizes the pinning
-just bench-mpi ci-bare-metal-L2b 4 --map-by slot:PE=2 --bind-to core
-monoprop-bench-bmf benches/results ci-bare-metal-L2b    # results as Bencher Metric Format JSON
+just bench-mpi l2b 4 --map-by slot:PE=2 --bind-to core
+monoprop-bench-bmf benches/results l2b    # results as Bencher Metric Format JSON
 ```
 
-`monoprop-bench-bmf` combines both artifacts because each Bencher upload accepts one adapter. The
-standard `python_pytest` adapter includes timings but omits memory and operator metrics. Three
-measures are recorded:
+`monoprop-bench-bmf` merges both artifacts: each upload accepts one adapter, and the stock
+`python_pytest` one keeps only timings.
 
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
 | `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
-| `peak-memory` | bytes | per-operation peak RSS (`VmHWM`), summed over ranks | +10% |
+| `peak-memory` | bytes | the process's peak RSS (`VmHWM`) while the row ran, summed over ranks | +10% |
+| `operation-memory` | bytes | what the timed call added above its own floor, summed over ranks | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
-For a fixed seed and problem size, `terms` is deterministic; any change therefore indicates an
-algorithmic change. It is tracked for that reason alone: it is the only check that a timing win is
-not an accuracy change. Timing alerts are recorded but do not fail the build.
+The `~GiB` columns below are `peak-memory`. `terms` is deterministic for a fixed seed and size, so
+any change is an algorithmic one — the only check that a timing win is not an accuracy change.
+Timing alerts do not fail the build.
 
 #### The rungs
 
-Bencher keys history on `(branch, testbed, benchmark, measure)`, so a testbed denotes one machine
-*and* one shape and the name carries both: `<cpu>-<cores>c-<rung>`, where `<cpu>` is `brand_raw`
-slugified and `<cores>` the physical core count read off the machine. On the pinned `c7i.4xlarge` —
-16 vCPU / **8 physical cores**, 32 GiB nominal (~30 usable), no swap — that gives
-`intel-xeon-platinum-8488c-8c-L1` and `-L2a`, `-L2b`, `-L2c`, `-L2d`. Every rung runs on one node
-from one MPI-enabled build, so the edges between them move the shape and nothing else.
+Bencher keys history on `(branch, testbed, benchmark, measure)`, so a testbed is one machine *and*
+one shape. It is the rung name up to the first `.`: `<cpu>-<cores>c-<prefix>`, from a slugified
+`brand_raw` and the physical core count. On the pinned `c7i.4xlarge` — 16 vCPU / **8 physical
+cores**, 32 GiB nominal (~30 usable), no swap — three testbeds:
+`intel-xeon-platinum-8488c-8c-L1`, `-L2a` and `-L2b`.
 
-| rung | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
-|---|---|---|---:|---:|
-| L1 | 1 × 1 | `pytest benches` | 1 | 3 |
-| L2a | 1 × 8 | `pytest benches` | 8 | 1 |
-| L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
-| L2c | 1 × 8 | `pytest benches` | 8 | 1 |
-| L2d | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
+| rungs | testbed | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
+|---|---|---|---|---:|---:|
+| `L1.ops`, `L1.propagate` | L1 | 1 × 1 | `pytest benches` | 1 | 3 |
+| `L2a.ops`, `L2a.propagate` | L2a | 1 × 8 | `pytest benches` | 8 | 1 |
+| `L2b.ops`, `L2b.propagate` | L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
 
-`R × P` = 8 at L2a and L2b. L2b is 4 × 2 because the per-rank cost is paid `R` times on one node,
-which makes it the memory-worst rung and so the one the size ceiling is set against; `P` = 2 keeps
-more than one partition inside each rank, which 8 × 1 would not.
+- One node, one MPI-enabled build, so an edge moves the shape and nothing else.
+- `R × P` = 8 at both L2 shapes. 4 × 2 pays the per-rank cost four times on one node, so it is the
+  memory-worst shape and the one the size ceiling is set against; `P` = 2 keeps more than one
+  partition inside a rank, which 8 × 1 would not.
+- Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before releasing *k*'s — a
+  memory setting, not a statistics one.
 
-Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before releasing round
-*k*'s, so a second round holds two — a memory setting here, not a statistics setting.
+#### The rows
 
-#### L1 — every row, one thread
+Two processes per shape, reporting to its one testbed, so all six rows share a plot. `build_graph`
+publishes the graph `energy` and `gradient` evaluate, so those three share an operator and the
+process peak is the max over them. `propagate` builds its own, and a fourth row holding its own would
+make that peak a *sum* — at L2 the random row alone is 15.02 GiB on top of `L2a.ops`'s 18.35 GiB
+against ~30 usable. The three `propagate` models do share a process, each releasing its operator when
+its row ends.
 
-The six rows the L2 rungs measure, at sizes one thread can carry, so each of them has a baseline
-one rung down.
+Selectors: `.ops` is `-k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg"`,
+`.propagate` is `-k "test_model_propagate or (test_random_propagate and heisenberg)"`. Both take
+`--num-generators=1000 --num-modes=142 --cutoff=6`, plus:
 
-`-k "test_model_propagate or ((test_random_build_graph or test_random_energy or test_random_gradient or test_random_propagate) and heisenberg)"`
-`--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 --pauli-cutoff=12 --pauli-lower-atol=1.22e-04`
-`--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000`
+| | `--obs-terms` | model cutoffs |
+|---|---|---|
+| L1 | 295000 | `--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 --pauli-cutoff=12 --pauli-lower-atol=1.22e-04` |
+| L2 | 2500000 | `--hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05` |
 
-| row | terms | ~s | ~GiB |
-|---|---:|---:|---:|
-| hubbard `propagate` | 9,953,109 | 23 | 0.72 |
-| pauli `propagate` | 10,069,308 | 21 | 0.90 |
-| random `build_graph` | 19,902,244 | 47 | 2.53 |
-| random `energy` | 19,902,244 | 3.1 | 2.32 |
-| random `gradient` | 19,902,244 | 8.6 | 2.46 |
-| random `propagate` | 19,902,244 | 49 | 3.91 |
+L1, at sizes one thread carries, so every L2 row has a baseline below it:
 
-One process, one selector: the three flag sets use disjoint options, so they union. Whole-rung peak
-3.91 GiB in 7:41 at three rounds. That row is the only one above the operator it measures: the
-graph `build_graph` published is still resident while `propagate` builds its own, which at L1 sizes
-is 1.4 GiB the rung can afford and at L2 sizes is why `propagate` runs at rungs of its own.
+| row | process | terms | ~s | ~GiB |
+|---|---|---:|---:|---:|
+| random `build_graph` | `.ops` | 19,902,244 | 54 | 2.56 |
+| random `energy` | `.ops` | 19,902,244 | 5.0 | 2.33 |
+| random `gradient` | `.ops` | 19,902,244 | 13 | 2.48 |
+| hubbard `propagate` | `.propagate` | 9,953,109 | 33 | 0.72 |
+| pauli `propagate` | `.propagate` | 10,069,308 | 25 | 0.92 |
+| random `propagate` | `.propagate` | 19,902,244 | 56 | 2.10 |
 
-LADDER.md's pared L1 row — the same gradient at `--pare-threshold=1e-10` — is not here, because
-that option is session-wide and cannot share a process with the unpared row.
+Before L1 was split that last row read 3.91 GiB, measured while `build_graph`'s graph was still
+resident; on a floor of its own it is 2.10, so `peak-memory` now means at L1 what it means at L2.
 
-#### L2a and L2b — one operator, three operations, ~25 GiB
+`L2a.ops` and `L2b.ops`, ~25 GiB:
 
-`build_graph` publishes the graph `energy` and `gradient` evaluate, so the three share one operator
-and the peak is the max over them. `propagate` is excluded: it holds its own. Both rungs take the
-same flags, so the term counts must match — that is the geometry-independence check, and the
-`terms` measure holds it to 0%.
-
-`-k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg"`
-`--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000`
-
-| row | terms | ~s | ~GiB L2a | ~s | ~GiB/node L2b | ~GiB worst rank |
+| row | terms | ~s 1 × 8 | ~GiB 1 × 8 | ~s 4 × 2 | ~GiB/node 4 × 2 | ~GiB worst rank |
 |---|---:|---:|---:|---:|---:|---:|
 | random `build_graph` | 167,515,463 | 83 | 19.11 | 68 | 23.71 | 6.14 |
 | random `energy` | 167,515,463 | 13 | 17.54 | 6 | 20.36 | 5.17 |
 | random `gradient` | 167,515,463 | 39 | 18.85 | 16 | 21.68 | 5.50 |
 
-Peak 19.11 GiB at L2a and 23.71 GiB/node at L2b, in 135 s and 90 s. `~GiB/node` is the sum over
-the node's ranks — it errs high, because a page shared between ranks is charged to each, so it is
-the number to provision against and the wrong number to divide.
+`L2a.propagate` and `L2b.propagate`:
 
-`--obs-terms=2500000` is **the largest measured point that fits**.
-
-The term count is identical at both shapes, which is the geometry-independence check. L2b's node
-sum is 1.24x L2a's peak at this size — the per-rank cost paid four times on one node — against
-1.29x at 1.5M, so the multiplier falls as the operator grows.
-
-#### L2c and L2d — `propagate`, three models, at the same two shapes
-
-`propagate` builds an operator of its own instead of reading the graph `build_graph` publishes, so
-it cannot share L2a and L2b's process: there the rung's peak is the *max* over three operations on
-one operator, and adding a fourth that holds its own would make it a *sum*. At this size that sum
-does not fit: the random row alone is 15.02 GiB on top of L2a's 18.35 GiB, against ~30 usable.
-
-So it takes the same two shapes in processes of its own, which is also what keeps L2a and L2b's
-`terms` equality meaningful: three operations, one operator, one count.
-
-All three models run here, in one process. Each `propagate` row releases its operator when its
-test ends, so the rung's peak is the max down the column, not the sum — the same reason L2a's
-three operations fit and a fourth would not.
-
-`-k "test_model_propagate or (test_random_propagate and heisenberg)"`
-`--hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05`
-`--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000`
-
-The random row keeps L2a and L2b's flags, so only the operation differs from those rungs.
-
-| row | terms | ~s | ~GiB L2c | ~s | ~GiB/node L2d | ~GiB worst rank |
+| row | terms | ~s 1 × 8 | ~GiB 1 × 8 | ~s 4 × 2 | ~GiB/node 4 × 2 | ~GiB worst rank |
 |---|---:|---:|---:|---:|---:|---:|
 | hubbard `propagate` | 345,519,120 | 217 | 17.95 | 217 | 18.72 | 4.68 |
 | pauli `propagate` | 253,933,183 | 119 | 21.11 | 120 | 22.15 | 5.67 |
 | random `propagate` | 167,515,463 | 58 | 15.02 | 58 | 17.29 | 4.33 |
 
-Peak 21.11 GiB at L2c and 22.15 GiB/node at L2d, in 6:57 and 6:59.
-
-The two atols are the largest measured points that fit, swept at the 4 × 2 shape one point per
-process: hubbard 8.8e-06, 7.0e-06 and 6.2e-06 are 9.96, 16.19 and 18.72 GiB/node, and pauli
-2.5e-05 is 22.15 against 27.62 at 2.0e-05. Below that, `--pauli-lower-atol=1.6e-05` OOM-killed the
-instance rather than the process, which loses the artifact upload as well — hence the `cat` of each
-`bmf-<rung>.json` in `bench.yml`, so a sweep's numbers survive in the log.
-
-`LADDER.md`'s fixed-model rows are sized for a 128-core node — 60 GiB (hubbard) and 80 GiB (pauli)
-— so these cutoffs are this node's, not those.
+- Process peaks: 19.11 and 21.11 GiB at 1 × 8, in 135 s and 6:57; 23.71 and 22.15 GiB/node at
+  4 × 2, in 90 s and 6:59. A testbed's two processes never sum.
+- `~GiB/node` sums the node's ranks and errs high, a page shared between ranks being charged to
+  each: the number to provision against, the wrong one to divide.
+- Same flags at both L2 shapes, so their term counts must match — the geometry-independence check,
+  held to 0% by `terms`.
+- The sizes are the largest measured points that fit, swept at 4 × 2. A size past that OOM-kills the
+  instance rather than the process, taking the artifact upload with it — hence the `cat` of each
+  `bmf-<rung>.json` in `bench.yml`. `LADDER.md`'s own fixed-model rows are sized for a 128-core
+  node, not this one, and its pared L1 row is absent because `--pare-threshold` is session-wide.
 
 #### Inputs
 
-`rungs` is one rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`, where
-`partitions` is an integer or `per-rank` for one per physical core of the rank's share. A shape
-that does not fit is refused rather than oversubscribed, and every rung reads its `ranks`,
-`partitions_env` and thread placement back out of its result JSON before the next one starts. Once
-a testbed has history these values should stay fixed: a new shape is a new rung, so a new testbed.
+`rungs` is one rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`: `partitions` an
+integer or `per-rank` for one per physical core of the rank's share, and a `.suffix` picking the
+process within a shape. A shape that does not fit is refused rather than oversubscribed, and every
+rung reads its `ranks`, `partitions_env` and thread placement back out of its result JSON. Once a
+testbed has history these should stay fixed — a new shape is a new prefix, so a new testbed.
 
-**No benchmark workflow gates a pull request.** It tracks `main`, and a threshold is a report, not
-a verdict — measuring a change is the author's job, per "Benchmarking ladder" above. Every run
-uploads each rung's `bmf-<rung>.json` and raw result JSON as an artifact, so a failed Bencher
-upload does not take the measurement with it.
+**No benchmark workflow gates a pull request.** It tracks `main`, and a threshold is a report, not a
+verdict. Each rung's `bmf-<rung>.json` and raw result JSON upload as an artifact, so a failed upload
+does not take the measurement with it.
