@@ -173,6 +173,11 @@ def build_pauli(
     See :func:`build_majorana` for the ``comm`` semantics -- in particular that
     ``None`` means ``MPI_COMM_WORLD`` in an MPI build.
     """
+    # Angle convention, stated once because the two engines differ and getting it wrong is
+    # silent: PauliPropagation.jl's PauliRotation(P) at angle t is exp(-i t/2 P), while
+    # monoprop's ExpGate(P) with parameter a is exp(+i a P). Matching Julia therefore means
+    # a = -t/2 in BOTH layers. (The Rzz layer used to pass -coupling, i.e. twice Julia's
+    # angle, so the two engines propagated different circuits.)
     theta = math.pi / 4
     coupling = math.pi / 4
     edges = [(i, i + 1) for i in range(num_qubits - 1)]
@@ -187,7 +192,7 @@ def build_pauli(
     gate_angles += [
         (
             ExpGate(PauliOperator({Pauli("ZZ", (i, j)): 1.0}, num_qubits=num_qubits)),
-            -coupling,
+            -coupling / 2,
         )
         for i, j in edges
     ]

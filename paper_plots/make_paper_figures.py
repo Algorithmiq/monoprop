@@ -119,7 +119,7 @@ INK = "#222222"
 
 
 # --------------------------------------------------------------------------- #
-# Data + fits (logic shared with plot_scaling_clear.py)
+# Data + fits
 # --------------------------------------------------------------------------- #
 def load(paths: list[Path]) -> list[dict]:
     records: list[dict] = []
@@ -142,6 +142,25 @@ def _series(records, fam, cutoff, metric):
         if r["engine_family"] == fam and r["cutoff"] == cutoff
     )
     return [x for x, _ in pts], [y for _, y in pts]
+
+
+def _grid(records):
+    """Every size the sweep was meant to cover, so a hole in one curve is visible."""
+    return sorted({r["num_qubits"] for r in records})
+
+
+def _draw(ax, xs, ys, grid, style):
+    """Plot a curve with a break wherever the sweep grid has a hole.
+
+    A missing size drawn as a straight segment between its neighbours reads as a measured
+    trend. The Julia cutoff-6 arm is missing N=832..992 -- right where its packed key
+    outgrows the fast BitInteger width -- so joining across it would draw a smooth line
+    through the exact region the divergence claim is about. NaN breaks the line and draws
+    no marker, leaving the hole legible.
+    """
+    have = dict(zip(xs, ys, strict=True))
+    inner = [g for g in grid if xs[0] <= g <= xs[-1]]
+    ax.plot(inner, [have.get(g, float("nan")) for g in inner], **style)
 
 
 def _fit_exponent(xs, ys, nmin=FIT_NMIN, nmax=FIT_NMAX):
@@ -257,13 +276,14 @@ def _two_part_legend(
 def _plot_curves(ax, records, cutoffs, metric):
     """Plot both engines × all cutoffs for a metric; return fitted exponents."""
     fits = {}
+    grid = _grid(records)
     for cutoff in cutoffs:
         color = CUTOFF_COLORS.get(cutoff, "#666666")
         for fam in ("monoprop", "julia"):
             xs, ys = _series(records, fam, cutoff, metric)
             if not xs:
                 continue
-            ax.plot(xs, ys, **_curve_style(fam, color))
+            _draw(ax, xs, ys, grid, _curve_style(fam, color))
             p = _fit_exponent(xs, ys)
             if p is not None:
                 fits[(cutoff, fam)] = p
@@ -293,7 +313,7 @@ def _plot_ratio(ax, records, cutoffs, metric):
         ys = [jul[x] / mono[x] for x in xs if mono[x]]
         if not xs:
             continue
-        ax.plot(xs, ys, **_curve_style("julia", color))
+        _draw(ax, xs, ys, _grid(records), _curve_style("julia", color))
     ax.axhline(1.0, color="#555555", lw=1.4, zorder=2)
     ax.annotate(
         "monoprop $=1\\times$",
@@ -427,7 +447,7 @@ def fig3_per_term_memory(records, outdir):
             xs, ys = _series(records, fam, cutoff, "bytes_per_term")
             if not xs:
                 continue
-            ax.plot(xs, ys, **_curve_style(fam, color))
+            _draw(ax, xs, ys, _grid(records), _curve_style(fam, color))
     ax.set_xscale("log", base=2)
     ax.set_xlim(xlo, xhi)
     ax.set_xlabel("number of qubits  $N$")

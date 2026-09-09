@@ -1,8 +1,7 @@
 # Paper figures — single-layer Pauli propagation: monoprop vs PauliPropagation.jl
 
 Publication-ready, self-contained figure package for the single-layer scaling
-comparison of monoprop's `PauliPropagator` (branch `perf/align-with-paper`) against
-the reference Julia library
+comparison of monoprop's `PauliPropagator` against the reference Julia library
 [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) v0.7.3.
 
 ## Result
@@ -39,18 +38,44 @@ support, shows neither the growth nor the cliff.
 
 ### Coverage
 
-Both engines cover all cutoffs to N=1024. The far end is expensive on the Julia side
-because of the cliff — the N=1024 c6 point alone took ~2.7 h of isolated-node time
-(≈9 770 s) versus ~4 s for monoprop — so those points were run as dedicated jobs.
+monoprop covers all three cutoffs at all 32 sizes (96 points). PauliPropagation.jl
+covers cutoffs 2 and 4 in full, but **cutoff 6 is missing N=832…992** (90 points):
+the far end is expensive on the Julia side because of the cliff — the N=1024 c6 point
+alone took ~2.7 h of isolated-node time (≈9 770 s) versus ~4 s for monoprop — so those
+points were run as dedicated jobs and five of them were never filled in. The gap sits
+*inside* the key-width region the headline claim is about, so the figures draw a
+**break** there rather than a segment joining N=800 to N=1024; the c6 Julia point at
+N=1024 stands alone. Filling it needs Leonardo, not a workstation.
+
 Timings were taken on **exclusive** Leonardo DCGP nodes (`--exclusive --mem=0`);
 shared nodes were found to be overloaded and corrupt timing.
+
+### Provenance limits of the shipped data
+
+Two things the shipped `data/*.jsonl` cannot tell you, both worth knowing before
+citing a number from them:
+
+- **No provenance fields.** The records carry no host, no monoprop version and no
+  Julia library version, so they cannot be audited the way `node_scaling/` gates every
+  rep on the built `_core.so` md5. The hardware claims above come from this README, not
+  from the data. Any *new* sweep should record them.
+- **The `expectation` column of `monoprop_pauli.jsonl` predates a fix and does not
+  match Julia's.** The monoprop driver passed twice Julia's angle on the Rzz layer (see
+  the angle-convention comment in `scripts/monoprop_single_layer.py`), so the two
+  engines evolved different circuits. With `lower_atol = 0` the retained term set is
+  fixed by the gate *supports*, not the angles, which is why the term counts still
+  agree exactly at every point and why the time, memory and bytes/term comparisons are
+  unaffected — but do not cite the shipped monoprop `expectation` values, and do not
+  cite agreement between the two `expectation` columns as validation of anything. The
+  driver is now correct: re-measured at N=32/64 and cutoff 2/4 the two engines agree to
+  12 decimal places.
 
 ## Figures
 
 All figures: colour = weight cutoff (Okabe–Ito, colourblind-safe, fixed order),
 line style = engine (monoprop = solid line / filled marker, PauliPropagation.jl =
-dashed line / open marker). Vector `.pdf` (for the paper) + `.png` twin (preview) in
-`figures/`.
+dashed line / open marker). Vector `.pdf` (for the paper) + a 150-dpi `.png` twin
+(preview only) in `figures/`. Both rebuild byte-identically from the shipped data.
 
 **`fig1_absolute_scaling`** — Absolute time (left) and total operator memory (right)
 vs N, log–log. Faint grey guides show slopes `N¹/N²/N³` for reference. The monoprop
@@ -115,25 +140,29 @@ python make_paper_figures.py data/monoprop_pauli.jsonl data/julia_pauli.jsonl \
 Regenerate the raw data (`scripts/` holds copies of the canonical study drivers):
 
 ```bash
-source ~/scripts/monoprop_leonardo_env.sh          # Spack GCC 15 toolchain
-export monoprop_NUM_THREADS=1 JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-JULIA=~/opt/julia/julia-1.10.11/bin/julia          # project pins PauliPropagation@0.7.3
+# Point these at your own toolchain. On Leonardo, PYTHON is a venv holding an
+# arch-native monoprop built on a compute node and JULIA is a 1.10.11 install; the
+# Manifest pins PauliPropagation@0.7.3.
+PYTHON=${PYTHON:-python}
+JULIA=${JULIA:-julia}
 
-# monoprop must be built with monoprop_MAX_NUM_MODES >= 1024 for the N=1024 end
-# (arch-native on a compute node for timing). See the workspace CLAUDE.md.
+export monoprop_NUM_THREADS=1 JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+
+# monoprop must be built with monoprop_MAX_NUM_MODES >= 1024 for the N=1024 end; that
+# is now the default (see the repository CMakeLists.txt), with no headroom above it.
 for C in 2 4 6; do for N in $(seq 32 32 1024); do
-  <monoprop-venv>/bin/python scripts/monoprop_single_layer.py --basis pauli \
-    --num-qubits $N --cutoff $C --layers 5 --lower-atol 0 --rounds 1 \
+  "$PYTHON" scripts/monoprop_single_layer.py --basis pauli \
+    --num-qubits "$N" --cutoff "$C" --layers 5 --lower-atol 0 --rounds 1 \
     --out data/monoprop_pauli.jsonl
-  $JULIA --project=scripts scripts/julia_pauli_single_layer.jl \
-    --num-qubits $N --cutoff $C --layers 5 --lower-atol 0 --rounds 1 \
+  "$JULIA" --project=scripts scripts/julia_pauli_single_layer.jl \
+    --num-qubits "$N" --cutoff "$C" --layers 5 --lower-atol 0 --rounds 1 \
     --out data/julia_pauli.jsonl
 done; done
 ```
 
-On Leonardo the sweep is run as parallel single-threaded, arch-native, **exclusive**
-compute-node jobs (see `~/scripts/sl_*.sbatch.sh`); memory/terms are contention-immune,
-only timing needs an isolated node.
+Terms and memory are contention-immune; only timing needs an isolated node. On
+Leonardo the sweep is run as parallel single-threaded, arch-native, **exclusive**
+compute-node jobs.
 
 ## Caveats
 
@@ -148,6 +177,7 @@ only timing needs an isolated node.
 
 ```
 make_paper_figures.py     publication figure script (PDF + PNG)
+ruff.toml                 lint scope for this package (extends the repository config)
 data/*.jsonl              merged, validated benchmark data (N=32..1024)
 scripts/                  reproduction drivers (copies of the canonical study files)
   monoprop_single_layer.py, julia_pauli_single_layer.jl, Project.toml, Manifest.toml
