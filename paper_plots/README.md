@@ -152,13 +152,20 @@ and no engine can be accused of winning by keeping fewer terms.
 ### Result
 
 Fitted log-log exponent of **time per term** against N, over N = 32…1024 at `M=32`, one
-thread, `busy_cores` measured at 0.99–1.01 on every row:
+thread, three timed rounds per point, minimum kept:
 
 | cutoff | K | monoprop | QuEra ppvm | PauliPropagation.jl |
 |---|---|---|---|---|
-| 2 | 188 | `N^+0.14` (1.4× over a 32× rise in N) | `N^+0.19` (2.2×) | `N^+1.77` (120×) |
-| 4 | 10 122 | `N^+0.24` (2.2×) | `N^+0.42` (5.5×) | `N^+1.54` (68×) |
-| 6 | 119 280 | `N^+0.15` (1.8×) | `N^+0.55` (8.8×) | `N^+1.48` (58×) |
+| 2 | 188 | `N^+0.17` (1.7× over a 32× rise in N) | `N^+0.21` (2.3×) | `N^+1.78` (123×) |
+| 4 | 10 122 | `N^+0.24` (2.2×) | `N^+0.41` (5.1×) | `N^+1.54` (74×) |
+| 6 | 119 280 | `N^+0.17` (1.6×) | `N^+0.57` (8.3×) | `N^+1.48` (61×) |
+
+The single-thread claim rests on different evidence per engine, and the figure script prints
+which: monoprop and ppvm are driven from Python and record `cpu_seconds`, so theirs is a
+measured CPU-to-wall ratio that never exceeds one core busy. The Julia driver records the
+thread count instead — Base exposes no per-interval process CPU clock accurate enough to
+form the ratio (`clock()` deltas on this host report 1.3–4.1 cores busy for a provably
+serial loop at `Threads.nthreads() == 1`), and Julia's parallelism is explicit and opt-in.
 
 monoprop's per-term cost is essentially flat in N: a term is an entropy-packed position list
 whose width comes from the cutoff rather than from N, and the commute/anticommute decision

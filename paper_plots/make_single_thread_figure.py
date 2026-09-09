@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import textwrap
 from pathlib import Path
 
 # Importing this applies the shared rcParams and the Agg backend, and hands over the one
@@ -152,30 +153,50 @@ BUSY_MIN_SECONDS = 0.01
 
 
 def report_threads(records, label):
-    """A single-thread figure has to show it was one thread, not assert it.
+    """Report the evidence that one thread ran -- which is not the same evidence for all.
 
-    The number that carries the claim is the *maximum* busy_cores: at or below 1, no row
-    used a second core. The minimum is only informative on runs long enough to time --
-    process_time() has too coarse a tick to say anything about a sub-millisecond run.
+    monoprop and ppvm are driven from Python and record cpu_seconds, so the claim rests on
+    a measured cpu/wall ratio; the number that carries it is the *maximum* busy_cores,
+    since at or below 1 no row used a second core. The ratio is only informative on runs
+    long enough to time, so short rows are excluded from the range.
+
+    The Julia driver records the thread count and not a ratio. Base exposes no reliable
+    per-interval process CPU clock -- `clock()` deltas on the measured host come back
+    between 1.3 and 4.1 cores busy for a provably serial loop at Threads.nthreads()==1, so
+    a ratio from it would be noise dressed as evidence. Julia's parallelism is explicit and
+    opt-in and PauliPropagation.jl's propagate has no threaded path under these settings,
+    so the recorded thread count is the evidence there. Say which is which rather than
+    implying one measurement covers all three.
     """
-    busy = [r["busy_cores"] for r in records if r.get("busy_cores")]
-    timed = [
-        r["busy_cores"]
-        for r in records
-        if r.get("busy_cores") and r["seconds"] >= BUSY_MIN_SECONDS
-    ]
-    if busy:
-        head = f"  {label}: busy_cores max {max(busy):.2f} over {len(busy)} rows"
-        if timed:
-            print(
-                f"{head}; {min(timed):.2f}..{max(timed):.2f} over the {len(timed)} rows "
-                f"longer than {BUSY_MIN_SECONDS * 1e3:.0f} ms"
+    by_engine = {}
+    for r in records:
+        by_engine.setdefault(r["engine_family"], []).append(r)
+    for fam in ENGINE_ORDER:
+        rows = by_engine.get(fam)
+        if not rows:
+            continue
+        busy = [r["busy_cores"] for r in rows if r.get("busy_cores")]
+        if busy:
+            timed = [
+                r["busy_cores"]
+                for r in rows
+                if r.get("busy_cores") and r["seconds"] >= BUSY_MIN_SECONDS
+            ]
+            head = f"busy_cores max {max(busy):.2f} over {len(rows)} rows"
+            detail = (
+                f", {min(timed):.2f}..{max(timed):.2f} over the {len(timed)} longer than "
+                f"{BUSY_MIN_SECONDS * 1e3:.0f} ms"
+                if timed
+                else " (all too short to time CPU reliably)"
             )
+            evidence = head + detail
         else:
-            print(f"{head} (all too short to time CPU reliably)")
-    hosts = sorted({r.get("host", "?") for r in records})
-    versions = sorted({str(r.get("library_version", "?")) for r in records})
-    print(f"  {label}: hosts {hosts}, library versions {versions}")
+            threads = sorted({str(r.get("num_threads", "?")) for r in rows})
+            evidence = f"no cpu clock; num_threads={threads} over {len(rows)} rows"
+        hosts = sorted({r.get("host", "?") for r in rows})
+        versions = sorted({str(r.get("library_version", "?")) for r in rows})
+        print(f"  {label}/{ENGINE_LABEL[fam]}: {evidence}")
+        print(f"    host {hosts}, version {versions}")
 
 
 def _guides(ax, xs, exponents, anchor_y=None, anchor_frac=0.35):
@@ -328,6 +349,44 @@ def _growth(records, fam):
     return best
 
 
+def _reflow(text, width=88):
+    """Rewrap the caption body so the .txt does not inherit the source's line breaks.
+
+    Heading lines and their `===`/`---` rules pass through untouched; the prose between
+    them is filled to `width`, blank-line-separated block by block.
+    """
+    lines = text.split("\n")
+    out, para = [], []
+
+    def flush():
+        if para:
+            out.append(textwrap.fill(" ".join(para), width, break_on_hyphens=False))
+            para.clear()
+
+    for i, line in enumerate(lines):
+        rule = bool(line) and set(line) <= {"=", "-"}
+        next_rule = (
+            i + 1 < len(lines) and lines[i + 1] and set(lines[i + 1]) <= {"=", "-"}
+        )
+        if rule or next_rule:
+            flush()
+            out.append(line)
+        elif not line.strip():
+            flush()
+            out.append("")
+        else:
+            para.append(line.strip())
+    flush()
+
+    # Collapse the runs of blank lines the pass above can leave behind.
+    collapsed = []
+    for line in out:
+        if line == "" and collapsed and collapsed[-1] == "":
+            continue
+        collapsed.append(line)
+    return "\n".join(collapsed).strip("\n") + "\n"
+
+
 def write_caption(spectator, lattice, outdir: Path, active_window, fits_a, fits_b):
     """Write the LaTeX caption with every number computed from the plotted rows.
 
@@ -344,8 +403,21 @@ def write_caption(spectator, lattice, outdir: Path, active_window, fits_a, fits_
     engines = [
         f for f in ENGINE_ORDER if any(r["engine_family"] == f for r in spectator)
     ]
-    hosts = sorted({r.get("host", "?") for r in spectator + lattice})
     max_busy = max(r["busy_cores"] for r in spectator + lattice if r.get("busy_cores"))
+    ratio_engines = sorted(
+        {
+            ENGINE_LABEL[r["engine_family"]]
+            for r in spectator + lattice
+            if r.get("busy_cores")
+        }
+    )
+    count_engines = sorted(
+        {
+            ENGINE_LABEL[r["engine_family"]]
+            for r in spectator + lattice
+            if not r.get("busy_cores")
+        }
+    )
     k_list = ", ".join(f"{ks[c]:,}".replace(",", "\\,") for c in cutoffs)
     jl_growth = _growth(spectator, "julia")
 
@@ -358,8 +430,11 @@ number here is computed, never typed; edit write_caption() in that script, not t
 
 Fig. 5  (fig5_single_thread_per_term)
 -------------------------------------
-Where the cost of a Pauli term goes as the mode space widens, on **one thread**
-(measured, not assumed: `busy_cores` peaks at {max_busy:.2f} over every row).
+Where the cost of a Pauli term goes as the mode space widens, on **one thread**. The
+evidence for that differs by engine and is recorded per row: for {" and ".join(ratio_engines)}
+it is a measured CPU-to-wall ratio, which peaks at {max_busy:.2f} cores busy over every
+row; for {" and ".join(count_engines)} it is the thread count, since Julia exposes no
+per-interval process CPU clock accurate enough to form the ratio.
 **(a)** The operator is held fixed and the register is widened. The kicked-Ising model is
 confined to an active window of $M={active_window}$ qubits and the register padded to $N$
 with qubits no gate and no observable term touches, so the term count, the gate count, the
@@ -368,9 +443,10 @@ all {len(engines)} engines ({k_list} terms at cutoff
 {", ".join(str(c) for c in cutoffs)}). The only variable left is the width of the mode
 space, so each curve is per-term cost in $N$ and nothing else; each is divided by its own
 value at $N={ns[0]}$, which removes the per-cutoff offset and makes the $N^0$ and $N^1$
-guides exact. monoprop is flat to {_span(fits_a, "monoprop")}: a term is a position list
-whose width comes from the cutoff, and one word operation settles the
-commute/anticommute question for 64 terms against a transposed index.
+guides exact. monoprop stays essentially flat, at {_span(fits_a, "monoprop")}: a term is a
+position list
+whose width comes from the cutoff, and one word operation settles the commute/anticommute
+question for 64 terms against a transposed index.
 PauliPropagation.jl climbs {_span(fits_a, "julia")} (up to
 {jl_growth:.0f}$\\times$ across the sweep, with the step where its packed key outgrows
 its fast BitInteger width) and ppvm {_span(fits_a, "ppvm")}; both carry a
@@ -387,11 +463,13 @@ this panel: it retains only {ks[cutoffs[0]]:,} terms at $N={nl[0]}$, few enough 
 per-layer cost is a visible share of a millisecond-scale measurement. Colour encodes the
 weight cutoff; the line style and marker encode the engine, as in Figs. 1--4.
 
-Measured on {", ".join(hosts)}, not on the Leonardo nodes Figs. 1--4 use: this is a shape
-measurement (an exponent in $N$), and the two datasets are never drawn in one panel.
+Measured on a single workstation core, not on the Leonardo nodes Figs. 1--4 use: this is a
+shape measurement (an exponent in $N$), which is what makes that acceptable here where it
+would not be for an absolute time. The two datasets live in separate files and are never
+drawn in one panel. Each row records its host, library version and thread evidence.
 """
     out = outdir / "fig5_caption.txt"
-    out.write_text(text)
+    out.write_text(_reflow(text))
     return out
 
 
