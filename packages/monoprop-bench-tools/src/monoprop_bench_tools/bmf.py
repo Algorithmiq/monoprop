@@ -24,13 +24,21 @@ Bencher accepts one adapter per report, so timings and memory are merged here an
 uploaded together under ``--adapter json``; the stock ``python_pytest`` adapter
 would keep the timings and drop everything else.
 
-Three measures are emitted:
+Four measures are emitted:
 
 ``latency`` (nanoseconds)
     Per-operation mean, with the interval one standard deviation either side.
 ``peak-memory`` (bytes)
-    Per-operation peak resident footprint, summed across ranks under MPI. The
-    sum bounds the job; ``memhwm_max`` bounds a node. The two coincide for single-rank jobs.
+    The process's peak resident footprint while one operation ran, summed across ranks
+    under MPI. It spans ``setup`` and starts from whatever an earlier row left resident,
+    so it predicts an OOM kill and is the wrong number for comparing operations --
+    ``operation-memory`` is that one. The sum bounds the job; ``memhwm_max`` bounds a
+    node. The two coincide for single-rank jobs.
+``operation-memory`` (bytes)
+    What the timed call added above its own floor, summed across ranks under MPI. Its
+    window opens inside ``setup``, after construction, so it excludes both the build
+    transient and anything a previous row left resident -- the figure to compare across
+    the rows of one plot.
 ``terms`` (count)
     Terms in the evolved operator. Deterministic for a fixed seed and problem
     size, so it is held to an exact match: it is the only check that a timing
@@ -151,6 +159,12 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
     # ``memhwm`` is the kernel's exact peak RSS per operation, summed over ranks under MPI.
     for benchmark, peak in results.get("memhwm", {}).items():
         measure(benchmark_name(benchmark), "peak-memory", peak)
+
+    # ``opmemdelta`` is spread over the ranks rather than reduced to one number: ``sum``
+    # matches what ``peak-memory`` uploads, and ``max`` is the per-node bound that
+    # ``memhwm_max`` is for the footprint. Only rows that ran a timed call have one.
+    for benchmark, delta in results.get("opmemdelta", {}).items():
+        measure(benchmark_name(benchmark), "operation-memory", delta["sum"])
 
     # A node-id key names the benchmark that built the operator, so its count belongs on
     # that benchmark, beside the latency and peak memory of the same call. Where a shared
