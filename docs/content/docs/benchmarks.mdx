@@ -368,18 +368,31 @@ more than one partition inside each rank, which 8 × 1 would not.
 Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before releasing round
 *k*'s, so a second round holds two — a memory setting here, not a statistics setting.
 
-#### L1 — LADDER.md's own rows, one thread
+#### L1 — every row, one thread
 
-| row | flags | `-k` | terms | ~s | ~GiB |
-|---|---|---|---:|---:|---:|
-| hubbard `propagate` | `--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05` | `test_model_propagate and hubbard` | 9,953,109 | 25 | 0.87 |
-| pauli `propagate` | `--pauli-cutoff=12 --pauli-lower-atol=1.22e-04` | `test_model_propagate and pauli` | 10,069,308 | 21 | 1.06 |
-| random `gradient` | `--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000` | `test_random_gradient and heisenberg` | 19,902,244 | 11 | 2.60 |
+The six rows the L2 rungs measure, at sizes one thread can carry, so each of them has a baseline
+one rung down.
+
+`-k "test_model_propagate or ((test_random_build_graph or test_random_energy or test_random_gradient or test_random_propagate) and heisenberg)"`
+`--hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 --pauli-cutoff=12 --pauli-lower-atol=1.22e-04`
+`--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000`
+
+| row | terms | ~s | ~GiB |
+|---|---:|---:|---:|
+| hubbard `propagate` | 9,953,109 | 23 | 0.72 |
+| pauli `propagate` | 10,069,308 | 21 | 0.90 |
+| random `build_graph` | 19,902,244 | 47 | 2.53 |
+| random `energy` | 19,902,244 | 3.1 | 2.32 |
+| random `gradient` | 19,902,244 | 8.6 | 2.46 |
+| random `propagate` | 19,902,244 | 49 | 3.91 |
 
 One process, one selector: the three flag sets use disjoint options, so they union. Whole-rung peak
-2.60 GiB in 3:53 at three rounds. LADDER.md's fourth L1 row — the same gradient pared at `1e-10` —
-is not here, because `--pare-threshold` is session-wide and cannot share a process with the unpared
-row.
+3.91 GiB in 7:41 at three rounds. That row is the only one above the operator it measures: the
+graph `build_graph` published is still resident while `propagate` builds its own, which at L1 sizes
+is 1.4 GiB the rung can afford and at L2 sizes is why `propagate` runs at rungs of its own.
+
+LADDER.md's pared L1 row — the same gradient at `--pare-threshold=1e-10` — is not here, because
+that option is session-wide and cannot share a process with the unpared row.
 
 #### L2a and L2b — one operator, three operations, ~25 GiB
 
@@ -407,23 +420,42 @@ The term count is identical at both shapes, which is the geometry-independence c
 sum is 1.24x L2a's peak at this size — the per-rank cost paid four times on one node — against
 1.29x at 1.5M, so the multiplier falls as the operator grows.
 
-#### L2c and L2d — `propagate`, at the same two shapes
+#### L2c and L2d — `propagate`, three models, at the same two shapes
 
 `propagate` builds an operator of its own instead of reading the graph `build_graph` publishes, so
 it cannot share L2a and L2b's process: there the rung's peak is the *max* over three operations on
 one operator, and adding a fourth that holds its own would make it a *sum*. At this size that sum
-does not fit — `propagate` is roughly 100 bytes per term at `LADDER.md`'s L2a point, so ~17 GiB for
-this rung's 167M terms, on top of L2a's 18.4 GiB against ~30 usable.
+does not fit: the random row alone is 15.02 GiB on top of L2a's 18.35 GiB, against ~30 usable.
 
 So it takes the same two shapes in processes of its own, which is also what keeps L2a and L2b's
 `terms` equality meaningful: three operations, one operator, one count.
 
-`-k "test_random_propagate and heisenberg"` with L2a and L2b's flags, so the problem is the one
-those rungs measure and only the operation differs.
+All three models run here, in one process. Each `propagate` row releases its operator when its
+test ends, so the rung's peak is the max down the column, not the sum — the same reason L2a's
+three operations fit and a fourth would not.
 
-Only the random Heisenberg row is here. `LADDER.md`'s fixed-model `propagate` rows at their L2
-cutoffs are 60 GiB (hubbard) and 80 GiB (pauli), an order of magnitude past this node, and at L1
-sizes they would only repeat L1.
+`-k "test_model_propagate or (test_random_propagate and heisenberg)"`
+`--hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05`
+`--num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000`
+
+The random row keeps L2a and L2b's flags, so only the operation differs from those rungs.
+
+| row | terms | ~s | ~GiB L2c | ~s | ~GiB/node L2d | ~GiB worst rank |
+|---|---:|---:|---:|---:|---:|---:|
+| hubbard `propagate` | 345,519,120 | 217 | 17.95 | 217 | 18.72 | 4.68 |
+| pauli `propagate` | 253,933,183 | 119 | 21.11 | 120 | 22.15 | 5.67 |
+| random `propagate` | 167,515,463 | 58 | 15.02 | 58 | 17.29 | 4.33 |
+
+Peak 21.11 GiB at L2c and 22.15 GiB/node at L2d, in 6:57 and 6:59.
+
+The two atols are the largest measured points that fit, swept at the 4 × 2 shape one point per
+process: hubbard 8.8e-06, 7.0e-06 and 6.2e-06 are 9.96, 16.19 and 18.72 GiB/node, and pauli
+2.5e-05 is 22.15 against 27.62 at 2.0e-05. Below that, `--pauli-lower-atol=1.6e-05` OOM-killed the
+instance rather than the process, which loses the artifact upload as well — hence the `cat` of each
+`bmf-<rung>.json` in `bench.yml`, so a sweep's numbers survive in the log.
+
+`LADDER.md`'s fixed-model rows are sized for a 128-core node — 60 GiB (hubbard) and 80 GiB (pauli)
+— so these cutoffs are this node's, not those.
 
 #### Inputs
 
