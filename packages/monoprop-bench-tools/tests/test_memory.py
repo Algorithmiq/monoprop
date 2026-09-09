@@ -38,28 +38,6 @@ from monoprop_bench_tools.memory.cpu import (
 MIB = 2**20
 
 
-def _under_sanitizer() -> bool:
-    """True when a sanitizer runtime is loaded into this interpreter.
-
-    Symbols confirm initialization; ``LD_PRELOAD`` does not.
-    """
-    try:
-        this_process = ctypes.CDLL(None)
-    except OSError:  # pragma: no cover - no dlopen on this platform
-        return False
-    return any(hasattr(this_process, sym) for sym in ("__asan_init", "__tsan_init"))
-
-
-# Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable, so every test
-# that asserts on a measured VmHWM is held out of those lanes. The synthetic window test
-# below asserts on monkeypatched figures instead, and runs everywhere.
-needs_real_peak_rss = pytest.mark.skipif(
-    _under_sanitizer(),
-    reason="peak-RSS accounting is not meaningful under a sanitizer runtime",
-)
-
-
-@needs_real_peak_rss
 def test_high_water_mark_catches_a_freed_transient() -> None:
     if not reset_peak_rss():
         pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
@@ -74,7 +52,6 @@ def test_high_water_mark_catches_a_freed_transient() -> None:
     assert window.peak_bytes >= window.baseline_bytes
 
 
-@needs_real_peak_rss
 def test_high_water_mark_window_is_reset_per_block() -> None:
     if not reset_peak_rss():
         pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
@@ -91,19 +68,29 @@ def test_high_water_mark_window_is_reset_per_block() -> None:
     assert second.delta_bytes < 10 * MIB
 
 
-@needs_real_peak_rss
 def test_peak_rss_never_below_current_rss() -> None:
     if peak_rss_bytes() == 0:
         pytest.skip("/proc/self/status VmHWM unavailable (non-Linux)")
     # Sample the current figure first. The two come from separate reads of
     # /proc/self/status and VmHWM only ever rises, so a peak read afterwards cannot be
     # below an RSS read before it. The other order fails whenever the interpreter gains a
-    # page between the two reads.
+    # page between the two reads -- rare normally, routine under a sanitizer runtime.
     current = rss_bytes()
     assert peak_rss_bytes() >= current
 
 
-@needs_real_peak_rss
+def _under_sanitizer() -> bool:
+    """True when a sanitizer runtime is loaded into this interpreter.
+
+    Symbols confirm initialization; ``LD_PRELOAD`` does not.
+    """
+    try:
+        this_process = ctypes.CDLL(None)
+    except OSError:  # pragma: no cover - no dlopen on this platform
+        return False
+    return any(hasattr(this_process, sym) for sym in ("__asan_init", "__tsan_init"))
+
+
 def test_reset_also_clears_ru_maxrss() -> None:
     """``ru_maxrss`` shares ``mm->hiwater_rss`` with ``VmHWM``, so a window reset drops it.
 
@@ -112,6 +99,10 @@ def test_reset_also_clears_ru_maxrss() -> None:
     """
     if not reset_peak_rss():
         pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    if _under_sanitizer():
+        # Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable.
+        pytest.skip("peak-RSS accounting is not meaningful under a sanitizer runtime")
+
     blob = bytearray(80 * MIB)
     for i in range(0, len(blob), 4096):
         blob[i] = 1
@@ -126,7 +117,6 @@ def test_reset_also_clears_ru_maxrss() -> None:
     assert after < before
 
 
-@needs_real_peak_rss
 def test_inner_window_does_not_erase_the_enclosing_peak() -> None:
     """An inner window's reset must not hide a transient the outer window spans.
 
@@ -136,6 +126,10 @@ def test_inner_window_does_not_erase_the_enclosing_peak() -> None:
     """
     if not reset_peak_rss():
         pytest.skip("/proc/self/clear_refs unavailable (non-Linux or kernel < 4.0)")
+    if _under_sanitizer():
+        # Sanitizer allocation and shadow mappings make peak-RSS accounting unreliable.
+        pytest.skip("peak-RSS accounting is not meaningful under a sanitizer runtime")
+
     with HighWaterMark() as outer:
         blob = bytearray(80 * MIB)
         for i in range(0, len(blob), 4096):
