@@ -1,0 +1,62 @@
+Fig. 6 -- The marginal cost of a gate, single-threaded.
+
+Model: kicked-Ising chain of N qubits, open boundary; five layers, each Rzz(pi/4) on
+all N-1 nearest-neighbour bonds then Rx(pi/4) on all N sites, so a layer holds 2N-1
+gates; observable sum_i Z_i propagated in the Heisenberg picture (the layer order
+therefore reverses); truncation a Pauli-weight cutoff of 6 with lower_atol = 0, so no
+coefficient pruning at all and the surviving term set is fixed by gate supports alone.
+That last point is what makes dividing by the term count a fair operation rather than a
+rescaling of three different workloads: all three engines carry the same terms.
+
+(a) Wall-clock milliseconds for ONE gate to act on 10^6 terms, against N. monoprop falls
+    as N^-0.86, close to the ideal 1/N drawn beside it: 0.584 ms at N=32 down to 0.0509 ms
+    at N=512, an 11.5x reduction across a 16x wider system. Neither reference engine
+    falls: PauliPropagation.jl N^+0.23, ppvm N^+0.58. Note where they start -- at N=32 ppvm
+    is the fastest of the three (0.470 ms against monoprop's 0.584), so the ordering is
+    earned over the sweep and not assumed at the origin. At N=512 monoprop leads
+    PauliPropagation.jl by 67x and ppvm by 43x.
+
+    Stated without dividing by the gate count at all, the same measurement reads: a
+    monoprop layer of 1023 gates costs 1.42x what a layer of 63 gates costs
+    (36.8 -> 52.1 ms per 10^6 terms). 16.2x the gates for 1.42x the time.
+
+    The mechanism is selectivity, not batching. The operator is held transposed: one
+    column per bit position, bit r set iff term r touches that position
+    (cpp/monoprop/detail/operator/InvertedIndex.h:33-46). Each column sits in one of two
+    tiers, and below a density of 1/64 it is an ascending set-row list rather than a
+    full-height bit-vector, with combine_columns_block narrowing even a dense column to a
+    word range. A gate on qubit i therefore costs work proportional to the terms that
+    actually touch qubit i, which at a fixed weight cutoff is a ~w/N fraction of the
+    operator, rather than a scan over all K terms. One fact, both readings: per gate the
+    cost carries the 1/N, and per layer each of the 2N-1 gates takes its ~1/N slice, so
+    the layer total barely moves. The reference engines hold a packed key per term and
+    revisit the whole sum for every gate, so nothing in them can fall.
+
+(b) The isolation test, and the reason to believe (a). The model is confined to a
+    32-qubit active window and the register padded out to N with idle spectator qubits,
+    so the term count (119,280), the gate count (315), every term's support and the
+    expectation value are held EXACTLY fixed while only the register width changes -- the
+    invariant expectation value doubling as a correctness check that the padding really is
+    idle. Over a 32x widening monoprop pays 1.6x, ppvm 8.3x and
+    PauliPropagation.jl 61x. The step in the Julia arm is its packed key outgrowing
+    the fast BitIntegers
+    width; monoprop's rows are entropy-packed position lists whose width comes from the
+    cutoff, not from N.
+
+Caveat, stated because the figure would otherwise overclaim: monoprop's residual N^+0.17
+in (b) is real work, not noise. The emit path materialises the dense partner and folds
+every word for the hash, so the per-term cost is sublinear in N rather than free of it,
+and the 1/N in (a) is approached rather than attained.
+
+Cutoff 6 is not chosen for effect. The per-gate exponent at every cutoff on this sweep:
+    cutoff 2:  monoprop N^-0.96,  QuEra ppvm N^-0.06,  PauliPropagation.jl N^+0.38
+    cutoff 4:  monoprop N^-0.81,  QuEra ppvm N^+0.31,  PauliPropagation.jl N^+0.31
+    cutoff 6:  monoprop N^-0.86,  QuEra ppvm N^+0.58,  PauliPropagation.jl N^+0.23
+monoprop sits between N^-0.81 and N^-0.96 at all three, and cutoff 6 is its MIDDLING
+result -- cutoff 2 is the most favourable. Cutoff 6 is shown because it is the only arm
+whose term count brackets the 10^6 the axis is normalised to: the cutoff-2 arm spans
+188..3068 terms, where normalising to a million would be a 326x extrapolation and fixed
+overheads rather than per-term work would set the time.
+
+Every point is single-threaded (one thread requested, and busy_cores ~ 1.0 recorded per
+point for the two Python engines), from a single host, at lower_atol = 0.

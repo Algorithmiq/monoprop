@@ -210,7 +210,43 @@ python make_single_thread_figure.py \
   --spectator data/{monoprop,ppvm,julia}_pauli_spectator.jsonl \
   --lattice   data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
   --outdir figures
+
+# Fig. 6 -- the headline figure, from exactly the same two sweeps
+python make_inverse_scaling_figure.py \
+  --lattice   data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
+  --spectator data/{monoprop,ppvm,julia}_pauli_spectator.jsonl \
+  --outdir figures
 ```
+
+### Fig. 6 — the same data on the axis where the claim is visible
+
+Fig. 6 plots one number: the wall-clock cost of **one gate acting on one million terms**,
+against N. On that axis monoprop falls as `N^-0.86` while both reference engines stay flat
+or rise (`N^+0.23`, `N^+0.58`), which is the `K/N` against `K` statement made directly
+rather than inferred from a ratio of exponents.
+
+Three choices in it are forced, and each is defended in the generated caption:
+
+- **Cutoff fixed at 6.** It is the only arm whose term count brackets the 10⁶ the axis is
+  normalised to (119,280 → 2,310,000). The cutoff-2 arm spans 188–3068 terms, where
+  normalising to a million is a 326× extrapolation and fixed overheads, not per-term work,
+  set the time. Cutoff 6 is also monoprop's *middling* result of the three (cutoff 2 gives
+  `N^-0.96`), so it is not the flattering choice.
+- **Per million terms**, because K is not free — it is set by N and the cutoff. Dividing by
+  K is conservative for monoprop: its cutoff-6 cost fits `K^1.14`, so the division leaves a
+  residual `K^0.14` working against it. The same divisor is applied to all three engines,
+  so the normalisation cannot manufacture a difference, only reveal one.
+- **Per gate**, because a layer is `2N-1` gates wide, so sweeping N sweeps the circuit size
+  too. Per gate is the marginal quantity: what one more gate costs. Stated with no division
+  by gate count at all, the same measurement reads *a layer of 1023 gates costs 1.42× what
+  a layer of 63 gates costs* — 16.2× the gates for 1.42× the time.
+
+The mechanism is selectivity rather than batching: the operator is stored transposed, one
+column per bit position, and a column below 1/64 density is held as an ascending set-row
+list instead of a full-height bit-vector (`cpp/monoprop/detail/operator/InvertedIndex.h`),
+with `combine_columns_block` narrowing even a dense column to a word range. A gate on qubit
+`i` therefore costs work proportional to the terms that actually touch qubit `i` — at a
+fixed weight cutoff a `~w/N` fraction of the operator — instead of a scan over all K terms.
 
 The Fig. 5 data was taken on a 10-core workstation, not on Leonardo, and every record says
 so — `host`, `library_version`, `cpu_seconds` and `busy_cores` are all recorded. It is a
@@ -267,16 +303,18 @@ compute-node jobs.
 
 ```
 make_paper_figures.py     Figs. 1-4 (PDF + PNG)
-make_single_thread_figure.py  Fig. 5, the single-thread per-term figure
+make_single_thread_figure.py  Fig. 5, the supporting per-term view (all three cutoffs)
+make_inverse_scaling_figure.py Fig. 6, the headline per-gate-per-million-term figure
 ruff.toml                 lint scope for this package (extends the repository config)
 data/*_pauli.jsonl        Figs. 1-4, Leonardo, N=32..1024
-data/*_spectator.jsonl    Fig. 5a, idle-spectator sweep at M=32, three engines
-data/*_lattice.jsonl      Fig. 5b, full-width sweep, three engines
+data/*_spectator.jsonl    Figs. 5a/6b, idle-spectator sweep at M=32, three engines
+data/*_lattice.jsonl      Figs. 5b/6a, full-width sweep, three engines
 scripts/                  reproduction drivers (copies of the canonical study files)
   monoprop_single_layer.py, julia_pauli_single_layer.jl, ppvm_single_layer.py,
   Project.toml, Manifest.toml
 figures/                  fig1_absolute_scaling, fig2_divergence_scaling,
                           fig3_per_term_memory, fig4_scaling_and_divergence,
-                          fig5_single_thread_per_term
-                          (each .pdf + .png); captions.txt (LaTeX-ready captions)
+                          fig5_single_thread_per_term, fig6_inverse_scaling
+                          (each .pdf + .png); captions.txt (LaTeX-ready captions),
+                          fig5_caption.txt and fig6_caption.txt (generated)
 ```
