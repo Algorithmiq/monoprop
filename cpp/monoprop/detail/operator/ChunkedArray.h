@@ -37,12 +37,10 @@ namespace monoprop::detail {
 /*! @brief Arena allocator handing out equally sized chunks to the chunked stores of one owner.
  *
  *  One size class per pool: every chunk is `chunk_bytes()` long, so a freed chunk fits any later
- *  request and the free list needs no search. Chunks are carved from arenas of `arena_bytes()`,
- *  mapped on demand and unmapped as soon as the last chunk in them comes back, so a drained store
- *  returns its memory to the OS rather than to the allocator's retention. Arenas are 2 MiB-aligned
- *  so transparent huge pages can back them.
- *
- *  Not thread-safe: one pool belongs to one partition's stores, driven by that partition's master.
+ *  request and the free list needs no search. Chunks are carved from arenas of `arena_bytes()`, mapped
+ *  on demand and unmapped as soon as the last chunk in them comes back, so a drained store returns its
+ *  memory to the OS rather than to the allocator's retention. Arenas are 2 MiB-aligned, so transparent
+ *  huge pages can back them. Not thread-safe: one pool serves one partition's stores.
  */
 class ChunkPool {
 public:
@@ -252,12 +250,10 @@ private:
  *
  *  Growth appends whole chunks from the pool the array is attached to: nothing is copied and the only
  *  slack is the tail of the last chunk. Elements are default-initialized like DefaultInitVector, so a
- *  caller that needs zeros asks grow_zeroed(); elements past size() are indeterminate.
- *
- *  The chunk length is a power of two, so index -> (chunk, offset) is a shift and a mask. A run of
- *  consecutive indices known not to cross a chunk boundary is readable through contiguous_at().
- *
- *  Move-only: the array owns its chunks and the pool must outlive it.
+ *  caller that needs zeros asks grow_zeroed(); elements past size() are indeterminate. The chunk
+ *  length is a power of two, so index -> (chunk, offset) is a shift and a mask, and a run of
+ *  consecutive indices known not to cross a boundary is readable through contiguous_at(). Move-only:
+ *  the array owns its chunks and the pool must outlive it.
  */
 template <typename T>
     requires std::is_trivially_copyable_v<T>
@@ -425,10 +421,8 @@ private:
  *  The stride is a runtime width (one popcount slot plus the inline positions), so `rows_per_chunk *
  *  stride` is not a power of two and ChunkedArray's element indexing cannot serve it. This keeps the
  *  power of two on the ROW index, which is what every caller has, and multiplies by the stride inside
- *  the chunk.
- *
- *  A row never straddles a chunk, so a span over one row is contiguous. Rows are default-initialized:
- *  every freshly grown row is overwritten by its set() before any read.
+ *  the chunk. A row never straddles a chunk, so a span over one row is contiguous. Rows are
+ *  default-initialized: every freshly grown row is overwritten by its set() before any read.
  */
 template <typename T>
     requires std::is_trivially_copyable_v<T>
