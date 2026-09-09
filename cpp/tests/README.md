@@ -125,7 +125,13 @@ name and cannot address suite-nested cases, tests use flat
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
 - **Transports / distribution**: `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`
-  (MPI-only), `partition_equivalence_tests.cpp`,
+  (MPI-only; the sparse cases drive a `PeerPlan` through both the staged hybrid
+  verbs and the plain-MPI ones, covering the peer-only delivery, an empty leg,
+  the self peer at shift 0, back-to-back rounds on one tag and the wire plan
+  partition 0 derives from a sibling's row -- all self-skipping below two ranks
+  or off a power-of-two rank count), `flat_exchange_tests.cpp` (the graph replay
+  path's transport gate: which arm `wire_bits` picks and what the ticket has to
+  drain, never inferred from the layout), `partition_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
   (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
   Majorana + native Pauli; self-skips at world size 1).

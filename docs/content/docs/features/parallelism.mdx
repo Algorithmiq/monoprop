@@ -157,6 +157,25 @@ monomial is balanced by construction; imbalance can only come from the operator'
 being non-uniform, which is why balance is measured rather than proved — rank occupancy
 max/mean 1.001 at $R = 128$, with every rank used.
 
+That one peer is what the exchange is then allowed to spend. A gate's query round carries a
+`PeerPlan` -- the rank shift $h_d(G)$, derived once per generator where the generator is held -- and
+the transports read it rather than a rank count: one `Isend`/`Irecv` pair with the peer instead of an
+`MPI_Alltoall` on the counts and an `MPI_Alltoallv` on the payload, and a plain `memcpy` when the
+shift is zero and the peer is this rank itself. The reply round retraces the queries, and XOR is an
+involution, so it takes the same plan. Under the hybrid the larger win is not the messages but the
+*serial* sweeps: the count transpose, the two staging sizers, the recv column and the scatter are all
+$O(R S^2)$ and all run on partition 0 while the other $S - 1$ partitions park at a barrier, and
+restricting them to the reachable ranks makes them $O(S^2)$. Graph replay is narrowed the same way,
+without a plan: its count matrix is symmetric, so what a rank sends a peer is that peer's receive
+count and both ends drop the same legs on the same value.
+
+Which transport a round takes must be the same on every rank, or a rank inside a collective waits
+forever on ranks that chose point-to-point. So it is never a predicate on a rank's own traffic --
+rows vary, and any threshold on one straddles -- but a function of the resolved routing mode and the
+rank count alone, the same two things the propagator's construction-time agreement check reduces
+across the world. A wrong shift that every rank agrees on does not hang; it silently drops the blocks
+outside the peer set, and debug builds assert against exactly that.
+
 The one condition is that the per-generator shifts $\{h_d(G)\}$ span $\mathbb{F}_2^{d}$.
 If they span only $\rho < d$ dimensions, the ranks a query can reach form a coset of a
 $\rho$-dimensional subspace: only $2^{\rho}$ of the $2^{d}$ are ever used and the rest stay

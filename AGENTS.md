@@ -64,4 +64,8 @@ just build-docs
   not a power of two: the default GF(2)-linear routing has no XOR structure to use there and refuses
   the geometry. It is bit-for-bit `monomial_hash % (R × S)`, and `routing_tests.cpp` pins both that
   equivalence and the refusal.
+- MPI CTest variants run at 2 **and** 4 ranks (`monoprop_MPI_TEST_PROCS` in
+  `cpp/tests/boost-test.cmake`): at 2 ranks a peer plan resolves one peer, so the sparse transport's
+  multi-peer paths are unreachable. Cross-rank cases self-skip below two ranks, so the same file runs
+  in the serial variant too.
 - Sanitizer rebuild and test:
