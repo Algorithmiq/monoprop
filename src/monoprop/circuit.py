@@ -359,7 +359,8 @@ class Circuit:
         ``other``'s angle indices are shifted up by ``self.n_parameters``, so the two halves keep
         independent angles and every gate in the result gets an explicit ``index``. Prefer one
         [MonomialPropagator.build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] call over
-        incremental multi-call building, whose ordering is picture-dependent.
+        incremental multi-call building, whose ordering is picture-dependent: two calls build
+        ``b + a`` in Heisenberg and ``a + b`` in Schrodinger.
         """
         if not isinstance(other, Circuit):
             return NotImplemented
