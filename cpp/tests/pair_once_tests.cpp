@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 // Pair-once (Resolve.h join_self): the value path settles a mutual pair from the leader's record alone
 // when that record is resolved first, and skips the follower's record at the probe. This runs the real
 // engine with the real ContractSink over a hand-built gate that has every case at once -- twenty
@@ -188,8 +187,9 @@ struct Gate {
     // The value-path scan's product: one rot=1 record per rotating row, in ascending row order.
     auto scan() -> detail::FusedScanResult<kN> {
         detail::FusedScanResult<kN> res;
-        res.queries.assign(1, VecZ{});
-        res.sent.assign(1, {});
+        res.window = mpi::SlotWindow{.base = 0, .count = 1};
+        res.queries.reset(res.window);
+        res.sent.reset(res.window);
         res.self.keeps_values = true;
         for (size_t i = 0; i < kRows; ++i) {
             if (!rot[i]) {
@@ -197,7 +197,7 @@ struct Gate {
             }
             const auto pos = positions_of(record_key[i]);
             res.self.push(pos, phase[i], key_of(record_key[i]), /*rot=*/true, v[i]);
-            res.sent[0].push_back(
+            res.sent.at_slot(0).push_back(
                 detail::SentRecord{.row = static_cast<TermIndex>(i), .phase = static_cast<int8_t>(phase[i])});
         }
         return res;

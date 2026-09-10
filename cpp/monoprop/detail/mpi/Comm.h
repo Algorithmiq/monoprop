@@ -103,6 +103,51 @@ struct SlotWindow {
 };
 
 /*!
+ * @brief A vector over a SlotWindow, addressed by flat slot through at_slot().
+ *
+ * `operator[]` takes a WindowIndex, so a flat slot used as a raw index does not compile. Re-basing an
+ * array is only safe if every index site shifts together, and these two accessors are the only sites.
+ */
+template <typename T>
+class WindowVec {
+public:
+    using value_type = T;
+
+    WindowVec() = default;
+    explicit WindowVec(SlotWindow w) : win_(w), v_(w.count) {}
+
+    auto reset(SlotWindow w) -> void {
+        win_ = w;
+        v_.assign(w.count, T{});
+    }
+
+    //! @brief Re-bases onto @a w keeping the elements: for a T that owns storage the caller reuses,
+    //! having cleared each element under its own release rule first.
+    auto rewindow(SlotWindow w) -> void {
+        win_ = w;
+        v_.resize(w.count);
+    }
+
+    [[nodiscard]] auto window() const -> SlotWindow { return win_; }
+    [[nodiscard]] auto size() const -> size_t { return v_.size(); }
+    [[nodiscard]] auto capacity() const -> size_t { return v_.capacity(); }
+
+    [[nodiscard]] auto operator[](WindowIndex i) -> T & { return v_[i.value]; }
+    [[nodiscard]] auto operator[](WindowIndex i) const -> const T & { return v_[i.value]; }
+    [[nodiscard]] auto at_slot(size_t slot) -> T & { return v_[win_.index(slot).value]; }
+    [[nodiscard]] auto at_slot(size_t slot) const -> const T & { return v_[win_.index(slot).value]; }
+
+    [[nodiscard]] auto begin() { return v_.begin(); }
+    [[nodiscard]] auto end() { return v_.end(); }
+    [[nodiscard]] auto begin() const { return v_.begin(); }
+    [[nodiscard]] auto end() const { return v_.end(); }
+
+private:
+    SlotWindow win_{};
+    std::vector<T> v_;
+};
+
+/*!
  * @brief Which destination RANKS a round can touch, when the caller knows.
  *
  * Two states, matching routing::Router: dense, or sparse over the single peer GF(2)-linear routing

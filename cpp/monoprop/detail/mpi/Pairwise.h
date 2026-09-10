@@ -25,7 +25,7 @@
 
 namespace monoprop::mpi {
 
-// One tag per (transport, verb), all five here so no two can collide unseen: one thread per rank calls
+// One tag per (transport, verb), all six here so no two can collide unseen: one thread per rank calls
 // MPI, so the tag is all that keeps a count round in flight from being matched by a payload receive.
 //
 // Why consecutive gate exchanges (one round per gate) may reuse kFlatPayloadTag on one communicator:
@@ -40,6 +40,12 @@ inline constexpr int kFlatCountTag = 0x6D73;
 // Graph REPLAY payload (Exchange.h). Its own value, so a replay leg can match neither the build path's
 // counts nor its payload even though both run over the same communicator.
 inline constexpr int kFlatReplayTag = 0x6D74;
+// pair_exchange (PairExchange.h): the S*S word counts and the payload travel in ONE message, so one tag.
+// A gate g+1 message cannot be matched by gate g's receive: every participant calls the verb in program
+// order with the rank-replicated shift, so a rank posts gate g+1's send only after gate g's receive has
+// completed, and the peer's sends to this rank sit on one (src, dst, tag, comm) sequence that MPI does
+// not reorder -- the probe that sizes gate g's receive therefore always meets gate g's message.
+inline constexpr int kPairExchangeTag = 0x6D75;
 
 //! @brief Per-peer element counts and offsets. Null @c counts is the fixed-block case: @c block each,
 //! at @c b*block.

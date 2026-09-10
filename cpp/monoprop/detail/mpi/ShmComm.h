@@ -26,6 +26,7 @@
 
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/PairSlots.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
 
 // In-process shared-memory SPMD transport: S partition-master threads each call the same collective
@@ -38,7 +39,7 @@ namespace monoprop::mpi {
 
 class ShmComm {
 public:
-    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)), barrier_(n) {}
+    explicit ShmComm(int n) : n_(n), slots_(static_cast<size_t>(n)), pair_(n), barrier_(n) {}
 
     ShmComm(const ShmComm &) = delete;
     auto operator=(const ShmComm &) -> ShmComm & = delete;
@@ -51,7 +52,9 @@ public:
      *  a peer reads the publisher's own send buffer in place through `slots_` -- so the only bytes here
      *  are one cache-line slot per partition.
      */
-    [[nodiscard]] auto staging_bytes() const -> size_t { return slots_.capacity() * sizeof(Slot); }
+    [[nodiscard]] auto staging_bytes() const -> size_t {
+        return slots_.capacity() * sizeof(Slot) + pair_.staging_bytes();
+    }
 
     // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
@@ -175,6 +178,18 @@ public:
         sync(); // peers write into our buffer (and read from it) until here
     }
 
+    /*! @brief The in-rank gate exchange; PairExchange.h states the contract.
+     *
+     *  ONE barrier, unlike the verbs above: the gather after it reads peers' buffers in place and no copy
+     *  is made, so the moment a peer may reuse its buffer is proved by the NEXT gate's barrier rather
+     *  than by a second one here.
+     */
+    auto pair_exchange(int rank, SubStreams send) -> PairRecv {
+        pair_.publish(rank, send);
+        sync();
+        return pair_.gather_in_rank(rank);
+    }
+
     // See PartitionBarrier::poison / ::reset for when each is legal to call.
     auto poison() -> void { barrier_.poison(); }
 
@@ -196,6 +211,7 @@ private:
 
     int n_;
     std::vector<Slot> slots_;
+    PairSlots pair_; // pair_exchange's descriptor table; holds no payload (see PairSlots)
     PartitionBarrier barrier_;
 };
 

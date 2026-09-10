@@ -25,6 +25,7 @@
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/TableJoin.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowKey.h"
@@ -58,11 +59,13 @@ namespace monoprop::detail {
 // reaches the decode through it: today the collective's receive buffer, whose slots are viewed in place.
 using WireStreams = std::span<const std::span<const size_t>>;
 
-//! Views of a per-slot wire buffer's slots, ascending, into caller-owned storage.
-inline auto slot_streams(const std::vector<VecZ> &wire, std::vector<std::span<const size_t>> &into) -> WireStreams {
-    into.resize(wire.size());
-    for (size_t s = 0; s < wire.size(); ++s) {
-        into[s] = std::span<const size_t>(wire[s]);
+//! Views of a WindowVec's slots, ascending, into caller-owned storage: the collective path's adapter.
+template <typename T>
+auto slot_streams(const mpi::WindowVec<std::vector<T>> &wv, std::vector<std::span<const T>> &into)
+    -> std::span<const std::span<const T>> {
+    into.resize(wv.size());
+    for (size_t k = 0; k < wv.size(); ++k) {
+        into[k] = std::span<const T>(wv[mpi::WindowIndex{k}]);
     }
     return {into};
 }
@@ -78,10 +81,15 @@ inline auto slot_streams(const std::vector<VecZ> &wire, std::vector<std::span<co
  *  tag is folded inside the same loop, while the positions this record owns are still in cache.
  */
 template <size_t NumModes>
-auto decode_incoming_records(WireStreams incoming, QueryForm form, IncomingRecords<NumModes> &pr) -> void {
+auto decode_incoming_records(WireStreams incoming,
+                             mpi::SlotWindow window,
+                             QueryForm form,
+                             IncomingRecords<NumModes> &pr) -> void {
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingRecords<NumModes>::PosT;
-    const size_t senders = incoming.size();
+    pr.window = window;
+    const size_t senders = window.count;
+    assert(incoming.size() == senders && "one incoming stream per window slot");
 
     pr.goff.assign(senders + 1, 0);
     for (size_t s = 0; s < senders; ++s) {
@@ -307,10 +315,12 @@ auto join_incoming(const IncomingRecords<NumModes> &pr,
                    size_t base,
                    MissStage<NumModes> &misses,
                    Sink &sink,
-                   std::vector<VecZ> &responses) -> size_t {
+                   mpi::WindowVec<VecZ> &responses) -> size_t {
     size_t staged = 0;
-    for (size_t s = 0; s + 1 < pr.goff.size(); ++s) {
-        for (size_t g = pr.goff[s]; g < pr.goff[s + 1]; ++g) {
+    for (size_t k = 0; k + 1 < pr.goff.size(); ++k) {
+        const mpi::WindowIndex wi{k};
+        const size_t s = pr.window.slot(wi);
+        for (size_t g = pr.goff[k]; g < pr.goff[k + 1]; ++g) {
             const size_t row = join.hit(q_base + g);
             // The value column exists only for the fused form, and that is a property of the sink, so
             // the branch value_at() would cost per record is settled at compile time here.
@@ -330,7 +340,7 @@ auto join_incoming(const IncomingRecords<NumModes> &pr,
                                                       sink);
             if constexpr (Sink::wants_responses) {
                 if (answer) {
-                    push_response(responses[s], g - pr.goff[s], sink.silent_value(row));
+                    push_response(responses[wi], g - pr.goff[k], sink.silent_value(row));
                     ++staged;
                 }
             }
@@ -347,13 +357,16 @@ auto join_incoming(const IncomingRecords<NumModes> &pr,
  */
 template <size_t NumModes, typename Sink>
 auto apply_responses(RowMarks &marks,
-                     const std::vector<std::vector<SentRecord>> &sent,
+                     const mpi::WindowVec<std::vector<SentRecord>> &sent,
                      WireStreams responses,
+                     mpi::SlotWindow w,
                      Sink &sink) -> void {
-    assert(responses.size() == sent.size() && "one answer stream per slot");
-    for (size_t s = 0; s < responses.size(); ++s) {
-        const std::span<const size_t> buf = responses[s];
-        const std::vector<SentRecord> &records = sent[s];
+    assert(responses.size() == w.count && "one answer stream per window slot");
+    for (size_t k = 0; k < w.count; ++k) {
+        const mpi::WindowIndex wi{k};
+        const std::span<const size_t> buf = responses[k];
+        const std::vector<SentRecord> &records = sent[wi];
+        const size_t s = w.slot(wi);
         for (size_t off = 0; off + kResponseWords <= buf.size(); off += kResponseWords) {
             const size_t idx = buf[off];
             assert(idx < records.size() && "a response named a record this slot never sent to that peer");
@@ -382,18 +395,21 @@ auto apply_responses(RowMarks &marks,
  */
 template <size_t NumModes, typename Sink>
 auto absence_pass(const RowMarks &marks,
-                  const std::vector<std::vector<SentRecord>> &sent,
-                  const std::vector<std::vector<double>> &sent_c0,
+                  const mpi::WindowVec<std::vector<SentRecord>> &sent,
+                  const mpi::WindowVec<std::vector<double>> &sent_c0,
                   Sink &sink) -> void {
+    const mpi::SlotWindow w = sent.window();
     const bool has_c0 = sent_c0.size() == sent.size();
-    for (size_t s = 0; s < sent.size(); ++s) {
-        const std::vector<SentRecord> &records = sent[s];
+    for (size_t k = 0; k < w.count; ++k) {
+        const mpi::WindowIndex wi{k};
+        const size_t s = w.slot(wi);
+        const std::vector<SentRecord> &records = sent[wi];
         for (size_t j = 0; j < records.size(); ++j) {
             const size_t row = static_cast<size_t>(records[j].row);
             const int phase = static_cast<int>(records[j].phase);
             const bool received = marks.received(row);
             if (marks.rot(row) && !received && !marks.answered(row)) {
-                sink.out_unanswered(s, row, has_c0 ? sent_c0[s][j] : 0.0, phase);
+                sink.out_unanswered(s, row, has_c0 ? sent_c0[wi][j] : 0.0, phase);
             }
             else if (received && !marks.foll(row) && (marks.rot(row) || marks.partner_rot(row))) {
                 sink.out_pair(s, row, phase);

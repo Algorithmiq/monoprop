@@ -148,6 +148,49 @@ inline auto staging_bytes(Comm comm) -> size_t {
 monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan = {})
     -> void;
 
+// The per-slot block arrays begin_alltoallv and wait_into accept: a plain [P] vector-of-vectors, or a
+// WindowVec over the slots a PeerPlan can reach. These four overload pairs are the whole difference --
+// the verbs below are one code path walking one SlotWindow.
+template <typename Blocks>
+using SlotBlockValue = typename Blocks::value_type::value_type;
+
+template <typename T>
+inline auto slot_window_of(const std::vector<std::vector<T>> &v) -> SlotWindow {
+    return SlotWindow{.base = 0, .count = v.size()};
+}
+template <typename T>
+inline auto slot_window_of(const WindowVec<std::vector<T>> &v) -> SlotWindow {
+    return v.window();
+}
+
+template <typename T>
+inline auto slot_block(const std::vector<std::vector<T>> &v, size_t slot) -> const std::vector<T> & {
+    return v[slot];
+}
+template <typename T>
+inline auto slot_block(std::vector<std::vector<T>> &v, size_t slot) -> std::vector<T> & {
+    return v[slot];
+}
+template <typename T>
+inline auto slot_block(const WindowVec<std::vector<T>> &v, size_t slot) -> const std::vector<T> & {
+    return v.at_slot(slot);
+}
+template <typename T>
+inline auto slot_block(WindowVec<std::vector<T>> &v, size_t slot) -> std::vector<T> & {
+    return v.at_slot(slot);
+}
+
+// A plain destination keeps the full-world shape (a non-peer's block is empty, not absent); a WindowVec
+// takes the round's window.
+template <typename T>
+inline auto reset_slots(std::vector<std::vector<T>> &v, SlotWindow /*w*/, size_t world) -> void {
+    v.assign(world, std::vector<T>{});
+}
+template <typename T>
+inline auto reset_slots(WindowVec<std::vector<T>> &v, SlotWindow w, size_t /*world*/) -> void {
+    v.reset(w);
+}
+
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
 // no-op on the synchronous Shm / single-process paths) and unpacks by source.
@@ -169,7 +212,8 @@ struct PendingAlltoallv {
                                             // and both move with the handle, so the pointers hold
 #endif
 
-    auto wait_into(std::vector<std::vector<T>> &recv_data) -> void {
+    template <typename Dest>
+    auto wait_into(Dest &recv_data) -> void {
 #ifdef monoprop_ENABLE_MPI
         if (request != MPI_REQUEST_NULL) {
             MPI_Wait(&request, MPI_STATUS_IGNORE);
@@ -180,24 +224,24 @@ struct PendingAlltoallv {
             posted = 0;
         }
 #endif
-        // Full-world shape whatever the window was: a non-peer's block is empty, not absent.
-        recv_data.assign(static_cast<size_t>(num_ranks), std::vector<T>{});
+        reset_slots(recv_data, window, static_cast<size_t>(num_ranks));
         for (size_t k = 0; k < window.count; ++k) {
             const size_t i = window.slot(WindowIndex{k});
             const auto lo = recv_buffer.begin() + recv_displs[i];
-            recv_data[i].assign(lo, lo + recv_counts[i]);
+            slot_block(recv_data, i).assign(lo, lo + recv_counts[i]);
         }
     }
 };
 
-// Debug-only: a caller may supply the whole [P] array under a sparse plan, and anything it left outside
-// the window is DROPPED rather than refused -- the silent failure mode a wrong-but-agreed shift produces.
-template <typename T>
-inline auto assert_outside_window_is_empty_([[maybe_unused]] const std::vector<std::vector<T>> &send_data,
+// Debug-only: a caller may supply more slots than the plan reaches, and anything it left outside the
+// window is DROPPED rather than refused -- the silent failure mode a wrong-but-agreed shift produces.
+template <typename Blocks>
+inline auto assert_outside_window_is_empty_([[maybe_unused]] const Blocks &send_data,
+                                            [[maybe_unused]] SlotWindow supplied,
                                             [[maybe_unused]] SlotWindow window) -> void {
 #ifndef NDEBUG
-    for (size_t i = 0; i < send_data.size(); ++i) {
-        assert((window.contains(i) || send_data[i].empty())
+    for (size_t i = supplied.base; i < supplied.stop(); ++i) {
+        assert((window.contains(i) || slot_block(send_data, i).empty())
                && "a block outside the plan's peer window would be dropped in silence");
     }
 #endif
@@ -208,8 +252,8 @@ inline auto assert_outside_window_is_empty_([[maybe_unused]] const std::vector<s
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
-template <typename T>
-inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
+template <typename Blocks, typename T = SlotBlockValue<Blocks>>
+inline auto begin_alltoallv(const Blocks &send_data,
                             Comm comm,
                             bool skip_self = false,
                             const std::vector<int> *known_recv_counts = nullptr,
@@ -217,21 +261,27 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     const int num_ranks = size(comm);
     const int me = rank(comm);
     const auto geom = geometry(comm);
-    if (static_cast<int>(send_data.size()) != num_ranks) {
-        throw CollectiveArgumentError(
-            std::format("begin_alltoallv: send_data size ({}) must equal number of ranks ({})",
-                        send_data.size(),
-                        num_ranks));
-    }
     PendingAlltoallv<T> h;
     h.num_ranks = num_ranks;
-    // The plan IS the mask, dense included -- it is the count == P value of the same window. The caller
-    // still hands a whole [P] array; assert_outside_window_is_empty_ catches what it leaves outside,
-    // which is the silent drop a wrong-but-agreed shift produces.
+    // The plan IS the mask, dense included -- it is the count == P value of the same window. A caller may
+    // hand a whole [P] array under a sparse plan (the tests do), so the supplied array only has to COVER
+    // the window; assert_outside_window_is_empty_ catches what it leaves outside, which is the silent
+    // drop a wrong-but-agreed shift produces.
     h.window =
         plan.window(static_cast<size_t>(me), static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
-    assert(h.window.stop() <= static_cast<size_t>(num_ranks));
-    assert_outside_window_is_empty_(send_data, h.window);
+    const SlotWindow supplied = slot_window_of(send_data);
+    if (h.window.stop() > static_cast<size_t>(num_ranks) || supplied.base > h.window.base
+        || supplied.stop() < h.window.stop()) {
+        throw CollectiveArgumentError(
+            std::format("begin_alltoallv: send_data covers slots [{}, {}), which does not cover the plan's "
+                        "[{}, {}) in a {}-slot world",
+                        supplied.base,
+                        supplied.stop(),
+                        h.window.base,
+                        h.window.stop(),
+                        num_ranks));
+    }
+    assert_outside_window_is_empty_(send_data, supplied, h.window);
     h.send_counts.assign(static_cast<size_t>(num_ranks), 0);
     h.send_displs.assign(static_cast<size_t>(num_ranks), 0);
     h.recv_displs.assign(static_cast<size_t>(num_ranks), 0);
@@ -243,7 +293,7 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
     long long running_send = 0;
     for (size_t k = 0; k < h.window.count; ++k) {
         const size_t i = h.window.slot(WindowIndex{k});
-        const size_t n = (static_cast<int>(i) == self) ? 0 : send_data[i].size();
+        const size_t n = (static_cast<int>(i) == self) ? 0 : slot_block(send_data, i).size();
         const int c = checked_mpi_count(n, "Send count");
         h.send_counts[i] = c;
         h.send_displs[i] = checked_mpi_count(running_send, "Send displacement");
@@ -256,7 +306,8 @@ inline auto begin_alltoallv(const std::vector<std::vector<T>> &send_data,
         if (c == 0) {
             continue;
         }
-        std::copy(send_data[i].begin(), send_data[i].begin() + c, h.send_buffer.begin() + h.send_displs[i]);
+        const auto &block = slot_block(send_data, i);
+        std::copy(block.begin(), block.begin() + c, h.send_buffer.begin() + h.send_displs[i]);
     }
 
     h.recv_counts.assign(static_cast<size_t>(num_ranks), 0);
