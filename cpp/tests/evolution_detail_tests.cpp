@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "ThreadHarness.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
@@ -39,12 +40,14 @@
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
 #include "monoprop/detail/evolution/layer_build/GateSinks.h"
+#include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/evolution/layer_build/TableJoin.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
+#include "monoprop/detail/mpi/ShmComm.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -421,6 +424,98 @@ BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) 
     }
     std::ranges::sort(touched);
     BOOST_TEST((std::ranges::adjacent_find(touched) == touched.end()));
+}
+
+/*
+ * The two arms of one gate, compared bitwise: pair_exchange against the collective, on the same records.
+ *
+ * Two partitions of an in-process ShmComm, each sending every one of its records to the other -- so
+ * nothing is staged and the whole gate goes through the transport. The engine chooses the pair path for
+ * a window that is one rank's partitions, which is every gate of this world, so the collective arm is
+ * reached by forcing `pair_path` off. The exchange is a transport, not a rule: the halves it produces
+ * must agree to the bit, in the same order, on both arms and on both partitions.
+ *
+ * The scratch objects outlive the threads on purpose. A published send buffer is read in place by the
+ * peer AFTER this partition's call returned, and the last gate on a comm has no next call to bound that
+ * (rule 1 of PairExchange.h's lifetime warning), so a scratch destroyed with its thread would be a
+ * use-after-free the arms' agreement could not see.
+ */
+BOOST_AUTO_TEST_CASE(one_gate_pair_and_collective_arms_agree_bitwise) {
+    constexpr size_t kSlots = 2;
+    const VecD coeffs = {0.5, 0.25, 12.0, 1.5, 14.0, 3.0};
+
+    // Partition u's records, all addressed to its peer: two hits on rotating rows, one hit on the silent
+    // row t2 (answered in round 2) and one miss (minted).
+    const auto fill_cross = [&](Scenario &sc, size_t peer) {
+        detail::FusedScanResult<kN> res;
+        res.window = mpi::SlotWindow{.base = 0, .count = kSlots};
+        res.queries.reset(res.window);
+        res.sent.reset(res.window);
+        res.sent_c0.reset(res.window);
+        VecZ &buf = res.queries.at_slot(peer);
+        const auto push = [&](const Monomial<kN> &key, int phase, double v) {
+            detail::QueryWire<kN>::push(buf, positions_of(key), phase, /*rot=*/true);
+            detail::QueryWire<kN>::push_value(buf, v);
+        };
+        push(sc.terms[1], 1, 0.5);
+        push(sc.terms[0], -1, 0.25);
+        push(sc.terms[2], -1, 1.5);
+        push(sc.absent_x, 1, 3.0);
+        res.sent.at_slot(peer) = {detail::SentRecord{.row = 0, .phase = 1},
+                                  detail::SentRecord{.row = 1, .phase = -1},
+                                  detail::SentRecord{.row = 3, .phase = -1},
+                                  detail::SentRecord{.row = 5, .phase = 1}};
+        res.sent_c0.at_slot(peer) = {0.0, 0.0, 0.0, -1.0};
+        return res;
+    };
+
+    const auto run_arm = [&](bool force_collective) {
+        std::vector<Scenario> scs(kSlots); // outlives the threads: see the note above
+        std::vector<detail::FusedContract> fcs(kSlots);
+        mpi::ShmComm sh(static_cast<int>(kSlots));
+        auto errs = test_utils::run_comm_threads(sh, static_cast<int>(kSlots), [&](mpi::ShmComm &comm, int u) {
+            Scenario &sc = scs[static_cast<size_t>(u)];
+            detail::LayerBuildEngine<kN, detail::ContractSink<kN>> eng(
+                sc.op,
+                mpi::Comm::make_shm(&comm, u),
+                kSlots,
+                static_cast<size_t>(u),
+                sc.scratch,
+                6,
+                detail::ContractSink<kN>{.fc = fcs[static_cast<size_t>(u)],
+                                         .fused_scale = true,
+                                         .op_coeffs = coeffs,
+                                         .absences_carry_c0 = true});
+            BOOST_REQUIRE(eng.pair_path); // every gate of a one-rank world pairs; the arm is forced below
+            if (force_collective) {
+                eng.pair_path = false;
+            }
+            eng.exchange_and_join(fill_cross(sc, static_cast<size_t>(u ^ 1)));
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        return fcs;
+    };
+
+    const auto pair_arm = run_arm(/*force_collective=*/false);
+    const auto coll_arm = run_arm(/*force_collective=*/true);
+    for (size_t u = 0; u < kSlots; ++u) {
+        BOOST_TEST_CONTEXT("partition " << u) {
+            BOOST_REQUIRE_EQUAL(pair_arm[u].halves.size(), coll_arm[u].halves.size());
+            BOOST_REQUIRE_GT(pair_arm[u].halves.size(), 0U);
+            for (size_t k = 0; k < pair_arm[u].halves.size(); ++k) {
+                const auto &a = pair_arm[u].halves[k];
+                const auto &b = coll_arm[u].halves[k];
+                BOOST_TEST_CONTEXT("half " << k) {
+                    BOOST_TEST(a.local_idx == b.local_idx);
+                    BOOST_TEST(a.phase_signed == b.phase_signed);
+                    BOOST_TEST(a.is_insert == b.is_insert);
+                    BOOST_TEST(std::bit_cast<uint64_t>(a.v_partner) == std::bit_cast<uint64_t>(b.v_partner));
+                }
+            }
+        }
+    }
 }
 
 // The same scenario without a c0 side channel -- the Heisenberg shape, where absence_pass substitutes

@@ -37,6 +37,7 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/evolution/layer_build/TableJoin.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/PairExchange.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
@@ -77,6 +78,8 @@ struct LayerBuildEngine {
     // The flat slots that plan reaches from my_rank: what every per-slot array of this gate is sized to.
     mpi::SlotWindow window;
     Sink sink;
+    bool pair_path = false; // this gate's exchange is one rank pair: mpi::pair_exchange carries it
+    int pair_shift = 0;     // the rank shift it names; 0 is the in-rank exchange
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      mpi::Comm comm_,
@@ -97,6 +100,14 @@ struct LayerBuildEngine {
           window(window_.count != 0 ? window_ : mpi::SlotWindow{.base = 0, .count = R_}),
           sink(std::move(sink_)) {
         assert(window.stop() <= R);
+        // pair_exchange addresses ONE rank pair, so it covers exactly the gates whose window is one
+        // rank's partitions: linear routing (the peer rank is my_rank ^ shift) and every single-rank
+        // world (the peer is this rank, shift 0). Dense routing over several ranks reaches a window of
+        // ranks x partitions, which only the collective can carry.
+        const auto geom = mpi::geometry(comm);
+        pair_path = R > 1 && window.count == static_cast<size_t>(geom.partitions);
+        pair_shift = plan.sparse ? plan.shift : 0;
+        assert((!pair_path || plan.sparse || geom.ranks == 1) && "a dense multi-rank gate cannot pair");
     }
 
     /*! @brief The round and a half.
@@ -133,15 +144,29 @@ struct LayerBuildEngine {
         std::optional<mpi::PendingAlltoallv<size_t>> pending;
         // Round 1 opens here and closes past the decode: the post, the wait and the decode are one stage
         // because no gate can overlap them with work of its own -- the join's row side needs every record.
-        if (R > 1) {
+        if (R > 1 && !pair_path) {
             pending.emplace(
                 mpi::begin_alltoallv(scan.queries, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
         }
-        if (pending.has_value()) {
-            scratch.reuse_incoming_wire(window);
-            pending->wait_into(scratch.incoming_wire);
-            decode_incoming_records<NumModes>(slot_streams(scratch.incoming_wire, scratch.slot_views),
-                                              scratch.incoming_wire.window(),
+        // The queries live in the scratch pool from here on, not in `scan`: the peers of a pair exchange
+        // read this buffer in place until this partition's NEXT call returns, which is past the end of
+        // `scan`. The move keeps every slot's storage where it is, so nothing is copied to say so, and it
+        // happens before anything can publish the buffer. The parity moves on at the end of the gate.
+        mpi::WindowVec<VecZ> &queries = scratch.wire_queries(Sink::wants_responses);
+        queries = std::move(scan.queries);
+        // The collective's receive buffer is a gate-local: nothing outside the gate reads it. Only a
+        // published SEND buffer outlives its gate (PairExchange.h), and those are the pool's.
+        mpi::WindowVec<VecZ> incoming;
+        if (pair_path) {
+            decode_incoming_records<NumModes>(mpi::pair_exchange(comm, pair_shift, publish_(queries)).from,
+                                              window,
+                                              sink.incoming_form(),
+                                              pr);
+        }
+        else if (pending.has_value()) {
+            pending->wait_into(incoming);
+            decode_incoming_records<NumModes>(slot_streams(incoming, scratch.slot_views),
+                                              incoming.window(),
                                               sink.incoming_form(),
                                               pr);
         }
@@ -192,11 +217,16 @@ struct LayerBuildEngine {
         sink.reserve_halves(join.queries() + n_sent);
         misses.reserve(join.queries() - join.hits());
 
-        // Round 2's send buffer. A sink that answers nothing keeps an empty local rather than naming the
-        // shared one, so nothing charges it what an earlier fused call left there.
-        mpi::WindowVec<VecZ> responses;
+        // Round 2's send buffer is claimed before the first push for the same lifetime reason, and it is
+        // the OTHER slot of the pool: round 1's is still published to the peers. It needs no twin --
+        // only the two-call fused sink stages responses, and its second call is bounded by the NEXT
+        // gate's first, so one buffer is already outlived. A sink that answers nothing keeps an empty
+        // local rather than naming the shared one, so nothing charges it what an earlier fused call left
+        // there.
+        mpi::WindowVec<VecZ> responses_none;
+        mpi::WindowVec<VecZ> &responses = Sink::wants_responses ? scratch.wire_r : responses_none;
         if constexpr (Sink::wants_responses) {
-            responses.reset(window);
+            reuse_wire(responses, window);
         }
         size_t answered = 0;
         if (n_self != 0) {
@@ -214,9 +244,12 @@ struct LayerBuildEngine {
         answered += join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink, responses);
 
         // Round 1 at its widest: the scan's arrays, the delivered records and the staged responses.
-        stamp_gate_buffers_(scan, scratch.incoming_wire, responses, /*extra=*/0);
-        run_round_two_(scan, responses, base);
+        stamp_gate_buffers_(scan, queries, incoming, responses, /*extra=*/0);
+        run_round_two_(scan, queries, incoming, responses, base);
         absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
+        // Past every read of this gate's queries, so the next gate's scan takes the OTHER buffer and this
+        // one stays intact for the peers that may still hold views into it.
+        ++scratch.wire_gate;
 
         scratch.counters.gates += 1;
         scratch.counters.records += n_sent;
@@ -238,21 +271,35 @@ private:
      *  result depends on, and that is what fixes their place here (mint indices were assigned against
      *  `base` before this call).
      */
-    auto run_round_two_(const FusedScanResult<NumModes> &scan, mpi::WindowVec<VecZ> &responses, size_t base) -> void {
+    auto run_round_two_(const FusedScanResult<NumModes> &scan,
+                        const mpi::WindowVec<VecZ> &queries,
+                        const mpi::WindowVec<VecZ> &incoming,
+                        mpi::WindowVec<VecZ> &responses,
+                        size_t base) -> void {
         std::optional<mpi::PendingAlltoallv<size_t>> answering;
         if constexpr (Sink::wants_responses) {
-            if (R > 1) {
+            if (R > 1 && !pair_path) {
                 answering.emplace(
                     mpi::begin_alltoallv(responses, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
             }
         }
+        // On the pair path the inserts move AHEAD of the exchange rather than under it: pair_exchange is
+        // synchronous, so there is no post to overlap. Their order against apply_responses is what the
+        // result depends on, and that is unchanged.
         insert_misses<NumModes>(local_op, scratch.misses, base);
         if constexpr (Sink::wants_responses) {
-            if (answering.has_value()) {
+            if (pair_path) {
+                const auto answers = mpi::pair_exchange(comm, pair_shift, publish_(responses)).from;
+                // Round 2 at its widest: round 1's buffers are all still in scope under the answers,
+                // which are views into the transport's own buffer -- hence `extra` 0 on this path.
+                stamp_gate_buffers_(scan, queries, incoming, responses, /*extra=*/0);
+                apply_responses<NumModes>(scratch.marks, scan.sent, answers, window, sink);
+            }
+            else if (answering.has_value()) {
                 mpi::WindowVec<VecZ> answers;
                 answering->wait_into(answers);
                 // Round 2 at its widest: round 1's buffers are all still in scope under the answers.
-                stamp_gate_buffers_(scan, scratch.incoming_wire, responses, wire_bytes_(answers));
+                stamp_gate_buffers_(scan, queries, incoming, responses, wire_bytes_(answers));
                 apply_responses<NumModes>(scratch.marks,
                                           scan.sent,
                                           slot_streams(answers, scratch.slot_views),
@@ -260,6 +307,19 @@ private:
                                           sink);
             }
         }
+    }
+
+    /*! @brief The gate's per-slot send descriptors, for pair_exchange.
+     *
+     *  The verb copies the outer array before its barrier, so one reusable array serves both rounds. The
+     *  BUFFERS it names are the ones the lifetime rule binds, and those are the scratch pool's.
+     */
+    auto publish_(const mpi::WindowVec<VecZ> &buf) -> mpi::SubStreams {
+        scratch.wire_spans.resize(window.count);
+        for (size_t k = 0; k < window.count; ++k) {
+            scratch.wire_spans[k] = std::span<const size_t>(buf[mpi::WindowIndex{k}]);
+        }
+        return mpi::SubStreams{scratch.wire_spans};
     }
 
     static auto wire_bytes_(const mpi::WindowVec<VecZ> &wire) -> size_t {
@@ -279,10 +339,11 @@ private:
      *  diagnostic beside the ledger and never a term in it.
      */
     auto stamp_gate_buffers_(const FusedScanResult<NumModes> &scan,
+                             const mpi::WindowVec<VecZ> &queries,
                              const mpi::WindowVec<VecZ> &incoming,
                              const mpi::WindowVec<VecZ> &responses,
                              size_t extra) -> void {
-        size_t bytes = extra + wire_bytes_(scan.queries) + wire_bytes_(incoming) + wire_bytes_(responses)
+        size_t bytes = extra + wire_bytes_(queries) + wire_bytes_(incoming) + wire_bytes_(responses)
                        + scratch.misses.memory_bytes() + scratch.incoming_records.memory_bytes()
                        + (scan.self.pos_flat.capacity() * sizeof(RowPosT))
                        + (scan.self.pos_off.capacity() * sizeof(size_t)) + (scan.self.k_of.capacity() * 2)
