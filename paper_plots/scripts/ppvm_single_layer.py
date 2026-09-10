@@ -152,6 +152,10 @@ def main() -> None:
         "bytes_per_term": (memory_bytes / num_terms) if num_terms else 0.0,
         "memory_metric": "peak process RSS (not the operator; see the module docstring)",
         "seconds": best,
+        # The number of timed repetitions the reported minimum was taken over. Recorded
+        # because a min-of-1 and a min-of-10 are different measurements, and the shipped
+        # data used to carry no way to tell them apart.
+        "rounds": max(1, args.rounds),
         "expectation": expectation,
         "active_window": args.active_window,
         "gates": gates,

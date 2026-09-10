@@ -1,62 +1,101 @@
 Fig. 6 -- The marginal cost of a gate, single-threaded.
 
-Model: kicked-Ising chain of N qubits, open boundary; five layers, each Rzz(pi/4) on
-all N-1 nearest-neighbour bonds then Rx(pi/4) on all N sites, so a layer holds 2N-1
-gates; observable sum_i Z_i propagated in the Heisenberg picture (the layer order
-therefore reverses); truncation a Pauli-weight cutoff of 6 with lower_atol = 0, so no
-coefficient pruning at all and the surviving term set is fixed by gate supports alone.
-That last point is what makes dividing by the term count a fair operation rather than a
-rescaling of three different workloads: all three engines carry the same terms.
+Model: kicked-Ising chain of N qubits, open boundary; 5 layers, each Rzz(pi/4) on all
+N-1 nearest-neighbour bonds then Rx(pi/4) on all N sites, so a layer holds 2N-1 gates;
+observable sum_i Z_i propagated in the Heisenberg picture (the layer order therefore
+reverses); truncation a Pauli-weight cutoff of 6 with lower_atol = 0, so no coefficient
+pruning at all and the surviving term set is fixed by gate supports alone. N = 32..1024 in
+powers of two, 6 points per engine, one thread, one host.
 
-(a) Wall-clock milliseconds for ONE gate to act on 10^6 terms, against N. monoprop falls
-    as N^-0.86, close to the ideal 1/N drawn beside it: 0.584 ms at N=32 down to 0.0509 ms
-    at N=512, an 11.5x reduction across a 16x wider system. Neither reference engine
-    falls: PauliPropagation.jl N^+0.23, ppvm N^+0.58. Note where they start -- at N=32 ppvm
-    is the fastest of the three (0.470 ms against monoprop's 0.584), so the ordering is
-    earned over the sweep and not assumed at the origin. At N=512 monoprop leads
-    PauliPropagation.jl by 67x and ppvm by 43x.
+Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both divisors
+are checked, not assumed: at every point all three engines report the same term count
+(119,280 at N=32 rising to 4,646,768 at N=1024), the same gate count (315 to 10235) and an
+expectation value agreeing to 1.6e-11 absolute, so the divisors are identical across the
+three curves and the figure script refuses to build if any of that moves. A shared divisor
+cannot manufacture a difference between the curves, only reveal one.
 
-    Stated without dividing by the gate count at all, the same measurement reads: a
-    monoprop layer of 1023 gates costs 1.42x what a layer of 63 gates costs
-    (36.8 -> 52.1 ms per 10^6 terms). 16.2x the gates for 1.42x the time.
+Result. monoprop falls as N^-0.88, close to the ideal 1/N drawn beside it: 0.571 ns at
+N=32 down to 0.0347 ns at N=1024, a 16.4x reduction across a 32x wider system.
+Neither reference engine falls: ppvm N^+0.59, PauliPropagation.jl N^+0.14. Note where they
+start -- at N=32 ppvm is the fastest of the three (0.459 ns against monoprop's 0.571),
+so the ordering is earned over the sweep and not assumed at the origin.
 
-    The mechanism is selectivity, not batching. The operator is held transposed: one
-    column per bit position, bit r set iff term r touches that position
-    (cpp/monoprop/detail/operator/InvertedIndex.h:33-46). Each column sits in one of two
-    tiers, and below a density of 1/64 it is an ascending set-row list rather than a
-    full-height bit-vector, with combine_columns_block narrowing even a dense column to a
-    word range. A gate on qubit i therefore costs work proportional to the terms that
-    actually touch qubit i, which at a fixed weight cutoff is a ~w/N fraction of the
-    operator, rather than a scan over all K terms. One fact, both readings: per gate the
-    cost carries the 1/N, and per layer each of the 2N-1 gates takes its ~1/N slice, so
-    the layer total barely moves. The reference engines hold a packed key per term and
-    revisit the whole sum for every gate, so nothing in them can fall.
+Two fit windows, and which figure you have. The panel ships in two versions from the same
+rows, told apart by FILE NAME and by nothing on the canvas. The plain one fades and
+excludes the points beyond N <= 512 (N=1024) and clips the axis to the fitted decade;
+the _cliff one fits every point and opens the axis until the reference engine's post-cliff
+excursion fits at its true size. Either way ONE window covers all three engines, so the
+three exponents are always like-for-like.
 
-(b) The isolation test, and the reason to believe (a). The model is confined to a
-    32-qubit active window and the register padded out to N with idle spectator qubits,
-    so the term count (119,280), the gate count (315), every term's support and the
-    expectation value are held EXACTLY fixed while only the register width changes -- the
-    invariant expectation value doubling as a correctness check that the padding really is
-    idle. Over a 32x widening monoprop pays 1.6x, ppvm 8.3x and
-    PauliPropagation.jl 61x. The step in the Julia arm is its packed key outgrowing
-    the fast BitIntegers
-    width; monoprop's rows are entropy-packed position lists whose width comes from the
-    cutoff, not from N.
+Beyond N <= 512 the reference engines cross a packed-key width boundary:
+PauliPropagation.jl's is measured at N=576->608, an 8.7x single-N jump in the Leonardo
+full-width sweep and 7.1x in the idle-spectator sweep, and ppvm has one of its own near
+N=1024 (2.14x). A power law fitted across a discontinuity measures where the step falls
+rather than per-term cost in N, and the step is a fixed-width-integer artifact that Figs. 2
+and 3 already own. Fitted over the whole range instead -- the _cliff version -- the same
+rows give monoprop N^-0.83, ppvm N^+0.57 and PauliPropagation.jl N^+0.87.
+The reference engines' numbers inflate, and that inflation IS the cliff. monoprop's
+exponent barely moves (-0.88 to -0.83), having no such boundary to cross. The
+N <= 512 window is therefore the conservative reading: it gives up the widest part of
+monoprop's lead, which at N=1024 is 3210x over PauliPropagation.jl and 78x over ppvm.
 
-Caveat, stated because the figure would otherwise overclaim: monoprop's residual N^+0.17
-in (b) is real work, not noise. The emit path materialises the dense partner and folds
-every word for the hash, so the per-term cost is sublinear in N rather than free of it,
-and the 1/N in (a) is approached rather than attained.
+The divisor is not the effect. A falling curve invites the objection that the gate count is
+itself proportional to N, so state the same rows with no gate division at all: a monoprop
+layer of 2047 gates costs 1.98x what a layer of 63 gates costs (36.0 -> 71.1 ms per
+10^6 terms). 32.5x the gates for 1.98x the time. The identical divisor applied to the
+other two engines leaves them flat or rising, so it cannot be the source of the fall.
 
-Cutoff 6 is not chosen for effect. The per-gate exponent at every cutoff on this sweep:
-    cutoff 2:  monoprop N^-0.96,  QuEra ppvm N^-0.06,  PauliPropagation.jl N^+0.38
-    cutoff 4:  monoprop N^-0.81,  QuEra ppvm N^+0.31,  PauliPropagation.jl N^+0.31
-    cutoff 6:  monoprop N^-0.86,  QuEra ppvm N^+0.58,  PauliPropagation.jl N^+0.23
-monoprop sits between N^-0.81 and N^-0.96 at all three, and cutoff 6 is its MIDDLING
-result -- cutoff 2 is the most favourable. Cutoff 6 is shown because it is the only arm
-whose term count brackets the 10^6 the axis is normalised to: the cutoff-2 arm spans
-188..3068 terms, where normalising to a million would be a 326x extrapolation and fixed
-overheads rather than per-term work would set the time.
+Nor is the cutoff. This panel draws one arm, so the cutoff-independence comes from the
+companion step-32 sweep over N=32..512 (16 points, all three
+cutoffs), fitted over the same N <= 512 window:
+    cutoff K (N=32->512)          monoprop    QuEra ppvm  PauliPropagation.jl
+    2      188 -> 3,068           N^-0.96     N^-0.06     N^+0.38
+    4      10,122 -> 183,882      N^-0.81     N^+0.31     N^+0.31
+    6      119,280 -> 2,310,000   N^-0.86     N^+0.58     N^+0.23
+monoprop falls at all three and neither reference engine is ever below N^-0.06, so the
+choice of arm is not load-bearing; cutoff 6 is drawn for continuity with Figs. 1-5.
 
-Every point is single-threaded (one thread requested, and busy_cores ~ 1.0 recorded per
-point for the two Python engines), from a single host, at lower_atol = 0.
+Mechanism: selectivity, not batching. The operator is held transposed -- one column per bit
+position, bit r set iff term r touches that position
+(cpp/monoprop/detail/operator/InvertedIndex.h). Each column sits in one of two tiers, and
+below a density of 1/64 it is an ascending set-row list rather than a full-height
+bit-vector, with combine_columns_block narrowing even a dense column to a word range. A
+gate on qubit i therefore costs work proportional to the terms that actually touch qubit i,
+which at a fixed weight cutoff is a ~w/N fraction of the operator, rather than a scan over
+all K terms. One fact, both readings: per gate the cost carries the 1/N, and per layer each
+of the 2N-1 gates takes its ~1/N slice, so the layer total barely moves. The reference
+engines hold a packed key per term and revisit the whole sum for every gate, so nothing in
+them can fall.
+
+Why to believe it, from the companion sweep (Fig. 5a). Confining the whole model to a
+32-qubit active window and padding the register out to N with idle spectator
+qubits holds the term count (119,280), the gate count (315), every term's support
+and the expectation value EXACTLY fixed while only the register width changes. Over a
+32x widening monoprop pays 1.6x, ppvm 8.3x and PauliPropagation.jl 61x. That is
+per-term N-overhead isolated from everything else, and the same ordering as here.
+
+Caveats, stated because the figure would otherwise overclaim:
+
+  * THERMAL. Taken on a fanless laptop (Aaron-MacbookAir-Work.local), not on an
+    exclusive Leonardo node. At N <= 512 the longest single point runs for tens of
+    seconds and stays in boost, but the
+    N=1024 reference-engine points run for minutes to tens of minutes and throttle, while
+    monoprop's N=1024 point finishes in about a second and does not. That biases the
+    reference engines' apparent cost UPWARD at the top of the range -- against them, not
+    against monoprop. It is one more reason those points sit outside every fit, and it is
+    why this dataset is cited only for a SHAPE (an exponent in N) and never for an
+    absolute time. Figs. 1-4 are the absolute-time figures and they come from Leonardo.
+  * Timed repetitions differ by engine, and the rows now record it:
+    monoprop 10, QuEra ppvm 1, PauliPropagation.jl 1.
+    monoprop's points are sub-second, where timer granularity and process noise are
+    proportionally worst, so its minimum is taken over many more rounds; the reference
+    engines' expensive points would gain nothing from a second round they could not also
+    lose to thermal drift within the first.
+  * num_terms is the FINAL term count, while K grows through the 5 layers, so the absolute
+    ns per term understates the true per-term cost. It understates it identically for all
+    three engines, so the comparison between the curves is unaffected.
+  * N=1024 is the ceiling, not a choice: monoprop_MAX_NUM_MODES defaults to 1024 with no
+    headroom above it, so a wider sweep needs a rebuild.
+  * monoprop's residual against the ideal N^-1 is real work, not noise: the emit path still
+    materialises the dense partner and folds every word for the hash, which is O(N/32) work
+    on the branching fraction. The 1/N is approached, not attained.

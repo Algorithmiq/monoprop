@@ -211,35 +211,118 @@ python make_single_thread_figure.py \
   --lattice   data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
   --outdir figures
 
-# Fig. 6 -- the headline figure, from exactly the same two sweeps
+# Fig. 6 -- the octave sweep: cutoff 6 only, N = 32..1024 in powers of two, 10 rounds for
+# monoprop and 1 for the reference engines. ~56 min, essentially all of it the single
+# PauliPropagation.jl N=1024 point (5304.7 s).
+for N in 32 64 128 256 512 1024; do
+  "$PYTHON"      scripts/monoprop_single_layer.py --basis pauli --num-qubits "$N" \
+    --cutoff 6 --layers 5 --lower-atol 0 --rounds 10 --out data/monoprop_pauli_octave.jsonl
+  "$PPVM_PYTHON" scripts/ppvm_single_layer.py --num-qubits "$N" \
+    --cutoff 6 --layers 5 --lower-atol 0 --rounds 1  --out data/ppvm_pauli_octave.jsonl
+  "$JULIA" --project=scripts scripts/julia_pauli_single_layer.jl --num-qubits "$N" \
+    --cutoff 6 --layers 5 --lower-atol 0 --rounds 1  --out data/julia_pauli_octave.jsonl
+done
+
+# Both panel shapes. --spectator and --cutoff-evidence draw no panel: they only supply the
+# caption's Fig. 5a cross-reference and its cutoff-independence table. Add
+# `--layout column` or `--layout page` for just one shape.
+# Add `--layout column|page` or `--fit clean|cliff` to emit just one variant.
 python make_inverse_scaling_figure.py \
-  --lattice   data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
-  --spectator data/{monoprop,ppvm,julia}_pauli_spectator.jsonl \
+  --lattice        data/{monoprop,ppvm,julia}_pauli_octave.jsonl \
+  --spectator      data/{monoprop,ppvm,julia}_pauli_spectator.jsonl \
+  --cutoff-evidence data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
   --outdir figures
 ```
 
 ### Fig. 6 — the same data on the axis where the claim is visible
 
-Fig. 6 plots one number: the wall-clock cost of **one gate acting on one million terms**,
-against N. On that axis monoprop falls as `N^-0.86` while both reference engines stay flat
-or rise (`N^+0.23`, `N^+0.58`), which is the `K/N` against `K` statement made directly
-rather than inferred from a ratio of exponents.
+One panel, three curves, nothing else — in two shapes from one code path, so they can
+never disagree:
 
-Three choices in it are forced, and each is defended in the generated caption:
+| `--layout` | file | saved size | intended slot |
+|---|---|---|---|
+| `column` | `fig6_inverse_scaling` | 3.40 × 3.45 in | one journal column (`\columnwidth`), legend below the axes |
+| `page` | `fig6_inverse_scaling_wide` | 6.90 × 4.15 in | full-width banner at the top of a page (`figure*`, `\textwidth`), all three engines on one horizontal line beneath the axes |
 
-- **Cutoff fixed at 6.** It is the only arm whose term count brackets the 10⁶ the axis is
-  normalised to (119,280 → 2,310,000). The cutoff-2 arm spans 188–3068 terms, where
-  normalising to a million is a 326× extrapolation and fixed overheads, not per-term work,
-  set the time. Cutoff 6 is also monoprop's *middling* result of the three (cutoff 2 gives
-  `N^-0.96`), so it is not the flattering choice.
-- **Per million terms**, because K is not free — it is set by N and the cutoff. Dividing by
-  K is conservative for monoprop: its cutoff-6 cost fits `K^1.14`, so the division leaves a
-  residual `K^0.14` working against it. The same divisor is applied to all three engines,
-  so the normalisation cannot manufacture a difference, only reveal one.
-- **Per gate**, because a layer is `2N-1` gates wide, so sweeping N sweeps the circuit size
-  too. Per gate is the marginal quantity: what one more gate costs. Stated with no division
-  by gate count at all, the same measurement reads *a layer of 1023 gates costs 1.42× what
-  a layer of 63 gates costs* — 16.2× the gates for 1.42× the time.
+The column legend is stacked because three entries each carrying an exponent need roughly
+twice 3.4 in on one line. Both `figsize` values are calibrated rather than chosen, and in
+opposite directions: with the legend centred under the axes the tight bbox *trims* the
+unused right margin, so the saved width comes out ~0.9× of `figsize`. Re-measure the saved
+`MediaBox` if the legend text or the tick labels change width. Neither shape is a
+decade-square (1.51 decades in N against ~2.1 in the plotted time), so the rendered
+*angle* of a true `-1` slope is a property of the frame — steeper than 45° in the
+column, shallower in the banner. That is
+what the `1/N` guide is for: the eye reads monoprop against the guide, never against the
+frame, so the claim survives the reshaping.
+
+It plots the wall-clock cost of
+**one gate acting on one term**, in nanoseconds, against N = 32…1024 in powers of two. On
+that axis monoprop falls as `N^-0.88` (0.571 → 0.0347 ns, a 16.4× reduction over a 32×
+wider system) while both reference engines stay flat or rise (`N^+0.59` for ppvm, `N^+0.14`
+for PauliPropagation.jl), which is the `K/N` against `K` statement made directly rather
+than inferred from a ratio of exponents. Per layer of `2N-1` gates that reads as `K`
+against `K·N`. Every sentence that used to sit on the canvas is now in the generated
+`figures/fig6_caption.txt`; the panel itself carries only the fitted exponents and one
+grey slope ruler.
+
+That ruler is the ideal `1/N`, anchored *through* monoprop's first point rather than offset
+from it, so monoprop starts on its guide and the drift away from it is the `N^-0.88` the
+legend reports. The `N^0` and `N^+1` counterparts — what the reference engines ought to pay
+per gate, `K` and `K·N` — are deliberately not drawn: their exponents are in the legend, and
+three rulers among three curves read as furniture rather than as a reference.
+
+**Two fit windows, distinguished by filename.** `--fit` selects:
+
+| `--fit` | suffix | window | exponents | axis |
+|---|---|---|---|---|
+| `clean` | — | N ≤ 512 | `N^-0.88` / `N^+0.59` / `N^+0.14` | scaled to the fitted decade (2.1); N=1024 faded, PauliPropagation.jl's clipped and named at 112 ns |
+| `cliff` | `_cliff` | all N | `N^-0.83` / `N^+0.57` / `N^+0.87` | opened to hold the post-cliff excursion (3.8 decades) |
+
+Both are emitted by default, so there are four PDFs (two layouts × two fit modes). Either
+way one window covers all three engines, so the three exponents are always like-for-like.
+The panel carries no prose, so **nothing on the canvas says which fit you are looking at** —
+only the `_cliff` suffix and the caption do. Keep the filenames straight when placing one in
+the paper: `N^+0.14` and `N^+0.87` for PauliPropagation.jl are the same figure otherwise.
+
+Beyond N=512 the reference engines cross a packed-key width boundary —
+PauliPropagation.jl's is measured at N=576→608 (8.7× in one step) and ppvm has one near
+N=1024 (2.14×). A power law fitted across a discontinuity measures where the step falls,
+not per-term cost in N, which is what the `clean` window exists to avoid; the inflation
+from `N^+0.14` to `N^+0.87` *is* the cliff. monoprop's exponent barely moves (`-0.88` to
+`-0.83`), having no such boundary to cross, so `clean` is the conservative reading — it
+gives up the widest part of monoprop's lead, 3210× over PauliPropagation.jl at N=1024.
+
+**Why the normalisation is fair.** The y axis divides wall time by the gate count (∝ N) and
+by the term count K. Neither divisor is engine-specific, and the script *checks* that rather
+than assuming it: `check_grid`, `check_same_workload` and `check_single_thread` refuse to
+build the figure unless all three engines cover the identical (cutoff, N) grid and report
+the same term count, the same gate count and an expectation value agreeing to 1e-9 at every
+point (the measured worst case is 1.6e-11 on the octave sweep). A shared divisor cannot
+manufacture a difference between the curves, only reveal one.
+
+**Timed repetitions differ by engine, and the rows now record it** (`rounds`): monoprop 10,
+ppvm 1, PauliPropagation.jl 1. monoprop's points are sub-second, where timer granularity is
+proportionally worst; the reference engines' N=1024 points run for minutes to an hour and
+would lose more to thermal drift within one round than they could gain from a second.
+
+**The divisor is not the effect.** A falling curve invites the objection that the gate count
+is itself proportional to N. Stated with no gate division at all, the same rows read *a
+monoprop layer of 1023 gates costs 1.42× what a layer of 63 gates costs* (36.8 → 52.1 ms
+per 10⁶ terms) — 16.2× the gates for 1.42× the time. The identical divisor applied to the
+other two engines leaves them flat or rising.
+
+**Nor is the cutoff.** The axis is an absolute time, so nothing is extrapolated to a term
+count that was not measured and the choice of arm is not load-bearing. Fitted per-gate,
+per-term exponent at every cutoff on this sweep:
+
+| cutoff | K (N=32→512) | monoprop | QuEra ppvm | PauliPropagation.jl |
+|---|---|---|---|---|
+| 2 | 188 → 3,068 | `N^-0.96` | `N^-0.06` | `N^+0.38` |
+| 4 | 10,122 → 183,882 | `N^-0.81` | `N^+0.31` | `N^+0.31` |
+| 6 | 119,280 → 2,310,000 | `N^-0.86` | `N^+0.58` | `N^+0.23` |
+
+monoprop falls at all three and neither reference engine is ever below `N^-0.06`. Cutoff 6
+is drawn for continuity with Figs. 1–5.
 
 The mechanism is selectivity rather than batching: the operator is stored transposed, one
 column per bit position, and a column below 1/64 density is held as an ascending set-row
@@ -248,11 +331,22 @@ with `combine_columns_block` narrowing even a dense column to a word range. A ga
 `i` therefore costs work proportional to the terms that actually touch qubit `i` — at a
 fixed weight cutoff a `~w/N` fraction of the operator — instead of a scan over all K terms.
 
-The Fig. 5 data was taken on a 10-core workstation, not on Leonardo, and every record says
-so — `host`, `library_version`, `cpu_seconds` and `busy_cores` are all recorded. It is a
-*shape* measurement (an exponent in N), which is what makes a workstation acceptable here
-where it would not be for Figs. 1–4's absolute times; the two datasets are kept in separate
-files and never plotted in the same panel.
+**Where the sweep is generous to the reference engines, and where it is not.** Both
+reference engines' N=1024 points sit outside every fit, which discards monoprop's widest
+lead (3210× over PauliPropagation.jl, 78× over ppvm there). They also ran for minutes to an
+hour on a **fanless laptop** and throttled, while monoprop's N=1024 point finishes in 1.65 s
+and does not — biasing their apparent cost upward, against them. `num_terms` is the final
+term count while K grows through the five layers, so the absolute ns/term understates
+per-term cost — identically for all three engines. And at N=32 ppvm is the fastest of the
+three (0.459 ns against monoprop's 0.571), so the ordering is earned over the sweep and not
+assumed at the origin. N=1024 is the ceiling, not a choice: `monoprop_MAX_NUM_MODES`
+defaults to 1024 with no headroom, so a wider sweep needs a rebuild.
+
+The Fig. 5 and 6 data was taken on a 10-core workstation, not on Leonardo, and the records
+say so — `host` and `library_version` on every row, `cpu_seconds` and `busy_cores` on the
+two Python engines. It is a *shape* measurement (an exponent in N), which is what makes a
+workstation acceptable here where it would not be for Figs. 1–4's absolute times; the two
+datasets are kept in separate files and never plotted in the same panel.
 
 ## Reproduce
 
@@ -304,17 +398,23 @@ compute-node jobs.
 ```
 make_paper_figures.py     Figs. 1-4 (PDF + PNG)
 make_single_thread_figure.py  Fig. 5, the supporting per-term view (all three cutoffs)
-make_inverse_scaling_figure.py Fig. 6, the headline per-gate-per-million-term figure
+make_inverse_scaling_figure.py Fig. 6, the headline single-panel per-gate figure
+                          (--layout column | page, --fit clean | cliff; all four
+                          combinations by default)
 ruff.toml                 lint scope for this package (extends the repository config)
 data/*_pauli.jsonl        Figs. 1-4, Leonardo, N=32..1024
-data/*_spectator.jsonl    Figs. 5a/6b, idle-spectator sweep at M=32, three engines
-data/*_lattice.jsonl      Figs. 5b/6a, full-width sweep, three engines
+data/*_spectator.jsonl    Fig. 5a, idle-spectator sweep at M=32, three engines
+                          (Fig. 6 uses it only for caption cross-reference numbers)
+data/*_lattice.jsonl      Fig. 5b, full-width step-32 sweep, three engines, three
+                          cutoffs (Fig. 6 uses it for its cutoff-independence table)
+data/*_octave.jsonl       Fig. 6, full-width octave sweep, cutoff 6, N=32..1024
 scripts/                  reproduction drivers (copies of the canonical study files)
   monoprop_single_layer.py, julia_pauli_single_layer.jl, ppvm_single_layer.py,
   Project.toml, Manifest.toml
 figures/                  fig1_absolute_scaling, fig2_divergence_scaling,
                           fig3_per_term_memory, fig4_scaling_and_divergence,
-                          fig5_single_thread_per_term, fig6_inverse_scaling
+                          fig5_single_thread_per_term, fig6_inverse_scaling{,_cliff},
+                          fig6_inverse_scaling_wide{,_cliff}
                           (each .pdf + .png); captions.txt (LaTeX-ready captions),
                           fig5_caption.txt and fig6_caption.txt (generated)
 ```

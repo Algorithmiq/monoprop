@@ -339,6 +339,10 @@ def main() -> None:
         "memory_bytes": int(memory_bytes),
         "bytes_per_term": (memory_bytes / num_terms) if num_terms else 0.0,
         "seconds": best,
+        # The number of timed repetitions the reported minimum was taken over. Recorded
+        # because a min-of-1 and a min-of-10 are different measurements, and the shipped
+        # data used to carry no way to tell them apart.
+        "rounds": max(1, args.rounds),
         "expectation": expectation,
         # Provenance. The shipped Leonardo data carries none of this, so a record from it
         # cannot be audited or told apart from a workstation run; every new record can.

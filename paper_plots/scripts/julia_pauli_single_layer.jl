@@ -117,6 +117,10 @@ function main()
         "memory_bytes" => memory_bytes,
         "bytes_per_term" => num_terms > 0 ? memory_bytes / num_terms : 0.0,
         "seconds" => best,
+        # The number of timed repetitions the reported minimum was taken over. Recorded
+        # because a min-of-1 and a min-of-10 are different measurements, and the shipped
+        # data used to carry no way to tell them apart.
+        "rounds" => rounds,
         "expectation" => expectation,
         # Provenance, matching monoprop_single_layer.py: the shipped Leonardo data carries
         # none of this, so a record from it cannot be audited or placed.
