@@ -88,13 +88,19 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
-  scan routing agreement under both routers, the routing-agreement check),
+  scan routing agreement under both routers and the per-slot sent-ordinal lists,
+  the routing-agreement check),
   `routing_tests.cpp` (Router term -> flat-slot map: the splitmix equivalence
   with `hash % P`, the linear shift identity, the gf2_rank coverage
   diagnostic, the non-power-of-two throw and the shipped default),
   `env_config_tests.cpp` (the environment parsers, which throw rather than
   default on a malformed routing knob),
-  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
+  `position_kernels_tests.cpp` (the position-only emit kernels -- both algebras'
+  rotation sign and the (k, d) digest cutoff -- against their dense oracles),
+  `evolution_detail_tests.cpp` (the one-round gate exchange on a hand-built
+  scan: the receiver rule at the join, the absence pass, the fused and graph
+  sinks' outputs, the emit-phase antisymmetry it rests on, the receiver rule end
+  to end through propagate(), the Schrödinger c0 channel, and CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `chunked_array_tests.cpp` (the pooled chunk allocator and
   the chunked arrays on it: arena reuse, unmapping read from
@@ -116,10 +122,16 @@ name and cannot address suite-nested cases, tests use flat
   coefficient growth policy, memory estimate and its row-tier and pool fields,
   deep copy).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
-  `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
+  `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp` (the sweep against
+  the build_graph replay, and which endpoint of a pair reads a partner value
+  recovered from its swept slot),
   `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense
-  oracle, plus the fused value channel), `sparse_resolve_tests.cpp` (probe and
-  insert from wire positions vs the dense Monomial-keyed path),
+  oracle, plus the fused value channel and the rot bit's header shapes),
+  `sparse_resolve_tests.cpp` (the receiver side: decode, join and mint from wire
+  positions vs the dense Monomial-keyed path),
+  `graph_pair_order_tests.cpp` (an in-process ShmComm world: every (p, q)
+  out-part length equals q's in-part length, and the graph replay reproduces the
+  fused propagate to a few ULP),
   `combined_recompute_equivalence.cpp` (recompute equivalence +
   snapshot invariance), `exact_upper_atol_rescue.cpp`,
   `large_cosine_storage_tests.cpp`, `gate_boundaries.cpp`.
@@ -138,7 +150,7 @@ name and cannot address suite-nested cases, tests use flat
   path's transport gate: which arm `wire_bits` picks and what the ticket has to
   drain, never inferred from the layout), `partition_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
-  (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
+  (serial↔world equivalence of the Schrödinger one-round fresh-insert arms,
   Majorana + native Pauli; self-skips at world size 1).
 - **Simulator / operator lifecycle**: `simulator_copy_tests.cpp`,
   `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard

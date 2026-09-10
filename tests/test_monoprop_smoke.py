@@ -182,7 +182,7 @@ _OPERATOR_LEDGER_KEYS = (
     "init_operator_bytes",
     "initial_state_bytes",
     "inverted_index_bytes",
-    "matched_scratch_bytes",
+    "gate_scratch_bytes",
 )
 _OPERATOR_DIAGNOSTIC_KEYS = (
     "d_invidx_dense_bytes",
@@ -192,6 +192,7 @@ _OPERATOR_DIAGNOSTIC_KEYS = (
     "d_state_coeffs_nonzero",
     "d_init_operator_entries",
     "d_op_coeffs_slack_bytes",
+    "d_gate_buffers_hwm_bytes",
     "d_row_wide_rows",
     "d_row_inline_width",
     "d_row_restrides",

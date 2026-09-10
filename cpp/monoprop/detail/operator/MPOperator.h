@@ -348,8 +348,9 @@ struct MPOperatorMemoryBreakdown final {
     size_t init_operator_bytes{0uz};
     size_t initial_state_bytes{0uz};
     size_t inverted_index_bytes{0uz};
-    // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
-    size_t matched_scratch_bytes{0uz};
+    // The layer build's per-gate scratch (GateScratch), whose capacity survives from gate to gate.
+    // Propagator-owned, so 0 unless MonomialPropagator fills it in.
+    size_t gate_scratch_bytes{0uz};
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -376,6 +377,13 @@ struct MPOperatorMemoryBreakdown final {
      *  the comm's memory, not the operator's, and total_bytes() is an operator figure.
      */
     size_t wire_staging_bytes{0uz};
+    /*! @brief The widest instant of the gate exchange's per-gate buffers over the last call.
+     *
+     *  Those buffers die with their gate or are resized under the next one, so no resting figure can name
+     *  their peak. Not in total_bytes(): it is a high-water mark over a call, not a resident size, and it
+     *  overlaps the part of gate_scratch_bytes whose capacity the scratch keeps for reuse.
+     */
+    size_t gate_buffers_hwm_bytes{0uz};
     // of op_coeffs_bytes: the most capacity the coefficient array held beyond its live rows at any
     // point in the last propagate or build_graph call. A high-water mark, not a resting figure: the
     // array is shrunk to fit at the end of every call, so measured at quiescence the slack is always 0.
@@ -387,7 +395,7 @@ struct MPOperatorMemoryBreakdown final {
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
+               + initial_state_bytes + inverted_index_bytes + gate_scratch_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -398,7 +406,7 @@ struct MPOperatorMemoryBreakdown final {
         init_operator_bytes += o.init_operator_bytes;
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
-        matched_scratch_bytes += o.matched_scratch_bytes;
+        gate_scratch_bytes += o.gate_scratch_bytes;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
@@ -411,6 +419,9 @@ struct MPOperatorMemoryBreakdown final {
         pool_free_chunk_bytes += o.pool_free_chunk_bytes;
         // Summed although it is per-rank, because only one partition reports a nonzero: see the field.
         wire_staging_bytes += o.wire_staging_bytes;
+        // Summed, not maxed: the partitions run their gates concurrently, so the per-process transient
+        // peak is the sum of theirs. An upper bound, and it errs the safe way.
+        gate_buffers_hwm_bytes += o.gate_buffers_hwm_bytes;
         // Summed, not maxed, across partitions: the partitions grow together within a call, so the sum
         // is the figure a per-process footprint wants. An upper bound, and it errs the safe way.
         op_coeffs_slack_bytes += o.op_coeffs_slack_bytes;

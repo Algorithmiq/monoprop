@@ -263,7 +263,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"init_operator_bytes", b.init_operator_bytes},
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
-                                             {"matched_scratch_bytes", b.matched_scratch_bytes},
+                                             {"gate_scratch_bytes", b.gate_scratch_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics, outside total_bytes().
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
@@ -278,6 +278,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_row_restrides", b.row_restrides},
                                              {"d_pool_mapped_bytes", b.pool_mapped_bytes},
                                              {"d_wire_staging_bytes", b.wire_staging_bytes},
+                                             {"d_gate_buffers_hwm_bytes", b.gate_buffers_hwm_bytes},
                                              {"d_pool_free_chunk_bytes", b.pool_free_chunk_bytes}};
     });
 

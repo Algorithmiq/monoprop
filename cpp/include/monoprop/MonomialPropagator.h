@@ -42,6 +42,7 @@
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -137,10 +138,12 @@ public:
         if (partition_group_) {
             return partitioned_operator_memory_usage_();
         }
-        // The stamp array is a member of THIS class, not of the operator, so the operator-side estimate
-        // leaves matched_scratch_bytes at 0 and only this level can fill it in.
+        // The gate scratch is a member of THIS class, not of the operator, so the operator-side estimate
+        // leaves gate_scratch_bytes at 0 and only this level can fill it in.
         auto breakdown = detail::estimate_memory_usage(mp_op_);
-        breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
+        breakdown.gate_scratch_bytes = gate_scratch_.memory_bytes();
+        // Also propagator-owned, and stamped by the engine during the last call rather than measured now.
+        breakdown.gate_buffers_hwm_bytes = gate_scratch_.buffers_hwm_bytes;
         // The transport is shared by all S partitions of this rank, so only partition 0 reports it and
         // the facade's sum over partitions counts the rank's staging exactly once.
         breakdown.wire_staging_bytes = comm_.shm_rank == 0 ? mpi::staging_bytes(comm_) : 0uz;
@@ -315,7 +318,7 @@ protected:
     detail::MPOperator<NumModes> mp_op_;
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
-    detail::MatchedEpochSet matched_scratch_;
+    detail::GateScratch<NumModes> gate_scratch_;
 
     // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
     // structural position bound when it has one.
@@ -471,6 +474,16 @@ private:
     // Do this call's generator shifts span log2(R)? If not, ranks receive nothing (routing::gf2_rank).
     // Not beside check_routing_agreement: at construction the gate list does not exist yet.
     auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
+
+    // One COMMPROF line for the call's gate-exchange volume, under monoprop_COMMPROF. Report-only.
+    auto report_comm_profile_() const -> void;
+
+    // Whether a tracked term may fail the structural cutoff during this call: upper_atol can rescue one,
+    // or the initial operator (never filtered) already holds one somewhere in the world. The gate
+    // exchange's send predicate reads it (Engine.h); it is agreed across the comm by run_gate_loop_ once
+    // per call, because a disagreement would drop records one side expects.
+    auto any_local_term_fails_cutoff_() const -> bool;
+    bool over_cutoff_possible_ = false;
 
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,

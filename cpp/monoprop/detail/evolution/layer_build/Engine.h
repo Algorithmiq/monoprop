@@ -15,11 +15,10 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -30,317 +29,50 @@
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
+#include "monoprop/detail/evolution/layer_build/GateSinks.h"
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
-#include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
+#include "monoprop/detail/evolution/layer_build/TableJoin.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
-#include "monoprop/detail/operator/RowAccess.h"
 
 namespace monoprop::detail {
 
-// Every rotation target must be in cos so the gradient reverse-sweep can un-do this layer's cosine
-// scaling; only freshly inserted half-terms can be absent (see tests/test_infinite_cutoff.py), and those
-// sit in [combined_size, op.size()). Scan cos bits and inserted endpoint bits are disjoint, so only the
-// seam word can carry both — bitwise-or that one, append the rest, keeping blocks ascending/disjoint.
-template <size_t NumModes>
-inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, const MPOperator<NumModes> &op) -> void {
-    const size_t cos_lo = combined_size;
-    const size_t cos_hi = op.store->size();
-    CosineWordBuilder end_b;
-    for (size_t idx = cos_lo; idx < cos_hi; ++idx) {
-        end_b.push_index(idx);
-    }
-    CosMask end_words = end_b.finish();
-    cos_all.total_count += end_words.total_count;
-    if (!cos_all.blocks.empty() && !end_words.blocks.empty()
-        && end_words.blocks.front().first == cos_all.blocks.back().first) {
-        cos_all.blocks.back().second |= end_words.blocks.front().second;
-        cos_all.blocks.insert(cos_all.blocks.end(), end_words.blocks.begin() + 1, end_words.blocks.end());
-    }
-    else {
-        cos_all.blocks.insert(cos_all.blocks.end(), end_words.blocks.begin(), end_words.blocks.end());
-    }
-}
-
-// A sink owns the divergent state and supplies the emission surfaces — self-resolve, cross-rank
-// resolve/process, deferred self-insert — plus finalize. Each monomorphizes: no run-time fused/graph branch.
-
-// Graph-build sink: accumulates the per-rank PartnerAcc endpoints and assembles a LayerCore at finalize.
-// wants_values=false — the scan captures no coeffs and every rotation records only (index, phase).
-template <size_t NumModes>
-struct GraphSink {
-    static constexpr bool wants_values = false;
-    [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
-    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
-    using Response = TermIndex;
-    static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
-
-    size_t R;
-    size_t my_rank;
-    std::vector<PartnerAcc> acc;
-    size_t def_in_base_ = 0; // deferred self-miss bases into acc[my_rank]
-    size_t def_out_base_ = 0;
-    std::vector<size_t> in_base_; // cross-rank per-rank base into acc[s].in_entries (set in prepare)
-
-    GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
-
-    auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
-        acc[my_rank].in_entries.push_back({found, phase});
-        acc[my_rank].out_entries.push_back({src, phase});
-    }
-    auto prepare_deferred(size_t n_miss) -> void {
-        def_in_base_ = acc[my_rank].in_entries.size();
-        def_out_base_ = acc[my_rank].out_entries.size();
-        acc[my_rank].in_entries.resize(def_in_base_ + n_miss);
-        acc[my_rank].out_entries.resize(def_out_base_ + n_miss);
-    }
-    auto emit_deferred(size_t k, size_t idx, size_t src, int phase, double /*v_src*/) -> void {
-        acc[my_rank].in_entries[def_in_base_ + k] = {idx, phase};
-        acc[my_rank].out_entries[def_out_base_ + k] = {src, phase};
-    }
-
-    // Cross-rank (R>1). Send buffer = the plain query stream (no value fusion). The exchange is positional:
-    // responses[s][q] must answer incoming[s][q], one resolution per query.
-    auto send_buffer(std::vector<VecZ> &queries,
-                     std::vector<std::vector<double>> & /*vals*/,
-                     std::vector<VecZ> & /*scratch*/) -> std::vector<VecZ> & {
-        return queries;
-    }
-    auto prepare(const IncomingProbe<NumModes> & /*pr*/,
-                 size_t rank_count,
-                 MPOperator<NumModes> & /*op*/,
-                 const std::vector<std::vector<Response>> &responses) -> void {
-        in_base_.assign(rank_count, 0);
-        for (size_t s = 0; s < rank_count; ++s) {
-            in_base_[s] = acc[s].in_entries.size();
-            acc[s].in_entries.resize(in_base_[s] + responses[s].size());
-        }
-    }
-    auto on_resolved(size_t g,
-                     size_t s,
-                     size_t q,
-                     size_t ip,
-                     const IncomingProbe<NumModes> &pr,
-                     const std::vector<VecZ> & /*incoming*/) -> Response {
-        acc[s].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
-        return static_cast<TermIndex>(ip);
-    }
-    auto process_reserve(const std::vector<std::vector<Response>> & /*inc_r*/,
-                         size_t /*rank_count*/,
-                         size_t /*my_rank*/) -> void {}
-    auto on_response_block(size_t r,
-                           const std::vector<Response> &resp,
-                           const std::vector<size_t> &srcs,
-                           const VecZ &qbuf) -> void {
-        auto &out = acc[r].out_entries;
-        const size_t base = out.size();
-        const size_t nq = resp.size();
-        const QueryForm form = querier_form();
-        out.resize(base + nq);
-        size_t off = 0;
-        for (size_t q = 0; q < nq; ++q) {
-            assert(resp[q] != std::numeric_limits<TermIndex>::max() && "resolver must insert absent cross-rank terms");
-            out[base + q] = {srcs[q], QueryWire<NumModes>::phase_at(qbuf, off)};
-            off = QueryWire<NumModes>::next_off(qbuf, form, off);
-        }
-    }
-
-    // Drains the per-rank accumulators into the LayerCore's sin_send/sin_recv lists (layout derivation:
-    // see cross_rank_sin_recv_index). cos covers all anticommuting indices, endpoints included, since the
-    // sin_recv apply only adds the sine term.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
-        -> std::shared_ptr<LayerCore> {
-        std::vector<CrossRankPartnerData> partners(R);
-        for (size_t r = 0; r < R; ++r) {
-            const auto &a = acc[r];
-            auto &p = partners[r];
-            const size_t P = a.in_entries.size();
-            const size_t Q = a.out_entries.size();
-            if (P + Q == 0) {
-                continue;
-            }
-            p.in_count = P; // boundary for deriving the sin_recv index list from sin_send (not stored)
-            p.sin_send_indices.resize(P + Q);
-            p.sin_recv_entries.resize(P + Q);
-            for (size_t k = 0; k < P + Q; ++k) {
-                if (k < P) {
-                    const auto &e = a.in_entries[k];
-                    p.sin_send_indices[k] = e.idx;
-                    p.sin_recv_entries[Q + k] = {e.idx, e.phase};
-                }
-                else {
-                    const size_t j = k - P;
-                    const auto &e = a.out_entries[j];
-                    p.sin_send_indices[k] = e.idx;
-                    p.sin_recv_entries[j] = {e.idx, -e.phase};
-                }
-            }
-        }
-        if (out_cos != nullptr) {
-            append_inserted_endpoints<NumModes>(cos_all, combined_size, op);
-            *out_cos = std::move(cos_all);
-        }
-        return build_layer_storage_unified(partners, my_rank);
-    }
-};
-
-// Fused ContractImmediately sink: applies each resolved rotation directly to op_coeffs via the
-// FusedContract record streams (no LayerCore — finalize returns nullptr). wants_values=true: the scan
-// captures the signed pre-cos v_src, and resolve reads v_tgt from op_coeffs (·inv_cos under the cos sweep).
-template <size_t NumModes>
-struct ContractSink {
-    static constexpr bool wants_values = true;
-    // This rank receives fused records, but on_response_block is handed its own plain queries_r;
-    // reading the wrong form there decodes a neighbouring record's phase, i.e. a coefficient sign flip.
-    [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
-    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
-    using Response = double;
-    static auto init_response() -> Response { return 0.0; }
-
-    size_t R;
-    size_t my_rank;
-    FusedContract &fc;
-    const VecD &op_coeffs; // the very array the scan read, not a copy
-    bool fused_scale;      // fused cos sweep active: hit v_tgt recovered as stored·inv_cos
-    double inv_cos;
-    bool schrodinger;                 // fresh cross-rank miss coeff: 0 (Heisenberg) vs state-scored (Schrödinger)
-    Basis basis;                      // Pauli vs Majorana state scoring of fresh cross-rank Schrödinger misses
-    size_t def_base_ = 0;             // deferred self-insert base into fc.inserts
-    size_t cross_base_ = 0;           // cross-rank resolver-half base into fc.cross_half
-    Monomial<NumModes> state_mask_{}; // Schrödinger fresh-insert scoring mask (empty in Heisenberg)
-
-    // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
-    // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
-
-    // Self-resolve hit: both endpoints are local.
-    [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
-        const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
-        fc.hits.push_back(RotationRec{src, found, v_src, v_tgt, static_cast<int32_t>(phase)});
-    }
-    // Deferred self-miss insert: v_tgt filled later (after op_coeffs is extended by the apply).
-    auto prepare_deferred(size_t n_miss) -> void {
-        def_base_ = fc.inserts.size();
-        fc.inserts.resize(def_base_ + n_miss);
-    }
-    [[gnu::always_inline]] auto emit_deferred(size_t k, size_t idx, size_t src, int phase, double v_src) -> void {
-        fc.inserts[def_base_ + k] = RotationRec{src, idx, v_src, /*v_tgt=*/0.0, static_cast<int32_t>(phase)};
-    }
-
-    // Cross-rank (R>1). Send buffer = queries interleaved with their v_src stream into `scratch`
-    // (combined_qv_), so one alltoallv carries query + value.
-    auto send_buffer(std::vector<VecZ> &queries, std::vector<std::vector<double>> &vals, std::vector<VecZ> &scratch)
-        -> std::vector<VecZ> & {
-        scratch.resize(queries.size());
-        for (size_t r = 0; r < queries.size(); ++r) {
-            QueryWire<NumModes>::build_fused(queries[r], vals[r], scratch[r]);
-        }
-        return scratch;
-    }
-    auto prepare(const IncomingProbe<NumModes> &pr,
-                 size_t /*rank_count*/,
-                 MPOperator<NumModes> &op,
-                 const std::vector<std::vector<Response>> & /*responses*/) -> void {
-        state_mask_ = schrodinger ? initial_state_mask<NumModes>(op.initial_state) : Monomial<NumModes>{};
-        cross_base_ = fc.cross_half.size();
-        fc.cross_half.resize(cross_base_ + pr.nq_total);
-    }
-    auto on_resolved(size_t g,
-                     size_t s,
-                     size_t /*q*/,
-                     size_t ip,
-                     const IncomingProbe<NumModes> &pr,
-                     const std::vector<VecZ> &incoming) -> Response {
-        double v_tgt;
-        if (ip < pr.base) {
-            v_tgt = fused_scale ? op_coeffs[ip] * inv_cos : op_coeffs[ip];
-        }
-        else if (schrodinger) {
-            v_tgt = pr.is_paired_at(g) ? algebra_state_phase<NumModes>(basis, pr.mono_at(g), state_mask_) : 0.0;
-        }
-        else {
-            v_tgt = 0.0; // Heisenberg fresh insert
-        }
-        fc.cross_half[cross_base_ + g] = HalfRotationRec{ip,
-                                                         QueryWire<NumModes>::value_at(incoming[s], pr.off_of[g]),
-                                                         static_cast<int32_t>(pr.phase_of[g]),
-                                                         /*is_insert=*/ip >= pr.base};
-        return v_tgt;
-    }
-    auto process_reserve(const std::vector<std::vector<Response>> &inc_r, size_t rank_count, size_t my_rank_) -> void {
-        size_t incoming = 0;
-        for (size_t r = 0; r < rank_count; ++r) {
-            if (r != my_rank_) {
-                incoming += inc_r[r].size();
-            }
-        }
-        fc.cross_half.reserve(fc.cross_half.size() + incoming);
-    }
-    // A querier half always writes a pre-gate term the cos sweep already covered ⇒ is_insert=false.
-    auto on_response_block(size_t /*r*/,
-                           const std::vector<Response> &rval,
-                           const std::vector<size_t> &srcs,
-                           const VecZ &qbuf) -> void {
-        const size_t nq = rval.size();
-        const QueryForm form = querier_form();
-        size_t off = 0;
-        for (size_t q = 0; q < nq; ++q) {
-            const auto nphase = static_cast<int32_t>(-QueryWire<NumModes>::phase_at(qbuf, off));
-            fc.cross_half.push_back(HalfRotationRec{srcs[q], rval[q], nphase, /*is_insert=*/false});
-            off = QueryWire<NumModes>::next_off(qbuf, form, off);
-        }
-    }
-
-    // No LayerCore in the fused path → nullptr. Two-pass fused (k>0 / cos==0 fallback) appends inserted
-    // endpoints so the immediate cos scale covers them; the fused cos sweep covers them in-place instead.
-    auto finalize(CosMask &&cos_all, CosMask *out_cos, size_t combined_size, MPOperator<NumModes> &op)
-        -> std::shared_ptr<LayerCore> {
-        if (out_cos != nullptr && !fused_scale) {
-            append_inserted_endpoints<NumModes>(cos_all, combined_size, op);
-            *out_cos = std::move(cos_all);
-        }
-        return nullptr;
-    }
-};
-
-// Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
+/*! @brief The gate exchange, over a compile-time Sink policy (GateSinks.h).
+ *
+ *  For a gate G, a tracked term v anticommuting with G has partner u = v ^ G owned by one flat slot, and
+ *  the pair rotates iff E(v) or E(u), both adds using the PRE-cos values and phi_v = -phi_u.
+ *
+ *  One and a half rounds. Only an EMITTING v sends a record (key u, phi_v, rot = E(v), [val_v]) to
+ *  owner(u), so round 1 is O(|emitted|), not O(|Anti(G)|). Each slot probes what it received against its
+ *  persistent term table once per record: a hit applies +phi_rec*val_rec onto u iff rot_rec or E(u), and
+ *  if u is SILENT (it sent nothing) stages a response carrying u's pre-gate coefficient; a miss mints u.
+ *  Round 2 delivers the responses, and the absence pass over the records v sent finds the partners nobody
+ *  could answer for. Per pair that is the same two adds with the same values whichever branch supplies
+ *  them, so the three outcomes are exact, not an approximation of the symmetric protocol. The narrative
+ *  argument is in docs/content/docs/features/parallelism.mdx.
+ *
+ *  Graph mode has no coefficients, so no term is silent and no response can be needed: it keeps the
+ *  symmetric one-round predicate its positional replay is proved on. `Sink::wants_responses` switches.
+ */
 template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
-    // A miss keeps the decoded positions it will become a row from (pos_at indexes deferred_pos_flat_).
-    struct DeferredSelfMiss {
-        size_t pos_at;
-        uint32_t k;
-        size_t src;
-        int phase;
-        double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
-    };
     MPOperator<NumModes> &local_op; // scanned, looked up, and grown by the inserts
     mpi::Comm comm;
     size_t R;
     size_t my_rank;
-    // Follower-matched set over [0, combined_size), caller-owned (see MatchedEpochSet). Distinct leaders
-    // → distinct found, so each slot is marked once.
-    MatchedEpochSet &matched;
-    size_t combined_size;
-    std::vector<VecZ> queries_r;
-    std::vector<std::vector<size_t>> src_idx_r;
-    std::vector<DeferredSelfMiss> deferred_self_misses;
-    // Deferred-miss positions, concatenated in miss order; parallel to deferred_self_misses.
-    std::vector<RowPosT> deferred_pos_flat_;
-    // This pass's self-owned queries as positions, straight from the scan: never encoded, so the resolve
-    // below has nothing to decode. Parallel to src_idx_r[my_rank].
-    SelfQueryStage<NumModes> self_stage_;
-    // Scan-captured v_src per query (ContractSink only via Sink::wants_values; empty for GraphSink).
-    std::vector<std::vector<double>> src_val_r;
-    // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
-    std::vector<VecZ> combined_qv_;
-    // Which destination ranks this gate's queries can reach. Dense unless the router is GF(2)-linear;
-    // see mpi::PeerPlan. Derived once per layer in build_layer, never per query.
+    // This gate's join and the other per-gate scratch, propagator-owned so capacity survives the gate;
+    // the protocol's per-row state is in scratch.marks (GateScratch.h).
+    GateScratch<NumModes> &scratch;
+    size_t combined_size; // the pre-layer operator size
+    // Which destination ranks this gate's records can reach. Dense unless the router is GF(2)-linear;
+    // see mpi::PeerPlan. Derived once per layer in build_layer, never per record.
     mpi::PeerPlan plan;
     Sink sink;
 
@@ -348,7 +80,7 @@ struct LayerBuildEngine {
                      mpi::Comm comm_,
                      size_t R_,
                      size_t my_rank_,
-                     MatchedEpochSet &matched_scratch,
+                     GateScratch<NumModes> &scratch_,
                      size_t combined_size_,
                      Sink &&sink_,
                      mpi::PeerPlan plan_ = {}) // dense by default: the tests build the engine directly
@@ -356,207 +88,169 @@ struct LayerBuildEngine {
           comm(comm_),
           R(R_),
           my_rank(my_rank_),
-          matched(matched_scratch),
+          scratch(scratch_),
           combined_size(combined_size_),
-          queries_r(R_),
-          src_idx_r(R_),
           plan(plan_),
-          sink(std::move(sink_)) {
-        matched.begin_gate(combined_size);
-    }
+          sink(std::move(sink_)) {}
 
-    // Resolve this rank's own query stream inline, then clear it so the alltoallv never sends to self.
-    auto resolve_self_queries(bool is_leader_pass) -> void {
-        std::vector<size_t> &ls = src_idx_r[my_rank];
-        std::vector<double> *lv = nullptr;
-        if constexpr (Sink::wants_values) {
-            lv = &src_val_r[my_rank];
-        }
-        // The scan routes a self-owned partner to the stage, never to the wire buffer.
-        resolve_range_(ls, lv, is_leader_pass);
-        self_stage_.clear();
-        ls.clear();
-        if constexpr (Sink::wants_values) {
-            src_val_r[my_rank].clear();
-        }
-    }
+    /*! @brief The round and a half.
+     *
+     *  Exchange the scan's records, probe every record against this slot's term table in ONE batched
+     *  pass, apply the receiver rule to the self stage and then the incoming records in that fixed order,
+     *  exchange the responses the silent hits staged, insert the misses while that is in flight, apply
+     *  the responses, walk the sent records. Taking the scan result by value is what makes the sequence
+     *  unmissable -- nothing else can read the records once they are here.
+     */
+    auto exchange_and_join(FusedScanResult<NumModes> &&scan) -> void {
+        RowMarks &marks = scratch.marks;
+        TableJoin<NumModes> &join = scratch.join;
+        MissStage<NumModes> &misses = scratch.misses;
+        IncomingRecords<NumModes> &pr = scratch.incoming_records;
+        const size_t base = local_op.store->size();
+        misses.clear();
+        pr.nq_total = 0;
+        pr.goff.assign(R + 1, 0);
+        assert(scan.queries[my_rank].empty() && "self-owned records are staged, never encoded");
 
-    // One partner-resolution pass over the given query streams, which it takes ownership of. Round 1
-    // carries the queries (the sink may fuse the v_src stream into them) and the resolver inserts absent
-    // partners in that same round; round 2 returns the answers. Taking the streams here rather than having
-    // the caller assign the members first is what makes the two-pass protocol unmissable — the follower
-    // pass must also drop the queries a leader already matched, and that only holds once the leader pass
-    // has run.
-    auto run_exchange(bool is_leader_pass,
-                      std::vector<VecZ> &&queries,
-                      std::vector<std::vector<size_t>> &&src_idx,
-                      std::vector<std::vector<double>> &&src_val,
-                      SelfQueryStage<NumModes> &&self_stage) -> void {
-        queries_r = std::move(queries);
-        src_idx_r = std::move(src_idx);
-        self_stage_ = std::move(self_stage);
-        // src_val is empty unless Sink::wants_values, so the move is a no-op under GraphSink.
-        src_val_r = std::move(src_val);
-        if (!is_leader_pass && R > 1) {
-            drop_matched_cross_rank_followers();
+        std::optional<mpi::PendingAlltoallv<size_t>> pending;
+        // Round 1 opens here and closes past the decode: the post, the wait and the decode are one stage
+        // because no gate can overlap them with work of its own -- the join's row side needs every record.
+        if (R > 1) {
+            pending.emplace(
+                mpi::begin_alltoallv(scan.queries, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
         }
-        resolve_self_queries(is_leader_pass);
-        if (R <= 1) {
-            return;
+        std::vector<std::span<const size_t>> views;
+        if (pending.has_value()) {
+            scratch.reuse_incoming_wire(R);
+            pending->wait_into(scratch.incoming_wire);
+            decode_incoming_records<NumModes>(slot_streams(scratch.incoming_wire, views), sink.incoming_form(), pr);
         }
-        std::vector<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
-        std::vector<std::vector<size_t>> inc_q;
-        mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, R, is_leader_pass, matched, combined_size, sink);
-        std::vector<int> resp_recv = response_recv_counts();
-        std::vector<std::vector<typename Sink::Response>> inc_r;
-        // The answers retrace the queries, and the pairing is an XOR involution, so the same plan holds.
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan).wait_into(inc_r);
-        process_responses<NumModes>(inc_r, src_idx_r, queries_r, R, my_rank, sink);
-    }
 
-    // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
-    auto drop_matched_cross_rank_followers() -> void {
-        using QW = QueryWire<NumModes>;
-        const QueryForm form = sink.querier_form();
-        for (size_t r = 0; r < R; ++r) {
-            if (r == my_rank) {
-                continue;
-            }
-            VecZ &q = queries_r[r];
-            std::vector<size_t> &s = src_idx_r[r];
-            // Fused: the v_src stream is parallel to the query/source streams, so compact it in lockstep.
-            std::vector<double> *v = nullptr;
-            if constexpr (Sink::wants_values) {
-                v = &src_val_r[r];
-            }
-            const size_t nq = s.size();
-            size_t kept = 0;
-            // Two cursors, since a dropped query has no fixed width; order is the accumulation order.
-            size_t src_off = 0;
-            size_t dst_off = 0;
-            for (size_t k = 0; k < nq; ++k) {
-                const size_t next = QW::next_off(q, form, src_off);
-                if (!matched.is_marked(s[k])) {
-                    dst_off += QW::move_query(q, form, src_off, dst_off);
-                    s[kept] = s[k];
-                    if (v != nullptr) {
-                        (*v)[kept] = (*v)[k];
-                    }
-                    ++kept;
-                }
-                src_off = next;
-            }
-            q.resize(dst_off);
-            s.resize(kept);
-            if (v != nullptr) {
-                v->resize(kept);
-            }
-        }
-    }
+        // Query order IS mint order: the self stage first, then the incoming sources in ascending slot
+        // order, each in its sender's stream order.
+        const size_t n_self = scan.self.size();
+        const std::span<const SentRecord> sent_self(scan.sent[my_rank]);
+        assert(sent_self.size() == n_self && "one sent record per self query");
+        join.begin_queries(n_self + pr.nq_total);
+        // One batched probe of the term table over the whole query space, in resolve order. The table
+        // covers every row of the store (the previous gate's mints were appended by reindex_after_growth),
+        // and a record's partner, if tracked anywhere on this slot, is one of them.
+        join.run(
+            local_op.term_table(),
+            *local_op.store,
+            [&](size_t q) -> uint32_t { return (q < n_self) ? scan.self.tag_of[q] : pr.tag_of[q - n_self]; },
+            [&](size_t q) -> std::span<const RowPosT> {
+                return (q < n_self) ? scan.self.positions_at(q) : pr.positions_at(q - n_self);
+            },
+            [&](size_t /*q*/, size_t row) { marks.set_matched(row); });
 
-    // Sub-step of finish() — call only after both resolve passes complete, or the base+k assignment and
-    // per-miss distinctness break. Misses are pairwise-distinct (mono = source⊕G, ⊕G injective), so miss
-    // k gets base+k in leader-then-follower order.
-    auto insert_deferred_self_misses() -> void {
-        const size_t n_miss = deferred_self_misses.size();
-        if (n_miss == 0) {
-            return;
+        // Both output buffers of the resolve phase are sized here, before the first push, because the
+        // join has just settled the two counts they depend on. Every sink call is keyed on either a
+        // distinct query -- a hit pushes at most one half, a miss mints at most one -- or a distinct
+        // record this slot sent, since a record is answered (round 2, or a self silent hit) or absent but
+        // never both, and a row sends exactly one record because it has exactly one partner. So
+        // |Q| + |sent| bounds the gate's halves, and |Q| - |hits| bounds its mints exactly.
+        size_t n_sent = 0;
+        for (const auto &records : scan.sent) {
+            n_sent += records.size();
         }
-        sink.prepare_deferred(n_miss);
-        // Grow the rows, write each miss's positions, insert; same base+k ordering as insert_absent_terms.
-        // Kept as the dense reference sparse_resolve_tests.cpp differentially tests this path against.
-        const size_t base = local_op.store->grow_rows_geometric(n_miss);
-        for (size_t k = 0; k < n_miss; ++k) {
-            const auto &m = deferred_self_misses[k];
-            local_op.store->set_positions(base + k,
-                                          std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
-            sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
+        sink.reserve_halves(join.queries() + n_sent);
+        misses.reserve(join.queries() - join.hits());
+
+        // Round 2's send buffer. A sink that answers nothing keeps an empty local rather than naming the
+        // shared one, so nothing charges it what an earlier fused call left there.
+        std::vector<VecZ> responses;
+        if constexpr (Sink::wants_responses) {
+            responses.assign(R, VecZ{});
         }
-        local_op.reindex_after_growth(base, n_miss);
+        size_t answered = 0;
+        if (n_self != 0) {
+            answered =
+                join_self<NumModes>(scan.self, join, /*q_base=*/0, marks, my_rank, base, misses, sink, sent_self);
+        }
+        answered += join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink, responses);
+
+        // Round 1 at its widest: the scan's arrays, the delivered records and the staged responses.
+        stamp_gate_buffers_(scan, scratch.incoming_wire, responses, /*extra=*/0);
+        run_round_two_(scan, responses, views, base);
+        absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
+
+        scratch.counters.gates += 1;
+        scratch.counters.records += n_sent;
+        if constexpr (Sink::wants_responses) {
+            scratch.counters.responses += answered;
+        }
     }
 
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {
-        insert_deferred_self_misses();
         return sink.finalize(std::move(cos_all), out_cos, combined_size, local_op);
     }
 
 private:
-    // Response counts are the transpose of the query counts (one answer per query), so passing them as
-    // known_recv_counts skips the response count-Alltoall round.
-    auto response_recv_counts() const -> std::vector<int> {
-        std::vector<int> counts(R);
-        for (size_t r = 0; r < R; ++r) {
-            // One response per query, and src_idx_r[r] holds one source per query: no walk, no division.
-            counts[r] = static_cast<int>(src_idx_r[r].size());
+    /*! @brief Round 2: the responses out, the misses inserted under them, the answers applied.
+     *
+     *  The same verb with the response counts, posted before the inserts so the store's growth overlaps
+     *  the peers' answers. Its slot set is round 1's: the rank shift is an involution, so a slot a record
+     *  came from is a slot this one can send to. The inserts' order against apply_responses is what the
+     *  result depends on, and that is what fixes their place here (mint indices were assigned against
+     *  `base` before this call).
+     */
+    auto run_round_two_(const FusedScanResult<NumModes> &scan,
+                        std::vector<VecZ> &responses,
+                        std::vector<std::span<const size_t>> &views,
+                        size_t base) -> void {
+        std::optional<mpi::PendingAlltoallv<size_t>> answering;
+        if constexpr (Sink::wants_responses) {
+            if (R > 1) {
+                answering.emplace(
+                    mpi::begin_alltoallv(responses, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
+            }
         }
-        return counts;
+        insert_misses<NumModes>(local_op, scratch.misses, base);
+        if constexpr (Sink::wants_responses) {
+            if (answering.has_value()) {
+                std::vector<VecZ> answers;
+                answering->wait_into(answers);
+                // Round 2 at its widest: round 1's buffers are all still in scope under the answers.
+                stamp_gate_buffers_(scan, scratch.incoming_wire, responses, wire_bytes_(answers));
+                apply_responses<NumModes>(scratch.marks, scan.sent, slot_streams(answers, views), sink);
+            }
+        }
     }
 
-    // Batched self-resolve over the term table's group-prefetch find_batch; hits/misses go to the sink
-    // in query order. `lv` is the per-query v_src array parallel to `ls` (read only when Sink::wants_values).
-    static constexpr size_t kResolveBatch = 64;
-    auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
-        -> void {
-        const size_t op_size = local_op.store->size();
-        // Gathered per batch because a matched follower is skipped; offsets stay absolute into pos_flat.
-        std::array<size_t, kResolveBatch> pos_off;
-        std::array<uint32_t, kResolveBatch> k_of;
-        std::array<uint32_t, kResolveBatch> keys;
-        std::array<int, kResolveBatch> phases;
-        std::array<size_t, kResolveBatch> srcs;
-        std::array<double, kResolveBatch> vals;
-        std::array<size_t, kResolveBatch> found;
-        const size_t hi = self_stage_.size();
-        size_t q = 0;
-        while (q < hi) {
-            size_t m = 0;
-            for (; q < hi && m < kResolveBatch; ++q) {
-                const size_t src = ls[q];
-                if (!is_leader_pass && matched.is_marked(src)) {
-                    continue; // follower already matched by a leader → not an independent rotation
-                }
-                pos_off[m] = self_stage_.pos_off[q];
-                k_of[m] = self_stage_.k_of[q];
-                keys[m] = key_of_positions<2 * NumModes>(self_stage_.pos_flat.data() + pos_off[m], k_of[m]);
-                phases[m] = self_stage_.phase_of[q];
-                srcs[m] = src;
-                if constexpr (Sink::wants_values) {
-                    vals[m] = (*lv)[q];
-                }
-                ++m;
-            }
-            if (m == 0) {
-                break;
-            }
-            local_op.term_table().find_batch(
-                *local_op.store,
-                m,
-                [&keys](size_t j) { return keys[j]; },
-                [&](size_t j) { return std::span<const RowPosT>(self_stage_.pos_flat).subspan(pos_off[j], k_of[j]); },
-                std::span<size_t>(found).first(m));
-            for (size_t j = 0; j < m; ++j) {
-                double v_src = 0.0;
-                if constexpr (Sink::wants_values) {
-                    v_src = vals[j];
-                }
-                // kNotFound == kMissingIndex == size_t max, so one bound check covers both.
-                if (found[j] < op_size) {
-                    // Freshly inserted partners (found >= combined_size) skip the mark: combined_size bounds it.
-                    if (is_leader_pass && found[j] < combined_size) {
-                        matched.mark(found[j]);
-                    }
-                    sink.self_hit(srcs[j], found[j], phases[j], v_src);
-                }
-                else {
-                    // The stage dies with this pass and the misses are flushed after both, so copy now.
-                    const size_t at = deferred_pos_flat_.size();
-                    const auto *const first = self_stage_.pos_flat.data() + pos_off[j];
-                    deferred_pos_flat_.insert(deferred_pos_flat_.end(), first, first + k_of[j]);
-                    deferred_self_misses.push_back({at, k_of[j], srcs[j], phases[j], v_src});
-                }
-            }
+    static auto wire_bytes_(const std::vector<VecZ> &wire) -> size_t {
+        size_t bytes = wire.capacity() * sizeof(VecZ);
+        for (const VecZ &slot : wire) {
+            bytes += slot.capacity() * sizeof(size_t);
         }
+        return bytes;
+    }
+
+    /*! @brief Stamps the gate's per-gate buffers at one instant into the call's high-water mark.
+     *
+     *  @param extra Round 2's answers, which are live only at the second sample.
+     *
+     *  None of what it counts can be read back once the gate is over, which is the whole reason the
+     *  field exists; it overlaps the buffers the scratch owns for their capacity, so it is a `d_`
+     *  diagnostic beside the ledger and never a term in it.
+     */
+    auto stamp_gate_buffers_(const FusedScanResult<NumModes> &scan,
+                             const std::vector<VecZ> &incoming,
+                             const std::vector<VecZ> &responses,
+                             size_t extra) -> void {
+        size_t bytes = extra + wire_bytes_(scan.queries) + wire_bytes_(incoming) + wire_bytes_(responses)
+                       + scratch.misses.memory_bytes() + scratch.incoming_records.memory_bytes()
+                       + (scan.self.pos_flat.capacity() * sizeof(RowPosT))
+                       + (scan.self.pos_off.capacity() * sizeof(size_t)) + (scan.self.k_of.capacity() * 2)
+                       + (scan.self.phase_of.capacity()) + (scan.self.rot_of.capacity())
+                       + (scan.self.val_of.capacity() * sizeof(double)) + (scan.self.tag_of.capacity() * 4);
+        for (const auto &records : scan.sent) {
+            bytes += records.capacity() * sizeof(SentRecord);
+        }
+        for (const auto &c0 : scan.sent_c0) {
+            bytes += c0.capacity() * sizeof(double);
+        }
+        scratch.buffers_hwm_bytes = std::max(scratch.buffers_hwm_bytes, bytes);
     }
 };
 
@@ -565,7 +259,13 @@ static inline auto empty_coeffs() -> const VecD & {
     return coeffs;
 }
 
-// Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
+/*! @brief Primary-path layer builder: one fused scan, one exchange, one join into the chosen sink.
+ *
+ *  See LayerBuilder.h. `over_cutoff_possible` is the caller's per-call flag
+ *  (MonomialPropagator::run_gate_loop_): true when a tracked term may fail the structural cutoff, which
+ *  widens the scan's send predicate to every anticommuting term. It must be agreed across the comm, or
+ *  one side drops records the other expects.
+ */
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
@@ -575,7 +275,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  const std::optional<double> &upper_atol,
                  const std::optional<double> &param,
                  std::optional<size_t> only_rotate_len_k,
-                 MatchedEpochSet &matched_scratch,
+                 bool over_cutoff_possible,
+                 GateScratch<NumModes> &scratch,
                  mpi::Comm comm,
                  CosMask *out_cos = nullptr,
                  FusedContract *fused_contract = nullptr,
@@ -590,16 +291,19 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // Hoisted here because mpi::geometry can reach the communicator, so it must never run per term.
     const routing::Router router = router_for<NumModes>(comm);
     assert(router.flat_world() == R);
+    // Under linear routing every record for THIS generator lands on the rank this rank's own index XOR
+    // rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise.
+    const auto plan =
+        mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
 
-    // Fused cos sweep: fold the per-gate cosine scale into the scan's own coefficient pass. No length cap only (a
-    // popcount>k hit is outside the per-index cos set, so 1/cos recovery would be wrong) and cos!=0 (else
-    // recovery is impossible; two-pass fallback). cos is even, so the sweep's cos(2·build_angle) matches
-    // the apply's cos(2·apply_angle) bit-for-bit.
+    // Fused cos sweep: fold the per-gate cosine into the scan's own coefficient pass. No length cap only
+    // (a popcount>k term is outside the per-index cos set) and cos!=0. cos is even, so the sweep's
+    // cos(2*build_angle) matches the apply's cos(2*apply_angle) bit-for-bit.
     const double cos_build = (use_fused && param.has_value()) ? std::cos(2.0 * param.value()) : 1.0;
     const bool fused_scale = use_fused && !only_rotate_len_k.has_value() && fused_scale_coeffs != nullptr
                              && param.has_value() && cos_build != 0.0;
@@ -609,38 +313,43 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
-    // An identity generator anticommutes with nothing: the scan returns on its empty fold-column set
-    // with no query, no cosine block and no coefficient swept, and run_exchange's three collectives per
-    // pass would carry no payload. The generator list is replicated, so skipping needs no agreement.
-    // (These are the identity monomials a gate whose every term fell below its atol expands to; a zero
-    // chemical potential alone contributes 60 of the 60-site Hubbard's 476 generators per Trotter
-    // layer.) No gate is merged: a no-op gate is simply not exchanged for, and the layer is still built.
+    // An identity generator anticommutes with nothing, so there is nothing to scan or exchange. The
+    // generator list is replicated, so skipping it needs no agreement.
     const bool identity_gen = !gen.any();
-    // Under linear routing every query for THIS generator lands on the rank whose index is this rank's
-    // own XOR rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise, which
-    // is today's collective.
-    const auto plan =
-        mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
 
     FusedScanResult<NumModes> fused;
     CosMask cos_all;
+    // An identity generator skips the scan, so the fold's words it would have produced are emptied here.
+    scratch.nz.clear();
     if (!identity_gen) {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
+        // The fresh partner's pre-gate coefficient is state-scored only in the Schrödinger picture, and
+        // only the fused path needs it on the sender side (graph replay reads it off the extended vector).
+        std::optional<Monomial<NumModes>> state_mask;
+        if (use_fused && schrodinger) {
+            state_mask = initial_state_mask<NumModes>(local_op.initial_state);
+        }
         fused = with_algebra<NumModes>(basis, [&]<typename A>() {
-            return fused_find_and_collect<NumModes, A>(local_op,
-                                                       gen,
-                                                       cut_eval,
-                                                       cut_st,
-                                                       coeffs,
-                                                       only_rotate_len_k,
-                                                       router,
-                                                       my_rank,
-                                                       /*capture_values=*/use_fused,
-                                                       sweep_ptr,
-                                                       cos_build);
+            // capture_values selects the fused sink downstream, so it is a compile-time property of the
+            // whole scan rather than a flag each record re-tests.
+            auto run_scan = [&]<bool CaptureValues>() {
+                return fused_find_and_collect<NumModes, A, CaptureValues>(local_op,
+                                                                          gen,
+                                                                          cut_eval,
+                                                                          cut_st,
+                                                                          coeffs,
+                                                                          only_rotate_len_k,
+                                                                          over_cutoff_possible,
+                                                                          my_rank,
+                                                                          router,
+                                                                          scratch,
+                                                                          sweep_ptr,
+                                                                          cos_build,
+                                                                          state_mask ? &*state_mask : nullptr);
+            };
+            return use_fused ? run_scan.template operator()<true>() : run_scan.template operator()<false>();
         });
         if (fused.cos_blocks.size() == 1) {
-            // The serial scan produces a single cosine block set — take it wholesale.
             cos_all = std::move(fused.cos_blocks[0]);
         }
         else {
@@ -658,48 +367,32 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              comm,
                                              R,
                                              my_rank,
-                                             matched_scratch,
+                                             scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink),
                                              plan);
-        // LayerBuildEngine construction stays outside the test: its ctor sizes the caller-owned matched
-        // scratch, which is reported as matched_scratch_bytes, so skipping it would move that telemetry
-        // when a propagator's first gate is identity. The ctor is O(R).
         if (!identity_gen) {
-            eng.run_exchange(/*is_leader_pass=*/true,
-                             std::move(fused.leader_queries),
-                             std::move(fused.leader_src),
-                             std::move(fused.leader_val),
-                             std::move(fused.leader_self));
-            eng.run_exchange(/*is_leader_pass=*/false,
-                             std::move(fused.follower_queries),
-                             std::move(fused.follower_src),
-                             std::move(fused.follower_val),
-                             std::move(fused.follower_self));
+            eng.exchange_and_join(std::move(fused));
         }
-
         return eng.finish(std::move(cos_all), out_cos);
     };
 
     std::shared_ptr<LayerCore> storage;
     if (use_fused) {
-        const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0; // pre-cos recovery factor for hit v_tgt
-        storage = run(ContractSink<NumModes>{.R = R,
-                                             .my_rank = my_rank,
-                                             .fc = *fused_contract,
-                                             .op_coeffs = coeffs,
+        // fl(1/cos_build), once per gate, which is exactly where the two-pass protocol computed it.
+        const double inv_cos = fused_scale ? 1.0 / cos_build : 1.0;
+        storage = run(ContractSink<NumModes>{.fc = *fused_contract,
                                              .fused_scale = fused_scale,
-                                             .inv_cos = inv_cos,
-                                             .schrodinger = schrodinger,
-                                             .basis = basis});
+                                             .op_coeffs = coeffs,
+                                             .cos_build = cos_build,
+                                             .inv_cos = inv_cos});
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});
     }
-
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the
     // post-insert operator size: the fold truncated to it reproduces the "all anticommuting" cos
-    // bit-for-bit with no stored bitmap. Fused mode has no LayerCore to stamp.
+    // bit-for-bit with no stored bitmap.
     if (storage != nullptr) {
         storage->generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
         storage->scaled_count = static_cast<uint64_t>(local_op.store->size());

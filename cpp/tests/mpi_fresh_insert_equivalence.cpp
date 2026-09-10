@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Multi-rank equivalence for the Schrödinger fresh-insert arm of ContractSink::on_resolved, where a
-// fresh partner is state-scored (majorana_state_phase / pauli_state_phase) rather than left at 0. The
+// Multi-rank equivalence for the Schrödinger fresh-insert arm of the one-round join, where a fresh
+// partner is state-scored (majorana_state_phase / pauli_state_phase) rather than left at 0: the mint at
+// the receiver and the sender's own absence half both carry that score. The
 // Heisenberg R>1 resolve/apply paths are already covered by exact_upper_atol_rescue and
 // mpi_distributed_layer_equivalence. Only runs at world >= 2. Oracle: serial<->world equivalence --
 // the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol.

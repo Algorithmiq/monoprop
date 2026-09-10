@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The position-form resolve path, differentially against the queries the caller built and the dense
-// Monomial-keyed insert path, neither of which is the code under test.
+// The receiver side of the one-round exchange: the incoming records decoded (IncomingRecords), matched
+// against the operator's term table (TableJoin), joined under the receiver rule (join_incoming) and the
+// misses inserted (MissStage / insert_misses) -- differentially against the records the caller built, the
+// dense Monomial-keyed insert path and the table's by-value find, none of which is the code under test.
 
 #include <boost/test/unit_test.hpp>
 
@@ -26,8 +28,11 @@
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/evolution/layer_build/GateScratch.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
+#include "monoprop/detail/evolution/layer_build/TableJoin.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 #include "monoprop/detail/operator/RowKey.h"
@@ -85,6 +90,39 @@ auto make_op(const std::vector<Monomial<NumModes>> &terms) -> detail::MPOperator
     return op;
 }
 
+// The per-gate state a gate that finds EVERY row anticommuting would leave behind: marks cleared over
+// all of them. This is the receiver-side oracle the decode and join run against; the rows themselves are
+// reached through the operator's term table, spilled ones included, exactly as the engine reaches them.
+template <size_t NumModes>
+struct AllRowsGate {
+    detail::TableJoin<NumModes> join;
+    detail::RowMarks marks;
+    std::vector<detail::EvenParityNzWord> nz;
+
+    explicit AllRowsGate(const detail::MPOperator<NumModes> &op) {
+        const size_t n = op.store->size();
+        for (size_t base = 0; base < n; base += 64) {
+            const size_t k = std::min<size_t>(64, n - base);
+            nz.push_back(detail::EvenParityNzWord{.base = base,
+                                                  .overlap = (k == 64) ? ~uint64_t{0} : ((uint64_t{1} << k) - 1U),
+                                                  .foll = 0});
+        }
+        marks.begin(n, nz);
+    }
+
+    // Probes a decoded batch's keys in record order against the operator's term table.
+    template <typename Records>
+    auto match(const detail::MPOperator<NumModes> &op, const Records &pr) -> void {
+        join.begin_queries(pr.nq_total);
+        join.run(
+            op.term_table(),
+            *op.store,
+            [&](size_t q) { return pr.tag_of[q]; },
+            [&](size_t q) { return pr.positions_at(q); },
+            [](size_t, size_t) {});
+    }
+};
+
 template <size_t NumModes>
 auto draw_distinct(std::mt19937_64 &rng, size_t n) -> std::vector<Monomial<NumModes>> {
     std::vector<Monomial<NumModes>> out;
@@ -117,21 +155,58 @@ auto positions_of(const Monomial<NumModes> &m) -> std::vector<uint16_t> {
     return pos;
 }
 
+// Record q of sender s carries phase (+1, -1 alternating), rot = (q % 3 != 2) and value 0.5 + q.
+auto record_phase(size_t q) -> int {
+    return ((q % 2) == 0) ? 1 : -1;
+}
+auto record_rot(size_t q) -> bool {
+    return (q % 3) != 2;
+}
+auto record_value(size_t q) -> double {
+    return 0.5 + static_cast<double>(q);
+}
+
 template <size_t NumModes>
 auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused) -> std::vector<VecZ> {
     std::vector<VecZ> incoming(queries.size());
     for (size_t s = 0; s < queries.size(); ++s) {
+        VecZ &buf = incoming[s];
         for (size_t q = 0; q < queries[s].size(); ++q) {
-            const int phase = ((q % 2) == 0) ? 1 : -1;
             const auto pos = positions_of<NumModes>(queries[s][q]);
-            detail::QueryWire<NumModes>::push(incoming[s], pos, phase);
+            detail::QueryWire<NumModes>::push(buf, pos, record_phase(q), record_rot(q));
             if (fused) {
-                detail::QueryWire<NumModes>::push_value(incoming[s], 0.5 + static_cast<double>(q));
+                detail::QueryWire<NumModes>::push_value(buf, record_value(q));
             }
         }
     }
     return incoming;
 }
+
+// Records every sink call with its slot, so the join order and the slot attribution are both pinned.
+struct RecordingSink {
+    // No value column: the decode's own value checks above cover it, and join_incoming reads val_of only
+    // when a sink asks for it -- which the Plain half of this case has none of.
+    static constexpr bool wants_values = false;
+    static constexpr bool wants_responses = false;
+
+    struct Rec {
+        char kind; // 'h' hit, 'm' mint
+        size_t slot;
+        size_t idx;
+        double v;
+        int phase;
+        bool foll;
+    };
+    std::vector<Rec> recs;
+    auto hit(size_t slot, size_t row, double v, int phase, bool foll, bool /*own_rot*/) -> void {
+        recs.push_back({'h', slot, row, v, phase, foll});
+    }
+    auto mint(size_t slot, size_t idx, double v, int phase) -> void {
+        recs.push_back({'m', slot, idx, v, phase, false});
+    }
+    auto out_pair(size_t, size_t, int) -> void { BOOST_FAIL("the join never reports out-side entries"); }
+    auto out_unanswered(size_t, size_t, double, int) -> void { BOOST_FAIL("the join never reports out-side entries"); }
+};
 
 template <size_t NumModes>
 auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t n_query, size_t rank_count, bool fused)
@@ -151,7 +226,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
             key.push_back(m.word(w));
         }
-        // A repeat would break the one-index-per-miss contract; the engine gets distinctness from ^G.
+        // A repeat would violate the mint's distinctness precondition; the engine gets it from ^G.
         if (!queried.insert(key).second) {
             continue;
         }
@@ -161,13 +236,18 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     BOOST_REQUIRE(hits_planned > 0);
     BOOST_REQUIRE(misses_planned > 0);
 
+    // The flat record order the receiver must reproduce: senders ascending, each in stream order.
     std::vector<Monomial<NumModes>> expect_mono;
     std::vector<int> expect_phase;
+    std::vector<bool> expect_rot;
+    std::vector<double> expect_value;
     std::vector<size_t> expect_sender;
     for (size_t s = 0; s < rank_count; ++s) {
         for (size_t q = 0; q < queries[s].size(); ++q) {
             expect_mono.push_back(queries[s][q]);
-            expect_phase.push_back(((q % 2) == 0) ? 1 : -1);
+            expect_phase.push_back(record_phase(q));
+            expect_rot.push_back(record_rot(q));
+            expect_value.push_back(fused ? record_value(q) : 0.0);
             expect_sender.push_back(s);
         }
     }
@@ -176,11 +256,17 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
-    const auto pr = detail::probe_incoming_queries<NumModes>(incoming, op, rank_count, form);
-
+    AllRowsGate<NumModes> gate(op);
+    std::vector<std::span<const size_t>> views;
+    detail::IncomingRecords<NumModes> pr;
+    detail::decode_incoming_records<NumModes>(detail::slot_streams(incoming, views), form, pr);
+    gate.match(op, pr);
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
     BOOST_REQUIRE(pr.nq_total > 0);
+    BOOST_REQUIRE_EQUAL(pr.goff.size(), rank_count + 1);
+    BOOST_REQUIRE_EQUAL(pr.goff.back(), pr.nq_total);
     BOOST_REQUIRE_EQUAL(pr.pos_off.size(), pr.nq_total);
+    BOOST_REQUIRE_EQUAL(pr.val_of.empty(), !fused);
 
     std::set<std::vector<uint64_t>> seeded;
     for (const auto &m : seed_terms) {
@@ -193,26 +279,44 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
 
     size_t hits_seen = 0;
     size_t wide_seen = 0;
-    std::vector<Monomial<NumModes>> expected_misses;
+    size_t dropped_seen = 0;
+    std::vector<Monomial<NumModes>> expected_mints; // rot=1 misses, in flat record order
+    std::vector<size_t> expected_mint_slot;
+    std::vector<size_t> expected_hit_row;
     for (size_t g = 0; g < pr.nq_total; ++g) {
         const Monomial<NumModes> &want = expect_mono[g];
-        BOOST_TEST((pr.mono_at(g) == want));
+        const auto pos = pr.positions_at(g);
+        Monomial<NumModes> got;
+        for (const auto p : pos) {
+            got.set(static_cast<size_t>(p));
+        }
+        BOOST_TEST((got == want));
         BOOST_TEST(pr.k_of[g] == want.count());
         BOOST_TEST(pr.phase_of[g] == expect_phase[g]);
-        BOOST_TEST(pr.sender_of[g] == expect_sender[g]);
-        BOOST_TEST(pr.is_paired_at(g) == monoprop::is_paired<NumModes>(want));
+        BOOST_TEST((pr.rot_of[g] != 0) == expect_rot[g]);
+        BOOST_TEST(pr.value_at(g) == expect_value[g]);
+        const size_t s = expect_sender[g];
+        BOOST_TEST(pr.goff[s] <= g);
+        BOOST_TEST(g < pr.goff[s + 1]);
 
         std::vector<uint64_t> key;
         for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
             key.push_back(want.word(w));
         }
         const bool want_hit = seeded.count(key) != 0;
-        BOOST_TEST((pr.idx_of[g] < pr.base) == want_hit);
+        const size_t row = gate.join.hit(g);
+        BOOST_TEST((row != detail::TableJoin<NumModes>::kMissing) == want_hit);
         if (want_hit) {
+            BOOST_TEST((op.store->row(row) == want));
+            expected_hit_row.push_back(row);
             ++hits_seen;
         }
+        else if (expect_rot[g]) {
+            expected_mints.push_back(want);
+            expected_mint_slot.push_back(s);
+        }
         else {
-            expected_misses.push_back(want);
+            ++dropped_seen;
         }
         VecZ scratch;
         const auto want_pos = positions_of<NumModes>(want);
@@ -220,28 +324,67 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
             ++wide_seen;
         }
     }
-    // Vacuous-pass guards: no hit means the confirm never ran, no wide record means the cursor didn't.
+    // Vacuous-pass guards: no hit means the confirm never ran, no wide record means the cursor didn't,
+    // no dropped record means the rot=0 miss arm never ran.
     BOOST_TEST(hits_seen > 0);
     BOOST_TEST(wide_seen > 0);
+    BOOST_TEST(dropped_seen > 0);
+    BOOST_REQUIRE(!expected_mints.empty());
 
-    // The miss list, term for term and index for index: miss j is the j-th absent query in
-    // (sender, record) order and takes row base+j, which is the assignment the insert writes at.
-    BOOST_REQUIRE_EQUAL(pr.miss_g.size(), expected_misses.size());
-    for (size_t j = 0; j < pr.miss_g.size(); ++j) {
-        BOOST_TEST((expect_mono[pr.miss_g[j]] == expected_misses[j]));
-        BOOST_TEST(pr.idx_of[pr.miss_g[j]] == pr.base + j);
+    // The join: every hit applies (no row has its rot bit set, so only rot=1 records rotate a hit),
+    // every rot=1 miss mints at base + j in flat record order, every rot=0 miss is dropped.
+    const size_t base = op.store->size();
+    detail::MissStage<NumModes> misses;
+    RecordingSink sink;
+    std::vector<VecZ> responses; // wants_responses is false, so the join never touches it
+    detail::join_incoming<NumModes>(pr, gate.join, /*q_base=*/0, gate.marks, base, misses, sink, responses);
+    BOOST_REQUIRE_EQUAL(misses.size(), expected_mints.size());
+    size_t mints_seen = 0;
+    size_t hit_calls = 0;
+    for (const auto &r : sink.recs) {
+        if (r.kind == 'm') {
+            BOOST_REQUIRE(mints_seen < expected_mints.size());
+            BOOST_TEST(r.idx == base + mints_seen);
+            BOOST_TEST(r.slot == expected_mint_slot[mints_seen]);
+            Monomial<NumModes> minted;
+            for (const auto p : misses.positions_at(mints_seen)) {
+                minted.set(static_cast<size_t>(p));
+            }
+            BOOST_TEST((minted == expected_mints[mints_seen]));
+            ++mints_seen;
+        }
+        else {
+            ++hit_calls;
+            BOOST_TEST(r.idx < base);
+            BOOST_TEST((std::find(expected_hit_row.begin(), expected_hit_row.end(), r.idx) != expected_hit_row.end()));
+            BOOST_TEST(r.slot < rank_count);
+        }
     }
+    BOOST_TEST(mints_seen == expected_mints.size());
+    // Only rot=1 records rotate an unmarked hit, so the hit calls are the rot=1 hits.
+    size_t rot_hits = 0;
+    for (size_t g = 0; g < pr.nq_total; ++g) {
+        const size_t row = gate.join.hit(g);
+        if (row != detail::TableJoin<NumModes>::kMissing) {
+            BOOST_TEST(gate.marks.received(row));
+            if (expect_rot[g]) {
+                ++rot_hits;
+            }
+        }
+    }
+    BOOST_TEST(hit_calls == rot_hits);
+    BOOST_TEST(rot_hits > 0);
 
-    detail::insert_incoming_misses<NumModes>(op, pr);
+    detail::insert_misses<NumModes>(op, misses, base);
 
     // The second implementation: the dense Monomial-keyed path, sharing no code with set_positions.
     auto ref = make_op<NumModes>(seed_terms);
-    detail::insert_absent_terms<NumModes>(ref, expected_misses.size(), [&](size_t j, size_t base) {
-        assign_row<NumModes>(*ref.store, base + j, expected_misses[j]);
+    detail::insert_absent_terms<NumModes>(ref, expected_mints.size(), [&](size_t j, size_t b) {
+        assign_row<NumModes>(*ref.store, b + j, expected_mints[j]);
     });
 
     BOOST_REQUIRE_EQUAL(op.store->size(), ref.store->size());
-    BOOST_TEST(op.store->size() > pr.base);
+    BOOST_TEST(op.store->size() > base);
     size_t overflow_seen = 0;
     for (size_t i = 0; i < ref.store->size(); ++i) {
         BOOST_TEST((op.store->row(i) == ref.store->row(i)));
@@ -274,12 +417,20 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_narrow_positions) {
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_wide_positions) {
     std::mt19937_64 rng(20260815);
     static_assert(sizeof(detail::OperatorIndex<250>::PosT) == 2, "this case exists to cover the wide store");
-    check_probe_matches_the_queries<250>(rng, /*n_seed=*/60, /*n_query=*/140, /*rank_count=*/4, /*fused=*/false);
+    check_probe_matches_the_queries<250>(rng,
+                                         /*n_seed=*/60,
+                                         /*n_query=*/140,
+                                         /*rank_count=*/4,
+                                         /*fused=*/false);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_fused_layout) {
     std::mt19937_64 rng(20260816);
-    check_probe_matches_the_queries<250>(rng, /*n_seed=*/50, /*n_query=*/120, /*rank_count=*/2, /*fused=*/true);
+    check_probe_matches_the_queries<250>(rng,
+                                         /*n_seed=*/50,
+                                         /*n_query=*/120,
+                                         /*rank_count=*/2,
+                                         /*fused=*/true);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_single_sender) {
@@ -322,61 +473,60 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_set_positions_matches_set) {
     BOOST_TEST(from_pos.overflow_size() == from_mono.overflow_size());
 }
 
-BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
-    // The key identity, isolated: a key folded off decoded positions must equal the one folded off the
-    // dense term the row was written from, or the probe misses a row that is there -- and legally.
+BOOST_AUTO_TEST_CASE(sparse_resolve_join_matches_the_by_value_oracle) {
+    // The gate join against the term table's own by-value find over the same rows: every seeded term,
+    // asked for as a query, matches its own row, and a genuinely absent term matches nothing. Spilled
+    // (wide) rows are in the draw, which is what pins the fingerprint of a row with no position array.
     constexpr size_t kN = 250;
     using PosT = detail::OperatorIndex<kN>::PosT;
     std::mt19937_64 rng(20260819);
     const auto terms = draw_distinct<kN>(rng, 300);
     auto op = make_op<kN>(terms);
-
-    std::vector<PosT> flat;
-    std::vector<size_t> off;
-    std::vector<uint32_t> kk;
-    for (const auto &m : terms) {
-        off.push_back(flat.size());
-        const auto pos = positions_of<kN>(m);
-        flat.insert(flat.end(), pos.begin(), pos.end());
-        kk.push_back(static_cast<uint32_t>(pos.size()));
-    }
-    const auto key_at = [&](size_t q) { return detail::key_of_positions<2 * kN>(flat.data() + off[q], kk[q]); };
-    const auto pos_at = [&](size_t q) { return std::span<const PosT>(flat).subspan(off[q], kk[q]); };
-
-    std::vector<size_t> out(terms.size(), 0);
-    op.term_table().find_batch(*op.store, terms.size(), key_at, pos_at, std::span<size_t>(out));
-    for (size_t i = 0; i < terms.size(); ++i) {
-        BOOST_TEST_INFO("term " << i);
-        BOOST_REQUIRE(out[i] != detail::TermTable::kNotFound);
-        BOOST_TEST(out[i] == i);
-        BOOST_TEST(key_at(i) == detail::key_of<2 * kN>(terms[i]));
-        BOOST_TEST(op.term_table().find(*op.store, terms[i]) == i); // and by value
-    }
+    const uint64_t *labels = routing::linear_basis<2 * kN>().data();
 
     const auto absent = draw_distinct<kN>(rng, 50);
-    std::vector<PosT> aflat;
-    std::vector<size_t> aoff;
-    std::vector<uint32_t> akk;
-    for (const auto &m : absent) {
-        aoff.push_back(aflat.size());
-        const auto pos = positions_of<kN>(m);
-        aflat.insert(aflat.end(), pos.begin(), pos.end());
-        akk.push_back(static_cast<uint32_t>(pos.size()));
-    }
-    std::vector<size_t> aout(absent.size(), 0);
-    op.term_table().find_batch(
-        *op.store,
-        absent.size(),
-        [&](size_t q) { return detail::key_of_positions<2 * kN>(aflat.data() + aoff[q], akk[q]); },
-        [&](size_t q) { return std::span<const PosT>(aflat).subspan(aoff[q], akk[q]); },
-        std::span<size_t>(aout));
+    std::vector<Monomial<kN>> asked = terms;
     size_t genuinely_absent = 0;
-    for (size_t i = 0; i < absent.size(); ++i) {
+    for (const auto &m : absent) {
         // draw_distinct may re-draw a seeded term; only genuinely absent ones are evidence.
-        if (op.term_table().find(*op.store, absent[i]) == detail::TermTable::kNotFound) {
-            BOOST_TEST(aout[i] == detail::TermTable::kNotFound);
+        if (op.term_table().find(*op.store, m) == detail::TermTable::kNotFound) {
+            asked.push_back(m);
             ++genuinely_absent;
         }
     }
     BOOST_TEST(genuinely_absent > 0);
+
+    std::vector<std::vector<PosT>> query_pos;
+    query_pos.reserve(asked.size());
+    for (const auto &m : asked) {
+        query_pos.push_back(positions_of<kN>(m));
+    }
+    AllRowsGate<kN> gate(op);
+    std::vector<uint32_t> keys;
+    for (size_t q = 0; q < asked.size(); ++q) {
+        const uint64_t fp = routing::fingerprint_positions(labels, query_pos[q].data(), query_pos[q].size());
+        BOOST_REQUIRE_EQUAL(fp, routing::linear_hash<2 * kN>(asked[q]));
+        keys.push_back(detail::join_tag(fp));
+    }
+    gate.join.begin_queries(asked.size());
+    gate.join.run(
+        op.term_table(),
+        *op.store,
+        [&](size_t q) { return keys[q]; },
+        [&](size_t q) { return std::span<const PosT>(query_pos[q]); },
+        [](size_t, size_t) {});
+
+    size_t spilled = 0;
+    for (size_t i = 0; i < terms.size(); ++i) {
+        BOOST_REQUIRE(gate.join.hit(i) != detail::TableJoin<kN>::kMissing);
+        BOOST_TEST(gate.join.hit(i) == i);
+        BOOST_TEST(op.term_table().find(*op.store, terms[i]) == i);
+        if (!op.store->row_positions(i).inlined()) {
+            ++spilled;
+        }
+    }
+    BOOST_TEST(spilled > 0);
+    for (size_t q = terms.size(); q < asked.size(); ++q) {
+        BOOST_TEST(gate.join.hit(q) == detail::TableJoin<kN>::kMissing);
+    }
 }

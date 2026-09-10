@@ -128,23 +128,30 @@ public:
         return find(store, key_of_positions<2 * NumModes>(pos.data(), k), std::span<const PosT>(pos.data(), k));
     }
 
-    /*! @brief Probes @a n queries in order: out[q] = the confirmed row of query q, or kNotFound.
+    /*! @brief Probes @a n queries in order, out[q] = the confirmed row of query q, or @a not_found.
      *
-     *  `key_of(q)` is query q's join key and `pos_of(q)` its ascending positions (the confirm). Same
-     *  result as n calls to find(), query by query; the group pipeline overlaps the three dependent
-     *  misses of a probe (slot line, chain walk, row) across kGroup queries, and a prefilter match the
+     *  `key_of(q)` is query q's join key and `pos_of(q)` its ascending positions (the confirm).
+     *  `on_hit(q, row)` runs at every confirm, in query order within a group.
+     *
+     *  Same result as n calls to find(), query by query. The group pipeline overlaps the three dependent
+     *  misses of a probe (slot line, chain walk, row) across kGroup queries; a prefilter match that the
      *  row refutes resumes the chain synchronously, which a 32-bit collision is rare enough to afford.
+     *
+     *  @return How many queries confirmed a row.
      */
-    template <size_t NumModes, typename KeyOf, typename PosOf>
+    template <size_t NumModes, typename KeyOf, typename PosOf, typename OnHit>
     auto find_batch(const OperatorIndex<NumModes> &store,
                     size_t n,
                     KeyOf &&key_of,
                     PosOf &&pos_of,
-                    std::span<size_t> out) const -> void {
+                    OnHit &&on_hit,
+                    std::span<TermIndex> out,
+                    TermIndex not_found) const -> size_t {
         assert(out.size() >= n && "one output slot per query");
+        size_t hits = 0;
         if (rows_ == 0) {
-            std::fill_n(out.begin(), n, kNotFound);
-            return;
+            std::fill_n(out.begin(), n, not_found);
+            return 0;
         }
         std::array<bool, kGroup> cand{};
         std::array<size_t, kGroup> at{};
@@ -174,16 +181,25 @@ public:
                 }
             }
             for (size_t j = 0; j < g; ++j) {
+                const size_t q = base + j;
                 if (!cand[j]) {
-                    out[base + j] = kNotFound;
+                    out[q] = not_found;
                     continue;
                 }
-                const auto pos = pos_of(base + j);
+                const auto pos = pos_of(q);
                 const size_t first = slots[at[j]] & mask_;
-                out[base + j] =
+                const size_t row =
                     store.row_eq_positions(first, pos) ? first : find_from_(store, (at[j] + 1) & mask_, pf[j], pos);
+                if (row == kNotFound) {
+                    out[q] = not_found;
+                    continue;
+                }
+                out[q] = static_cast<TermIndex>(row);
+                ++hits;
+                on_hit(q, row);
             }
         }
+        return hits;
     }
 
     /*! @brief The hash a key's slot and prefilter are cut from: splitmix64's finalizer over the key.

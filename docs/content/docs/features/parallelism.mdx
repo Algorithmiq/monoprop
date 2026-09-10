@@ -39,8 +39,9 @@ larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 
-Two further variables control which MPI rank owns a term; they belong with the
-distribution axis and are documented under [Rank routing](#rank-routing) below.
+Three further variables belong with the distribution axis rather than this one and are
+documented under [Rank routing](#rank-routing) below: two control which MPI rank owns a term,
+and one reports the gate exchange's wire volume.
 
 ```bash
 # Run 8 partitions instead of one-per-core:
@@ -92,6 +93,19 @@ resident for the whole of it while nothing resting names them. One transport ser
 partitions of a rank, so it is a per-rank figure: exactly one partition reports it and a sum over
 partitions counts a rank's staging once. A pure-MPI rank reports 0, because there its payload
 buffers belong to the in-flight exchange handle and die with the gate that opened the round.
+
+`gate_scratch_bytes` is the per-gate layer-build scratch, which the propagator owns so that its
+capacity survives the gate: the anticommuting fold's words, the protocol's per-row marks, the join's
+hit slots, the miss stage and the decoded incoming records. It carries no state between gates.
+`d_gate_buffers_hwm_bytes` is outside the total for the opposite reason to the fields above: it is
+not a subset of any of them but a quantity no resting field can hold. The records a gate puts on the
+wire, the ones it receives, the responses it stages and the answers it applies are all freed when
+the gate returns, so by the time a caller can ask, nothing of them is left to measure -- yet on a
+wide gate they are the largest thing the call adds to resident memory. The engine therefore stamps
+their combined size at the two instants where the set is widest, and the field carries the maximum
+over the gates of the last `propagate` or `build_graph`. Across partitions the values are summed,
+which is an upper bound rather than a simultaneous figure: each partition's peak is over its own
+timeline.
 
 ### Peak memory of large runs: pin glibc's `mmap` threshold
 
@@ -208,8 +222,10 @@ $\mathrm{key}(M) = h(M) \gg 32$, which a persistent open-addressing table over e
 term is hashed by (`indexing_bytes`: four-byte slots holding a row index below a hash
 prefilter, at a load of at most 0.7). No key is resident: the table folds a row's key off the
 row's own positions when it indexes it -- streaming the store on a rebuild, and reading the rows
-a gate has just minted on an append. A gate's queries are answered by one batched,
-prefetch-pipelined probe per query, with every key match confirmed against the row's positions.
+a gate has just minted on an append -- and the emit path folds the partner's, off the positions
+the partner product has just produced. A record names its partner by that key, and the gate's
+join is one batched, prefetch-pipelined probe per record -- proportional to the records, not to
+the anticommuting set -- with every key match confirmed against the row's positions.
 
 Taking the key as a plain projection rather than a mixed one keeps it linear,
 $\mathrm{key}(M \oplus G) = \mathrm{key}(M) \oplus \mathrm{key}(G)$, so a rank folds the same
@@ -219,6 +235,34 @@ share a key prefix. Collisions become structured -- two terms share a key exactl
 symmetric difference has key zero -- but the labels are `mix64` outputs, so the projection is
 uniform, and a key match was never more than a prefilter: the confirm against the positions is
 what decides a partner, so a collision costs a compare and never a wrong answer.
+
+Every gate is then one exchange round for the terms that rotate. A term $M$ that anticommutes with
+$G$ and passes the rotation gate sends one record — the partner's positions, the rotation phase
+$\varphi(M, G)$, one bit saying whether $M$'s own side rotates, and in the fused path $M$'s pre-gate
+coefficient — to the partner's owner, all of them in one `alltoallv`. The owner of $M \oplus G$ joins
+the key against its own stored terms: a hit is the partner, and the pair rotates if either side asked
+for it, each owner applying the record it received ($\varphi(M \oplus G, G) = -\varphi(M, G)$, so the
+two adds are exactly the two-term rotation); a miss mints the partner. Graph mode records the same
+joins as the layer's in/out endpoint lists, so the replay pairs them positionally without exchanging
+indices.
+
+A pair where both sides rotate is answered by that one round alone: each side receives the other's
+record. Where only one side rotates it is not, because a term below `lower_atol` still owns a
+coefficient its rotating partner needs, and only that term can supply it. Making every such term
+send a record of its own would put the whole anticommuting set on the wire and into the join — in
+the `lower_atol` regime, six times the records for the same rotations. So the *hit* carries the
+answer back instead: a record that lands on a silent row applies its own half there and returns
+that row's coefficient in a second, small message, naming the record by its position in the
+sender's stream. The sender applies its half from the answer. That makes three distinguishable
+outcomes for a record, and they are what tells a tracked partner from an absent one: the partner's
+own record arrived, or an answer arrived, or neither — and neither means absent, because only the
+partner's owner could have replied at all. Every add is the same add the two-pass protocol made,
+with the same value on the same side of the pair, so the round-and-a-half protocol reproduces it
+bit for bit at the volume of the rotations rather than of the anticommuting set.
+
+Graph mode has no coefficients and therefore no silent terms to answer: it keeps the symmetric
+predicate, sending for every anticommuting term whose partner is structurally admissible, which is
+what its positional in/out pairing is proved on.
 
 Linear routing is a switch and not a dial: the rank index takes every bit of $h$ or none of
 them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)` bit for
@@ -238,6 +282,7 @@ that bound into an identity.
 | --- | --- | --- |
 | `monoprop_ROUTING` | `linear` | `splitmix` selects the dense all-to-all; `linear`, or unset, takes every rank bit from $h$ and requires a power-of-two $R$. Any other value is rejected at startup rather than silently defaulting. |
 | `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
+| `monoprop_COMMPROF` | `0` | `1` writes one `COMMPROF` line per slot to stderr at the end of each `propagate` or `build_graph` call, naming the gates that exchanged and the records and answers that slot sent, in total and per gate. Report-only; nothing reads it back. Any other value is rejected at startup. |
 
 ### Single-node (`MPI.COMM_SELF`)
 

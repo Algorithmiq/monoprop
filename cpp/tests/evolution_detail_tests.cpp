@@ -12,169 +12,830 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// MatchedEpochSet, CutoffContext and the self-resolve mark guard driven directly, not through build_layer.
+// The gate exchange (Engine.h): the join, response and absence rules driven directly on a hand-built scan
+// result, the graph sink's endpoint layout, the phase antisymmetry the protocol's exactness rests on, and
+// the receiver rule end to end through propagate() on two-term operators. Plus the CutoffContext predicates.
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <random>
+#include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "monoprop/MonomialPropagator.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
+#include "monoprop/detail/evolution/layer_build/GateSinks.h"
+#include "monoprop/detail/evolution/layer_build/Scan.h"
+#include "monoprop/detail/evolution/layer_build/TableJoin.h"
+#include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
+#include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
 using namespace monoprop;
 using monoprop::detail::CutoffContext;
-using monoprop::detail::MatchedEpochSet;
 
 namespace {
 
-// resolve_range_ touches only wants_values and self_hit, so the engine drives without the cross-rank sink surface.
+// Records every sink surface in call order. wants_responses is false: this sink is the oracle for the
+// symmetric stream graph mode sends, where a silent row sends a record of its own instead of answering.
 struct RecordingSink {
-    static constexpr bool wants_values = false;
-    std::vector<std::pair<size_t, size_t>> hits; // (src, found)
-    auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
+    static constexpr bool wants_values = true;
+    static constexpr bool wants_responses = false;
+    [[nodiscard]] auto incoming_form() const -> detail::QueryForm { return detail::QueryForm::Fused; }
+
+    struct Rec {
+        std::string kind;
+        size_t slot;
+        size_t idx;
+        double v;
+        int phase;
+        bool foll;
+    };
+    std::vector<Rec> recs;
+
+    auto hit(size_t slot, size_t row, double v, int phase, bool foll, bool /*own_rot*/) -> void {
+        recs.push_back({"hit", slot, row, v, phase, foll});
+    }
+    auto mint(size_t slot, size_t idx, double v, int phase) -> void {
+        recs.push_back({"mint", slot, idx, v, phase, false});
+    }
+    auto out_pair(size_t slot, size_t row, int phase) -> void {
+        recs.push_back({"out_pair", slot, row, 0.0, phase, false});
+    }
+    auto out_unanswered(size_t slot, size_t row, double c0, int phase) -> void {
+        recs.push_back({"out_unanswered", slot, row, c0, phase, false});
+    }
+    //! The engine's per-gate bound on the four surfaces above; here it only pre-sizes the log.
+    auto reserve_halves(size_t upper_bound) -> void { recs.reserve(upper_bound); }
 };
 
-// Rows in through the engine's growth door, so the operator's term table follows them.
-auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
-    detail::MPOperator<8> op;
-    detail::insert_absent_terms<8>(op, terms.size(), [&](size_t k, size_t base) {
-        assign_row<8>(*op.store, base + k, terms[k]);
+// The same, for the value path: it answers a hit on a silent row, and its response payload names the row
+// it was read from so a case can assert which row answered.
+struct AnsweringSink : RecordingSink {
+    static constexpr bool wants_responses = true;
+
+    [[nodiscard]] auto silent_value(size_t row) const -> double { return 100.0 + static_cast<double>(row); }
+    auto answer(size_t slot, size_t row, double v, int phase) -> void {
+        recs.push_back({"answer", slot, row, v, phase, false});
+    }
+};
+
+constexpr size_t kN = 8;
+using Op = detail::MPOperator<kN>;
+using RowPosT = detail::OperatorIndex<kN>::PosT;
+
+auto indexed_op(const std::vector<Monomial<kN>> &terms) -> Op {
+    Op op;
+    detail::insert_absent_terms<kN>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<kN>(*op.store, base + k, terms[k]);
     });
     return op;
 }
 
+auto positions_of(const Monomial<kN> &m) -> std::vector<RowPosT> {
+    std::vector<RowPosT> pos;
+    for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+        pos.push_back(static_cast<RowPosT>(b));
+    }
+    return pos;
+}
+
+auto fp_of(const Monomial<kN> &m) -> uint64_t {
+    const auto pos = positions_of(m);
+    return routing::fingerprint_positions(routing::linear_basis<2 * kN>().data(), pos.data(), pos.size());
+}
+
+//! The join tag a record for `m` carries: the same map the store's per-row key uses.
+auto tag_of(const Monomial<kN> &m) -> uint32_t {
+    return detail::join_tag(fp_of(m));
+}
+
+// The scenario every engine case below runs: six tracked anticommuting rows t0..t5, each sending one
+// self-addressed record in stream order. Odd rows carry the pivot (foll).
+//
+//   src  key         rot  phi  v      expectation at the join
+//   t0   t1 (hit)    1    +1   0.5    hit: rotates by the record's rot
+//   t1   X  (absent) 1    -1   0.25   mint at base+0
+//   t2   t3 (hit)    0    +1   0.75   hit: rotates by t3's own rot
+//   t3   t2 (hit)    1    -1   1.5    hit on a leader row (foll clear)
+//   t4   t5 (hit)    0    +1   2.0    hit: rotates by t5's own rot
+//   t5   Y  (absent) 0    +1   3.0    dropped: a silent record that missed mints nothing
+//
+// Own rot bits: t0, t1, t3, t5. Nobody sends key t0 or t4, so those are the unanswered ones.
+struct Scenario {
+    std::vector<Monomial<kN>> terms;
+    Monomial<kN> absent_x = indices_to_bitset<kN>({2, 3});
+    Monomial<kN> absent_y = indices_to_bitset<kN>({4, 5});
+    Op op;
+    detail::GateScratch<kN> scratch;
+    // The scan's product: rows 0..5 are the gate's anticommuting set, all in word 0.
+    std::vector<detail::EvenParityNzWord> nz{{.base = 0, .overlap = 0b11'1111, .foll = 0b10'1010}};
+
+    Scenario() {
+        for (size_t i = 0; i < 6; ++i) {
+            terms.push_back(indices_to_bitset<kN>({i, i + 8}));
+        }
+        op = indexed_op(terms);
+        scratch.nz = nz;
+        scratch.marks.begin(terms.size(), nz);
+        for (size_t i = 0; i < terms.size(); ++i) {
+            if (i % 2 == 1) {
+                scratch.marks.set_foll(i);
+            }
+        }
+        for (const size_t row : {0U, 1U, 3U, 5U}) {
+            scratch.marks.set_rot(row);
+        }
+    }
+
+    // Probes `n` queries against the fixture's store, as the engine does between the exchange and the
+    // resolve.
+    template <typename KeyOf, typename PosOf>
+    auto probe(size_t n, KeyOf &&key_of, PosOf &&pos_of) -> void {
+        scratch.join.begin_queries(n);
+        scratch.join.run(op.term_table(), *op.store, key_of, pos_of, [](size_t, size_t) {});
+    }
+
+    //! An R = 1 scan result: every record is self-addressed, so the wire's own slot stays empty.
+    static auto empty_scan() -> detail::FusedScanResult<kN> {
+        detail::FusedScanResult<kN> res;
+        res.queries.assign(1, VecZ{});
+        res.sent.assign(1, {});
+        return res;
+    }
+
+    auto scan(bool with_c0) -> detail::FusedScanResult<kN> {
+        auto res = empty_scan();
+        if (with_c0) {
+            res.sent_c0.assign(1, {});
+            res.sent_c0[0] = {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        }
+        auto push = [&](const Monomial<kN> &key, int phase, bool rot, double v, size_t row) {
+            res.self.keeps_values = true;
+            res.self.push(positions_of(key), phase, tag_of(key), rot, v);
+            res.sent[0].push_back(
+                detail::SentRecord{.row = static_cast<TermIndex>(row), .phase = static_cast<int8_t>(phase)});
+        };
+        push(terms[1], 1, true, 0.5, 0);
+        push(absent_x, -1, true, 0.25, 1);
+        push(terms[3], 1, false, 0.75, 2);
+        push(terms[2], -1, true, 1.5, 3);
+        push(terms[5], 1, false, 2.0, 4);
+        push(absent_y, 1, false, 3.0, 5);
+        return res;
+    }
+
+    // The value path's stream over the same rows: only the four EMITTING rows send, so every record
+    // carries rot=1 and the three answers a record can get are all present at once.
+    //
+    //   src  key         phi  v      outcome
+    //   t0   t1 (hit)    +1   0.5    symmetric pair with t1: both emit, so neither is answered
+    //   t1   t0 (hit)    -1   0.25   the other half of it
+    //   t3   t2 (hit)    -1   1.5    t2 is SILENT -> response, so t3 is answered and not absent
+    //   t5   X  (absent) +1   3.0    miss -> mint, and t5 takes the absence add
+    // Own rot bits are the fixture's {t0, t1, t3, t5}; t2 and t4 are the silent rows.
+    auto value_scan() -> detail::FusedScanResult<kN> {
+        auto res = empty_scan();
+        res.sent_c0.assign(1, {});
+        res.sent_c0[0] = {0.0, 0.0, 0.0, -1.0};
+        auto push = [&](const Monomial<kN> &key, int phase, double v, size_t row) {
+            res.self.keeps_values = true;
+            res.self.push(positions_of(key), phase, tag_of(key), /*rot=*/true, v);
+            res.sent[0].push_back(
+                detail::SentRecord{.row = static_cast<TermIndex>(row), .phase = static_cast<int8_t>(phase)});
+        };
+        push(terms[1], 1, 0.5, 0);
+        push(terms[0], -1, 0.25, 1);
+        push(terms[2], -1, 1.5, 3);
+        push(absent_x, 1, 3.0, 5);
+        return res;
+    }
+};
+
 } // namespace
 
-BOOST_AUTO_TEST_CASE(matched_epoch_begin_gate_clears_all) {
-    MatchedEpochSet set;
-    set.begin_gate(5);
-    set.mark(2);
-    set.mark(4);
-    BOOST_TEST(set.is_marked(2));
-    BOOST_TEST(set.is_marked(4));
-    BOOST_TEST(!set.is_marked(0));
+// The receiver rule on the self slot: hits rotate iff rot_rec or rot_own, a rot=1 miss mints at base+j, a
+// rot=0 miss is dropped, and the absence pass reports the unanswered E-record and the answered leader.
+BOOST_AUTO_TEST_CASE(one_round_join_applies_the_receiver_rule) {
+    Scenario sc;
+    detail::LayerBuildEngine<kN, RecordingSink> eng(sc.op,
+                                                    mpi::Comm{},
+                                                    /*R_=*/1,
+                                                    /*my_rank_=*/0,
+                                                    sc.scratch,
+                                                    /*combined_size_=*/6,
+                                                    RecordingSink{});
+    eng.exchange_and_join(sc.scan(/*with_c0=*/true));
 
-    set.begin_gate(5);
-    BOOST_TEST(!set.is_marked(2));
-    BOOST_TEST(!set.is_marked(4));
-    set.mark(0);
-    BOOST_TEST(set.is_marked(0));
-    BOOST_TEST(!set.is_marked(2));
+    const auto &r = eng.sink.recs;
+    BOOST_REQUIRE_EQUAL(r.size(), 7U);
+    // Join, in stream order.
+    BOOST_TEST(r[0].kind == "hit");
+    BOOST_TEST(r[0].idx == 1U);
+    BOOST_TEST(r[0].v == 0.5);
+    BOOST_TEST(r[0].phase == 1);
+    BOOST_TEST(r[0].foll);
+    BOOST_TEST(r[1].kind == "mint");
+    BOOST_TEST(r[1].idx == 6U); // base + 0
+    BOOST_TEST(r[1].v == 0.25);
+    BOOST_TEST(r[1].phase == -1);
+    BOOST_TEST(r[2].kind == "hit"); // rot=0 record, but t3's own rot is set
+    BOOST_TEST(r[2].idx == 3U);
+    BOOST_TEST(r[2].v == 0.75);
+    BOOST_TEST(r[2].foll);
+    BOOST_TEST(r[3].kind == "hit");
+    BOOST_TEST(r[3].idx == 2U);
+    BOOST_TEST(r[3].phase == -1);
+    BOOST_TEST(!r[3].foll);
+    BOOST_TEST(r[4].kind == "hit"); // rot=0 record, t5's own rot is set
+    BOOST_TEST(r[4].idx == 5U);
+    BOOST_TEST(r[4].v == 2.0);
+    // Absence pass, ascending ordinal: t0 unanswered (nobody sent key t0) with its c0; t2 an answered
+    // leader whose partner's record carried rot. t4 sent rot=0 and received nothing: neither list. The
+    // followers t1/t3/t5 never appear on the out side.
+    BOOST_TEST(r[5].kind == "out_unanswered");
+    BOOST_TEST(r[5].idx == 0U);
+    BOOST_TEST(r[5].v == -1.0);
+    BOOST_TEST(r[5].phase == 1);
+    BOOST_TEST(r[6].kind == "out_pair");
+    BOOST_TEST(r[6].idx == 2U);
+    BOOST_TEST(r[6].phase == 1);
+
+    // The mint landed as a row, and only it.
+    BOOST_REQUIRE_EQUAL(sc.op.store->size(), 7U);
+    BOOST_TEST((sc.op.store->row(6) == sc.absent_x));
+
+    const auto &t = sc.scratch.marks;
+    BOOST_TEST(!t.received(0));
+    BOOST_TEST(t.received(1));
+    BOOST_TEST(t.received(2));
+    BOOST_TEST(t.received(3));
+    BOOST_TEST(!t.received(4));
+    BOOST_TEST(t.received(5));
+    BOOST_TEST(t.partner_rot(1)); // t0's record
+    BOOST_TEST(t.partner_rot(2)); // t3's record
+    BOOST_TEST(!t.partner_rot(3));
+    BOOST_TEST(!t.partner_rot(5));
 }
 
-// Growing the operator only appends to the tail; old slots stay cleared and new slots are usable.
-BOOST_AUTO_TEST_CASE(matched_epoch_tail_grow) {
-    MatchedEpochSet set;
-    set.begin_gate(4);
-    set.mark(3);
-    BOOST_TEST(set.is_marked(3));
-
-    set.begin_gate(8);
-    BOOST_TEST(!set.is_marked(3));
-    set.mark(7);
-    BOOST_TEST(set.is_marked(7));
-    BOOST_TEST(!set.is_marked(3));
+// The absence pass alone, so both out lists are pinned with their order and payload: t0 is the unanswered
+// E-record (with the sender-side c0), t2 the answered leader (rotating through its partner's rot).
+BOOST_AUTO_TEST_CASE(one_round_absence_pass_reports_unanswered_and_answered_leaders) {
+    Scenario sc;
+    RecordingSink sink;
+    auto scan = sc.scan(/*with_c0=*/true);
+    detail::MissStage<kN> misses;
+    sc.probe(
+        scan.self.size(),
+        [&](size_t q) { return scan.self.tag_of[q]; },
+        [&](size_t q) { return scan.self.positions_at(q); });
+    detail::join_self<kN>(scan.self,
+                          sc.scratch.join,
+                          /*q_base=*/0,
+                          sc.scratch.marks,
+                          /*my_rank=*/0,
+                          /*base=*/6,
+                          misses,
+                          sink,
+                          std::span<const detail::SentRecord>(scan.sent[0]));
+    sink.recs.clear();
+    detail::absence_pass<kN>(sc.scratch.marks, scan.sent, scan.sent_c0, sink);
+    BOOST_REQUIRE_EQUAL(sink.recs.size(), 2U);
+    BOOST_TEST(sink.recs[0].kind == "out_unanswered");
+    BOOST_TEST(sink.recs[0].idx == 0U);
+    BOOST_TEST(sink.recs[0].v == -1.0);
+    BOOST_TEST(sink.recs[0].phase == 1);
+    BOOST_TEST(sink.recs[1].kind == "out_pair");
+    BOOST_TEST(sink.recs[1].idx == 2U);
+    BOOST_TEST(sink.recs[1].phase == 1);
+    BOOST_TEST(misses.size() == 1U);
 }
 
-// Reaches the wrap by assigning cur_, which pins the branch and the counter restart but not the fill.
-BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_resets) {
-    MatchedEpochSet set;
-    set.begin_gate(4); // allocate the backing array
-    // Force the counter to the wrap boundary; a stale slot still equals the pre-wrap counter.
-    set.cur_ = std::numeric_limits<MatchedEpochSet::Stamp>::max();
-    set.mark(1);
-    BOOST_TEST(set.is_marked(1));
+// The value path end to end on one slot: the three answers a record can get, and the four sink surfaces
+// they drive. A hit on the silent row t2 stages no message at all here -- the self slot applies nu's half
+// at once -- but it still marks t3 answered, which is what keeps t3 out of the absence pass.
+BOOST_AUTO_TEST_CASE(one_and_half_round_answers_a_silent_hit_and_leaves_it_out_of_the_absence_pass) {
+    Scenario sc;
+    detail::LayerBuildEngine<kN, AnsweringSink> eng(sc.op, mpi::Comm{}, 1, 0, sc.scratch, 6, AnsweringSink{});
+    eng.exchange_and_join(sc.value_scan());
 
-    set.begin_gate(4); // triggers the fill(0) + cur_ = 0 -> ++cur_ = 1 reset
-    BOOST_TEST(set.cur_ == 1U);
-    BOOST_TEST(!set.is_marked(1));
-    set.mark(2);
-    BOOST_TEST(set.is_marked(2));
+    const auto &r = eng.sink.recs;
+    BOOST_REQUIRE_EQUAL(r.size(), 7U);
+    // t0/t1 are symmetric: each hit lands on a row whose own rot is set, so neither is answered.
+    BOOST_TEST(r[0].kind == "hit");
+    BOOST_TEST(r[0].idx == 1U);
+    BOOST_TEST(r[0].v == 0.5);
+    BOOST_TEST(r[1].kind == "hit");
+    BOOST_TEST(r[1].idx == 0U);
+    BOOST_TEST(r[1].v == 0.25);
+    // t3's record hits the silent t2: mu's half applies, and t2 answers with its own coefficient.
+    BOOST_TEST(r[2].kind == "hit");
+    BOOST_TEST(r[2].idx == 2U);
+    BOOST_TEST(r[2].v == 1.5);
+    BOOST_TEST(r[2].phase == -1);
+    BOOST_TEST(r[3].kind == "answer");
+    BOOST_TEST(r[3].idx == 3U);  // the answer lands on the SENDER's row, not the row that answered
+    BOOST_TEST(r[3].v == 102.0); // silent_value(2)
+    BOOST_TEST(r[3].phase == -1);
+    BOOST_TEST(r[4].kind == "mint");
+    BOOST_TEST(r[4].idx == 6U);
+    BOOST_TEST(r[4].v == 3.0);
+    // t0 is the leader of the one symmetric pair; t5's partner was minted remotely, so it alone is
+    // unanswered. t3 is answered and must NOT appear here, which is the whole point of the mark.
+    BOOST_TEST(r[5].kind == "out_pair");
+    BOOST_TEST(r[5].idx == 0U);
+    BOOST_TEST(r[6].kind == "out_unanswered");
+    BOOST_TEST(r[6].idx == 5U);
+    BOOST_TEST(r[6].v == -1.0);
+
+    const auto &t = sc.scratch.marks;
+    BOOST_TEST(t.answered(3));
+    BOOST_TEST(!t.answered(5)); // absent partner, not a silent one
+    BOOST_TEST(!t.answered(0));
+    BOOST_TEST(!t.received(3)); // t2 sent nothing: the answer is the only thing t3 heard
+    BOOST_TEST(t.received(2));
 }
 
-// Reaches the wrap by counting gates, with the mark at epoch 1 so a missing fill would alias onto it.
-BOOST_AUTO_TEST_CASE(matched_epoch_stamp_wrap_reached_by_gate_count) {
-    constexpr auto kMaxStamp = std::numeric_limits<MatchedEpochSet::Stamp>::max();
-    constexpr size_t kPeriod = static_cast<size_t>(kMaxStamp);
-
-    MatchedEpochSet set;
-    set.begin_gate(4);
-    BOOST_REQUIRE(set.cur_ == MatchedEpochSet::Stamp{1});
-    set.mark(1);
-    BOOST_TEST(set.is_marked(1));
-
-    // One increment per gate, folded into a single assertion rather than 65534 of them.
-    bool one_epoch_per_gate = true;
-    for (size_t k = 2; k <= kPeriod; ++k) {
-        set.begin_gate(4);
-        one_epoch_per_gate = one_epoch_per_gate && (static_cast<size_t>(set.cur_) == k);
-    }
-    BOOST_TEST(one_epoch_per_gate);
-    BOOST_TEST(set.cur_ == kMaxStamp); // boundary reached by counting, not by assignment
-
-    // The wrap: cur_ returns to 1, the surviving mark's own stamp, so a false is_marked(1) is the fill.
-    set.begin_gate(4);
-    BOOST_TEST(set.cur_ == MatchedEpochSet::Stamp{1});
-    BOOST_TEST(!set.is_marked(1));
-    set.mark(2);
-    BOOST_TEST(set.is_marked(2));
-    BOOST_TEST(!set.is_marked(1));
-}
-
-// A self-resolve hit whose index the store only grew into after construction is a real hit -- it must reach
-// the sink -- but it is outside the matched set, whose array is sized to combined_size.
-BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
-    std::vector<Monomial<8>> terms;
-    for (size_t i = 0; i < 6; ++i) {
-        terms.push_back(indices_to_bitset<8>({i, i + 8}));
-    }
-    detail::MPOperator<8> op = indexed_op(terms);
-    const size_t combined_size = 4; // rows 4 and 5 stand for terms this layer inserted after construction
-
-    MatchedEpochSet matched;
-    // Pre-grown past combined_size on purpose: an unguarded mark then lands in an observable slot rather
-    // than past the end of epoch_, where it would be silent undefined behaviour.
-    matched.begin_gate(op.size());
-
-    detail::LayerBuildEngine<8, RecordingSink> eng(op,
-                                                   mpi::Comm{},
-                                                   /*R_=*/1,
-                                                   /*my_rank_=*/0,
-                                                   matched,
-                                                   combined_size,
-                                                   RecordingSink{});
-    // The self leg is staged as positions, never encoded, so this feeds the stage the scan would fill.
-    using Eng = detail::LayerBuildEngine<8, RecordingSink>;
-    const auto stage_self = [&eng](const Monomial<8> &m, int phase) {
-        std::vector<Eng::RowPosT> pos;
-        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
-            pos.push_back(static_cast<Eng::RowPosT>(b));
+// The fused sink turns those joins into half-rotations: +phi_rec*v_rec on hits and mints (mints flagged as
+// inserts), -phi_own*v_mu for an answer, -phi_own*c0 for an absence, nothing for the answered leader.
+BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) {
+    Scenario sc;
+    detail::FusedContract fc;
+    // The pre-gate coefficients: a silent row's own slot is where its response payload comes from, so
+    // this is what the answer for t3 must carry.
+    const VecD coeffs = {0.5, 0.25, 12.0, 1.5, 14.0, 3.0};
+    detail::LayerBuildEngine<kN, detail::ContractSink<kN>> eng(
+        sc.op,
+        mpi::Comm{},
+        1,
+        0,
+        sc.scratch,
+        6,
+        // cos_build/inv_cos left at 1.0: this case is about which slot each half lands on and with which
+        // sign, so the recovery factor is the identity and every value passes through.
+        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .op_coeffs = coeffs});
+    eng.exchange_and_join(sc.value_scan());
+    BOOST_REQUIRE_EQUAL(fc.halves.size(), 6U);
+    const auto expect = [&](size_t k, size_t idx, double v, int phase, bool insert) {
+        BOOST_TEST_CONTEXT("half " << k) {
+            BOOST_TEST(fc.halves[k].local_idx == idx);
+            BOOST_TEST(fc.halves[k].v_partner == v);
+            BOOST_TEST(fc.halves[k].phase_signed == phase);
+            BOOST_TEST(fc.halves[k].is_insert == insert);
         }
-        eng.self_stage_.push(pos, phase);
     };
-    stage_self(terms[1], 1);
-    stage_self(terms[5], -1);
-    eng.src_idx_r[0] = {0, 2};
+    expect(0, 1, 0.5, 1, false);
+    expect(1, 0, 0.25, -1, false);
+    expect(2, 2, 1.5, -1, false);
+    expect(3, 3, coeffs[2], 1, false); // the answer: -phi_t3 * c[t2]*(1/cos), and here 1/cos is 1
+    expect(4, 6, 3.0, 1, true);
+    expect(5, 5, -1.0, -1, false); // the absence: -phi_t5 * c0
+    // Every slot is touched at most once, which is what lets the apply run in any order.
+    std::vector<size_t> touched;
+    for (const auto &h : fc.halves) {
+        touched.push_back(h.local_idx);
+    }
+    std::ranges::sort(touched);
+    BOOST_TEST((std::ranges::adjacent_find(touched) == touched.end()));
+}
 
-    eng.resolve_self_queries(/*is_leader_pass=*/true);
+// Round 2 across slots: a response names the record by its position in the SENDER's own stream, and the
+// sender maps that back to the row and phase it kept in `sent`. No row index is ever on the wire, in
+// either direction -- which is what makes the answer two words and independent of the peer's row layout.
+BOOST_AUTO_TEST_CASE(one_and_half_round_response_names_the_record_and_the_sender_maps_it_back) {
+    Scenario sc;
+    // Two flat slots. The peer's stream holds two records; the second hits the silent row t2.
+    std::vector<VecZ> wire(2);
+    using QW = detail::QueryWire<kN>;
+    VecZ &peer = wire[1];
+    QW::push(peer, positions_of(sc.terms[1]), 1, /*rot=*/true);
+    QW::push_value(peer, 0.5);
+    QW::push(peer, positions_of(sc.terms[2]), -1, /*rot=*/true);
+    QW::push_value(peer, 1.5);
 
-    // Both keys are in the store, so both resolve as hits and neither may be deferred as a miss.
-    BOOST_TEST(eng.deferred_self_misses.empty());
-    BOOST_TEST_REQUIRE(eng.sink.hits.size() == 2U);
-    BOOST_TEST(eng.sink.hits[0].second == 1U);
-    BOOST_TEST(eng.sink.hits[1].second == 5U);
-    BOOST_TEST(matched.is_marked(1));
-    BOOST_TEST(!matched.is_marked(4));
-    BOOST_TEST(!matched.is_marked(5));
+    std::vector<std::span<const size_t>> views;
+    detail::IncomingRecords<kN> pr;
+    detail::decode_incoming_records<kN>(detail::slot_streams(wire, views), detail::QueryForm::Fused, pr);
+    BOOST_REQUIRE_EQUAL(pr.nq_total, 2U);
+    sc.probe(pr.nq_total, [&](size_t g) { return pr.tag_of[g]; }, [&](size_t g) { return pr.positions_at(g); });
+
+    AnsweringSink sink;
+    detail::MissStage<kN> misses;
+    std::vector<VecZ> responses(2);
+    detail::join_incoming<kN>(pr, sc.scratch.join, /*q_base=*/0, sc.scratch.marks, /*base=*/6, misses, sink, responses);
+    // t1's own rot is set, so that hit needs no answer; t2's is not, so record 1 of slot 1's stream does.
+    BOOST_TEST(responses[0].empty());
+    BOOST_REQUIRE_EQUAL(responses[1].size(), detail::kResponseWords);
+    BOOST_TEST(responses[1][0] == 1U);
+    BOOST_TEST(detail::decode_value(responses[1][1]) == 102.0); // silent_value(2)
+
+    // The other direction: an answer to record 1 of this slot's own stream to slot 1.
+    std::vector<std::vector<detail::SentRecord>> sent(2);
+    sent[1] = {detail::SentRecord{.row = 4, .phase = 1}, detail::SentRecord{.row = 5, .phase = -1}};
+    std::vector<VecZ> answers(2);
+    detail::push_response(answers[1], 1, 7.5);
+    sink.recs.clear();
+    detail::apply_responses<kN>(sc.scratch.marks, sent, detail::slot_streams(answers, views), sink);
+    BOOST_REQUIRE_EQUAL(sink.recs.size(), 1U);
+    BOOST_TEST(sink.recs[0].kind == "answer");
+    BOOST_TEST(sink.recs[0].slot == 1U);
+    BOOST_TEST(sink.recs[0].idx == 5U); // sent[slot 1][1].row, not the index on the wire
+    BOOST_TEST(sink.recs[0].v == 7.5);
+    BOOST_TEST(sink.recs[0].phase == -1); // sent[slot 1][1].phase, so the half is +1 * 7.5
+    BOOST_TEST(sc.scratch.marks.answered(5));
+    BOOST_TEST(!sc.scratch.marks.answered(4));
+}
+
+// The graph sink's layout: in = [in_pairs (hits on followers), in_mints], out = [out_pairs (answered
+// leaders), out_unanswered], and finalize's sin_send = [in..., out...] / sin_recv = [(out, -phi)..., (in, +phi)...].
+BOOST_AUTO_TEST_CASE(one_round_graph_sink_lays_out_in_and_out_blocks) {
+    Scenario sc;
+    detail::LayerBuildEngine<kN, detail::GraphSink<kN>>
+        eng(sc.op, mpi::Comm{}, 1, 0, sc.scratch, 6, detail::GraphSink<kN>{1, 0});
+    eng.exchange_and_join(sc.scan(/*with_c0=*/false));
+    const auto &a = eng.sink.acc[0];
+    const auto entries = [](const std::vector<detail::PhasedEntry> &v) {
+        std::vector<std::pair<size_t, int>> out;
+        for (const auto &e : v) {
+            out.emplace_back(e.idx, e.phase);
+        }
+        return out;
+    };
+    using P = std::vector<std::pair<size_t, int>>;
+    BOOST_TEST((entries(a.in_pairs) == P{{1, 1}, {3, 1}, {5, 1}}));
+    BOOST_TEST((entries(a.in_mints) == P{{6, -1}}));
+    BOOST_TEST((entries(a.out_pairs) == P{{2, 1}}));
+    BOOST_TEST((entries(a.out_unanswered) == P{{0, 1}}));
+
+    CosMask cos;
+    const auto core = eng.finish(CosMask{}, &cos);
+    BOOST_REQUIRE(core != nullptr);
+    const auto slot = detail::cross_rank_slot(core->cross_rank, 0);
+    BOOST_REQUIRE_EQUAL(slot.sin_send_count, 6U);
+    BOOST_TEST(slot.in_count == 4U);
+    const std::vector<size_t> b = {1, 3, 5, 6, 2, 0};
+    for (size_t k = 0; k < 6; ++k) {
+        BOOST_TEST(detail::slot_sin_send_index(slot, k) == b[k]);
+    }
+    const std::vector<std::pair<size_t, int>> d = {{2, -1}, {0, -1}, {1, 1}, {3, 1}, {5, 1}, {6, -1}};
+    for (size_t k = 0; k < 6; ++k) {
+        BOOST_TEST_CONTEXT("sin_recv " << k) {
+            BOOST_TEST(detail::slot_sin_recv_index(slot, k) == d[k].first);
+            BOOST_TEST(detail::slot_sin_recv_phase(slot, k) == d[k].second);
+        }
+    }
+    // The mint is a rotation endpoint born after the scan, so the cos mask covers it.
+    BOOST_TEST(cos.total_count == 1U);
+}
+
+namespace {
+
+template <size_t N>
+auto majorana_anticommutes(const Monomial<N> &m, const Monomial<N> &g) -> bool {
+    return ((m.count() * g.count()) - m.count_and(g)) % 2 == 1;
+}
+
+template <size_t N, Algebra A>
+auto emit_phase_of(const Monomial<N> &m, const Monomial<N> &g) -> int {
+    const auto ctx = A::make_gen_context(g);
+    const Monomial<N> partner = m ^ g;
+    return A::emit_phase(A::rotation_sign(ctx, m, partner), m.count(), g.count(), m.count_and(g));
+}
+
+template <size_t N>
+auto random_monomial(std::mt19937_64 &rng, size_t k) -> Monomial<N> {
+    Monomial<N> m;
+    std::uniform_int_distribution<size_t> bit(0, Monomial<N>::size() - 1);
+    while (m.count() < k) {
+        m.set(bit(rng));
+    }
+    return m;
+}
+
+} // namespace
+
+// The identity the one-round protocol's exactness rests on: the two endpoints of a pair emit opposite
+// phases, phi(M^G, G) = -phi(M, G), in both algebras. Each side then applies the OTHER side's record with
+// its phase as sent, and gets exactly today's two adds.
+BOOST_AUTO_TEST_CASE(emit_phase_antisymmetry) {
+    constexpr size_t N = 24;
+    std::mt19937_64 rng(20260902);
+    size_t majorana = 0;
+    size_t pauli = 0;
+    for (size_t trial = 0; trial < 6000; ++trial) {
+        const auto m = random_monomial<N>(rng, 1 + (rng() % 8));
+        const auto g = random_monomial<N>(rng, 1 + (rng() % 6));
+        if (majorana_anticommutes<N>(m, g)) {
+            const int fwd = emit_phase_of<N, MajoranaAlgebra<N>>(m, g);
+            const int back = emit_phase_of<N, MajoranaAlgebra<N>>(m ^ g, g);
+            BOOST_REQUIRE_EQUAL(back, -fwd);
+            ++majorana;
+        }
+        if (pauli_anticommutes<N>(m, g)) {
+            const int fwd = emit_phase_of<N, PauliAlgebra<N>>(m, g);
+            const int back = emit_phase_of<N, PauliAlgebra<N>>(m ^ g, g);
+            BOOST_REQUIRE_EQUAL(back, -fwd);
+            ++pauli;
+        }
+    }
+    BOOST_TEST(majorana > 1000U);
+    BOOST_TEST(pauli > 1000U);
+}
+
+/* -- The receiver rule end to end, on two-term Majorana operators ---------------------------------- */
+
+namespace {
+
+constexpr size_t kM = 4;
+
+//! A Majorana term with the given ENCODED (real) coefficient: the dict holds coeff * i^C(k,2).
+auto term(OperatorDict &dict, const VecZ &idx, double encoded) -> void {
+    dict[idx] = hermitian_coefficient<kM>(indices_to_bitset<kM>(idx)) * encoded;
+}
+
+struct Knobs {
+    std::optional<double> lower_atol = std::nullopt;
+    std::optional<double> upper_atol = std::nullopt;
+    unsigned int cutoff = 2 * kM;
+    std::optional<unsigned int> schrodinger = std::nullopt;
+    VecZ initial_state = {};
+};
+
+auto make(const OperatorDict &dict, const Knobs &k) -> MonomialPropagator<kM> {
+    return MonomialPropagator<kM>(dict,
+                                  k.cutoff,
+                                  k.initial_state,
+                                  k.schrodinger,
+                                  MPI_COMM_SELF,
+                                  k.lower_atol,
+                                  k.upper_atol,
+                                  CutoffType::Length,
+                                  std::nullopt);
+}
+
+//! The evolved coefficient of `idx` (nullopt when the term is not tracked), from the live picture vector.
+auto coeff_of(MonomialPropagator<kM> &sim, const VecZ &idx) -> std::optional<double> {
+    const auto want = indices_to_bitset<kM>(idx);
+    const VecD &c = sim.mp_op().get_operator();
+    std::optional<double> out;
+    sim.indexing().for_each([&](const Monomial<kM> &mono, size_t i) {
+        if (mono == want && i < c.size()) {
+            out = c[i];
+        }
+    });
+    return out;
+}
+
+//! One gate G at angle theta over `dict`, with the knobs; returns the propagator for inspection.
+auto run_gate(const OperatorDict &dict,
+              const VecZ &gate,
+              double theta,
+              const Knobs &k,
+              std::optional<size_t> rot_k = {}) -> MonomialPropagator<kM> {
+    auto sim = make(dict, k);
+    sim.propagate({gate}, VecZ{0}, VecD{1.0}, VecD{theta}, rot_k);
+    return sim;
+}
+
+const VecZ kG = {0, 1};  // |G| = 2
+const VecZ kNu = {0, 2}; // anticommutes with G (2*2 - 1 odd); partner mu = {1, 2}
+const VecZ kMu = {1, 2};
+constexpr double kTheta = 0.37;
+
+} // namespace
+
+// Both endpoints below lower_atol: the pair does not rotate, so each coefficient equals its solo
+// evolution (cos-scaled only; a solo term's absent partner contributes nothing).
+BOOST_AUTO_TEST_CASE(receiver_rule_both_below_atol_do_not_rotate) {
+    const Knobs k{.lower_atol = 1e-6};
+    OperatorDict both;
+    term(both, kNu, 1e-12);
+    term(both, kMu, -3e-12);
+    OperatorDict solo_nu;
+    term(solo_nu, kNu, 1e-12);
+    OperatorDict solo_mu;
+    term(solo_mu, kMu, -3e-12);
+    auto pair = run_gate(both, kG, kTheta, k);
+    auto nu = run_gate(solo_nu, kG, kTheta, k);
+    auto mu = run_gate(solo_mu, kG, kTheta, k);
+    BOOST_TEST(pair.size() == 2U);
+    BOOST_TEST(*coeff_of(pair, kNu) == *coeff_of(nu, kNu));
+    BOOST_TEST(*coeff_of(pair, kMu) == *coeff_of(mu, kMu));
+    // And the solo runs minted nothing: below the threshold a term does not emit.
+    BOOST_TEST(nu.size() == 1U);
+    BOOST_TEST(mu.size() == 1U);
+}
+
+// One endpoint below lower_atol: the other's emission rotates the pair, and BOTH adds happen with the
+// same values as with the threshold off -- the below-threshold side's silent record is what makes that
+// bit-identical.
+BOOST_AUTO_TEST_CASE(receiver_rule_one_below_atol_still_rotates_both) {
+    OperatorDict both;
+    term(both, kNu, 1.0);
+    term(both, kMu, 1e-12);
+    auto gated = run_gate(both, kG, kTheta, Knobs{.lower_atol = 1e-6});
+    auto exact = run_gate(both, kG, kTheta, Knobs{});
+    BOOST_TEST(gated.size() == 2U);
+    BOOST_TEST(*coeff_of(gated, kNu) == *coeff_of(exact, kNu));
+    BOOST_TEST(*coeff_of(gated, kMu) == *coeff_of(exact, kMu));
+    // The rotation really happened: the small side moved by sin*|c_nu| >> 1e-12.
+    BOOST_TEST(std::abs(*coeff_of(gated, kMu)) > 0.1);
+}
+
+// A source over the rotation length cap does not emit and is not cos-scaled, but its in-cap partner's
+// record still rotates it: c'_mu = c_mu + sin*phi*c_nu against c'_mu = cos*c_mu + sin*phi*c_nu uncapped,
+// while the in-cap side is bit-identical either way.
+BOOST_AUTO_TEST_CASE(receiver_rule_capped_source_is_rotated_by_its_partner) {
+    const VecZ g = {0, 1, 2};     // odd |G|: anticommutes with disjoint odd-weight terms
+    const VecZ nu = {3};          // pop 1: in cap
+    const VecZ mu = {0, 1, 2, 3}; // pop 4: over cap 3
+    OperatorDict both;
+    term(both, nu, 0.8);
+    term(both, mu, -0.6);
+    auto capped = run_gate(both, g, kTheta, Knobs{}, /*rot_k=*/3);
+    auto uncapped = run_gate(both, g, kTheta, Knobs{});
+    // The same two operations on nu either way (cos*c_nu, then + sin*phi_mu*c_mu); the two apply paths
+    // (fused cos sweep vs the two-pass cos mask) are separate loops the compiler may contract
+    // differently, so this is a 1-ULP check rather than a bit-identity one.
+    BOOST_TEST(std::abs(*coeff_of(capped, nu) - *coeff_of(uncapped, nu))
+               <= std::numeric_limits<double>::epsilon() * std::abs(*coeff_of(uncapped, nu)));
+    const double cos2 = std::cos(2 * kTheta);
+    // Both runs added the same sine term to mu; only the cos scale differs.
+    BOOST_TEST(*coeff_of(capped, mu) - (-0.6) == *coeff_of(uncapped, mu) - (cos2 * -0.6),
+               boost::test_tools::tolerance(1e-15));
+    BOOST_TEST(std::abs(*coeff_of(capped, mu) - (-0.6)) > 0.1); // it did rotate
+}
+
+// upper_atol rescues a partner the structural cutoff rejects: the partner is minted and the source's
+// value is what the wide-cutoff run gives.
+BOOST_AUTO_TEST_CASE(receiver_rule_rescued_partner_is_minted) {
+    const VecZ g = {0, 1, 2};
+    const VecZ nu = {4};          // pop 1 passes cutoff 2
+    const VecZ mu = {0, 1, 2, 4}; // pop 4 fails cutoff 2 and is not paired
+    OperatorDict one;
+    term(one, nu, 0.9);
+    auto rescued = run_gate(one, g, kTheta, Knobs{.upper_atol = 0.0, .cutoff = 2});
+    auto dropped = run_gate(one, g, kTheta, Knobs{.cutoff = 2});
+    auto wide = run_gate(one, g, kTheta, Knobs{});
+    BOOST_TEST(rescued.size() == 2U);
+    BOOST_TEST(dropped.size() == 1U);
+    BOOST_TEST(*coeff_of(rescued, mu) == *coeff_of(wide, mu));
+    BOOST_TEST(*coeff_of(rescued, nu) == *coeff_of(wide, nu));
+    BOOST_TEST(*coeff_of(dropped, nu) == std::cos(2 * kTheta) * 0.9);
+}
+
+// An initial term over the structural cutoff (the initial operator is never filtered) whose partner
+// passes: only the partner emits, and the pair must still rotate on both sides. This is what the per-call
+// over_cutoff_possible flag exists for -- without it the over-cutoff side would never send, and its
+// partner would see it as absent.
+BOOST_AUTO_TEST_CASE(receiver_rule_initial_over_cutoff_term_rotates_with_its_partner) {
+    const VecZ g = {0, 1, 2};
+    const VecZ nu = {4};          // pop 1: passes cutoff 1
+    const VecZ mu = {0, 1, 2, 4}; // pop 4: tracked (initial) but over cutoff 1
+    OperatorDict both;
+    term(both, nu, 0.7);
+    term(both, mu, 0.4);
+    auto tight = run_gate(both, g, kTheta, Knobs{.cutoff = 1});
+    auto wide = run_gate(both, g, kTheta, Knobs{});
+    BOOST_TEST(tight.size() == 2U);
+    BOOST_TEST(*coeff_of(tight, nu) == *coeff_of(wide, nu));
+    BOOST_TEST(*coeff_of(tight, mu) == *coeff_of(wide, mu));
+    BOOST_TEST(std::abs(*coeff_of(tight, mu) - std::cos(2 * kTheta) * 0.4) > 0.1); // rotated, not just scaled
+
+    // With cutoff 0 neither side passes and nothing is rescued: the pair only cos-scales.
+    auto zero = run_gate(both, g, kTheta, Knobs{.cutoff = 0});
+    BOOST_TEST(*coeff_of(zero, nu) == std::cos(2 * kTheta) * 0.7);
+    BOOST_TEST(*coeff_of(zero, mu) == std::cos(2 * kTheta) * 0.4);
+}
+
+// Schrodinger: the sender computes c0(mu), the coefficient an absent paired partner would be minted with,
+// off the partner's positions -- the state score for a fully paired mu, 0 otherwise -- and the scan
+// carries it parallel to the sent ordinals so the absence pass can supply the source's half without the
+// partner.
+BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
+    using A = MajoranaAlgebra<kM>;
+    // G = {1,3,4,5}: nu1={1,2} -> mu1={2,3,4,5} paired, nu2={3} -> mu2={1,4,5} unpaired, nu3={0,3} ->
+    // mu3={0,1,4,5} paired. Mode 1 occupied => mask bit 2 => c0(mu1) = (-1)^(1+2) = -1, c0(mu3) = +1.
+    const auto gen = indices_to_bitset<kM>({1, 3, 4, 5});
+    const std::vector<Monomial<kM>> rows = {indices_to_bitset<kM>({1, 2}),
+                                            indices_to_bitset<kM>({3}),
+                                            indices_to_bitset<kM>({0, 3})};
+    detail::MPOperator<kM> op;
+    detail::insert_absent_terms<kM>(op, rows.size(), [&](size_t k, size_t base) {
+        assign_row<kM>(*op.store, base + k, rows[k]);
+    });
+    const VecD coeffs(rows.size(), 1.0);
+    const CutoffFn<kM> fn = detail::LengthCutoff<kM>{2 * kM, kM};
+    const detail::CutoffEvaluator<kM> eval(fn);
+    const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt, std::cref(coeffs), std::nullopt, 0.3);
+    const auto router = routing::Router::splitmix(1);
+    const auto mask = initial_state_mask<kM>(VecZ{1});
+    detail::GateScratch<kM> scratch;
+    const auto res = detail::fused_find_and_collect<kM, A, /*CaptureValues=*/true>(op,
+                                                                                   gen,
+                                                                                   eval,
+                                                                                   cut,
+                                                                                   coeffs,
+                                                                                   std::nullopt,
+                                                                                   /*over_cutoff_possible=*/false,
+                                                                                   /*my_rank=*/0,
+                                                                                   router,
+                                                                                   scratch,
+                                                                                   nullptr,
+                                                                                   1.0,
+                                                                                   &mask);
+    // All three rows anticommute; the join's row side is built later, from these words.
+    size_t n_anti = 0;
+    for (const auto &w : scratch.nz) {
+        n_anti += static_cast<size_t>(std::popcount(w.overlap));
+    }
+    BOOST_REQUIRE_EQUAL(n_anti, 3U);
+    BOOST_REQUIRE_EQUAL(res.self.size(), 3U); // R = 1: every record is self-addressed and staged
+    const auto &sent = res.sent[0];
+    const auto &c0 = res.sent_c0[0];
+    BOOST_REQUIRE_EQUAL(sent.size(), 3U);
+    BOOST_REQUIRE_EQUAL(c0.size(), 3U);
+    for (size_t j = 0; j < 3; ++j) {
+        BOOST_TEST(sent[j].row == static_cast<TermIndex>(j));
+    }
+    BOOST_TEST(c0[0] == -1.0);
+    BOOST_TEST(c0[1] == 0.0);
+    BOOST_TEST(c0[2] == 1.0);
+    // The rot bit rides with the record: all three sources are above threshold with a structurally
+    // admitted partner, so all three rotate.
+    for (size_t q = 0; q < 3; ++q) {
+        BOOST_TEST(res.self.rot_of[q] == 1);
+        BOOST_TEST(res.self.val_of[q] == 1.0);
+        BOOST_TEST(scratch.marks.rot(q));
+    }
+    // Without a state mask (Heisenberg) no c0 is carried at all.
+    detail::GateScratch<kM> scratch_h;
+    const auto heis = detail::fused_find_and_collect<kM, A, true>(op,
+                                                                  gen,
+                                                                  eval,
+                                                                  cut,
+                                                                  coeffs,
+                                                                  std::nullopt,
+                                                                  false,
+                                                                  0,
+                                                                  router,
+                                                                  scratch_h,
+                                                                  nullptr,
+                                                                  1.0,
+                                                                  nullptr);
+    BOOST_TEST(heis.sent_c0.size() == 0U);
+    BOOST_TEST(heis.sent[0].size() == 3U);
+}
+
+// The position-form state score agrees with the dense one in both algebras.
+BOOST_AUTO_TEST_CASE(state_phase_positions_matches_state_phase) {
+    constexpr size_t N = 24;
+    std::mt19937_64 rng(20260903);
+    for (size_t trial = 0; trial < 400; ++trial) {
+        VecZ occupied;
+        for (size_t m = 0; m < N; ++m) {
+            if ((rng() & 1U) != 0U) {
+                occupied.push_back(m);
+            }
+        }
+        const auto mask = initial_state_mask<N>(occupied);
+        Monomial<N> paired;
+        for (size_t m = 0; m < N; ++m) {
+            if ((rng() & 1U) != 0U) {
+                paired.set(2 * m);
+                paired.set((2 * m) + 1);
+            }
+        }
+        std::vector<uint16_t> pos;
+        for (size_t b = paired.find_first(); b < paired.size(); b = paired.find_next(b)) {
+            pos.push_back(static_cast<uint16_t>(b));
+        }
+        BOOST_TEST(MajoranaAlgebra<N>::state_phase_positions(pos.data(), pos.size(), mask)
+                   == MajoranaAlgebra<N>::state_phase(paired, mask));
+        const auto z_string = random_monomial<N>(rng, 1 + (rng() % 10));
+        std::vector<uint16_t> zpos;
+        for (size_t b = z_string.find_first(); b < z_string.size(); b = z_string.find_next(b)) {
+            zpos.push_back(static_cast<uint16_t>(b));
+        }
+        BOOST_TEST(PauliAlgebra<N>::state_phase_positions(zpos.data(), zpos.size(), mask)
+                   == PauliAlgebra<N>::state_phase(z_string, mask));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {
@@ -190,7 +851,7 @@ BOOST_AUTO_TEST_CASE(cutoff_context_abs_coeff_for) {
     BOOST_TEST(on.abs_coeff_for(3, coeffs) == 0.0); // out of range -> 0
 }
 
-// is_above_upper is the rescue predicate: enabled AND |sin|·|coeff| >= upper_atol (inclusive).
+// is_above_upper is the rescue predicate: enabled AND |sin|*|coeff| >= upper_atol (inclusive).
 BOOST_AUTO_TEST_CASE(cutoff_context_is_above_upper) {
     CutoffContext ctx;
     ctx.abs_sin_val = 0.5;
@@ -205,7 +866,7 @@ BOOST_AUTO_TEST_CASE(cutoff_context_is_above_upper) {
     BOOST_TEST(!ctx.is_above_upper(1.0));
 }
 
-// is_below_sin is the lower-atol drop predicate: enabled AND |sin|·|coeff| <= atol (inclusive).
+// is_below_sin is the lower-atol drop predicate: enabled AND |sin|*|coeff| <= atol (inclusive).
 BOOST_AUTO_TEST_CASE(cutoff_context_is_below_sin) {
     CutoffContext ctx;
     ctx.abs_sin_val = 2.0;
