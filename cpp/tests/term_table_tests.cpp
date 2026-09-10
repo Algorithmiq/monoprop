@@ -117,16 +117,21 @@ auto probe_batch(const Op &op, const std::vector<Monomial<kN>> &asked) -> std::v
         pos.push_back(positions_of(m));
     }
     constexpr TermIndex kMissing = std::numeric_limits<TermIndex>::max();
+    constexpr TermIndex kSkipped = kMissing - 1;
     std::vector<TermIndex> rows(asked.size(), 0);
     size_t on_hit_calls = 0;
-    const size_t hits = op.term_table().find_batch(
+    const auto stats = op.term_table().find_batch(
         *op.store,
         asked.size(),
         [&keys](size_t q) { return keys[q]; },
         [&pos](size_t q) { return std::span<const PosT>(pos[q]); },
+        [](size_t /*q*/) { return false; },
         [&on_hit_calls](size_t /*q*/, size_t /*row*/) { ++on_hit_calls; },
         std::span<TermIndex>(rows),
-        kMissing);
+        kMissing,
+        kSkipped);
+    const size_t hits = stats.hits;
+    BOOST_TEST(stats.skipped == 0U);
     BOOST_TEST(on_hit_calls == hits);
     std::vector<size_t> out;
     out.reserve(asked.size());

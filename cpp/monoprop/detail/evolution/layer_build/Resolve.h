@@ -46,6 +46,8 @@ namespace monoprop::detail {
 //   answer(slot, row, v, phase)         a response arrived for this slot's row: its half is -phase*v
 // plus, once per gate before any of them:
 //   reserve_halves(n)                   at most n of the recording calls above will follow this gate
+// and, iff the sink declares `static constexpr bool pairs_once`, join_self may settle a mutual pair from
+// the leader's record alone, pushing the follower's half through answer() (see join_self).
 // `slot` is always the flat slot of the peer the record came from / went to.
 //
 // How a partner is found is entirely TableJoin's business: the join reads `join.hit(q)` and nothing
@@ -185,6 +187,19 @@ template <size_t NumModes, typename Sink>
     return false;
 }
 
+//! Whether `Sink` settles mutual pairs from the leader's record alone (join_self). False unless declared.
+template <typename Sink>
+[[nodiscard]] consteval auto sink_pairs_once() -> bool {
+    if constexpr (requires { Sink::pairs_once; }) {
+        static_assert(!Sink::pairs_once || Sink::wants_responses,
+                      "pair-once reads the follower's swept slot through silent_value/answer");
+        return Sink::pairs_once;
+    }
+    else {
+        return false;
+    }
+}
+
 /*! @brief The records this slot addressed to itself, in stream order.
  *
  *  They occupy the join's query indices [q_base, q_base + stage.size()), which is the front of the query
@@ -194,6 +209,18 @@ template <size_t NumModes, typename Sink>
  *  which is why a silent hit needs no response here: both halves are on this slot, so the sender's is
  *  applied at once instead of travelling. `answered` is still marked, so the absence pass reads the pair
  *  alike however the answer arrived.
+ *
+ *  PAIR-ONCE (`pair_once`, a sink that declares `pairs_once`). A mutual pair -- both endpoints rotating,
+ *  so each one's record hits the other's source -- is settled by the LEADER's record when that record is
+ *  resolved first: it pushes its own half and, in place of the follower's record, the follower's half
+ *  {source, -phase, silent_value(row)}. That is the very half the follower's record would have
+ *  delivered, because phase_foll = -phase_lead (Engine.h) and the follower's record would have recovered
+ *  fl(fl(v*cos)*inv_cos) = op_coeffs[row]*inv_cos = silent_value(row) from the same swept slot. The
+ *  follower's record is then recognised by `received(source) && foll(source)` -- only its partner's
+ *  record can set `received` on its source, keys being injective per gate -- and is skipped here and at
+ *  the probe (TableJoin::run's skip, on `matched`). In the follower-first order both records take the
+ *  ordinary arm, so the result is the same and only the saving is lost. Mint order is untouched: a
+ *  skipped record counts as a hit, and hits never mint.
  *
  *  @return How many self records were answered without the wire.
  */
@@ -206,11 +233,41 @@ auto join_self(const SelfQueryStage<NumModes> &stage,
                size_t base,
                MissStage<NumModes> &misses,
                Sink &sink,
-               std::span<const SentRecord> sent_self) -> size_t {
+               std::span<const SentRecord> sent_self,
+               bool pair_once = false) -> size_t {
     assert(!Sink::wants_responses || sent_self.size() == stage.size());
+    assert((!pair_once || sink_pairs_once<Sink>()) && "pair-once needs a sink that declares it");
     size_t answered = 0;
     for (size_t q = 0; q < stage.size(); ++q) {
+        [[maybe_unused]] size_t src = 0;
+        [[maybe_unused]] bool src_received = false;
+        if constexpr (sink_pairs_once<Sink>()) {
+            if (pair_once) {
+                src = sent_self[q].row;
+                src_received = marks.received(src);
+                // A skipped probe implies the leader's record settled this pair before this one was reached.
+                assert(!join.skipped(q_base + q) || (src_received && marks.foll(src)));
+                if (src_received && marks.foll(src)) {
+                    continue; // the follower's record of a settled pair: both halves are already pushed
+                }
+            }
+        }
+        // One read of the join's outcome per query, whichever arm takes it; a skipped query has none.
         const size_t row = join.hit(q_base + q);
+        if constexpr (sink_pairs_once<Sink>()) {
+            if (pair_once && !src_received && row != TableJoin<NumModes>::kMissing && marks.rot(row)
+                && marks.foll(row)) {
+                // The leader's record onto a rotating follower whose own record is still to come.
+                marks.set_received(row);
+                marks.set_partner_rot(row);
+                marks.set_received(src);
+                marks.set_partner_rot(src);
+                const int phase = static_cast<int>(stage.phase_of[q]);
+                sink.hit(my_rank, row, stage.value_at(q), phase, /*foll=*/true, /*own_rot=*/true);
+                sink.answer(my_rank, src, sink.silent_value(row), phase);
+                continue;
+            }
+        }
         const bool answer = join_record<NumModes>(marks,
                                                   my_rank,
                                                   row,

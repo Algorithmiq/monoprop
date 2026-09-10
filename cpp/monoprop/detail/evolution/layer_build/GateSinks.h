@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #pragma once
 
 // The two sinks the gate exchange resolves into. A sink owns the divergent state and supplies the
@@ -158,14 +157,22 @@ template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
     static constexpr bool wants_responses = true;
+    //! A mutual pair's two halves from the leader's record alone (Resolve.h join_self): the follower's
+    //! half is silent_value(follower), which is what the follower's own record would have delivered.
+    static constexpr bool pairs_once = true;
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
 
     FusedContract &fc;
-    bool fused_scale;      // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
+    bool fused_scale;       // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
     const VecD &op_coeffs;  // the very array the scan read, not a copy: under the sweep every
                             // anticommuting slot in it already holds fl(c * cos)
     double cos_build = 1.0; // cos(2*theta), the factor the sweep applied
     double inv_cos = 1.0;   // fl(1/cos_build) under the sweep, 1.0 without it
+    // Does an absent partner's half carry a value at all? Only the Schrodinger picture scores a fresh
+    // term's pre-gate coefficient (Scan.h `state_mask`); in Heisenberg `c0` is the literal 0.0 that
+    // absence_pass substitutes. Equal to absence_pass's own `has_c0` by construction: `sent_c0` is
+    // windowed exactly when the scan was given a state mask.
+    bool absences_carry_c0 = false;
 
     /*! @brief One rotation half onto tracked row `row`, from the record that found it.
      *
@@ -196,10 +203,14 @@ struct ContractSink {
         push_half_(HalfRotationRec{row_of_(idx), static_cast<int8_t>(phase), /*is_insert=*/true, v});
     }
     auto out_pair(size_t /*slot*/, size_t /*row*/, int /*phase*/) -> void {}
-    // Pushed in Heisenberg too, where c0 is exactly 0.0: the signed-zero add is what a fresh Heisenberg
-    // partner's source received before, and skipping it would leave a coefficient sitting at -0.0 where
-    // the add turns it into +0.0.
+    // Skipped in Heisenberg, where c0 is exactly 0.0: the half's add is `c += sin*(-phase)*0.0`, which
+    // cannot change any coefficient's VALUE -- its one and only effect is that a coefficient sitting at
+    // -0.0 stays there instead of being turned into +0.0, and -0.0 == +0.0. Keeping it costs a 16-byte
+    // half and one random-access `+=` per mint of every gate.
     auto out_unanswered(size_t /*slot*/, size_t row, double c0, int phase) -> void {
+        if (!absences_carry_c0) {
+            return;
+        }
         push_half_(HalfRotationRec{row_of_(row), static_cast<int8_t>(-phase), /*is_insert=*/false, c0});
     }
     // One allocation per gate instead of a doubling chain: `fc` is built fresh for each gate, so every

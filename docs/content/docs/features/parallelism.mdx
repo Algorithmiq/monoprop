@@ -264,6 +264,23 @@ Graph mode has no coefficients and therefore no silent terms to answer: it keeps
 predicate, sending for every anticommuting term whose partner is structurally admissible, which is
 what its positional in/out pairing is proved on.
 
+A mutual pair whose two terms sit on the *same* slot is settled once rather than twice. Both of its
+records are then staged locally, and whichever is resolved first has the other's row in hand: if that
+is the *leader*'s record — the endpoint that does not carry the pivot bit, the one bit of $G$ that a
+term and its partner always differ on — it applies its own half and, in place of the follower's record,
+the follower's half read straight off the follower's swept coefficient slot. The follower's record is
+then skipped, at its probe as well as at its resolve. That half is bit-identical to the one the
+follower's own record would have delivered, since $\varphi(M \oplus G, G) = -\varphi(M, G)$ and the
+sweep left exactly $\mathrm{fl}(c \cdot \cos)$ in that slot; in the follower-first order both records
+take the ordinary path, so the saving — one probe and one confirm per local mutual pair — is the only
+thing the order decides.
+
+The absent partner's half is skipped outright in the Heisenberg picture. A record whose key missed
+everywhere mints its partner and owes its own side an add of that partner's *pre-gate* coefficient,
+which only the Schrödinger picture scores: in Heisenberg the freshly minted partner had none, so the
+add is $c \mathrel{+}= \sin \cdot (\mp 1) \cdot 0$ — a 16-byte half and one random-access
+read-modify-write per mint of every gate, to add nothing.
+
 Linear routing is a switch and not a dial: the rank index takes every bit of $h$ or none of
 them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)` bit for
 bit. It therefore requires $R$ to be a power of two; any other rank count has no XOR
