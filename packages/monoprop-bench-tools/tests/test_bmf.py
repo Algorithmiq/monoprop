@@ -84,6 +84,30 @@ def test_memory_joins_the_benchmark_of_the_same_operation(tmp_path: Path) -> Non
     }
 
 
+def test_operation_memory_reads_the_rank_sum_of_the_spread(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        memhwm={_ENERGY: 4096},
+        opmemdelta={_ENERGY: {"sum": 1024, "max": 512}},
+    )
+
+    # The footprint and the operation's own cost are separate measures on one benchmark:
+    # the peak spans setup and carries what an earlier row left resident, the delta does not.
+    assert bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME] == {
+        "latency": {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9},
+        "peak-memory": {"value": 4096.0},
+        "operation-memory": {"value": 1024.0},
+    }
+
+
+def test_operation_memory_is_absent_where_no_window_was_opened(tmp_path: Path) -> None:
+    _write(tmp_path, memhwm={_ENERGY: 4096})
+
+    # ``record_memory`` is autouse, ``op_memory`` is not, so a row can have a peak and no
+    # delta. Uploading a zero there would read as an operation that allocated nothing.
+    assert "operation-memory" not in bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]
+
+
 def test_operator_metrics_are_grouped_per_picture_and_model(tmp_path: Path) -> None:
     _write(
         tmp_path,
