@@ -91,6 +91,20 @@ inline auto finalize() -> void {}
 monoprop_EXPORT auto rank(const Comm &comm) -> int;
 monoprop_EXPORT auto size(const Comm &comm) -> int;
 
+/*!
+ * @brief How the flat world of size() is actually built: ranks * partitions.
+ *
+ * Routing needs the split, because an inter-rank message costs a network hop while an inter-partition
+ * one is a shared-memory copy -- size() alone cannot tell them apart. Exported because public template
+ * chains (routing::Router, find_rank) reach it from headers across the hidden-visibility boundary.
+ * Invariant: ranks * partitions == size() for every Kind.
+ */
+struct Geometry {
+    int ranks = 1;      //!< MPI ranks in the world.
+    int partitions = 1; //!< In-process partitions per rank.
+};
+monoprop_EXPORT auto geometry(const Comm &comm) -> Geometry;
+
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {

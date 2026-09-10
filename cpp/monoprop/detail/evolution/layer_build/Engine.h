@@ -36,6 +36,7 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 
@@ -580,6 +581,10 @@ auto build_layer(MPOperator<NumModes> &local_op,
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
+    // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
+    // Hoisted here because mpi::geometry can reach the communicator, so it must never run per term.
+    const routing::Router router = router_for<NumModes>(comm);
+    assert(router.flat_world() == R);
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
@@ -599,36 +604,44 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
-    FusedScanResult<NumModes> fused = [&] {
+    // An identity generator anticommutes with nothing: the scan returns on its empty fold-column set
+    // with no query, no cosine block and no coefficient swept, and run_exchange's three collectives per
+    // pass would carry no payload. The generator list is replicated, so skipping needs no agreement.
+    // (These are the identity monomials a gate whose every term fell below its atol expands to; a zero
+    // chemical potential alone contributes 60 of the 60-site Hubbard's 476 generators per Trotter
+    // layer.) No gate is merged: a no-op gate is simply not exchanged for, and the layer is still built.
+    const bool identity_gen = !gen.any();
+
+    FusedScanResult<NumModes> fused;
+    CosMask cos_all;
+    if (!identity_gen) {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
-        return with_algebra<NumModes>(basis, [&]<typename A>() {
+        fused = with_algebra<NumModes>(basis, [&]<typename A>() {
             return fused_find_and_collect<NumModes, A>(local_op,
                                                        gen,
                                                        cut_eval,
                                                        cut_st,
                                                        coeffs,
                                                        only_rotate_len_k,
-                                                       R,
+                                                       router,
                                                        my_rank,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
                                                        cos_build);
         });
-    }();
-
-    CosMask cos_all;
-    if (fused.cos_blocks.size() == 1) {
-        // The serial scan produces a single cosine block set — take it wholesale.
-        cos_all = std::move(fused.cos_blocks[0]);
-    }
-    else {
-        // Cosine block sets are disjoint and ascending; concatenate in order.
-        for (const auto &block : fused.cos_blocks) {
-            cos_all.total_count += block.total_count;
-            cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+        if (fused.cos_blocks.size() == 1) {
+            // The serial scan produces a single cosine block set — take it wholesale.
+            cos_all = std::move(fused.cos_blocks[0]);
         }
+        else {
+            // Cosine block sets are disjoint and ascending; concatenate in order.
+            for (const auto &block : fused.cos_blocks) {
+                cos_all.total_count += block.total_count;
+                cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+            }
+        }
+        fused.cos_blocks = std::vector<CosMask>{};
     }
-    fused.cos_blocks = std::vector<CosMask>{};
 
     auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
         LayerBuildEngine<NumModes, Sink> eng(local_op,
@@ -638,16 +651,21 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              matched_scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink));
-        eng.run_exchange(/*is_leader_pass=*/true,
-                         std::move(fused.leader_queries),
-                         std::move(fused.leader_src),
-                         std::move(fused.leader_val),
-                         std::move(fused.leader_self));
-        eng.run_exchange(/*is_leader_pass=*/false,
-                         std::move(fused.follower_queries),
-                         std::move(fused.follower_src),
-                         std::move(fused.follower_val),
-                         std::move(fused.follower_self));
+        // LayerBuildEngine construction stays outside the test: its ctor sizes the caller-owned matched
+        // scratch, which is reported as matched_scratch_bytes, so skipping it would move that telemetry
+        // when a propagator's first gate is identity. The ctor is O(R).
+        if (!identity_gen) {
+            eng.run_exchange(/*is_leader_pass=*/true,
+                             std::move(fused.leader_queries),
+                             std::move(fused.leader_src),
+                             std::move(fused.leader_val),
+                             std::move(fused.leader_self));
+            eng.run_exchange(/*is_leader_pass=*/false,
+                             std::move(fused.follower_queries),
+                             std::move(fused.follower_src),
+                             std::move(fused.follower_val),
+                             std::move(fused.follower_self));
+        }
 
         return eng.finish(std::move(cos_all), out_cos);
     };

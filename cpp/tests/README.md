@@ -88,8 +88,13 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
-  scan routing agreement), `evolution_detail_tests.cpp` (MatchedEpochSet +
-  CutoffContext),
+  scan routing agreement under both routers, the routing-agreement check),
+  `routing_tests.cpp` (Router term -> flat-slot map: the splitmix equivalence
+  with `hash % P`, the linear shift identity, the gf2_rank coverage
+  diagnostic, the non-power-of-two throw and the shipped default),
+  `env_config_tests.cpp` (the environment parsers, which throw rather than
+  default on a malformed routing knob),
+  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `chunked_array_tests.cpp` (the pooled chunk allocator and
   the chunked arrays on it: arena reuse, unmapping read from

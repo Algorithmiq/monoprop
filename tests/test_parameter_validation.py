@@ -75,6 +75,29 @@ class TestConstructorValidation:
                 comm=serial_comm,
             )
 
+    def test_schrodinger_cutoff_error_survives_several_partitions(
+        self, serial_comm, monkeypatch
+    ):
+        """The setting must be named even when the partitions raise it concurrently.
+
+        Every partition rejects the same setting, so one of them can be unwinding while its
+        peers are still inside a construction-time collective -- which poisons the in-process
+        comm and replaces the message with the poison. Constructing repeatedly is deliberate:
+        the ordering is a race, so one attempt is not evidence.
+        """
+        monkeypatch.setenv("monoprop_PARTITIONS", "4")
+        num_modes = 64
+        operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=num_modes)
+        for _ in range(8):
+            with pytest.raises(RuntimeError, match="schrodinger_cutoff"):
+                MajoranaPropagator(
+                    operator,
+                    [],
+                    cutoff=4,
+                    schrodinger_cutoff=2 * num_modes,
+                    comm=serial_comm,
+                )
+
 
 class TestGraphAndParameterValidation:
     def test_build_graph_accumulates_layers(self, serial_comm):

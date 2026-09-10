@@ -34,6 +34,7 @@
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
 
@@ -224,9 +225,9 @@ struct FusedScanResult {
 };
 
 // Classify, cut off and emit in one pass over the anticommuting terms. Queries go to the owner of
-// M'=M⊕G (hash%R; self at R==1) in ascending source-index order, so resolve and index assignment are
-// deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every anticommuting
-// coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
+// M'=M⊕G (routing::Router; self at R==1) in ascending source-index order, so resolve and index
+// assignment are deterministic. `fused_scale_coeffs` (no length cap only; must alias coeffs.data()) scales every
+// anticommuting coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
@@ -235,12 +236,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const CutoffContext &cut_st,
                             const VecD &coeffs,
                             std::optional<size_t> only_rotate_len_k,
-                            size_t rank_count,
+                            const routing::Router &router,
                             size_t my_rank,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
+    // The flat world the router indexes: R ranks x S partitions, which is what mpi::size reports.
+    const size_t rank_count = router.flat_world();
     const size_t gen_pop = gen.count();
     const auto ectx = A::make_gen_context(gen);
 
@@ -323,12 +326,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         size_t i,
                         double v_src,
                         bool is_follower) {
-            // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            // Must be the same function find_rank computes (MPIUtils.h) or a term is placed and queried
-            // on different ranks, which duplicates a row silently; mpi_utils_tests.cpp asserts it.
+            // Single rank: every partner is self-owned, skip the O(W) map; multi-rank routes by owner.
+            // The Router is the single authority and find_rank calls the same dest(), or a term is
+            // placed and queried on different ranks, which duplicates a row silently;
+            // mpi_utils_tests.cpp asserts the two agree.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
-                r_prime = monomial_hash<NumModes>(dense) % rank_count;
+                r_prime = router.dest<NumModes>(dense);
             }
             if (r_prime == my_rank) {
                 (is_follower ? res.follower_self : res.leader_self).push(pos, phase);

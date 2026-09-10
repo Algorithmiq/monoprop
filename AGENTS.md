@@ -60,4 +60,8 @@ just build-docs
   recipe in `docs/content/docs/building.mdx`.
 - Slow CTest startup in MPI builds is `MPI_Init` fabric probing; see
   `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
+- `monoprop_ROUTING=splitmix` (`detail/mpi/Routing.h`) is the live fallback for a rank count that is
+  not a power of two: the default GF(2)-linear routing has no XOR structure to use there and refuses
+  the geometry. It is bit-for-bit `monomial_hash % (R × S)`, and `routing_tests.cpp` pins both that
+  equivalence and the refusal.
 - Sanitizer rebuild and test:

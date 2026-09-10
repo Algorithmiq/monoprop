@@ -144,6 +144,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         return;
     }
 
+    const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() reaches the comm
     const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
     MonomialList<NumModes> local_heisenberg_terms;
@@ -158,7 +159,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             core_term = encoded_coeff;
             continue;
         }
-        if (my_rank == find_rank<NumModes>(majorana_bitset, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(majorana_bitset, router)) {
             mp_op_.init_op_map[majorana_bitset] = encoded_coeff;
             local_heisenberg_terms.push_back(majorana_bitset);
         }
@@ -207,7 +208,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here. A row
     // index is a position in the kept subsequence, so the enumeration order below is load-bearing.
     const auto keep_if_owned = [&](const Monomial<NumModes> &mono) {
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(mono, router)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
         }
@@ -227,6 +228,15 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     core_term_ = core_term;
 
     initialize_operator_caches_();
+
+    // LAST, after every validation this constructor can fail on: it is a collective, and a partition
+    // that throws while its peers are inside one poisons the in-process comm, so the caller is told the
+    // comm is poisoned instead of which setting was wrong. Deterministic errors (the schrodinger_cutoff
+    // ceiling above, the tolerance and mode-count checks) are raised by every partition, which is
+    // exactly the race -- tests/test_parameter_validation.py pins the message at S > 1. Placing it here
+    // still puts it before the first exchange, and seeding needs no agreement: it communicates nothing,
+    // so a rank that resolved a different router has merely claimed the wrong share when this throws.
+    check_routing_agreement(comm_); // a disagreement would hang the first exchange, not corrupt it
 }
 
 template <size_t NumModes>
@@ -249,6 +259,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       cutoff_type_(other.cutoff_type_),
       basis_change_(other.basis_change_),
       basis_(other.basis_),
+      routing_coverage_reported_(other.routing_coverage_reported_),
       partition_group_(other.partition_group_
                            ? std::make_unique<detail::partition::PartitionGroup<NumModes>>(*other.partition_group_)
                            : nullptr) {}
@@ -435,7 +446,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
+    const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() reaches the comm
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
@@ -445,7 +456,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
             core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
             continue;
         }
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(mono, router)) {
             const auto mono_indices = bitset_to_indices<NumModes>(mono);
             new_op[mono_indices] = coeff;
         }
@@ -792,10 +803,49 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void {
+    // One report per rank, so only its partition 0 speaks, and only once whatever the outcome.
+    if (routing_coverage_reported_ || comm_.shm_rank != 0) {
+        return;
+    }
+    routing_coverage_reported_ = true;
+    const routing::Router router = router_for<NumModes>(comm_);
+    if (!router.is_linear()) {
+        return; // splitmix: no subspace to fall short of
+    }
+    std::vector<uint64_t> shifts;
+    shifts.reserve(majoranas.size());
+    for (const auto &gate : majoranas) {
+        // An out-of-range index is build_evolve_result_'s to reject, gate by gate: converting the whole
+        // list up front would pre-empt that throw.
+        if (std::ranges::any_of(gate, [this](size_t i) { return i >= 2 * logical_num_modes_; })) {
+            return;
+        }
+        shifts.push_back(static_cast<uint64_t>(router.rank_shift<NumModes>(indices_to_bitset<NumModes>(gate))));
+    }
+    std::ranges::sort(shifts);
+    shifts.erase(std::ranges::unique(shifts).begin(), shifts.end());
+    const size_t span = routing::gf2_rank(shifts);
+    if (span >= router.linear_bits()) {
+        return;
+    }
+    // A warning, not a throw: every term still lands on one owner, they just do not cover the ranks.
+    const auto line = std::format("COMMROUTE rank={} linear_bits={} shift_rank={} shifts={} idle_ranks={}\n",
+                                  static_cast<size_t>(mpi::rank(comm_)) / router.partitions(),
+                                  router.linear_bits(),
+                                  span,
+                                  shifts.size(),
+                                  router.ranks() - (size_t{1} << span));
+    std::fputs(line.c_str(), stderr);
+    std::fflush(stderr);
+}
+
+template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
+    report_routing_coverage_(majoranas);
     mp_op_.reset_op_coeffs_slack_hwm();
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {

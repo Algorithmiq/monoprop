@@ -18,6 +18,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -28,13 +29,15 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 using namespace monoprop;
 
-// find_rank is splitmix over the dense words modulo the rank count, and nothing else, so the oracle
-// is asserted unconditionally rather than as one of several permitted hashes.
+// Under the splitmix router find_rank is the dense words modulo the rank count and nothing else, so the
+// oracle is asserted unconditionally rather than as one of several permitted hashes. The router is
+// constructed explicitly: there is no rank-count overload to reach it by accident.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
     constexpr size_t N = 32;
     std::mt19937_64 rng(0x9E3779B9ULL);
@@ -46,19 +49,21 @@ BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_range_and_hash_mod) {
         }
         const auto mono = indices_to_bitset<N>(inds);
         for (size_t n_ranks : {size_t{1}, size_t{2}, size_t{3}, size_t{7}}) {
-            const size_t r = find_rank<N>(mono, n_ranks);
+            const auto router = routing::Router::splitmix(n_ranks);
+            const size_t r = find_rank<N>(mono, router);
             BOOST_TEST(r == monomial_hash<N>(mono) % n_ranks);
             BOOST_TEST(r < n_ranks);
-            BOOST_TEST(r == find_rank<N>(mono, n_ranks)); // deterministic
+            BOOST_TEST(r == find_rank<N>(mono, router)); // deterministic
         }
     }
 }
 
-// n_ranks == 0 is degenerate: owner is rank 0, not a modulo by zero.
+// A zero-slot world is degenerate: Router clamps it to one slot, so the owner is rank 0 rather than a
+// modulo by zero.
 BOOST_AUTO_TEST_CASE(mpi_utils_find_rank_zero_ranks) {
     constexpr size_t N = 32;
     const auto mono = indices_to_bitset<N>(VecZ{0, 3, 5});
-    BOOST_TEST(find_rank<N>(mono, 0) == 0U);
+    BOOST_TEST(find_rank<N>(mono, routing::Router::splitmix(0)) == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(mpi_utils_monomial_words_roundtrip) {
@@ -111,7 +116,7 @@ auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> 
     return op;
 }
 
-auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size_t &checked) -> void {
+auto check_bucket_ownership(const std::vector<VecZ> &buckets, const routing::Router &router, size_t &checked) -> void {
     // Every offset comes from the record walk: widths vary, so a hardcoded stride would compare a
     // monomial decoded at the wrong offset against the wrong rank.
     using QW = detail::QueryWire<32>;
@@ -126,7 +131,7 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
             for (size_t j = 0; j < k; ++j) {
                 mono.set(static_cast<size_t>(pos[j]));
             }
-            BOOST_REQUIRE_EQUAL(find_rank<32>(mono, ranks), r);
+            BOOST_REQUIRE_EQUAL(find_rank<32>(mono, router), r);
             off = QW::next_off(buckets[r], form, off);
             ++checked;
         }
@@ -136,14 +141,16 @@ auto check_bucket_ownership(const std::vector<VecZ> &buckets, size_t ranks, size
 
 // The self-owned bucket is staged as positions, not encoded, so it is invisible to the walk above --
 // without this the r == my_rank arm of the routing decision goes unchecked.
-auto check_self_ownership(const detail::SelfQueryStage<32> &stage, size_t ranks, size_t my_rank, size_t &checked)
-    -> void {
+auto check_self_ownership(const detail::SelfQueryStage<32> &stage,
+                          const routing::Router &router,
+                          size_t my_rank,
+                          size_t &checked) -> void {
     for (size_t q = 0; q < stage.size(); ++q) {
         Monomial<32> mono;
         for (size_t j = 0; j < stage.k_of[q]; ++j) {
             mono.set(static_cast<size_t>(stage.pos_flat[stage.pos_off[q] + j]));
         }
-        BOOST_REQUIRE_EQUAL(find_rank<32>(mono, ranks), my_rank);
+        BOOST_REQUIRE_EQUAL(find_rank<32>(mono, router), my_rank);
         ++checked;
     }
 }
@@ -172,36 +179,43 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                                                                    std::nullopt,
                                                                    std::optional<double>{0.3});
 
-    size_t checked = 0;
-    size_t self_checked = 0;
-    for (const size_t ranks : {2U, 4U, 8U}) {
-        const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
-                                                                                 gen,
-                                                                                 eval,
-                                                                                 cut,
-                                                                                 coeffs,
-                                                                                 std::nullopt,
-                                                                                 ranks,
-                                                                                 0,
-                                                                                 false,
-                                                                                 nullptr,
-                                                                                 1.0);
-        BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
-        // The scan routes a self-owned partner to the stage, so bucket 0 must be empty here.
-        BOOST_REQUIRE(res.leader_queries[0].empty());
-        BOOST_REQUIRE(res.follower_queries[0].empty());
-        check_bucket_ownership(res.leader_queries, ranks, checked);
-        check_bucket_ownership(res.follower_queries, ranks, checked);
-        check_self_ownership(res.leader_self, ranks, /*my_rank=*/0, self_checked);
-        check_self_ownership(res.follower_self, ranks, /*my_rank=*/0, self_checked);
+    // BOTH routers, because the agreement is a property of the pair and not of either map: the scan
+    // routes the partner it just built and find_rank routes what the resolve side decoded, so a
+    // divergence introduced by either shows up here whichever routing the geometry resolves to.
+    for (const bool linear : {false, true}) {
+        size_t checked = 0;
+        size_t self_checked = 0;
+        for (const size_t ranks : {2U, 4U, 8U}) {
+            const auto router = routing::Router::for_modes<kN>(ranks, /*partitions=*/1, linear);
+            BOOST_REQUIRE_EQUAL(router.is_linear(), linear);
+            const auto res = detail::fused_find_and_collect<kN, MajoranaAlgebra<kN>>(op,
+                                                                                     gen,
+                                                                                     eval,
+                                                                                     cut,
+                                                                                     coeffs,
+                                                                                     std::nullopt,
+                                                                                     router,
+                                                                                     0,
+                                                                                     false,
+                                                                                     nullptr,
+                                                                                     1.0);
+            BOOST_REQUIRE_EQUAL(res.leader_queries.size(), ranks);
+            // The scan routes a self-owned partner to the stage, so bucket 0 must be empty here.
+            BOOST_REQUIRE(res.leader_queries[0].empty());
+            BOOST_REQUIRE(res.follower_queries[0].empty());
+            check_bucket_ownership(res.leader_queries, router, checked);
+            check_bucket_ownership(res.follower_queries, router, checked);
+            check_self_ownership(res.leader_self, router, /*my_rank=*/0, self_checked);
+            check_self_ownership(res.follower_self, router, /*my_rank=*/0, self_checked);
+        }
+        // Without this the loop above passes trivially if the scan emitted nothing. The floors are per
+        // router, not summed over them: a sum lets one router carry the other. The total floor is what is
+        // invariant across the split; each arm keeps its own so a bug that sends everything one way fails.
+        BOOST_TEST_MESSAGE("linear=" << linear << " encoded=" << checked << " staged=" << self_checked);
+        BOOST_TEST(checked + self_checked > 1000U);
+        BOOST_TEST(checked > 500U);
+        BOOST_TEST(self_checked > 200U);
     }
-    // Without this the loop above passes trivially if the scan emitted nothing. The floor is on the total
-    // because that is what is invariant across the split; each arm also keeps its own floor so a routing
-    // bug that sends everything one way still fails.
-    BOOST_TEST_MESSAGE("encoded=" << checked << " staged=" << self_checked);
-    BOOST_TEST(checked + self_checked > 1000U);
-    BOOST_TEST(checked > 500U);
-    BOOST_TEST(self_checked > 200U);
 }
 
 // A Schrodinger propagator seeds a slot by walking the whole paired basis and keeping find_rank ==
@@ -218,30 +232,50 @@ BOOST_AUTO_TEST_CASE(mpi_utils_paired_enumeration_partitions_by_find_rank) {
     BOOST_REQUIRE_EQUAL(full.size(), paired_op_size(kMaxPairs, kLogical));
 
     for (const size_t slots : {size_t{1}, size_t{2}, size_t{3}, size_t{8}, size_t{128}}) {
-        size_t total = 0;
-        for (size_t slot = 0; slot < slots; ++slot) {
-            MonomialList<kN> kept;
-            for_each_paired_monomial<kN>(kMaxPairs, kLogical, [&](const Monomial<kN> &mono) {
-                if (find_rank<kN>(mono, slots) == slot) {
-                    kept.push_back(mono);
-                }
-            });
-            total += kept.size();
+        // Both routers where the geometry admits both: the partition property is a property of the walk
+        // and the owner function, so it must not depend on which owner function is in force.
+        for (const bool linear : {false, true}) {
+            if (linear && !std::has_single_bit(slots)) {
+                continue; // linear routing refuses a non-power-of-two world (routing_tests pins the throw)
+            }
+            const auto router = routing::Router::for_modes<kN>(slots, /*partitions=*/1, linear);
+            size_t total = 0;
+            for (size_t slot = 0; slot < slots; ++slot) {
+                MonomialList<kN> kept;
+                for_each_paired_monomial<kN>(kMaxPairs, kLogical, [&](const Monomial<kN> &mono) {
+                    if (find_rank<kN>(mono, router) == slot) {
+                        kept.push_back(mono);
+                    }
+                });
+                total += kept.size();
 
-            // kept[r] == full[j_r] with j_0 < j_1 < ... : row r's monomial follows from the global order.
-            size_t cursor = 0;
-            for (const auto &mono : kept) {
-                while (cursor < full.size() && !(full[cursor] == mono)) {
+                // kept[r] == full[j_r] with j_0 < j_1 < ... : row r's monomial follows from the global order.
+                size_t cursor = 0;
+                for (const auto &mono : kept) {
+                    while (cursor < full.size() && !(full[cursor] == mono)) {
+                        ++cursor;
+                    }
+                    BOOST_REQUIRE_LT(cursor, full.size());
                     ++cursor;
                 }
-                BOOST_REQUIRE_LT(cursor, full.size());
-                ++cursor;
+            }
+            // The walk is duplicate-free (pinned in majorana_cutoff_tests), so equal counts mean the slots'
+            // kept sets are disjoint AND cover every term exactly once.
+            BOOST_TEST_CONTEXT("slots=" << slots << " linear=" << linear) {
+                BOOST_CHECK_EQUAL(total, full.size());
             }
         }
-        // The walk is duplicate-free (pinned in majorana_cutoff_tests), so equal counts mean the slots'
-        // kept sets are disjoint AND cover every term exactly once.
-        BOOST_TEST_CONTEXT("slots=" << slots) {
-            BOOST_CHECK_EQUAL(total, full.size());
-        }
     }
+}
+
+// One environment across the world resolves one router, so the agreement check must pass. The value of
+// the case is under the MPI variants (2 ranks): the digests are built from the mode, the seed and the
+// partition count and reduced with two allreduces, so a rank that never entered them would hang here
+// rather than return -- which is the failure this check exists to convert into an exception.
+BOOST_AUTO_TEST_CASE(mpi_utils_routing_agreement_holds_across_the_world) {
+    const monoprop::mpi::Comm comm{MPI_COMM_WORLD};
+    BOOST_CHECK_NO_THROW(check_routing_agreement(comm));
+    // MPI_COMM_SELF is a world of one: the check returns before any collective, so it is safe to call
+    // on a communicator the other ranks are not in.
+    BOOST_CHECK_NO_THROW(check_routing_agreement(monoprop::mpi::Comm{MPI_COMM_SELF}));
 }
