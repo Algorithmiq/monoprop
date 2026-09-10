@@ -19,7 +19,6 @@
 // only to keep its capacity, and a copied propagator starts with an empty one. `counters` is the one
 // exception: it accumulates over a call, and its owner resets it (MonomialPropagator::run_gate_loop_).
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -224,20 +223,6 @@ struct IncomingRecords {
     }
 };
 
-/*! @brief Gives a per-gate buffer back when it has run far past what it last held.
- *
- *  The engine's release rule, one definition: a buffer whose capacity has run past 4x its content
- *  gives the storage back and re-earns it, so one very wide gate cannot pin the partition's footprint
- *  for the rest of the call. `kFloor` keeps the tiny buffers alone.
- */
-template <typename Vector>
-inline auto release_if_oversized(Vector &v, size_t held) -> void {
-    constexpr size_t kFloor = 64;
-    if (v.capacity() > 4 * std::max(held, kFloor)) {
-        v = Vector{};
-    }
-}
-
 template <size_t NumModes>
 struct GateScratch {
     using PosT = typename OperatorIndex<NumModes>::PosT;
@@ -247,9 +232,9 @@ struct GateScratch {
     std::vector<EvenParityNzWord> nz; // the fold's nonzero words: Anti(G), read by the emit pass and the join
     std::vector<PosT> partner;        // one partner's positions; sized 2*NumModes, the partner's upper bound
     std::vector<uint16_t> gen;        // the generator's ascending positions, the merge's second input
-    // The gate's mints, in join order, and the records the exchange delivered. Both die with the gate,
-    // and both are here rather than on the engine so that their storage does not: a gate would otherwise
-    // pay ~12 allocations and log2(mints) reallocations for buffers the previous gate had already sized.
+    // The gate's mints, in join order, and the records the exchange delivered. Both are here because the
+    // decode and the join write them through out-parameters, NOT so that their storage outlives the gate:
+    // it does not, and release_gate_stages() below is where it goes back.
     MissStage<NumModes> misses;
     IncomingRecords<NumModes> incoming_records;
     /*
@@ -293,6 +278,23 @@ struct GateScratch {
      */
     [[nodiscard]] auto wire_queries(bool two_rounds) -> mpi::WindowVec<VecZ> & {
         return wire_q[two_rounds ? 0U : (wire_gate & 1U)];
+    }
+
+    /*! @brief Gives the two per-gate stages their storage back, at the end of the gate that filled them.
+     *
+     *  They are the one part of this scratch whose capacity must NOT survive its gate. The wire buffers
+     *  above have to (a peer may still be reading a published one), and everything else -- the join's hit
+     *  slots, `marks`, `nz` -- only ever grows to the operator's own width, so its resting figure already
+     *  is its peak. A gate's mints and the records it decoded are proportional to THAT gate's |Anti(G)|:
+     *  kept, the widest gate of the call would rest in the partition's footprint for the remainder of it,
+     *  which is 27.2 MB of ledger and 23.6 MB of kernel VmHWM on the 9.26 M-term cell at P=16 and
+     *  215.6 MiB at the 250 M-term rung. Freed, they cost the gate that follows the allocations the
+     *  engine paid when it owned them by value, and the gate stamp still prices them at their widest
+     *  instant (Engine.h stamp_gate_buffers_), which is the figure a per-gate slab would have to serve.
+     */
+    auto release_gate_stages() -> void {
+        misses = MissStage<NumModes>{};
+        incoming_records = IncomingRecords<NumModes>{};
     }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {

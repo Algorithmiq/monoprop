@@ -383,6 +383,22 @@ BOOST_AUTO_TEST_CASE(one_and_half_round_answers_a_silent_hit_and_leaves_it_out_o
     BOOST_TEST(t.received(2));
 }
 
+// A gate's mints and the records it decoded are the one part of GateScratch whose capacity must not
+// survive the gate: they are proportional to that gate's |Anti(G)|, so kept, the widest gate of a call
+// would rest in the partition's footprint for the remainder of it. The gate stamp still prices them.
+BOOST_AUTO_TEST_CASE(a_gate_gives_its_mint_and_record_stages_back_when_it_is_over) {
+    Scenario sc;
+    detail::LayerBuildEngine<kN, AnsweringSink> eng(sc.op, mpi::Comm{}, 1, 0, sc.scratch, 6, AnsweringSink{});
+    eng.exchange_and_join(sc.value_scan());
+
+    // The gate did mint and did decode -- the stamp saw both at their widest instant ...
+    BOOST_TEST(sc.scratch.buffers_hwm_bytes > 0U);
+    // ... and neither stage holds a byte once the gate is over.
+    BOOST_TEST(sc.scratch.misses.memory_bytes() == 0U);
+    BOOST_TEST(sc.scratch.incoming_records.memory_bytes() == 0U);
+    BOOST_TEST(sc.scratch.misses.size() == 0U);
+}
+
 // The fused sink turns those joins into half-rotations: +phi_rec*v_rec on hits and mints (mints flagged as
 // inserts), -phi_own*v_mu for an answer, -phi_own*c0 for an absence, nothing for the answered leader.
 BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) {

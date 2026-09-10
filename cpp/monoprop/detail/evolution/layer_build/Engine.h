@@ -256,6 +256,9 @@ struct LayerBuildEngine {
         if constexpr (Sink::wants_responses) {
             scratch.counters.responses += answered;
         }
+        // Past every read of the mints and the delivered records, and past both stamps that price them:
+        // their storage goes back here rather than resting in the scratch until the call ends.
+        scratch.release_gate_stages();
     }
 
     auto finish(CosMask &&cos_all, CosMask *out_cos = nullptr) -> std::shared_ptr<LayerCore> {

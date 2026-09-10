@@ -70,7 +70,7 @@ inline constexpr size_t kWireFloorWords = 64;
  * (PairExchange.h) forbids freeing it at the end of the gate that filled it, so without a rule one wide
  * gate pins its peak for the rest of the call.
  *
- * The rule is the engine's usual one (release_if_oversized): a slot whose capacity has run past 4x what
+ * The rule is the engine's usual one (TableJoin::begin_queries): a slot whose capacity has run past 4x what
  * it last held gives the storage back and re-earns it. The comparison reads the sizes still in place, so
  * it must run BEFORE the reset that clears them.
  */
