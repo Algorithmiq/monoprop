@@ -39,7 +39,10 @@ namespace monoprop::detail {
  *  a pair the row is); the probe sets `matched` the moment a record confirms the row; the resolve sets
  *  `received` (the partner's record arrived, i.e. the partner is tracked) and `partner_rot` (that
  *  record's rot bit); round 2 sets `answered` (the partner is tracked but silent, and sent its
- *  coefficient back instead of a record).
+ *  coefficient back instead of a record). `matched` and `received` name the same event at two moments:
+ *  the probe runs over the whole gate before the resolve does, so a resolve-time rule that read
+ *  `matched` would see confirms the resolve has not reached yet, which is why the two are kept apart
+ *  (the pair-once rule reads `matched` at the probe and `received` at the resolve, Resolve.h join_self).
  *
  *  Only rows of Anti(G) are ever set or read, and Anti(G) is exactly the set bits of the gate's `nz`
  *  words, so a gate clears its state by zeroing one word per nz word rather than the whole operator's
@@ -272,8 +275,8 @@ struct GateScratch {
             wire += slot.capacity() * sizeof(size_t);
         }
         return join.memory_bytes() + marks.memory_bytes() + (nz.capacity() * sizeof(EvenParityNzWord))
-               + (partner.capacity() * sizeof(PosT)) + (gen.capacity() * sizeof(uint16_t))
-               + misses.memory_bytes() + incoming_records.memory_bytes() + wire;
+               + (partner.capacity() * sizeof(PosT)) + (gen.capacity() * sizeof(uint16_t)) + misses.memory_bytes()
+               + incoming_records.memory_bytes() + wire;
     }
 };
 

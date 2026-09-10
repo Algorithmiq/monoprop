@@ -119,7 +119,8 @@ struct AllRowsGate {
             *op.store,
             [&](size_t q) { return pr.tag_of[q]; },
             [&](size_t q) { return pr.positions_at(q); },
-            [](size_t, size_t) {});
+            [](size_t) { return false; },
+            [&](size_t /*q*/, size_t row) { marks.set_matched(row); });
     }
 };
 
@@ -514,6 +515,7 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_join_matches_the_by_value_oracle) {
         *op.store,
         [&](size_t q) { return keys[q]; },
         [&](size_t q) { return std::span<const PosT>(query_pos[q]); },
+        [](size_t) { return false; },
         [](size_t, size_t) {});
 
     size_t spilled = 0;

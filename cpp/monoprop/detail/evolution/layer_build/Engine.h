@@ -131,6 +131,9 @@ struct LayerBuildEngine {
         const size_t n_self = scan.self.size();
         const std::span<const SentRecord> sent_self(scan.sent[my_rank]);
         assert(sent_self.size() == n_self && "one sent record per self query");
+        // Pair-once needs the self stage's sent records (the source row of each self query) and a skip
+        // sentinel no hit row can equal (TableJoin::kSkippedRow): hit rows are below `base`.
+        const bool pair_once = sink_pairs_once<Sink>() && n_self != 0 && base < TableJoin<NumModes>::kSkippedRow;
         join.begin_queries(n_self + pr.nq_total);
         // One batched probe of the term table over the whole query space, in resolve order. The table
         // covers every row of the store (the previous gate's mints were appended by reindex_after_growth),
@@ -142,14 +145,24 @@ struct LayerBuildEngine {
             [&](size_t q) -> std::span<const RowPosT> {
                 return (q < n_self) ? scan.self.positions_at(q) : pr.positions_at(q - n_self);
             },
+            // The pair-once skip: a self record whose source row a record has already confirmed, and
+            // which is the follower of its pair, was settled by the leader's record (Resolve.h join_self).
+            [&](size_t q) -> bool {
+                if (!pair_once || q >= n_self) {
+                    return false;
+                }
+                const size_t src = sent_self[q].row;
+                return marks.matched(src) && marks.foll(src);
+            },
             [&](size_t /*q*/, size_t row) { marks.set_matched(row); });
 
         // Both output buffers of the resolve phase are sized here, before the first push, because the
         // join has just settled the two counts they depend on. Every sink call is keyed on either a
         // distinct query -- a hit pushes at most one half, a miss mints at most one -- or a distinct
-        // record this slot sent, since a record is answered (round 2, or a self silent hit) or absent but
-        // never both, and a row sends exactly one record because it has exactly one partner. So
-        // |Q| + |sent| bounds the gate's halves, and |Q| - |hits| bounds its mints exactly.
+        // record this slot sent, since a record is answered (round 2, a self silent hit, or the follower's
+        // half of a pair the leader's record settled) or absent but never both, and a row sends exactly
+        // one record because it has exactly one partner. So |Q| + |sent| bounds the gate's halves, and
+        // |Q| - |hits| bounds its mints exactly (a skipped query counts as a hit).
         size_t n_sent = 0;
         for (const auto &records : scan.sent) {
             n_sent += records.size();
@@ -165,8 +178,16 @@ struct LayerBuildEngine {
         }
         size_t answered = 0;
         if (n_self != 0) {
-            answered =
-                join_self<NumModes>(scan.self, join, /*q_base=*/0, marks, my_rank, base, misses, sink, sent_self);
+            answered = join_self<NumModes>(scan.self,
+                                           join,
+                                           /*q_base=*/0,
+                                           marks,
+                                           my_rank,
+                                           base,
+                                           misses,
+                                           sink,
+                                           sent_self,
+                                           pair_once);
         }
         answered += join_incoming<NumModes>(pr, join, /*q_base=*/n_self, marks, base, misses, sink, responses);
 

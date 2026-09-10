@@ -54,6 +54,12 @@ public:
     //! Keys probed together per pipeline pass; the depth the prefetches run ahead by.
     static constexpr size_t kGroup = 16;
 
+    //! What one find_batch() settled: rows confirmed, and queries its caller declined to probe.
+    struct BatchStats {
+        size_t hits = 0;
+        size_t skipped = 0;
+    };
+
     //! Rows indexed: rows [0, rows()) of the store this was last rebuilt from or appended with.
     [[nodiscard]] auto rows() const -> size_t { return rows_; }
     [[nodiscard]] auto slots() const -> size_t { return slots_.size(); }
@@ -128,45 +134,62 @@ public:
         return find(store, key_of_positions<2 * NumModes>(pos.data(), k), std::span<const PosT>(pos.data(), k));
     }
 
-    /*! @brief Probes @a n queries in order, out[q] = the confirmed row of query q, or @a not_found.
+    /*! @brief Probes @a n queries in order, out[q] = query q's confirmed row, @a not_found or @a skipped.
      *
      *  `key_of(q)` is query q's join key and `pos_of(q)` its ascending positions (the confirm).
+     *  `skip(q)` is consulted once per query, in order, before it is probed: a query it declines costs
+     *  nothing and is recorded as @a skipped. Its answer may depend on the confirms of queries more than
+     *  one group (kGroup) ahead of it, which is what a pair-once rule reads (Resolve.h join_self).
      *  `on_hit(q, row)` runs at every confirm, in query order within a group.
      *
      *  Same result as n calls to find(), query by query. The group pipeline overlaps the three dependent
      *  misses of a probe (slot line, chain walk, row) across kGroup queries; a prefilter match that the
      *  row refutes resumes the chain synchronously, which a 32-bit collision is rare enough to afford.
-     *
-     *  @return How many queries confirmed a row.
      */
-    template <size_t NumModes, typename KeyOf, typename PosOf, typename OnHit>
+    template <size_t NumModes, typename KeyOf, typename PosOf, typename Skip, typename OnHit>
     auto find_batch(const OperatorIndex<NumModes> &store,
                     size_t n,
                     KeyOf &&key_of,
                     PosOf &&pos_of,
+                    Skip &&skip,
                     OnHit &&on_hit,
                     std::span<TermIndex> out,
-                    TermIndex not_found) const -> size_t {
+                    TermIndex not_found,
+                    TermIndex skipped) const -> BatchStats {
         assert(out.size() >= n && "one output slot per query");
-        size_t hits = 0;
+        BatchStats stats;
+        // An empty table confirms nothing, so the group pipeline would only carry the skip decision.
         if (rows_ == 0) {
-            std::fill_n(out.begin(), n, not_found);
-            return 0;
+            for (size_t q = 0; q < n; ++q) {
+                const bool declined = skip(q);
+                out[q] = declined ? skipped : not_found;
+                stats.skipped += static_cast<size_t>(declined);
+            }
+            return stats;
         }
-        std::array<bool, kGroup> cand{};
+        enum class Lane : uint8_t { skipped, miss, cand };
+        std::array<Lane, kGroup> lane{};
         std::array<size_t, kGroup> at{};
         std::array<uint32_t, kGroup> pf{};
         const uint32_t *const slots = slots_.data();
         for (size_t base = 0; base < n; base += kGroup) {
             const size_t g = std::min(kGroup, n - base);
             for (size_t j = 0; j < g; ++j) {
+                if (skip(base + j)) {
+                    lane[j] = Lane::skipped;
+                    continue;
+                }
                 const uint64_t h = spread(key_of(base + j));
                 at[j] = h & mask_;
                 pf[j] = prefilter_(h);
+                lane[j] = Lane::cand;
                 __builtin_prefetch(&slots[at[j]], 0, 0);
             }
             for (size_t j = 0; j < g; ++j) {
-                cand[j] = false;
+                if (lane[j] != Lane::cand) {
+                    continue;
+                }
+                lane[j] = Lane::miss;
                 for (size_t s = at[j];; s = (s + 1) & mask_) {
                     const uint32_t e = slots[s];
                     if (e == kEmpty) {
@@ -174,7 +197,7 @@ public:
                     }
                     if ((static_cast<uint64_t>(e) >> shift_) == pf[j]) {
                         at[j] = s;
-                        cand[j] = true;
+                        lane[j] = Lane::cand;
                         store.prefetch_row(e & mask_);
                         break;
                     }
@@ -182,7 +205,12 @@ public:
             }
             for (size_t j = 0; j < g; ++j) {
                 const size_t q = base + j;
-                if (!cand[j]) {
+                if (lane[j] == Lane::skipped) {
+                    out[q] = skipped;
+                    ++stats.skipped;
+                    continue;
+                }
+                if (lane[j] == Lane::miss) {
                     out[q] = not_found;
                     continue;
                 }
@@ -195,11 +223,11 @@ public:
                     continue;
                 }
                 out[q] = static_cast<TermIndex>(row);
-                ++hits;
+                ++stats.hits;
                 on_hit(q, row);
             }
         }
-        return hits;
+        return stats;
     }
 
     /*! @brief The hash a key's slot and prefilter are cut from: splitmix64's finalizer over the key.

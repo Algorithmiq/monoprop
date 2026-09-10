@@ -169,7 +169,13 @@ struct Scenario {
     template <typename KeyOf, typename PosOf>
     auto probe(size_t n, KeyOf &&key_of, PosOf &&pos_of) -> void {
         scratch.join.begin_queries(n);
-        scratch.join.run(op.term_table(), *op.store, key_of, pos_of, [](size_t, size_t) {});
+        scratch.join.run(
+            op.term_table(),
+            *op.store,
+            key_of,
+            pos_of,
+            [](size_t) { return false; },
+            [&](size_t /*q*/, size_t row) { scratch.marks.set_matched(row); });
     }
 
     //! An R = 1 scan result: every record is self-addressed, so the wire's own slot stays empty.

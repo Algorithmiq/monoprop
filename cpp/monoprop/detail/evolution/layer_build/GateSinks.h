@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #pragma once
 
 // The two sinks the gate exchange resolves into. A sink owns the divergent state and supplies the
@@ -158,10 +157,13 @@ template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
     static constexpr bool wants_responses = true;
+    //! A mutual pair's two halves from the leader's record alone (Resolve.h join_self): the follower's
+    //! half is silent_value(follower), which is what the follower's own record would have delivered.
+    static constexpr bool pairs_once = true;
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
 
     FusedContract &fc;
-    bool fused_scale;      // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
+    bool fused_scale;       // the fused cos sweep ran: inserted endpoints fold cos in at the apply, not here
     const VecD &op_coeffs;  // the very array the scan read, not a copy: under the sweep every
                             // anticommuting slot in it already holds fl(c * cos)
     double cos_build = 1.0; // cos(2*theta), the factor the sweep applied
