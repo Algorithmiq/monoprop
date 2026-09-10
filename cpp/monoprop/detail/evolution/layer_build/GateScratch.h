@@ -29,6 +29,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/TableJoin.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
 
 namespace monoprop::detail {
@@ -183,15 +184,17 @@ struct MissStage {
 
 /*! @brief The records one exchange delivered, decoded (Resolve.h decode_incoming_records fills it).
  *
- *  Record g belongs to the sender at slot s iff goff[s] <= g < goff[s+1]; within a sender they are in
- *  the sender's stream order.
+ *  Record g belongs to the sender at window index k iff goff[k] <= g < goff[k+1]; within a sender they
+ *  are in the sender's stream order.
  */
 template <size_t NumModes>
 struct IncomingRecords {
     // The operator store's position width, not the wire's: these positions exist to become rows.
     using PosT = typename OperatorIndex<NumModes>::PosT;
 
-    std::vector<size_t> goff;           // slots+1 flat offsets: g = goff[s] + q
+    // The slots these records came from: record g belongs to window index k iff goff[k] <= g < goff[k+1].
+    mpi::SlotWindow window;
+    std::vector<size_t> goff;           // window.count+1 flat offsets: g = goff[k] + q
     DefaultInitVector<int8_t> phase_of; // g -> record phase
     DefaultInitVector<uint8_t> rot_of;  // g -> record rot bit
     DefaultInitVector<double> val_of;   // g -> record value; sized only for the Fused form
@@ -249,7 +252,10 @@ struct GateScratch {
     // pay ~12 allocations and log2(mints) reallocations for buffers the previous gate had already sized.
     MissStage<NumModes> misses;
     IncomingRecords<NumModes> incoming_records;
-    std::vector<VecZ> incoming_wire; // the collective's receive buffer, one slot per flat slot
+    mpi::WindowVec<VecZ> incoming_wire; // the collective's receive buffer, one slot per window slot
+    // Re-used span table for the stream views a decode pass reads; owns nothing, and is only ever
+    // valid while the buffer it was filled from is.
+    std::vector<std::span<const size_t>> slot_views;
     // How many records the previous gate of this partition staged for itself: what the next gate's
     // self-slot reserve is sized from (Scan.h). A hint only -- wrong in either direction it costs at most
     // a few pushes their geometric grow -- which is why it may cross gates although nothing else here does.
@@ -260,17 +266,18 @@ struct GateScratch {
     // alongside `counters`.
     size_t buffers_hwm_bytes{0uz};
 
-    //! Re-windows the collective receive buffer for a world of `slots`, under the release rule.
-    auto reuse_incoming_wire(size_t slots) -> void {
+    //! Re-windows the collective receive buffer onto `window`, under the release rule.
+    auto reuse_incoming_wire(mpi::SlotWindow window) -> void {
         for (VecZ &slot : incoming_wire) {
             release_if_oversized(slot, slot.size());
             slot.clear();
         }
-        incoming_wire.resize(slots);
+        incoming_wire.rewindow(window);
     }
 
     [[nodiscard]] auto memory_bytes() const -> size_t {
-        size_t wire = incoming_wire.capacity() * sizeof(VecZ);
+        size_t wire =
+            (incoming_wire.capacity() * sizeof(VecZ)) + (slot_views.capacity() * sizeof(std::span<const size_t>));
         for (const VecZ &slot : incoming_wire) {
             wire += slot.capacity() * sizeof(size_t);
         }

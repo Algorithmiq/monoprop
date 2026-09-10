@@ -34,6 +34,7 @@
 #include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingTypes.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -236,19 +237,24 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 template <size_t NumModes>
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
+    // The per-slot arrays below are indexed by DESTINATION SLOT through WindowVec::at_slot, and cover
+    // only the slots THIS generator can reach: one rank's partitions under linear routing, the whole
+    // world under splitmix. See mpi::PeerPlan::window.
+    mpi::SlotWindow window;
     // The wire records (QueryWire.h) per destination slot, in stream order = ascending source row. Fused
     // (value word after each record) iff capture_values.
-    std::vector<VecZ> queries;
+    mpi::WindowVec<VecZ> queries;
     // Per destination slot, the SOURCE row and emit phase of each record, parallel to the records of that
     // slot (the self slot's parallel to `self`). Ascending in row, because the scan walks rows ascending:
     // the absence pass and the graph sink's out lists rely on that order.
-    std::vector<std::vector<SentRecord>> sent;
+    mpi::WindowVec<std::vector<SentRecord>> sent;
     // Parallel to `sent`: the pre-gate coefficient the partner would be minted with (Schrodinger: the
     // state score of a fully paired partner, else 0). Only filled when a state mask is given, i.e. for
     // the fused Schrodinger picture; read by the absence pass alone.
-    std::vector<std::vector<double>> sent_c0;
-    // Records addressed to this slot itself, staged as positions instead of encoded into the wire's self
-    // slot, and joined inline.
+    mpi::WindowVec<std::vector<double>> sent_c0;
+    // Records addressed to this slot itself, staged as positions instead of encoded into the window's
+    // self slot, and joined inline. Empty unless the window contains my_rank, i.e. unless this
+    // generator's rank shift is zero.
     SelfQueryStage<NumModes> self;
 };
 
@@ -284,6 +290,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const VecD &coeffs,
                             std::optional<size_t> only_rotate_len_k,
                             bool over_cutoff_possible,
+                            mpi::SlotWindow window,
                             size_t my_rank,
                             const routing::Router &router,
                             GateScratch<NumModes> &scratch,
@@ -299,13 +306,15 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     // ContractSink::wants_responses), and so the path whose send predicate is E(M) alone.
     constexpr bool kAnswerSilentHits = CaptureValues;
 
+    assert(window.stop() <= rank_count && window.count != 0);
     FusedScanResult<NumModes> res;
-    res.queries.assign(rank_count, VecZ{});
-    res.sent.assign(rank_count, std::vector<SentRecord>{});
+    res.window = window;
+    res.queries.reset(window);
+    res.sent.reset(window);
     res.self.keeps_values = CaptureValues;
     // Sized on the early-return paths below too, so the engine's per-slot access is always in bounds.
     if (state_mask != nullptr) {
-        res.sent_c0.assign(rank_count, std::vector<double>{});
+        res.sent_c0.reset(window);
     }
     // No anticommuting words on an early return: nothing is sent, so the per-row marks stay untouched.
     scratch.nz.clear();
@@ -410,15 +419,17 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 res.self.push(pos, phase, tag_partner, rot, v_src);
             }
             else {
-                VecZ &buf = res.queries[r_prime];
+                // at_slot is the only re-basing door and asserts membership: a destination outside this
+                // generator's window means the shift is wrong, and would otherwise land on another peer.
+                VecZ &buf = res.queries.at_slot(r_prime);
                 QueryWire<NumModes>::push(buf, pos, phase, rot);
                 if constexpr (CaptureValues) {
                     QueryWire<NumModes>::push_value(buf, v_src);
                 }
             }
-            res.sent[r_prime].push_back(SentRecord{static_cast<TermIndex>(row), static_cast<int8_t>(phase)});
+            res.sent.at_slot(r_prime).push_back(SentRecord{static_cast<TermIndex>(row), static_cast<int8_t>(phase)});
             if (mask != nullptr) {
-                res.sent_c0[r_prime].push_back(c0);
+                res.sent_c0.at_slot(r_prime).push_back(c0);
             }
         };
 
@@ -552,11 +563,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // propagate. The previous gate's emitted count with a margin is a good enough estimate to leave
         // one allocation, is capped by the fold's own bound, and when it falls short push() doubles as it
         // always has.
-        if (rank_count == 1) {
+        // Whenever the window holds this slot -- every gate at one rank, and the zero-shift gates of a
+        // multi-rank run -- not only when the world is one slot: at R > 1 roughly one gate in R has a
+        // zero shift, and those staged their whole self side from an empty vector.
+        if (window.contains(my_rank)) {
             const size_t hint = scratch.self_records_hint;
             const size_t want = std::min(n_anti, std::max(kSelfReserveFloor, hint + (hint / 4)));
             res.self.reserve(want, QueryWire<NumModes>::kReservePositionsPerQuery);
-            res.sent[my_rank].reserve(want);
+            res.sent.at_slot(my_rank).reserve(want);
         }
 
         // Everything the per-row loops read on every anticommuting row, hoisted out of them: through a

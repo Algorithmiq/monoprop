@@ -42,6 +42,7 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/evolution/layer_build/TableJoin.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -181,21 +182,22 @@ struct Scenario {
     //! An R = 1 scan result: every record is self-addressed, so the wire's own slot stays empty.
     static auto empty_scan() -> detail::FusedScanResult<kN> {
         detail::FusedScanResult<kN> res;
-        res.queries.assign(1, VecZ{});
-        res.sent.assign(1, {});
+        res.window = mpi::SlotWindow{.base = 0, .count = 1};
+        res.queries.reset(res.window);
+        res.sent.reset(res.window);
         return res;
     }
 
     auto scan(bool with_c0) -> detail::FusedScanResult<kN> {
         auto res = empty_scan();
         if (with_c0) {
-            res.sent_c0.assign(1, {});
-            res.sent_c0[0] = {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            res.sent_c0.reset(res.window);
+            res.sent_c0.at_slot(0) = {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         }
         auto push = [&](const Monomial<kN> &key, int phase, bool rot, double v, size_t row) {
             res.self.keeps_values = true;
             res.self.push(positions_of(key), phase, tag_of(key), rot, v);
-            res.sent[0].push_back(
+            res.sent.at_slot(0).push_back(
                 detail::SentRecord{.row = static_cast<TermIndex>(row), .phase = static_cast<int8_t>(phase)});
         };
         push(terms[1], 1, true, 0.5, 0);
@@ -218,12 +220,12 @@ struct Scenario {
     // Own rot bits are the fixture's {t0, t1, t3, t5}; t2 and t4 are the silent rows.
     auto value_scan() -> detail::FusedScanResult<kN> {
         auto res = empty_scan();
-        res.sent_c0.assign(1, {});
-        res.sent_c0[0] = {0.0, 0.0, 0.0, -1.0};
+        res.sent_c0.reset(res.window);
+        res.sent_c0.at_slot(0) = {0.0, 0.0, 0.0, -1.0};
         auto push = [&](const Monomial<kN> &key, int phase, double v, size_t row) {
             res.self.keeps_values = true;
             res.self.push(positions_of(key), phase, tag_of(key), /*rot=*/true, v);
-            res.sent[0].push_back(
+            res.sent.at_slot(0).push_back(
                 detail::SentRecord{.row = static_cast<TermIndex>(row), .phase = static_cast<int8_t>(phase)});
         };
         push(terms[1], 1, 0.5, 0);
@@ -319,7 +321,7 @@ BOOST_AUTO_TEST_CASE(one_round_absence_pass_reports_unanswered_and_answered_lead
                           /*base=*/6,
                           misses,
                           sink,
-                          std::span<const detail::SentRecord>(scan.sent[0]));
+                          std::span<const detail::SentRecord>(scan.sent.at_slot(0)));
     sink.recs.clear();
     detail::absence_pass<kN>(sc.scratch.marks, scan.sent, scan.sent_c0, sink);
     BOOST_REQUIRE_EQUAL(sink.recs.size(), 2U);
@@ -458,9 +460,11 @@ BOOST_AUTO_TEST_CASE(contract_sink_skips_the_absence_half_when_no_c0_travels) {
 BOOST_AUTO_TEST_CASE(one_and_half_round_response_names_the_record_and_the_sender_maps_it_back) {
     Scenario sc;
     // Two flat slots. The peer's stream holds two records; the second hits the silent row t2.
-    std::vector<VecZ> wire(2);
+    const mpi::SlotWindow window{.base = 0, .count = 2};
+    mpi::WindowVec<VecZ> wire;
+    wire.reset(window);
     using QW = detail::QueryWire<kN>;
-    VecZ &peer = wire[1];
+    VecZ &peer = wire.at_slot(1);
     QW::push(peer, positions_of(sc.terms[1]), 1, /*rot=*/true);
     QW::push_value(peer, 0.5);
     QW::push(peer, positions_of(sc.terms[2]), -1, /*rot=*/true);
@@ -468,27 +472,30 @@ BOOST_AUTO_TEST_CASE(one_and_half_round_response_names_the_record_and_the_sender
 
     std::vector<std::span<const size_t>> views;
     detail::IncomingRecords<kN> pr;
-    detail::decode_incoming_records<kN>(detail::slot_streams(wire, views), detail::QueryForm::Fused, pr);
+    detail::decode_incoming_records<kN>(detail::slot_streams(wire, views), window, detail::QueryForm::Fused, pr);
     BOOST_REQUIRE_EQUAL(pr.nq_total, 2U);
     sc.probe(pr.nq_total, [&](size_t g) { return pr.tag_of[g]; }, [&](size_t g) { return pr.positions_at(g); });
 
     AnsweringSink sink;
     detail::MissStage<kN> misses;
-    std::vector<VecZ> responses(2);
+    mpi::WindowVec<VecZ> responses;
+    responses.reset(window);
     detail::join_incoming<kN>(pr, sc.scratch.join, /*q_base=*/0, sc.scratch.marks, /*base=*/6, misses, sink, responses);
     // t1's own rot is set, so that hit needs no answer; t2's is not, so record 1 of slot 1's stream does.
-    BOOST_TEST(responses[0].empty());
-    BOOST_REQUIRE_EQUAL(responses[1].size(), detail::kResponseWords);
-    BOOST_TEST(responses[1][0] == 1U);
-    BOOST_TEST(detail::decode_value(responses[1][1]) == 102.0); // silent_value(2)
+    BOOST_TEST(responses.at_slot(0).empty());
+    BOOST_REQUIRE_EQUAL(responses.at_slot(1).size(), detail::kResponseWords);
+    BOOST_TEST(responses.at_slot(1)[0] == 1U);
+    BOOST_TEST(detail::decode_value(responses.at_slot(1)[1]) == 102.0); // silent_value(2)
 
     // The other direction: an answer to record 1 of this slot's own stream to slot 1.
-    std::vector<std::vector<detail::SentRecord>> sent(2);
-    sent[1] = {detail::SentRecord{.row = 4, .phase = 1}, detail::SentRecord{.row = 5, .phase = -1}};
-    std::vector<VecZ> answers(2);
-    detail::push_response(answers[1], 1, 7.5);
+    mpi::WindowVec<std::vector<detail::SentRecord>> sent;
+    sent.reset(window);
+    sent.at_slot(1) = {detail::SentRecord{.row = 4, .phase = 1}, detail::SentRecord{.row = 5, .phase = -1}};
+    mpi::WindowVec<VecZ> answers;
+    answers.reset(window);
+    detail::push_response(answers.at_slot(1), 1, 7.5);
     sink.recs.clear();
-    detail::apply_responses<kN>(sc.scratch.marks, sent, detail::slot_streams(answers, views), sink);
+    detail::apply_responses<kN>(sc.scratch.marks, sent, detail::slot_streams(answers, views), answers.window(), sink);
     BOOST_REQUIRE_EQUAL(sink.recs.size(), 1U);
     BOOST_TEST(sink.recs[0].kind == "answer");
     BOOST_TEST(sink.recs[0].slot == 1U);
@@ -782,6 +789,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
     const detail::CutoffEvaluator<kM> eval(fn);
     const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt, std::cref(coeffs), std::nullopt, 0.3);
     const auto router = routing::Router::splitmix(1);
+    const mpi::SlotWindow window{.base = 0, .count = 1};
     const auto mask = initial_state_mask<kM>(VecZ{1});
     detail::GateScratch<kM> scratch;
     const auto res = detail::fused_find_and_collect<kM, A, /*CaptureValues=*/true>(op,
@@ -791,6 +799,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                                                    coeffs,
                                                                                    std::nullopt,
                                                                                    /*over_cutoff_possible=*/false,
+                                                                                   window,
                                                                                    /*my_rank=*/0,
                                                                                    router,
                                                                                    scratch,
@@ -804,8 +813,8 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
     }
     BOOST_REQUIRE_EQUAL(n_anti, 3U);
     BOOST_REQUIRE_EQUAL(res.self.size(), 3U); // R = 1: every record is self-addressed and staged
-    const auto &sent = res.sent[0];
-    const auto &c0 = res.sent_c0[0];
+    const auto &sent = res.sent.at_slot(0);
+    const auto &c0 = res.sent_c0.at_slot(0);
     BOOST_REQUIRE_EQUAL(sent.size(), 3U);
     BOOST_REQUIRE_EQUAL(c0.size(), 3U);
     for (size_t j = 0; j < 3; ++j) {
@@ -830,6 +839,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                                   coeffs,
                                                                   std::nullopt,
                                                                   false,
+                                                                  window,
                                                                   0,
                                                                   router,
                                                                   scratch_h,
@@ -837,7 +847,7 @@ BOOST_AUTO_TEST_CASE(scan_c0_is_the_state_score_of_a_paired_absent_partner) {
                                                                   1.0,
                                                                   nullptr);
     BOOST_TEST(heis.sent_c0.size() == 0U);
-    BOOST_TEST(heis.sent[0].size() == 3U);
+    BOOST_TEST(heis.sent.at_slot(0).size() == 3U);
 }
 
 // The position-form state score agrees with the dense one in both algebras.

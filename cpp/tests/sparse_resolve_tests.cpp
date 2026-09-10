@@ -32,6 +32,7 @@
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Resolve.h"
 #include "monoprop/detail/evolution/layer_build/TableJoin.h"
+#include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
@@ -168,10 +169,11 @@ auto record_value(size_t q) -> double {
 }
 
 template <size_t NumModes>
-auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused) -> std::vector<VecZ> {
-    std::vector<VecZ> incoming(queries.size());
+auto serialize(const std::vector<std::vector<Monomial<NumModes>>> &queries, bool fused, mpi::SlotWindow window)
+    -> mpi::WindowVec<VecZ> {
+    mpi::WindowVec<VecZ> incoming(window);
     for (size_t s = 0; s < queries.size(); ++s) {
-        VecZ &buf = incoming[s];
+        VecZ &buf = incoming[mpi::WindowIndex{s}];
         for (size_t q = 0; q < queries[s].size(); ++q) {
             const auto pos = positions_of<NumModes>(queries[s][q]);
             detail::QueryWire<NumModes>::push(buf, pos, record_phase(q), record_rot(q));
@@ -210,8 +212,14 @@ struct RecordingSink {
 };
 
 template <size_t NumModes>
-auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t n_query, size_t rank_count, bool fused)
-    -> void {
+auto check_probe_matches_the_queries(std::mt19937_64 &rng,
+                                     size_t n_seed,
+                                     size_t n_query,
+                                     size_t rank_count,
+                                     bool fused,
+                                     size_t window_base = 0) -> void {
+    // A non-zero base is the case a re-basing bug survives: the sink must still see the flat slot.
+    const mpi::SlotWindow window{.base = window_base, .count = rank_count};
     const auto seed_terms = draw_distinct<NumModes>(rng, n_seed);
     const auto fresh_terms = draw_distinct<NumModes>(rng, n_query);
 
@@ -253,15 +261,17 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         }
     }
 
-    const auto incoming = serialize<NumModes>(queries, fused);
+    const auto incoming = serialize<NumModes>(queries, fused, window);
     const detail::QueryForm form = fused ? detail::QueryForm::Fused : detail::QueryForm::Plain;
 
     auto op = make_op<NumModes>(seed_terms);
     AllRowsGate<NumModes> gate(op);
     std::vector<std::span<const size_t>> views;
     detail::IncomingRecords<NumModes> pr;
-    detail::decode_incoming_records<NumModes>(detail::slot_streams(incoming, views), form, pr);
+    detail::decode_incoming_records<NumModes>(detail::slot_streams(incoming, views), incoming.window(), form, pr);
     gate.match(op, pr);
+    BOOST_REQUIRE_EQUAL(pr.window.base, window.base);
+    BOOST_REQUIRE_EQUAL(pr.window.count, window.count);
     BOOST_REQUIRE_EQUAL(pr.nq_total, expect_mono.size());
     BOOST_REQUIRE(pr.nq_total > 0);
     BOOST_REQUIRE_EQUAL(pr.goff.size(), rank_count + 1);
@@ -314,7 +324,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
         }
         else if (expect_rot[g]) {
             expected_mints.push_back(want);
-            expected_mint_slot.push_back(s);
+            expected_mint_slot.push_back(window.base + s);
         }
         else {
             ++dropped_seen;
@@ -337,7 +347,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
     const size_t base = op.store->size();
     detail::MissStage<NumModes> misses;
     RecordingSink sink;
-    std::vector<VecZ> responses; // wants_responses is false, so the join never touches it
+    mpi::WindowVec<VecZ> responses; // wants_responses is false, so the join never touches it
     detail::join_incoming<NumModes>(pr, gate.join, /*q_base=*/0, gate.marks, base, misses, sink, responses);
     BOOST_REQUIRE_EQUAL(misses.size(), expected_mints.size());
     size_t mints_seen = 0;
@@ -358,7 +368,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng, size_t n_seed, size_t
             ++hit_calls;
             BOOST_TEST(r.idx < base);
             BOOST_TEST((std::find(expected_hit_row.begin(), expected_hit_row.end(), r.idx) != expected_hit_row.end()));
-            BOOST_TEST(r.slot < rank_count);
+            BOOST_TEST(window.contains(r.slot));
         }
     }
     BOOST_TEST(mints_seen == expected_mints.size());
@@ -422,7 +432,8 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_wide_positions) {
                                          /*n_seed=*/60,
                                          /*n_query=*/140,
                                          /*rank_count=*/4,
-                                         /*fused=*/false);
+                                         /*fused=*/false,
+                                         /*window_base=*/16);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_fused_layout) {
@@ -431,7 +442,8 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_fused_layout) {
                                          /*n_seed=*/50,
                                          /*n_query=*/120,
                                          /*rank_count=*/2,
-                                         /*fused=*/true);
+                                         /*fused=*/true,
+                                         /*window_base=*/6);
 }
 
 BOOST_AUTO_TEST_CASE(sparse_resolve_probe_matches_single_sender) {

@@ -74,6 +74,8 @@ struct LayerBuildEngine {
     // Which destination ranks this gate's records can reach. Dense unless the router is GF(2)-linear;
     // see mpi::PeerPlan. Derived once per layer in build_layer, never per record.
     mpi::PeerPlan plan;
+    // The flat slots that plan reaches from my_rank: what every per-slot array of this gate is sized to.
+    mpi::SlotWindow window;
     Sink sink;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
@@ -83,7 +85,8 @@ struct LayerBuildEngine {
                      GateScratch<NumModes> &scratch_,
                      size_t combined_size_,
                      Sink &&sink_,
-                     mpi::PeerPlan plan_ = {}) // dense by default: the tests build the engine directly
+                     mpi::PeerPlan plan_ = {},     // dense by default: the tests build the engine directly
+                     mpi::SlotWindow window_ = {}) // likewise: an empty window means the whole world
         : local_op(local_op_),
           comm(comm_),
           R(R_),
@@ -91,7 +94,10 @@ struct LayerBuildEngine {
           scratch(scratch_),
           combined_size(combined_size_),
           plan(plan_),
-          sink(std::move(sink_)) {}
+          window(window_.count != 0 ? window_ : mpi::SlotWindow{.base = 0, .count = R_}),
+          sink(std::move(sink_)) {
+        assert(window.stop() <= R);
+    }
 
     /*! @brief The round and a half.
      *
@@ -107,10 +113,22 @@ struct LayerBuildEngine {
         MissStage<NumModes> &misses = scratch.misses;
         IncomingRecords<NumModes> &pr = scratch.incoming_records;
         const size_t base = local_op.store->size();
+        // The scan sized its arrays to the same plan, so the two windows must agree exactly -- a
+        // mismatch would re-base every slot against the wrong base.
+        assert(scan.window.base == window.base && scan.window.count == window.count);
         misses.clear();
+        pr.window = window;
         pr.nq_total = 0;
-        pr.goff.assign(R + 1, 0);
-        assert(scan.queries[my_rank].empty() && "self-owned records are staged, never encoded");
+        pr.goff.assign(window.count + 1, 0);
+        // Self is inside the window only when this generator's rank shift is zero; otherwise the window
+        // names another rank outright and the scan cannot have staged a self-owned partner. The self
+        // block of the wire array is empty either way (staged, never encoded).
+        if (window.contains(my_rank)) {
+            assert(scan.queries.at_slot(my_rank).empty() && "self-owned records are staged, never encoded");
+        }
+        else {
+            assert(scan.self.size() == 0 && "a self-owned partner outside this generator's peer window");
+        }
 
         std::optional<mpi::PendingAlltoallv<size_t>> pending;
         // Round 1 opens here and closes past the decode: the post, the wait and the decode are one stage
@@ -119,17 +137,20 @@ struct LayerBuildEngine {
             pending.emplace(
                 mpi::begin_alltoallv(scan.queries, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan));
         }
-        std::vector<std::span<const size_t>> views;
         if (pending.has_value()) {
-            scratch.reuse_incoming_wire(R);
+            scratch.reuse_incoming_wire(window);
             pending->wait_into(scratch.incoming_wire);
-            decode_incoming_records<NumModes>(slot_streams(scratch.incoming_wire, views), sink.incoming_form(), pr);
+            decode_incoming_records<NumModes>(slot_streams(scratch.incoming_wire, scratch.slot_views),
+                                              scratch.incoming_wire.window(),
+                                              sink.incoming_form(),
+                                              pr);
         }
 
         // Query order IS mint order: the self stage first, then the incoming sources in ascending slot
         // order, each in its sender's stream order.
         const size_t n_self = scan.self.size();
-        const std::span<const SentRecord> sent_self(scan.sent[my_rank]);
+        const std::span<const SentRecord> sent_self =
+            n_self != 0 ? std::span<const SentRecord>(scan.sent.at_slot(my_rank)) : std::span<const SentRecord>{};
         assert(sent_self.size() == n_self && "one sent record per self query");
         // Pair-once needs the self stage's sent records (the source row of each self query) and a skip
         // sentinel no hit row can equal (TableJoin::kSkippedRow): hit rows are below `base`.
@@ -167,14 +188,15 @@ struct LayerBuildEngine {
         for (const auto &records : scan.sent) {
             n_sent += records.size();
         }
+
         sink.reserve_halves(join.queries() + n_sent);
         misses.reserve(join.queries() - join.hits());
 
         // Round 2's send buffer. A sink that answers nothing keeps an empty local rather than naming the
         // shared one, so nothing charges it what an earlier fused call left there.
-        std::vector<VecZ> responses;
+        mpi::WindowVec<VecZ> responses;
         if constexpr (Sink::wants_responses) {
-            responses.assign(R, VecZ{});
+            responses.reset(window);
         }
         size_t answered = 0;
         if (n_self != 0) {
@@ -193,7 +215,7 @@ struct LayerBuildEngine {
 
         // Round 1 at its widest: the scan's arrays, the delivered records and the staged responses.
         stamp_gate_buffers_(scan, scratch.incoming_wire, responses, /*extra=*/0);
-        run_round_two_(scan, responses, views, base);
+        run_round_two_(scan, responses, base);
         absence_pass<NumModes>(marks, scan.sent, scan.sent_c0, sink);
 
         scratch.counters.gates += 1;
@@ -216,10 +238,7 @@ private:
      *  result depends on, and that is what fixes their place here (mint indices were assigned against
      *  `base` before this call).
      */
-    auto run_round_two_(const FusedScanResult<NumModes> &scan,
-                        std::vector<VecZ> &responses,
-                        std::vector<std::span<const size_t>> &views,
-                        size_t base) -> void {
+    auto run_round_two_(const FusedScanResult<NumModes> &scan, mpi::WindowVec<VecZ> &responses, size_t base) -> void {
         std::optional<mpi::PendingAlltoallv<size_t>> answering;
         if constexpr (Sink::wants_responses) {
             if (R > 1) {
@@ -230,17 +249,21 @@ private:
         insert_misses<NumModes>(local_op, scratch.misses, base);
         if constexpr (Sink::wants_responses) {
             if (answering.has_value()) {
-                std::vector<VecZ> answers;
+                mpi::WindowVec<VecZ> answers;
                 answering->wait_into(answers);
                 // Round 2 at its widest: round 1's buffers are all still in scope under the answers.
                 stamp_gate_buffers_(scan, scratch.incoming_wire, responses, wire_bytes_(answers));
-                apply_responses<NumModes>(scratch.marks, scan.sent, slot_streams(answers, views), sink);
+                apply_responses<NumModes>(scratch.marks,
+                                          scan.sent,
+                                          slot_streams(answers, scratch.slot_views),
+                                          answers.window(),
+                                          sink);
             }
         }
     }
 
-    static auto wire_bytes_(const std::vector<VecZ> &wire) -> size_t {
-        size_t bytes = wire.capacity() * sizeof(VecZ);
+    static auto wire_bytes_(const mpi::WindowVec<VecZ> &wire) -> size_t {
+        size_t bytes = wire.size() * sizeof(VecZ);
         for (const VecZ &slot : wire) {
             bytes += slot.capacity() * sizeof(size_t);
         }
@@ -256,8 +279,8 @@ private:
      *  diagnostic beside the ledger and never a term in it.
      */
     auto stamp_gate_buffers_(const FusedScanResult<NumModes> &scan,
-                             const std::vector<VecZ> &incoming,
-                             const std::vector<VecZ> &responses,
+                             const mpi::WindowVec<VecZ> &incoming,
+                             const mpi::WindowVec<VecZ> &responses,
                              size_t extra) -> void {
         size_t bytes = extra + wire_bytes_(scan.queries) + wire_bytes_(incoming) + wire_bytes_(responses)
                        + scratch.misses.memory_bytes() + scratch.incoming_records.memory_bytes()
@@ -316,6 +339,9 @@ auto build_layer(MPOperator<NumModes> &local_op,
     // rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise.
     const auto plan =
         mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(router.rank_shift<NumModes>(gen))};
+    // The reachable slots, once per generator: S of the R*S world under linear routing, all of it
+    // otherwise. Every per-slot structure from the scan to the wire is sized to this run.
+    const mpi::SlotWindow scan_window = plan.window(my_rank, router.ranks(), router.partitions());
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
@@ -361,6 +387,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                                           coeffs,
                                                                           only_rotate_len_k,
                                                                           over_cutoff_possible,
+                                                                          scan_window,
                                                                           my_rank,
                                                                           router,
                                                                           scratch,
@@ -391,7 +418,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink),
-                                             plan);
+                                             plan,
+                                             scan_window);
         if (!identity_gen) {
             eng.exchange_and_join(std::move(fused));
         }
