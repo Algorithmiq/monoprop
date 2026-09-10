@@ -194,7 +194,11 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
+    const size_t wide_width = packed_inline_width_();
+    mp_op_.store =
+        std::make_unique<detail::OperatorIndex<NumModes>>(predicted_inline_width_(local_heisenberg_terms, wide_width),
+                                                          0,
+                                                          wide_width);
     mp_op_.store->reserve(expected_local_terms);
     // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
     mp_op_.inverted_index_.reset();
@@ -376,6 +380,35 @@ auto MonomialPropagator<NumModes>::partitioned_operator_memory_usage_() const
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown {
     return sum_partitions_([](const MonomialPropagator &s) { return s.graph_memory_usage(); });
+}
+
+/*! @brief The inline width to build the row store at: the width most rows are expected to need.
+ *
+ *  packed_inline_width_() is the structural *bound*, which real operators sit well under, and the
+ *  inline width is paid for by every row while the wide tier is paid for only by the rows in it.
+ *  Majorana rows are even-parity when the initial operator is and the generators preserve it, so the
+ *  bound is one slot loose at every odd cutoff. For Pauli the measured P99 runs at 0.79-0.88 of the
+ *  bound, and 0.79 takes the largest cut.
+ *
+ *  Either guess being wrong costs one restride and nothing else: the store spills to its wide tier and
+ *  re-lays itself at the bound the first time the tier passes kRestridePercent of the rows.
+ */
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::predicted_inline_width_(const MonomialList<NumModes> &op, size_t wide_width) const
+    -> size_t {
+    constexpr size_t kPauliP99Numerator = 79;
+    if (schrodinger_ || wide_width == 0) {
+        return wide_width;
+    }
+    if (basis_ == Basis::Pauli) {
+        return std::max<size_t>(1, (wide_width * kPauliP99Numerator + 99) / 100);
+    }
+    for (size_t r = 0; r < op.size(); ++r) {
+        if (materialize_row<NumModes>(op, r).count() % 2 != 0) {
+            return wide_width;
+        }
+    }
+    return std::max<size_t>(1, 2 * (wide_width / 2));
 }
 
 template <size_t NumModes>
@@ -564,10 +597,14 @@ auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_
         return;
     }
 
+    // One reservation for both the copy and the zero-fill tail, so the caller's array takes a single
+    // growth step at the row store's policy rather than up to two of std::vector's own.
+    detail::reserve_coeffs_geometric(coeffs, mp_op_.size());
     if (coeffs.size() < current.size()) {
         coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
     }
     coeffs.resize(mp_op_.size(), 0.0);
+    mp_op_.observe_op_coeffs_slack();
 }
 
 template <size_t NumModes>
@@ -759,11 +796,17 @@ template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
+    mp_op_.reset_op_coeffs_slack_hwm();
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
         const auto &mono = majoranas[idx];
         evolution_func(mono, only_rotate_len_k, i);
+        // Between gates, never inside one: a gate holds spans into the rows it is reading, and the
+        // restride moves every one of them. Row indices survive it, so nothing else has to be rebuilt.
+        if (mp_op_.store->should_restride()) {
+            mp_op_.store->restride_to_bound();
+        }
     }
 
     initialize_operator_caches_();

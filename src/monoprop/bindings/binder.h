@@ -271,7 +271,13 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
-                                             {"d_init_operator_entries", b.init_operator_entries}};
+                                             {"d_init_operator_entries", b.init_operator_entries},
+                                             {"d_op_coeffs_slack_bytes", b.op_coeffs_slack_bytes},
+                                             {"d_row_wide_rows", b.row_wide_rows},
+                                             {"d_row_inline_width", b.row_inline_width},
+                                             {"d_row_restrides", b.row_restrides},
+                                             {"d_pool_mapped_bytes", b.pool_mapped_bytes},
+                                             {"d_pool_free_chunk_bytes", b.pool_free_chunk_bytes}};
     });
 
     // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P

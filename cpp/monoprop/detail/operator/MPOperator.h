@@ -59,6 +59,21 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+/*! @brief Reserve for a coefficient array that parallels the row store, on the store's own policy.
+ *
+ *  Left to itself std::vector doubles, so a coefficient array appended alongside the rows settles at up
+ *  to 8 B/term more capacity than the rows it parallels -- and never returns it mid-run, only at the
+ *  quiescence shrink_to_fit. Growing at 1.5x keeps the two in step. Capacity is unobservable, so this
+ *  is exactly a memory choice: the array stays one contiguous vector, append-only, with every fresh
+ *  slot zero-filled by the resize that follows.
+ */
+inline auto reserve_coeffs_geometric(VecD &coeffs, size_t new_size) -> void {
+    const size_t cap = coeffs.capacity();
+    if (cap < new_size) {
+        coeffs.reserve(std::max(new_size, cap + (cap / 2) + 1));
+    }
+}
+
 template <size_t NumModes>
 struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
@@ -74,6 +89,10 @@ struct MPOperator {
     // The dense state: empty in Heisenberg unless a caller asks dense_state() to cache one; in Schrödinger
     // it is the live coefficient vector evolution mutates in place.
     VecD state_coeffs;
+    // Peak of (capacity - size) * 8 over the current propagate/build_graph call, sampled at the growth
+    // sites. Kept here rather than derived in estimate_memory_usage() because the peak is transient:
+    // the shrink at the end of each call erases it.
+    size_t op_coeffs_slack_hwm_{0uz};
     MonomialMap<NumModes> init_op_map{};
     VecZ initial_state;
     // Set once at propagator construction.
@@ -91,12 +110,27 @@ struct MPOperator {
           state_vals_(other.state_vals_),
           state_scored_rows_(other.state_scored_rows_),
           state_coeffs(other.state_coeffs),
+          op_coeffs_slack_hwm_(other.op_coeffs_slack_hwm_),
           init_op_map(other.init_op_map),
           initial_state(other.initial_state),
           basis(other.basis),
           inverted_index_(other.inverted_index_) {}
 
     auto size() const -> size_t { return store->size(); }
+
+    /*! @brief Records op_coeffs' current growth slack into the per-call high-water mark.
+     *
+     *  Called right after every growth, because that is the only moment the slack exists to be seen:
+     *  the array is shrunk to fit at the end of each propagate or build_graph call, so a caller reading
+     *  the ledger between calls finds nothing left of it.
+     */
+    auto observe_op_coeffs_slack() -> void {
+        op_coeffs_slack_hwm_ =
+            std::max(op_coeffs_slack_hwm_, (op_coeffs.capacity() - op_coeffs.size()) * sizeof(double));
+    }
+
+    //! Opens a new measurement window for observe_op_coeffs_slack(): one propagate or build_graph call.
+    auto reset_op_coeffs_slack_hwm() -> void { op_coeffs_slack_hwm_ = 0uz; }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
@@ -123,7 +157,9 @@ struct MPOperator {
             return op_coeffs;
         }
 
+        reserve_coeffs_geometric(op_coeffs, size());
         op_coeffs.resize(size(), 0.0);
+        observe_op_coeffs_slack();
 
         if (init_op_map.empty()) {
             return op_coeffs;
@@ -173,6 +209,7 @@ struct MPOperator {
             return state_coeffs;
         }
         const size_t cur_len = state_coeffs.size();
+        reserve_coeffs_geometric(state_coeffs, size());
         state_coeffs.resize(size(), 0.0);
         scatter_state_rows_from_(cur_len, state_coeffs);
         return state_coeffs;
@@ -296,7 +333,22 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_dense_bytes{0uz};  // of inverted_index_bytes: full-height bitmap columns
     size_t inverted_index_sparse_bytes{0uz}; // of inverted_index_bytes: ascending set-row lists
     size_t inverted_index_dense_columns{0uz};
-    size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused geometric-growth capacity
+    size_t operator_terms_slack_bytes{0uz}; // of operator_terms_bytes: unused capacity (a chunk's tail)
+    // The row store's two tiers: how many rows are too wide for the inline slot, the inline width they
+    // are measured against, and how often the store has had to re-lay itself at a wider one. Together
+    // they say whether the width guessed from the model's cutoff held.
+    size_t row_wide_rows{0uz};
+    size_t row_inline_width{0uz};
+    size_t row_restrides{0uz};
+    // What the chunk pools have mapped, and how much of that is chunks they have not handed out. Not a
+    // subset of any field above: a pool maps whole arenas and keeps one while a single chunk is live,
+    // so these bytes are what the kernel charges even where no named field prices them.
+    size_t pool_mapped_bytes{0uz};
+    size_t pool_free_chunk_bytes{0uz};
+    // of op_coeffs_bytes: the most capacity the coefficient array held beyond its live rows at any
+    // point in the last propagate or build_graph call. A high-water mark, not a resting figure: the
+    // array is shrunk to fit at the end of every call, so measured at quiescence the slack is always 0.
+    size_t op_coeffs_slack_bytes{0uz};
     // of state_coeffs_bytes: entries of the state that are not exactly 0.0
     size_t state_coeffs_nonzero{0uz};
     // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
@@ -320,6 +372,15 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
         operator_terms_slack_bytes += o.operator_terms_slack_bytes;
+        row_wide_rows += o.row_wide_rows;
+        row_restrides += o.row_restrides;
+        // Every partition sizes its rows from the same cutoff, so the width is shared, not summed.
+        row_inline_width = std::max(row_inline_width, o.row_inline_width);
+        pool_mapped_bytes += o.pool_mapped_bytes;
+        pool_free_chunk_bytes += o.pool_free_chunk_bytes;
+        // Summed, not maxed, across partitions: the partitions grow together within a call, so the sum
+        // is the figure a per-process footprint wants. An upper bound, and it errs the safe way.
+        op_coeffs_slack_bytes += o.op_coeffs_slack_bytes;
         state_coeffs_nonzero += o.state_coeffs_nonzero;
         init_operator_entries += o.init_operator_entries;
         return *this;
@@ -330,6 +391,11 @@ template <size_t NumModes>
 inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
+    breakdown.row_wide_rows = op.store->wide_size();
+    breakdown.row_inline_width = op.store->inline_width();
+    breakdown.row_restrides = op.store->restrides();
+    breakdown.pool_mapped_bytes = op.store->pool_mapped_bytes();
+    breakdown.pool_free_chunk_bytes = op.store->pool_free_chunk_bytes();
     breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
     breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
@@ -345,8 +411,11 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_dense_bytes = tiers[0];
         breakdown.inverted_index_sparse_bytes = tiers[1];
         breakdown.inverted_index_dense_columns = tiers[2];
+        breakdown.pool_mapped_bytes += op.inverted_index_->pool_mapped_bytes();
+        breakdown.pool_free_chunk_bytes += op.inverted_index_->pool_free_chunk_bytes();
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
+    breakdown.op_coeffs_slack_bytes = op.op_coeffs_slack_hwm_;
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

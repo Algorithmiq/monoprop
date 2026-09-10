@@ -174,6 +174,30 @@ _GRAPH_DIAGNOSTIC_KEYS = (
     "d_occupied_slots",
     "d_cross_rank_endpoints",
 )
+_OPERATOR_LEDGER_KEYS = (
+    "operator_terms_bytes",
+    "op_coeffs_bytes",
+    "state_coeffs_bytes",
+    "indexing_bytes",
+    "init_operator_bytes",
+    "initial_state_bytes",
+    "inverted_index_bytes",
+    "matched_scratch_bytes",
+)
+_OPERATOR_DIAGNOSTIC_KEYS = (
+    "d_invidx_dense_bytes",
+    "d_invidx_sparse_bytes",
+    "d_invidx_dense_columns",
+    "d_terms_slack_bytes",
+    "d_state_coeffs_nonzero",
+    "d_init_operator_entries",
+    "d_op_coeffs_slack_bytes",
+    "d_row_wide_rows",
+    "d_row_inline_width",
+    "d_row_restrides",
+    "d_pool_mapped_bytes",
+    "d_pool_free_chunk_bytes",
+)
 
 
 @parametrize_with_cases(
@@ -214,3 +238,37 @@ def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
     assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]
     assert breakdown["d_occupied_slots"] <= breakdown["d_cross_rank_endpoints"]
     assert breakdown["d_slot_record_bytes"] <= breakdown["cross_rank_bytes"]
+
+
+@parametrize_with_cases(
+    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
+)
+def test_operator_memory_breakdown_keys_and_totals(problem, serial_comm):
+    """The operator ledger is the same measurement contract as the graph one."""
+    monomial_circuit = problem.monomial_circuit
+    core = _make_bound_core(problem, serial_comm, schrodinger=False)
+    _evolve_bound_core(core, monomial_circuit)
+
+    breakdown = core.operator_memory_breakdown()
+
+    assert set(breakdown) == {
+        *_OPERATOR_LEDGER_KEYS,
+        "total_bytes",
+        *_OPERATOR_DIAGNOSTIC_KEYS,
+    }
+
+    # total_bytes() is the live-at-quiescence figure: the d_ keys are subsets or counts.
+    assert breakdown["total_bytes"] == sum(breakdown[k] for k in _OPERATOR_LEDGER_KEYS)
+    assert breakdown["total_bytes"] == core.operator_memory_bytes()
+    assert breakdown["total_bytes"] > 0
+
+    # The pools map whole arenas, so the free part is a part of the mapping.
+    assert breakdown["d_pool_free_chunk_bytes"] <= breakdown["d_pool_mapped_bytes"]
+    # The chunked row store's slack is the tail of one chunk, so it cannot exceed the store.
+    assert breakdown["d_terms_slack_bytes"] <= breakdown["operator_terms_bytes"]
+    # A high-water mark over the call just made, and a subset of the array it breaks down. Growth is
+    # bounded by the 1.5x policy, so the peak stays under the array itself.
+    assert breakdown["d_op_coeffs_slack_bytes"] <= breakdown["op_coeffs_bytes"]
+    # The rows in the wide tier are rows of the store, and the inline width is a slot count.
+    assert breakdown["d_row_wide_rows"] <= core.size()
+    assert 1 <= breakdown["d_row_inline_width"] <= 32
