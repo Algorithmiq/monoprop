@@ -19,9 +19,9 @@ than leaving it to the picture.
 ## Extending a graph across several calls
 
 [build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] can also grow
-one graph a block of gates at a time, as an ADAPT-style loop does. Which circuit that adds
-up to is decided by the [simulation mode](/concepts/simulation_modes), because the
-Heisenberg picture consumes each call's gates back-to-front:
+one graph a block of gates at a time. Which circuit that adds up to is decided by the
+[simulation mode](/concepts/simulation_modes), because the Heisenberg picture consumes each
+call's gates back-to-front:
 
 ```python notest
 sim.build_graph(a)
@@ -49,7 +49,7 @@ graph by assigning a per-gate mapping — see the warning on
 </Callout>
 
 `seed_parameters` is read on that same post-call axis, which makes it the parameter vector
-of the equivalent composed circuit. It matters only while extending a non-empty graph with
+of the equivalent composed circuit. It is needed only while extending a non-empty graph with
 coefficient-informed truncation (`lower_atol` / `upper_atol`, see
 [Truncation and cutoffs](/features/cutoff)) active: seeded there, the extension truncates
 against the coefficients the existing layers really carry and reproduces the one-call build
