@@ -45,6 +45,14 @@ public:
 
     auto size() const -> int { return n_; }
 
+    /*! @brief Bytes this transport holds: the publish slots, and nothing else.
+     *
+     *  Diagnostic, the ShmComm half of mpi::staging_bytes(). There is no payload staging to report --
+     *  a peer reads the publisher's own send buffer in place through `slots_` -- so the only bytes here
+     *  are one cache-line slot per partition.
+     */
+    [[nodiscard]] auto staging_bytes() const -> size_t { return slots_.capacity() * sizeof(Slot); }
+
     // recv_counts[s] = what rank s sends to me (the transpose of the send-count matrix).
     auto alltoall_counts(int rank, const int *send_counts, int *recv_counts) -> void {
         slots_[static_cast<size_t>(rank)].counts = send_counts;

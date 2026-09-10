@@ -14,9 +14,14 @@
 
 #include "monoprop/detail/mpi/Exchange.h"
 
+#include <algorithm>
 #include <format>
 #include <print>
 #include <stdexcept>
+
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/Pairwise.h"
+#endif
 
 namespace monoprop::mpi {
 
@@ -114,19 +119,45 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
+auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
         return;
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts, plan);
+        return;
+    }
+    if (!plan.dense()) {
+        // S == 1 world: exchange one int with each reachable peer; the rest of the row is zero by
+        // definition, so it must be cleared rather than left from a previous round.
+        int me = 0;
+        MPI_Comm_rank(comm.mpi, &me);
+        std::fill(recv_counts, recv_counts + n, 0);
+        const PeerLayout one{.block = 1};
+        // Eager by contract: recv_counts is caller memory the caller reads on return, so unlike the
+        // payload round this one cannot be handed on in a handle.
+        std::vector<MPI_Request> reqs;
+        const int posted = sparse_pairwise(plan,
+                                           me,
+                                           n,
+                                           comm.mpi,
+                                           kFlatCountTag,
+                                           MPI_INT,
+                                           sizeof(int),
+                                           reinterpret_cast<const std::byte *>(send_counts),
+                                           one,
+                                           reinterpret_cast<std::byte *>(recv_counts),
+                                           one,
+                                           reqs);
+        MPI_Waitall(posted, reqs.data(), MPI_STATUSES_IGNORE);
         return;
     }
     (void)n;
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
+    (void)plan; // single participant: nothing to narrow
     for (int i = 0; i < n; ++i) {
         recv_counts[i] = send_counts[i];
     }

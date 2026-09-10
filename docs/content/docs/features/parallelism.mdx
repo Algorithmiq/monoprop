@@ -80,6 +80,15 @@ than as a measurement of the array as it stands, which would always be 0. Across
 are summed rather than maxed: the partitions grow together within a call, so the sum is the figure a
 per-process footprint wants, and it errs high.
 
+`d_wire_staging_bytes` is not the operator's memory at all but the transport's, which is why it is
+outside the total: the in-process transports keep a payload staging buffer per direction, grown to
+the widest message the run has needed and never shrunk, plus the count and displacement tables that
+are fixed by the rank and partition counts. On a run whose widest gate came early those buffers are
+resident for the whole of it while nothing resting names them. One transport serves all the
+partitions of a rank, so it is a per-rank figure: exactly one partition reports it and a sum over
+partitions counts a rank's staging once. A pure-MPI rank reports 0, because there its payload
+buffers belong to the in-flight exchange handle and die with the gate that opened the round.
+
 ### Peak memory of large runs: pin glibc's `mmap` threshold
 
 Every gate allocates and frees a few large transient buffers: the records it stages, sends, receives
@@ -147,6 +156,25 @@ And the fibres are cosets of $\ker h_d$, all of size $2^{2N-d}$, so a uniformly 
 monomial is balanced by construction; imbalance can only come from the operator's support
 being non-uniform, which is why balance is measured rather than proved — rank occupancy
 max/mean 1.001 at $R = 128$, with every rank used.
+
+That one peer is what the exchange is then allowed to spend. A gate's query round carries a
+`PeerPlan` -- the rank shift $h_d(G)$, derived once per generator where the generator is held -- and
+the transports read it rather than a rank count: one `Isend`/`Irecv` pair with the peer instead of an
+`MPI_Alltoall` on the counts and an `MPI_Alltoallv` on the payload, and a plain `memcpy` when the
+shift is zero and the peer is this rank itself. The reply round retraces the queries, and XOR is an
+involution, so it takes the same plan. Under the hybrid the larger win is not the messages but the
+*serial* sweeps: the count transpose, the two staging sizers, the recv column and the scatter are all
+$O(R S^2)$ and all run on partition 0 while the other $S - 1$ partitions park at a barrier, and
+restricting them to the reachable ranks makes them $O(S^2)$. Graph replay is narrowed the same way,
+without a plan: its count matrix is symmetric, so what a rank sends a peer is that peer's receive
+count and both ends drop the same legs on the same value.
+
+Which transport a round takes must be the same on every rank, or a rank inside a collective waits
+forever on ranks that chose point-to-point. So it is never a predicate on a rank's own traffic --
+rows vary, and any threshold on one straddles -- but a function of the resolved routing mode and the
+rank count alone, the same two things the propagator's construction-time agreement check reduces
+across the world. A wrong shift that every rank agrees on does not hang; it silently drops the blocks
+outside the peer set, and debug builds assert against exactly that.
 
 The one condition is that the per-generator shifts $\{h_d(G)\}$ span $\mathbb{F}_2^{d}$.
 If they span only $\rho < d$ dimensions, the ranks a query can reach form a coset of a
