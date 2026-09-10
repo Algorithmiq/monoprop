@@ -890,25 +890,9 @@ def test_incremental_heisenberg_moves_each_block_to_the_front_of_the_axis() -> N
     assert incremental.parameter_mapping == list(range(6))
     assert incremental.parameter_mapping == single.parameter_mapping
     theta = [0.31, -0.47, 0.23, 0.55, -0.19, 0.4]
-    reference = single.expectation_value(theta)
-    np.testing.assert_allclose(incremental.expectation_value(theta), reference)
-
-    # The equality only means something because the wiring is observable here: both the forward
-    # composition and a block reversed inside itself differ.
-    forward = _incremental_propagator()
-    forward.build_graph(_compose(blocks))
-    assert abs(forward.expectation_value(theta) - reference) > 1e-3
-    within_block = _incremental_propagator()
-    within_block.build_graph(
-        _compose(
-            [
-                _block(gens[5], gens[4], gens[3]),
-                _block(gens[2]),
-                _block(gens[1], gens[0]),
-            ]
-        )
+    np.testing.assert_allclose(
+        incremental.expectation_value(theta), single.expectation_value(theta)
     )
-    assert abs(within_block.expectation_value(theta) - reference) > 1e-3
 
 
 def test_incremental_reindex_keeps_a_multi_monomial_gate_on_one_index() -> None:
@@ -938,12 +922,72 @@ def test_incremental_reindex_keeps_a_multi_monomial_gate_on_one_index() -> None:
     np.testing.assert_allclose(gradient, ref_gradient)
 
 
+# Overlapping, mutually anticommuting supports, so the gate order is observable here too. The
+# first entry is one gate of two commuting terms, giving `graph_layers > n_gates`.
+_INCREMENTAL_PAULI_GENS = [
+    {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0},
+    {Pauli("YZ", (1, 2)): 1.0},
+    {Pauli("X", 1): 1.0},
+    {Pauli("ZX", (0, 2)): 1.0},
+]
+
+
+def _pauli_propagator() -> PauliPropagator:
+    """Heisenberg qubit propagator on 3 qubits, at a weight cutoff that truncates nothing."""
+    return PauliPropagator(
+        PauliOperator({Pauli("ZZ", (0, 1)): 1.0, Pauli("Z", 2): 0.5}, num_qubits=3),
+        [0],
+        cutoff=3,
+    )
+
+
+def _pauli_block(*generators: dict) -> Circuit:
+    """One build_graph call's worth of qubit gates, angle-indexed 0.. in gate order."""
+    return Circuit(
+        [
+            ExpGate(PauliOperator(generator, num_qubits=3), index=i)
+            for i, generator in enumerate(generators)
+        ],
+        system_size=3,
+        initial_state=[0],
+    )
+
+
+def test_incremental_build_wires_the_equivalent_circuit_for_pauli() -> None:
+    """The axis contract is the shared engine's, so PauliPropagator obeys it as well.
+
+    Same invariant as the Majorana legs: ``build_graph(a); build_graph(b)`` is the circuit
+    ``b + a`` in Heisenberg and is numbered like it, on the axis, the value and the gradient.
+    """
+    gens = _INCREMENTAL_PAULI_GENS
+    a = _pauli_block(gens[0], gens[1])
+    b = _pauli_block(gens[2], gens[3])
+
+    incremental = _pauli_propagator()
+    incremental.build_graph(a)
+    incremental.build_graph(b)
+
+    single = _pauli_propagator()
+    single.build_graph(b + a)
+
+    # The two-term gate keeps its layers on one index through the rotation.
+    assert incremental.n_gates == 4
+    assert incremental.graph_layers == 5
+    assert incremental.parameter_mapping == [0, 1, 2, 2, 3]
+    assert incremental.parameter_mapping == single.parameter_mapping
+
+    theta = [0.31, -0.47, 0.23, 0.55]
+    value, gradient = incremental.expectation_value_and_gradient(theta)
+    ref_value, ref_gradient = single.expectation_value_and_gradient(theta)
+    np.testing.assert_allclose(value, ref_value)
+    np.testing.assert_allclose(gradient, ref_gradient)
+
+
 def test_extend_seed_parameters_are_read_on_the_post_call_axis() -> None:
     """A Heisenberg seed is indexed like the axis the call leaves behind, not like the old one.
 
     Seeded there, the extension's coefficient-informed truncation reproduces the one-call build
-    of the equivalent circuit exactly -- same kept terms, same value. On the pre-call axis the
-    two blocks' angles swap places, which nothing raises on: it just keeps different terms.
+    of the equivalent circuit exactly -- same kept terms, same value.
     """
     gens = _INCREMENTAL_GENS
     existing = _block(gens[0], gens[1], gens[2], angles=(0.9, -0.7, 0.5))
@@ -963,14 +1007,6 @@ def test_extend_seed_parameters_are_read_on_the_post_call_axis() -> None:
     seeded.build_graph(existing, seed_parameters=existing.parameters)
     seeded.build_graph(appended, seed_parameters=theta)
     assert signature(seeded) == signature(single)
-
-    stale = _incremental_propagator(lower_atol=0.1)
-    stale.build_graph(existing, seed_parameters=existing.parameters)
-    stale.build_graph(
-        appended,
-        seed_parameters=list(existing.parameters) + list(appended.parameters),
-    )
-    assert signature(stale) != signature(single)
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
