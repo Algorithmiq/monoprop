@@ -25,6 +25,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <set>
 #include <span>
@@ -105,7 +106,9 @@ auto find_term(const Op &op, const Monomial<kN> &m) -> size_t {
     return op.term_table().find(*op.store, key_of(m), std::span<const PosT>(pos));
 }
 
-// out[q] = the row of query q, or TermTable::kNotFound, through the batched pipeline.
+// out[q] = the row of query q, or TermTable::kNotFound, through the batched pipeline. `on_hit` fires once
+// per confirmed row, which is what the gate join marks its rows with, so it is counted here too: the
+// hit count the probe returns must equal the calls it made.
 auto probe_batch(const Op &op, const std::vector<Monomial<kN>> &asked) -> std::vector<size_t> {
     std::vector<uint32_t> keys;
     std::vector<std::vector<PosT>> pos;
@@ -113,13 +116,26 @@ auto probe_batch(const Op &op, const std::vector<Monomial<kN>> &asked) -> std::v
         keys.push_back(key_of(m));
         pos.push_back(positions_of(m));
     }
-    std::vector<size_t> out(asked.size(), 0);
-    op.term_table().find_batch(
+    constexpr TermIndex kMissing = std::numeric_limits<TermIndex>::max();
+    std::vector<TermIndex> rows(asked.size(), 0);
+    size_t on_hit_calls = 0;
+    const size_t hits = op.term_table().find_batch(
         *op.store,
         asked.size(),
         [&keys](size_t q) { return keys[q]; },
         [&pos](size_t q) { return std::span<const PosT>(pos[q]); },
-        std::span<size_t>(out));
+        [&on_hit_calls](size_t /*q*/, size_t /*row*/) { ++on_hit_calls; },
+        std::span<TermIndex>(rows),
+        kMissing);
+    BOOST_TEST(on_hit_calls == hits);
+    std::vector<size_t> out;
+    out.reserve(asked.size());
+    size_t found = 0;
+    for (const TermIndex row : rows) {
+        out.push_back(row == kMissing ? detail::TermTable::kNotFound : static_cast<size_t>(row));
+        found += static_cast<size_t>(row != kMissing);
+    }
+    BOOST_TEST(found == hits);
     return out;
 }
 

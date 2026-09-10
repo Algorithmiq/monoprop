@@ -32,76 +32,87 @@ namespace monoprop::detail {
 // OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
-// Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
-// across gates.
-struct MatchedEpochSet {
-    // One 2-byte stamp per term: the counter is never serialised, never exchanged, only compared to cur_.
-    using Stamp = uint16_t;
+// One nonzero-overlap word of the anticommutation fold, produced by the scan's pass 1 and read again by
+// the emit pass and the per-gate mark clear. `overlap` bit t set <=> term (base+t) anticommutes with G;
+// `foll` = overlap & pivot column = the followers (leaders are `overlap ^ foll`). `base` is a multiple
+// of 64: it is word wi's first row, so base/64 indexes a row-bitset word directly.
+struct EvenParityNzWord {
+    size_t base;
+    uint64_t overlap;
+    uint64_t foll;
+};
 
-    std::vector<Stamp> epoch_;
-    Stamp cur_ = 0;
+// One record this slot sent for a gate, in stream order (ascending source row): the source row and the
+// emit phase of that source. The absence pass walks these, so the row is carried rather than looked
+// up -- there are no per-gate ordinals to index a phase array by.
+struct SentRecord {
+    TermIndex row;
+    int8_t phase; // ternary, as A::emit_phase returns it
+};
 
-    // Wraps once per 65535 gates; without the fill a stale stamp on a row reused after a truncation aliases.
-    auto begin_gate(size_t n) -> void {
-        if (cur_ == std::numeric_limits<Stamp>::max()) {
-            std::fill(epoch_.begin(), epoch_.end(), Stamp{0});
-            cur_ = 0;
-        }
-        ++cur_;
-        if (epoch_.size() < n) {
-            epoch_.resize(n, Stamp{0});
-        }
-    }
-    auto mark(size_t i) -> void { epoch_[i] = cur_; }
-    [[nodiscard]] auto is_marked(size_t i) const -> bool { return epoch_[i] == cur_; }
-    [[nodiscard]] auto memory_bytes() const -> size_t { return epoch_.capacity() * sizeof(Stamp); }
+// Round 2 of the gate protocol (Engine.h): the answer a slot owes a record that hit one of its silent
+// rows is two words, `{sent_idx, value}`. `sent_idx` is that record's position in the sender's own
+// stream to this slot, which is what lets the answer name a row without carrying one -- the sender maps
+// it back through its `sent` list. Two words, so the response round reuses the records' transport verb
+// and buffer type.
+inline constexpr size_t kResponseWords = 2;
+
+// COMMPROF's tallies (MonomialPropagator::report_comm_profile_ prints them): the wire volume of one
+// call's gates, as this slot SENT it. Accumulated across the gates of a call, not reset per gate.
+struct ExchangeCounters {
+    size_t gates = 0;     // gates that exchanged, i.e. excluding the identity ones
+    size_t records = 0;   // round-1 records pushed, self-staged included
+    size_t responses = 0; // round-2 responses staged, the self slot's immediate ones included
 };
 
 // A trivial aggregate on purpose — not std::pair — so DefaultInitVector can skip the zero-fill and lower
 // the gather to memmove.
 struct PhasedEntry {
-    size_t idx; // local target index for in_entries, local source index for out_entries
+    size_t idx; // local target index for the in lists, local source index for the out lists
     int phase;
 };
 
-// Uniform per-rank rotation accumulator, drained into the LayerCore's sin_send/sin_recv lists by
-// GraphSink::finalize. Self slot: in:=(tgt,φ), out:=(src,φ); cross-rank: in=resolver, out=querier side.
+// One peer slot's rotation endpoints as the graph sink collects them (GateSinks.h has the rules),
+// drained into the LayerCore's sin_send/sin_recv lists by GraphSink::finalize as
+// in = [in_pairs, in_mints] and out = [out_pairs, out_unanswered]. Replay pairs my out[j] with the
+// peer's in[j] positionally, which the four lists' orders guarantee: in_pairs/in_mints are in the
+// peer's stream order (ascending peer row), out_pairs/out_unanswered in ascending own row.
 struct PartnerAcc {
-    // Default-init storage: every resize-then-overwrite path must fully overwrite [base, base+n) before reading.
-    DefaultInitVector<PhasedEntry> in_entries;
-    DefaultInitVector<PhasedEntry> out_entries;
+    std::vector<PhasedEntry> in_pairs;       // my follower endpoints of pairs with a tracked partner
+    std::vector<PhasedEntry> in_mints;       // partners this slot minted from a peer's E-record
+    std::vector<PhasedEntry> out_pairs;      // my leader endpoints of pairs with a tracked partner
+    std::vector<PhasedEntry> out_unanswered; // my E-records whose key missed at the peer (it minted)
+
+    [[nodiscard]] auto in_count() const -> size_t { return in_pairs.size() + in_mints.size(); }
+    [[nodiscard]] auto out_count() const -> size_t { return out_pairs.size() + out_unanswered.size(); }
 };
 
-// Fused contraction (ContractImmediately — the default forward path at all rank counts): one rotation
-// (source S, target T, phase φ) applied directly to op_coeffs, bypassing the LayerCore, after cos-scaling S and T:
-//   op[S] += -sin·φ·op_pre[T]      op[T] += +sin·φ·op_pre[S]
-struct RotationRec {
-    size_t src = 0;
-    size_t tgt = 0;
-    double v_src = 0.0; // op_pre[src] — signed coeff captured at scan emit
-    double v_tgt = 0.0; // op_pre[tgt] — resolve-time (hits) / post-extension (inserts) coeff
-    int32_t phase = 0;  // ±1 rotation phase (A::emit_phase)
-};
-
-// One cross-rank half-rotation (R>1): each rank applies only the add to the slot it owns. The resolver
-// owns target T: {T, v_src, +φ}; the querier owns source S: {S, v_tgt, −φ}. Applied like the self-rank
-// sin_recv apply: op[local_idx] += sin·phase_signed·v_partner (v_partner off the wire, pre-cos).
+// One half-rotation (Engine.h has the protocol): the add this slot owns of a rotation between a term and
+// its partner, applied as op[local_idx] += sin*phase_signed*v_partner with v_partner the partner's
+// pre-cos coefficient off the wire. Each slot is touched by exactly one add per gate (a term has one
+// partner), so the order of the records is irrelevant to the result.
+// Two words rather than three: the index is a row, so it is TermIndex-wide like every other row in the
+// engine, and the phase is ternary. One gate's halves are pushed and then drained as one sequential
+// stream over a buffer the join sizes exactly, so a third off the record is a third off the memory
+// traffic of both passes.
 struct HalfRotationRec {
-    size_t local_idx = 0;     // slot this rank owns: T (resolver) or S (querier)
-    double v_partner = 0.0;   // partner's pre-cos coeff: v_src (resolver) / v_tgt (querier)
-    int32_t phase_signed = 0; // +φ (resolver) / −φ (querier), pre-signed so the apply never negates
-    // Resolver miss halves write a slot inserted this gate (after the fused cos sweep), so the apply folds
-    // the gate's cos in (c = cos·c + sin) instead of a plain add. False for hit/querier halves: pre-gate terms.
+    TermIndex local_idx = 0; // the slot this rank owns
+    int8_t phase_signed = 0; // +phi_rec for a hit or mint, -phi_own for an absent partner: pre-signed so
+                             // the apply never negates
+    // A mint writes a slot inserted this gate (after the fused cos sweep), so the apply folds the gate's
+    // cos in (c = cos*c + sin*phi*v) instead of a plain add. False for every pre-gate term.
     bool is_insert = false;
+    double v_partner = 0.0; // partner's pre-cos coefficient: v_rec for a hit or mint, the answering
+                            // row's own coefficient for a response, c0 for an absence
 };
+// Only the default 32-bit TermIndex can hold the layout.
+static_assert(sizeof(TermIndex) != sizeof(uint32_t) || sizeof(HalfRotationRec) == 16,
+              "the apply streams these, so the packing is the point");
 
-// Sink threaded through build_layer's fused branch; a non-null FusedContract* selects the fused path.
-// Self-routed rotations (both endpoints local) are full RotationRecs, split into hit and insert lists so
-// the apply can fill insert v_tgt (readable only after extend_coeffs) without scanning for a sentinel.
+// Sink threaded through build_layer's fused branch (ContractImmediately); a non-null FusedContract*
+// selects the fused path. Drained by apply_fused_contract.
 struct FusedContract {
-    std::vector<RotationRec> hits;
-    std::vector<RotationRec> inserts;
-    std::vector<HalfRotationRec> cross_half; // R>1: one half per cross-rank query (resolver +φ, querier −φ)
+    std::vector<HalfRotationRec> halves;
 };
 
 // bit_cast, not a conversion, so v_src arrives over the wire bit-identical.
@@ -111,6 +122,12 @@ inline auto encode_value(double v) -> size_t {
 }
 inline auto decode_value(size_t word) -> double {
     return std::bit_cast<double>(word);
+}
+
+//! Appends one round-2 response, `kResponseWords` words wide.
+inline auto push_response(VecZ &buf, size_t sent_idx, double v) -> void {
+    buf.push_back(sent_idx);
+    buf.push_back(encode_value(v));
 }
 
 } // namespace monoprop::detail
