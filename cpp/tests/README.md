@@ -94,6 +94,8 @@ name and cannot address suite-nested cases, tests use flat
   diagnostic, the non-power-of-two throw and the shipped default),
   `env_config_tests.cpp` (the environment parsers, which throw rather than
   default on a malformed routing knob),
+  `position_kernels_tests.cpp` (the position-only emit kernels -- both algebras'
+  rotation sign and the (k, d) digest cutoff -- against their dense oracles),
   `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `chunked_array_tests.cpp` (the pooled chunk allocator and

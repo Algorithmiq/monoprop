@@ -18,6 +18,7 @@
 // fold, a term's rotation sign and emitted sine phase, the coefficient codec, and the diagonal
 // initial-state score. The arithmetic behind each answer lives in MajoranaAlgebra.h / PauliAlgebra.h.
 
+#include <cassert>
 #include <complex>
 #include <concepts>
 #include <cstddef>
@@ -59,6 +60,23 @@ struct MajoranaAlgebra {
         return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
     }
 
+    //! Whether rotation_sign_positions() is available for this generator. Always, for this algebra.
+    static auto sign_from_positions_ok(const GenContext & /*ctx*/) -> bool { return true; }
+    /*! @brief rotation_sign() from M's ascending positions instead of its bitset.
+     *
+     *  parity_and(W) is the parity of |M n W|, i.e. the XOR of W's bits AT those positions, so a packed
+     *  row is signed without being expanded.
+     */
+    template <typename PosT>
+    [[gnu::always_inline]] static auto rotation_sign_positions(const GenContext &ctx, const PosT *pos, size_t count)
+        -> int {
+        bool parity = false;
+        for (size_t j = 0; j < count; ++j) {
+            parity ^= ctx.interleave_mask.test(static_cast<size_t>(pos[j]));
+        }
+        return parity ? -1 : 1;
+    }
+
     // Anticommutation fold columns = G itself; odd |G| needs the per-row parity(|M|) correction.
     static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return gen; }
     static auto fold_needs_odd_correction(const Monomial<NumModes> &gen) -> bool { return gen.count() % 2 != 0; }
@@ -72,6 +90,18 @@ struct MajoranaAlgebra {
     }
     static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
         return monoprop::majorana_state_phase<NumModes>(mono, state_mask);
+    }
+    /*! @brief state_phase() from the term's ascending positions: (-1)^(|M n mask| + |M|/2).
+     *
+     *  Meaningful only for a fully paired M, exactly as state_phase() is.
+     */
+    template <typename PosT>
+    static auto state_phase_positions(const PosT *pos, size_t count, const Monomial<NumModes> &state_mask) -> double {
+        size_t in_mask = 0;
+        for (size_t j = 0; j < count; ++j) {
+            in_mask += static_cast<size_t>(state_mask.test(static_cast<size_t>(pos[j])));
+        }
+        return POWERS_OF_MINUS_ONE[(in_mask + count / 2) % 2];
     }
 };
 
@@ -99,6 +129,27 @@ struct PauliAlgebra {
         return rotation_sign;
     }
 
+    //! Whether rotation_sign_positions() is available: false when G acts on more than 32 qubits.
+    static auto sign_from_positions_ok(const GenContext &ctx) -> bool { return ctx.pauli_ctx.compact_ok; }
+    /*! @brief rotation_sign() from M's positions, through the per-gate compact word.
+     *
+     *  @pre sign_from_positions_ok(ctx). Only the qubits G acts on can change the sign, so the term's
+     *  bits at those qubits are gathered into the compact word and the kernel runs there.
+     */
+    template <typename PosT>
+    [[gnu::always_inline]] static auto rotation_sign_positions(const GenContext &ctx, const PosT *pos, size_t count)
+        -> int {
+        assert(ctx.pauli_ctx.compact_ok);
+        constexpr uint8_t kNone = PauliGenContext<NumModes>::kNotInGen;
+        uint64_t m_compact = 0;
+        for (size_t j = 0; j < count; ++j) {
+            const uint8_t cs = ctx.pauli_ctx.compact_slot[static_cast<size_t>(pos[j])];
+            // cs == kNone contributes nothing: shift by a masked amount and AND with the predicate.
+            m_compact |= (uint64_t{cs != kNone}) << (cs & 63U);
+        }
+        return pauli_rotation_sign_compact<NumModes>(ctx.pauli_ctx, m_compact);
+    }
+
     // Anticommutation fold columns = J(G) = pair_swap(G); Pauli needs no odd-|G| row-parity correction.
     static auto fold_generator(const Monomial<NumModes> &gen) -> Monomial<NumModes> { return pair_swap<NumModes>(gen); }
     static auto fold_needs_odd_correction(const Monomial<NumModes> & /*gen*/) -> bool { return false; }
@@ -112,6 +163,15 @@ struct PauliAlgebra {
     }
     static auto state_phase(const Monomial<NumModes> &mono, const Monomial<NumModes> &state_mask) -> double {
         return pauli_state_phase<NumModes>(mono, state_mask);
+    }
+    //! state_phase() from the term's ascending positions: (-1)^|Z n occupied|, the mask count alone.
+    template <typename PosT>
+    static auto state_phase_positions(const PosT *pos, size_t count, const Monomial<NumModes> &state_mask) -> double {
+        size_t in_mask = 0;
+        for (size_t j = 0; j < count; ++j) {
+            in_mask += static_cast<size_t>(state_mask.test(static_cast<size_t>(pos[j])));
+        }
+        return (in_mask & 1U) != 0U ? -1.0 : 1.0;
     }
 };
 
