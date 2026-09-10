@@ -268,9 +268,12 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # validation all raise, and a retry after such a failure must reuse the same indices.
         self._n_params += circuit.n_parameters
         if rotate_axis:
-            # Cyclic in the index *values*, not a shift: the mapping must stay a bijection of
-            # 0..n-1 at every step, and a shift would leave 0 unused. Assigning the per-layer
-            # form (length graph_layers) keeps `_n_params` correct.
+            # A cyclic rotation, because both blocks move: the existing indices go up by
+            # `num_new`, and the block just appended wraps from the top of the axis down to
+            # 0..num_new-1. Shifting only the existing ones would collide with the new block and
+            # leave its numbering untouched, which is the bug. Assigning the per-layer form
+            # (length graph_layers) picks that reading unambiguously; the rotated mapping is
+            # still contiguous, so this only skips the property setter's redundant validation.
             self._simulator.parameter_mapping = [
                 (m + num_new) % self._n_params for m in self.parameter_mapping
             ]
@@ -340,6 +343,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
             whose gates each carry one monomial has ``graph_layers == n_gates``, so a per-gate
             mapping is silently read per layer -- and on an incrementally built Heisenberg graph
             those orders differ. Permute what this getter returns instead.
+
+            Gate arrival order does not follow the picture: unlike the per-layer axis, it is not
+            renumbered when a Heisenberg extension reorders the equivalent circuit. So the same
+            per-gate mapping wires an incremental build and the one-call build of its equivalent
+            circuit differently, even though their per-layer mappings agree.
 
             ``list(range(n))`` is no reset either: read per layer it wires layer ``i`` to
             parameter ``i``, and on a multi-monomial graph splits one gate's layers apart.
