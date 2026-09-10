@@ -9,4 +9,6 @@ target_sources(
         "MPOperator.h"
         "OperatorIndex.h"
         "RowAccess.h"
+        "RowKey.h"
+        "TermTable.h"
 )

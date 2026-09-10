@@ -36,17 +36,20 @@ using cd = std::complex<double>;
 
 namespace {
 
-// Build an MPOperator whose store rows are also indexed (findable). append_term writes a row only;
-// find() needs the hash index, which only the insert_absent_terms path populates.
+// Build an MPOperator whose store rows go in through the engine's growth door, so its term table
+// follows them; append_term writes a row and leaves the lazy indices to catch up.
 auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
     detail::MPOperator<8> op;
     op.basis = basis;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<8>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<8>(*op.store, base + k, terms[k]);
+    });
     return op;
+}
+
+// The row the operator's term table holds for `mono`, or TermTable::kNotFound.
+auto find_term(const detail::MPOperator<8> &op, const Monomial<8> &mono) -> size_t {
+    return op.term_table().find(*op.store, mono);
 }
 
 // Independent expected state vector: score paired rows with the basis' state phase, 0 otherwise.
@@ -309,19 +312,18 @@ BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
                                             indices_to_bitset<8>({6, 7}),
                                             indices_to_bitset<8>({0, 3})};
 
-    const size_t base = detail::insert_absent_terms<8>(
-        op,
-        fresh.size(),
-        [&](size_t k) -> const Monomial<8> & { return fresh[k]; },
-        [&](size_t k, size_t b) { assign_row<8>(*op.store, b + k, fresh[k]); });
+    const size_t base = detail::insert_absent_terms<8>(op, fresh.size(), [&](size_t k, size_t b) {
+        assign_row<8>(*op.store, b + k, fresh[k]);
+    });
 
     BOOST_CHECK_EQUAL(base, 2U);
     BOOST_CHECK_EQUAL(op.size(), 5U);
-    for (const auto &f : fresh) {
-        BOOST_CHECK(op.store->find(f).has_value());
+    BOOST_CHECK_EQUAL(op.term_table().rows(), 5U); // the table followed the growth, row for row
+    for (size_t k = 0; k < fresh.size(); ++k) {
+        BOOST_CHECK_EQUAL(find_term(op, fresh[k]), base + k);
     }
-    BOOST_CHECK(op.store->find(e0).has_value()); // existing rows intact
-    BOOST_CHECK(op.store->find(e1).has_value());
+    BOOST_CHECK_EQUAL(find_term(op, e0), 0U); // existing rows intact
+    BOOST_CHECK_EQUAL(find_term(op, e1), 1U);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_append_term_after_materialization_rebuilds_inverted_index) {
@@ -425,7 +427,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
     BOOST_CHECK(copy.state_rows_ == op.state_rows_);
     BOOST_CHECK(copy.state_vals_ == op.state_vals_);
     BOOST_CHECK(copy.materialize_state() == op.materialize_state());
-    BOOST_CHECK(copy.store->find(indices_to_bitset<8>({0, 1})).has_value());
+    BOOST_CHECK_EQUAL(find_term(copy, indices_to_bitset<8>({0, 1})), 0U);
     // Mutating the copy must not touch the original (independent stores).
     copy.append_term(indices_to_bitset<8>({4, 5}));
     BOOST_CHECK_EQUAL(op.size(), 2U);

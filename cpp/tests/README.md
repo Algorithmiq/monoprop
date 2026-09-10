@@ -99,17 +99,22 @@ name and cannot address suite-nested cases, tests use flat
 - **Operator store**: `chunked_array_tests.cpp` (the pooled chunk allocator and
   the chunked arrays on it: arena reuse, unmapping read from
   `/proc/self/maps`, chunk alignment, indexing and cloning across boundaries),
-  `operator_index_tests.cpp` (row round-trip and the hash index, plus the
-  chunked storage: reads and finds across chunk boundaries, the chunk length
-  selected from the row count, the wide tier vs the side-map, and an
-  index-preserving restride), `inverted_index_tests.cpp` (the two column tiers
+  `operator_index_tests.cpp` (row round-trip, the row-key fold over every
+  storage tier and the linearity it rests on, the positions confirm, the 64-row
+  block accessor, plus the chunked storage: reads across chunk boundaries, the
+  chunk length selected from the row count, the wide tier vs the side-map, and an
+  index-preserving restride), `term_table_tests.cpp` (the persistent key -> row
+  table: every row found under its own key, the batched probe against a dense map
+  over the same rows -- answer for answer and in the miss order the resolve
+  assigns row indices in -- growth at the load bound, a key collision settled by
+  the row confirm, and the staleness guard),
+  `inverted_index_tests.cpp` (the two column tiers
   and the blocked fold, including that a fold is bit-identical across chunk
   sizes), `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
   get_operator init-map drain, update_initial_operator picture branches,
-  insert_absent_terms, inverted-index sync, coefficient growth policy, memory
-  estimate and its row-tier and pool fields, deep copy),
-  `bulk_insert_tests.cpp` (the grouped-prefetch insert vs a one-key-at-a-time
-  reference: table state and enumeration order).
+  insert_absent_terms and the term-table sync it drives, inverted-index sync,
+  coefficient growth policy, memory estimate and its row-tier and pool fields,
+  deep copy).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
   `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense

@@ -108,11 +108,9 @@ auto draw_well_formed(std::mt19937_64 &rng, size_t logical, size_t weight) -> Mo
 auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> {
     detail::MPOperator<32> op;
     op.basis = Basis::Majorana;
-    detail::insert_absent_terms<32>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<32> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<32>(*op.store, base + k, terms[k]); });
+    detail::insert_absent_terms<32>(op, terms.size(), [&](size_t k, size_t base) {
+        assign_row<32>(*op.store, base + k, terms[k]);
+    });
     return op;
 }
 

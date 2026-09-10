@@ -311,11 +311,10 @@ template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
-    // A miss keeps its decoded positions (pos_at indexes deferred_pos_flat_) and the probe's hash.
+    // A miss keeps the decoded positions it will become a row from (pos_at indexes deferred_pos_flat_).
     struct DeferredSelfMiss {
         size_t pos_at;
         uint32_t k;
-        uint32_t hash;
         size_t src;
         int phase;
         double v_src = 0.0; // ContractSink only: op_pre[src] captured at scan emit; 0 for GraphSink
@@ -474,7 +473,6 @@ struct LayerBuildEngine {
                                           std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         }
-        local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
         local_op.reindex_after_growth(base, n_miss);
     }
 
@@ -495,7 +493,7 @@ private:
         return counts;
     }
 
-    // Batched self-resolve over the index's group-prefetch find_batch; hits/misses are emitted to the sink
+    // Batched self-resolve over the term table's group-prefetch find_batch; hits/misses go to the sink
     // in query order. `lv` is the per-query v_src array parallel to `ls` (read only when Sink::wants_values).
     static constexpr size_t kResolveBatch = 64;
     auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
@@ -504,7 +502,7 @@ private:
         // Gathered per batch because a matched follower is skipped; offsets stay absolute into pos_flat.
         std::array<size_t, kResolveBatch> pos_off;
         std::array<uint32_t, kResolveBatch> k_of;
-        std::array<uint32_t, kResolveBatch> hashes;
+        std::array<uint32_t, kResolveBatch> keys;
         std::array<int, kResolveBatch> phases;
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
@@ -520,6 +518,7 @@ private:
                 }
                 pos_off[m] = self_stage_.pos_off[q];
                 k_of[m] = self_stage_.k_of[q];
+                keys[m] = key_of_positions<2 * NumModes>(self_stage_.pos_flat.data() + pos_off[m], k_of[m]);
                 phases[m] = self_stage_.phase_of[q];
                 srcs[m] = src;
                 if constexpr (Sink::wants_values) {
@@ -530,12 +529,12 @@ private:
             if (m == 0) {
                 break;
             }
-            // The hashes come back because a miss needs one at insert, folded from these same positions.
-            local_op.store->find_batch_positions(std::span<const RowPosT>(self_stage_.pos_flat),
-                                                 std::span<const size_t>(pos_off).first(m),
-                                                 std::span<const uint32_t>(k_of).first(m),
-                                                 std::span<size_t>(found).first(m),
-                                                 std::span<uint32_t>(hashes).first(m));
+            local_op.term_table().find_batch(
+                *local_op.store,
+                m,
+                [&keys](size_t j) { return keys[j]; },
+                [&](size_t j) { return std::span<const RowPosT>(self_stage_.pos_flat).subspan(pos_off[j], k_of[j]); },
+                std::span<size_t>(found).first(m));
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {
@@ -554,7 +553,7 @@ private:
                     const size_t at = deferred_pos_flat_.size();
                     const auto *const first = self_stage_.pos_flat.data() + pos_off[j];
                     deferred_pos_flat_.insert(deferred_pos_flat_.end(), first, first + k_of[j]);
-                    deferred_self_misses.push_back({at, k_of[j], hashes[j], srcs[j], phases[j], v_src});
+                    deferred_self_misses.push_back({at, k_of[j], srcs[j], phases[j], v_src});
                 }
             }
         }

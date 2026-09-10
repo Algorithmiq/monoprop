@@ -19,7 +19,8 @@
 #include <bit>
 #include <cstdint>
 #include <limits>
-#include <optional>
+#include <random>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -28,6 +29,8 @@
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/operator/RowKey.h"
+#include "monoprop/detail/operator/TermTable.h"
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -49,6 +52,24 @@ static_assert(!std::is_copy_constructible_v<Store>, "OperatorIndex must remain n
 
 MSet bs(const VecZ &r) {
     return indices_to_bitset<N>(r);
+}
+
+auto key_of_term(const MSet &m) -> uint32_t {
+    return detail::key_of<2 * N>(m);
+}
+
+auto positions_of(const MSet &m) -> std::vector<Store::PosT> {
+    std::vector<Store::PosT> pos;
+    for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+        pos.push_back(static_cast<Store::PosT>(b));
+    }
+    return pos;
+}
+
+// The row `table` holds for `m`, or Store::kNotFound: what the deleted by-value find() answered.
+auto find_in(const detail::TermTable &table, const Store &s, const MSet &m) -> size_t {
+    const auto pos = positions_of(m);
+    return table.find(s, key_of_term(m), std::span<const Store::PosT>(pos));
 }
 } // namespace
 
@@ -101,18 +122,6 @@ BOOST_AUTO_TEST_CASE(empty_append_never_throws_and_a_normal_append_still_grows) 
     BOOST_CHECK_EQUAL(s.size(), 3u);
 }
 
-BOOST_AUTO_TEST_CASE(index_emplace_then_find_roundtrip) {
-    Store s;
-    s.push_back(bs({0, 3, 5}));
-    s.emplace(bs({0, 3, 5}), 0);
-    s.push_back(bs({1, 2}));
-    s.emplace(bs({1, 2}), 1);
-    auto f = s.find(bs({1, 2}));
-    BOOST_TEST(f.has_value());
-    BOOST_TEST(*f == 1u);
-    BOOST_TEST(!s.find(bs({7, 9})).has_value());
-}
-
 BOOST_AUTO_TEST_CASE(width_is_a_construction_invariant) {
     Store s(4);                    // stride = 1 + 4, fixed at construction
     s.push_back(bs({0, 2, 4, 6})); // a 4-position row fits inline at width 4
@@ -128,103 +137,122 @@ BOOST_AUTO_TEST_CASE(overflow_is_lossless_above_width) {
     BOOST_TEST((s.row(0) == bs({0, 1, 2})));
 }
 
-BOOST_AUTO_TEST_CASE(index_survives_rehash_in_place) {
-    Store a;
-    // 64 distinct rows (positions i and (i+7)%62) force at least one rehash of the in-place index.
-    for (int i = 0; i < 64; ++i) {
-        a.push_back(bs({static_cast<size_t>(i % 62), static_cast<size_t>((i + 7) % 62)}));
-        a.emplace(a.row(static_cast<size_t>(i)), static_cast<size_t>(i));
-    }
-    auto f = a.find(a.row(50));
-    BOOST_TEST(f.has_value());
-    BOOST_TEST(*f == 50u);
-}
-
 BOOST_AUTO_TEST_CASE(clone_is_deep_and_independent) {
     Store a(4); // non-default width must carry over
     a.push_back(bs({0, 3, 5}));
-    a.emplace(bs({0, 3, 5}), 0);
     a.push_back(bs({1, 2}));
-    a.emplace(bs({1, 2}), 1);
 
     auto b = a.clone();
     BOOST_TEST(b->size() == 2u);
     BOOST_TEST((b->row(0) == bs({0, 3, 5})));
-    auto f = b->find(bs({1, 2}));
-    BOOST_TEST(f.has_value());
-    BOOST_TEST(*f == 1u);
+    BOOST_TEST((b->row(1) == bs({1, 2})));
 
     a.push_back(bs({6, 7}));
-    a.emplace(bs({6, 7}), 2);
     BOOST_TEST(b->size() == 2u);
-    BOOST_TEST(!b->find(bs({6, 7})).has_value());
 
-    // If the clone still referenced the source's rows, this find would read a->row(0) (now {8,9})
-    // and fail.
+    // If the clone still referenced the source's rows, row 0 would now read {8,9}.
     a.set(0, bs({8, 9}));
-    auto g = b->find(bs({0, 3, 5}));
-    BOOST_TEST(g.has_value());
-    BOOST_TEST(*g == 0u);
+    BOOST_TEST((b->row(0) == bs({0, 3, 5})));
+    BOOST_TEST((a.row(0) == bs({8, 9})));
 }
 
 BOOST_AUTO_TEST_CASE(clone_preserves_overflow_rows) {
     Store a(2); // width 2; a 3-position row overflows losslessly
     a.push_back(bs({0, 1, 2}));
-    a.emplace(bs({0, 1, 2}), 0);
 
     auto b = a.clone();
     BOOST_TEST(b->popcount(0) == 3u);
     BOOST_TEST((b->row(0) == bs({0, 1, 2})));
-    BOOST_TEST(*b->find(bs({0, 1, 2})) == 0u);
+    BOOST_TEST(b->overflow_size() == 1u);
 }
 
-// find_batch (the group-prefetch pipelined lookup) must be semantically identical to n independent
-// find() calls. The query mix below spans several G=16 groups plus a short tail and interleaves
-// present and absent keys, so every branch but the h32-collision fallback runs; that one needs a
-// real 32-bit hash collision, but the equivalence assertion pins it whichever path a key takes.
-BOOST_AUTO_TEST_CASE(find_batch_matches_scalar_find) {
+// for_each walks every row in index order: the Python-visible enumeration.
+BOOST_AUTO_TEST_CASE(for_each_visits_rows_in_index_order) {
     Store s;
-    constexpr size_t kRows = 200; // > 12 groups of G=16
-    // (i/60, 4 + i%60) is a bijection for i < 240 over the disjoint ranges {0..3} and {4..63}.
-    for (size_t i = 0; i < kRows; ++i) {
-        const auto key = bs({i / 60, 4 + (i % 60)});
-        s.push_back(key);
-        s.emplace(key, i);
+    for (size_t i = 0; i < 40; ++i) {
+        s.push_back(bs({i % 62, (i + 7) % 62}));
     }
+    size_t expect = 0;
+    bool in_order = true;
+    s.for_each([&](const MSet &mono, size_t i) {
+        in_order = in_order && (i == expect) && (mono == s.row(i));
+        ++expect;
+    });
+    BOOST_TEST(in_order);
+    BOOST_TEST(expect == 40u);
+}
 
-    std::vector<MSet> queries;
-    for (size_t i = 0; i < kRows; ++i) {
-        queries.push_back(bs({i / 60, 4 + (i % 60)}));
-        queries.push_back(bs({0, 1, 2 + (i % 20)}));
-    }
-    queries.push_back(bs({0, 1, 2})); // 401 total
-    BOOST_TEST(queries.size() % 16u != 0u);
+// row_eq_positions is the confirm behind every key match: exact on inline rows (popcount first, then
+// the positions) and on spilled rows through the dense compare.
+BOOST_AUTO_TEST_CASE(row_eq_positions_confirms_exactly) {
+    Store s(3);
+    s.push_back(bs({0, 3, 5}));    // inline
+    s.push_back(bs({0, 1, 2, 4})); // spilled at width 3
+    BOOST_TEST(s.row_eq_positions(0, positions_of(bs({0, 3, 5}))));
+    BOOST_TEST(!s.row_eq_positions(0, positions_of(bs({0, 3}))));    // popcount differs
+    BOOST_TEST(!s.row_eq_positions(0, positions_of(bs({0, 3, 6})))); // one position differs
+    BOOST_TEST(s.row_eq_positions(1, positions_of(bs({0, 1, 2, 4}))));
+    BOOST_TEST(!s.row_eq_positions(1, positions_of(bs({0, 1, 2, 5}))));
+    BOOST_TEST(!s.row_eq_positions(1, positions_of(bs({0, 3, 5}))));
+}
 
-    std::vector<size_t> out(queries.size(), 424242);
-    s.find_batch(queries.data(), queries.size(), out.data());
-
-    bool all_match = true;
-    for (size_t i = 0; i < queries.size(); ++i) {
-        const auto scalar = s.find(queries[i]);
-        const size_t expected = scalar ? *scalar : Store::kNotFound;
-        if (out[i] != expected) {
-            all_match = false;
+// The join key is a GF(2)-linear projection of the term: key(M ^ G) == key(M) ^ key(G), which is what
+// lets a receiver fold the key of a partner it never constructed. Held by the dense and the packed fold
+// alike, since they are the same map.
+BOOST_AUTO_TEST_CASE(join_key_is_linear_in_the_term) {
+    std::mt19937_64 rng(20260908);
+    std::uniform_int_distribution<size_t> bit(0, (2 * N) - 1);
+    const auto draw = [&](size_t weight) {
+        MSet m;
+        for (size_t j = 0; j < weight; ++j) {
+            m.set(bit(rng));
         }
+        return m;
+    };
+    for (size_t trial = 0; trial < 500; ++trial) {
+        const MSet term = draw(trial % 12);
+        const MSet gen = draw(1 + (trial % 5));
+        BOOST_TEST(key_of_term(term ^ gen) == (key_of_term(term) ^ key_of_term(gen)));
     }
-    BOOST_TEST(all_match);
-    BOOST_TEST(out[0] == 0u);               // first present key -> row 0
-    BOOST_TEST(out[1] == Store::kNotFound); // first absent key
+    // The degenerate end: the identity's key is 0.
+    BOOST_TEST(key_of_term(MSet{}) == 0U);
+    const MSet g = bs({1, 4, 9});
+    const MSet term = bs({0, 3, 5, 20});
+    const auto tp = positions_of(term);
+    const auto pp = positions_of(term ^ g);
+    BOOST_TEST(detail::key_of_positions<2 * N>(pp.data(), pp.size())
+               == (detail::key_of_positions<2 * N>(tp.data(), tp.size()) ^ key_of_term(g)));
 }
 
-// Pins find_batch's partition.count == 0 early-out.
-BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
-    Store s;
-    const std::array<MSet, 3> keys{bs({0, 3}), bs({1, 2}), bs({4, 5, 6})};
-    std::array<size_t, 3> out{0, 0, 0};
-    s.find_batch(keys.data(), keys.size(), out.data());
-    for (size_t i = 0; i < keys.size(); ++i) {
-        BOOST_TEST(out[i] == Store::kNotFound);
+// A row's key is folded off the row rather than stored (key_of_row), so the fold has to agree with the
+// map applied to a position list and to a dense monomial on the inline, wide and side-map paths alike --
+// a side-map row has no position array at all and falls back to its dense form.
+BOOST_AUTO_TEST_CASE(key_of_row_folds_every_storage_path) {
+    const std::array<VecZ, 4> rows{VecZ{0, 3, 5}, VecZ{}, VecZ{1, 2, 4, 7, 9}, VecZ{1, 2, 3, 4, 5, 6}};
+    // Inline width 4 (the narrowest that still leaves room for a wide row's tier slot,
+    // kMinInlineForWideTier) and a structural bound of 5: the empty and three-position rows stay
+    // inline, the five-position row takes the wide tier and the six-position row the side-map.
+    Store want(4, 0, 5); // written densely
+    Store got(4, 0, 5);  // written as position lists
+    want.grow_rows_geometric(rows.size());
+    got.grow_rows_geometric(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto pos = positions_of(bs(rows[i]));
+        want.set(i, bs(rows[i]));
+        got.set_positions(i, std::span<const Store::PosT>(pos));
     }
+    BOOST_REQUIRE_GT(want.wide_size(), 0U);
+    BOOST_REQUIRE_GT(want.overflow_size(), 0U);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        BOOST_TEST_INFO("row " << i);
+        const auto pos = positions_of(bs(rows[i]));
+        BOOST_TEST(got.key_of_row(i) == want.key_of_row(i));
+        BOOST_TEST(got.key_of_row(i) == detail::key_of_positions<2 * N>(pos.data(), pos.size()));
+        BOOST_TEST(got.key_of_row(i) == key_of_term(bs(rows[i])));
+        BOOST_CHECK(got.row(i) == want.row(i));
+        BOOST_CHECK_EQUAL(got.popcount(i), want.popcount(i));
+    }
+    BOOST_TEST(got.overflow_size() == want.overflow_size());
 }
 
 namespace {
@@ -309,34 +337,27 @@ BOOST_AUTO_TEST_CASE(chunked_rows_read_back_across_chunk_boundaries) {
     }
 }
 
-// The index has to keep finding rows that moved chunk, both by value and through the batch pipeline:
-// a chunk lookup off by a row would confirm against a neighbour.
-BOOST_AUTO_TEST_CASE(the_index_finds_rows_in_every_chunk) {
+// A caller that resolves a 64-row window once (row_block) must read exactly the rows the per-row
+// accessors read: a chunk lookup off by a row would confirm a key against a neighbour.
+BOOST_AUTO_TEST_CASE(row_block_agrees_with_the_per_row_accessors) {
     Store s(3, kTinyChunkRows);
     fill_boundary_store(s);
-    for (size_t i = 0; i < kBoundaryTestRows; ++i) {
-        s.emplace(boundary_term(i), i);
-    }
-
-    std::vector<MSet> keys;
-    std::vector<size_t> want;
-    for (size_t i = 0; i < kBoundaryTestRows; ++i) {
-        keys.push_back(boundary_term(i));
-        want.push_back(i);
-        keys.push_back(bs({0, 1, 2, 4, 6, 8})); // absent at inline width 3: a spilled query
-        want.push_back(Store::kNotFound);
-    }
-    std::vector<size_t> out(keys.size(), 424242);
-    s.find_batch(keys.data(), keys.size(), out.data());
-    for (size_t q = 0; q < keys.size(); ++q) {
-        BOOST_TEST_INFO("query " << q);
-        const auto scalar = s.find(keys[q]);
-        BOOST_CHECK_EQUAL(out[q], scalar ? *scalar : Store::kNotFound);
-        if (want[q] != Store::kNotFound) {
-            BOOST_CHECK_EQUAL(out[q], want[q]);
-        }
-        else {
-            BOOST_CHECK_EQUAL(out[q], Store::kNotFound);
+    for (size_t first = 0; first < kBoundaryTestRows; first += 64) {
+        const auto block = s.row_block(first);
+        for (size_t i = first; i < std::min(first + 64, kBoundaryTestRows); ++i) {
+            BOOST_TEST_INFO("row " << i);
+            const Store::PosT *const row = Store::block_row(block, i);
+            const auto rp = s.row_positions(i);
+            const auto direct = s.positions_at(row);
+            BOOST_CHECK_EQUAL(rp.inlined(), direct.inlined());
+            if (rp.inlined()) {
+                BOOST_CHECK_EQUAL(static_cast<size_t>(row[0]), rp.pos.size());
+                BOOST_CHECK(row + 1 == rp.pos.data());
+                BOOST_CHECK(direct.pos.data() == rp.pos.data());
+            }
+            else {
+                BOOST_CHECK_EQUAL(row[0], Store::kOverflowMarker);
+            }
         }
     }
 }
@@ -525,14 +546,12 @@ BOOST_AUTO_TEST_CASE(wide_rows_go_to_the_second_tier_not_the_side_map) {
         else {
             t.set(i, want[i]);
         }
-        t.emplace(want[i], i);
     }
     BOOST_CHECK_EQUAL(t.wide_size(), s.wide_size());
     BOOST_CHECK_EQUAL(t.overflow_size(), s.overflow_size());
     for (size_t i = 0; i < widths.size(); ++i) {
         BOOST_TEST_INFO("row " << i);
         BOOST_CHECK(t.row(i) == want[i]);
-        BOOST_CHECK(t.find(want[i]) == std::optional<size_t>{i});
     }
 }
 
@@ -557,15 +576,17 @@ BOOST_AUTO_TEST_CASE(a_store_restrides_once_when_the_wide_tier_grows_past_the_th
     for (size_t i = 0; i < kRows; ++i) {
         want.push_back(term_of_width(i, i % 10 == 0 ? kBound : kInline));
         fat.push_back(want.back());
-        fat.emplace(want.back(), i);
     }
     BOOST_REQUIRE(fat.should_restride());
-    // What the index answered before the layout moved. term_of_width repeats a term every 64 rows, so
-    // these are not all distinct -- which is beside the point: the claim is that the index answers
-    // exactly as it did, whatever it answered.
+    // What the term table answered before the layout moved -- the same table afterwards, never rebuilt,
+    // so this is the claim the graph's endpoints rest on: a restride moves bytes and no row index.
+    // term_of_width repeats a term every 64 rows, so these are not all distinct, which is beside the
+    // point: the claim is that the table answers exactly as it did, whatever it answered.
+    detail::TermTable table;
+    table.rebuild(fat);
     std::vector<size_t> found_before;
     for (size_t i = 0; i < kRows; ++i) {
-        found_before.push_back(fat.find(want[i]).value_or(Store::kNotFound));
+        found_before.push_back(find_in(table, fat, want[i]));
     }
 
     fat.restride_to_bound();
@@ -575,14 +596,14 @@ BOOST_AUTO_TEST_CASE(a_store_restrides_once_when_the_wide_tier_grows_past_the_th
     BOOST_CHECK(!fat.should_restride()); // the tier is gone, so it can never fire again
     BOOST_CHECK_EQUAL(fat.size(), kRows);
 
-    // Index-preserving: every row survives at its own index, and the hash index -- which keys on the
-    // row's value, not on its layout -- still resolves each term to the row it was inserted at. This is
-    // what lets the inverted index and the graph's endpoints stand across a restride.
+    // Index-preserving: every row survives at its own index, and the term table -- whose slots hold row
+    // indices and whose confirm reads the re-laid rows -- still resolves each term to the row it was
+    // indexed at. This is what lets the inverted index and the graph's endpoints stand across a restride.
     for (size_t i = 0; i < kRows; ++i) {
         BOOST_TEST_INFO("row " << i);
         BOOST_CHECK(fat.row(i) == want[i]);
         BOOST_CHECK_EQUAL(fat.popcount(i), i % 10 == 0 ? kBound : kInline);
-        BOOST_CHECK_EQUAL(fat.find(want[i]).value_or(Store::kNotFound), found_before[i]);
+        BOOST_CHECK_EQUAL(find_in(table, fat, want[i]), found_before[i]);
     }
     // A restride is idempotent, and a store built at its bound has no tier to begin with.
     fat.restride_to_bound();

@@ -52,8 +52,8 @@ struct IncomingProbe {
     DefaultInitVector<PosT> pos_flat;
     DefaultInitVector<size_t> pos_off;
     DefaultInitVector<uint32_t> k_of;
-    // g → fold_hash of the query key, folded by the probe and reused by the insert.
-    DefaultInitVector<uint32_t> hash_of;
+    // g → the query's join key, folded off its positions as they are decoded.
+    DefaultInitVector<uint32_t> key_of;
 
     //! Query g's ascending positions, as a view into pos_flat.
     [[nodiscard]] auto positions_at(size_t g) const -> std::span<const PosT> {
@@ -110,7 +110,7 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
     pr.idx_of.resize(pr.nq_total);
     pr.pos_off.resize(pr.nq_total);
     pr.k_of.resize(pr.nq_total);
-    pr.hash_of.resize(pr.nq_total);
+    pr.key_of.resize(pr.nq_total);
     pr.pos_flat.clear();
     // A hint only, so this stays one allocation for the common case.
     pr.pos_flat.reserve(pr.nq_total * QW::kReservePositionsPerQuery);
@@ -124,18 +124,21 @@ auto probe_incoming_queries(const std::vector<VecZ> &incoming, // serialized, on
             pr.k_of[g] = static_cast<uint32_t>(k);
             pr.off_of[g] = off;
             const auto d = QW::read_query(incoming[s], form, off, std::span<PosT>(pr.pos_flat).subspan(at, k));
+            // Folded here, while the positions this query owns are still in cache.
+            pr.key_of[g] = key_of_positions<2 * NumModes>(pr.pos_flat.data() + at, k);
             pr.phase_of[g] = d.phase;
             off = d.next;
         }
     }
     {
         const size_t op_size = op.store->size();
-        // The vectors are sized to capacity, not to nq_total, so every span is trimmed explicitly.
-        op.store->find_batch_positions(std::span<const PosT>(pr.pos_flat),
-                                       std::span<const size_t>(pr.pos_off).first(pr.nq_total),
-                                       std::span<const uint32_t>(pr.k_of).first(pr.nq_total),
-                                       std::span<size_t>(pr.idx_of).first(pr.nq_total),
-                                       std::span<uint32_t>(pr.hash_of).first(pr.nq_total));
+        // The vectors are sized to capacity, not to nq_total, so the output span is trimmed explicitly.
+        op.term_table().find_batch(
+            *op.store,
+            pr.nq_total,
+            [&pr](size_t g) { return pr.key_of[g]; },
+            [&pr](size_t g) { return pr.positions_at(g); },
+            std::span<size_t>(pr.idx_of).first(pr.nq_total));
         for (size_t g = 0; g < pr.nq_total; ++g) {
             if (pr.idx_of[g] >= op_size) { // kNotFound is size_t max → also lands here
                 pr.idx_of[g] = kMissingIndex;
@@ -162,14 +165,13 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
     if (n_miss == 0) {
         return;
     }
-    // insert_absent_terms' three steps without its two dense round-trips, and on the same ordering
-    // contract, which is what matters: slot j lands at base+j, in miss order = (sender, record) order.
+    // insert_absent_terms' steps on the same ordering contract, which is what matters: slot j lands at
+    // base+j, in miss order = (sender, record) order. The indices then index the rows they have written.
     const size_t base = op.store->grow_rows_geometric(n_miss);
     for (size_t j = 0; j < n_miss; ++j) {
         const size_t g = pr.miss_g[j];
         op.store->set_positions(base + j, pr.positions_at(g));
     }
-    op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return pr.hash_of[pr.miss_g[j]]; });
     op.reindex_after_growth(base, n_miss);
 }
 
