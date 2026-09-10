@@ -281,6 +281,26 @@ which only the Schrödinger picture scores: in Heisenberg the freshly minted par
 add is $c \mathrel{+}= \sin \cdot (\mp 1) \cdot 0$ — a 16-byte half and one random-access
 read-modify-write per mint of every gate, to add nothing.
 
+Under linear routing that round needs no collective at all. Every partition of a rank has exactly
+one peer partition per generator, so the exchange is a *pair* exchange: one call per gate in which
+each participant hands over its $S$ sub-streams — one per destination partition of the peer rank —
+and receives the peer rank's $S$ sub-streams back, in ascending source order. Inside a rank
+(including every zero-shift gate of a multi-rank run) it costs **one barrier and no copy**: each
+partition publishes $S$ span descriptors, and past the barrier its peers read those buffers in
+place. Across ranks it costs two barriers and **one message each way**, sent in place through a
+derived datatype whose leading block is the $S \times S$ word counts, with the receive sized by
+probing the peer's message — so a side with nothing to send still posts exactly one message and
+there is no count round and no zero-length asymmetry to keep symmetric.
+
+The single in-rank barrier is what a copy-free gather costs, and it is paid by *deferring* the
+second one rather than dropping it. A two-barrier collective uses its second barrier to prove that
+every peer has finished reading the publisher's buffer; here the next gate's barrier proves the
+same thing, so a caller may reuse a send buffer only from the gate after next and alternates two
+sets of them gate by gate. A partition that has passed gate $g$'s barrier may already be publishing
+gate $g+1$ while a slower peer is still gathering gate $g$, so the descriptor table is
+double-buffered by call parity, and gate $g+2$ cannot reach gate $g$'s lines before that slow peer
+has passed gate $g+1$'s barrier — which it reaches only after its own gather of gate $g$ returned.
+
 Linear routing is a switch and not a dial: the rank index takes every bit of $h$ or none of
 them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)` bit for
 bit. It therefore requires $R$ to be a power of two; any other rank count has no XOR

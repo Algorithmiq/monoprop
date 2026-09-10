@@ -22,8 +22,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <format>
 #include <optional>
 #include <print>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -33,6 +35,8 @@
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/HybridStaging.h"
+#include "monoprop/detail/mpi/PairSlots.h"
+#include "monoprop/detail/mpi/Pairwise.h"
 #include "monoprop/detail/mpi/PartitionBarrier.h"
 
 // Composes R MPI ranks x S in-process partitions into one flat P=R*S SPMD world. Global id is rank-major
@@ -59,6 +63,7 @@ public:
         : parent_(parent),
           s_(n_local_partitions),
           slots_(static_cast<size_t>(n_local_partitions)),
+          pair_(n_local_partitions),
           barrier_(n_local_partitions) {
         MPI_Comm_size(parent_, &r_);
         MPI_Comm_rank(parent_, &mpi_rank_);
@@ -70,6 +75,11 @@ public:
                                             "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
         staging_.emplace(parent_, mpi_rank_, r_, s_);
+        const size_t ss = static_cast<size_t>(s_) * static_cast<size_t>(s_);
+        pair_hdr_send_.resize(ss);
+        pair_row_start_.resize(static_cast<size_t>(s_));
+        pair_blocklens_.reserve(ss + 1);
+        pair_displs_.reserve(ss + 1);
     }
 
     HybridComm(const HybridComm &) = delete;
@@ -84,11 +94,18 @@ public:
      *
      *  Diagnostic only. The two payload buffers are sized to the widest message the run has needed and
      *  never shrink, so on a run whose widest gate came early they are resident for the whole of it
-     *  while nothing resting names them. One HybridComm serves all S partitions of a rank, so this is
-     *  a per-RANK figure: a caller summing over partitions must ask exactly one of them.
+     *  while nothing resting names them. `pair_recv_` is the one pair_exchange fills: it sends in place
+     *  through a derived datatype, so it has no send-side staging at all. One HybridComm serves all S
+     *  partitions of a rank, so this is a per-RANK figure: a caller summing over partitions must ask
+     *  exactly one of them.
      */
     [[nodiscard]] auto staging_bytes() const -> size_t {
-        return staging_->bytes() + slots_.capacity() * sizeof(Slot) + red_vec_.capacity() * sizeof(double);
+        const auto cap = [](const auto &v) {
+            return v.capacity() * sizeof(typename std::decay_t<decltype(v)>::value_type);
+        };
+        return staging_->bytes() + slots_.capacity() * sizeof(Slot) + cap(red_vec_) + cap(pair_recv_)
+               + cap(pair_hdr_send_) + cap(pair_blocklens_) + cap(pair_displs_) + cap(pair_row_start_)
+               + pair_.staging_bytes();
     }
 
     auto alltoall_counts(int local_partition,
@@ -135,6 +152,13 @@ public:
     auto allreduce_sum(int local_partition, T local_val) -> T {
         return guard_partition0_(local_partition, "allreduce_sum", [this, local_partition, local_val] {
             return allreduce_sum_impl_<T>(local_partition, local_val);
+        });
+    }
+
+    //! @brief The gate exchange; PairExchange.h states the contract. Partition 0 alone reaches MPI.
+    auto pair_exchange(int local_partition, int rank_shift, SubStreams send) -> PairRecv {
+        return guard_partition0_(local_partition, "pair_exchange", [this, local_partition, rank_shift, send] {
+            return pair_exchange_impl_(local_partition, rank_shift, send);
         });
     }
 
@@ -394,6 +418,113 @@ private:
         // No trailing barrier: red_vec_ is rewritten only inside a future verb's barriered phases.
     }
 
+    /*! @brief The gate exchange's barrier discipline. Arguments are the verb's to validate
+     *  (PairExchange.h), before any barrier; here they are asserted.
+     */
+    auto pair_exchange_impl_(int local_partition, int rank_shift, SubStreams send) -> PairRecv {
+        assert(static_cast<int>(send.size()) == s_);
+        assert(rank_shift >= 0 && (mpi_rank_ ^ rank_shift) < r_);
+        pair_.publish(local_partition, send);
+        if (rank_shift == 0) {
+            sync(); // B1: descriptors published; the gather reads peers' buffers in place (PairExchange.h)
+            return pair_.gather_in_rank(local_partition);
+        }
+        sync(); // B1: every partition's descriptors are published
+        if (local_partition == 0) {
+            pair_exchange_with_rank_(mpi_rank_ ^ rank_shift);
+        }
+        sync(); // B2: pair_recv_ holds the peer rank's header and payload, pair_row_start_ its row starts
+        return pair_views_(local_partition);
+    }
+
+    /*! @brief Partition 0's one message each way, between B1 and B2.
+     *
+     *  The outgoing message is one hindexed datatype over absolute addresses: block 0 is the S*S
+     *  word-count header, then the (t, u) sub-streams destination-major so that each receiving
+     *  partition's run is contiguous; empty blocks are left out and the header carries their zero. The
+     *  incoming message is sized by probing it -- its header is inside it -- and lands in one contiguous
+     *  buffer, so neither side stages a byte. Isend before the blocking probe: both ranks do the same, so
+     *  neither waits on a send the other has not posted.
+     */
+    auto pair_exchange_with_rank_(int peer) -> void {
+        const size_t ss = static_cast<size_t>(s_) * static_cast<size_t>(s_);
+        pair_blocklens_.clear();
+        pair_displs_.clear();
+        MPI_Aint addr = 0;
+        MPI_Get_address(pair_hdr_send_.data(), &addr);
+        pair_blocklens_.push_back(checked_mpi_count(static_cast<long long>(ss), "Pair header length"));
+        pair_displs_.push_back(addr);
+        for (int t = 0; t < s_; ++t) {
+            for (int u = 0; u < s_; ++u) {
+                const std::span<const size_t> sp = pair_.stream(/*reader=*/0, u, t);
+                pair_hdr_send_[static_cast<size_t>(t) * static_cast<size_t>(s_) + static_cast<size_t>(u)] = sp.size();
+                if (sp.empty()) {
+                    continue;
+                }
+                MPI_Get_address(sp.data(), &addr);
+                pair_blocklens_.push_back(
+                    checked_mpi_count(static_cast<long long>(sp.size()), "Pair sub-stream length"));
+                pair_displs_.push_back(addr);
+            }
+        }
+        MPI_Datatype dt = MPI_DATATYPE_NULL;
+        MPI_Type_create_hindexed(static_cast<int>(pair_blocklens_.size()),
+                                 pair_blocklens_.data(),
+                                 pair_displs_.data(),
+                                 MPI_UINT64_T,
+                                 &dt);
+        MPI_Type_commit(&dt);
+        MPI_Request req = MPI_REQUEST_NULL;
+        MPI_Isend(MPI_BOTTOM, 1, dt, peer, kPairExchangeTag, parent_, &req);
+
+        MPI_Message msg = MPI_MESSAGE_NULL;
+        MPI_Status status;
+        MPI_Mprobe(peer, kPairExchangeTag, parent_, &msg, &status);
+        int total = 0;
+        MPI_Get_count(&status, MPI_UINT64_T, &total);
+        // Classic counts: a rank pair's gate payload above INT_MAX words is out of range and aborts here.
+        if (total == MPI_UNDEFINED || static_cast<size_t>(total) < ss) {
+            throw std::runtime_error(std::format("pair_exchange: peer rank {} sent {} words, below the {}-word header "
+                                                 "or beyond the MPI count range",
+                                                 peer,
+                                                 total,
+                                                 ss));
+        }
+        grow_to(pair_recv_, static_cast<size_t>(total)); // never shrunk: views into it outlive this gate
+        MPI_Mrecv(pair_recv_.data(), total, MPI_UINT64_T, &msg, MPI_STATUS_IGNORE);
+        MPI_Wait(&req, MPI_STATUS_IGNORE);
+        MPI_Type_free(&dt);
+
+        // S*S serial adds here so that each partition's gather past B2 walks only its own S counts.
+        size_t off = ss;
+        for (int t = 0; t < s_; ++t) {
+            pair_row_start_[static_cast<size_t>(t)] = off;
+            for (int u = 0; u < s_; ++u) {
+                off += pair_recv_[static_cast<size_t>(t) * static_cast<size_t>(s_) + static_cast<size_t>(u)];
+            }
+        }
+        if (off != static_cast<size_t>(total)) {
+            throw std::runtime_error(
+                std::format("pair_exchange: peer rank {}'s header sums to {} words but its message holds {}",
+                            peer,
+                            off,
+                            total));
+        }
+    }
+
+    //! @brief Past B2: partition t's views into pair_recv_, one per source partition ascending.
+    auto pair_views_(int local_partition) -> PairRecv {
+        const size_t t = static_cast<size_t>(local_partition);
+        auto row = pair_.from_row(local_partition);
+        const size_t *counts = pair_recv_.data() + t * static_cast<size_t>(s_);
+        size_t off = pair_row_start_[t];
+        for (int u = 0; u < s_; ++u) {
+            row[static_cast<size_t>(u)] = std::span<const size_t>(pair_recv_.data() + off, counts[u]);
+            off += counts[u];
+        }
+        return PairRecv{row};
+    }
+
     [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
         std::print(stderr,
                    "monoprop: rank {} cannot complete the collective '{}' ({}). Its peer ranks are "
@@ -420,6 +551,15 @@ private:
     std::vector<double> red_vec_;
     // alltoallv's wire plan, partition 0 only: written in B1->B2, read in B3->B4. See derived_wire_plan.
     PeerPlan wire_plan_;
+
+    // pair_exchange. The descriptor table has per-partition rows (see PairSlots); the rest is partition
+    // 0's alone, written between B1 and B2 and read by every partition past B2.
+    PairSlots pair_;
+    std::vector<size_t> pair_hdr_send_; // [S*S] (t, u) word counts: the outgoing message's leading block
+    std::vector<int> pair_blocklens_;   // hindexed block list scratch, S*S + 1 at most
+    std::vector<MPI_Aint> pair_displs_;
+    std::vector<size_t> pair_recv_;      // [S*S header][payload, (t, u)-major]; HWM-sized, views alias it
+    std::vector<size_t> pair_row_start_; // [S] word offset of partition t's run in pair_recv_
 
     PartitionBarrier barrier_;
 };
