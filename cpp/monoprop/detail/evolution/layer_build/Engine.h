@@ -385,7 +385,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              .fused_scale = fused_scale,
                                              .op_coeffs = coeffs,
                                              .cos_build = cos_build,
-                                             .inv_cos = inv_cos});
+                                             .inv_cos = inv_cos,
+                                             .absences_carry_c0 = schrodinger});
     }
     else {
         storage = run(GraphSink<NumModes>{R, my_rank});

@@ -389,7 +389,7 @@ BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) 
         6,
         // cos_build/inv_cos left at 1.0: this case is about which slot each half lands on and with which
         // sign, so the recovery factor is the identity and every value passes through.
-        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .op_coeffs = coeffs});
+        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .op_coeffs = coeffs, .absences_carry_c0 = true});
     eng.exchange_and_join(sc.value_scan());
     BOOST_REQUIRE_EQUAL(fc.halves.size(), 6U);
     const auto expect = [&](size_t k, size_t idx, double v, int phase, bool insert) {
@@ -413,6 +413,37 @@ BOOST_AUTO_TEST_CASE(one_round_contract_sink_records_one_half_per_touched_slot) 
     }
     std::ranges::sort(touched);
     BOOST_TEST((std::ranges::adjacent_find(touched) == touched.end()));
+}
+
+// The same scenario without a c0 side channel -- the Heisenberg shape, where absence_pass substitutes
+// the literal 0.0. That half would add sin*(-phase)*0.0, so the sink drops it: five halves instead of
+// six, the missing one being exactly the one on the absent partner's slot, every other half unchanged.
+// `absences_carry_c0` is what says which shape this is, and build_layer sets it from `schrodinger` --
+// the same condition that decides whether the scan was given a state mask at all.
+BOOST_AUTO_TEST_CASE(contract_sink_skips_the_absence_half_when_no_c0_travels) {
+    Scenario sc;
+    detail::FusedContract fc;
+    const VecD coeffs = {0.5, 0.25, 12.0, 1.5, 14.0, 3.0};
+    detail::LayerBuildEngine<kN, detail::ContractSink<kN>> eng(
+        sc.op,
+        mpi::Comm{},
+        1,
+        0,
+        sc.scratch,
+        6,
+        detail::ContractSink<kN>{.fc = fc, .fused_scale = true, .op_coeffs = coeffs, .absences_carry_c0 = false});
+    eng.exchange_and_join(sc.value_scan());
+    BOOST_REQUIRE_EQUAL(fc.halves.size(), 5U);
+    for (const auto &h : fc.halves) {
+        BOOST_TEST(h.local_idx != 5U); // t5's absence half is the one that is gone
+    }
+    // The five that remain are the five the c0-carrying case produced, in the same order.
+    BOOST_TEST(fc.halves[0].local_idx == 1U);
+    BOOST_TEST(fc.halves[1].local_idx == 0U);
+    BOOST_TEST(fc.halves[2].local_idx == 2U);
+    BOOST_TEST(fc.halves[3].local_idx == 3U);
+    BOOST_TEST(fc.halves[4].local_idx == 6U);
+    BOOST_TEST(fc.halves[4].is_insert);
 }
 
 // Round 2 across slots: a response names the record by its position in the SENDER's own stream, and the
