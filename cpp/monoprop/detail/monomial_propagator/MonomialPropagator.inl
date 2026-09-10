@@ -248,7 +248,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       cutoff_fn_(other.cutoff_fn_),
       mp_op_(other.mp_op_),
       graph_(other.graph_),
-      matched_scratch_(other.matched_scratch_),
+      gate_scratch_(), // capacity only: nothing in it outlives a gate, and its bases would be stale
       cutoff_(other.cutoff_),
       lower_atol_(other.lower_atol_),
       upper_atol_(other.upper_atol_),
@@ -697,7 +697,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
             bool fused_scale = false;
             build_evolve_result_(mono, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
             extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
-            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
+            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, fused_scale);
         });
 }
 
@@ -840,11 +840,53 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::any_local_term_fails_cutoff_() const -> bool {
+    const detail::CutoffEvaluator<NumModes> eval(cutoff_fn_);
+    // Both structural forms keep any term with popcount <= cutoff (or_sum <= popcount), so only the rows
+    // above it are materialised.
+    std::optional<size_t> quick;
+    if (const auto *lc = eval.length_cutoff(); lc != nullptr) {
+        quick = lc->cutoff;
+    }
+    else if (const auto *sc = eval.support_cutoff(); sc != nullptr) {
+        quick = sc->cutoff;
+    }
+    const auto &store = *mp_op_.store;
+    const bool digest_form = eval.has_digest_form();
+    for (size_t i = 0; i < store.size(); ++i) {
+        const size_t pop = store.popcount(i);
+        if (quick.has_value() && pop <= *quick) {
+            continue;
+        }
+        // Both structural cutoffs are functions of the (k, d) digest, which the row's own position list
+        // yields directly -- only an opaque cutoff or a spilled row (no position array) needs a bitset.
+        const auto src = store.row_positions(i);
+        if (digest_form && src.inlined()) {
+            if (!eval.passes_from_digest(pop, detail::count_paired_positions(src.pos.data(), pop))) {
+                return true;
+            }
+            continue;
+        }
+        if (!eval(store.row(i))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
     report_routing_coverage_(majoranas);
+    // Terms inserted during this call pass the cutoff unless upper_atol rescues them, so one agreement per
+    // call covers every gate. A sum of 0/1 flags is the OR; it is a collective, so every participant runs
+    // it whatever its local answer.
+    const size_t local_fails = any_local_term_fails_cutoff_() ? 1 : 0;
+    over_cutoff_possible_ = upper_atol_.has_value() || mpi::allreduce_sum<size_t>(local_fails, comm_) != 0;
+    gate_scratch_.counters = detail::ExchangeCounters{};
+    gate_scratch_.buffers_hwm_bytes = 0;
     mp_op_.reset_op_coeffs_slack_hwm();
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
@@ -858,7 +900,30 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
         }
     }
 
+    report_comm_profile_();
+
     initialize_operator_caches_();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::report_comm_profile_() const -> void {
+    if (!config::get().comm_profile) {
+        return;
+    }
+    // One greppable line per slot: what this slot SENT over the call's exchanging gates (graph mode never
+    // sends a response, so its responses column is 0).
+    const auto &c = gate_scratch_.counters;
+    const double gates = (c.gates == 0) ? 1.0 : static_cast<double>(c.gates);
+    const auto line = std::format("COMMPROF slot={} gates={} records={} responses={} records_per_gate={:.1f} "
+                                  "responses_per_gate={:.1f}\n",
+                                  static_cast<size_t>(mpi::rank(comm_)),
+                                  c.gates,
+                                  c.records,
+                                  c.responses,
+                                  static_cast<double>(c.records) / gates,
+                                  static_cast<double>(c.responses) / gates);
+    std::fputs(line.c_str(), stderr);
+    std::fflush(stderr);
 }
 
 template <size_t NumModes>
@@ -883,7 +948,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          upper_atol_,
                                          param,
                                          only_rotate_len_k,
-                                         matched_scratch_,
+                                         over_cutoff_possible_,
+                                         gate_scratch_,
                                          comm_,
                                          out_cos,
                                          fused_contract,
