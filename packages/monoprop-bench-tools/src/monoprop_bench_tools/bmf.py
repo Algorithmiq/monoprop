@@ -24,17 +24,26 @@ Bencher accepts one adapter per report, so timings and memory are merged here an
 uploaded together under ``--adapter json``; the stock ``python_pytest`` adapter
 would keep the timings and drop everything else.
 
-Three measures are emitted:
+Four measures are emitted:
 
 ``latency`` (nanoseconds)
     Per-operation mean, with the interval one standard deviation either side.
 ``peak-memory`` (bytes)
-    Per-operation peak resident footprint, summed across ranks under MPI. The
-    sum bounds the job; ``memhwm_max`` bounds a node. The two coincide for single-rank jobs.
+    The process's peak resident footprint while one operation ran, summed across ranks
+    under MPI. It spans ``setup`` and starts from whatever an earlier row left resident,
+    so it predicts an OOM kill and is the wrong number for comparing operations --
+    ``operation-memory`` is that one. The sum bounds the job; ``memhwm_max`` bounds a
+    node. The two coincide for single-rank jobs.
+``operation-memory`` (bytes)
+    What the timed call added above its own floor, summed across ranks under MPI. Its
+    window opens inside ``setup``, after construction, so it excludes both the build
+    transient and anything a previous row left resident -- the figure to compare across
+    the rows of one plot.
 ``terms`` (count)
     Terms in the evolved operator. Deterministic for a fixed seed and problem
     size, so it is held to an exact match: it is the only check that a timing
-    win is not an accuracy change.
+    win is not an accuracy change. Recorded on the benchmark that owns the
+    operator, or under ``operator[<picture>]`` where several operations share one.
 
 Usage::
 
@@ -57,9 +66,12 @@ _NS_PER_S = 1e9
 # describe a built operator rather than one timed call.
 _OPERATOR = "operator"
 
-# ``opsize`` is also keyed by pytest node id (``::``, as report.py reads it) for a
-# private A/B harness; those are not operators, so they are skipped here.
+# ``opsize`` is keyed by picture where operations share one operator, and by pytest node
+# id (``::``, as report.py reads it) where a benchmark holds its own.
 _NODE_ID_SEP = "::"
+
+# Stripped from a node id's test name; what follows it is ``<family>_<operation>``.
+_TEST_PREFIX = "test_"
 
 Metric = dict[str, float]
 Bmf = dict[str, dict[str, Metric]]
@@ -99,6 +111,28 @@ def _latency(stats: dict[str, float]) -> Metric:
     }
 
 
+def benchmark_name(node_id: str) -> str:
+    """Return the Bencher benchmark name for a pytest ``node_id``.
+
+    ``bench_models.py::test_model_propagate[hubbard]`` becomes
+    ``model/propagate[hubbard]``: a plot legend shows this name, and the module, the
+    ``test_`` prefix and the repeated family word carry nothing a reader of one rung's
+    plot needs. The family is kept as a path segment because it is the only thing
+    separating a fixed model's operation from a random problem's once the parameter
+    alone is left, and Bencher keys history on the name forever.
+
+    Anything not shaped like a parameterised pytest id is returned unchanged, so a
+    name from another producer is never silently rewritten.
+    """
+    _, separator, test = node_id.partition(_NODE_ID_SEP)
+    if not separator or not test.startswith(_TEST_PREFIX):
+        return node_id
+    family, _, operation = test[len(_TEST_PREFIX) :].partition("_")
+    if not operation:
+        return node_id
+    return f"{family}/{operation}"
+
+
 def _timings(results_dir: Path, label: str) -> Iterator[tuple[str, Metric]]:
     """Yield ``(benchmark, latency)`` from ``time-<label>.json``.
 
@@ -108,7 +142,7 @@ def _timings(results_dir: Path, label: str) -> Iterator[tuple[str, Metric]]:
     """
     data = _read_json(results_dir / f"time-{label}.json")
     for bench in data.get("benchmarks", []):
-        yield bench["fullname"].split("/")[-1], _latency(bench["stats"])
+        yield benchmark_name(bench["fullname"].split("/")[-1]), _latency(bench["stats"])
 
 
 def build_bmf(results_dir: Path, label: str) -> Bmf:
@@ -124,11 +158,21 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
 
     # ``memhwm`` is the kernel's exact peak RSS per operation, summed over ranks under MPI.
     for benchmark, peak in results.get("memhwm", {}).items():
-        measure(benchmark, "peak-memory", peak)
+        measure(benchmark_name(benchmark), "peak-memory", peak)
 
+    # ``opmemdelta`` is spread over the ranks rather than reduced to one number: ``sum``
+    # matches what ``peak-memory`` uploads, and ``max`` is the per-node bound that
+    # ``memhwm_max`` is for the footprint. Only rows that ran a timed call have one.
+    for benchmark, delta in results.get("opmemdelta", {}).items():
+        measure(benchmark_name(benchmark), "operation-memory", delta["sum"])
+
+    # A node-id key names the benchmark that built the operator, so its count belongs on
+    # that benchmark, beside the latency and peak memory of the same call. Where a shared
+    # operator is also counted per picture the two agree by construction, and a run where
+    # they disagree is exactly what the exact-match threshold exists to catch.
     for key, size in results.get("opsize", {}).items():
-        if _NODE_ID_SEP not in key:
-            measure(f"{_OPERATOR}[{key}]", "terms", size["terms"])
+        name = benchmark_name(key) if _NODE_ID_SEP in key else f"{_OPERATOR}[{key}]"
+        measure(name, "terms", size["terms"])
 
     return bmf
 
