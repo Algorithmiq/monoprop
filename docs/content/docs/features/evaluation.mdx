@@ -102,3 +102,27 @@ To read the fully evolved operator as a [MajoranaOperator][] (or [PauliOperator]
 [PauliPropagator][]) — without modifying the
 simulator — use [MajoranaPropagator.evolved_operator][majorana_propagator.MajoranaPropagator.evolved_operator]
 (or [PauliPropagator.evolved_operator][pauli_propagator.PauliPropagator.evolved_operator]).
+
+## Reading individual terms
+
+[MajoranaPropagator.evolved_operator][majorana_propagator.MajoranaPropagator.evolved_operator]
+decodes the *whole* evolved operator: it enumerates the operator index,
+materialises a key per surviving term, and hands back a term dictionary.
+Use [evolved_operator_coefficients][monoprop.monomial_propagator.MonomialPropagator.evolved_operator_coefficients]
+when only a handful of terms are wanted; reading a few amplitudes out of an evolved
+state in the Schrödinger picture, for example.
+
+```python notest
+# The coefficients of these three terms alone, in this order.
+terms = [Majorana(0, 1), Majorana(2, 3), Majorana(0, 3)]
+coeffs = sim.evolved_operator_coefficients(terms, parameters)
+```
+
+The terms are given in the front-end's own vocabulary: [Majorana][] terms (or
+raw index tuples) for [MajoranaPropagator][]; [Pauli][] terms for
+[PauliPropagator][]. The returned NumPy array carries one coefficient per
+requested term, in the order requested.
+
+This does **not** make the evolution faster. The graph contraction is identical
+and still the dominant cost; what disappears is the decode and dictionary build
+over every surviving term.

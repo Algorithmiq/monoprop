@@ -219,6 +219,12 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "atol"_a,
         "The evolved operator as a {indices: coefficient} dict, keeping terms with |coeff| >= atol");
 
+    cls.def("evolved_operator_coefficients",
+            &MonomialPropagator<NumModes>::evolved_operator_coefficients,
+            "parameters"_a,
+            "terms"_a,
+            "Coefficients of the given index terms, in query order; terms the operator does not carry are 0");
+
     cls.def_prop_ro("num_modes",
                     &MonomialPropagator<NumModes>::logical_num_modes,
                     "Number of modes the operator actually uses");
