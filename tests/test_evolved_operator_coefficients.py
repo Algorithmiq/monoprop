@@ -323,11 +323,10 @@ def test_majorana_front_end_rejects_a_pauli_term(serial_comm) -> None:
     """A term from the other front-end's vocabulary raises TypeError, not an obscure failure."""
     problem = load_problem(DATA / "random_exact.msgpack")
     prop = _majorana_propagator(problem, serial_comm)
+    paulis = [Pauli("X", (0,))]
 
     with pytest.raises(TypeError, match="Majorana objects or index sequences"):
-        prop.evolved_operator_coefficients(
-            [Pauli("X", (0,))], problem.monomial_circuit.parameters
-        )
+        prop.evolved_operator_coefficients(paulis, problem.monomial_circuit.parameters)
 
 
 def test_pauli_front_end_rejects_a_raw_slot_tuple(serial_comm) -> None:
