@@ -28,10 +28,9 @@
 namespace monoprop {
 
 /// Ordered per-rank record of the evolution circuit, one Layer per generator.
-class monoprop_EXPORT MPGraph {
+class monoprop_EXPORT MPGraph : public LayerWindow {
 private:
     using LayerIterator = std::vector<Layer>::iterator;
-    using ConstLayerIterator = std::vector<Layer>::const_iterator;
 
     bool schrodinger_;
     std::vector<Layer> layers_;
@@ -41,17 +40,16 @@ private:
 
     auto active_end_index() const -> size_t { return layers_.size(); }
 
-    auto active_begin_iterator() -> LayerIterator {
-        return layers_.begin() + static_cast<std::ptrdiff_t>(active_begin_index());
+    // Deducing this: const-ness of the returned iterator follows the object, so neither body is doubled.
+    template <typename Self>
+    auto active_begin_iterator(this Self &&self) {
+        return self.layers_.begin() + static_cast<std::ptrdiff_t>(self.active_begin_index());
     }
 
-    auto active_end_iterator() -> LayerIterator { return layers_.end(); }
-
-    auto active_begin_iterator() const -> ConstLayerIterator {
-        return layers_.begin() + static_cast<std::ptrdiff_t>(active_begin_index());
+    template <typename Self>
+    auto active_end_iterator(this Self &&self) {
+        return self.layers_.end();
     }
-
-    auto active_end_iterator() const -> ConstLayerIterator { return layers_.end(); }
 
     auto append_position() -> LayerIterator { return schrodinger_ ? active_begin_iterator() : active_end_iterator(); }
 
@@ -91,11 +89,12 @@ public:
 
     auto layers() const -> size_t { return active_end_index() - active_begin_index(); }
 
-    auto get_layer(size_t layer_idx) -> Layer& { return layers_[checked_layer_offset(layer_idx)]; }
-
-    auto get_layer(size_t layer_idx) const -> const Layer& { return layers_[checked_layer_offset(layer_idx)]; }
-
-    auto get_layer_traversal(size_t layer_idx) const -> LayerTraversal { return get_layer(layer_idx).traversal(); }
+    /// The layer at `layer_idx` in build order; throws LayerIndexOutOfRange at or past the end.
+    // Deducing this: const-ness of the returned reference follows the object, so one body serves both.
+    template <typename Self>
+    auto get_layer(this Self &&self, size_t layer_idx) -> auto & {
+        return self.layers_[self.checked_layer_offset(layer_idx)];
+    }
 
     /// Non-owning replay view over the active layers, in build order.
     auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
