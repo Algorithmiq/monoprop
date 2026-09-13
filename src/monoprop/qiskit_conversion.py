@@ -65,7 +65,7 @@ def from_qiskit_operator(
         A PauliOperator instance representing the given operator.
     """
     qiskit_op = (
-        SparsePauliOp(qiskit_op)
+        SparsePauliOp(qiskit_op)  # Handles signs/phases
         if isinstance(qiskit_op, QiskitPauli)
         else qiskit_op.simplify(atol=atol)
     )
