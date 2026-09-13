@@ -23,7 +23,7 @@ from pytest_cases import case, parametrize_with_cases
 try:
     from qiskit import QuantumCircuit
     from qiskit.circuit import QuantumRegister
-    from qiskit.circuit.library import PauliEvolutionGate, PauliProductRotationGate
+    from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import Pauli as QiskitPauli
     from qiskit.quantum_info import SparsePauliOp
 
@@ -41,6 +41,14 @@ try:
 except ImportError:
     _qiskit_available = False
 
+try:
+    # PauliProductRotationGate was added in qiskit 2.4, above this project's qiskit>=2.0 floor.
+    from qiskit.circuit.library import PauliProductRotationGate
+
+    _ppr_gate_available = True
+except ImportError:
+    _ppr_gate_available = False
+
 
 def _assert_pauli_circuits_close(converted, expected) -> None:
     assert converted.initial_state == expected.initial_state
@@ -57,6 +65,9 @@ def _assert_pauli_circuits_close(converted, expected) -> None:
 
 requires_qiskit = pytest.mark.skipif(
     not _qiskit_available, reason="qiskit not installed"
+)
+requires_ppr_gate = pytest.mark.skipif(
+    not _ppr_gate_available, reason="PauliProductRotationGate requires qiskit>=2.4"
 )
 
 
@@ -318,6 +329,7 @@ class TestFromQiskitCircuit:
         with pytest.raises(ValueError, match="Unsupported gate"):
             from_qiskit_circuit(circuit, [])
 
+    @requires_ppr_gate
     @pytest.mark.parametrize(
         ("label", "qubits"),
         [("XYZ", [1, 2, 6]), ("-XIZ", [3, 0, 5]), ("Z", [2]), ("YY", [5, 4])],
@@ -352,6 +364,7 @@ class TestFromQiskitCircuit:
         assert converted.gates[0].generator.terms == reference.gates[0].generator.terms
         assert converted.parameters[0] == pytest.approx(reference.parameters[0])
 
+    @requires_ppr_gate
     def test_pauli_product_rotation_needs_no_identity_padding(self):
         """Only the non-identity letters reach the generator, on the qubits they act on."""
         circuit = QuantumCircuit(5)
