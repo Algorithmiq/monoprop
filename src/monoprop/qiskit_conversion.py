@@ -73,13 +73,12 @@ def from_qiskit_operator(
         if isinstance(qiskit_op, QiskitPauli)
         else qiskit_op.simplify(atol=atol)
     )
-    pauli_strings: list[str] = qiskit_op.paulis.to_labels(array=True)  # type: ignore
-    pauli_strings = [
-        s[::-1] for s in pauli_strings
-    ]  # reverse the strings to match monoprop convention
-    return PauliOperator._from_terms(
-        pauli_strings, list(qiskit_op.coeffs), num_qubits=qiskit_op.num_qubits
-    )
+    # to_sparse_list() pairs each label with the qubits it acts on directly, unlike the dense
+    # to_labels()/coeffs split, which needs every term reversed and widened to num_qubits.
+    sparse_terms = qiskit_op.to_sparse_list()
+    paulis = [Pauli(label, indices) for label, indices, _ in sparse_terms]
+    coeffs = [coeff for _, _, coeff in sparse_terms]
+    return PauliOperator._from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
 
 
 def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> SparsePauliOp:
