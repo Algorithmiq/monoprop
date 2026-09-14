@@ -155,7 +155,9 @@ def from_qiskit_circuit(
     equivalent rotations in ``PAULI_EVOLUTION_EQUIVALENT``, with commuting operators; barriers are
     ignored. Each gate becomes one [ExpGate][monoprop.circuit.ExpGate] driven by its own angle (the
     identity parameter mapping), with the generator's coefficients negated so the angles carry
-    through unchanged (see ``_negated``).
+    through unchanged (see ``_negated``). Constant factors from a gate's own definition (e.g. the
+    1/2 in ``R_P(theta) = exp(-i theta P / 2)``) go on the generator, never on ``parameter``, so
+    ``parameter`` always matches the angle the qiskit gate was built with.
     """
     if len(circuit.qregs) != 1:
         raise ValueError(
@@ -176,10 +178,14 @@ def from_qiskit_circuit(
         qubits: tuple[int, ...] = tuple(qregs.index(qb) for qb in gate.qubits)  # type: ignore
 
         if gate_name == "pauli_product_rotation":
-            # R_P(theta) = exp(-i theta P / 2) is a PauliEvolution of time theta / 2.
-            parameter = g_op.params[0] / 2
-            generator = _negated(
-                _place_operator(from_qiskit_operator(g_op.pauli()), qubits, num_qubits)
+            parameter = g_op.params[0]
+            placed = _place_operator(
+                from_qiskit_operator(g_op.pauli()), qubits, num_qubits
+            )
+            generator = PauliOperator._from_terms(
+                list(placed.terms),
+                [-0.5 * coeff for coeff in placed.terms.values()],
+                num_qubits=num_qubits,
             )
         elif gate_name == "PauliEvolution":
             parameter = g_op.time

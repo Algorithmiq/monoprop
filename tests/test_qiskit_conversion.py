@@ -339,9 +339,10 @@ class TestFromQiskitCircuit:
     ):
         """A PauliProductRotationGate converts like the PauliEvolutionGate it denotes.
 
-        exp(-i theta P / 2) is an evolution of time theta / 2, so the two agree exactly. Comparing
-        them pins the qubit ordering, which is the part that would silently go wrong -- a qiskit
-        label runs last-operand-first over the gate's own qubits, not over the register.
+        exp(-i theta P / 2) is an evolution of time theta on the operator P / 2, so the two agree
+        exactly. Comparing them pins the qubit ordering, which is the part that would silently go
+        wrong -- a qiskit label runs last-operand-first over the gate's own qubits, not over the
+        register.
         """
         num_qubits = 7
         gate = PauliProductRotationGate(QiskitPauli(label), 0.7)
@@ -355,7 +356,7 @@ class TestFromQiskitCircuit:
             placed[num_qubits - 1 - qubits[position]] = letter
         evolution = QuantumCircuit(num_qubits)
         evolution.append(
-            PauliEvolutionGate(SparsePauliOp("".join(placed)), gate.params[0] / 2),
+            PauliEvolutionGate(SparsePauliOp("".join(placed)) * 0.5, gate.params[0]),
             range(num_qubits),
         )
 
@@ -363,6 +364,7 @@ class TestFromQiskitCircuit:
         reference = from_qiskit_circuit(evolution, [])
         assert converted.gates[0].generator.terms == reference.gates[0].generator.terms
         assert converted.parameters[0] == pytest.approx(reference.parameters[0])
+        assert converted.parameters[0] == pytest.approx(gate.params[0])
 
     @requires_ppr_gate
     def test_pauli_product_rotation_needs_no_identity_padding(self):
@@ -370,8 +372,8 @@ class TestFromQiskitCircuit:
         circuit = QuantumCircuit(5)
         circuit.append(PauliProductRotationGate(QiskitPauli("XIZ"), 0.4), [1, 3, 4])
         converted = from_qiskit_circuit(circuit, [])
-        assert converted.gates[0].generator.terms == {Pauli("ZX", (1, 4)): -1.0}
-        assert converted.parameters == (0.2,)
+        assert converted.gates[0].generator.terms == {Pauli("ZX", (1, 4)): -0.5}
+        assert converted.parameters == (0.4,)
 
 
 @requires_qiskit
