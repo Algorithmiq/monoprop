@@ -6,10 +6,8 @@
 runners:
   # Used by .github/workflows/bench_bare_metal.yml.
   #
-  # Every field is pinned rather than ranged. Bencher compares each run against
-  # this testbed's own history, so a different instance type or core count is a
-  # step change in the series rather than a data point -- widening any of these
-  # means retiring the testbed and starting a new one.
+  # Pinned rather than ranged: the testbed is named after this CPU and its core count, so widening
+  # any field renames the testbed and stops the old series rather than corrupting it.
   bench:
     # Avoid expand to partial family
     family: ["c7i.4xlarge"]

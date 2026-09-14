@@ -1,12 +1,6 @@
 name: Track benchmarks (bare metal)
 
-# The same benchmark profile as `bench_main.yml`, on a dedicated EC2 node
-# provisioned per run by RunsOn. The point is the noise floor: nothing else is
-# scheduled on the machine, so this testbed can eventually carry thresholds
-# tight enough to gate on, which the shared GitHub runner cannot.
-#
-# The node exists only for the duration of the run, so cost tracks the number
-# of commits to main rather than wall-clock time.
+# monoprop's continuous benchmarking, on a dedicated EC2 node provisioned per run by RunsOn.
 
 on:
   workflow_dispatch:
@@ -20,22 +14,34 @@ concurrency:
 
 jobs:
   bare-metal:
-    # Inert until a maintainer sets the BENCH_BARE_METAL repository variable to
-    # 'true'. Without a RunsOn stack behind the label the job would sit queued
-    # until it timed out, once per commit.
+    # Inert until a maintainer sets BENCH_BARE_METAL to 'true': without a RunsOn stack behind the
+    # label the job would queue until it timed out, once per commit.
     if: ${{ vars.BENCH_BARE_METAL == 'true' }}
     uses: ./.github/workflows/bench.yml
     with:
-      # The `runner=bench` shape is defined in .github/runs-on.yml; run_id
-      # namespaces the runner so no other job can claim it.
+      # The `runner=bench` shape is defined in .github/runs-on.yml; run_id namespaces it.
       runner: runs-on=${{ github.run_id }}/runner=bench
-      # Names the hardware, not the provider: a different instance type is a
-      # different testbed, because its history cannot be compared to this one.
-      testbed: aws-c7i-4xlarge
       label: ci-bare-metal
-      # A dedicated node can afford the slow fixed models
-      bench-markers: ""
-      bench-rounds: "3"
+      rungs: |
+        # Six rows per shape, always in two processes. `build_graph` publishes the graph
+        # `energy` and `gradient` evaluate, so those three share one operator and the peak is
+        # the max over them. `propagate` builds its own, and a fourth row holding its own would
+        # make that peak a sum -- which at L2 does not fit, and at L1 measured `propagate`
+        # against a graph it never touches. Its three models do share a process: each releases
+        # its operator at the end of its row.
+        #
+        # Rungs sharing a name prefix share a Bencher testbed, so each shape's six rows land on
+        # one plot and every row's memory means the same thing at every rung.
+        #
+        # L1 is the one-thread baseline, at its own smaller sizes.
+        L1.ops        1 1        3 | -k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000
+        L1.propagate  1 1        3 | -k "test_model_propagate or (test_random_propagate and heisenberg)" --hubbard-cutoff=10 --hubbard-lower-atol=4.2e-05 --pauli-cutoff=12 --pauli-lower-atol=1.22e-04 --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=295000
+        # The L2 sizes and the two atols are the largest measured points that fit, swept at the
+        # memory-worst 4 x 2 shape -- see benchmarks.mdx.
+        L2a.ops       1 per-rank 1 | -k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
+        L2a.propagate 1 per-rank 1 | -k "test_model_propagate or (test_random_propagate and heisenberg)" --hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05 --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
+        L2b.ops       4 per-rank 1 | -k "(test_random_build_graph or test_random_energy or test_random_gradient) and heisenberg" --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
+        L2b.propagate 4 per-rank 1 | -k "test_model_propagate or (test_random_propagate and heisenberg)" --hubbard-cutoff=10 --hubbard-lower-atol=6.2e-06 --pauli-cutoff=14 --pauli-lower-atol=2.5e-05 --num-generators=1000 --num-modes=142 --cutoff=6 --obs-terms=2500000
     secrets: inherit
     permissions:
       contents: read

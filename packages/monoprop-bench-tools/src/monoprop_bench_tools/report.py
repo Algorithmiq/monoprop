@@ -106,6 +106,15 @@ def _fmt_mem(num_bytes: int | None) -> str:
     return "—" if num_bytes is None else f"{num_bytes / 1024 / 1024:.2f} MiB"
 
 
+def _delta_sum(spread: dict[str, int] | None) -> int | None:
+    """Return an ``opmemdelta`` entry's rank sum; ``None`` where the row has none.
+
+    Unlike ``memhwm``, the per-operation windows are recorded spread over the ranks, so the
+    figure comparable with the summed peak is the ``sum`` field rather than the entry itself.
+    """
+    return None if spread is None else spread["sum"]
+
+
 def _fmt_config(value: object) -> str:
     """Format a config field value compactly (floats via ``g``, else ``str``)."""
     return format(value, "g") if isinstance(value, float) else str(value)
@@ -276,11 +285,12 @@ def build_report(results_dir: Path) -> str:
     def sec(name: str) -> dict[str, dict]:
         return {lbl: results.get(lbl, {}).get(name, {}) for lbl in labels}
 
-    params, opsize, memory, memory_max = (
+    params, opsize, memory, memory_max, op_delta = (
         sec("params"),
         sec("opsize"),
         sec("memhwm"),
         sec("memhwm_max"),
+        sec("opmemdelta"),
     )
 
     all_ops = sorted(
@@ -332,6 +342,15 @@ def build_report(results_dir: Path) -> str:
                 lambda lbl, op: _fmt_mem(memory_max.get(lbl, {}).get(op)),
                 level=3,
             ),
+            *_section(
+                "Memory (operation delta, summed across ranks)",
+                "",
+                "Operation",
+                ops,
+                labels,
+                lambda lbl, op: _fmt_mem(_delta_sum(op_delta.get(lbl, {}).get(op))),
+                level=3,
+            ),
         ]
 
     lines = [
@@ -341,7 +360,10 @@ def build_report(results_dir: Path) -> str:
         "memory is the kernel's exact peak resident footprint (`VmHWM`) during each "
         "operation, measured from a window reset and settled per operation. Under MPI "
         "the summed figure counts ranks peaking at different moments together (an "
-        "upper bound on the job total); the max figure is the single worst rank.",
+        "upper bound on the job total); the max figure is the single worst rank. The "
+        "delta figure is what the timed call added above its own floor, which is the one "
+        "to compare between operations -- the peaks include whatever an earlier "
+        "operation left resident.",
         "",
         *_config_table(labels, results),
         *_section(
