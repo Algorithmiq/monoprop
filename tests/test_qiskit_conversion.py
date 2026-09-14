@@ -50,6 +50,14 @@ except ImportError:
     _ppr_gate_available = False
 
 
+requires_qiskit = pytest.mark.skipif(
+    not _qiskit_available, reason="qiskit not installed"
+)
+requires_ppr_gate = pytest.mark.skipif(
+    not _ppr_gate_available, reason="PauliProductRotationGate requires qiskit>=2.4"
+)
+
+
 def _assert_pauli_circuits_close(converted, expected) -> None:
     assert converted.initial_state == expected.initial_state
     assert len(converted) == len(expected)
@@ -61,14 +69,6 @@ def _assert_pauli_circuits_close(converted, expected) -> None:
         # The generator's Pauli terms carry the qubit placement, so this also
         # checks the gate acts on the right qubits.
         assert got_gate.generator.isclose(exp_gate.generator)
-
-
-requires_qiskit = pytest.mark.skipif(
-    not _qiskit_available, reason="qiskit not installed"
-)
-requires_ppr_gate = pytest.mark.skipif(
-    not _ppr_gate_available, reason="PauliProductRotationGate requires qiskit>=2.4"
-)
 
 
 @pytest.fixture
