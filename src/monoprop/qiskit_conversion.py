@@ -21,6 +21,7 @@ from monoprop.conversion_utils import _extend_pauli_string
 try:
     from qiskit import QuantumCircuit
     from qiskit.circuit.library import PauliEvolutionGate
+    from qiskit.quantum_info import Pauli as QiskitPauli
     from qiskit.quantum_info import SparsePauliOp
 except ImportError as e:
     raise ImportError(
@@ -43,24 +44,31 @@ PAULI_EVOLUTION_EQUIVALENT = {
     "ryz",
 }
 
-VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union({"PauliEvolution"})
+VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union(
+    {"PauliEvolution", "pauli_product_rotation"}
+)
 
 
 def from_qiskit_operator(
-    qiskit_op: SparsePauliOp, *, atol: float = 1e-8
+    qiskit_op: SparsePauliOp | QiskitPauli, *, atol: float = 1e-8
 ) -> PauliOperator:
     """Convert a Qiskit operator to a PauliOperator.
 
     Requires the operator to be Hermitian
 
     Args:
-        qiskit_op: A qiskit Pauli operator.
+        qiskit_op: A qiskit Pauli operator, or a single ``Pauli``, which carries one term and so
+            skips the ``simplify()``.
         atol: Absolute tolerance for the ``simplify()`` run first, which drops smaller terms.
 
     Returns:
         A PauliOperator instance representing the given operator.
     """
-    qiskit_op = qiskit_op.simplify(atol=atol)
+    qiskit_op = (
+        SparsePauliOp(qiskit_op)  # Handles signs/phases
+        if isinstance(qiskit_op, QiskitPauli)
+        else qiskit_op.simplify(atol=atol)
+    )
     pauli_strings: list[str] = qiskit_op.paulis.to_labels(array=True)  # type: ignore
     pauli_strings = [
         s[::-1] for s in pauli_strings
@@ -143,11 +151,13 @@ def from_qiskit_circuit(
 ) -> Circuit:
     """Convert a Qiskit circuit to a [Circuit][monoprop.circuit.Circuit].
 
-    The qiskit circuit must hold only PauliEvolutionGates (or the equivalent rotations in
-    ``PAULI_EVOLUTION_EQUIVALENT``) with commuting operators; barriers are ignored. Each gate
-    becomes one [ExpGate][monoprop.circuit.ExpGate] driven by its own angle (the identity parameter
-    mapping), with the generator's coefficients negated so the angles carry through unchanged (see
-    ``_negated``).
+    The qiskit circuit must hold only PauliEvolutionGates, PauliProductRotationGates, or the
+    equivalent rotations in ``PAULI_EVOLUTION_EQUIVALENT``, with commuting operators; barriers are
+    ignored. Each gate becomes one [ExpGate][monoprop.circuit.ExpGate] driven by its own angle (the
+    identity parameter mapping), with the generator's coefficients negated so the angles carry
+    through unchanged (see ``_negated``). Constant factors from a gate's own definition (e.g. the
+    1/2 in ``R_P(theta) = exp(-i theta P / 2)``) go on the generator, never on ``parameter``, so
+    ``parameter`` always matches the angle the qiskit gate was built with.
     """
     if len(circuit.qregs) != 1:
         raise ValueError(
@@ -167,7 +177,17 @@ def from_qiskit_circuit(
 
         qubits: tuple[int, ...] = tuple(qregs.index(qb) for qb in gate.qubits)  # type: ignore
 
-        if gate_name == "PauliEvolution":
+        if gate_name == "pauli_product_rotation":
+            parameter = g_op.params[0]
+            placed = _place_operator(
+                from_qiskit_operator(g_op.pauli()), qubits, num_qubits
+            )
+            generator = PauliOperator._from_terms(
+                list(placed.terms),
+                [-0.5 * coeff for coeff in placed.terms.values()],
+                num_qubits=num_qubits,
+            )
+        elif gate_name == "PauliEvolution":
             parameter = g_op.time
             generator = _negated(
                 _place_operator(from_qiskit_operator(g_op.operator), qubits, num_qubits)
