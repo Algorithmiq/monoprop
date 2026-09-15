@@ -75,12 +75,11 @@ def from_qiskit_operator(
     )
     # to_sparse_list() pairs each label with the qubits it acts on directly, unlike the dense
     # to_labels()/coeffs split, which needs every term reversed and widened to num_qubits.
-    paulis, coeffs = zip(
-        *(
-            (Pauli(label, indices), coeff)
-            for label, indices, coeff in qiskit_op.to_sparse_list()
-        )
-    )
+    paulis = []
+    coeffs = []
+    for label, indices, coeff in qiskit_op.to_sparse_list():
+        paulis.append(Pauli(label, indices))
+        coeffs.append(coeff)
     return PauliOperator._from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
 
 

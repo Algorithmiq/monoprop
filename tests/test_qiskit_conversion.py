@@ -164,6 +164,13 @@ class TestFromQiskitOperator:
         assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(1.0)  # qiskit order
         assert result.terms[Pauli("Y", 0)] == pytest.approx(0.5)  # "IY" -> Y on qubit 0
 
+    def test_zero_sparse_observable(self):
+        """A zero SparseObservable has no sparse terms; unpacking them must not raise."""
+        obs = SparseObservable.zero(2)
+        result = from_qiskit_operator(obs)
+        assert result.num_qubits == 2
+        assert all(coeff == 0 for coeff in result.terms.values())
+
 
 @requires_qiskit
 @pytest.mark.qiskit
