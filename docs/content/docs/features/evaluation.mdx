@@ -118,10 +118,8 @@ terms = [Majorana(0, 1), Majorana(2, 3), Majorana(0, 3)]
 coeffs = sim.evolved_operator_coefficients(terms, parameters)
 ```
 
-The terms are given in the front-end's own vocabulary: [Majorana][] terms (or
-raw index tuples) for [MajoranaPropagator][]; [Pauli][] terms for
-[PauliPropagator][]. The returned NumPy array carries one coefficient per
-requested term, in the order requested.
+The terms are given as [Majorana][] terms (or raw index tuples) for [MajoranaPropagator][] or [Pauli][] terms for
+[PauliPropagator][]. The returned NumPy array contains the corresponding coefficients, preserving the order.
 
 This does **not** make the evolution faster. The graph contraction is identical
 and still the dominant cost; what disappears is the decode and dictionary build

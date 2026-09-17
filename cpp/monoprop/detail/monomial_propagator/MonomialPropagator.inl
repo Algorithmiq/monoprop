@@ -1199,8 +1199,7 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
         out = probe(*this);
     }
     else {
-        // The partitions probe concurrently on their own master threads, so each fills its own
-        // vector and the merge happens here. They are disjoint, so at most one contributes per key.
+        // The partitions are disjoint, so at most one contributes per key.
         for (const auto &partition_found : map_partitions_(probe)) {
             for (size_t q = 0; q < out.size(); ++q) {
                 out[q] += partition_found[q];
@@ -1208,14 +1207,13 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
         }
     }
 
-    // Match evolved_operator_terms(): round off the anti-hermitian numerical noise.
+    // Round off the anti-hermitian numerical noise.
     for (auto &coeff : out) {
         coeff = {std::round(coeff.real() * 1e12) / 1e12, std::round(coeff.imag() * 1e12) / 1e12};
     }
 
     // Heisenberg only: the empty monomial is diverted to core_term_ instead of indexed, so the probe
-    // cannot have found it. Assigned after the rounding, so the value is bit-for-bit the core_term()
-    // that evolved_operator's callers publish under the empty key.
+    // cannot have found it.
     if (!schrodinger_) {
         const auto core = core_term();
         for (size_t q = 0; q < terms.size(); ++q) {

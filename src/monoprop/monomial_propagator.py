@@ -52,8 +52,7 @@ if TYPE_CHECKING:
     from .pauli import Pauli
 
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
-    # A single operator term in a front-end's own vocabulary: a Pauli, a Majorana, or the raw
-    # index sequence either engine keys its terms by.
+    # A single operator term: a Pauli, a Majorana, or the raw index sequence either engine keys its terms by.
     OperatorTerm = Majorana | Pauli | Sequence[int] | np.ndarray
 
 logger = logging.getLogger(__name__)
@@ -549,7 +548,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         no coefficient to put the reordering's sign on.
 
         Args:
-            term: A single term in this front-end's own vocabulary.
+            term: A single operator term.
 
         Returns:
             The term's engine index tuple: Majorana indices, or symplectic slots in the Pauli basis.
@@ -566,27 +565,24 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> np.ndarray:
         """Return the coefficients of ``terms`` alone in the evolved operator, in the order given.
 
-        A cheaper
+        A cheaper alternative to
         [evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator] when
-        only a few terms are wanted: the contraction is identical and still dominant, but the index
-        is *probed* with these terms rather than enumerated, so the decode costs one entry per term
-        *requested* rather than one per term the evolved operator carries.
+        only a few terms are needed. Only those terms are decoded from the evolved operator,
+        avoiding enumerating all its terms.
 
-        A term the operator does not carry reads back as ``0``, and there is deliberately no
-        ``atol`` -- the caller named its terms, so magnitude filtering would silently zero some of
-        them. Terms must be canonical; for a Majorana product that is not, use
+        Terms must be canonical; for a Majorana product that is not, use
         [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
-        returns. A repeated term is answered once per occurrence.
+        returns.
 
         Args:
-            terms: The terms to look up, in this front-end's own vocabulary.
+            terms: The operator terms to look up.
             parameters: Variational parameter values (see [expectation_value][]).
 
         Returns:
             A complex NumPy array, one coefficient per requested term, in the order requested.
 
         Raises:
-            TypeError: If a term is not in this front-end's vocabulary.
+            TypeError: If an operator term is of the wrong form for the front-end.
             ValueError: If a term is not a canonical monomial.
             RuntimeError: If a term index lies outside the propagator's own system.
         """
