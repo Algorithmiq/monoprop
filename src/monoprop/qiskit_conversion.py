@@ -22,7 +22,7 @@ try:
     from qiskit import QuantumCircuit
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import Pauli as QiskitPauli
-    from qiskit.quantum_info import SparsePauliOp
+    from qiskit.quantum_info import SparseObservable, SparsePauliOp
 except ImportError as e:
     raise ImportError(
         "qiskit is required to use monoprop.qiskit_conversion. Install it with: pip install qiskit"
@@ -50,32 +50,37 @@ VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union(
 
 
 def from_qiskit_operator(
-    qiskit_op: SparsePauliOp | QiskitPauli, *, atol: float = 1e-8
+    qiskit_op: SparsePauliOp | SparseObservable | QiskitPauli, *, atol: float = 1e-8
 ) -> PauliOperator:
     """Convert a Qiskit operator to a PauliOperator.
 
     Requires the operator to be Hermitian
 
     Args:
-        qiskit_op: A qiskit Pauli operator, or a single ``Pauli``, which carries one term and so
-            skips the ``simplify()``.
+        qiskit_op: A qiskit Pauli operator, a ``SparseObservable``, or a single ``Pauli``, which
+            carries one term and so skips the ``simplify()``. A ``SparseObservable`` is expanded
+            into a ``SparsePauliOp`` first (see ``SparsePauliOp.from_sparse_observable``), which is
+            exponential in its number of single-qubit projector terms.
         atol: Absolute tolerance for the ``simplify()`` run first, which drops smaller terms.
 
     Returns:
         A PauliOperator instance representing the given operator.
     """
+    if isinstance(qiskit_op, SparseObservable):
+        qiskit_op = SparsePauliOp.from_sparse_observable(qiskit_op)
     qiskit_op = (
         SparsePauliOp(qiskit_op)  # Handles signs/phases
         if isinstance(qiskit_op, QiskitPauli)
         else qiskit_op.simplify(atol=atol)
     )
-    pauli_strings: list[str] = qiskit_op.paulis.to_labels(array=True)  # type: ignore
-    pauli_strings = [
-        s[::-1] for s in pauli_strings
-    ]  # reverse the strings to match monoprop convention
-    return PauliOperator._from_terms(
-        pauli_strings, list(qiskit_op.coeffs), num_qubits=qiskit_op.num_qubits
-    )
+    # to_sparse_list() pairs each label with the qubits it acts on directly, unlike the dense
+    # to_labels()/coeffs split, which needs every term reversed and widened to num_qubits.
+    paulis = []
+    coeffs = []
+    for label, indices, coeff in qiskit_op.to_sparse_list():
+        paulis.append(Pauli(label, indices))
+        coeffs.append(coeff)
+    return PauliOperator._from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
 
 
 def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> SparsePauliOp:

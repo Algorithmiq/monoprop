@@ -25,7 +25,7 @@ try:
     from qiskit.circuit import QuantumRegister
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import Pauli as QiskitPauli
-    from qiskit.quantum_info import SparsePauliOp
+    from qiskit.quantum_info import SparseObservable, SparsePauliOp
 
     from monoprop import Circuit, ExpGate
     from monoprop.majorana import MajoranaOperator
@@ -155,6 +155,21 @@ class TestFromQiskitOperator:
         result = from_qiskit_operator(op)
         assert Pauli("Z") in result.terms
         assert result.num_qubits == 1
+
+    def test_sparse_observable_pauli_terms(self):
+        """A SparseObservable with only Pauli terms converts term-by-term, like a SparsePauliOp."""
+        obs = SparseObservable.from_list([("XZ", 1.0), ("IY", 0.5)])
+        result = from_qiskit_operator(obs)
+        assert len(result) == 2
+        assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(1.0)  # qiskit order
+        assert result.terms[Pauli("Y", 0)] == pytest.approx(0.5)  # "IY" -> Y on qubit 0
+
+    def test_zero_sparse_observable(self):
+        """A zero SparseObservable has no sparse terms; unpacking them must not raise."""
+        obs = SparseObservable.zero(2)
+        result = from_qiskit_operator(obs)
+        assert result.num_qubits == 2
+        assert all(coeff == 0 for coeff in result.terms.values())
 
 
 @requires_qiskit
