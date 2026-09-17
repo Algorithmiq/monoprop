@@ -184,6 +184,23 @@ struct MPOperator {
         state_coeffs.shrink_to_fit();
     }
 
+    // Rejects exactly what update_initial_operator() would, writing nothing: a Heisenberg term on no
+    // existing row, or a coefficient this algebra cannot encode. Run by a caller that must not commit
+    // part-way; see MonomialPropagator::check_initial_operator_.
+    auto validate_initial_operator(const OperatorDict &op_dict, bool schrodinger) const -> void {
+        for (const auto &[k, v] : op_dict) {
+            // Unchecked by design: prepare_initial_operator_() bounds-checks before this runs.
+            const auto mono = indices_to_bitset<NumModes>(k);
+            // Pure, and the other way this dict can be refused.
+            static_cast<void>(algebra_encode_coeff<NumModes>(basis, v, mono));
+            if (schrodinger || store->find(mono).has_value() || init_op_map.find(mono) != init_op_map.end()) {
+                continue;
+            }
+            const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
+            throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
+        }
+    }
+
     // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.
     // Heisenberg rejects a term absent from both (new monomials may have no graph paths); Schrödinger
     // admits them freely (the state was already evolved). Returns the supplied terms with their encoded

@@ -20,21 +20,19 @@
 
 namespace monoprop {
 
-// Every validate_* precondition on a caller-supplied argument reports through this one type.
+// Invalid caller input reports through this type.
 class ValidationError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// The propagator was mutated after a functional captured what it replays: a rebuilt graph leaves the
-// functional's parameter mapping describing a graph that is gone, a re-weight leaves its snapshotted
-// operator coefficients stale.
+// A functional no longer matches its propagator.
 class StaleFunctionalGraph : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
 
-// Declared in Validation.h and used across translation units, so internal linkage does not apply.
+// Exported validators below have external linkage.
 // NOLINTBEGIN(misc-use-internal-linkage)
 
 namespace {
@@ -99,21 +97,49 @@ auto validate_functional_call(const VecD &parameters, size_t expected_num_params
     }
 }
 
-auto validate_expected_graph_layers(size_t current_layers, size_t expected_layers) -> void {
-    if (current_layers != expected_layers) {
-        throw StaleFunctionalGraph(std::format("MP object has been modified since the functional was created. "
-                                               "Previous number of graph layers was {} and now is {}.",
-                                               expected_layers,
-                                               current_layers));
+auto validate_functional_state(const FunctionalState &state) -> void {
+    if (!state.propagator_alive) {
+        throw StaleFunctionalGraph("The propagator this functional was built from has been destroyed. "
+                                   "A functional reads the propagator's operator index directly, so it "
+                                   "cannot outlive it; keep the propagator alive, or build the functional "
+                                   "again from a live one.");
+    }
+    if (state.current_revision != state.expected_revision) {
+        throw StaleFunctionalGraph(std::format(
+            "MP object has been modified since the functional was created: {} changed the "
+            "graph or operator the functional replays. Create a new functional.",
+            state.last_structural_change != nullptr ? state.last_structural_change : "a structural mutation"));
+    }
+    if (!state.operator_layout_unchanged) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
+                                   "operator index it reads was rebuilt or grown. Create a new functional.");
     }
 }
 
-auto validate_expected_initial_operator(size_t current_epoch, size_t expected_epoch) -> void {
-    if (current_epoch != expected_epoch) {
-        throw StaleFunctionalGraph("MP object has been modified since the functional was created. "
-                                   "The initial operator was re-weighted, so the coefficients the functional "
-                                   "snapshotted are stale; create a new functional.");
+auto validate_weight_refresh(const WeightRefresh &refresh) -> void {
+    if (!refresh.may_follow_weights) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
+                                   "initial operator was re-weighted, and this functional pares its graph "
+                                   "against the operator coefficients (a Schrodinger picture functional "
+                                   "with a pare_threshold), so it cannot follow the new weights. Create a "
+                                   "new functional.");
     }
+    if (refresh.weights_revision != refresh.expected_revision) {
+        throw StaleFunctionalGraph("MP object has been modified since the functional was created: the "
+                                   "initial-operator weights it reads belong to a different graph. Create "
+                                   "a new functional.");
+    }
+}
+
+auto validate_partition_facade_intact(const char *fault_site) -> void {
+    if (fault_site == nullptr) {
+        return;
+    }
+    throw ValidationError(std::format("{} failed part-way across the partitions of this propagator, so they no "
+                                      "longer hold the same state: the ones it reached committed the change and "
+                                      "the rest never will. No answer would be either partitioning's, so this "
+                                      "propagator refuses all further use. Build a new one.",
+                                      fault_site));
 }
 
 auto validate_only_rotate_len_k_(std::optional<size_t> only_rotate_len_k, size_t max_k) -> void {

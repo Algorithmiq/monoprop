@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "monoprop/Evolution.h"
+#include "monoprop/Functional.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
@@ -98,6 +99,12 @@ public:
 
     static constexpr auto num_modes{NumModes};
     static constexpr auto storage_num_modes{NumModes};
+
+    /// How many public methods mutate this propagator, and so may invalidate a live functional.
+    // cpp/tests/functional_validity.cpp static_asserts that its table has a row for each, so bumping
+    // this when adding a mutator breaks that build until the new method's effect on a functional is
+    // recorded. That table is the roster; keeping the names here too would be a copy nothing enforces.
+    static constexpr size_t num_mutating_methods{10};
 
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
 
@@ -264,11 +271,12 @@ public:
     auto expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD>;
 
     /// `pare_threshold` is the edge-retention cutoff for a masked plan; nullopt keeps the exact graph.
+    /// The result borrows from this propagator, so it must not outlive it.
     auto expectation_value_functional(std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<double(const VecD &)>;
+        -> ExpectationValueFunctional<NumModes>;
 
     auto expectation_value_and_gradient_functional(std::optional<double> pare_threshold = std::nullopt)
-        -> std::function<std::pair<double, VecD>(const VecD &)>;
+        -> ExpectationValueAndGradientFunctional<NumModes>;
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
@@ -283,6 +291,9 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
+    /// Re-weight the initial operator in place; every existing term op_dict omits is zeroed, the
+    /// identity term included. A dict this operator refuses commits nothing, on every partition, so it
+    /// leaves live functionals valid.
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
@@ -290,18 +301,17 @@ protected:
         return std::make_unique<MonomialPropagator<NumModes>>(*this);
     }
 
-    static inline const auto ev_fn = [](const EvalRequest &request,
-                                        mpi::Comm comm,
-                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
-
-    static inline const auto ev_and_grad_fn =
-        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-        return ev_and_grad(request, comm, cos);
-    };
-
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
+
+    // This rank's share of `op_dict` plus its encoded core term. Pure: bounds-checks and encodes but
+    // writes nothing, so the dry pass and the commit agree on what is acceptable.
+    auto prepare_initial_operator_(const OperatorDict &op_dict) const -> std::pair<OperatorDict, double>;
+
+    // Throw if `op_dict` would be refused, writing nothing. On a facade each partition judges its own
+    // share -- the only way to refuse a term just one of them holds before any has committed.
+    auto check_initial_operator_(const OperatorDict &op_dict) -> void;
 
     bool schrodinger_;
     mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
@@ -352,6 +362,10 @@ protected:
 
     auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
 
+    // The one door onto the partitions: every fan-out helper reaches them through it, so none can skip
+    // the check that refuses a facade a mutation left part-way (see detail::MutationGuard).
+    auto partitions_() const -> detail::partition::PartitionGroup<NumModes> &;
+
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
 
@@ -360,10 +374,6 @@ private:
 
     std::optional<double> lower_atol_, upper_atol_;
     double core_term_{0.0};
-
-    // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
-    // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
-    size_t initial_operator_epoch_{0};
 
     size_t logical_num_modes_{NumModes};
 
@@ -378,6 +388,47 @@ private:
     std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
     friend class detail::partition::PartitionGroup<NumModes>;
+
+    // Shared with every functional plan this propagator makes: they read it, only this propagator writes
+    // it. A copy gets its own block, because a copy carries no functionals.
+    std::shared_ptr<detail::FunctionalControl> functional_control_{std::make_shared<detail::FunctionalControl>()};
+
+    // Record that what a plan replays has moved. `site` must be a string literal: plans read it after
+    // this propagator is gone. A mutation that is rejected outright must not bump -- it changed nothing,
+    // so it must not invalidate anything -- decided above the fan-out, so a facade agrees with a single
+    // partition. A mutation that can fail part-way bumps on the failure path instead: invalidating a
+    // functional that did not need it costs a rebuild, answering from a half-written operator costs a
+    // wrong number.
+    //
+    // Every structural mutator uses the scope below rather than bumping by hand, so no exit path can
+    // forget it -- hence no unscoped bump. It records the change on scope exit, so a mutator that throws
+    // after committing part of its work invalidates like one that completed. `armed` is false where the
+    // guarded call is a known no-op. See detail::MutationGuard.
+    // On a facade it also latches the fault, if the round it guards is the kind that leaves the
+    // partitions disagreeing, so the two verdicts a part-way fan-out earns are decided together.
+    auto bump_structure_scope_(const char *site, bool armed = true) const -> detail::MutationGuard {
+        return {*functional_control_, site, armed, /*on_success=*/true, facade_diverged_flag_()};
+    }
+
+    // A re-weight is followed rather than invalidated, so it records only the failure path.
+    auto bump_structure_on_unwind_(const char *site) const -> detail::MutationGuard {
+        return {*functional_control_, site, /*armed=*/true, /*on_success=*/false, facade_diverged_flag_()};
+    }
+
+    auto facade_diverged_flag_() const -> const bool * {
+        return partition_group_ ? partition_group_->diverged_flag() : nullptr;
+    }
+
+    // Hand the current initial-operator weights to every functional over this propagator, as one
+    // immutable set stamped with the revision it belongs to. Called on a re-weight, which is what makes a
+    // functional follow it, and never on a facade -- a facade holds no terms, and its partitions publish
+    // their own on their own masters.
+    auto publish_weights_() -> std::shared_ptr<const detail::OperatorWeights>;
+
+    // The weight set a new plan is built over: the published one when it still belongs to this revision,
+    // a fresh publication otherwise. Reusing matters -- a plan detects a re-weight by comparing pointers,
+    // so republishing an identical set would read as one.
+    auto weights_for_plan_() -> std::shared_ptr<const detail::OperatorWeights>;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
@@ -473,9 +524,9 @@ private:
                               VecD *fused_scale_coeffs = nullptr,
                               bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
 
-    template <typename Fn,
-              typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
-    auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
+    // One plan serves both functional kinds: it holds the snapshot and the validity checks, not the
+    // choice of what to compute. On a facade it holds one child plan per partition.
+    auto make_plan_(std::optional<double> pare_threshold) -> std::shared_ptr<const detail::FunctionalPlan<NumModes>>;
 
     // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
     auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
