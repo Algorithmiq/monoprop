@@ -282,3 +282,4 @@ jobs:
         run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
