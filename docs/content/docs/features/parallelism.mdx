@@ -39,6 +39,9 @@ larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 
+Three further variables control which MPI rank owns a term; they belong with the
+distribution axis and are documented under [Rank routing](#rank-routing) below.
+
 ```bash
 # Run 8 partitions instead of one-per-core:
 export monoprop_NUM_THREADS=8
@@ -69,6 +72,60 @@ MPI partitions the operator and graph across ranks, composing with per-rank
 partitioning into one flat world of `R × S` partitions (`R` ranks, `S` partitions each).
 MPI communication is serialised through each rank's first partition, bracketed by
 the intra-rank barriers.
+
+### Rank routing
+
+For $N$ modes, monomials under a gate form the group $(\mathbb{F}_2^{2N}, \oplus)$: a generator $G$ sends
+$M \mapsto M \oplus G$. The rank index is chosen to be a homomorphism of that group —
+$h(M) = \bigoplus_{i \in \mathrm{supp}(M)} v_i$, over one fixed vector $v_i$ per Majorana
+slot, with $h_d$ its low $d$ bits — so that
+
+$$
+h(M \oplus G) = h(M) \oplus h(G).
+$$
+
+Three consequences. A rank owning the fibre $h_d^{-1}(r)$ sends every query for $G$ to
+$r \oplus h_d(G)$: one peer, independent of $R$ and of $|\mathrm{supp}\,G|$, where a
+full-avalanche hash sprays the same queries across all $R$ ranks. XOR is an involution, so
+the peer relation is symmetric and both sides derive the pairing without communicating.
+And the fibres are cosets of $\ker h_d$, all of size $2^{2N-d}$, so a uniformly drawn
+monomial is balanced by construction; imbalance can only come from the operator's support
+being non-uniform, which is why balance is measured rather than proved — rank occupancy
+max/mean 1.001 at $R = 128$, with every rank used.
+
+The one condition is that the per-generator shifts $\{h_d(G)\}$ span $\mathbb{F}_2^{d}$.
+If they span only $\rho < d$ dimensions, the ranks a query can reach form a coset of a
+$\rho$-dimensional subspace: only $2^{\rho}$ of the $2^{d}$ are ever used and the rest stay
+empty. That is a load-balance failure and not a wrong answer, so it is left as a diagnostic
+rather than enforced at runtime — measured $\rho = 32$ over the 60-site Hubbard's 416
+distinct shifts, against the $d = 7$ that $R = 128$ needs.
+
+Within a rank, partitions keep the full-avalanche `splitmix` hash: fanout across shared
+memory is free, so only balance matters there. Routing is therefore two-level. Writing $q$
+for the `splitmix` hash of $M$, the partition is $q \bmod S$ and the rank is $h_d(M)$ with
+$d = \log_2 R$ — every rank bit, so the fanout is 1:
+
+$$
+\mathrm{flat}(M) = h_d(M)\,S + (q \bmod S).
+$$
+
+Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
+none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`
+bit for bit. It therefore requires $R$ to be a power of two; any other rank count has no
+XOR structure to route by and is raised at propagator construction rather than silently
+routed. $R = 1$ is a power of two, takes no rank bit, and so is the dense case already.
+
+A related distributed scheme maps an index by summing its $k$-bit blocks modulo the rank
+count [@Broers2025-or]. That sum is additive modulo that count while the gate acts by XOR,
+so the carries make $f(I \oplus J)$ differ from $f(I)$ by $\pm 2^{J_j \bmod k}$ terms whose
+signs depend on the bits of $I$, bounding the destinations at $2^{2|J|+1}$ rather than
+collapsing them to one. Being linear over the same group the gate acts by is what turns
+that bound into an identity.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `monoprop_ROUTING` | `linear` | `splitmix` selects the dense all-to-all; `linear`, or unset, takes every rank bit from $h$ and requires a power-of-two $R$. Any other value is rejected at startup rather than silently defaulting. |
+| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
 
 ### Single-node (`MPI.COMM_SELF`)
 

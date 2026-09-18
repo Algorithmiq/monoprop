@@ -88,8 +88,10 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
-  scan routing agreement), `evolution_detail_tests.cpp` (MatchedEpochSet +
-  CutoffContext),
+  scan routing agreement), `routing_tests.cpp` (Router term -> flat-slot map:
+  the `d = 0` splitmix equivalence, the linear shift identity, the gf2_rank
+  coverage diagnostic, and the shipped default),
+  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,

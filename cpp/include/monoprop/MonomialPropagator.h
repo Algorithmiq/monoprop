@@ -365,6 +365,8 @@ private:
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
 
+    bool routing_coverage_reported_{false}; // report_routing_coverage_ speaks once per propagator
+
     size_t logical_num_modes_{NumModes};
 
     CutoffType cutoff_type_;
@@ -448,6 +450,10 @@ private:
                                            const VecD &gen_coeffs,
                                            const VecD &parameters,
                                            std::optional<size_t> only_rotate_len_k) -> void;
+
+    // Do this call's generator shifts span log2(R)? If not, ranks receive nothing (routing::gf2_rank).
+    // Not beside check_routing_agreement: at construction the gate list does not exist yet.
+    auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
 
     template <typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,
