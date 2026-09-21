@@ -50,12 +50,35 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
+// Opaque Python functional types, created only by their propagator factories.
+template <typename Functional>
+auto bind_functional(nb::module_ &mod, const std::string &name, const char *call_doc) -> void {
+    nb::class_<Functional>(mod, name.c_str())
+        .def("__call__", &Functional::operator(), "parameters"_a, call_doc)
+        .def_prop_ro(
+            "num_params",
+            [](const Functional &f) { return f.num_params(); },
+            "Parameter-axis length this functional was built against")
+        .def_prop_ro(
+            "follows_weights",
+            [](const Functional &f) { return f.follows_weights(); },
+            "Whether a call after update_initial_operator() answers for the new weights");
+}
+
 template <size_t NumModes>
 auto bind_monomial_propagator(nb::module_ &mod) -> void {
     using namespace monoprop;
 
     auto name = std::format("MonomialPropagator{:03d}", NumModes);
     auto cls = nb::class_<MonomialPropagator<NumModes>>(mod, name.c_str());
+
+    bind_functional<ExpectationValueFunctional<NumModes>>(mod,
+                                                          std::format("ExpectationValueFunctional{:03d}", NumModes),
+                                                          "Expectation value at the given variational parameters");
+    bind_functional<ExpectationValueAndGradientFunctional<NumModes>>(
+        mod,
+        std::format("ExpectationValueAndGradientFunctional{:03d}", NumModes),
+        "(expectation value, gradient) at the given variational parameters");
 
     cls.def(
         "__init__",
@@ -134,14 +157,17 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "parameters"_a,
             "Expectation value and its gradient at the given variational parameters");
 
+    // Functionals borrow this propagator's index and graph.
     cls.def("expectation_value_functional",
             &MonomialPropagator<NumModes>::expectation_value_functional,
             "pare_threshold"_a = std::nullopt,
+            nb::keep_alive<0, 1>(),
             "Reusable callable giving the expectation value from parameters; None keeps the exact graph");
 
     cls.def("expectation_value_and_gradient_functional",
             &MonomialPropagator<NumModes>::expectation_value_and_gradient_functional,
             "pare_threshold"_a = std::nullopt,
+            nb::keep_alive<0, 1>(),
             "Reusable callable giving (expectation value, gradient) from parameters; None keeps the exact graph");
 
     cls.def("contract_partially",
@@ -153,7 +179,9 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     cls.def("update_initial_operator",
             &MonomialPropagator<NumModes>::update_initial_operator,
             "op_dict"_a,
-            "Rewrite the initial operator from an {indices: coefficient} dict");
+            "Rewrite the initial operator from an {indices: coefficient} dict; every existing term "
+            "the dict omits is zeroed, the identity term included. A dict this operator refuses "
+            "commits nothing");
 
     cls.def_prop_rw("lower_atol",
                     &MonomialPropagator<NumModes>::lower_atol,

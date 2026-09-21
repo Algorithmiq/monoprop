@@ -65,3 +65,14 @@ def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
 def serial_comm() -> Any:  # noqa: ANN401
     """Single-rank communicator for tests that inspect rank-local operator state."""
     return None if MPI is None else MPI.COMM_SELF
+
+
+@pytest.fixture(params=["off", "auto"])
+def partitions(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Run the test once per partitioning mode, with ``monoprop_PARTITIONS`` set to it.
+
+    The env var is read when a propagator is constructed, so this must be in place before the test
+    body builds one -- which is why it is a fixture rather than a plain parametrization.
+    """
+    monkeypatch.setenv("monoprop_PARTITIONS", request.param)
+    return request.param

@@ -56,6 +56,8 @@
     "qubit",
     "qubits",
     "Remigio",
+    "reweight",
+    "reweighted",
     "tracemalloc",
     "uct",
     "ucx",
