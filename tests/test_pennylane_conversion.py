@@ -306,16 +306,15 @@ class TestFromPennylaneCircuit:
 @requires_pennylane
 @pytest.mark.pennylane
 class TestToPennylaneCircuit:
-    def test_returns_qfunc_and_params(self):
+    def test_qfunc_replays_bound_parameters_by_default(self):
         circuit = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
             system_size=1,
             parameters=(0.7,),
         )
-        qfunc, params = to_pennylane_circuit(circuit)
-        assert params == (0.7,)
-        result = qml.tape.make_qscript(qfunc)(*params)
+        qfunc = to_pennylane_circuit(circuit)
+        result = qml.tape.make_qscript(qfunc)()
         assert len(result.operations) == 1
         (op,) = result.operations
         assert isinstance(op, qml.ops.Exp)
@@ -329,7 +328,7 @@ class TestToPennylaneCircuit:
             system_size=1,
             parameters=(0.7,),
         )
-        qfunc, _params = to_pennylane_circuit(circuit)
+        qfunc = to_pennylane_circuit(circuit)
         result = qml.tape.make_qscript(qfunc)(0.3)
         (op,) = result.operations
         assert op.coeff == pytest.approx(1j * 0.3)
@@ -341,18 +340,19 @@ class TestToPennylaneCircuit:
             system_size=1,
             parameters=(0.7,),
         )
-        qfunc, _params = to_pennylane_circuit(circuit)
+        qfunc = to_pennylane_circuit(circuit)
         with pytest.raises(ValueError, match="expects 1 angle"):
-            qfunc()
+            qfunc(0.1, 0.2)
 
-    def test_unbound_circuit_returns_empty_params(self):
+    def test_unbound_circuit_needs_explicit_angles(self):
         circuit = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
             system_size=1,
         )
-        qfunc, params = to_pennylane_circuit(circuit)
-        assert params == ()
+        qfunc = to_pennylane_circuit(circuit)
+        with pytest.raises(ValueError, match="expects 1 angle"):
+            qfunc()
         result = qml.tape.make_qscript(qfunc)(0.5)
         (op,) = result.operations
         assert op.coeff == pytest.approx(1j * 0.5)
@@ -363,8 +363,8 @@ class TestToPennylaneCircuit:
             system_size=5,
             parameters=(0.7,),
         )
-        qfunc, params = to_pennylane_circuit(circuit)
-        result = qml.tape.make_qscript(qfunc)(*params)
+        qfunc = to_pennylane_circuit(circuit)
+        result = qml.tape.make_qscript(qfunc)()
         (op,) = result.operations
         rebuilt = from_pennylane_operator(op.base, wires=range(5))
         assert rebuilt.isclose(circuit.gates[0].generator, atol=0.0, rtol=0.0)
@@ -381,8 +381,8 @@ class TestToPennylaneCircuit:
             system_size=2,
             parameters=(0.4,),
         )
-        qfunc, params = to_pennylane_circuit(circuit)
-        result = qml.tape.make_qscript(qfunc)(*params)
+        qfunc = to_pennylane_circuit(circuit)
+        result = qml.tape.make_qscript(qfunc)()
         (op,) = result.operations
         rebuilt = from_pennylane_operator(op.base, wires=range(2))
         assert rebuilt.isclose(circuit.gates[0].generator, atol=0.0, rtol=0.0)
@@ -428,8 +428,8 @@ def test_to_pennylane_circuit_generators_match_original() -> None:
         system_size=4,
         parameters=[-1.2, 0.3],
     )
-    qfunc, params = to_pennylane_circuit(circuit)
-    result = qml.tape.make_qscript(qfunc)(*params)
+    qfunc = to_pennylane_circuit(circuit)
+    result = qml.tape.make_qscript(qfunc)()
     for gate, op in zip(circuit.gates, result.operations, strict=True):
         rebuilt = from_pennylane_operator(op.base, wires=range(4))
         assert rebuilt.isclose(gate.generator, atol=0.0, rtol=0.0)

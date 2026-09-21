@@ -212,17 +212,16 @@ def from_pennylane_circuit(
 
 def to_pennylane_circuit(
     circuit: Circuit, *, wires: Sequence[Hashable] | None = None
-) -> tuple[Callable[..., None], tuple[float, ...]]:
+) -> Callable[..., None]:
     """Convert a [Circuit][monoprop.circuit.Circuit] to a PennyLane quantum function.
 
-    Returns ``(qfunc, params)``: calling ``qfunc(*thetas)`` inside a queuing context (e.g. a
-    ``QNode`` or ``qml.tape.make_qscript``) queues one ``qml.exp(generator, 1j * theta)``
-    operation per gate, where ``generator`` is the gate's own
-    [PauliOperator][monoprop.pauli.PauliOperator] rebuilt as a native PennyLane operator, and
-    ``thetas`` supplies ``circuit``'s ``n_parameters`` free angles (``circuit`` need not be
-    bound). ``params`` is ``circuit.parameters`` as-is -- empty if ``circuit`` is unbound -- so
-    ``qfunc(*params)`` reproduces ``circuit``'s own bound values immediately, while ``qfunc`` can
-    also be called with different angles later (e.g. inside a training loop). Unlike
+    Calling the returned ``qfunc`` inside a queuing context (e.g. a ``QNode`` or
+    ``qml.tape.make_qscript``) queues one ``qml.exp(generator, 1j * theta)`` operation per gate,
+    where ``generator`` is the gate's own [PauliOperator][monoprop.pauli.PauliOperator] rebuilt as
+    a native PennyLane operator. Called with no arguments, ``qfunc()`` replays ``circuit``'s own
+    bound angles (``circuit.parameters``); called with ``circuit.n_parameters`` positional angles,
+    ``qfunc(*thetas)`` uses those instead -- this also works when ``circuit`` itself is unbound
+    (``circuit.parameters == ()``), as long as angles are then supplied explicitly. Unlike
     [monoprop.qiskit_conversion][], no sign flip is applied (see [from_pennylane_circuit][]):
     ``exp(+i theta H) == qml.exp(H, 1j * theta)`` directly.
 
@@ -232,11 +231,12 @@ def to_pennylane_circuit(
             ``0..circuit.system_size-1``.
 
     Returns:
-        A ``(qfunc, params)`` pair, as described above.
+        A quantum function ``qfunc(*thetas)``, as described above.
 
     Raises:
         ValueError: If ``wires`` does not match ``circuit.system_size``, or ``qfunc`` is called
-            with a number of angles other than ``circuit.n_parameters``.
+            with a number of angles other than ``circuit.n_parameters`` (and not zero, in which
+            case ``circuit.parameters`` is used instead).
         TypeError: If ``circuit`` holds a Majorana-family gate rather than a Pauli one.
     """
     wire_tuple = wires if wires is not None else tuple(range(circuit.system_size))
@@ -255,9 +255,10 @@ def to_pennylane_circuit(
     mapping = circuit.resolved_mapping
 
     def qfunc(*thetas: float) -> None:
-        if len(thetas) != circuit.n_parameters:
+        angles = thetas or circuit.parameters
+        if len(angles) != circuit.n_parameters:
             raise ValueError(
-                f"qfunc expects {circuit.n_parameters} angle(s); got {len(thetas)}."
+                f"qfunc expects {circuit.n_parameters} angle(s); got {len(angles)}."
             )
         for generator, param_index in zip(generators, mapping, strict=True):
             coeffs: list[float] = []
@@ -271,6 +272,6 @@ def to_pennylane_circuit(
                 )
                 coeffs.append(coeff)
                 term_ops.append(word.operation())
-            qml.exp(qml.dot(coeffs, term_ops), 1j * thetas[param_index])
+            qml.exp(qml.dot(coeffs, term_ops), 1j * angles[param_index])
 
-    return qfunc, circuit.parameters
+    return qfunc
