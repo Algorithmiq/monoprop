@@ -16,9 +16,13 @@ from __future__ import annotations
 
 import importlib
 import sys
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 from pytest_cases import parametrize_with_cases
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 try:
     import pennylane as qml
@@ -193,6 +197,15 @@ class TestToPennylaneOperator:
         assert result.wires == qml.wires.Wires(["q0"])
 
 
+class PennylaneCircuitCase(NamedTuple):
+    """A `(qfunc, args, kwargs, expected)` case consumed by `parametrize_with_cases`."""
+
+    qfunc: Callable[..., None]
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    expected: Circuit
+
+
 class PennylaneCircuitsCases:
     # PennyLane's generator() already uses the SAME +i*phi*G sign ExpGate does, so -- unlike the
     # qiskit cases -- the expected monoprop generator carries the SAME sign PennyLane's own
@@ -206,7 +219,7 @@ class PennylaneCircuitsCases:
             system_size=1,
             parameters=(0.7,),
         )
-        return qfunc, (0.7,), {}, expected
+        return PennylaneCircuitCase(qfunc, (0.7,), {}, expected)
 
     def case_multiple_gates(self):
         def qfunc(a, b):
@@ -222,7 +235,7 @@ class PennylaneCircuitsCases:
             system_size=2,
             parameters=(0.3, 0.5),
         )
-        return qfunc, (0.3, 0.5), {}, expected
+        return PennylaneCircuitCase(qfunc, (0.3, 0.5), {}, expected)
 
     def case_pauli_rot_on_non_contiguous_wires(self):
         """Also exercises an idle wire (2), which needs an explicit `wires` to be counted."""
@@ -235,7 +248,7 @@ class PennylaneCircuitsCases:
             system_size=4,
             parameters=(0.4,),
         )
-        return qfunc, (0.4,), {"wires": (0, 1, 2, 3)}, expected
+        return PennylaneCircuitCase(qfunc, (0.4,), {"wires": (0, 1, 2, 3)}, expected)
 
     def case_barrier_ignored(self):
         def qfunc(theta):
@@ -247,7 +260,7 @@ class PennylaneCircuitsCases:
             system_size=1,
             parameters=(0.6,),
         )
-        return qfunc, (0.6,), {}, expected
+        return PennylaneCircuitCase(qfunc, (0.6,), {}, expected)
 
 
 @requires_pennylane
