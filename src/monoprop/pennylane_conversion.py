@@ -1,0 +1,267 @@
+# Copyright 2026 Algorithmiq
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Module to convert PennyLane objects."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+try:
+    import pennylane as qml
+except ImportError as e:
+    raise ImportError(
+        "pennylane is required to use monoprop.pennylane_conversion. "
+        "Install it with: pip install pennylane"
+    ) from e
+
+from monoprop.circuit import Circuit, ExpGate
+from monoprop.pauli import Pauli, PauliOperator
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Hashable, Iterable, Sequence
+
+
+def _resolve_wires(
+    touched: Iterable[Hashable], wires: Sequence[Hashable] | None
+) -> tuple[Hashable, ...]:
+    """Return an explicit, ordered wire tuple, inferring one from ``touched`` if not given."""
+    if wires is not None:
+        wire_tuple = tuple(wires)
+        missing = set(touched) - set(wire_tuple)
+        if missing:
+            raise ValueError(
+                f"wires={wire_tuple} does not include the wires actually used: "
+                f"{sorted(missing, key=str)}."
+            )
+        return wire_tuple
+    try:
+        return tuple(sorted(set(touched)))
+    except TypeError as e:
+        raise ValueError(
+            "Cannot infer a qubit ordering from these wire labels (they are not mutually "
+            "orderable); pass wires=... explicitly."
+        ) from e
+
+
+def _pauli_sentence_terms(
+    pauli_sentence: qml.pauli.PauliSentence, wire_map: dict[Hashable, int]
+) -> tuple[list[Pauli], list[complex]]:
+    """Translate a ``PauliSentence`` into monoprop [Pauli][monoprop.pauli.Pauli] terms."""
+    paulis: list[Pauli] = []
+    coeffs: list[complex] = []
+    for word, coeff in pauli_sentence.items():
+        qubits = tuple(wire_map[w] for w in word)
+        letters = "".join(word[w] for w in word)
+        paulis.append(Pauli(letters, qubits))
+        coeffs.append(coeff)
+    return paulis, coeffs
+
+
+def from_pennylane_operator(
+    pennylane_op: qml.operation.Operator,
+    *,
+    wires: Sequence[Hashable] | None = None,
+    atol: float = 1e-8,
+) -> PauliOperator:
+    """Convert a PennyLane operator to a [PauliOperator][monoprop.pauli.PauliOperator].
+
+    Requires the operator to carry a Pauli decomposition (its ``pauli_rep``, e.g. a
+    ``qml.ops.LinearCombination``/``qml.Hamiltonian``, a ``qml.ops.Sum``/``qml.ops.Prod`` of Pauli
+    operators, or a bare single-qubit Pauli operator) and to be Hermitian.
+
+    Args:
+        pennylane_op: A PennyLane operator expressible as a linear combination of Pauli words.
+        wires: The wire ordering to use for the resulting qubit indices, with ``wires[i]``
+            becoming qubit ``i``. Defaults to the sorted wires the operator touches; pass this
+            explicitly when the wires are not mutually orderable (e.g. mixed types) or a specific
+            ordering is wanted.
+        atol: Absolute tolerance below which a term's coefficient is dropped.
+
+    Returns:
+        A PauliOperator instance representing the given operator.
+    """
+    # pauli_sentence() returns the operator's own cached pauli_rep, and prune() mutates in place
+    # and returns None -- so a fresh copy is pruned instead, to avoid corrupting the caller's op.
+    pauli_sentence = qml.pauli.PauliSentence(
+        dict(qml.pauli.pauli_sentence(pennylane_op))
+    )
+    pauli_sentence.prune(atol)
+    wire_tuple = _resolve_wires(pauli_sentence.wires, wires)
+    wire_map = {w: i for i, w in enumerate(wire_tuple)}
+    paulis, coeffs = _pauli_sentence_terms(pauli_sentence, wire_map)
+    return PauliOperator._from_terms(paulis, coeffs, num_qubits=len(wire_tuple))
+
+
+def to_pennylane_operator(
+    pauli_operator: PauliOperator, *, wires: Sequence[Hashable] | None = None
+) -> qml.ops.LinearCombination:
+    """Convert a [PauliOperator][monoprop.pauli.PauliOperator] to a PennyLane operator.
+
+    Args:
+        pauli_operator: A PauliOperator instance.
+        wires: The wire labels to use, with qubit ``i`` placed on ``wires[i]``. Defaults to plain
+            integer wires ``0..num_qubits-1``.
+
+    Returns:
+        A ``qml.ops.LinearCombination`` over the given wires.
+    """
+    wire_tuple = wires if wires is not None else tuple(range(pauli_operator.num_qubits))
+    coeffs: list[float] = []
+    ops: list[qml.operation.Operator] = []
+    for pauli, coeff in pauli_operator.terms.items():
+        word = qml.pauli.PauliWord(
+            {
+                wire_tuple[q]: letter
+                for q, letter in zip(pauli.qubits, pauli.string, strict=True)
+            }
+        )
+        coeffs.append(coeff)
+        ops.append(word.operation(wire_order=list(wire_tuple)))
+    return qml.ops.LinearCombination(coeffs, ops)
+
+
+def from_pennylane_circuit(
+    qfunc: Callable[..., Any],
+    initial_state: list[int],
+    *args: Any,
+    wires: Sequence[Hashable] | None = None,
+    **kwargs: Any,
+) -> Circuit:
+    """Convert a PennyLane circuit to a [Circuit][monoprop.circuit.Circuit].
+
+    ``qfunc`` (a plain quantum function or a ``QNode``) is traced with ``qml.tape.make_qscript``,
+    without executing on any device. Only gates with a single trainable parameter and a
+    Pauli-expressible generator are supported (e.g. ``qml.RX``/``qml.RY``/``qml.RZ``/
+    ``qml.PauliRot``/``qml.MultiRZ``/``qml.IsingXX`` and similar); ``qml.Barrier`` is ignored, and a
+    ``qml.exp``/``qml.evolve`` gate (a multi-term-generator exponential, the PennyLane analog of
+    qiskit's ``PauliEvolutionGate``) is explicitly unsupported -- decomposing its ``coeff`` into a
+    single real angle is not generally well-defined. Each gate becomes one
+    [ExpGate][monoprop.circuit.ExpGate] driven by its own angle (the identity parameter mapping).
+    Unlike [monoprop.qiskit_conversion][], no sign flip is needed: PennyLane's ``generator()`` is
+    already defined by ``U(phi) = exp(+i phi G)``, the same convention
+    [ExpGate][monoprop.circuit.ExpGate] uses.
+
+    Args:
+        qfunc: A quantum function or ``QNode`` to trace.
+        initial_state: The reference state (occupied qubit indices).
+        *args: Positional arguments to call ``qfunc`` with.
+        wires: The wire ordering to use for the resulting qubit indices. Defaults to the sorted
+            wires the traced circuit touches; pass this explicitly if the circuit has idle wires
+            that never appear in a gate, or the wires are not mutually orderable.
+        **kwargs: Keyword arguments to call ``qfunc`` with.
+
+    Returns:
+        A Circuit instance representing the given circuit.
+
+    Raises:
+        ValueError: If a gate is not a single-parameter, Pauli-generator gate.
+    """
+    tape = qml.tape.make_qscript(qfunc)(*args, **kwargs)
+    all_wires = [w for op in tape.operations for w in op.wires]
+    wire_tuple = _resolve_wires(all_wires, wires)
+    wire_map = {w: i for i, w in enumerate(wire_tuple)}
+    num_qubits = len(wire_tuple)
+
+    gates: list[ExpGate] = []
+    parameters: list[float] = []
+    for op in tape.operations:
+        if isinstance(op, qml.Barrier):
+            continue
+        # qml.ops.Exp is excluded explicitly: a single-term instance would otherwise slip past
+        # the has_generator/num_params==1 check below (Exp.generator() returns its own base
+        # unscaled, and Exp.parameters holds the raw, possibly-complex `coeff`), which is not the
+        # single-real-angle form the rest of this loop assumes (see this function's docstring).
+        if isinstance(op, qml.ops.Exp) or not (op.has_generator and op.num_params == 1):
+            raise ValueError(
+                f"Unsupported gate {type(op).__name__}. Only single-parameter Pauli-generator "
+                "gates are supported."
+            )
+        pauli_sentence = op.generator().pauli_rep
+        if pauli_sentence is None:
+            raise ValueError(
+                f"Unsupported gate {type(op).__name__}: its generator is not expressible as a "
+                "sum of Pauli words."
+            )
+        paulis, coeffs = _pauli_sentence_terms(pauli_sentence, wire_map)
+        gates.append(
+            ExpGate(PauliOperator._from_terms(paulis, coeffs, num_qubits=num_qubits))
+        )
+        parameters.append(float(op.parameters[0]))
+
+    return Circuit(
+        gates=tuple(gates),
+        parameters=tuple(parameters),
+        initial_state=tuple(initial_state),
+        system_size=num_qubits,
+    )
+
+
+def to_pennylane_circuit(
+    circuit: Circuit, *, wires: Sequence[Hashable] | None = None
+) -> qml.tape.QuantumScript:
+    """Convert a [Circuit][monoprop.circuit.Circuit] to a PennyLane ``QuantumScript``.
+
+    Each gate becomes one ``qml.exp(generator, 1j * theta)`` operation, where ``generator`` is the
+    gate's own [PauliOperator][monoprop.pauli.PauliOperator] rebuilt as a native PennyLane operator.
+    Unlike [monoprop.qiskit_conversion][], no sign flip is applied (see
+    [from_pennylane_circuit][]): ``exp(+i theta H) == qml.exp(H, 1j * theta)`` directly.
+
+    Args:
+        circuit: A [Circuit][monoprop.circuit.Circuit] representing the given circuit.
+        wires: The wire labels to use for the circuit's qubits. Defaults to plain integer wires
+            ``0..circuit.system_size-1``.
+
+    Returns:
+        A ``qml.tape.QuantumScript`` holding the converted gates (no measurements).
+
+    Raises:
+        ValueError: If ``circuit`` is unbound, or ``wires`` does not match ``circuit.system_size``.
+        TypeError: If ``circuit`` holds a Majorana-family gate rather than a Pauli one.
+    """
+    if len(circuit.parameters) != circuit.n_parameters:
+        raise ValueError(
+            f"to_pennylane_circuit needs a bound circuit: it has {circuit.n_parameters} "
+            f"parameter(s) but {len(circuit.parameters)} angle value(s). Supply the angles, "
+            "e.g. Circuit(..., parameters=...)."
+        )
+    wire_tuple = wires if wires is not None else tuple(range(circuit.system_size))
+    if len(wire_tuple) != circuit.system_size:
+        raise ValueError(
+            f"wires has {len(wire_tuple)} entries but circuit.system_size={circuit.system_size}."
+        )
+
+    mapping = circuit.resolved_mapping
+    ops: list[qml.operation.Operator] = []
+    for gate, param_index in zip(circuit.gates, mapping, strict=True):
+        generator = gate.generator
+        if not isinstance(generator, PauliOperator):
+            raise TypeError(
+                "to_pennylane_circuit requires a qubit (Pauli) circuit; got a "
+                f"{circuit.family}-family gate."
+            )
+        coeffs: list[float] = []
+        term_ops: list[qml.operation.Operator] = []
+        for pauli, coeff in generator.terms.items():
+            word = qml.pauli.PauliWord(
+                {
+                    wire_tuple[q]: letter
+                    for q, letter in zip(pauli.qubits, pauli.string, strict=True)
+                }
+            )
+            coeffs.append(coeff)
+            term_ops.append(word.operation())
+        theta = circuit.parameters[param_index]
+        ops.append(qml.exp(qml.dot(coeffs, term_ops), 1j * theta))
+    return qml.tape.QuantumScript(ops)
