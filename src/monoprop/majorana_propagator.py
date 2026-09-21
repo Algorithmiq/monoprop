@@ -16,19 +16,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
-from .majorana import MajoranaOperator
+from .majorana import Majorana, MajoranaOperator
 from .monomial_propagator import MonomialPropagator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import ParameterValues
+    from .monomial_propagator import OperatorTerm, ParameterValues
     from .quantum_data import IQuantumOperator
 
 
@@ -125,6 +124,30 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         """
         terms = self._simulator.evolved_operator(self._bind(parameters), atol)
         return MajoranaOperator(terms, self.num_modes)
+
+    def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
+        """Encode a Majorana term into the engine's index tuple.
+
+        Majorana indices *are* the engine's keys, so this only unwraps the term. A raw sequence goes
+        through [Majorana][monoprop.majorana.Majorana], which rejects a non-canonical product rather
+        than drop the anticommutation sign a lookup cannot carry; for one of those, use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply its sign.
+
+        Args:
+            term: A [Majorana][monoprop.majorana.Majorana] term, or a raw index sequence.
+
+        Returns:
+            The term's Majorana indices.
+        """
+        if isinstance(term, Majorana):
+            return term.indices
+        # Iterable rather than Sequence: a NumPy array of indices is not a Sequence.
+        if not isinstance(term, Iterable):
+            raise TypeError(
+                "Majorana terms are Majorana objects or index sequences; got "
+                f"{type(term).__name__}."
+            )
+        return Majorana(*term).indices
 
     def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
         """Replace the *initial operator* (existing terms only).
