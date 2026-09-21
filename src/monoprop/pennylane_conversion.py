@@ -36,23 +36,24 @@ if TYPE_CHECKING:
 def _resolve_wires(
     touched: Iterable[Hashable], wires: Sequence[Hashable] | None
 ) -> tuple[Hashable, ...]:
-    """Return an explicit, ordered wire tuple, inferring one from ``touched`` if not given."""
+    """Return an explicit, ordered wire tuple, inferring one from ``touched`` if not given.
+
+    Without an explicit ``wires``, the wire label doubles as the qubit index: the default is
+    ``range(max(touched) + 1)``, so a wire below the highest one touched becomes an implicit
+    idle qubit rather than being silently renumbered away (e.g. touching only wire 1 defaults
+    to a 2-qubit system with that term on qubit 1, not a 1-qubit system with it moved to qubit
+    0). This only works when every touched wire is a non-negative integer with at least one
+    touched; anything else needs an explicit ``wires=``.
+    """
     if wires is not None:
-        wire_tuple = tuple(wires)
-        missing = set(touched) - set(wire_tuple)
-        if missing:
-            raise ValueError(
-                f"wires={wire_tuple} does not include the wires actually used: "
-                f"{sorted(missing, key=str)}."
-            )
-        return wire_tuple
-    try:
-        return tuple(sorted(set(touched)))
-    except TypeError as e:
+        return tuple(wires)
+    touched_set = set(touched)
+    if not touched_set or not all(isinstance(w, int) and w >= 0 for w in touched_set):
         raise ValueError(
-            "Cannot infer a qubit ordering from these wire labels (they are not mutually "
-            "orderable); pass wires=... explicitly."
-        ) from e
+            "Cannot infer a qubit ordering from these wire labels (they must be non-negative "
+            "integers, with at least one touched); pass wires=... explicitly."
+        )
+    return tuple(range(max(touched_set) + 1))
 
 
 def _pauli_sentence_terms(
@@ -84,9 +85,9 @@ def from_pennylane_operator(
     Args:
         pennylane_op: A PennyLane operator expressible as a linear combination of Pauli words.
         wires: The wire ordering to use for the resulting qubit indices, with ``wires[i]``
-            becoming qubit ``i``. Defaults to the sorted wires the operator touches; pass this
-            explicitly when the wires are not mutually orderable (e.g. mixed types) or a specific
-            ordering is wanted.
+            becoming qubit ``i``. Defaults to ``range(max(touched wire) + 1)`` -- the wire label
+            doubles as the qubit index -- so pass this explicitly when a touched wire is not a
+            non-negative integer, or a specific ordering is wanted.
         atol: Absolute tolerance below which a term's coefficient is dropped.
 
     Returns:
@@ -157,9 +158,10 @@ def from_pennylane_circuit(
         qfunc: A quantum function or ``QNode`` to trace.
         initial_state: The reference state (occupied qubit indices).
         *args: Positional arguments to call ``qfunc`` with.
-        wires: The wire ordering to use for the resulting qubit indices. Defaults to the sorted
-            wires the traced circuit touches; pass this explicitly if the circuit has idle wires
-            that never appear in a gate, or the wires are not mutually orderable.
+        wires: The wire ordering to use for the resulting qubit indices. Defaults to
+            ``range(max(touched wire) + 1)`` -- the wire label doubles as the qubit index -- so
+            pass this explicitly if the circuit has idle wires past the highest one touched, or
+            a touched wire is not a non-negative integer.
         **kwargs: Keyword arguments to call ``qfunc`` with.
 
     Returns:

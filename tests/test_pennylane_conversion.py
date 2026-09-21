@@ -127,8 +127,9 @@ class TestFromPennylaneOperator:
     def test_preserves_coefficient_magnitude(self):
         op = qml.ops.LinearCombination([0.75 + 0j], [qml.PauliZ(1)])
         result = from_pennylane_operator(op)
-        # Wire 1 is the only wire touched, so it compacts to qubit index 0.
-        assert result.terms[Pauli("Z", 0)] == pytest.approx(0.75)
+        # Wire 1 doubles as qubit index 1, in an inferred 2-qubit system (i.e. "IZ").
+        assert result.terms[Pauli("Z", 1)] == pytest.approx(0.75)
+        assert result.num_qubits == 2
 
     def test_identity_term_needs_explicit_wires(self):
         """A purely-identity operator has no wires in its pauli_rep to infer a width from."""
@@ -150,13 +151,6 @@ class TestFromPennylaneOperator:
             from_pennylane_operator(op)
         result = from_pennylane_operator(op, wires=["a", 0])
         assert result.num_qubits == 2
-
-    def test_explicit_wires_must_cover_touched_wires(self):
-        op = qml.ops.LinearCombination([1.0], [qml.PauliX(0) @ qml.PauliZ(1)])
-        with pytest.raises(
-            ValueError, match="does not include the wires actually used"
-        ):
-            from_pennylane_operator(op, wires=[0])
 
 
 @requires_pennylane
@@ -238,7 +232,8 @@ class PennylaneCircuitsCases:
         return PennylaneCircuitCase(qfunc, (0.3, 0.5), {}, expected)
 
     def case_pauli_rot_on_non_contiguous_wires(self):
-        """Also exercises an idle wire (2), which needs an explicit `wires` to be counted."""
+        """Also exercises the implicit idle wire (2) below the highest one touched (3), which is
+        counted automatically since wires default to `range(max(touched wire) + 1)`."""
 
         def qfunc(theta):
             qml.PauliRot(theta, "XY", wires=[3, 1])
@@ -248,7 +243,7 @@ class PennylaneCircuitsCases:
             system_size=4,
             parameters=(0.4,),
         )
-        return PennylaneCircuitCase(qfunc, (0.4,), {"wires": (0, 1, 2, 3)}, expected)
+        return PennylaneCircuitCase(qfunc, (0.4,), {}, expected)
 
     def case_barrier_ignored(self):
         def qfunc(theta):
