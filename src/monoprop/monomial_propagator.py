@@ -232,8 +232,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._validate_only_rotate_len_k(only_rotate_len_k)
 
         num_new = circuit.n_parameters
-        # Heisenberg puts the appended gates first in the equivalent circuit, so index order only
-        # tracks circuit order if the axis rotates; Schrodinger appends layers and indices alike.
+        # Adjust seed order in heisenberg case
         rotate_axis = not self.schrodinger and self._n_params > 0 and num_new > 0
 
         if seed_parameters is not None:
@@ -242,8 +241,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
             seed = circuit.parameters
         else:
             seed = None
-        # The C++ build reads the seed against the axis the graph still has, so the caller's
-        # post-call ordering has to be undone first.
         if rotate_axis and seed is not None:
             bound_seed = self._bind(seed)
             seed = bound_seed[num_new:] + bound_seed[:num_new]
@@ -268,12 +265,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # validation all raise, and a retry after such a failure must reuse the same indices.
         self._n_params += circuit.n_parameters
         if rotate_axis:
-            # A cyclic rotation, because both blocks move: the existing indices go up by
-            # `num_new`, and the block just appended wraps from the top of the axis down to
-            # 0..num_new-1. Shifting only the existing ones would collide with the new block and
-            # leave its numbering untouched, which is the bug. Assigning the per-layer form
-            # (length graph_layers) picks that reading unambiguously; the rotated mapping is
-            # still contiguous, so this only skips the property setter's redundant validation.
             self._simulator.parameter_mapping = [
                 (m + num_new) % self._n_params for m in self.parameter_mapping
             ]
@@ -334,23 +325,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         [Circuit][monoprop.circuit.Circuit] when gates bundle several monomials.
 
         The layers run in the order of the equivalent single circuit (see [build_graph][]), which
-        in Heisenberg puts the most recent extension first -- not the order the gates arrived in.
-
-        Warning:
-            Assigning to this property takes either a per-layer or a per-gate mapping, tells them
-            apart by length alone, but indexes them differently: per-layer in the
-            equivalent-circuit order read back here, per-gate in gate-arrival order. A graph
-            whose gates each carry one monomial has ``graph_layers == n_gates``, so a per-gate
-            mapping is silently read per layer -- and on an incrementally built Heisenberg graph
-            those orders differ. Permute what this getter returns instead.
-
-            Gate arrival order does not follow the picture: unlike the per-layer axis, it is not
-            renumbered when a Heisenberg extension reorders the equivalent circuit. So the same
-            per-gate mapping wires an incremental build and the one-call build of its equivalent
-            circuit differently, even though their per-layer mappings agree.
-
-            ``list(range(n))`` is no reset either: read per layer it wires layer ``i`` to
-            parameter ``i``, and on a multi-monomial graph splits one gate's layers apart.
+        in Heisenberg puts the most recent extension first.
         """
         return list(self._simulator.parameter_mapping)
 
@@ -362,8 +337,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         [graph_layers][], in parameter-vector order) or per gate (length [n_gates][],
         expanded so a multi-term gate's layers stay tied); when the two lengths coincide the
         per-layer reading wins. Functionals created earlier keep the mapping they were built with.
-
-        The two forms are indexed differently -- see the warning on [parameter_mapping][].
         """
         resolved = [int(m) for m in mapping]
         n_layers, n_gates = self.graph_layers, self.n_gates
