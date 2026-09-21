@@ -212,13 +212,19 @@ def from_pennylane_circuit(
 
 def to_pennylane_circuit(
     circuit: Circuit, *, wires: Sequence[Hashable] | None = None
-) -> qml.tape.QuantumScript:
-    """Convert a [Circuit][monoprop.circuit.Circuit] to a PennyLane ``QuantumScript``.
+) -> tuple[Callable[..., None], tuple[float, ...]]:
+    """Convert a [Circuit][monoprop.circuit.Circuit] to a PennyLane quantum function.
 
-    Each gate becomes one ``qml.exp(generator, 1j * theta)`` operation, where ``generator`` is the
-    gate's own [PauliOperator][monoprop.pauli.PauliOperator] rebuilt as a native PennyLane operator.
-    Unlike [monoprop.qiskit_conversion][], no sign flip is applied (see
-    [from_pennylane_circuit][]): ``exp(+i theta H) == qml.exp(H, 1j * theta)`` directly.
+    Returns ``(qfunc, params)``: calling ``qfunc(*thetas)`` inside a queuing context (e.g. a
+    ``QNode`` or ``qml.tape.make_qscript``) queues one ``qml.exp(generator, 1j * theta)``
+    operation per gate, where ``generator`` is the gate's own
+    [PauliOperator][monoprop.pauli.PauliOperator] rebuilt as a native PennyLane operator, and
+    ``thetas`` supplies ``circuit``'s ``n_parameters`` free angles (``circuit`` need not be
+    bound). ``params`` is ``circuit.parameters`` as-is -- empty if ``circuit`` is unbound -- so
+    ``qfunc(*params)`` reproduces ``circuit``'s own bound values immediately, while ``qfunc`` can
+    also be called with different angles later (e.g. inside a training loop). Unlike
+    [monoprop.qiskit_conversion][], no sign flip is applied (see [from_pennylane_circuit][]):
+    ``exp(+i theta H) == qml.exp(H, 1j * theta)`` directly.
 
     Args:
         circuit: A [Circuit][monoprop.circuit.Circuit] representing the given circuit.
@@ -226,44 +232,45 @@ def to_pennylane_circuit(
             ``0..circuit.system_size-1``.
 
     Returns:
-        A ``qml.tape.QuantumScript`` holding the converted gates (no measurements).
+        A ``(qfunc, params)`` pair, as described above.
 
     Raises:
-        ValueError: If ``circuit`` is unbound, or ``wires`` does not match ``circuit.system_size``.
+        ValueError: If ``wires`` does not match ``circuit.system_size``, or ``qfunc`` is called
+            with a number of angles other than ``circuit.n_parameters``.
         TypeError: If ``circuit`` holds a Majorana-family gate rather than a Pauli one.
     """
-    if len(circuit.parameters) != circuit.n_parameters:
-        raise ValueError(
-            f"to_pennylane_circuit needs a bound circuit: it has {circuit.n_parameters} "
-            f"parameter(s) but {len(circuit.parameters)} angle value(s). Supply the angles, "
-            "e.g. Circuit(..., parameters=...)."
-        )
     wire_tuple = wires if wires is not None else tuple(range(circuit.system_size))
     if len(wire_tuple) != circuit.system_size:
         raise ValueError(
             f"wires has {len(wire_tuple)} entries but circuit.system_size={circuit.system_size}."
         )
-
-    mapping = circuit.resolved_mapping
-    ops: list[qml.operation.Operator] = []
-    for gate, param_index in zip(circuit.gates, mapping, strict=True):
-        generator = gate.generator
-        if not isinstance(generator, PauliOperator):
+    generators: list[PauliOperator] = []
+    for gate in circuit.gates:
+        if not isinstance(gate.generator, PauliOperator):
             raise TypeError(
                 "to_pennylane_circuit requires a qubit (Pauli) circuit; got a "
                 f"{circuit.family}-family gate."
             )
-        coeffs: list[float] = []
-        term_ops: list[qml.operation.Operator] = []
-        for pauli, coeff in generator.terms.items():
-            word = qml.pauli.PauliWord(
-                {
-                    wire_tuple[q]: letter
-                    for q, letter in zip(pauli.qubits, pauli.string, strict=True)
-                }
+        generators.append(gate.generator)
+    mapping = circuit.resolved_mapping
+
+    def qfunc(*thetas: float) -> None:
+        if len(thetas) != circuit.n_parameters:
+            raise ValueError(
+                f"qfunc expects {circuit.n_parameters} angle(s); got {len(thetas)}."
             )
-            coeffs.append(coeff)
-            term_ops.append(word.operation())
-        theta = circuit.parameters[param_index]
-        ops.append(qml.exp(qml.dot(coeffs, term_ops), 1j * theta))
-    return qml.tape.QuantumScript(ops)
+        for generator, param_index in zip(generators, mapping, strict=True):
+            coeffs: list[float] = []
+            term_ops: list[qml.operation.Operator] = []
+            for pauli, coeff in generator.terms.items():
+                word = qml.pauli.PauliWord(
+                    {
+                        wire_tuple[q]: letter
+                        for q, letter in zip(pauli.qubits, pauli.string, strict=True)
+                    }
+                )
+                coeffs.append(coeff)
+                term_ops.append(word.operation())
+            qml.exp(qml.dot(coeffs, term_ops), 1j * thetas[param_index])
+
+    return qfunc, circuit.parameters

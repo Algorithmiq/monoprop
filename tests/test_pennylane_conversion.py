@@ -306,19 +306,56 @@ class TestFromPennylaneCircuit:
 @requires_pennylane
 @pytest.mark.pennylane
 class TestToPennylaneCircuit:
-    def test_returns_quantum_script(self):
+    def test_returns_qfunc_and_params(self):
         circuit = Circuit(
             gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
             system_size=1,
             parameters=(0.7,),
         )
-        result = to_pennylane_circuit(circuit)
-        assert isinstance(result, qml.tape.QuantumScript)
+        qfunc, params = to_pennylane_circuit(circuit)
+        assert params == (0.7,)
+        result = qml.tape.make_qscript(qfunc)(*params)
         assert len(result.operations) == 1
         (op,) = result.operations
         assert isinstance(op, qml.ops.Exp)
         assert op.coeff == pytest.approx(1j * 0.7)
+
+    def test_qfunc_accepts_different_angles(self):
+        """qfunc is reusable: it isn't frozen to circuit's own bound parameters."""
+        circuit = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            initial_state=(),
+            system_size=1,
+            parameters=(0.7,),
+        )
+        qfunc, _params = to_pennylane_circuit(circuit)
+        result = qml.tape.make_qscript(qfunc)(0.3)
+        (op,) = result.operations
+        assert op.coeff == pytest.approx(1j * 0.3)
+
+    def test_qfunc_wrong_angle_count_raises(self):
+        circuit = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
+            initial_state=(),
+            system_size=1,
+            parameters=(0.7,),
+        )
+        qfunc, _params = to_pennylane_circuit(circuit)
+        with pytest.raises(ValueError, match="expects 1 angle"):
+            qfunc()
+
+    def test_unbound_circuit_returns_empty_params(self):
+        circuit = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),),
+            initial_state=(),
+            system_size=1,
+        )
+        qfunc, params = to_pennylane_circuit(circuit)
+        assert params == ()
+        result = qml.tape.make_qscript(qfunc)(0.5)
+        (op,) = result.operations
+        assert op.coeff == pytest.approx(1j * 0.5)
 
     def test_generator_matches_original_no_reversal(self):
         circuit = Circuit(
@@ -326,7 +363,8 @@ class TestToPennylaneCircuit:
             system_size=5,
             parameters=(0.7,),
         )
-        result = to_pennylane_circuit(circuit)
+        qfunc, params = to_pennylane_circuit(circuit)
+        result = qml.tape.make_qscript(qfunc)(*params)
         (op,) = result.operations
         rebuilt = from_pennylane_operator(op.base, wires=range(5))
         assert rebuilt.isclose(circuit.gates[0].generator, atol=0.0, rtol=0.0)
@@ -343,19 +381,11 @@ class TestToPennylaneCircuit:
             system_size=2,
             parameters=(0.4,),
         )
-        result = to_pennylane_circuit(circuit)
+        qfunc, params = to_pennylane_circuit(circuit)
+        result = qml.tape.make_qscript(qfunc)(*params)
         (op,) = result.operations
         rebuilt = from_pennylane_operator(op.base, wires=range(2))
         assert rebuilt.isclose(circuit.gates[0].generator, atol=0.0, rtol=0.0)
-
-    def test_rejects_unbound(self):
-        circuit = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),),
-            initial_state=(),
-            system_size=1,
-        )
-        with pytest.raises(ValueError, match="bound circuit"):
-            to_pennylane_circuit(circuit)
 
     def test_rejects_majorana_family(self):
         circuit = Circuit(
@@ -398,7 +428,8 @@ def test_to_pennylane_circuit_generators_match_original() -> None:
         system_size=4,
         parameters=[-1.2, 0.3],
     )
-    result = to_pennylane_circuit(circuit)
+    qfunc, params = to_pennylane_circuit(circuit)
+    result = qml.tape.make_qscript(qfunc)(*params)
     for gate, op in zip(circuit.gates, result.operations, strict=True):
         rebuilt = from_pennylane_operator(op.base, wires=range(4))
         assert rebuilt.isclose(gate.generator, atol=0.0, rtol=0.0)
