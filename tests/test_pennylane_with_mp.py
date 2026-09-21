@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 
 import numpy as np
@@ -19,15 +21,15 @@ import pytest
 
 from monoprop import PauliPropagator
 from monoprop.pauli import PauliOperator
-from monoprop.pennylane_conversion import (
-    from_pennylane_circuit,
-    from_pennylane_operator,
-)
 
 try:
     import pennylane as qml
 
-    from monoprop.pennylane_conversion import to_pennylane_operator
+    from monoprop.pennylane_conversion import (
+        from_pennylane_circuit,
+        from_pennylane_operator,
+        to_pennylane_operator,
+    )
 
     _pennylane_available = True
 except ImportError:
