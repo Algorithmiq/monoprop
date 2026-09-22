@@ -86,17 +86,27 @@ if importlib.util.find_spec("qiskit") is not None:
         "to_qiskit_operator",
     ]
 
-if importlib.util.find_spec("pennylane") is not None:
-    from .pennylane_conversion import (
-        from_pennylane_circuit,
-        from_pennylane_operator,
-        to_pennylane_circuit,
-        to_pennylane_operator,
-    )
 
-    __all__ += [
-        "from_pennylane_circuit",
-        "from_pennylane_operator",
-        "to_pennylane_circuit",
-        "to_pennylane_operator",
-    ]
+import importlib.metadata
+
+
+def _load_plugins() -> None:
+    """Attach every installed monoprop plugin's public API onto this namespace.
+
+    A plugin is any distribution registering a `monoprop.plugins` entry point whose
+    value is an importable module exposing `__all__`; every name in it is copied here,
+    the same way `from module import *` would. See `monoprop_pennylane` for the
+    reference implementation.
+    """
+    for entry_point in importlib.metadata.entry_points(group="monoprop.plugins"):
+        plugin = entry_point.load()
+        names = getattr(plugin, "__all__", ())
+        for name in names:
+            globals()[name] = getattr(plugin, name)
+        # extend() mutates the existing list in place, so `__all__` stays a read (not a
+        # rebind) of the module-level global -- unlike `+=`, this needs no `global` statement.
+        __all__.extend(names)  # noqa: PYI056
+
+
+_load_plugins()
+del _load_plugins
