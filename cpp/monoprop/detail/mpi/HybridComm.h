@@ -15,7 +15,6 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -59,6 +58,7 @@ public:
           s_(n_local_partitions),
           slots_(static_cast<size_t>(n_local_partitions)),
           row_peer_(static_cast<size_t>(n_local_partitions), kNoPeer),
+          row_recv_peer_(static_cast<size_t>(n_local_partitions), kNoPeer),
           barrier_(n_local_partitions) {
         MPI_Comm_size(parent_, &r_);
         MPI_Comm_rank(parent_, &mpi_rank_);
@@ -69,9 +69,8 @@ public:
                                             "MPI while peers are parked); provided level is lower. Ensure "
                                             "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
-        // After the local preconditions: this is a collective, so a rank that fails one of those must not
-        // already have committed its peers to it.
-        pairwise_ = agree_routing_(routing::Config::from_env(static_cast<size_t>(s_)));
+        // Collective, so it runs after the local checks: a rank that throws first must not strand its peers.
+        pairwise_ = agree_routes_pairwise(parent_, r_, routing::Config::from_env(static_cast<size_t>(s_)));
         // Size all (R,S)-fixed scratch once so per-call paths never allocate; staging grows on demand.
         const size_t rss = static_cast<size_t>(r_) * static_cast<size_t>(s_) * static_cast<size_t>(s_);
         const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
@@ -108,7 +107,7 @@ public:
     auto ranks() const -> int { return r_; }
     auto partitions() const -> int { return s_; }
     auto global_rank(int local_partition) const -> int { return (mpi_rank_ * s_) + local_partition; }
-    // Agreed across parent_ at construction, so every rank branches the same way. See agree_routing_.
+    // Agreed across parent_ at construction, so every rank branches the same way.
     auto routes_pairwise() const -> bool { return pairwise_; }
 
     auto alltoall_counts(int local_partition,
@@ -125,14 +124,9 @@ public:
     // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
     // with the non-MPI-capable transport.
     //
-    // `derive_wire_plan` both selects the point-to-point transport and asks partition 0 to read the peer
-    // set off the whole rank's traffic instead of taking it from the caller. A caller cannot supply that
-    // set: only partition 0 reaches MPI, and its own row may be the empty one while a sibling partition
-    // holds the rank's only traffic.
-    //
-    // It must be RANK-UNIFORM -- get it from routes_pairwise() -- because it picks the transport. It puts
-    // no condition on the LAYOUT: a symmetric one (recv counts are the send counts) narrows to a single
-    // peer, and anything else simply keeps the full peer set.
+    // `derive_wire_plan` selects point-to-point and has partition 0 read the peer set off the whole rank's
+    // rows, which no single caller can see. It must be rank-uniform (routes_pairwise()); a symmetric
+    // layout narrows to one peer, anything else keeps every rank.
     auto alltoallv(int local_partition,
                    const AlltoallvArgs &args,
                    MPI_Datatype dt,
@@ -215,12 +209,12 @@ private:
             require_plan_covers_traffic_(plan);
             fill_peers_(plan);
             pack_count_matrix_();
-            exchange_count_blocks_(plan);
+            post_count_blocks_(plan);
+            wait_count_blocks_();
         }
         sync();
         // Partition t extracts its row: recv from (rank a, partition su) is contiguous per source rank a.
-        // Under a plan only the f peer ranks were exchanged, so the rest of the row is zero by definition
-        // (a non-peer cannot own the partner of any term this rank owns).
+        // Non-peers are zero by definition.
         const int t = local_partition;
         std::fill(recv_counts, recv_counts + (static_cast<size_t>(r_) * static_cast<size_t>(s_)), 0);
         for (const int a : peers_) {
@@ -249,9 +243,9 @@ private:
 
         // B2: partition 0 sizes/reallocates staging; must finish before any partition packs into stage_send_.
         if (local_partition == 0) {
-            // Written here, read again in the B3->B4 window: partition 0 is this member's only toucher.
+            // Partition 0 only: written here, read again in B3->B4.
             if (derive_wire_plan) {
-                wire_plan_ = derived_wire_plan_(); // cross-checks both sides itself
+                wire_plan_ = derived_wire_plan_();
             }
             else {
                 wire_plan_ = plan;
@@ -282,10 +276,8 @@ private:
     // barriered windows (4 syncs instead of 6). recv_counts / recv_displs and `recv` (resized) are
     // outputs. Bit-identical to alltoall_counts + alltoallv.
     //
-    // The count round is POSTED in B1→B2 and only waited on in B3→B4, so the whole B2→B3 packing runs
-    // underneath it. Split, not fused, because nothing before fill_recv_col_ reads counts_recv_: the
-    // send side sizes from the locally published rows, and pack_send_ from that sizing. The dense arm
-    // is MPI_Alltoall, blocking, and completes inside post_count_blocks_ regardless.
+    // The sparse count round is posted in B1→B2 and drained in B3→B4, overlapping the packing: nothing
+    // before fill_recv_col_ reads counts_recv_. The dense arm's MPI_Alltoall blocks in the post.
     template <typename T>
     auto alltoallv_resolve_impl_(int local_partition,
                                  const AlltoallvResolveArgs<T> &args,
@@ -312,11 +304,11 @@ private:
         }
         sync(); // B2
 
-        // B3: each partition packs its own cross-rank blocks into stage_send_, the count round in flight.
+        // B3: each partition packs its own blocks while the count round is in flight.
         pack_send_(local_partition, elem);
         sync(); // B3
 
-        // B4: the counts land here -- fill_recv_col_ is their first reader -- then the payload moves.
+        // B4: the counts land, then the payload moves.
         if (local_partition == 0) {
             wait_count_blocks_();
             fill_recv_col_([this](int a, int t) { return block_sum_(a, t); });
@@ -325,9 +317,7 @@ private:
         }
         sync(); // B4
 
-        // Past B4 now, not before B3: counts_recv_ does not exist until the wait above. Partition 0
-        // cannot rewrite it before a later verb's B1→B2 window, unreachable until every reader here
-        // has arrived at that verb's B1.
+        // Only past B4 does counts_recv_ exist; partition 0 next rewrites it in a later verb's B1→B2.
         const int t = local_partition;
         long long total = 0;
         const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);
@@ -441,8 +431,7 @@ private:
                + static_cast<size_t>(su);
     }
 
-    // The plan's peer ranks, materialised once per verb: the sizing sweeps index them S times each.
-    // Written by partition 0 in the B1→B2 window, like base_recv_, so every reader past B2 sees it.
+    // The plan's peer ranks, once per verb. Written by partition 0 in B1→B2, so every reader past B2 sees it.
     auto fill_peers_(PeerPlan plan) -> void {
         const int f = plan.count(r_);
         peers_.resize(static_cast<size_t>(f));
@@ -451,16 +440,14 @@ private:
         }
     }
 
-    // Zero only the peer ranks' slots of a [P] table. Every sweep that writes one of these tables and
-    // every sweep that reads it walks the same peer set, so the rest of the row is never looked at --
-    // and these run SERIALLY on partition 0 while S-1 partitions park, so the width is the cost.
+    // Zero the peer ranks' slots of a [P] table; every reader walks the same peers, so the rest is dead.
     auto zero_peer_slots_(std::vector<long long> &table) const -> void {
         for (const int b : peers_) {
             std::fill_n(table.begin() + (static_cast<std::ptrdiff_t>(b) * s_), s_, 0LL);
         }
     }
 
-    // What rank a's block of the count message holds for partition t, summed over source partitions.
+    // Rank a's count block for partition t, summed over source partitions.
     auto block_sum_(int a, int t) const -> long long {
         const int *blk = counts_recv_.data() + counts_idx_(a, t, 0);
         long long sum = 0;
@@ -488,45 +475,43 @@ private:
                     static_cast<size_t>(r_) * static_cast<size_t>(s_) * sizeof(int));
         row_peer_[u] = kNoPeer;
         if (!track_peer) {
-            return; // a dense round reaches every rank, so there is nothing a peer could exclude
+            return; // a dense round reaches every rank, so no peer can be excluded
         }
-        // The destination rank this row's live blocks touch, so partition 0 can check a plan against the
-        // traffic without an O(R*S^2) sweep of its own: S rows of O(R*S), each on its own partition.
+        // Folded per partition so partition 0 checks the plan without an O(R*S^2) serial sweep.
         int peer = kNoPeer;
         for (int a = 0; a < r_ && peer != kManyPeers; ++a) {
             const int *block = send_counts + (static_cast<size_t>(a) * static_cast<size_t>(s_));
-            if (std::all_of(block, block + s_, [](int n) { return n == 0; })) {
-                continue;
+            if (!std::all_of(block, block + s_, [](int n) { return n == 0; })) {
+                peer = fold_peer_(peer, a);
             }
-            peer = peer == kNoPeer ? a : kManyPeers;
         }
         row_peer_[u] = peer;
     }
 
-    // The S published rows folded: kNoPeer, the one destination rank, or kManyPeers. Partition 0 only.
-    auto folded_send_peer_() const -> int {
+    // Summarises the ranks seen so far as kNoPeer, one rank, or kManyPeers.
+    static constexpr auto fold_peer_(int acc, int a) -> int {
+        if (a == kNoPeer || a == acc) {
+            return acc;
+        }
+        return acc == kNoPeer ? a : kManyPeers;
+    }
+
+    // One row-peer table folded across the S partitions. Partition 0 only.
+    auto fold_rows_(const std::vector<int> &row_peers) const -> int {
         int peer = kNoPeer;
-        for (int u = 0; u < s_; ++u) {
-            const int a = row_peer_[static_cast<size_t>(u)];
-            if (a == kNoPeer || a == peer) {
-                continue;
-            }
-            if (a == kManyPeers || peer != kNoPeer) {
-                return kManyPeers;
-            }
-            peer = a;
+        for (const int a : row_peers) {
+            peer = fold_peer_(peer, a);
         }
         return peer;
     }
 
-    // A plan every rank agrees on but that excludes a live destination does not hang -- it silently DROPS
-    // those blocks, because the staging sweeps only ever visit peers. Raised in partition 0's B1->B2
-    // window, before any count or payload is posted, so guard_partition0_ can abort with nobody waiting.
+    // An agreed plan that excludes a live destination would silently drop those blocks. Checked in B1->B2,
+    // before anything is posted, so guard_partition0_ can abort with nobody waiting.
     auto require_plan_covers_traffic_(PeerPlan plan) const -> void {
         if (plan.dense()) {
             return;
         }
-        const int peer = folded_send_peer_();
+        const int peer = fold_rows_(row_peer_);
         if (peer == kNoPeer || (peer != kManyPeers && plan.contains(mpi_rank_, peer))) {
             return;
         }
@@ -538,13 +523,11 @@ private:
                         r_));
     }
 
-    // long long: it sums S int counts. Masked through the plan, symmetric with its one reader
-    // (fill_recv_col_): a non-peer's row is zero by definition, and a count left there would size
-    // staging for a block no receive is posted for.
+    // long long: it sums S int counts. Only the plan's peers are written, the only entries read. Also
+    // folds the row's recv peer for derived_wire_plan_, like publish_counts_row_ does for sends.
     auto publish_recv_rows_(int local_partition, const int *recv_counts, PeerPlan plan) -> void {
         long long *rr = row_recv_(local_partition);
-        // Every entry is written, not just the peers': derived_wire_plan_ reads the whole row.
-        std::fill_n(rr, r_, 0LL);
+        int peer = kNoPeer;
         const int f = plan.count(r_);
         for (int k = 0; k < f; ++k) {
             const int a = plan.peer(mpi_rank_, k);
@@ -553,7 +536,11 @@ private:
                 sum += recv_counts[(a * s_) + su];
             }
             rr[a] = sum;
+            if (sum != 0) {
+                peer = fold_peer_(peer, a);
+            }
         }
+        row_recv_peer_[static_cast<size_t>(local_partition)] = peer;
     }
 
     // Transpose the published count rows into counts_send_, dest-major then source-minor, for the one
@@ -570,48 +557,23 @@ private:
         }
     }
 
-    // The rank-level peer set, read off the rows every partition published before B1 -- the first point
-    // with a view wider than one partition's row. Under fanout-1 routing a layer's traffic is all on ONE
-    // rank, so this narrows to a shift; with nothing occupied it narrows to the self peer, whose legs are
-    // then all zero.
-    //
-    // Narrowing ONLY. The transport is the caller's rank-uniform gate and is not a function of what this
-    // returns, so anything the rows do not pin down -- several peers, or a send side disagreeing with the
-    // recv side -- falls back to the FULL peer set, which visits every rank and can therefore drop
-    // nothing. A legacy or hand-built layer that spans several peers replays correctly, just without the
-    // narrowing. Both sides are read because the symmetry claim (recv counts ARE the send counts) is what
-    // licenses reading the peer off the recv rows at all.
-    auto derived_wire_plan_() -> PeerPlan {
-        int recv_peer = kNoPeer;
-        for (int u = 0; u < s_ && recv_peer != kManyPeers; ++u) {
-            const long long *rr = row_recv_(u);
-            for (int a = 0; a < r_; ++a) {
-                if (rr[a] == 0 || a == recv_peer) {
-                    continue;
-                }
-                if (recv_peer != kNoPeer) {
-                    recv_peer = kManyPeers;
-                    break;
-                }
-                recv_peer = a;
-            }
-        }
-        const int send_peer = folded_send_peer_();
+    // The rank's peer set, read off every partition's published rows. Narrowing only: anything the rows
+    // do not pin to one peer (several, or send and recv disagreeing) keeps every rank, which drops
+    // nothing. Nothing occupied narrows to self, whose legs are all empty.
+    auto derived_wire_plan_() const -> PeerPlan {
+        const int recv_peer = fold_rows_(row_recv_peer_);
+        const int send_peer = fold_rows_(row_peer_);
         const bool spans_one = recv_peer != kManyPeers && send_peer != kManyPeers;
         const bool sides_agree = recv_peer == kNoPeer || send_peer == kNoPeer || recv_peer == send_peer;
         if (!spans_one || !sides_agree) {
-            return PeerPlan{}; // every rank: nothing to drop, and the wire stays point-to-point
+            return PeerPlan{};
         }
         const int peer = recv_peer != kNoPeer ? recv_peer : (send_peer != kNoPeer ? send_peer : mpi_rank_);
         return PeerPlan{.sparse = true, .shift = mpi_rank_ ^ peer};
     }
 
-    // The count blocks: one S*S-int MPI_Alltoall when dense, else a pair per peer (with the full linear
-    // bits a zero rank shift keeps the whole round on-rank). Partition 0 only, in a barriered window.
-    //
-    // Sparse arm POSTS ONLY, so counts_recv_ and counts_send_ must stay put until wait_count_blocks_;
-    // the dense MPI_Alltoall is blocking and has completed on return, which is why plan.dense() leaves
-    // nothing live. The requests go in count_reqs_, never reqs_: see the member declaration.
+    // The count blocks: a blocking S*S-int MPI_Alltoall when dense, else a posted pair per peer that
+    // wait_count_blocks_ drains; counts_send_/counts_recv_ must stay put until then. Partition 0 only.
     auto post_count_blocks_(PeerPlan plan) -> void {
         assert(count_posted_ == 0); // an un-drained round would be waited on twice
         const int block = s_ * s_;
@@ -636,8 +598,7 @@ private:
         count_posted_ = sparse_pairwise(pairwise, count_reqs_);
     }
 
-    // Drains post_count_blocks_. A no-op on the dense arm, and on a plan whose only peer is this rank
-    // itself -- a count block is a fixed S*S ints, so no other peer can be skipped for a zero count.
+    // Drains post_count_blocks_; a no-op on the dense arm and when the only peer is self.
     auto wait_count_blocks_() -> void {
         if (count_posted_ != 0) {
             MPI_Waitall(count_posted_, count_reqs_.data(), MPI_STATUSES_IGNORE);
@@ -645,20 +606,9 @@ private:
         }
     }
 
-    // Post and drain in one step, for callers with no work to overlap.
-    auto exchange_count_blocks_(PeerPlan plan) -> void {
-        post_count_blocks_(plan);
-        wait_count_blocks_();
-    }
-
-    // The staged payload: one MPI_Alltoallv, or a pair per peer over the same per-rank counts and
-    // displacements (a non-peer's count is zero, so nothing is dropped). `elem` is dt's extent: needed to
-    // reach a block, and known exactly to both callers.
-    //
-    // `pairwise` is the transport and `plan` only the peer set, because the two must be able to differ:
-    // the transport has to be RANK-UNIFORM (a rank inside MPI_Alltoallv waits forever on one posting
-    // Isend/Irecv), while the peer set is whatever this rank's own rows narrow to. A dense peer set on the
-    // point-to-point arm is the full walk, posting only the legs that carry a payload.
+    // The staged payload: one MPI_Alltoallv, or point-to-point over `plan`'s peers. `pairwise` is the
+    // transport and must be rank-uniform; `plan` is only the peer set, which each rank narrows itself.
+    // `elem` is dt's extent.
     auto exchange_payload_(MPI_Datatype dt, size_t elem, PeerPlan plan, bool pairwise) -> void {
         if (!pairwise) {
             MPI_Alltoallv(stage_send_.data(),
@@ -698,8 +648,7 @@ private:
 
     // Partition 0's send-side staging sizing, between B1 and B2, in two sweeps of counts_matrix_. Wire
     // block order is destination major, source minor: a per-destination base plus a per-source prefix.
-    // Both sweeps run SERIALLY here while S-1 partitions park, so narrowing them to the peers matters as
-    // much as the message count does.
+    // Serial while S-1 partitions park, so both sweeps walk only the peers.
     auto size_staging_send_(size_t elem) -> void {
         zero_peer_slots_(col_sum_);
         for (int u = 0; u < s_; ++u) {
@@ -711,8 +660,7 @@ private:
                 }
             }
         }
-        // The [R] arrays stay fully zeroed -- MPI_Alltoallv reads every entry on the dense arm, and the
-        // zeros are what make the prefix below equal the full 0..R one at the peers' positions.
+        // Fully zeroed: MPI_Alltoallv reads every entry, and non-peers must contribute 0 to the prefix.
         std::ranges::fill(mpi_send_counts_, 0);
         std::ranges::fill(mpi_send_displs_, 0);
         for (const int b : peers_) {
@@ -723,8 +671,7 @@ private:
             }
             mpi_send_counts_[static_cast<size_t>(b)] = checked_mpi_count(send_sum, "Per-rank send count");
         }
-        // peers_ is ascending (dense is 0..R-1, sparse is a singleton), so a prefix over it takes the
-        // same value at every peer as a prefix over all R: a non-peer contributes zero.
+        // peers_ is ascending, so this prefix equals the full 0..R one at every peer.
         long long send_running = 0;
         for (const int b : peers_) {
             mpi_send_displs_[static_cast<size_t>(b)] = checked_mpi_count(send_running, "Send displacement");
@@ -756,8 +703,7 @@ private:
         grow_(stage_send_, total_send * elem);
     }
 
-    // recv_col_[a*S + t] = what partition t receives from rank a. `value(a, t)` reads it from the rows
-    // published in Phase P0 (alltoallv) or from the count blocks just exchanged (the fused resolve).
+    // recv_col_[a*S + t] = what partition t receives from rank a, as `value(a, t)` reads it.
     template <typename Value>
     auto fill_recv_col_(Value &&value) -> void {
         zero_peer_slots_(recv_col_);
@@ -820,9 +766,8 @@ private:
         }
     }
 
-    // Scatter each global source's contiguous run out of stage_recv_ to recv_displs[g] (all legs, incl.
-    // self-rank, go through staging). Walks (a, su) in accumulation order, so `cur` re-derives the block
-    // starts from base_recv_ and this partition's own counts.
+    // Scatter each source's run out of stage_recv_ (self-rank legs included) to recv_displs[g]. Walks
+    // (a, su) in accumulation order, so `cur` re-derives block starts from base_recv_.
     auto scatter_recv_(int local_partition, std::byte *dst, const int *recv_counts, const int *recv_displs, size_t elem)
         -> void {
         const int t = local_partition;
@@ -839,34 +784,6 @@ private:
                 cur += static_cast<size_t>(cnt);
             }
         }
-    }
-
-    // Resolved here and nowhere else, because this is the only point on the replay path that is
-    // collective on parent_ and owned by the library rather than by the caller: the exported evolve_*
-    // entry points take a graph and a communicator, so they cannot be trusted to have checked anything.
-    // Ranks that resolve differently do not answer differently, they HANG -- each posts receives from the
-    // peers its own bits imply -- so the check is an exact equality, not a probable one. One allreduce of
-    // {v, ~v} pairs under MPI_MAX yields both max and min, and max == min == mine is certainty.
-    auto agree_routing_(routing::Config mine) const -> bool {
-        const std::array<uint64_t, 6> probe{mine.linear,
-                                            ~mine.linear,
-                                            mine.partitions,
-                                            ~mine.partitions,
-                                            mine.seed,
-                                            ~mine.seed};
-        std::array<uint64_t, 6> agreed{};
-        MPI_Allreduce(probe.data(), agreed.data(), 6, MPI_UINT64_T, MPI_MAX, parent_);
-        for (size_t i = 0; i < probe.size(); ++i) {
-            if (agreed[i] != probe[i]) {
-                throw routing::RoutingDisagreement(
-                    std::format("routing configuration differs across the {} ranks (this one: {}). "
-                                "monoprop_ROUTING / monoprop_ROUTE_SEED must reach every rank identically -- "
-                                "a disagreement deadlocks the exchange rather than corrupting it.",
-                                r_,
-                                mine.describe()));
-            }
-        }
-        return routing::routes_pairwise(mine, static_cast<size_t>(r_));
     }
 
     [[noreturn]] auto abort_rank_(const char *verb, const char *what) -> void {
@@ -892,8 +809,10 @@ private:
     int mpi_rank_ = 0;
     bool pairwise_ = false;
     std::vector<Slot> slots_;
-    // One per partition, written in Phase P0 by its owner and folded by partition 0 in B1->B2.
+    // Each partition's send / recv peer (kNoPeer, a rank, or kManyPeers): written by its owner in Phase
+    // P0, folded by partition 0 in B1->B2.
     std::vector<int> row_peer_;
+    std::vector<int> row_recv_peer_;
 
     // Partition-0-managed, except the two Phase P0 tables at the end, whose rows each partition owns.
     // S*S per rank, the counts alltoall.
@@ -928,17 +847,13 @@ private:
     double red_f64_ = 0.0;
     uint64_t red_u64_ = 0;
     std::vector<double> red_vec_;
-    // Point-to-point request scratch for the sparse payload round; grown on demand, partition 0 only.
+    // Partition-0 request scratch for the sparse payload round.
     std::vector<MPI_Request> reqs_;
-    // The count round's own scratch, separate from reqs_ by construction and not merely by the current
-    // ordering: it stays live across B2 and B3, and Pairwise.h's resize would move the buffer MPI holds
-    // pointers into the moment a payload post ever preceded the count wait.
+    // The count round's own: it stays live across B2..B3, so sharing reqs_ would let a resize move it.
     std::vector<MPI_Request> count_reqs_;
-    int count_posted_ = 0; // live requests in count_reqs_; always 0 on the dense (blocking) arm
-    // This verb's peer ranks; see fill_peers_.
-    std::vector<int> peers_;
-    // alltoallv's wire plan, partition 0 only: written in B1->B2, read in B3->B4. See derived_wire_plan_.
-    PeerPlan wire_plan_;
+    int count_posted_ = 0;   // live entries of count_reqs_; 0 on the dense (blocking) arm
+    std::vector<int> peers_; // this verb's peer ranks; see fill_peers_
+    PeerPlan wire_plan_;     // alltoallv's, partition 0 only: written in B1->B2, read in B3->B4
 
     PartitionBarrier barrier_;
 };
