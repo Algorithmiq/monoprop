@@ -6,7 +6,7 @@ comparison of monoprop's `PauliPropagator` against the reference Julia library
 
 The shipped data spans two library versions and the rows say which: Figs. 1-5 were taken
 against v0.7.3 on its dictionary-backed `PauliSum`, Fig. 6 against **v0.8.2** on the
-vectorised `VectorPauliSum`. `scripts/` pins v0.8.2 and the driver refuses to run on
+vectorised `VectorPauliSum`, at seven layers on exclusive AWS compute nodes. `scripts/` pins v0.8.2 and the driver refuses to run on
 anything else, so re-running Figs. 1-5 means checking out the commit that pinned v0.7.3.
 
 ## Result
@@ -24,8 +24,8 @@ support, shows neither the growth nor the cliff.
 
 ## Method
 
-- **Circuit:** kicked-Ising chain, `LAYERS = 5` layers of `Rx(π/4)` on every qubit
-  plus `Rzz(π/4)` on every bond of a 1D chain.
+- **Circuit:** kicked-Ising chain, `LAYERS = 5` layers (Fig. 6: 7) of `Rx(π/4)` on every
+  qubit plus `Rzz(π/4)` on every bond of a 1D chain.
 - **Observable:** extensive `Σᵢ Zᵢ` (Heisenberg picture) — spreads under the circuit,
   giving a term count that grows *linearly* in N (single shallow-layer light cone).
 - **Truncation trick — `lower_atol = 0`:** truncation is then purely by weight cutoff,
@@ -218,32 +218,44 @@ python make_single_thread_figure.py \
   --lattice   data/{monoprop,ppvm,julia}_pauli_lattice.jsonl \
   --outdir figures
 
-# Fig. 6 -- the octave sweep: cutoff 6 only, N = 32..1024 in powers of two, 10 rounds for
-# monoprop and 1 for the reference engines. ~56 min, essentially all of it the single
-# PauliPropagation.jl N=1024 point (5304.7 s).
-for N in 32 64 128 256 512 1024; do
-  "$PYTHON"      scripts/monoprop_single_layer.py --basis pauli --num-qubits "$N" \
-    --cutoff 6 --layers 5 --lower-atol 0 --rounds 10 --out data/monoprop_pauli_octave.jsonl
-  "$PPVM_PYTHON" scripts/ppvm_single_layer.py --num-qubits "$N" \
-    --cutoff 6 --layers 5 --lower-atol 0 --rounds 1  --out data/ppvm_pauli_octave.jsonl
-  "$JULIA" --project=scripts scripts/julia_pauli_single_layer.jl --num-qubits "$N" \
-    --cutoff 6 --layers 5 --lower-atol 0 --rounds 1 \
-    --out data/julia_pauli_octave_v082.jsonl
+# Fig. 6 -- the octave sweep: cutoff 6, SEVEN layers, N = 32..1024 in powers of two
+# (PauliPropagation.jl to 512 only), 10 rounds for monoprop and 1 for the reference engines.
+# Measured as independent exclusive Slurm jobs, one work item each, every point under a
+# hard timeout; wall clock ~50 min, set by the single ppvm N=1024 point (~46 min). Fill in a
+# copy of scripts/slurm/site.env.example first -- it is passed by path, never via --export.
+scripts/slurm/submit_octave.sh /path/to/site.env 7
+# When every job has finished, merge the per-job files (the figure orders rows by N):
+cat "$RUN_DIR"/monoprop_N*.jsonl > data/monoprop_pauli_octave_l7.jsonl
+cat "$RUN_DIR"/ppvm_N*.jsonl     > data/ppvm_pauli_octave_l7.jsonl
+cat "$RUN_DIR"/julia_N*.jsonl    > data/julia_pauli_octave_v082_l7.jsonl
+# The single-host cross-check that licenses the split: the same workload, all six points of
+# an engine in one job on one node (point RUN_DIR somewhere fresh first).
+for E in monoprop ppvm; do
+  sbatch --partition="$PARTITION" --chdir="$PWD" scripts/slurm/octave_point.sbatch \
+    /path/to/site.env 7 "$E" 32 64 128 256 512 1024
 done
+# ...then data/{monoprop,ppvm}_pauli_octave_l7_onehost.jsonl from that RUN_DIR.
+# A rerun records NEW EC2 hostnames (ip-10-0-0-*): add them to FLEETS in
+# make_inverse_scaling_figure.py, or the build refuses them as undeclared machines.
+# The earlier five-layer sweep (data/*_octave.jsonl, data/julia_pauli_octave_v082.jsonl) is
+# the same three drivers with --layers 5, run sequentially on one host.
 
 # Both panel shapes. --spectator and --cutoff-evidence draw no panel: they only supply the
 # caption's Fig. 5a cross-reference and its cutoff-independence table. Add
 # `--layout column` or `--layout page` for just one shape.
 # Add `--layout column` or `--layout page` to emit just one shape.
 python make_inverse_scaling_figure.py \
-  --lattice        data/{monoprop,ppvm}_pauli_octave.jsonl data/julia_pauli_octave_v082.jsonl \
-  --spectator      data/{monoprop,ppvm}_pauli_spectator.jsonl data/julia_pauli_spectator_v082.jsonl \
+  --lattice         data/{monoprop,ppvm}_pauli_octave_l7.jsonl data/julia_pauli_octave_v082_l7.jsonl \
+  --spectator       data/{monoprop,ppvm}_pauli_spectator.jsonl data/julia_pauli_spectator_v082.jsonl \
   --cutoff-evidence data/{monoprop,ppvm}_pauli_lattice.jsonl data/julia_pauli_lattice_v082.jsonl \
+  --host-crosscheck data/{monoprop,ppvm}_pauli_octave_l7_onehost.jsonl \
   --outdir figures
 ```
 
 **What v0.8.2 and the vectorised backend changed, and why it is not what one would guess.**
-Re-measuring the PauliPropagation.jl arm on v0.8.2's `VectorPauliSum` makes it look *worse*
+(Measured on the earlier five-layer workstation sweep, still shipped as
+`data/*_octave.jsonl`.) Re-measuring the PauliPropagation.jl arm on v0.8.2's `VectorPauliSum`
+makes it look *worse*
 on this axis, not better: `N^+0.87` → `N^+1.12` over the drawn range, and `N^+0.14` →
 `N^+0.32` in the clean N ≤ 512 window. Absolute times did improve over most of the sweep —
 1.91× at N=32, 1.87× at N=128, 1.20× at N=512 — but the gain decays monotonically and
@@ -276,43 +288,43 @@ column, shallower in the banner. That is
 what the `1/N` guide is for: the eye reads monoprop against the guide, never against the
 frame, so the claim survives the reshaping.
 
-It plots the wall-clock cost of
-**one gate acting on one term**, in nanoseconds, against N = 32…1024 in powers of two. On
-that axis monoprop falls as `N^-0.83` (0.571 → 0.0347 ns, a 16.4× reduction over a 32×
-wider system) while both reference engines stay flat or rise (`N^+0.57` for ppvm, `N^+1.12`
-for PauliPropagation.jl), which is the `K/N` against `K` statement made directly rather
-than inferred from a ratio of exponents. Per layer of `2N-1` gates that reads as `K`
+It plots the wall-clock cost of **one gate acting on one term**, in nanoseconds, against
+N = 32…1024 in powers of two, at **seven layers** — 607,054 terms at N=32 rising to
+25,254,286 at N=1024. On that axis monoprop falls as `N^-0.80` (1.352 → 0.0833 ns, a 16.2×
+reduction over a 32× wider system) while both reference engines rise (`N^+0.39` for ppvm,
+`N^+0.41` for PauliPropagation.jl), which is the `K/N` against `K` statement made directly
+rather than inferred from a ratio of exponents. Per layer of `2N-1` gates that reads as `K`
 against `K·N`. Every sentence that used to sit on the canvas is now in the generated
-`figures/fig6_caption.txt`; the panel itself carries only the fitted exponents and one
-grey slope ruler.
+`figures/fig6_caption.txt`; the panel itself carries only the engine names and one grey
+slope ruler.
 
 That ruler is the ideal `1/N`, anchored *through* monoprop's first point rather than offset
-from it, so monoprop starts on its guide and the drift away from it is the `N^-0.88` the
-legend reports. The `N^0` and `N^+1` counterparts — what the reference engines ought to pay
-per gate, `K` and `K·N` — are deliberately not drawn: their exponents are in the legend, and
-three rulers among three curves read as furniture rather than as a reference.
+from it, so monoprop starts on its guide and the drift away from it is the `N^-0.80` the
+caption reports. The `N^0` and `N^+1` counterparts — what the reference engines ought to pay
+per gate, `K` and `K·N` — are deliberately not drawn: three rulers among three curves read
+as furniture rather than as a reference.
 
-**The panel fits every point it draws**, N = 32…1024, so the drawn range and the fitted
-range are the same and there is no window a reader cannot see. The *view* is cropped
-though: the y axis stops at 10 ns per gate per term (`Y_TOP_NS`), because letting
-PauliPropagation.jl's 134 ns post-cliff point set the ceiling stretches the axis to 3.8
-decades and squashes the decade the `1/N` lives in. Its line runs off the top instead; the
-point is still in the fit and in the caption. The legend carries engine
-names only, so the exponents themselves live in `figures/fig6_caption.txt` and in the
-build's stdout — those are the only record of them.
+**The exponents are fitted over N ≤ 512** (`FIT_ALL_POINTS = False`), the one window all
+three engines were measured across, because PauliPropagation.jl has no N=1024 point. Past
+its packed-key cliff at N=576→608 (8.5× in one step at v0.8.2, 8.7× at v0.7.3) that single
+point is out of reach: at five layers on the same nodes it had not finished after five
+hours, and seven layers carry more than five times the terms. `check_grid` therefore still
+demands an identical grid inside the fit window, and lets an engine stop early only above
+it, where points are drawn but never fitted. Fitted over every point each engine reached
+instead, nothing changes at two decimals (monoprop `N^-0.80` and ppvm `N^+0.39` over
+32…1024). Nothing reaches the 10 ns `Y_TOP_NS` crop at seven layers, so no line runs off
+the panel. The legend carries engine names only; the exponents live in
+`figures/fig6_caption.txt` and in the build's stdout.
 
-That choice has a cost and it lands on the reference engines. Beyond N=512 both cross a
-packed-key width boundary — PauliPropagation.jl's is measured at N=576→608 (8.5× in one
-step at v0.8.2, 8.7× at v0.7.3) and ppvm has one near N=1024 (2.14×) — and a power law
-fitted across a discontinuity
-partly measures where the step falls rather than per-term cost in N. Restricted to the clean
-N ≤ 512 window the same rows give monoprop `N^-0.88`, ppvm `N^+0.59` and
-PauliPropagation.jl `N^+0.32`. PauliPropagation.jl is the one that moves, `+0.32` → `+1.12`:
-that difference *is* the cliff, and it flatters monoprop, so **`N^+0.32` is the conservative
-number to quote for per-term cost** and `N^+1.12` is per-term cost plus a discontinuity.
-monoprop's own exponent barely moves (`-0.88` → `-0.83`), having no such boundary to cross.
-The caption reports both windows; `FIT_ALL_POINTS` in the script selects which one the panel
-draws.
+At N=1024 monoprop leads ppvm by **92×**; at N=512, the widest point all three reached, it
+leads ppvm by 41× and PauliPropagation.jl by 50×. At N=32 the leads are only 1.5× and 1.8×,
+so the gap is opened over the sweep rather than present at the origin.
+
+Seven layers rather than five: more layers fill the cutoff-6 operator out further (607,054
+terms at N=32, against 119,280 at five), so fixed per-call overhead is a smaller share of
+the cheap small-N points — every seven-layer monoprop and ppvm row has `busy_cores` ≥ 0.96
+(the Julia driver records no such ratio). The exponents barely depend on it: monoprop's is
+`N^-0.79` at five layers on the same nodes and `N^-0.80` at seven.
 
 The mechanism is selectivity rather than batching: the operator is stored transposed, one
 column per bit position, and a column below 1/64 density is held as an ascending set-row
@@ -321,22 +333,28 @@ with `combine_columns_block` narrowing even a dense column to a word range. A ga
 `i` therefore costs work proportional to the terms that actually touch qubit `i` — at a
 fixed weight cutoff a `~w/N` fraction of the operator — instead of a scan over all K terms.
 
-**Where the sweep is generous to the reference engines, and where it is not.** Both
-reference engines' N=1024 points sit outside every fit, which discards monoprop's widest
-lead (3864× over PauliPropagation.jl, 78× over ppvm there). They also ran for minutes to an
-hour on a **fanless laptop** and throttled, while monoprop's N=1024 point finishes in 1.65 s
-and does not — biasing their apparent cost upward, against them. `num_terms` is the final
-term count while K grows through the five layers, so the absolute ns/term understates
-per-term cost — identically for all three engines. And at N=32 ppvm is the fastest of the
-three (0.459 ns against monoprop's 0.571), so the ordering is earned over the sweep and not
-assumed at the origin. N=1024 is the ceiling, not a choice: `monoprop_MAX_NUM_MODES`
-defaults to 1024 with no headroom, so a wider sweep needs a rebuild.
+**Where it was measured.** On the AWS PCS cluster, not on Leonardo: m7a.8xlarge nodes (AMD
+EPYC 9R14, Zen 4, 32 cores, SMT off), every point an **exclusive** Slurm job with the timed
+process pinned to one core (`scripts/slurm/`). The sweep is split one work item per job, so
+that no single point can hold the rest hostage, and the rows therefore record ten
+hostnames. `FLEETS` in the script declares them one instance type and `check_single_thread`
+reports exactly that, never "one host". The split is checked rather than assumed:
+`--host-crosscheck` takes a rerun of monoprop and ppvm with every point on one node
+(`data/*_octave_l7_onehost.jsonl`), and the two agree point by point within 6.8% (the worst
+is ppvm at N=512) and shift no exponent by more than 0.009 over 32…1024, or 0.023 over
+N ≤ 512, where N=512 is the fit's endpoint and levers the slope hardest. Being exclusive
+server nodes, they also remove the thermal-throttling caveat the earlier laptop sweep had to
+carry. `num_terms` is the final term count while K grows through the seven layers, so the
+absolute ns/term understates per-term cost — identically for all three engines. N=1024 is
+the ceiling, not a choice: `monoprop_MAX_NUM_MODES` defaults to 1024 with no headroom, so a
+wider sweep needs a rebuild.
 
-The Fig. 5 and 6 data was taken on a 10-core workstation, not on Leonardo, and the records
-say so — `host` and `library_version` on every row, `cpu_seconds` and `busy_cores` on the
-two Python engines. It is a *shape* measurement (an exponent in N), which is what makes a
-workstation acceptable here where it would not be for Figs. 1–4's absolute times; the two
-datasets are kept in separate files and never plotted in the same panel.
+The Fig. 5 data, and the earlier five-layer Fig. 6 sweep, were taken on a 10-core
+workstation, not on Leonardo, and the records say so — `host` and `library_version` on every
+row, `cpu_seconds` and `busy_cores` on the two Python engines. Figs. 5 and 6 are *shape*
+measurements (an exponent in N), which is what makes a workstation or a cloud node
+acceptable here where it would not be for Figs. 1–4's absolute times; the datasets are kept
+in separate files and never plotted in the same panel.
 
 ## Reproduce
 
@@ -398,14 +416,21 @@ data/*_spectator.jsonl    Fig. 5a, idle-spectator sweep at M=32, three engines
                           (Fig. 6 uses it only for caption cross-reference numbers)
 data/*_lattice.jsonl      Fig. 5b, full-width step-32 sweep, three engines, three
                           cutoffs (Fig. 6 uses it for its cutoff-independence table)
-data/*_octave.jsonl       Fig. 6, full-width octave sweep, cutoff 6, N=32..1024
-data/julia_*_v082.jsonl   Fig. 6's PauliPropagation.jl arm re-measured at v0.8.2 on the
-                          vectorised VectorPauliSum backend: octave (drawn), lattice and
-                          spectator (caption only), plus cliff, the N=576/608 probe that
-                          dates the key-width step and is fed to no figure
+data/*_octave_l7.jsonl    Fig. 6 (drawn): octave sweep, 7 layers, cutoff 6, N=32..1024
+                          (PauliPropagation.jl to 512), exclusive AWS m7a.8xlarge nodes
+data/*_octave_l7_onehost.jsonl
+                          Fig. 6 --host-crosscheck: monoprop and ppvm, same workload,
+                          every point on one node (caption only)
+data/*_octave.jsonl       the earlier five-layer octave sweep, workstation, N=32..1024
+data/julia_*_v082.jsonl   the PauliPropagation.jl arms at v0.8.2 on the vectorised
+                          VectorPauliSum backend: octave_l7 (drawn), octave (earlier sweep),
+                          lattice and spectator (caption only), plus cliff, the N=576/608
+                          probe that dates the key-width step and is fed to no figure
 scripts/                  reproduction drivers (copies of the canonical study files)
   monoprop_single_layer.py, julia_pauli_single_layer.jl, ppvm_single_layer.py,
   Project.toml, Manifest.toml (PauliPropagation 0.8.2)
+scripts/slurm/            Fig. 6's split sweep: octave_point.sbatch (one work item per
+                          exclusive node), submit_octave.sh, site.env.example
 figures/                  fig1_absolute_scaling, fig2_divergence_scaling,
                           fig3_per_term_memory, fig4_scaling_and_divergence,
                           fig5_single_thread_per_term, fig6_inverse_scaling,

@@ -19,7 +19,7 @@ per layer of 2N-1 gates monoprop pays K and they pay K*N. This figure plots that
 nothing else; every sentence that used to sit on the canvas is in fig6_caption.txt.
 
 THE MODEL (identical for all three engines): kicked-Ising chain of N qubits, open
-boundary. Five layers, each layer being ``Rzz(pi/4)`` on all N-1 nearest-neighbour
+boundary. Seven layers, each layer being ``Rzz(pi/4)`` on all N-1 nearest-neighbour
 bonds followed by ``Rx(pi/4)`` on all N sites, so a layer holds 2N-1 gates. The
 observable is the extensive magnetisation ``sum_i Z_i``, propagated in the Heisenberg
 picture (the layer order therefore reverses). Truncation is a Pauli-weight cutoff with
@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import textwrap
 from pathlib import Path
 
 from matplotlib.lines import Line2D
@@ -91,13 +92,14 @@ MILLION = 1.0e6
 # Points above the window are still plotted, de-emphasised, and excluded from every fit.
 FIT_NMAX = 512
 
-# The panel fits every point it draws, so the drawn range and the fitted range are the same
-# and there is no window a reader cannot see. The cost falls on the reference engines: their
-# exponents then span the key-width discontinuity past FIT_NMAX and partly measure where
-# that step falls rather than per-term cost in N. FIT_NMAX survives as the clean comparison
-# window, which the caption reports beside the drawn numbers so the difference -- the cliff
-# -- is on the record and quotable.
-FIT_ALL_POINTS = True
+# Which window the headline exponents come from. It was True -- fit every drawn point -- while
+# all three engines reached N=1024. The seven-layer sweep has no PauliPropagation.jl point
+# there (past its packed-key cliff that single point runs for hours), so fitting "every
+# point" would set its 32..512 slope beside the other two engines' 32..1024 ones. N <=
+# FIT_NMAX is the one window all three were measured across, and it also keeps the key-width
+# discontinuity out of every fit. The caption still reports the every-point exponents beside
+# it, so no drawn point goes unaccounted for.
+FIT_ALL_POINTS = False
 
 # Hard ceiling on the y axis, in ns per gate per term. Letting the data set the top means
 # PauliPropagation.jl's post-cliff point at ~112 ns stretches the axis to 3.8 decades and
@@ -186,9 +188,44 @@ HOST_ALIASES = {
 }
 
 
+# One instance type, several machines -- which is NOT what HOST_ALIASES means, so it is
+# declared separately and reported separately. The seven-layer octave sweep ran as eleven
+# independent Slurm jobs, each holding an exclusive node of the AWS PCS `hpc-qa-queue`, and
+# EC2 names each node after its private IP, so its rows carry ten hostnames for ten
+# interchangeable instances; the eleventh name below is the node the --host-crosscheck run
+# used. check_single_thread reports the fleet and how many hosts it
+# folded, never "one host". That the split does not move the result is measured rather than
+# asserted: --host-crosscheck takes a single-host run of the same workload, and the caption
+# reports the per-point scatter and the exponent shift between the two. EC2 recycles these
+# addresses, so the set describes these rows, not the cluster going forward: a rerun records
+# new hostnames, and the build refuses them -- as it should any undeclared machine -- until
+# they are added here.
+FLEETS = {
+    "AWS m7a.8xlarge, AMD EPYC 9R14 (Zen 4), SMT off": frozenset(
+        {
+            "ip-10-0-0-18",
+            "ip-10-0-0-22",
+            "ip-10-0-0-32",
+            "ip-10-0-0-50",
+            "ip-10-0-0-54",
+            "ip-10-0-0-77",
+            "ip-10-0-0-165",
+            "ip-10-0-0-169",
+            "ip-10-0-0-217",
+            "ip-10-0-0-240",
+            "ip-10-0-0-252",
+        }
+    ),
+}
+
+
 def canonical_host(host):
-    """The machine a recorded hostname denotes. Unknown names are their own canonical form."""
-    return HOST_ALIASES.get(host, host)
+    """The machine, or declared fleet of identical instances, a recorded hostname denotes.
+
+    Unknown names are their own canonical form.
+    """
+    host = HOST_ALIASES.get(host, host)
+    return next((name for name, hosts in FLEETS.items() if host in hosts), host)
 
 
 # process_time() has a coarse tick, so cpu/wall says nothing on a sub-millisecond run.
@@ -270,12 +307,16 @@ def _exponent(xs, ys):
 # Fairness preconditions -- the figure refuses to build if any of them fails
 # --------------------------------------------------------------------------- #
 def check_grid(records):
-    """Every engine must cover the identical set of (cutoff, N).
+    """Every engine must cover the identical set of (cutoff, N) wherever it is fitted.
 
     A curve fitted over a different N range than its neighbour is not comparable to it,
     and a missing point at one end moves an exponent more than any effect this figure is
-    about, so a ragged grid is a hard error rather than a footnote.
+    about, so a ragged grid inside the fit window is a hard error rather than a footnote.
+    Above FIT_NMAX, and only while FIT_ALL_POINTS is off, an engine may stop early: those
+    points are drawn but never fitted, so a missing one cannot move an exponent. Such gaps
+    come back as notes for main() to print, not as problems.
     """
+    limit = math.inf if FIT_ALL_POINTS else FIT_NMAX
     grids = {
         fam: {
             (r["cutoff"], r["num_qubits"]) for r in records if r["engine_family"] == fam
@@ -283,16 +324,23 @@ def check_grid(records):
         for fam in ORDER
     }
     reference = grids[ORDER[0]]
-    problems = []
+    problems, notes = [], []
     for fam in ORDER[1:]:
         for label, missing in (
             (f"{ENGINE_LABEL[fam]} is missing", reference - grids[fam]),
             (f"{ENGINE_LABEL[fam]} has extra", grids[fam] - reference),
         ):
-            if missing:
-                points = ", ".join(f"c{c} N={n}" for c, n in sorted(missing))
-                problems.append(f"{label} {len(missing)} point(s): {points}")
-    return problems, len(reference)
+            inside = sorted(p for p in missing if p[1] <= limit)
+            outside = sorted(p for p in missing if p[1] > limit)
+            if inside:
+                points = ", ".join(f"c{c} N={n}" for c, n in inside)
+                problems.append(f"{label} {len(inside)} point(s): {points}")
+            if outside:
+                points = ", ".join(f"c{c} N={n}" for c, n in outside)
+                notes.append(
+                    f"{label} {len(outside)} unfitted point(s) above N={FIT_NMAX}: {points}"
+                )
+    return problems, sum(1 for _, n in reference if n <= limit), notes
 
 
 def check_same_workload(records, expectation_tol=1e-9):
@@ -316,8 +364,11 @@ def check_same_workload(records, expectation_tol=1e-9):
             for r in records
             if r["cutoff"] == cutoff and r["num_qubits"] == num_qubits
         }
-        if len(rows) < len(ORDER):
-            continue  # check_grid reports coverage; do not double-report it here
+        # Whichever engines are present. A point only some of them reached (above FIT_NMAX,
+        # see check_grid) must still be the same workload for those that did; coverage
+        # itself is check_grid's to report.
+        if len(rows) < 2:
+            continue
         for key in ("num_terms", "gates", "layers", "lower_atol"):
             vals = {fam: row[key] for fam, row in rows.items()}
             if len(set(vals.values())) != 1:
@@ -335,7 +386,8 @@ def check_same_workload(records, expectation_tol=1e-9):
 
 
 def check_single_thread(records):
-    """One host, one thread -- and say which engine that claim rests on which evidence.
+    """One machine (or declared fleet), one thread -- and say which evidence each engine's
+    claim rests on.
 
     monoprop and ppvm are driven from Python and record ``cpu_seconds``, so their claim is a
     measured cpu/wall ratio and the number that carries it is the *maximum* busy_cores. The
@@ -356,11 +408,13 @@ def check_single_thread(records):
     spellings = (
         "" if raw_hosts == machines else f" (recorded as {', '.join(raw_hosts)})"
     )
-    lines = [
-        f"one host: {machines[0]}{spellings}"
-        if len(machines) == 1
-        else f"machines: {machines}"
-    ]
+    if len(machines) != 1:
+        where = f"machines: {machines}"
+    elif machines[0] in FLEETS:
+        where = f"one instance type, {len(raw_hosts)} hosts: {machines[0]}{spellings}"
+    else:
+        where = f"one host: {machines[0]}{spellings}"
+    lines = [where]
     for fam in ORDER:
         rows = [r for r in records if r["engine_family"] == fam]
         threads = sorted({str(r["num_threads"]) for r in rows})
@@ -558,8 +612,274 @@ def _largest_step(rows):
     )
 
 
+# The caption's prose names; ENGINE_LABEL carries the vendor prefix the legend wants.
+_SHORT = {"monoprop": "monoprop", "ppvm": "ppvm", "julia": "PauliPropagation.jl"}
+
+
+def _para(text, indent=""):
+    """One caption paragraph, wrapped the way the hand-written ones are."""
+    return textwrap.fill(
+        " ".join(text.split()),
+        width=94,
+        initial_indent=indent,
+        subsequent_indent=indent + ("  " if indent else ""),
+        # Hostnames and compound terms carry hyphens; splitting one across a line break
+        # would put half a hostname on each line of the record.
+        break_on_hyphens=False,
+        break_long_words=False,
+    )
+
+
+def _lead_at(fits, fam, n):
+    """How many times monoprop's per-gate-per-term cost fam pays at the SAME N."""
+    xs, ys, _ = fits[fam]
+    mx, my, _ = fits["monoprop"]
+    return ys[xs.index(n)] / my[mx.index(n)]
+
+
+def _companion(records, lattice):
+    """'; 5 layers, on <host>' when a companion sweep is not the drawn data's workload/host.
+
+    The caption cross-references sweeps that were taken separately, and a reader must not
+    come away thinking they share the drawn panel's layer count or machine when they don't.
+    """
+    layers = sorted({r["layers"] for r in records})
+    hosts = sorted({canonical_host(r["host"]) for r in records})
+    if layers == sorted({r["layers"] for r in lattice}) and hosts == sorted(
+        {canonical_host(r["host"]) for r in lattice}
+    ):
+        return ""
+    return f"; {'/'.join(map(str, layers))} layers, on {', '.join(hosts)}"
+
+
+def _crosscheck_note(lattice, crosscheck):
+    """What a single-host run of the same workload says about splitting it across nodes."""
+    if not crosscheck:
+        return (
+            "No single-host rerun was supplied to this build (--host-crosscheck), so the "
+            "split rests on the nodes being one instance type alone."
+        )
+    worst = (0.0, "", 0)
+    shift_full, shift_win, spans = [], [], set()
+    fams = [f for f in ORDER if _arm(crosscheck, f)]
+    for fam in fams:
+        one = {r["num_qubits"]: r for r in _arm(crosscheck, fam)}
+        split = {r["num_qubits"]: r for r in _arm(lattice, fam)}
+        common = sorted(one.keys() & split.keys())
+        for n in common:
+            for key in ("num_terms", "gates", "layers", "lower_atol"):
+                if one[n][key] != split[n][key]:
+                    raise SystemExit(
+                        f"--host-crosscheck is a different workload: {fam} N={n} {key} "
+                        f"{one[n][key]} against {split[n][key]}"
+                    )
+            d = abs(_per_gate_per_term(split[n]) / _per_gate_per_term(one[n]) - 1)
+            worst = max(worst, (d, fam, n))
+        for ns, out in (
+            (common, shift_full),
+            ([n for n in common if n <= FIT_NMAX], shift_win),
+        ):
+            e_one = _exponent(ns, [_per_gate_per_term(one[n]) for n in ns])
+            e_split = _exponent(ns, [_per_gate_per_term(split[n]) for n in ns])
+            out.append(abs(e_split - e_one))
+        spans.add((common[0], common[-1]))
+    lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
+    hosts = sorted({r["host"] for r in crosscheck})
+    return (
+        f"That the split does not move the result is measured, not assumed: a rerun of the "
+        f"same workload for {' and '.join(_SHORT[f] for f in fams)} with every point on one "
+        f"node ({', '.join(hosts)}) agrees point by point to within {worst[0] * 100:.1f}% "
+        f"(the worst is {_SHORT[worst[1]]} at N={worst[2]}), and shifts no exponent by more "
+        f"than {max(shift_full):.3f} over N={lo}..{hi}, or {max(shift_win):.3f} over "
+        f"N <= {FIT_NMAX}, where the fit's endpoint levers the slope hardest."
+    )
+
+
+def _start_sentence(fits, n_common):
+    """Where the three curves start -- derived, since which engine is cheapest at the
+    smallest N changes with the machine and the layer count."""
+    n_lo = fits["monoprop"][0][0]
+    first = {f: fits[f][1][0] for f in ORDER}
+    m_lo = first["monoprop"]
+    fastest = min(first, key=first.get)
+    if fastest == "monoprop":
+        return _para(
+            f"Note where they start -- at N={n_lo} monoprop leads ppvm by only "
+            f"{first['ppvm'] / m_lo:.1f}x and PauliPropagation.jl by "
+            f"{first['julia'] / m_lo:.1f}x, against {_lead_at(fits, 'ppvm', n_common):.0f}x "
+            f"and {_lead_at(fits, 'julia', n_common):.0f}x by N={n_common}, so the gap is "
+            "opened over the sweep and not assumed at the origin."
+        )
+    return _para(
+        f"Note where they start -- at N={n_lo} {_SHORT[fastest]} is the fastest of the "
+        f"three ({first[fastest]:.3f} ns against monoprop's {m_lo:.3f}), so the ordering "
+        "is earned over the sweep and not assumed at the origin."
+    )
+
+
+def _leads(fits, n_hi, n_common):
+    """monoprop's lead at the top of the sweep, at matched N only."""
+    at_top = [f for f in ORDER[1:] if max(fits[f][0]) == n_hi]
+    if not at_top:
+        return ""
+    leads = f"At N={n_hi} monoprop leads " + " and ".join(
+        f"{_SHORT[f]} by {_lead_at(fits, f, n_hi):.0f}x" for f in at_top
+    )
+    if n_common < n_hi:
+        leads += (
+            f"; at N={n_common}, the widest point all three reached, it leads "
+            + " and ".join(
+                f"{_SHORT[f]} by {_lead_at(fits, f, n_common):.0f}x" for f in ORDER[1:]
+            )
+        )
+    return leads + "."
+
+
+def _crop_note(fits):
+    """Only when something is actually above the Y_TOP_NS crop."""
+    over = [
+        f"{_SHORT[f]}'s N={x} point ({y:.0f} ns)"
+        for f in ORDER
+        for x, y in zip(fits[f][0], fits[f][1], strict=True)
+        if y > Y_TOP_NS
+    ]
+    if not over:
+        return ""
+    return "\n\n" + _para(
+        f"The y axis is cropped at {Y_TOP_NS:.0f} ns per gate per term, to keep the "
+        f"decade the 1/N lives in legible. {' and '.join(over)} "
+        f"{'is' if len(over) == 1 else 'are'} above the crop, so the line runs off the "
+        "top of the panel: in the numbers above, only not in the view."
+    )
+
+
+def _window_section(fits, lattice):
+    """The fit window, what lies beyond it, and what the other window would have said."""
+    lat = _arm(lattice, "monoprop")
+    n_lo, n_hi = lat[0]["num_qubits"], lat[-1]["num_qubits"]
+    if n_hi <= FIT_NMAX:
+        return ""
+    n_common = min(max(fits[f][0]) for f in ORDER)
+    m = fits["monoprop"]
+    # The same three exponents fitted over the other window, so the effect of the choice is
+    # on the record rather than something a reader has to trust.
+    other = {f: v[2] for f, v in _fits(lattice, fit_all=not FIT_ALL_POINTS).items()}
+    other_str = (
+        f"monoprop N^{other['monoprop']:+.2f}, ppvm N^{other['ppvm']:+.2f} "
+        f"and PauliPropagation.jl N^{other['julia']:+.2f}"
+    )
+    if FIT_ALL_POINTS:
+        fitted = (
+            f"fitted over every measured point, N = {n_lo}..{n_hi}, so the drawn range and "
+            "the fitted range are the same and there is no window a reader cannot see"
+        )
+        other_desc = f"Restricted to the clean N <= {FIT_NMAX} window"
+    else:
+        fitted = (
+            f"fitted over N <= {FIT_NMAX}, the one window every engine was measured "
+            "across; the points beyond it are drawn but enter no fit"
+        )
+        other_desc = "Fitted over every point each engine reached instead"
+    stops = [f for f in ORDER if max(fits[f][0]) < n_hi]
+    stop_note = ""
+    if stops:
+        why = (
+            " past the packed-key cliff described next that single point runs for hours, and"
+            if stops == ["julia"]
+            else ""
+        )
+        stop_note = (
+            f" {' and '.join(_SHORT[f] for f in stops)} stops at N={n_common}: its "
+            f"N={n_hi} point was not measured, because{why} above N = {FIT_NMAX} it could "
+            "not enter a like-for-like fit in any case."
+        )
+    pv_step = _largest_step(_arm(lattice, "ppvm"))
+    if f"{m[2]:+.2f}" == f"{other['monoprop']:+.2f}":
+        mono = f"monoprop's own exponent is the same to two decimals ({m[2]:+.2f}),"
+    else:
+        mono = f"monoprop's own exponent moves only {m[2]:+.2f} to {other['monoprop']:+.2f},"
+    return (
+        "\n"
+        + _para(
+            f"The fit window. Every exponent above is {fitted}.{stop_note} Nothing on the "
+            "canvas says even that much -- the legend carries engine names only -- so this "
+            "caption is the record."
+        )
+        + "\n\n"
+        + _para(
+            f"Beyond N = {FIT_NMAX} PauliPropagation.jl crosses a packed-key width "
+            "boundary, measured at N=576->608: an 8.5x single-N jump in the v0.8.2 "
+            "full-width probe and 7.7x in its idle-spectator sweep (8.7x and 7.1x at "
+            "v0.7.3, so the vectorised backend does not move it). ppvm's largest "
+            f"single-N step in these rows is {pv_step[0]:.2f}x, at N={pv_step[1]}->"
+            f"{pv_step[2]}. A power law fitted across a discontinuity partly measures "
+            "where the step falls rather than per-term cost in N, and that step is a "
+            "fixed-width-integer artifact which Figs. 2 and 3 already own. "
+            f"{other_desc}, the same rows give {other_str}. {mono} having no such "
+            f"boundary to cross. {_leads(fits, n_hi, n_common)}"
+        )
+        + _crop_note(fits)
+        + "\n"
+    )
+
+
+def _where_caveat(lattice, crosscheck, n_hi):
+    """Where the rows were measured, and what that does and does not license."""
+    host = min(canonical_host(r["host"]) for r in lattice)
+    if host not in FLEETS:
+        return f"""  * THERMAL. Taken on a fanless laptop ({host}), not on an
+    exclusive Leonardo node. At N <= {FIT_NMAX} the longest single point runs for tens of
+    seconds and stays in boost, but the
+    N={n_hi} reference-engine points run for minutes to tens of minutes and throttle, while
+    monoprop's N={n_hi} point finishes in about a second and does not. That biases the
+    reference engines' apparent cost UPWARD at the top of the range -- against them, not
+    against monoprop. It is one more reason those points sit outside every fit, and it is
+    why this dataset is cited only for a SHAPE (an exponent in N) and never for an
+    absolute time. Figs. 1-4 are the absolute-time figures and they come from Leonardo.
+  * Timed repetitions differ by engine, and the rows now record it:
+    {_rounds_note(lattice)}.
+    monoprop's points are sub-second, where timer granularity and process noise are
+    proportionally worst, so its minimum is taken over many more rounds; the reference
+    engines' expensive points would gain nothing from a second round they could not also
+    lose to thermal drift within the first."""
+    n_hosts = len({r["host"] for r in lattice})
+    m_secs = [r["seconds"] for r in _arm(lattice, "monoprop")]
+    ref_secs = max(r["seconds"] for f in ORDER[1:] for r in _arm(lattice, f))
+    return "\n".join(
+        [
+            _para(
+                "* WHERE. Measured on the AWS PCS cluster, not on an exclusive Leonardo "
+                f"node: {n_hosts} nodes of one instance type ({host}). The sweep ran as "
+                "independent Slurm jobs, each holding a whole node exclusively with the "
+                "timed process pinned to one core, so that no single point could hold the "
+                f"rest hostage; that is why the rows record {n_hosts} hostnames. "
+                f"{_crosscheck_note(lattice, crosscheck)} The dataset is still cited only "
+                "for a SHAPE (an exponent in N) and never for an absolute time. Figs. 1-4 "
+                "are the absolute-time figures and they come from Leonardo.",
+                "  ",
+            ),
+            _para(
+                "* Timed repetitions differ by engine, and the rows record it: "
+                f"{_rounds_note(lattice)}. monoprop's points run {min(m_secs):.2f} to "
+                f"{max(m_secs):.0f} s, short enough at the low end that timer granularity "
+                "and process noise matter, so its minimum is taken over many more rounds; "
+                f"the reference engines' points run for up to {ref_secs / 60:.0f} minutes "
+                "each, where one round already resolves them.",
+                "  ",
+            ),
+        ]
+    )
+
+
 def write_caption(
-    outdir: Path, fits, lattice, *, spread, points, spectator=None, cutoff_evidence=None
+    outdir: Path,
+    fits,
+    lattice,
+    *,
+    spread,
+    spectator=None,
+    cutoff_evidence=None,
+    crosscheck=None,
 ):
     """Emit the caption with every number taken from the data, not retyped."""
     m, pv, j = (fits[f] for f in ("monoprop", "ppvm", "julia"))
@@ -573,59 +893,43 @@ def write_caption(
     # "a 16.4x" but "an 11.5x" -- the article depends on the rendered digits, so derive it
     # rather than freezing whichever one happened to be right when this was written.
     fall_article = "an" if f"{fall:.1f}".startswith(("8", "11", "18")) else "a"
-    lead_j, lead_p = j[1][-1] / m_hi, pv[1][-1] / m_hi
+    # The widest N every engine reached. A lead is only ever quoted at matched N, never
+    # against monoprop's cheaper point further on.
+    n_common = min(max(fits[f][0]) for f in ORDER)
     # Gates in one layer, and the same rows with no division by the gate count at all.
     g_lo, g_hi = lo["gates"] // layers, hi["gates"] // layers
     pl_lo = lo["seconds"] / layers / k_lo * MILLION * 1e3
     pl_hi = hi["seconds"] / layers / k_hi * MILLION * 1e3
     slower, more_gates = pl_hi / pl_lo, g_hi / g_lo
-    per_engine = points // len({r["cutoff"] for r in lattice})
+    counts = {f: len(fits[f][0]) for f in ORDER}
+    if len(set(counts.values())) == 1:
+        coverage = f"{counts['monoprop']} points per engine"
+    else:
+        coverage = ", ".join(f"{_SHORT[f]} {c}" for f, c in counts.items()) + " points"
     host = min(canonical_host(r["host"]) for r in lattice)
-
-    # The same three exponents fitted over everything, so the effect of excluding the
-    # post-cliff points is on the record rather than something a reader has to trust.
-    # The other window, for comparison: whichever one the panel did NOT fit.
-    other = {f: v[2] for f, v in _fits(lattice, fit_all=not FIT_ALL_POINTS).items()}
-    other_str = (
-        f"monoprop N^{other['monoprop']:+.2f}, ppvm N^{other['ppvm']:+.2f} "
-        f"and PauliPropagation.jl N^{other['julia']:+.2f}"
+    raw_hosts = sorted({r["host"] for r in lattice})
+    fleet = host if host in FLEETS else None
+    where = (
+        f"every work item an exclusive job on one of {len(raw_hosts)} nodes of one instance type"
+        if fleet
+        else "one host"
     )
-    beyond = [r["num_qubits"] for r in lat if r["num_qubits"] > FIT_NMAX]
-    window = ""
-    if beyond:
-        window = f"""
-The fit window. Every exponent above is fitted over every measured point, N = {n_lo}..{n_hi}, so
-the drawn range and the fitted range are the same and there is no window a reader cannot
-see. Nothing on the canvas says even that much -- the legend carries engine names only --
-so this caption is the record.
 
-That choice has a cost and it falls on the reference engines. Beyond N = {FIT_NMAX} both cross a
-packed-key width boundary: PauliPropagation.jl's is measured at N=576->608, an 8.5x
-single-N jump in the v0.8.2 full-width probe and 7.7x in its idle-spectator sweep (8.7x
-and 7.1x at v0.7.3, so the vectorised backend does not move it), and
-ppvm has one of its own near N=1024 (2.14x). A power law fitted across a discontinuity
-partly measures where the step falls rather than per-term cost in N, and that step is a
-fixed-width-integer artifact which Figs. 2 and 3 already own. Restricted to the clean
-N <= {FIT_NMAX} window the same rows give
-{other_str}.
-PauliPropagation.jl is the one that moves, {other["julia"]:+.2f} to {j[2]:+.2f}: that difference IS the cliff, and
-it flatters monoprop here, so the N <= {FIT_NMAX} numbers are the conservative ones to quote for
-per-term cost. monoprop's own exponent barely moves ({other["monoprop"]:+.2f} to {m[2]:+.2f}), having no such
-boundary to cross. At N={n_hi} monoprop leads PauliPropagation.jl by {lead_j:.0f}x and ppvm by {lead_p:.0f}x.
+    start = _start_sentence(fits, n_common)
 
-The y axis is cropped at {Y_TOP_NS:.0f} ns per gate per term, to keep the decade the 1/N lives in
-legible. PauliPropagation.jl's N={n_hi} point is above the crop, at {j[1][-1]:.0f} ns, so its line runs
-off the top of the panel: that point is in the fit and in the numbers above, only not in
-the view.
-"""
+    window = _window_section(fits, lattice)
 
     cutoffs = ""
     if cutoff_evidence and len({r["cutoff"] for r in cutoff_evidence}) > 1:
         src = sorted({r["num_qubits"] for r in cutoff_evidence})
+        lead_in = _para(
+            "Nor is the cutoff. This panel draws one arm, so the cutoff-independence comes "
+            f"from the companion step-{src[1] - src[0]} sweep over N={src[0]}..{src[-1]} "
+            f"({len(src)} points, all three cutoffs{_companion(cutoff_evidence, lattice)}), "
+            f"fitted over the same N <= {FIT_NMAX} window:"
+        )
         cutoffs = f"""
-Nor is the cutoff. This panel draws one arm, so the cutoff-independence comes from the
-companion step-{src[1] - src[0]} sweep over N={src[0]}..{src[-1]} ({len(src)} points, all three
-cutoffs), fitted over the same N <= {FIT_NMAX} window:
+{lead_in}
 {_cutoff_table(cutoff_evidence)}
 monoprop falls at all three and neither reference engine is ever below N^-0.06, so the
 choice of arm is not load-bearing; cutoff {CUTOFF} is drawn for continuity with Figs. 1-5.
@@ -639,23 +943,37 @@ choice of arm is not load-bearing; cutoff {CUTOFF} is drawn for continuity with 
             ys = [r["seconds"] / r["num_terms"] for r in _arm(spectator, fam)]
             grow[fam] = ys[-1] / ys[0]
         g_m, g_p, g_j = (grow[f] for f in ORDER)
-        isolation = f"""
-Why to believe it, from the companion sweep (Fig. 5a). Confining the whole model to a
-{spec0["active_window"]}-qubit active window and padding the register out to N with idle spectator
-qubits holds the term count ({spec0["num_terms"]:,}), the gate count ({spec0["gates"]}), every term's support
-and the expectation value EXACTLY fixed while only the register width changes. Over a
-32x widening monoprop pays {g_m:.1f}x, ppvm {g_p:.1f}x and PauliPropagation.jl {g_j:.0f}x. That is
-per-term N-overhead isolated from everything else, and the same ordering as here.
-"""
+        isolation = (
+            "\n"
+            + _para(
+                f"Why to believe it, from the companion sweep (Fig. 5a"
+                f"{_companion(spectator, lattice)}). Confining the whole model to a "
+                f"{spec0['active_window']}-qubit active window and padding the register out to N "
+                "with idle spectator qubits holds the term count "
+                f"({spec0['num_terms']:,}), the gate count ({spec0['gates']}), every term's "
+                "support and the expectation value EXACTLY fixed while only the register width "
+                f"changes. Over a 32x widening monoprop pays {g_m:.1f}x, ppvm {g_p:.1f}x and "
+                f"PauliPropagation.jl {g_j:.0f}x. That is per-term N-overhead isolated from "
+                "everything else, and the same ordering as here."
+            )
+            + "\n"
+        )
+
+    where_caveat = _where_caveat(lattice, crosscheck, n_hi)
+
+    model = _para(
+        f"Model: kicked-Ising chain of N qubits, open boundary; {layers} layers, each "
+        "Rzz(pi/4) on all N-1 nearest-neighbour bonds then Rx(pi/4) on all N sites, so a "
+        "layer holds 2N-1 gates; observable sum_i Z_i propagated in the Heisenberg picture "
+        "(the layer order therefore reverses); truncation a Pauli-weight cutoff of "
+        f"{CUTOFF} with lower_atol = 0, so no coefficient pruning at all and the surviving "
+        f"term set is fixed by gate supports alone. N = {n_lo}..{n_hi} in powers of two "
+        f"({coverage}), one thread, {where}."
+    )
 
     text = f"""Fig. 6 -- The marginal cost of a gate, single-threaded.
 
-Model: kicked-Ising chain of N qubits, open boundary; {layers} layers, each Rzz(pi/4) on all
-N-1 nearest-neighbour bonds then Rx(pi/4) on all N sites, so a layer holds 2N-1 gates;
-observable sum_i Z_i propagated in the Heisenberg picture (the layer order therefore
-reverses); truncation a Pauli-weight cutoff of {CUTOFF} with lower_atol = 0, so no coefficient
-pruning at all and the surviving term set is fixed by gate supports alone. N = {n_lo}..{n_hi} in
-powers of two, {per_engine} points per engine, one thread, one host.
+{model}
 
 Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both divisors
 are checked, not assumed: at every point all three engines report the same term count
@@ -666,9 +984,8 @@ cannot manufacture a difference between the curves, only reveal one.
 
 Result. monoprop falls as N^{m[2]:+.2f}, close to the ideal 1/N drawn beside it: {m_lo:.3f} ns at
 N={n_lo} down to {m_hi:.4f} ns at N={n_hi}, {fall_article} {fall:.1f}x reduction across a {widen}x wider system.
-Neither reference engine falls: ppvm N^{pv[2]:+.2f}, PauliPropagation.jl N^{j[2]:+.2f}. Note where they
-start -- at N={n_lo} ppvm is the fastest of the three ({pv[1][0]:.3f} ns against monoprop's {m_lo:.3f}),
-so the ordering is earned over the sweep and not assumed at the origin.
+Neither reference engine falls: ppvm N^{pv[2]:+.2f}, PauliPropagation.jl N^{j[2]:+.2f}.
+{start}
 {window}
 The divisor is not the effect. A falling curve invites the objection that the gate count is
 itself proportional to N, so state the same rows with no gate division at all: a monoprop
@@ -690,21 +1007,7 @@ them can fall.
 {isolation}
 Caveats, stated because the figure would otherwise overclaim:
 
-  * THERMAL. Taken on a fanless laptop ({host}), not on an
-    exclusive Leonardo node. At N <= {FIT_NMAX} the longest single point runs for tens of
-    seconds and stays in boost, but the
-    N={n_hi} reference-engine points run for minutes to tens of minutes and throttle, while
-    monoprop's N={n_hi} point finishes in about a second and does not. That biases the
-    reference engines' apparent cost UPWARD at the top of the range -- against them, not
-    against monoprop. It is one more reason those points sit outside every fit, and it is
-    why this dataset is cited only for a SHAPE (an exponent in N) and never for an
-    absolute time. Figs. 1-4 are the absolute-time figures and they come from Leonardo.
-  * Timed repetitions differ by engine, and the rows now record it:
-    {_rounds_note(lattice)}.
-    monoprop's points are sub-second, where timer granularity and process noise are
-    proportionally worst, so its minimum is taken over many more rounds; the reference
-    engines' expensive points would gain nothing from a second round they could not also
-    lose to thermal drift within the first.
+{where_caveat}
   * num_terms is the FINAL term count, while K grows through the {layers} layers, so the absolute
     ns per term understates the true per-term cost. It understates it identically for all
     three engines, so the comparison between the curves is unaffected.
@@ -744,6 +1047,15 @@ def main() -> None:
         help="optional: a sweep carrying more than one cutoff, used only for the "
         "caption's cutoff-independence table. No panel is drawn from it.",
     )
+    ap.add_argument(
+        "--host-crosscheck",
+        nargs="+",
+        type=Path,
+        default=None,
+        help="optional: a single-host run of the same workload, for a --lattice split across "
+        "a declared fleet of nodes. Used only for the caption's per-point scatter and "
+        "exponent shift between the two. No panel is drawn from it.",
+    )
     ap.add_argument("--outdir", type=Path, default=Path("figures"))
     ap.add_argument(
         "--layout",
@@ -758,8 +1070,9 @@ def main() -> None:
     lattice = load(args.lattice)
     spectator = load(args.spectator) if args.spectator else None
     cutoff_evidence = load(args.cutoff_evidence) if args.cutoff_evidence else None
+    crosscheck = load(args.host_crosscheck) if args.host_crosscheck else None
 
-    grid_problems, points = check_grid(lattice)
+    grid_problems, points, grid_notes = check_grid(lattice)
     workload_problems, expectation_spread = check_same_workload(lattice)
     thread_problems, thread_lines = check_single_thread(lattice)
     problems = grid_problems + workload_problems + thread_problems
@@ -769,7 +1082,10 @@ def main() -> None:
         )
 
     print("preconditions:")
-    print(f"  identical (cutoff, N) grid, {points} points per engine")
+    scope = f" over N <= {FIT_NMAX}" if grid_notes else ""
+    print(f"  identical (cutoff, N) grid{scope}, {points} points per engine")
+    for note in grid_notes:
+        print(f"  note: {note}")
     print(
         "  identical term and gate counts; "
         f"expectation agrees to {expectation_spread:.1e}"
@@ -788,15 +1104,18 @@ def main() -> None:
         fits,
         lattice,
         spread=expectation_spread,
-        points=points,
         spectator=spectator,
         cutoff_evidence=cutoff_evidence,
+        crosscheck=crosscheck,
     )
 
+    span = (
+        f"N = {min(r['num_qubits'] for r in lattice)}..{max(r['num_qubits'] for r in lattice)}"
+        if FIT_ALL_POINTS
+        else f"N <= {FIT_NMAX}"
+    )
     print(
-        f"\nfitted exponents over N = {min(r['num_qubits'] for r in lattice)}.."
-        f"{max(r['num_qubits'] for r in lattice)}, ns per gate per term "
-        "[ideal: -1 (K/N) vs 0 (K)]"
+        f"\nfitted exponents over {span}, ns per gate per term [ideal: -1 (K/N) vs 0 (K)]"
     )
     for cutoff in sorted({r["cutoff"] for r in lattice}):
         for fam in ORDER:
