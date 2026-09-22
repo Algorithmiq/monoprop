@@ -190,20 +190,22 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Builds (or extends) the reusable evolution graph, recording each layer's gate
         information (the parameter that drives it and its generator coefficient) so that
         later evaluation takes only ``parameters``. The circuit's angle indices are local
-        (``0``-based); when extending a non-empty graph they are shifted up onto the
-        accumulated parameter axis automatically, so each call's circuit is authored
-        independently.
+        (``0``-based), so each call's circuit is authored independently; they join the
+        accumulated axis in the order of the equivalent single circuit, which is ``b + a``
+        for ``build_graph(a); build_graph(b)`` in Heisenberg and ``a + b`` in Schrodinger.
+        Heisenberg therefore lifts the indices already in the graph by
+        ``circuit.n_parameters``, numbering an extension exactly like the one-call build.
 
         Args:
             circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
-            seed_parameters: The full parameter vector covering the whole accumulated graph,
-                used to regenerate the coefficient seed (by contracting the existing graph) so
-                coefficient truncation sees realistic coefficients when extending. Only needed
-                when extending a non-empty graph *with* coefficient-informed truncation; on the
-                first (or a single) call it defaults to the circuit's own parameters. When
-                omitted while extending, the new layers are built structurally (coefficient
-                truncation is skipped for them); the engine validates the length of an explicit
-                seed.
+            seed_parameters: The full parameter vector covering the whole accumulated graph, on
+                the axis the graph has *after* this call, used to regenerate the coefficient seed
+                (by contracting the existing graph) so coefficient truncation sees realistic
+                coefficients when extending. Only needed when extending a non-empty graph *with*
+                coefficient-informed truncation; on the first (or a single) call it defaults to
+                the circuit's own parameters. When omitted while extending, the new layers are
+                built structurally (coefficient truncation is skipped for them); the engine
+                validates the length of an explicit seed.
             only_rotate_len_k: If provided, apply gates to Pauli terms of length <= k in the
                 evolved operator even if they anticommute. Length is counted in the engine's
                 slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
