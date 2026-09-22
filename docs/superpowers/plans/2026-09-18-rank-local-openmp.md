@@ -1,8 +1,9 @@
 # Rank-local OpenMP Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
-> superpowers:executing-plans to implement this plan task-by-task. Read both documents completely; explicit full-plan
-> approval is required before execution. Do not infer missing contracts. Checkboxes track future work.
+> superpowers:executing-plans to implement this plan task-by-task. Read both documents completely; full-plan execution
+> requires explicit approval. A separately authorized baseline-only calibration may precede campaign approval, as Task 1
+> describes. Do not infer missing contracts. Checkboxes track future work.
 
 **Goal:** Replace thread-owned partitions with one compact operator store per MPI rank and OpenMP worksharing, accepting
 the replacement only after correctness, runtime, and peak-memory parity have been demonstrated.
@@ -19,12 +20,23 @@ Boost.Test, pytest. Monoprop's direct hwloc dependency is removed with the legac
 **Spec:** [Rank-local OpenMP design](../specs/2026-09-18-rank-local-openmp-design.md). Read both documents before
 execution.
 
-**Status:** Planning only. Refreshed against branch `perf/linear-routing-on-wire`, HEAD
-`290112c8289ab8015eb9a2c7651ac409839c5a88`. The owner approved removing monoprop's direct hwloc dependency and making
-process/thread counts and placement user responsibilities; the full refactor is not authorized for execution. No
-implementation, builds, tests, or benchmarks were performed in preparing this plan. All future code/test/build commands
-below are planned, not executed. The refresh authorizes only these two Markdown documents. EXISTING labels name current
-contracts; PROPOSED labels name work requiring full-plan approval.
+**Status:** Planning only. Source baseline: `perf/linear-routing-on-wire` at
+`290112c8289ab8015eb9a2c7651ac409839c5a88`; published planning commit: `refactor-parallelization` at
+`38eb13d80a95dd1ac60e762f14f68c9a5925f755`. This documentation-only interview revision records approved runtime,
+compatibility, numerical and failure policies. OpenMP is mandatory; partition configuration is removed immediately;
+thread budgets are launch-environment-only and captured at construction. The fixed32 capacity reduction is accepted.
+The owner selected one AWS EC2 `c8a.metal-24xl` for implementation/testing and initial acceptance. Production targets
+are dual-socket Sapphire Rapids and AMD Zen3/Zen4/Zen5 HPC nodes, commonly four NUMA domains/socket. Hardware SMT may
+be on or off, but SMT workers are not recommended: always configure one worker per physical core. Passing the frozen
+single-instance EC2 campaign is sufficient for initial acceptance; HPC performance remains separately unqualified.
+Multi-node qualification is pending a proper HPC cluster/interconnect, not a cloud-network substitute. Record actual EC2
+topology/software and agree representative workload sizes before freezing the campaign or collecting acceptance data.
+The owner approved baseline-only, unscored sizing trials before the freeze, once separately authorized. Small/medium
+profiles cover the full geometry sweep; large profiles cover only the full-node one- and two-ranks-per-domain cases.
+
+No implementation, engine builds/tests or benchmarks are authorized by this revision. All future execution commands
+below are planned, not evidence of passing gates. EXISTING labels describe current source; PROPOSED labels describe
+future work. Full implementation and any publication of this revision require separate authorization.
 
 ## Global Constraints
 
@@ -32,11 +44,15 @@ contracts; PROPOSED labels name work requiring full-plan approval.
 - MPI remains optional and OFF by default; retain working non-MPI wheels.
 - OpenMP becomes a required implementation dependency for the replacement runtime; support Linux x86_64, Linux aarch64,
   and macOS builds covered by the current project.
-- Each MPI rank owns exactly one operator store and one graph; threads are never communicator ranks.
+- Each independent propagator instance owns one packed operator store per MPI rank; threads are never communicator
+  ranks. Preserve independent copies, immutable graph-core sharing, retained coefficient/state snapshots and pared
+  graphs.
 - Remove monoprop's direct hwloc dependency and topology/affinity machinery; do not replace it with another
   library-owned hardware-discovery or pinning mechanism.
 - Users choose P processes and T threads per process and configure resource allocation, binding and pinning; monoprop
   does not clamp T to physical cores or validate NUMA placement.
+- SMT use is not recommended: allocate at most one monoprop worker per physical core, including on SMT-enabled hosts.
+  Enforce this through user launch/binding settings and acceptance evidence, not a library hardware policy.
 - Preserve packed operator rows, the keyless hash index, fixed uint32_t TermIndex, sparse state storage, and
   inverted-index cosine recomputation.
 - Do not introduce boost::concurrent_flat_map, hidden shards, a dense duplicate store, a second persistent key store, a
@@ -46,7 +62,7 @@ contracts; PROPOSED labels name work requiring full-plan approval.
 - MPI calls execute on the controlling thread outside library-created OpenMP worksharing regions; retain
   MPI_THREAD_SERIALIZED rather than changing the initialization contract.
 - No exception escapes an OpenMP structured region; distributed operations fail coherently rather than leaving peers in
-  collectives.
+  collectives. Enforce invalidation after failed mutation; dependent functionals cannot reuse an invalid owner.
 - No global omp_set_num_threads/omp_set_dynamic/omp_set_nested mutation; each worksharing region receives an explicit
   per-object thread budget.
 - Use bitmap traversal or anticommutation pass for the existing operation; reserve prefix offsets for cumulative counts
@@ -64,14 +80,18 @@ contracts; PROPOSED labels name work requiring full-plan approval.
 
 Additional execution rules:
 
-- **Do not start until the owner authorizes implementation.** Approval must include the proposed compatibility policy,
-  required OpenMP dependency, floating-point policy, and strict performance gates in the design. If any is rejected,
-  revise these documents first.
+- **No runtime work or implementation is authorized by the design interview.** Obtain separate authorization for a
+  bounded baseline-only calibration/build phase; it may precede campaign approval. Candidate engine changes require
+  implementation authorization and an owner-approved frozen campaign. Formal baseline collection also waits for that
+  freeze. Simplification without regressions is the goal; reject the architecture if it cannot earn acceptance. The
+  campaign bounds performance claims, not mathematical correctness across the supported API.
 - P (called R in existing code/benchmark geometry) is the user-selected process count; T is the requested threads per
-  process, normally set with `OMP_NUM_THREADS`. Users must allocate enough resources and configure rank/thread binding
+  process, normally set with `monoprop_NUM_THREADS`. Only an unset override selects the OpenMP runtime default. Users
+  must allocate enough resources and configure rank/thread binding
   with OpenMP, `srun --cpu-bind`, and/or `mpiexec` options. Each rank's workers are assumed to fit its allocation within
-  one NUMA domain. Do not create a topology service/NUMA scheduler, silently change P/T, or attempt to prevent
-  user-created oversubscription.
+  one NUMA domain. Documentation recommends against SMT workers: allocate one worker per physical core, including when
+  hardware SMT is enabled. Do not create a topology service/NUMA scheduler, silently change P/T, or enforce that
+  recommendation through library clamping or affinity changes.
 - Do not touch pre-existing `.codegraph/` or `.direnv/`. Use an isolated implementation checkout and a separately built
   baseline. Follow the worktree/GitButler skills for version-control writes; no raw git write commands.
 - New behavior follows RED → minimal implementation → GREEN → diff review. Run tests before production edits and record
@@ -87,7 +107,7 @@ Additional execution rules:
 
 | Stage | Tasks | Gate before proceeding |
 | --- | --- | --- |
-| Baseline | 1 | Reproducible numerical/performance baseline and approved policies |
+| Baseline | 1 | Authorized baseline-only calibration, approved frozen inventory, fresh formal baseline evidence |
 | Small prototype | 2–4 | OpenMP packaging works; one-store serial and threaded replay agree |
 | Shared-store construction | 5–7 | Stable queries/IDs, safety, construction scaling and scratch measured |
 | Remaining evaluation kernels | 8–9 | Replay, derivative, retained closures and reductions validated |
@@ -138,6 +158,37 @@ Handoff checklist: exact revision/binary and overlay hashes; owner approvals; la
 commands/results; remaining gate/capacity/placement blockers; fixed routing and workload manifest; raw artifact paths.
 Never hand off only “tests pass”. No builds/tests/imports/installs/VCS writes are authorized by this document refresh.
 
+### Remote Task 1 entry point
+
+The baseline-only pilot belongs to Task 1. It is not a prerequisite that must run on the planning machine before handing
+this plan to an implementer. Run it on the authorized execution host, currently c8a.metal-24xl. If the host differs,
+clarify the hardware decision before treating its sizing results as applicable to the target campaign.
+No remote access, provisioning or runtime execution is authorized merely by reading these documents.
+
+Transfer the latest spec, plan and CONTEXT.md with the source checkout. The historical planning commit alone does not
+include subsequent interview decisions. Verify document contents/digests on the execution host, including the 2-hour,
+15-minute and 75% calibration limits. Documentation-only commits above the source anchor are not engine drift; inspect
+semantic source/build/benchmark changes against the baseline-drift checkpoint rather than require HEAD to equal the old
+planning commit. Keep the measured baseline source pinned to 290112c8289ab8015eb9a2c7651ac409839c5a88.
+
+A bounded starter authorization may cover only host/source preflight, documented project-local setup, an isolated
+baseline build, existing baseline API/benchmark sizing trials and their report. It does not authorize candidate engine
+changes, formal acceptance samples, commits, pushes or a PR. Read both documents completely before starting; distinguish
+EXISTING baseline behavior from PROPOSED replacement behavior rather than making the baseline conform to the new design.
+Do not infer subagent/delegation permission from the plan's choice of execution skills.
+
+Before expensive commands, state the observed host/allocation, source/doc identities, permitted scope, resource limits
+and a durable artifact directory outside the source checkout. Preserve the source checkout and record any approved
+measurement overlay separately. On interruption, retain commands/results, trial outcomes and remaining budget in a
+checkpoint; resuming does not reset the pilot limits.
+
+The pilot handoff contains absolute artifact/report paths and digests; host/toolchain/binary provenance; verified
+placement; all tried configurations and outcomes; time/memory observations including export/validation; proposed exact
+small/medium/large workload and geometry/routing cells; and the estimated time/cost of the formal campaign, including
+prescribed extra repetitions. State blockers and unmeasured items explicitly. Stop for owner approval of that campaign
+and budget, and authorization for the remaining work. Task 1 is not complete until its tools/tests and fresh post-freeze
+formal baseline evidence also pass. No pilot result is a parity claim or an acceptance sample.
+
 ## File responsibilities
 
 Paths in task lists are relative to the repository root.
@@ -181,10 +232,13 @@ must enter CMake FILE_SETs, not merely compiler include paths.
    before writing either endpoint.
 10. Gate loops, reverse-gradient loops, repeated-parameter accumulation, graph append, store publication, and MPI remain
     ordered on the caller.
-11. Empty local stores still follow the same distributed collective sequence. Runtime thread budgets may differ by rank
-    without changing ownership.
-12. Ordinary kernels fall back to serial inside an existing OpenMP region. This does **not** authorize concurrent MPI
-    calls or concurrent calls on one propagator/retained functional.
+11. Empty local stores still follow the same distributed collective sequence. Launch-time thread budgets may differ by
+    rank without changing ownership; each object's captured budget is immutable.
+12. Internal numerical kernels fall back to serial inside an existing OpenMP region. The supported host enters through
+    one controlling thread per rank, outside active host OpenMP teams, with no overlapping dependent-state or host MPI
+    calls. The fallback does not extend that calling contract.
+13. A post-mutation failure invalidates the affected owner and its dependent functionals. Check validity before later
+    state access or copying; independent earlier copies remain valid. Pre-mutation validation errors do not poison.
 
 ## Build/test command library
 
@@ -192,12 +246,15 @@ These commands are to run **during implementation**, not evidence of passing tes
 Unset stale sanitizer/build-type and MPI override settings before Release commands; R explicitly uses
 `monoprop_ENABLE_MPI=OFF` as well as its CMake OFF setting. A configuration change requires forced reinstall and
 regenerated tests; `uv sync` alone does not reliably relink the C++ executable. For ordinary suite runs explicitly set
-`OMP_NUM_THREADS=1`; this is test-runner policy, not a library multi-rank default. Dedicated parallel tests override
-their object budget or launch fresh processes with a selected OMP_NUM_THREADS on an adequate allocation.
+`monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1`; this is test-runner policy, not a library multi-rank default. Dedicated
+kernel tests pass internal Options; propagator tests launch fresh processes with a selected environment budget on an
+adequate allocation. Unset removed partition settings in candidate launches. OpenMP-fallback tests specifically unset
+monoprop_NUM_THREADS.
 
 ### R: non-MPI Release
 
 ```bash
+export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1
 monoprop_ENABLE_MPI=OFF uv sync --all-extras --group workspace-test --group bench \
   --reinstall-package monoprop --no-cache \
   --config-settings-package='monoprop:cmake.define.monoprop_ENABLE_MPI=OFF' -v
@@ -220,6 +277,7 @@ regeneration.
 ### M: MPI Release
 
 ```bash
+export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1
 # Environment switch also adds mpi4py>=4.1.0 to the isolated build requirements.
 monoprop_ENABLE_MPI=ON uv sync --all-extras --group workspace-test --group bench \
   --reinstall-package monoprop --no-cache \
@@ -255,6 +313,7 @@ There is no alternate index-width build. `cpp/monoprop/TypeAliases.h:39` fixes T
 ### S: sanitizer profiles
 
 ```bash
+export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1
 SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan \
 monoprop_ENABLE_MPI=OFF SKBUILD_CMAKE_DEFINE='monoprop_SANITIZER=asan-ubsan;monoprop_ENABLE_MPI=OFF' \
 uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
@@ -307,12 +366,55 @@ kind-specific artifact; `compare` joins a timed/construction pair into one obser
 paring-construction measurement below is deliberate additional measurement work requiring full-plan approval, not
 instrumentation-only.
 
-- [ ] Obtain owner approval of the full design policies, bounded new paring-construction measurement and target
-  allocation. Record baseline revision, CPU allocation, compiler/flags, MPI version, index width, OpenMP runtime,
-  allocator environment, imported extension path/hash, seed and complete workload configuration.
+**Selected platform, not observed topology:** AWS's
+[exact-size table](https://docs.aws.amazon.com/ec2/latest/instancetypes/co.html#co_hardware) specifies c8a.metal-24xl as
+AMD EPYC 9R45, 96 physical cores/96 vCPUs, one thread/core and 192 GiB. Its
+[C8a description](https://aws.amazon.com/ec2/instance-types/c8a/) explicitly says no SMT. These are published facts, not
+measurements. Socket/NUMA counts remain unverified. Do not label oversubscription as SMT coverage or assume this machine
+has production's usual eight domains. Once execution is authorized, archive the following read-only observations from
+inside the actual allocation; these commands have not been run here:
+
+```bash
+lscpu
+lscpu -e=CPU,NODE,SOCKET,CORE,ONLINE
+numactl --hardware
+grep -E 'Cpus_allowed_list|Mems_allowed_list' /proc/self/status
+```
+
+Use these observations and per-rank placement evidence to select NUMA-contained geometries; a capacity-based 1x96 shape
+is not automatically admissible. Missing diagnostic tools require another external observation method, not a new
+library topology dependency. Record hardware SMT state, but configure only one worker per physical core. Do not add
+SMT-sibling worker profiles; production-HPC and multi-node qualification remain separate and pending.
+
+- [ ] Obtain separate authorization for baseline build/calibration work. On c8a.metal-24xl, record sockets/NUMA domains,
+  physical cores, hardware SMT state, memory allocation and software stack before choosing geometries. Agree
+  representative workloads/sizes and single-instance routing/rank/thread shapes. Initial acceptance is the EC2 campaign,
+  including a two-ranks-per-domain case; all workers use distinct physical cores. Production-HPC performance and
+  multi-node qualification on a proper interconnect remain pending, not prerequisites for initial EC2 acceptance.
+  Production's common eight-domain layout is not a hard-coded EC2 topology. Historical profiles below are candidates,
+  not an approved campaign.
+  Confirm the bounded new paring-construction measurement in that campaign. Record baseline
+  revision, allocation, compiler/flags, MPI version, index width, OpenMP runtime, allocator environment, imported
+  extension path/hash, seed and complete workload configuration before collecting evidence.
 - [ ] Before changing engine code, separately build the baseline using R/M. Preserve its environment and binary. Apply
-  only the identical measurement-harness changes to both arms; record this overlay's diff/hash. Baseline
-  numerical/performance failures stop this task.
+  only the identical measurement-harness changes to both arms; record this overlay's diff/hash. Baseline numerical
+  failures stop this task. After the freeze, any required baseline failure blocks collection, not permission to resize
+  or remove the cell.
+- [ ] Once authorized, run unscored baseline-only feasibility trials before freezing workload sizes. Use existing
+  baseline APIs/benchmark entrypoints; add no fourth driver mode or general calibration framework. Check elapsed
+  time and memory for construction, evaluation and numerical export/validation, including their temporary storage.
+  The approved pilot budget is 2 hours total, excluding builds/setup, and 15 minutes per trial including all those
+  phases. If insufficient, stop and report; do not silently extend either limit. Target at most 75% of observed usable
+  allocation RAM across all ranks, including construction and validation/export temporary storage. Record the RAM basis
+  and byte ceiling before trials; do not keep recomputing it from falling free memory. Exceeding this target requires
+  owner review before larger trials. This is operator-side sizing, not a library memory clamp or an OOM guarantee.
+  Record every attempted configuration, geometry/placement, baseline binary/overlay identity, elapsed time, memory
+  observations, outcome and reason for retaining/rejecting a size. Keep raw trials in a separate calibration archive,
+  without acceptance sample IDs. Capacity/time failures may inform pre-freeze sizing; numerical inconsistencies stop.
+  Do not run/consult candidate performance to select the inventory. Estimate formal campaign time/cost from the pilot,
+  then seek owner approval of sizes, coverage and campaign expenditure before the freeze and formal collection. Do not
+  reduce required samples/coverage to fit an unapproved budget. Collect fresh formal baseline samples after the freeze.
+  Never promote calibration runs, even with unchanged parameters. Approval of these limits is not execution permission.
 - [ ] Add renderer tests independently varying operation and outer exactness: true/false/absent and mixed flags.
   `bmf.py::build_bmf` publishes `peak-memory` from `memhwm`, so gate it on `memhwmexact`; `operation-memory` comes from
   `opmemdelta`, so gate it on `opmemexact`. `report.py::build_report` must label each corresponding metric correctly.
@@ -324,31 +426,40 @@ instrumentation-only.
   rank-zero-only collective. Extend existing nested transient/fallback tests, not the reset implementation.
 - [ ] Migrate `_require_shape` in the identical shared overlay. Add explicit manifest/CLI runtime declaration
   `--runtime-shape=partitions|openmp` to pytest and driver; this is PROPOSED measurement configuration, not a backend
-  selector. Baseline declares partitions with `monoprop_PARTITIONS=T` (and `monoprop_NUM_THREADS=T`); candidate declares
-  openmp with `OMP_NUM_THREADS=T` and both library overrides unset. Require positive declared R/T and equal allocation.
+  selector. Baseline declares partitions with `monoprop_PARTITIONS=T` and `monoprop_NUM_THREADS=T`; candidate declares
+  openmp with `monoprop_NUM_THREADS=T` and removed partition settings unset. OMP_NUM_THREADS may also be T for the host
+  runtime. Accept the documented candidate fallback with monoprop_NUM_THREADS unset and OpenMP resolving T; verify it
+  separately in configuration tests. Require positive declared R/T and equal allocation.
   Record declared and observed shape separately; a renamed `--arm` label must not bypass validation. Before acceptance,
   diagnostic runs must verify actual baseline partition participation and candidate worker participation on
   representative large kernels, accounting for documented small/nested/runtime-limit paths. Reject missing or
-  contradictory evidence. Tests: missing baseline declaration, missing candidate OMP setting, candidate deprecated
-  override, wrong observed R/T, mislabeled arm, and valid equal-allocation declarations. RED: current multi-rank guard
-  rejects candidate configuration.
+  contradictory evidence. Tests: missing baseline declaration, invalid candidate thread override, leftover candidate
+  partition setting in the measurement environment, wrong observed R/T, mislabeled arm, and valid explicit/fallback
+  candidate declarations. This strict measurement preflight does not restore a removed production getenv reader.
+  RED: current multi-rank guard rejects candidate configuration.
 - [ ] Separate whole-construction measurement is intentional policy, not a repair for nesting. A fresh untimed worker,
   without pytest memory fixtures/session graphs, opens one `HighWaterMark`, constructs inputs/propagator/graph/callable
   as required, runs the operation and retains outputs until close. Record peak sum/max, floor, delta and exactness. Use
   existing model builders; no duplicate physics or general benchmark framework.
-- [ ] Freeze an owner-approved campaign inventory BEFORE collecting baseline evidence. Its JSON schema is
+- [ ] After unscored calibration, freeze an owner-approved campaign inventory BEFORE formal baseline collection. Its
+  JSON schema is
   `{"schema_version":1,"workloads_path":str,"workloads_sha256":str,"cells":[cell]}`. Each cell has unique slug `id`,
   `profile`, `node_id`, `operation`, `measurement_kind` (`pytest` or `driver`), `identity`, `config_digest` and
   `parameters_digest`. `identity` contains `ranks`, requested `threads`, `index_bits=32`, `cpu_allocation`,
   `compiler_flags`, resolved `config`, and `routing` (`mode`, derived `bits`, numeric `seed`). Expand the complete
-  required workload/profile × approved geometry/routing inventory from the matrix below; archive its digest with owner
-  approval. This file, not the observations supplied later, is the authoritative expected-cell list. A full cell missing
+  size-band-specific inventory below: small/medium profiles use the full geometry sweep, with the existing routing
+  coverage requirements; selected large profiles use only full-node one- and two-ranks-per-domain geometries. Do not
+  generate an all-sizes Cartesian product. Archive the inventory/digest with owner approval. This file, not later
+  observations, is the authoritative expected-cell list. A full cell missing
   from BOTH arms must fail completeness. Reject duplicate/extra cell IDs and mismatched identities. Do not regenerate or
   shrink the inventory to make observations pass.
 - [ ] `tools/rank-local-openmp-workloads.json` maps `profiles[profile][node_id]` to `operation`, `measurement_kind`,
-  `basis`, `picture`, complete `config`, deterministic `parameters`, and `pare_threshold`. `reference`/`tiny` contain
-  unpared four-family entries; `reference-pared`/`tiny-pared` contain threshold-1e-10 energy/gradient entries and both
-  driver construction identities. Record profile overrides explicitly; no ambiguity within one profile/node pair. Define
+  `basis`, `picture`, complete `config`, deterministic `parameters`, and `pare_threshold`. `tiny` is the small band and
+  calibrated `reference` is medium; each band's `-pared` variant shares its geometry policy. Preserve the existing
+  unpared four-family and threshold-1e-10 energy/gradient plus driver-construction coverage. Add `large`/`large-pared`
+  entries for the owner-selected large workloads, restricted to the two full-node decompositions. Profile names do not
+  freeze the historical reference sizes: record every calibrated override explicitly, with no ambiguity within a
+  profile/node pair. Define
   config/parameter digests as SHA-256 of UTF-8
   `json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)`. File digests are SHA-256 of exact file
   bytes. Resolve relative JSON paths against the containing file's directory. Do not put binary or placement-evidence
@@ -433,19 +544,21 @@ evidence compares baseline/candidate of the identical operation, not an infeasib
   `functional="expectation_value_and_gradient_functional"`, `pare_threshold=1e-10`, picture, full random config and
   parameter digest. Use the proposed `observe`/`validate` interface: `--cell-id` resolves this node/profile from the
   frozen campaign, not a new framework or pytest family. Workload key is `(profile,node_id)`; a campaign cell also fixes
-  geometry/routing and gets a unique slug. Freeze tiny-pared and reference-pared entries before baseline collection.
+  geometry/routing and gets a unique slug. Freeze tiny-pared, reference-pared and selected large-pared entries before
+  formal baseline collection, respecting each band's geometry coverage.
   Example planned invocation after selecting the matching cell and binary-linked placement file (launcher/allocation
   supplied externally):
 
 ```bash
-OMP_NUM_THREADS="$T" uv run --no-sync python tools/benchmark-rank-local-openmp.py observe \
+monoprop_NUM_THREADS="$T" OMP_NUM_THREADS="$T" \
+uv run --no-sync python tools/benchmark-rank-local-openmp.py observe \
   --arm candidate --runtime-shape openmp --campaign "$CAMPAIGN" --cell-id "$CELL" \
   --sample-id s01 --placement "$PLACEMENT" --output "$RESULTS"
 # Repeat in a separate fresh process with the same arguments plus --whole-process.
 # Run validate separately; omit --sample-id and --whole-process.
 ```
 
-  Unset both library overrides before this candidate command; if launched at three ranks, explicitly export
+  Unset removed partition settings before this candidate command; if launched at three ranks, explicitly export
   `monoprop_ROUTING=splitmix` to every rank. Use `--runtime-shape partitions` and both legacy T declarations for
   baseline. In normal driver observe, build random inputs first, then open an outer `HighWaterMark` before
   propagator/graph construction (the driver analogue of pytest `record_memory`). Construct graph fully before barrier,
@@ -528,9 +641,9 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
         for arm, elapsed in (("baseline", 10.0), ("candidate", candidate_time)):
             shape = "partitions" if arm == "baseline" else "openmp"
             binary_hash = ("b" if arm == "baseline" else "c") * 64
-            settings = {"OMP_NUM_THREADS": "2", "OMP_DYNAMIC": "FALSE"}
+            settings = {"monoprop_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "OMP_DYNAMIC": "FALSE"}
             if arm == "baseline":
-                settings.update(monoprop_PARTITIONS="2", monoprop_NUM_THREADS="2")
+                settings.update(monoprop_PARTITIONS="2")
             placement = {"schema_version": 1, "artifact_kind": "placement", "arm": arm,
                          "cell_id": name, "binary_hash": binary_hash, "identity": identity,
                          "runtime_shape": shape,
@@ -577,16 +690,18 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
 These two miniature inventory entries use empty-map energy fixtures, not real benchmark measurements. They follow the
 same schema, reference loading and provenance checks as real artifacts; no synthetic-mode bypass is allowed. The
 comparison test does not run physics, acquire placement, or establish actual hardware participation. Add tests for a
-whole required cell deleted from both arms, missing samples, mismatched timed/construction pairs, reused measurement
-files/run IDs, missing placement provenance (exit 2), each false/absent exactness flag, unequal
+whole required cell deleted from both arms (including a large-profile cell), missing samples, mismatched
+timed/construction pairs, reused measurement files/run IDs, raw calibration output offered as an acceptance artifact,
+missing placement provenance (exit 2), each false/absent exactness flag, unequal
 shape/configuration/index width, and sum-versus-max peaks. For only an outer-peak regression or unknown outer exactness,
 report the diagnostic accurately while allowing the five-metric gate to pass. Operation/construction inexactness still
 fails. The comparator reports that five more observations are needed on first ratio failure; it launches no jobs.
-- [ ] Freeze these required cells in `tools/rank-local-openmp-workloads.json`: fixed Hubbard and Pauli models and random
+- [ ] Use the baseline-only trials and observed allocation to freeze owner-approved sizes for these coverage families in
+  `tools/rank-local-openmp-workloads.json`: fixed Hubbard and Pauli models and random
   Heisenberg/Schrödinger × build_graph/propagate/energy/gradient. Energy/gradient have separate unpared and
   threshold-1e-10 profiles; do not change node IDs to distinguish the profile. Also require random Heisenberg and
-  Schrödinger `pare_functional_construct` driver cells; no removed pytest node is revived. Reference configurations at
-  the inspected HEAD are:
+  Schrödinger `pare_functional_construct` driver cells; no removed pytest node is revived. The following are EXISTING
+  source-reference configurations, not the selected acceptance workloads:
 
 ```json
 {
@@ -609,15 +724,21 @@ configurations in artifacts, not just a profile label.
   node per process. The existing fixed-model guard skips retained graphs with more than two repeated steps
   (`MAX_GRAPH_STEPS=2`), so the 29-step Hubbard reference is intentionally a capacity decision: use
   `monoprop_BENCH_ALLOW_BIG_GRAPH=1` only on adequately provisioned hardware, or obtain approval for a fixed lower
-  `--hubbard-trotter-steps` profile on both arms before collecting any baseline. A skipped cell is not a pass. Do not
+  `--hubbard-trotter-steps` profile on both arms before formal baseline collection. A skipped cell is not a pass. Do not
   silently omit graph-heavy cells or bypass the guard on an unverified allocation.
-- [ ] Run baseline geometries `(R,T)=(1,1),(1,Tmax),(Rmax,1),(Rmax,Tmax)` on the approved allocation, deduplicating
-  equal cells. Old throughput arm uses `R` real MPI ranks × `T` partitions; record an additional old single-store serial
-  diagnostic. Never compare only against forced-serial old code.
+- [ ] Select geometries from observed physical cores, not vCPU/SMT-sibling counts. For D allocated NUMA domains with
+  C selected physical cores each, the small/medium sweep is `(R,T)=(1,1),(1,C),(D,1),(D,C)`, deduplicated. R=1 uses
+  only one domain. Add `(2*D,floor(C/2))` with non-overlapping physical-core subsets when C>=2; record unused cores.
+  Apply existing routing coverage requirements too. Selected large profiles use only `(D,C)` and `(2*D,floor(C/2))`
+  from the full-node allocation, not the one-worker/partial-node sweep. Freeze the exact allowed cells per profile;
+  do not reclassify profiles or drop cells after a regression. If domains/allocation are uneven, agree explicit balanced
+  subsets before freezing rather than assume C=96/D. Each baseline/candidate pair has identical R/T/core allocation.
+  All these cells are single-instance; network-HPC qualification stays pending. Old throughput uses R ranks x T
+  partitions; retain an old single-store serial diagnostic but never compare only against forced-serial old code.
 
 - [ ] Reuse `benches/LADDER.md` L1–L4 labels/provenance and term-count fields as historical calibration, never
   acceptance evidence from old runs. Where a full-node single rank crosses NUMA domains, do not copy that historical
-  allocation: obtain an approved within-one-domain profile, equal on both arms, before baseline collection. Preserve
+  allocation: freeze a within-one-domain profile, identical on both arms, before formal baseline collection. Preserve
   historical nodes and fields while adding runtime-shape/observed-team metadata. Term counts must agree for the
   identical operation.
 - [ ] Use `just capture-baseline` / `just diff-baseline` and `tools/capture-baseline.py --compare` only as supplementary
@@ -625,8 +746,9 @@ configurations in artifacts, not just a profile label.
   gradients/provenance; it cannot replace the ownership-aware global-map comparator or independent
   exact/finite-difference tests.
 
-**Gate:** Benchmark tools' unit tests pass; baseline numerical suites pass; baseline observations and placement evidence
-are archived. Historical benchmark keys unchanged. No parity claim yet.
+**Gate:** Calibration archive and owner-approved size-band inventory/digest are retained; benchmark tools' unit tests
+and baseline numerical suites pass. Fresh post-freeze baseline observations and placement evidence cover every required
+cell; no calibration sample is counted. Historical benchmark keys remain unchanged. No parity claim yet.
 
 ### Task 2: Add the smallest OpenMP primitive and its build dependency
 
@@ -728,7 +850,7 @@ clean consumer finds/links/runs with no manual flags or source includes. No engi
 - Modify: `cpp/monoprop/detail/monomial_propagator/MonomialPropagator.inl`, `cpp/monoprop/{Evolution,MPFunctions}.cpp`.
 - Modify: `cpp/monoprop/detail/evolution/{CosineRecompute,CosineRecomputeCallbacks}.h`,
   `cpp/monoprop/detail/evolution/layer_build/{Scan,Resolve,Engine,FusedApply}.h`.
-- Modify: `cpp/monoprop/detail/mpi/MPICompat.cpp`, `cpp/monoprop/detail/EnvConfig.h`, `src/monoprop/bindings/binder.h`.
+- Modify: `cpp/monoprop/detail/mpi/MPICompat.cpp`; the final environment/configuration cleanup is in Task 10.
 - Create/test: `cpp/tests/openmp_runtime_tests.cpp`, `cpp/tests/mpi_failure_driver.cpp`, `tests/test_openmp_config.py`;
   modify `cpp/tests/CMakeLists.txt` to exclude the failure-driver main from the unit-runner glob and build a separate
   executable.
@@ -736,15 +858,18 @@ clean consumer finds/links/runs with no manual flags or source includes. No engi
 **PROPOSED interfaces:**
 
 ```cpp
-// ThreadBudget.h; pure count validation, no topology or mutable global setting.
+// ThreadBudget.h; include <optional>, <string_view> and Options.h.
 namespace monoprop::detail::parallel {
-// requested==0 selects runtime_default; otherwise use requested exactly.
-// Throw std::invalid_argument if the selected value is not in [1, INT_MAX].
-auto resolve_thread_budget(size_t requested, int runtime_default) -> Options;
+// nullopt selects runtime_default; a present value must be decimal digits and in [1, INT_MAX].
+// Throw std::invalid_argument on invalid input; no hardware query or global runtime mutation.
+auto resolve_thread_budget(std::optional<std::string_view> configured, int runtime_default) -> Options;
+// Read monoprop_NUM_THREADS once and obtain omp_get_max_threads(); called only during construction.
+auto capture_thread_budget() -> Options;
 }
-// Constructor: append after existing child_factory argument:
-// size_t num_threads = 0
-// Object member: parallel::Options parallel_; logically immutable after construction.
+// No new public constructor argument or binding keyword.
+// Private object members: parallel::Options parallel_; bool invalid_ = false;
+// Private helpers: auto require_valid_() const -> void; auto invalidate_() noexcept -> void;
+// MonomialPropagator.h: declare monoprop::InvalidPropagatorError deriving std::runtime_error.
 // EvalRequest: append detail::parallel::Options parallel = {};
 ```
 
@@ -767,15 +892,17 @@ criteria; `Evolution.cpp:450–477` snapshots self endpoints, predivides, accumu
 pre-layer-unit sums. Keep record append/predivide/restore serial because duplicate indices are allowed. Do not replace
 this stable protocol with a division-only reverse pass.
 
-- [ ] Add compile/integration tests for old low-level numerical call sites (their defaults stay serial; constructor
-  default selection changes in Task 10), two objects with budgets 1/3, copied budget, retained functional budget
-  capture, and rejection of simultaneous prototype multi-partition + threaded kernels.
-- [ ] During coexistence, only explicit new `num_threads>0` enables the new runtime; require resolved legacy
-  `partitions==1`. Use explicit `partitions=1` plus final `num_threads` in C++ and low-level Python tests. Legacy
-  children always receive `{.threads=1}`. Do not reinterpret environment variables until Task 10.
-- [ ] Expose the low-level binding constructor keyword `num_threads=0` after `partitions`. Regenerate by running R or M:
-  `src/monoprop/bindings/CMakeLists.txt` already invokes the generator at configure time and dispatch generation at
-  install time. For a manual regeneration of the default Release configuration only, its exact equivalent is:
+- [ ] Add compile/integration tests for old low-level numerical call sites (their default Options stay serial),
+  prototype budgets 1/3 in separately launched processes, copied budget and retained-functional capture. Prove legacy
+  children stay serial even when their process environment requests multiple threads.
+- [ ] During coexistence, initialize `parallel_` to `{.threads=1}`. Only when the EXISTING constructor has explicit
+  `partitions==1` AND `comm.kind==mpi::Comm::Kind::Mpi`, capture the environment budget before work. This also covers
+  non-MPI builds, whose ordinary Comm has Kind::Mpi. Shm/Hybrid children never activate OpenMP; multi-partition facades
+  keep their legacy path. Prototype tests use existing `partitions=1` and launch-time monoprop_NUM_THREADS; no new
+  constructor keyword, runtime switch or test-only production setter is introduced. Task 10 removes the old arguments
+  and makes capture unconditional for independent instances.
+- [ ] Rebuild bindings through R/M without adding a thread keyword. Configuration already invokes binder generation
+  and installation invokes dispatch generation. For manual regeneration of the default Release configuration only:
 
 ```bash
 uv run --no-sync python tools/generate-binders.py --max-num-modes 1024 \
@@ -786,21 +913,25 @@ uv run --no-sync python tools/generate-binders.py --max-num-modes 1024 \
 For a nondefault maximum use the actual `monoprop_MAX_NUM_MODES` cache value (current default 1024). Generated files
 stay in the build tree and are not committed. Never hand-edit generated bindings, invent a mode-width policy, or modify
 `tools/_binding_layout.py` for this task.
-- [ ] Implement `resolve_thread_budget(requested,runtime_default)` without any hardware queries: when requested is
-  nonzero, check `requested <= static_cast<size_t>(INT_MAX)` before conversion and keep that value exactly; when zero,
-  require `runtime_default > 0` and use it. Throw `std::invalid_argument` for unrepresentable/nonpositive selected
-  values; translate configuration errors at the public constructor boundary to `PropagatorConfigError`. Tests cover
-  `(0,1)->1`, `(0,3)->3`, `(8,2)->8`, `(1,0)->1`, `(0,0)`/`(0,-1)` rejection, INT_MAX acceptance and SIZE_MAX rejection
-  when larger than INT_MAX. These are pure count tests, never requests to create huge teams. In the prototype resolve
-  only explicitly enabled threaded objects; Task 10 enables the default path. Copy the resolved options unchanged.
-- [ ] At cutover, when all explicit/compatibility overrides are absent, pass `omp_get_max_threads()` as runtime_default
-  once at construction. This captures the OpenMP calling context's default (normally `OMP_NUM_THREADS`), not actual team
-  size or available hardware. Do not parse OMP_NUM_THREADS independently or derive T from `omp_get_num_procs`,
-  `std::thread::hardware_concurrency`, affinity masks, OpenMP places, hwloc, sysfs or NUMA discovery. A requested count
-  may exceed the rank's allocation; preventing that is the user's responsibility. Small-work/nested serial fallback and
-  OpenMP limits may still reduce a region's actual team.
-- [ ] In this prototype task test explicit budget validation/copy/callable capture and runtime-limited teams;
-  default-selection/precedence subprocess tests belong to Task 10, when that path is enabled. Verify library calls leave
+- [ ] Implement `resolve_thread_budget(configured,runtime_default)` as a pure parser: nullopt selects a positive runtime
+  default; present input must be nonempty ASCII decimal digits, with the whole value in [1, INT_MAX]. Use checked
+  parsing before narrowing; reject signs, whitespace, lists, junk, zero and overflow. Leading zeros are harmless. Do not
+  retain the old arbitrary million-thread parser cap. Translate std::invalid_argument to PropagatorConfigError at the
+  constructor boundary, then apply the coherent distributed failure policy if peers can be stranded. Tests cover nullopt
+  with 1/3, nullopt with 0/-1 rejection, "8" with default 2 returning 8, and "1" with default 0 returning 1.
+  Reject empty, "0", "-1", "abc", "2,3", " 3" and "+3". Test INT_MAX text acceptance and overflow rejection without
+  creating teams.
+- [ ] `capture_thread_budget()` reads getenv("monoprop_NUM_THREADS") once, distinguishes absent from present-empty,
+  and calls the pure resolver with omp_get_max_threads(). No function-static budget cache or operation-time reload.
+  During coexistence keep the old config parser solely for legacy partition selection; remove that cached budget path
+  in Task 10. Copy resolved options unchanged. The supported application fixes ranks/threads at launch; no live
+  configuration mechanism is provided or required.
+- [ ] OpenMP supplies the fallback at any rank count, not an actual team size or hardware count. Do not independently
+  parse OMP_NUM_THREADS or derive T from omp_get_num_procs, hardware_concurrency, affinity masks, places, hwloc, sysfs
+  or NUMA. A request may exceed the allocation; resource suitability is the user's responsibility. Small-work/nested
+  internal-helper fallback and OpenMP limits may reduce actual teams without changing the captured budget.
+- [ ] In this task test parser/copy/callable capture and runtime-limited teams through the one-store prototype;
+  final constructor surface and full default-selection subprocess tests belong to Task 10. Verify library calls leave
   OpenMP settings unchanged and issue no affinity-setting calls. A no-affinity-change test must disable OpenMP binding
   (`OMP_PROC_BIND=FALSE`), so it does not mistake the runtime's user-requested placement for library pinning. No
   hardware-topology query is needed by these tests; Task 11 placement checks are external benchmark-operator work.
@@ -817,11 +948,29 @@ stay in the build tree and are not committed. Never hand-edit generated bindings
   unwinding can wait on peers that never posted. Normal successful paths still explicitly wait. Do not rely on a ticket
   destructor to coordinate distributed failure; do not add a per-kernel allreduce to agree on allocation failure. Wrap
   constructor/build/replay/evaluation phases that can strand another rank, including retained-callable entry points.
-  Single-rank failures preserve exception type; failed mutated objects must not be reused.
+  Single-rank failures preserve the original exception type. Add private `invalid_`, `invalidate_()` and
+  `require_valid_()` to enforce non-reuse. The latter throws InvalidPropagatorError with a stable recreate-the-object
+  diagnostic. On the caller, separate validation from the mutation phase using a local `mutation_started` flag; set it
+  before the first mutable cache/state/workspace change. A catch after that boundary calls invalidate_() before the
+  existing abort/rethrow path, including inside active-ticket lifetime. Successful calls never invalidate; pre-mutation
+  validation errors preserve validity. No atomic flag, rollback framework or new persistent workspace is needed.
+- [ ] Call require_valid_() before state-consuming/mutating public operations and dependent functional invocations.
+  Retained closures capture the existing non-owning owner reference and check it before touching caches/snapshots;
+  they invalidate that owner on their own post-mutation failure. Do not change C++ callable lifetime or Python owner
+  retention. Validate a copy/clone source before any store/graph copy; cloning must not revive an invalid object.
+  Already independent copies remain valid. Destruction is always allowed; immutable configuration diagnostics need
+  not inspect invalid computational state. No production reset/setter clears invalid_.
+- [ ] Add single-rank test-only failure injection at a real mutation boundary and during functional evaluation. Catch
+  the original exception; then assert build/replay/update/functional creation, a previously retained functional and
+  copy/clone reject the invalid owner. An independent earlier copy still evaluates. A validation-only failure leaves
+  the original usable. RED: reuse currently reaches state; GREEN: entry guards reject before further work. Injection
+  remains test-only and no production arbitrary-callback API is added.
 - [ ] Validate already initialized MPI with `MPI_Query_thread`, not only monoprop-owned initialization. Reject a level
   below `MPI_THREAD_SERIALIZED` with an actionable diagnostic before distributed work. MPI worker calls are forbidden;
   low-level numerical kernels may serialize under a nested OpenMP call, but distributed public operations from an
-  external OpenMP team are unsupported and must reject before communication.
+  external OpenMP team are unsupported and must reject before communication. The host contract is one controlling
+  caller per rank, no overlapping use of one propagator/dependent functionals and no overlapping host MPI calls.
+  Do not add a process-wide locking service or nested-parallel execution machinery.
 - [ ] Add a separate failure driver with command cases `worker-throw`, `before-exchange`, `active-ticket`,
   `insufficient-thread-level`. On rank zero inject the failure; peers execute the normal phase. Run from a subprocess
   with timeout 30s under two ranks. Expected outcome is prompt nonzero failure, **not** timeout or a successful exit. Do
@@ -896,9 +1045,12 @@ speedup.
 - Extend: `cpp/tests/{fused_cos_sweep_tests,sparse_query_tests,pauli_build_layer_tests}.cpp`,
   `cpp/tests/{exact_upper_atol_rescue,evolution_detail_tests}.cpp`.
 
-**PROPOSED interfaces:** Add `CutoffEvaluator::parallel_safe() const noexcept -> bool`, true only for existing typed
-`LengthCutoff`/`SupportCutoff` targets. Unknown callbacks, including current basis-change closures, use serial
-traversal. Do not require arbitrary existing user callbacks to become thread-safe.
+**PROPOSED interfaces:** Add `CutoffEvaluator::parallel_safe() const noexcept -> bool`, initially true only for existing
+typed `LengthCutoff`/`SupportCutoff` targets. Ordinary Python/C++ constructors take cutoff settings and basis-change
+data, not arbitrary functions. Opaque predicates remain possible through protected C++ `cutoff_fn_` or low-level
+helpers; keep their serial path. Current basis-change closures capture data by value, with no mutable capture found;
+their initial serial path is conservative, not evidence of unsafety. Do not add a new callback API or claim a const
+std::function alone proves safety.
 
 EXISTING `Scan.h::fused_find_and_collect<N,A>` returns `FusedScanResult<N>` and takes `SlotWindow window`, `my_rank`,
 router, precomputed `gen_shift`, then capture/scaling arguments. `Engine.h` derives the plan/window once from that
@@ -927,9 +1079,11 @@ prepared-state cache. Tail masking uses the full index's final word, not each ra
   Cases must exercise dense and sparse pivots, odd Majorana correction even when selected fold columns are empty, Pauli
   J(G), no length cap, cap 0/positive, lower-atol equality, upper-atol rescue, cos=0 fallback, capture-values on/off,
   and no emitted queries.
-- [ ] Add a stateful custom cutoff counting calls and checking caller thread identity. Expected behavior remains serial.
-  A basis-change regression test must retain its existing mathematical result, even though this first version leaves its
-  traversal serial.
+- [ ] Extend the EXISTING stateless opaque C++ lambda fixture in `majorana_cutoff_tests.cpp:171–196`: evaluator
+  classification must be non-parallel-safe and the kernel's test-only work-range observations must show its serial
+  path. Do not invent a stateful Python callback or a callback-heavy performance cell for a nonexistent constructor
+  surface. Preserve actual basis-change results; this first version leaves that traversal serial. Audit real cosine
+  callbacks/parity-cache preparation separately. Serial fallback is not an exemption from approved campaign gates.
 - [ ] On caller: validate arguments, prepare algebra/generator columns, obtain router once, initialize lazy
   index/parity, snapshot row/word count, check skip/tail conditions. Partition words into at most
   `min(options.threads,ceil(words/1024))` contiguous nonempty ranges. Range IDs increase with source word index and do
@@ -1127,8 +1281,11 @@ auto reserve_index_for_size(size_t final_size) -> void;
   row-storage multiplication, vector max_size, table load-factor sizing and next-power-of-two rounding before
   allocations. Geometric spare capacity cannot wrap. Update diagnostics from per-partition to per-rank store at cutover.
 - [ ] Use these checks before incoming predicted IDs and deferred insertion. Audit existing MPI checked counts without
-  changing transport or count width. A rank-wide store can exceed a ceiling that each old partition fit; this is a
-  **capacity compatibility blocker**, not permission to widen only the candidate or introduce hidden shards.
+  changing transport or count width. The owner accepts that consolidating old partitions reduces aggregate per-rank
+  addressability. A required campaign cell above the new ceiling is still a **capacity acceptance blocker**, not
+  permission to widen only the candidate, change ranks or introduce hidden shards. Do not infer a universal RAM limit
+  from the illustrative 512-GiB/eight-domain machine. C8a has 192 GiB advertised RAM; per-rank budgets still
+  require the observed allocation and actual memory demands, not a hard-coded equal split.
 - [ ] Profile row fill. If it is not significant, leave row initialization and publication serial and mark the optional
   steps below skipped with evidence; the required capacity checks still ship.
 - [ ] If justified, add tests proving simultaneous new inline writes do not modify old overflow entries.
@@ -1212,7 +1369,7 @@ current algorithmic requirements.
 **PROPOSED interfaces:** Keep `inner_product(v,w)` and `EvalState::dot(op)` unchanged. Add explicitly named
 `inner_product_threaded(v,w,parallel::Options)` and `EvalState::dot_threaded(op,parallel::Options) const`. They have
 documented fixed-block association, not historical left-to-right association. `ev`/`ev_and_grad` use the new helpers
-through `EvalRequest.parallel` after approval of this numerical policy.
+through `EvalRequest.parallel` under the approved numerical policy; implementation remains separately gated.
 
 - [ ] Add cancellation-heavy finite vectors, zero/signed-zero, sparse gapped rows, very short arrays, >4096 rows,
   non-finite inputs, and repeated parameter indices. Check old serial dot tests unchanged; check new helper results
@@ -1243,8 +1400,8 @@ through `EvalRequest.parallel` after approval of this numerical policy.
   equal; don't widen tolerances to pass them.
 
 **Gate:** Existing serial API guarantees remain intact; new numerical association is documented and deterministic by
-team size. If near-cutoff retained terms change outside existing intended equivalence, stop for owner decision, not a
-tolerance adjustment.
+team size. Global retained term keys must agree, including near cutoffs and stored zeros; matching energies/gradients
+alone is insufficient. A key-set change blocks the gate. Stop and report, never widen tolerances or change truncation.
 
 ### Task 10: Cut over configuration and API semantics to one store
 
@@ -1254,44 +1411,49 @@ tolerance adjustment.
 - Modify: `src/monoprop/bindings/binder.h`, `src/monoprop/monomial_propagator.py` docstrings.
 - Create/extend: `cpp/tests/openmp_equivalence_tests.cpp`, `tests/test_openmp_config.py`,
   `cpp/tests/{env_config_tests,routing_tests,mpi_distributed_layer_equivalence}.cpp`,
-  `cpp/tests/{mpi_fresh_insert_equivalence,unit_tests}.cpp`, `tests/test_monoprop_smoke.py`.
+  `cpp/tests/{mpi_fresh_insert_equivalence,unit_tests,ctor_validation_tests,hybrid_comm_tests}.cpp`,
+  `cpp/tests/link_export_probe/link_export_probe.cpp`, `tests/{test_monoprop_smoke,test_parameter_validation}.py`.
+- Migrate now: `cpp/tests/{partition_equivalence_tests,partition_group_clone_tests}.cpp`; preserve useful coverage in
+  the OpenMP equivalence suite and `cpp/tests/{simulator_copy_tests,update_initial_operator}.cpp` before retiring
+  obsolete facade/factory assertions. Update `cpp/tests/README.md`; do not defer broken constructor users to Task 12.
 - Modify: `AGENTS.md`, `README.md`, `docs/content/docs/features/parallelism.mdx`,
   `docs/content/docs/openmp-migration.mdx` (new).
 
-**PROPOSED interfaces/policy:** Implement the design's deprecation aliases, not the alternative rejection policy
-suggested by some investigations. No second permanent backend setting.
+**PROPOSED interfaces/policy:** Implement immediate removal, as approved in the design interview. No aliases,
+deprecation window, public thread-count constructor argument or permanent backend selector.
 
-- [ ] In fresh subprocesses test the precedence table:
+- [ ] In fresh subprocesses test the final environment-only policy:
 
 | Input | Result |
 | --- | --- |
-| explicit `num_threads=N`, no positive partitions | N exactly, provided 1 <= N <= INT_MAX; no hardware clamp |
-| positive `partitions` and positive `num_threads` | `PropagatorConfigError` |
-| explicit positive `partitions=N` alone | warned deprecated thread budget N; reject if above INT_MAX |
-| `monoprop_PARTITIONS=off` | warned, budget 1 |
-| `monoprop_PARTITIONS=N` | warned, N exactly; reject a positive numeric request above INT_MAX |
-| `monoprop_PARTITIONS=auto` or malformed | warned, fall through to valid monoprop_NUM_THREADS, otherwise OpenMP default |
-| no partition override, valid `monoprop_NUM_THREADS=N` | N exactly (existing parser/range retained) |
-| no library override, any MPI rank count | capture omp_get_max_threads() at construction |
-| OMP_NUM_THREADS unset and no library override | capture runtime default; no hardware-suitability promise |
-| non-null child factory | `PropagatorConfigError`, factory never invoked |
+| `monoprop_NUM_THREADS=N`, valid decimal 1..INT_MAX | capture N exactly; no hardware clamp |
+| valid override and a different OpenMP default | monoprop_NUM_THREADS wins |
+| present empty/zero/negative/malformed/overflowing override | actionable PropagatorConfigError; no fallback |
+| override unset, any MPI rank count | capture omp_get_max_threads() at construction |
+| both thread environment variables unset | capture runtime default; no hardware-suitability promise |
+| stale `monoprop_PARTITIONS` in application environment | no production reader, alias or effect |
+| C++ partition/factory constructor arguments | removed; old source must migrate |
+| low-level Python `partitions` or `num_threads` keyword | rejected as an unknown keyword |
 
-Public `num_threads=0` is the no-explicit-request sentinel. Positive explicit num_threads ignores environment aliases;
-warn only for the legacy setting actually used. Warn once per process per deprecated partitions spelling, using an
-existing diagnostic style or a small `std::once_flag`, not a Python-only warning that C++ users miss. Invalid
-monoprop_NUM_THREADS keeps current parser behavior. Reject oversized positive partition requests before narrowing; do
-not reinterpret them as malformed fallback input. Normally recommend OMP_NUM_THREADS=T with library overrides unset. It
-supplies the OpenMP default but does not override an explicit library budget. Runtime limits such as OMP_THREAD_LIMIT
-and dynamic-team adjustment may reduce the actual team. There is no topology-based fallback or special multi-rank
-default of one thread.
-- [ ] Add default-selection subprocess tests with library overrides unset: OMP_NUM_THREADS=1/3, list-valued
-  OMP_NUM_THREADS=2,3 (capture the runtime's outer-level default), and OMP_NUM_THREADS unset (compare the captured count
-  with omp_get_max_threads, not an assumed core count). Repeat at one and multiple MPI ranks; prove there is no library
-  multi-rank serial fallback. Test explicit/library-environment precedence and OMP_THREAD_LIMIT-reduced actual teams
-  separately from stored requests. Copies and retained closures preserve their captured budget; caller-driven
-  runtime-setting changes affect only subsequently constructed objects. Update prototype constructors/helpers to pass
-  `partitions=0` with an explicit num_threads, since the final API rejects both positive arguments.
-- [ ] Obtain approval for changed historical splitmix physical ownership: `floor((hash % (R*S))/S)` becomes `hash % R`.
+Only absent monoprop_NUM_THREADS selects the OpenMP default; zero is not a public sentinel. Use Task 3's strict parser
+rather than the old cached permissive one. Remove Settings::num_threads and its legacy accessor/parser once their
+partition consumers are gone; remove resolve_partition_count_ declaration/definition in this task too, so its old parser
+references do not survive as ill-formed dead template code. Retain independent routing settings/cache. Scan readers for
+remaining partition-only knobs and remove them. At the inspected source the only partition-specific runtime variable is
+monoprop_PARTITIONS; monoprop_ROUTING and monoprop_ROUTE_SEED remain MPI configuration. Do not add a removed-variable
+reader for warning or rejection. Candidate benchmark preflight may reject a stale launch environment independently.
+
+The supported application fixes ranks/threads at launch. Capture once per constructor, never reload during operations or
+add a setter. Copies/functionals preserve their budget. OpenMP limits or small-work paths may use fewer actual workers;
+this is not a budget change. There is no topology-based fallback or special multi-rank default of one thread.
+- [ ] Test defaults in fresh processes with monoprop_NUM_THREADS unset: OMP_NUM_THREADS=1/3, list-valued 2,3 (use the
+  runtime's outer-level default), and unset OMP_NUM_THREADS (compare against omp_get_max_threads, not assumed cores).
+  Repeat at one and multiple ranks. Test override precedence, all invalid-input classes from Task 3 and limited teams.
+  Invalid settings on one rank must fail coherently rather than strand peers. Add a bounded white-box test that changes
+  the source setting after construction solely to prove existing objects/copies/closures do not reread it; this is not
+  a supported hot-configuration API. Full-budget matrix tests use separate launches, not mid-calculation changes.
+  Remove prototype partitions=1 arguments; public tests use environment configuration, internal kernels use Options.
+- [ ] Apply the approved splitmix physical ownership change: `floor((hash % (R*S))/S)` becomes `hash % R`.
   Linear rank mapping remains unchanged; S=1 removes only the partition hash. Preserve boolean mode/seed,
   `linear_requested()`, `linear_bits_for(R)`, `make_router(R,1)`, generator `rank_shift` and `dest_from_shift` peer
   selection. No virtual shards. Exports/load/reduction order can change under splitmix; validate global term/value maps
@@ -1303,33 +1465,43 @@ default of one thread.
   default tests distinct from splitmix matrix runs; never expect an automatic fallback. Assert unique global ownership,
   generator-peer agreement, zero-payload participation, fixed-candidate ordering across budgets and global numerical
   equivalence. Do not require old/new rank-local maps equal for splitmix.
-- [ ] Make constructor create exactly one rank-local `MPOperator` and graph, with `comm_` representing only real MPI
-  ranks. Remove facade branches from every public method and internal dispatch, but leave now-unused transport files
-  until Task 12. Retain `PartitionChildFactory` declaration/argument temporarily to produce actionable failure, and keep
-  `MultiPartitionUnsupported` type temporarily for source migration even though single-store accessors no longer throw
-  it.
+- [ ] Migrate every constructor/helper/binding test using removed partition arguments in this same task. Use a source
+  search over cpp/tests, tests and src; include the installed export probe, constructor-validation cases and Python
+  parameter-validation/smoke tests. Old calls failing to compile or obsolete keywords still being accepted are
+  meaningful RED conditions. Move useful numerical/copy/update/empty-rank coverage before retiring facade/factory-only
+  cases; preserve ordinary-MPI cases currently housed in hybrid suites. Record each retired case's replacement in the
+  Task 12 ledger. Remove unit_tests.cpp's monoprop_PARTITIONS override and use the serial launch budget instead.
+  R/M must compile and pass here, not become green only after Task 12 deletes test files.
+- [ ] Each independent propagator constructor creates one rank-local MPOperator and primary graph; comm_ represents
+  only real MPI ranks. Remove facade branches, partitions/child_factory arguments, PartitionChildFactory and
+  partition-specific error types such as MultiPartitionUnsupported. No diagnostic compatibility shims. Leave now-unused
+  transport implementation files until Task 12. Independently copied propagators keep their own stores; retained
+  coefficient/state snapshots, shared immutable graph cores and pared graphs remain legitimate existing objects.
 - [ ] Preserve rank-local size/bytes accounting (do not allreduce twice), core term handling, copy independence,
   immutable graph-core sharing, virtual destructor, virtual `clone_`, overridden virtual `update_initial_operator`, and
   protected nonvirtual `apply_initial_operator_`. Do not add override to or make that helper virtual. Copy budget and
-  ordinary MPI communicator. Raw accessors return the one store/graph at all budgets.
+  ordinary MPI communicator. Raw accessors expose that instance's rank-local store/primary graph at every budget.
+  Preserve Task 3 invalidation checks: invalid sources cannot be cloned; an already independent copy stays usable.
 - [ ] Preserve `MonomialPropagator.inl:126–151,197–227` streamed paired-basis construction and local reservation:
   cardinality rejection remains before worker startup and uses real ranks at S=1, never T. Do not materialize
   `generate_paired_op` globally per rank. Migrate `partition_equivalence_tests.cpp` initial-basis invariance alongside
   enumeration/cardinality tests from `majorana_cutoff_tests.cpp` and `ctor_validation_tests.cpp`.
-- [ ] Migrate numerical tests from partition counts to explicit budgets 1/2/3/4; distinguish stored requests from actual
-  team sizes under OpenMP limits. Library budget selection never clamps to affinity. Run parallel gates on a user/CI
+- [ ] Migrate numerical tests from partition counts to launch-time budgets 1/2/3/4 in fresh processes; lower-level
+  kernel tests may pass explicit internal Options. Distinguish stored requests from actual team sizes under OpenMP
+  limits. Library budget selection never clamps to affinity. Run parallel gates on a user/CI
   allocation supporting the requested teams and report limited-team skips honestly; pure budget tests need no extra
-  CPUs. The default white-box harness selects a serial library budget (not CPU pinning); explicit tests override it.
-  Test default OpenMP selection in fresh processes without that harness override.
-- [ ] Test public Majorana/Pauli constructors unchanged. Keep binding-only `partitions`/`num_threads`; do not add
-  unrelated public constructor parameters. Test copy, operator update, retained callbacks after growth,
+  CPUs. The default white-box harness selects a serial library budget (not CPU pinning); dedicated launches override
+  it before construction. Test OpenMP-default selection in fresh processes with that library override absent.
+- [ ] Test public Majorana/Pauli mathematical constructors unchanged. Remove binding-only partitions and do not add
+  num_threads or any other public thread-count argument. Test copy, operator update, retained callbacks after growth,
   cutoff/basis-change update, paring, Schrödinger state extension and independent repeated evaluation.
 - [ ] Regenerate bindings via the configured generator. Preserve 32-mode template dispatch. Document
   low-level/source/ABI breaks and unspecified coefficient-order changes; compare decoded term/value mappings rather than
   sorted coefficients alone.
 
-**Gate:** R/M API/configuration tests pass; `R ranks × T threads` owns exactly R stores. Full compatibility ledger is
-approved before deleting extension hooks.
+**Gate:** R/M API/configuration tests pass; one independent propagator across R ranks owns R packed stores, regardless
+of T. Copies and retained snapshots/graphs obey the qualified ownership rule. Removed configuration/constructor surfaces
+stay absent; invalid objects cannot be reused. Record the approved immediate compatibility breaks in the release ledger.
 
 ### Task 11: Measure parity and apply only bounded optimizations
 
@@ -1344,35 +1516,44 @@ functions or move benchmark files.
   (on Linux, `lscpu -e=CPU,CORE,SOCKET,NODE` and `/proc/<pid>/task/*/status`). Observe actual active-worker masks/team
   size, not merely omp_get_max_threads; if a runtime cannot supply that evidence, use external sampling or test-only
   observation rather than adding a production topology API. Preserve old single-CPU-thread fields as historical data:
-  OpenMP core places may include SMT siblings. No required hwloc dependency for the library or measurement helper.
+  OpenMP core places may contain both SMT siblings, but at most one worker may occupy each physical core in the
+  recommended/acceptance configuration. A wider affinity mask is not evidence of extra worker capacity. Record distinct
+  physical-core ownership from verified sibling topology across active ranks/workers, not only disjoint logical CPU IDs.
+  No required hwloc dependency for the library or measurement helper.
 - [ ] The benchmark operator, not monoprop construction, verifies that rank masks and actual worker places stay in one
-  NUMA domain and within the reserved allocation, with no unintended overlap between ranks. Do not require one logical
-  CPU per worker mask. Record idle/small-kernel serial fallback versus representative large-kernel actual team size
-  separately. An unverifiable placement blocks that benchmark result, not normal library construction.
-- [ ] Compare old partitions vs final new threads at identical R,T and routing settings, using Task 1 frozen profiles.
+  NUMA domain and within the reserved allocation, with no unintended overlap between ranks. Advise at least one MPI
+  process per allocated NUMA domain, with disjoint CPU subsets when several processes share a domain. Use actual OS/site
+  topology, not a constant four domains/socket; partial-node runs cover only their allocated domains.
+  Do not require one logical CPU per worker mask. Record idle/small-kernel serial fallback versus representative
+  large-kernel actual team size separately. Unverifiable placement blocks benchmark evidence, not library construction.
+- [ ] Compare old partitions vs final new threads at identical R,T and routing settings, using Task 1's frozen
+  size-band-specific inventory. Small/medium profiles cover the full sweep; large profiles only the two full-node
+  decompositions. Do not add/remove required cells or reinterpret profile sizes after seeing candidate performance.
   Freeze the production routing mode in that matrix; additionally require the random reference profile under explicit
   splitmix at R=3 and R=4, plus default linear at R=4 so ownership-dependent imbalance is measured, not only
   unit-tested. Run five alternating **fresh-process** observations per arm/cell; external repetition only,
   `--bench-rounds=1`. Include first-call/cold cache and separately measured repeated warm calls without overlapping
   object construction.
 
-Example candidate Open MPI invocation after selecting actual values for `R` (= P), `T`, `LABEL`, and absolute `RESULTS`.
+Example candidate Open MPI invocation after selecting R (= P), K (ranks/domain), T, LABEL and absolute RESULTS.
+Use K=1 or K=2 for the agreed decomposition profiles. Choose a compatible placement for routing-specific R=3/R=4 cells;
+do not force ppr:1:numa onto an allocation with too few NUMA domains. All placements require observed disjoint cores.
 This demonstrates one raw pytest run, not a complete parity observation. The Task 1 driver uses the same launcher
 contract, unique per-sample raw directory, frozen campaign and paired construction/validation artifacts for acceptance.
-Unset compatibility overrides so this exercises normal OMP_NUM_THREADS configuration:
+Unset removed partition configuration and use the supported library override. The OpenMP fallback is tested separately:
 
 ```bash
-unset monoprop_PARTITIONS monoprop_NUM_THREADS
+unset monoprop_PARTITIONS
 # This example chooses splitmix explicitly, including if R=3; use linear only in a separate R=1/2/4 cell.
 export monoprop_ROUTING=splitmix
 mkdir -p "$RESULTS"
 monoprop_BENCH_LABEL="$LABEL" monoprop_BENCH_RESULTS="$RESULTS" \
-OMP_NUM_THREADS="$T" OMP_DYNAMIC=FALSE \
+monoprop_NUM_THREADS="$T" OMP_NUM_THREADS="$T" OMP_DYNAMIC=FALSE \
 OMP_PLACES=cores OMP_PROC_BIND=close \
-uv run --no-sync mpiexec -n "$R" --map-by "ppr:1:numa:PE=$T" \
-  --bind-to core --report-bindings \
+uv run --no-sync mpiexec -n "$R" --map-by "ppr:${K}:numa:PE=${T}" \
+  --bind-to core --nooversubscribe --report-bindings \
   -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS -x monoprop_ROUTING \
-  -x OMP_NUM_THREADS -x OMP_DYNAMIC -x OMP_PLACES -x OMP_PROC_BIND \
+  -x monoprop_NUM_THREADS -x OMP_NUM_THREADS -x OMP_DYNAMIC -x OMP_PLACES -x OMP_PROC_BIND \
   python -m pytest 'benches/bench_models.py::test_model_propagate[pauli]' \
   -o filterwarnings=default --bench-rounds=1 --runtime-shape=openmp \
   --benchmark-json="$RESULTS/time-$LABEL.json"
@@ -1383,14 +1564,15 @@ uv run --no-sync monoprop-bench-bmf "$RESULTS" "$LABEL"
 This mapping syntax is Open MPI-specific. Verify scheduler/launcher support; do not escape the allocation. For the
 **baseline only**, set `monoprop_PARTITIONS="$T"` and `monoprop_NUM_THREADS="$T"`, export both to ranks with
 `-x monoprop_PARTITIONS -x monoprop_NUM_THREADS`, and replace `--runtime-shape=openmp` with
-`--runtime-shape=partitions`. Keep OMP settings, routing, allocation and shared overlay identical. The candidate must
-leave both library overrides unset. The shared preflight is a required Task 1 change: the existing guard would reject
-this candidate above one rank. Verify declared versus observed shape with binary-linked diagnostics; labels alone cannot
-certify shape. After M build assert monoprop.has_mpi before invoking any launcher. For Slurm document the corresponding
-user contract (`srun --ntasks=P --cpus-per-task=T --cpu-bind=cores` with OMP_NUM_THREADS=T and suitable
-OMP_PLACES/OMP_PROC_BIND), while making clear that site CPU/SMT allocation rules and single-NUMA containment must be
-verified. Launcher binding must leave each rank enough CPUs for its workers; merely setting OMP_NUM_THREADS does not
-enlarge a one-core rank mask.
+`--runtime-shape=partitions`. Keep OMP settings, routing, allocation and shared overlay identical. The candidate uses
+monoprop_NUM_THREADS but never monoprop_PARTITIONS. The shared preflight is a required Task 1 change: the existing
+guard would reject this candidate above one rank. Verify declared versus observed shape with binary-linked diagnostics;
+labels alone cannot certify shape. After M build assert monoprop.has_mpi before invoking any launcher. Follow the
+[physical-core launch recipes](../specs/2026-09-18-rank-local-openmp-design.md#physical-core-launch-recipes) for both
+Open MPI and Slurm. Document srun's --threads-per-core=1, compatible core binding and OpenMP budgets/places, and the
+required NUMA verification. Do not combine conflicting --hint options or claim that socket/block distribution implies
+NUMA containment. Explicit-mask fallbacks require eligible full-CPU step allocation, not merely an exclusive job.
+OMP_PLACES=cores is not a worker-count cap, and merely setting OMP_NUM_THREADS does not enlarge a one-core rank mask.
 - [ ] Report runtime, exact operation peak/floor/delta, outer peak sum/max, separate whole-construction peak, persistent
   operator/graph bytes, query/snapshot/TLS capacities, term/graph sizes, and numerical checks. Rank peak sums are upper
   bounds on aggregate footprint, not node provisioning estimates; retain maximum rank peak as another statistic. Reject
@@ -1398,7 +1580,8 @@ enlarge a one-core rank mask.
 - [ ] Compare medians per cell using exactly the five Task 1 gates: runtime, operation peak sum/max and construction
   peak sum/max. Outer peak ratios are diagnostics only. All five required ratios must be <=1.00. If any fail, collect
   five additional observations per arm for those cells and compare all ten. Do not replace the strict gate with a
-  geometric mean, a made-up 5% tolerance, or a changed problem size.
+  geometric mean, a made-up 5% tolerance, or a changed problem size. A noisy failure means parity was not demonstrated,
+  not proof of architectural slowdown; it still blocks acceptance. Do not drop the cell or quietly waive it.
 - [ ] Profile phases before optimization: bitmap traversal, query merge, decode/probe, missing-ID assignment, row fill,
   hash publication/rehash, inverted-index maintenance, graph packing, MPI pack/wait, cosine, pairs, dot. Record miss
   fraction, overflow fraction and bytes, not just aggregate speed.
@@ -1423,7 +1606,7 @@ enlarge a one-core rank mask.
   redistribution, full per-thread stores or a persistent key map require a new design; stop rather than improvise.
 
 **Gate:** All required performance/memory cells pass with attached raw observations and numerical/placement evidence.
-Missing hardware, capacity failure, persistent serial-publication bottleneck or repeated ratio>1.00 blocks
+Missing required EC2 evidence, capacity failure, persistent serial-publication bottleneck or repeated ratio>1.00 blocks
 removal/acceptance. Report it honestly; the design is not a promise of achievable parity.
 
 ### Task 12: Remove legacy partition runtime, topology machinery and direct hwloc dependency
@@ -1451,11 +1634,12 @@ removal/acceptance. Report it honestly; the design is not a promise of achievabl
 Kind/Shm/Hybrid and associated pointers/constructors/dispatch. Keep non-MPI behavior, ordinary MPI, PeerPlan routing and
 existing typed exchanges. Do not collapse it to a raw alias if that changes overload behavior unnecessarily.
 
-- [ ] Start only after Task 11 parity and explicit owner approval of the C++ extension-interface break. Confirm no
-  runtime path constructs old groups before deleting definitions.
-- [ ] Remove `partition_group_`, friendship, fan-out implementations, `resolve_partition_count_`, `is_partition_facade`,
-  and all protected partition-only helpers. Keep `clone_` and virtual lifecycle/operator-update hooks. No compatibility
-  facade that invokes old callbacks once with silently different semantics.
+- [ ] Start only after Task 11 parity under separately authorized implementation. The owner approved the immediate
+  partition-related C++ extension/ABI break; confirm no runtime path constructs old groups before deleting definitions.
+- [ ] Remove any remaining `partition_group_`, friendship and unused fan-out implementation. Confirm Task 10 already
+  removed resolve_partition_count_, public partition/factory arguments and facade-only test users; remove remaining
+  is_partition_facade/protected partition-only helpers. Keep `clone_` and virtual lifecycle/operator-update hooks. No
+  compatibility facade that invokes old callbacks once with silently different semantics.
 - [ ] Remove non-MPI-thread transport branches from utilities/tickets. Production router geometry is `(real_ranks,1)`.
   Preserve EXISTING boolean linear/splitmix default/rejection contract and generator shift/peer rules; no
   routing-default repair is needed. Keep ordinary MPI sparse query routing and sparse on-wire replay, sender order,
@@ -1480,20 +1664,21 @@ existing typed exchanges. Do not collapse it to a raw alias if that changes over
   required OpenMP across flake package/MPI package/devshell checks and the deploy wheel matrix. Remove documentation
   claiming hwloc/pkg-config is a direct monoprop prerequisite or that the library pins threads. Do not uninstall or
   strip a library needed by the selected MPI/OpenMP runtime, or remove another dependency's legitimate pkg-config use.
-- [ ] Migrate tests before deleting obsolete files:
+- [ ] Complete this migration ledger before deleting obsolete files. Constructor/facade-dependent cases must already
+  have moved in Task 10; retain transport-only coverage until this task removes its implementation.
 
 | Old coverage | Replacement/retirement |
 | --- | --- |
 | `partition_equivalence_tests.cpp`: energies, gradients, propagation, determinism, copies, Pauli, setters, partial contraction | `openmp_equivalence_tests.cpp`, budgets 1/2/3/4, both pictures, decoded term/value equivalence |
 | facade raw-accessor errors | single-store raw-accessor consistency at every budget |
-| factory throw/child construction | deprecated factory rejected before invocation; no worker terminate |
+| factory throw/child construction | factory API removed; Task 3 validates joined worker exceptions without terminate |
 | `partition_group_clone_tests.cpp`: derived children | retire child-existence assertions; retain derived clone/update-initial-operator independence in `simulator_copy_tests.cpp` and `update_initial_operator.cpp` |
 | `shm_comm_tests.cpp` / `hybrid_comm_tests.cpp`: private barrier algorithms | retire only after ownership/source-order/empty-payload/count/error assertions map to MPI/OpenMP tests |
 | `hybrid_comm_sparse_plan_on_the_plain_mpi_path` | move unchanged semantics to ordinary MPI tests; unknown and known receive counts |
 | plain-MPI half of `hybrid_comm_known_recv_counts_are_masked_through_the_plan` | preserve masked non-peer counts and sparse peer payload assertions |
 | `flat_exchange_tests.cpp` replay dense/pairwise/dense-layout/empty tests | retain and run under ordinary MPI after deletion |
 | hybrid MPI energy and size case | retain as MPI×OpenMP matrix case in `mpi_distributed_layer_equivalence.cpp` |
-| poisoned waiter release | Task 3 MPI failure-driver and local joined-exception tests |
+| poisoned waiter release | Task 3 MPI failure-driver, joined exceptions and enforced invalid-owner/functionals tests |
 | `cpu_topology_tests.cpp`: topology enumeration, mask classification, pinning/L3 dealing | retire these library-owned policy tests; Task 3/10 count/precedence/no-affinity-mutation tests cover the retained library contract, and Task 11 verifies placement externally |
 
 Record individual retired case names and replacement names in the implementation acceptance artifact; do not merely
@@ -1508,8 +1693,9 @@ rg -n -i 'hwloc|CpuTopology|PkgConfig::HWLOC|libhwloc-dev' \
   README.md AGENTS.md docs/content/docs
 ```
 
-First command should have no production matches except deliberately retained migration diagnostics/type names where
-applicable; second must resolve to approved deprecated API/docs, not active ownership/fan-out. The hwloc audit must find
+First command should have no production legacy-runtime matches; second must resolve only to mathematical/MPI
+partition terminology or historical migration notes, never a retained constructor alias, getenv reader or fan-out.
+The hwloc audit must find
 no direct discovery/link/install requirement or CpuTopology implementation; migration notes about removal and
 third-party/transitive dependencies are allowed. Inspect each match rather than deleting mathematical/MPI partition
 terminology indiscriminately.
@@ -1521,8 +1707,8 @@ terminology indiscriminately.
 **Gate:** No in-process communication runtime, library-owned worker threads, custom barriers, topology/affinity
 subsystem, direct hwloc dependency or permanent legacy backend remain. Build/install/import a non-MPI candidate in an
 environment without hwloc development headers/pkg-config metadata; inspect direct linkage instead of requiring the
-absence of a runtime's own transitive hwloc dependency. One store per rank is verified by construction, tests and memory
-accounting, not merely a flag.
+absence of a runtime's own transitive hwloc dependency. One packed store per independent propagator per rank is verified
+by construction, copy/functional tests and memory accounting, not merely a flag.
 
 ### Task 13: Final packaging, documentation and independent acceptance
 
@@ -1562,17 +1748,24 @@ nix develop --command bash -euo pipefail -c '
 - [ ] Run `just test-find-package` against the installed package, extending its existing shared probe source rather than
   creating a duplicate harness; compile a template kernel using OpenMP and both Majorana/Pauli APIs. The consumer must
   not inherit source-tree include paths or manual linker flags.
-- [ ] Document one store/rank and the resource-ownership contract explicitly: users choose P and T for their resources
-  and bind/pin ranks/threads with OMP_PLACES+OMP_PROC_BIND, srun --cpu-bind and/or mpiexec options. Normally use
-  OMP_NUM_THREADS=T; explicit library overrides have the documented precedence. Describe construction-time capture of
-  the OpenMP default at any rank count, no library hardware clamp/topology discovery/NUMA validation, possible OpenMP
-  team-size limits, and the one-NUMA-per-rank allocation assumption. Show matching allocation/rank-binding/thread-place
-  examples, including the single-core-rank-mask pitfall. Retain MPI serialized policy, no concurrent object/communicator
-  calls, callable lifetime, failed-operation non-reuse, capacity and numerical contracts. State that external placement
-  verification for benchmarks does not add a required topology library.
-- [ ] State exact breaks: protected partition helpers removed, factory rejected, old automatic physical-core
-  selection/multi-rank serial default and library pinning removed in favor of OpenMP/user configuration, direct hwloc
-  prerequisite removed, raw coefficient order can differ, ABI requires rebuild. Explicit thread requests are not
+- [ ] Document one packed store per independent propagator per rank, preserving copies, existing functional snapshots
+  and pared graphs. Users choose P/T at launch and bind with OMP_PLACES+OMP_PROC_BIND, srun --cpu-bind and/or mpiexec.
+  Normally use monoprop_NUM_THREADS=T; only unset selects the OpenMP runtime default. Present-invalid is an error.
+  Capture once during construction, with no reload/setter. Describe no hardware clamp/topology discovery/NUMA
+  validation, possible smaller OpenMP teams, and the within-one-domain allocation assumption. Show matching allocation,
+  rank-binding and thread-place examples, including the one-core-rank-mask pitfall. Document one controlling host caller
+  outside host OpenMP teams, no overlapping use of dependent state or host MPI calls, serialized MPI, callable lifetime,
+  enforced failed-object invalidation, accepted capacity reduction and numerical contracts. Placement verification for
+  benchmarks does not add a topology dependency. Advise at least one MPI process per allocated NUMA domain and identify
+  actual topology externally; production's common four-domains/socket layout is not universal. Distinguish the selected
+  c8a.metal-24xl initial acceptance from pending Intel/AMD HPC qualification. Explicitly recommend against SMT workers,
+  even when hardware SMT is enabled, and demonstrate launcher plus OpenMP settings for one worker per physical core.
+  Multi-node performance qualification remains pending a proper HPC cluster/interconnect; do not claim it from EC2
+  same-instance MPI tests.
+- [ ] State exact immediate breaks: partitions/child_factory arguments, PartitionChildFactory, partition-only helpers,
+  errors and environment controls removed without aliases; no replacement public num_threads argument. Old automatic
+  physical-core selection, multi-rank serial default, library pinning and direct hwloc requirement are gone. OpenMP is
+  mandatory even without MPI. Raw order/splitmix physical ownership may differ; ABI requires rebuild. Requests are not
   hardware-clamped. Preserve high-level Python mathematical signatures. In prose/docstrings use `[Symbol][]` references,
   not hard-coded API URLs.
 - [ ] Run `prek run --all-files` before any separately authorized push, plus relevant tests, `just gen-api` and
@@ -1590,11 +1783,16 @@ nix develop --command bash -euo pipefail -c '
 
 **Final acceptance checklist:**
 
-- [ ] Mathematical features, near-cutoff term retention, copies/updates/closures and graph paring pass existing oracles.
+- [ ] Mathematical features, equal global retained term keys, copies/updates/closures and graph paring pass existing
+  oracles; matching energies/gradients alone is insufficient.
+- [ ] Environment-only immutable budgets, strict invalid-input errors, removed partition interfaces and enforced
+  invalid-object/dependent-functional rejection pass; host calling assumptions and immediate breaks are documented.
 - [ ] Thread-count-stable ordering and approved deterministic reductions pass; no shared append, lazy-cache, packed-word
   or MPI-worker race remains.
 - [ ] Fixed uint32_t TermIndex and optional-MPI/non-MPI packaging pass.
-- [ ] Rank-wide limits and real placement satisfy the selected baseline geometries.
+- [ ] Rank-wide limits and verified one-worker-per-physical-core placement satisfy the single-instance campaign,
+  including its two-ranks-per-domain case. HPC-family performance and proper-interconnect multi-node qualification are
+  explicitly pending, not falsely passed or silently included in the initial acceptance claim.
 - [ ] Every required runtime and exact peak-memory cell passes Task 11; unsupported or missing measurements are not
   marked passed.
 - [ ] No legacy runtime, direct hwloc dependency or replacement topology/pinning service remains; no equivalent
