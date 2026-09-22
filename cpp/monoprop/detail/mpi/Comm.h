@@ -18,6 +18,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <stdexcept>
 #include <vector>
 
@@ -68,8 +69,8 @@ struct Comm {
     }
 };
 
-// A window-relative index. Distinct from a flat slot on purpose: the two are the same number only when
-// the window starts at 0, so a swap addresses the wrong peer while staying in bounds.
+// A window-relative index, typed apart from a flat slot: mixing the two stays in bounds but addresses
+// the wrong peer whenever the window does not start at 0.
 struct WindowIndex {
     size_t value = 0;
 
@@ -77,17 +78,17 @@ struct WindowIndex {
     explicit constexpr WindowIndex(size_t v) noexcept : value(v) {}
 };
 
-// The contiguous run of flat destination slots a round can reach. Slots are rank-major
-// (slot = rank * S + partition), so one rank's S partitions are contiguous and the single peer sparse
-// routing leaves is exactly one such run; dense is the count == P value of the same run, not a second
-// shape. See PeerPlan::window.
+// The contiguous run of flat slots a round can reach. Slots are rank-major, so a sparse plan's one peer
+// is S contiguous slots and dense is the count == P case of the same run. See PeerPlan::window.
 struct SlotWindow {
     size_t base = 0;  // first reachable flat slot
     size_t count = 0; // slots in the run
 
+    constexpr auto operator==(const SlotWindow &) const -> bool = default;
+
     [[nodiscard]] constexpr auto stop() const -> size_t { return base + count; }
     [[nodiscard]] constexpr auto contains(size_t slot) const -> bool { return slot >= base && slot < stop(); }
-    // The one flat-slot door: it asserts membership, so a slot from outside cannot become another's entry.
+    // Asserts membership, so an outside slot cannot alias another's entry.
     [[nodiscard]] constexpr auto index(size_t slot) const -> WindowIndex {
         assert(contains(slot) && "flat slot outside the window it is being re-based into");
         return WindowIndex{slot - base};
@@ -96,11 +97,14 @@ struct SlotWindow {
         assert(i.value < count);
         return base + i.value;
     }
+    // Every WindowIndex of the run, in slot order.
+    [[nodiscard]] constexpr auto indices() const {
+        return std::views::iota(size_t{0}, count) | std::views::transform([](size_t k) { return WindowIndex{k}; });
+    }
 };
 
-// A vector over a SlotWindow, addressed by flat slot through at_slot(); operator[] takes a WindowIndex,
-// so a flat slot used as a raw index does not compile. Re-basing an array is only safe if every index
-// site shifts together, and these two accessors are the only sites.
+// A vector over a SlotWindow: at_slot() takes a flat slot, operator[] a WindowIndex, so a flat slot used
+// as a raw index does not compile.
 template <typename T>
 class WindowVec {
 public:
@@ -132,28 +136,12 @@ private:
     std::vector<T> v_;
 };
 
-// Which destination RANKS a round can touch, when the caller knows. Two states, matching
-// routing::Router: dense, or sparse over the single peer GF(2)-linear routing implies.
+// Which destination ranks a round can touch. Dense (the default) is every rank and the collective path;
+// sparse is the single peer `me ^ shift` that linear routing implies. XOR is an involution, so every
+// rank derives the same pairing without communicating.
 //
-// Sparse means the destination rank of every block is determined by the generator: it is this rank's
-// own index XOR `shift`, so
-//
-//     peer = me ^ shift,   count == 1
-//
-// -- one peer instead of all `ranks`, and the relation is symmetric (XOR is an involution), so every
-// rank derives the same pairing with no communication. That is what lets a verb replace a dense
-// collective with point-to-point. Linear routing takes ALL log2(ranks) rank bits, so there is no
-// intermediate fanout to express here.
-//
-// Dense is the default: peer(k) == k and count == ranks, so the same loops walk every rank and the
-// verbs take their collective path. Every single-rank run is dense (Router::is_linear is false at
-// R == 1), so the collectives are not a fallback but the common case.
-//
-// Two distinct failure modes if `shift` is wrong, which is why the plan is derived in one place. Ranks
-// that DISAGREE deadlock: the pairing stops being symmetric and someone waits on a send never posted.
-// Ranks that all agree on the same wrong shift stay symmetric and never hang -- they silently DROP the
-// blocks outside the peer set, because pack_count_matrix_ / size_staging_send_ / pack_send_ only ever
-// touch peers. pack_count_matrix_ asserts the non-peer remainder is empty to catch that one.
+// A wrong `shift` fails two ways: ranks that disagree deadlock, and ranks that agree on the same wrong
+// value silently drop blocks outside the peer set. HybridComm::require_plan_covers_traffic_ checks the latter.
 struct PeerPlan {
     bool sparse = false;
     int shift = 0;
@@ -163,26 +151,22 @@ struct PeerPlan {
     // `k` indexes the peer set, which is a singleton when sparse.
     [[nodiscard]] constexpr auto peer(int me, int k) const -> int { return sparse ? (me ^ shift) : k; }
     [[nodiscard]] constexpr auto contains(int me, int b) const -> bool { return !sparse || b == (me ^ shift); }
-    // The flat slots reachable from `me_flat` over a `ranks` x `parts` world. One expression per field:
-    // sparse names the peer rank's `parts` slots, dense is the same with peer rank 0 and count(ranks)
-    // == ranks, i.e. the whole world.
+    // The flat slots reachable from `me_flat` in a `ranks` x `parts` world: the peer rank's, or all.
     [[nodiscard]] constexpr auto window(size_t me_flat, size_t ranks, size_t parts) const -> SlotWindow {
         const size_t peer_rank = sparse ? ((me_flat / parts) ^ static_cast<size_t>(shift)) : 0;
         return SlotWindow{.base = peer_rank * parts,
                           .count = static_cast<size_t>(count(static_cast<int>(ranks))) * parts};
     }
 
-    // `me ^ shift` is a vector index and an MPI rank before anything bounds-checks it, so a shift outside
-    // the rank-index width indexes out of range and names a peer that does not exist. The power-of-two
-    // condition is load-bearing: `shift < ranks` alone does not keep `me ^ shift` under `ranks` otherwise.
+    // `me ^ shift` is used as an index and an MPI rank unchecked. Power-of-two `ranks` is what makes
+    // `shift < ranks` keep it in range.
     [[nodiscard]] constexpr auto routable(int ranks) const -> bool {
         return dense()
                || (ranks > 0 && std::has_single_bit(static_cast<unsigned>(ranks)) && shift >= 0 && shift < ranks);
     }
 };
 
-// Every sparse entry point calls this before it indexes, posts or barriers on a plan. Aggregate
-// initialisation is how PeerPlan is meant to be built, so the invariant cannot live in a constructor.
+// Called by every sparse entry point before it indexes or posts; PeerPlan is an aggregate, so no ctor can.
 inline auto require_routable(PeerPlan plan, int ranks) -> void {
     if (!plan.routable(ranks)) {
         throw std::invalid_argument(

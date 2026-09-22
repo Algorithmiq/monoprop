@@ -14,34 +14,33 @@
 
 #pragma once
 
+#include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <format>
 #include <vector>
 
 #include <mpi.h>
 
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/Routing.h"
 
 namespace monoprop::mpi {
 
-// One tag per (transport, verb), all five here so no two can collide unseen: one thread per rank calls
-// MPI, so the tag is all that keeps a count round in flight from being matched by a payload receive.
-//
-// Why Engine.h's run_exchange may post BOTH its begin_alltoallv rounds under kFlatPayloadTag on one
-// communicator: MPI does not overtake within a (src, dst, tag, comm); the query round's MPI_Waitall
-// completes before round 2 posts; and both ends skip a zero-count leg on the same value -- what one
-// sends a peer IS that peer's recv count, by transpose -- so the two posted sequences match element
-// for element and a round-2 receive cannot match a round-1 send.
+// One tag per (transport, verb), kept together so none collide: the tag is all that stops a count round
+// in flight matching a payload receive. Engine.h's two rounds may share kFlatPayloadTag: MPI does not
+// overtake within (src, dst, tag, comm), round 1 completes before round 2 posts, and both ends skip a
+// zero-count leg on the same (transposed) value.
 inline constexpr int kHybridCountTag = 0x6D70; // 'mp'
 inline constexpr int kHybridPayloadTag = 0x6D71;
 inline constexpr int kFlatPayloadTag = 0x6D72;
 inline constexpr int kFlatCountTag = 0x6D73;
-// Graph REPLAY payload (Exchange.h). Its own value, so a replay leg can match neither the build path's
-// counts nor its payload even though both run over the same communicator.
+// Graph replay payload (Exchange.h), distinct from the build path's rounds on the same communicator.
 inline constexpr int kFlatReplayTag = 0x6D74;
 
-// Per-peer element counts and offsets. Null `counts` is the fixed-block case: `block` each, at b*block.
+// Per-peer element counts and offsets; null `counts` means `block` elements each, at b * block.
 struct PeerLayout {
     const int *counts = nullptr;
     const int *displs = nullptr;
@@ -68,15 +67,10 @@ struct SparsePairwiseArgs {
     PeerLayout recv_layout;
 };
 
-// A variable all-to-all as point-to-point over `args.plan`'s peers: one Irecv/Isend pair each, the self
-// peer copied in place. Counts and displacements are in elements of `args.datatype`, whose extent must be
-// `args.elem`. `reqs` is caller storage, grown then indexed: MPI holds these pointers until the wait, so
-// it cannot be grown inside the loop and a reallocating push_back would dangle what is already posted.
-//
-// POSTS ONLY, and returns how many of `reqs` are live. The caller waits, so the buffers and `reqs` must
-// all outlive that wait. `reqs` is sized from a pre-pass rather than from a caller's bound, because a
-// bound that turns out to be short cannot be recovered from: by then MPI holds pointers into the old
-// buffer, so neither growing it nor throwing is safe.
+// A variable all-to-all as point-to-point over `args.plan`'s peers: an Irecv/Isend per non-empty leg,
+// the self leg copied. Counts are in elements of `args.datatype`, whose extent is `args.elem`.
+// POSTS ONLY and returns how many of `reqs` are live; buffers and `reqs` must outlive the caller's wait.
+// `reqs` is sized by a pre-pass, never grown mid-loop: MPI holds pointers into it once a request posts.
 [[nodiscard]] inline auto sparse_pairwise(const SparsePairwiseArgs &args, std::vector<MPI_Request> &reqs) -> int {
     require_routable(args.plan, args.num_ranks);
     const int num_peers = args.plan.count(args.num_ranks);
@@ -97,7 +91,6 @@ struct SparsePairwiseArgs {
         const int send_count = args.send_layout.count(peer);
         const int recv_count = args.recv_layout.count(peer);
         if (peer == args.me) {
-            // The self slot is a copy, not a message: its two counts are each other's transpose.
             assert(send_count == recv_count);
             if (recv_count != 0) {
                 std::memcpy(args.recv + (args.recv_layout.displ(peer) * args.elem),
@@ -126,6 +119,28 @@ struct SparsePairwiseArgs {
         }
     }
     return num_requests;
+}
+
+// Allreduce {v, ~v} under MPI_MAX, giving max and min at once: max == min == mine is exact agreement.
+// Ranks that disagree would hang, so every rank throws together instead.
+inline auto agree_routes_pairwise(MPI_Comm comm, int ranks, const routing::Config &mine) -> bool {
+    const std::array<uint64_t, 6> probe{mine.linear,
+                                        ~mine.linear,
+                                        mine.partitions,
+                                        ~mine.partitions,
+                                        mine.seed,
+                                        ~mine.seed};
+    std::array<uint64_t, 6> agreed{};
+    MPI_Allreduce(probe.data(), agreed.data(), 6, MPI_UINT64_T, MPI_MAX, comm);
+    if (agreed != probe) {
+        throw routing::RoutingDisagreement(
+            std::format("routing configuration differs across the {} ranks (this one: {}). "
+                        "monoprop_ROUTING / monoprop_ROUTE_SEED must reach every rank identically -- "
+                        "a disagreement deadlocks the exchange rather than corrupting it.",
+                        ranks,
+                        mine.describe()));
+    }
+    return routing::routes_pairwise(mine, static_cast<size_t>(ranks));
 }
 
 } // namespace monoprop::mpi

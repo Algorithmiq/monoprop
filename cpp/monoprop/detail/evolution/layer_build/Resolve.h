@@ -40,10 +40,10 @@ struct IncomingProbe {
     // The operator store's position width, not the wire's: these positions exist to become rows.
     using PosT = typename OperatorIndex<NumModes>::PosT;
 
-    // The slots `incoming` covers; senders are named by their index into it, never by a flat slot.
+    // The slots `incoming` covers; senders are named by WindowIndex into it.
     mpi::SlotWindow window;
     std::vector<size_t> goff;              // window.count+1 flat offsets: g = goff[k] + q
-    DefaultInitVector<uint32_t> sender_wi; // g -> sender's WINDOW index (see sender_index)
+    DefaultInitVector<uint32_t> sender_wi; // g → sender's window index
     DefaultInitVector<int> phase_of;       // g → query phase
     // g → word offset of that query inside its sender's buffer; a query ordinal names no position.
     DefaultInitVector<size_t> off_of;
@@ -64,7 +64,7 @@ struct IncomingProbe {
         return std::span<const PosT>(pos_flat).subspan(pos_off[g], k_of[g]);
     }
 
-    //! Query g's sender, re-based onto `window`; compose with window.slot() for the flat slot.
+    //! Query g's sender in `window`; window.slot() gives the flat slot.
     [[nodiscard]] auto sender_index(size_t g) const -> mpi::WindowIndex { return mpi::WindowIndex{sender_wi[g]}; }
 
     //! Builds a dense bitset; only the fully paired minority of callers needs one.
@@ -198,11 +198,10 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
                       Sink &sink) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
     const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form());
-    // The response window is the query window: the pairing is an XOR involution, so a rank answers
-    // exactly the slots it queried.
+    // The pairing is an XOR involution, so the response window is the query window.
     mpi::WindowVec<std::vector<Resp>> responses(pr.window);
-    for (size_t k = 0; k < pr.window.count; ++k) {
-        responses[mpi::WindowIndex{k}].assign(pr.goff[k + 1] - pr.goff[k], Sink::init_response());
+    for (const auto wi : pr.window.indices()) {
+        responses[wi].assign(pr.goff[wi.value + 1] - pr.goff[wi.value], Sink::init_response());
     }
     if (pr.nq_total == 0) {
         return responses;
@@ -226,8 +225,8 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
 }
 
 // Querier rank (any cross-rank sink): fold each resolver response into a querier-side record. The self/
-// local slot was already resolved inline, so it is skipped here (and is in the window only when this
-// generator's rank shift is zero). inc_r[k][q] answers query q sent to the window's k-th slot.
+// local slot was already resolved inline, so it is skipped here. inc_r[k][q] answers query q sent to
+// the window's k-th slot.
 template <size_t NumModes, typename Sink>
 auto process_responses(const mpi::WindowVec<std::vector<typename Sink::Response>> &inc_r,
                        const mpi::WindowVec<std::vector<size_t>> &src_idx,
@@ -235,11 +234,9 @@ auto process_responses(const mpi::WindowVec<std::vector<typename Sink::Response>
                        size_t my_rank,
                        Sink &sink) -> void {
     const mpi::SlotWindow w = inc_r.window();
-    assert(src_idx.window().base == w.base && src_idx.window().count == w.count);
-    assert(queries.window().base == w.base && queries.window().count == w.count);
+    assert(src_idx.window() == w && queries.window() == w);
     sink.process_reserve(inc_r, my_rank);
-    for (size_t k = 0; k < w.count; ++k) {
-        const mpi::WindowIndex wi{k};
+    for (const auto wi : w.indices()) {
         const size_t r = w.slot(wi);
         if (r == my_rank) {
             continue;

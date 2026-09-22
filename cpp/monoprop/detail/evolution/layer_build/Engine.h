@@ -83,7 +83,7 @@ struct GraphSink {
     std::vector<PartnerAcc> acc;
     size_t def_in_base_ = 0; // deferred self-miss bases into acc[my_rank]
     size_t def_out_base_ = 0;
-    // Cross-rank base into acc[slot].in_entries, over the query window (set in prepare).
+    // Per-window-slot base into acc[slot].in_entries (set in prepare).
     mpi::WindowVec<size_t> in_base_;
 
     GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
@@ -110,15 +110,13 @@ struct GraphSink {
                      mpi::WindowVec<VecZ> & /*scratch*/) -> mpi::WindowVec<VecZ> & {
         return queries;
     }
-    // `acc` stays flat [P] -- finalize hands it to build_layer_storage_unified, which is P-shaped -- so
-    // the window index is turned back into a slot here rather than re-basing it.
+    // `acc` stays flat [P] for build_layer_storage_unified, so window indices map back to slots here.
     auto prepare(const IncomingProbe<NumModes> & /*pr*/,
                  MPOperator<NumModes> & /*op*/,
                  const mpi::WindowVec<std::vector<Response>> &responses) -> void {
         const mpi::SlotWindow w = responses.window();
         in_base_.reset(w);
-        for (size_t k = 0; k < w.count; ++k) {
-            const mpi::WindowIndex wi{k};
+        for (const auto wi : w.indices()) {
             PartnerAcc &a = acc[w.slot(wi)];
             in_base_[wi] = a.in_entries.size();
             a.in_entries.resize(in_base_[wi] + responses[wi].size());
@@ -239,8 +237,7 @@ struct ContractSink {
                      mpi::WindowVec<VecZ> &scratch) -> mpi::WindowVec<VecZ> & {
         const mpi::SlotWindow w = queries.window();
         scratch.reset(w);
-        for (size_t k = 0; k < w.count; ++k) {
-            const mpi::WindowIndex wi{k};
+        for (const auto wi : w.indices()) {
             QueryWire<NumModes>::build_fused(queries[wi], vals[wi], scratch[wi]);
         }
         return scratch;
@@ -277,8 +274,7 @@ struct ContractSink {
     auto process_reserve(const mpi::WindowVec<std::vector<Response>> &inc_r, size_t my_rank_) -> void {
         const mpi::SlotWindow w = inc_r.window();
         size_t incoming = 0;
-        for (size_t k = 0; k < w.count; ++k) {
-            const mpi::WindowIndex wi{k};
+        for (const auto wi : w.indices()) {
             if (w.slot(wi) != my_rank_) {
                 incoming += inc_r[wi].size();
             }
@@ -334,8 +330,7 @@ struct LayerBuildEngine {
     // → distinct found, so each slot is marked once.
     MatchedEpochSet &matched;
     size_t combined_size;
-    // The destination slots this generator can reach: `plan`'s window for my_rank. Every per-slot array
-    // below is sized to it, so a flat slot only ever enters through WindowVec::at_slot.
+    // `plan`'s window for my_rank: every per-slot array below is sized to it.
     mpi::SlotWindow window;
     mpi::WindowVec<VecZ> queries_r;
     mpi::WindowVec<std::vector<size_t>> src_idx_r;
@@ -349,8 +344,7 @@ struct LayerBuildEngine {
     mpi::WindowVec<std::vector<double>> src_val_r;
     // Fused query+value send scratch (ContractSink, R>1): shared by a gate's two exchange passes.
     mpi::WindowVec<VecZ> combined_qv_;
-    // Which destination ranks this gate's queries can reach. Dense unless the router is GF(2)-linear;
-    // see mpi::PeerPlan. Derived once per layer in build_layer, never per query.
+    // This gate's destination ranks (mpi::PeerPlan), derived once in build_layer.
     mpi::PeerPlan plan;
     Sink sink;
 
@@ -379,8 +373,7 @@ struct LayerBuildEngine {
     }
 
     // Resolve this rank's own query stream inline, then clear it so the alltoallv never sends to self.
-    // Self is inside the window only when this generator's rank shift is zero; otherwise the window names
-    // another rank outright and the scan cannot have staged a self-owned partner.
+    // Self is in the window only when this generator's rank shift is zero.
     auto resolve_self_queries(bool is_leader_pass) -> void {
         if (!window.contains(my_rank)) {
             assert(self_stage_.size() == 0 && "a self-owned partner outside this generator's peer window");
@@ -412,11 +405,8 @@ struct LayerBuildEngine {
                       mpi::WindowVec<std::vector<size_t>> &&src_idx,
                       mpi::WindowVec<std::vector<double>> &&src_val,
                       SelfQueryStage<NumModes> &&self_stage) -> void {
-        // The scan sized its arrays to the same plan, so all three windows must agree exactly -- a
-        // mismatch would re-base every slot against the wrong base.
-        assert(queries.window().base == window.base && queries.window().count == window.count);
-        assert(src_idx.window().base == window.base && src_idx.window().count == window.count);
-        assert(src_val.size() == 0 || src_val.window().base == window.base); // empty under GraphSink
+        assert(queries.window() == window && src_idx.window() == window);
+        assert(src_val.size() == 0 || src_val.window() == window); // empty under GraphSink
         queries_r = std::move(queries);
         src_idx_r = std::move(src_idx);
         self_stage_ = std::move(self_stage);
@@ -435,7 +425,7 @@ struct LayerBuildEngine {
         auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, matched, combined_size, sink);
         std::vector<int> resp_recv = response_recv_counts();
         mpi::WindowVec<std::vector<typename Sink::Response>> inc_r;
-        // The answers retrace the queries, and the pairing is an XOR involution, so the same plan holds.
+        // Answers retrace the queries over an XOR involution, so the same plan holds.
         mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan).wait_into(inc_r);
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, my_rank, sink);
     }
@@ -444,8 +434,7 @@ struct LayerBuildEngine {
     auto drop_matched_cross_rank_followers() -> void {
         using QW = QueryWire<NumModes>;
         const QueryForm form = sink.querier_form();
-        for (size_t k = 0; k < window.count; ++k) {
-            const mpi::WindowIndex wi{k};
+        for (const auto wi : window.indices()) {
             if (window.slot(wi) == my_rank) {
                 continue;
             }
@@ -511,12 +500,10 @@ struct LayerBuildEngine {
 private:
     // Response counts are the transpose of the query counts (one answer per query), so passing them as
     // known_recv_counts skips the response count-Alltoall round.
-    // FLAT [P], which is what begin_alltoallv's known_recv_counts is indexed by; only the window's slots
-    // can be non-zero, and the window is what masks the rest.
+    // Flat [P], as begin_alltoallv's known_recv_counts is; only the window's slots are non-zero.
     auto response_recv_counts() const -> std::vector<int> {
         std::vector<int> counts(R, 0);
-        for (size_t k = 0; k < window.count; ++k) {
-            const mpi::WindowIndex wi{k};
+        for (const auto wi : window.indices()) {
             // One response per query, and src_idx_r's block holds one source per query: no walk, no division.
             counts[window.slot(wi)] = static_cast<int>(src_idx_r[wi].size());
         }
@@ -615,16 +602,13 @@ auto build_layer(MPOperator<NumModes> &local_op,
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
-    // R is the FLAT world (ranks x partitions); the router is what splits it back into the two levels.
+    // R is the flat world (ranks x partitions).
     const routing::Router router = router_for<NumModes>(comm);
     assert(router.flat_world() == R);
-    // Under linear routing every query for THIS generator lands on the rank this rank's own index XOR
-    // rank_shift(gen), so the exchange knows its peer before it starts. Dense otherwise, which is
-    // today's collective.
+    // Under linear routing every query for this generator goes to rank my_rank ^ rank_shift(gen).
     const size_t gen_shift = router.rank_shift<NumModes>(gen);
     const auto plan = mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(gen_shift)};
-    // The reachable slots, once per generator: S of the P=R*S world under linear routing, all P otherwise.
-    // Every per-slot structure from the scan to the wire is sized to this run.
+    // S of the P slots under linear routing, all P otherwise; every per-slot array is sized to it.
     const mpi::SlotWindow scan_window = plan.window(my_rank, router.ranks(), router.partitions());
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
     const bool use_fused = (fused_contract != nullptr);
@@ -645,10 +629,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
-    // An identity generator anticommutes with nothing, so its exchange carries no payload -- but the
-    // collectives fire regardless. The generator list is replicated, so skipping needs no agreement.
-    // Worth the branch: a zero chemical potential alone contributes 60 of the 60-site Hubbard's 476
-    // generators per Trotter layer. No gate is merged; a no-op gate is simply not exchanged for.
+    // An identity generator anticommutes with nothing, so its exchange would be empty collectives. The
+    // generator list is replicated, so every rank skips it together.
     const bool identity_gen = !gen.any();
 
     FusedScanResult<NumModes> fused;

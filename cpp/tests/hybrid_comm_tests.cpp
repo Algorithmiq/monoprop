@@ -35,6 +35,7 @@
 
 #include <mpi.h>
 
+#include "SlotBlocks.h"
 #include "ThreadHarness.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/HybridComm.h"
@@ -132,9 +133,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
                     send[static_cast<size_t>(d)].push_back(g * 1000 + j);
                 }
             }
-            auto h = monoprop::mpi::begin_alltoallv(send, c);
-            std::vector<std::vector<int>> out;
-            h.wait_into(out);
+            const auto out = test_utils::exchange_blocks(send, c);
             recv[static_cast<size_t>(u)] = out;
         });
         for (const auto &e : errs) {
@@ -181,9 +180,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
                     send[static_cast<size_t>(d)].push_back(g * 100000 + round * 100 + j);
                 }
             }
-            auto h = monoprop::mpi::begin_alltoallv(send, c);
-            std::vector<std::vector<int>> out;
-            h.wait_into(out);
+            const auto out = test_utils::exchange_blocks(send, c);
             if (static_cast<int>(out.size()) != P) {
                 failures.fetch_add(1);
                 continue;
@@ -540,13 +537,11 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_delivers_only_to_its_peers) {
                         blk.push_back(g * 1000 + t * 10 + j);
                     }
                 }
-                auto h = monoprop::mpi::begin_alltoallv(send,
-                                                        c,
-                                                        /*skip_self=*/false,
-                                                        /*known_recv_counts=*/nullptr,
-                                                        plan);
-                std::vector<std::vector<int>> out;
-                h.wait_into(out);
+                const auto out = test_utils::exchange_blocks(send,
+                                                             c,
+                                                             /*skip_self=*/false,
+                                                             /*known_recv_counts=*/nullptr,
+                                                             plan);
                 recv[static_cast<size_t>(u)] = out;
             });
             for (const auto &e : errs) {
@@ -589,8 +584,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
             send[static_cast<size_t>(peer)].push_back(world_rank() * 1000 + j);
         }
         // Unknown recv layout: the counts round is point-to-point too.
-        std::vector<std::vector<int>> out;
-        monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+        const auto out = test_utils::exchange_blocks(send, c, false, nullptr, plan);
         BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
         for (int src = 0; src < R; ++src) {
             if (src != peer) {
@@ -605,8 +599,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
         // Known recv layout (the response round): counts are the transpose, so peer-only again.
         std::vector<int> known(static_cast<size_t>(R), 0);
         known[static_cast<size_t>(peer)] = 4;
-        std::vector<std::vector<int>> out2;
-        monoprop::mpi::begin_alltoallv(send, c, false, &known, plan).wait_into(out2);
+        const auto out2 = test_utils::exchange_blocks(send, c, false, &known, plan);
         BOOST_REQUIRE_EQUAL(static_cast<int>(out2.size()), R);
         BOOST_CHECK(out2[static_cast<size_t>(peer)] == out[static_cast<size_t>(peer)]);
     }
@@ -639,8 +632,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan) 
             std::vector<int> known(static_cast<size_t>(R), 0);
             known[static_cast<size_t>(peer)] = kReal;
             known[static_cast<size_t>(bad)] = kBogus;
-            std::vector<std::vector<int>> out;
-            monoprop::mpi::begin_alltoallv(send, c, false, &known, plan).wait_into(out);
+            const auto out = test_utils::exchange_blocks(send, c, false, &known, plan);
             BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
             BOOST_CHECK(out[static_cast<size_t>(bad)].empty()); // unmasked, this holds kBogus elements
             BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(peer)].size()), kReal);
@@ -665,8 +657,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan) 
                 known[static_cast<size_t>((peer * S) + t)] = kReal;
                 known[static_cast<size_t>((bad * S) + t)] = kBogus;
             }
-            std::vector<std::vector<int>> out;
-            monoprop::mpi::begin_alltoallv(send, c, false, &known, plan).wait_into(out);
+            const auto out = test_utils::exchange_blocks(send, c, false, &known, plan);
             recv[static_cast<size_t>(u)] = out;
         });
         for (const auto &e : errs) {
@@ -723,8 +714,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_an_empty_leg) {
             for (int j = 0; j < my_len; ++j) {
                 send[static_cast<size_t>(peer)].push_back(sparse_tag(me, peer, j));
             }
-            std::vector<std::vector<int>> out;
-            monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+            const auto out = test_utils::exchange_blocks(send, c, false, nullptr, plan);
             BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
             BOOST_REQUIRE_EQUAL(static_cast<int>(out[static_cast<size_t>(peer)].size()), peer_len);
             for (int j = 0; j < peer_len; ++j) {
@@ -745,8 +735,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_an_empty_leg) {
                         send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
                     }
                 }
-                std::vector<std::vector<int>> out;
-                monoprop::mpi::begin_alltoallv(send, c, false, nullptr, plan).wait_into(out);
+                const auto out = test_utils::exchange_blocks(send, c, false, nullptr, plan);
                 recv[static_cast<size_t>(u)] = out;
             });
             for (const auto &e : errs) {
@@ -786,8 +775,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero) {
         for (int j = 0; j < 5; ++j) {
             send[static_cast<size_t>(me)].push_back(sparse_tag(me, me, j));
         }
-        std::vector<std::vector<int>> out;
-        monoprop::mpi::begin_alltoallv(send, c, /*skip_self=*/true, nullptr, plan).wait_into(out);
+        const auto out = test_utils::exchange_blocks(send, c, /*skip_self=*/true, nullptr, plan);
         BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
         for (const auto &blk : out) {
             BOOST_CHECK(blk.empty());
@@ -807,8 +795,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero) {
                     send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
                 }
             }
-            std::vector<std::vector<int>> out;
-            monoprop::mpi::begin_alltoallv(send, c, /*skip_self=*/true, nullptr, plan).wait_into(out);
+            const auto out = test_utils::exchange_blocks(send, c, /*skip_self=*/true, nullptr, plan);
             recv[static_cast<size_t>(u)] = out;
         });
         for (const auto &e : errs) {
@@ -849,8 +836,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds) {
         for (int j = 0; j < len; ++j) {
             q[static_cast<size_t>(peer)].push_back(sparse_tag(me, peer, j));
         }
-        std::vector<std::vector<int>> q_out;
-        monoprop::mpi::begin_alltoallv(q, c, false, nullptr, plan).wait_into(q_out);
+        const auto q_out = test_utils::exchange_blocks(q, c, false, nullptr, plan);
 
         // Round 2 immediately, same comm and tag, sized from round 1's transpose -- the response shape.
         std::vector<int> known(static_cast<size_t>(R), 0);
@@ -860,8 +846,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds) {
         for (int j = 0; j < back; ++j) {
             r[static_cast<size_t>(peer)].push_back(q_out[static_cast<size_t>(peer)][static_cast<size_t>(j)] + 7);
         }
-        std::vector<std::vector<int>> r_out;
-        monoprop::mpi::begin_alltoallv(r, c, false, &known, plan).wait_into(r_out);
+        const auto r_out = test_utils::exchange_blocks(r, c, false, &known, plan);
 
         BOOST_REQUIRE_EQUAL(back, 3 + (peer % 2));
         BOOST_REQUIRE_EQUAL(static_cast<int>(r_out[static_cast<size_t>(peer)].size()), len);
@@ -1227,8 +1212,9 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_unroutable_peer_plan_is_refused) {
     const int P = R;
     std::vector<std::vector<int>> send(static_cast<size_t>(P));
     Comm c{MPI_COMM_WORLD};
-    BOOST_CHECK_THROW(static_cast<void>(monoprop::mpi::begin_alltoallv(send, c, false, nullptr, bad)),
-                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        static_cast<void>(monoprop::mpi::begin_alltoallv(test_utils::full_window(send), c, false, nullptr, bad)),
+        std::invalid_argument);
     std::vector<int> counts(static_cast<size_t>(P), 0);
     std::vector<int> got(static_cast<size_t>(P), 0);
     BOOST_CHECK_THROW(monoprop::mpi::alltoall_counts(counts.data(), got.data(), P, c, bad), std::invalid_argument);
@@ -1255,10 +1241,11 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_pending_alltoallv_owns_its_requests) {
         send[static_cast<size_t>(d)] = {(me * 1000) + d};
     }
     {
-        auto h = monoprop::mpi::begin_alltoallv(send, c);
+        auto h = monoprop::mpi::begin_alltoallv(test_utils::full_window(send), c);
         auto moved = std::move(h); // the requests travel with the buffers MPI is reading
-        std::vector<std::vector<int>> out;
-        moved.wait_into(out);
+        monoprop::mpi::WindowVec<std::vector<int>> got;
+        moved.wait_into(got);
+        const auto out = test_utils::flat_blocks(got, static_cast<size_t>(R));
         BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
         for (int src = 0; src < R; ++src) {
             BOOST_REQUIRE_EQUAL(out[static_cast<size_t>(src)].size(), 1U);
@@ -1267,7 +1254,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_pending_alltoallv_owns_its_requests) {
     }
     // Same round, never waited on: the destructor has to drain it or the next collective mismatches.
     {
-        static_cast<void>(monoprop::mpi::begin_alltoallv(send, c));
+        static_cast<void>(monoprop::mpi::begin_alltoallv(test_utils::full_window(send), c));
     }
     MPI_Barrier(MPI_COMM_WORLD);
 }

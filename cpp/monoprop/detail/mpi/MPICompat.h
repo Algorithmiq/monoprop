@@ -93,20 +93,15 @@ inline auto finalize() -> void {}
 monoprop_EXPORT auto rank(const Comm &comm) -> int;
 monoprop_EXPORT auto size(const Comm &comm) -> int;
 
-// How the flat world of size() is actually built: ranks * partitions. Routing needs the split, because
-// an inter-rank message costs a network hop while an inter-partition one is a shared-memory copy --
-// size() alone cannot tell them apart. ranks * partitions == size() for every Kind.
+// size() split into ranks * partitions: routing needs to tell a network hop from a shared-memory copy.
 struct Geometry {
     int ranks = 1;
     int partitions = 1;
 };
 monoprop_EXPORT auto geometry(const Comm &comm) -> Geometry;
 
-// Whether this communicator's exchanges go point-to-point, agreed across it once and cached on it, so
-// that a caller who never built a MonomialPropagator is as safe as one who did. The decision comes from
-// the process environment, and ranks that resolve it differently HANG rather than answer differently --
-// so it is never re-derived per exchange, and never left to the caller. Throws RoutingDisagreement on a
-// mismatch, which every rank raises together because the comparison is collective.
+// Whether this communicator's exchanges go point-to-point: agreed collectively once and cached on it,
+// because ranks that disagree hang. Throws RoutingDisagreement on every rank together on a mismatch.
 monoprop_EXPORT auto routes_pairwise(const Comm &comm) -> bool;
 
 template <typename T>
@@ -128,70 +123,18 @@ inline auto allreduce_sum(T local_val, Comm comm) -> T {
 
 monoprop_EXPORT auto allreduce_sum_inplace(VecD &values, Comm comm) -> void;
 
-// `n` is the comm size. `plan` narrows the exchange to the destination ranks it can reach (see PeerPlan);
-// the default is dense, i.e. today's collective.
+// `n` is the comm size; `plan` narrows the exchange to its peer ranks (dense by default).
 monoprop_EXPORT auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan = {})
     -> void;
 
-// The per-slot block arrays begin_alltoallv and wait_into accept: a plain [P] vector-of-vectors, or a
-// WindowVec over the slots a PeerPlan can reach. These four overload pairs are the whole difference --
-// the verbs below are one code path walking one SlotWindow.
-template <typename Blocks>
-using SlotBlockValue = typename Blocks::value_type::value_type;
-
-template <typename T>
-inline auto slot_window_of(const std::vector<std::vector<T>> &v) -> SlotWindow {
-    return SlotWindow{.base = 0, .count = v.size()};
-}
-template <typename T>
-inline auto slot_window_of(const WindowVec<std::vector<T>> &v) -> SlotWindow {
-    return v.window();
-}
-
-template <typename T>
-inline auto slot_block(const std::vector<std::vector<T>> &v, size_t slot) -> const std::vector<T> & {
-    return v[slot];
-}
-template <typename T>
-inline auto slot_block(std::vector<std::vector<T>> &v, size_t slot) -> std::vector<T> & {
-    return v[slot];
-}
-template <typename T>
-inline auto slot_block(const WindowVec<std::vector<T>> &v, size_t slot) -> const std::vector<T> & {
-    return v.at_slot(slot);
-}
-template <typename T>
-inline auto slot_block(WindowVec<std::vector<T>> &v, size_t slot) -> std::vector<T> & {
-    return v.at_slot(slot);
-}
-
-// A plain destination keeps the full-world shape (a non-peer's block is empty, not absent); a WindowVec
-// takes the round's window.
-template <typename T>
-inline auto reset_slots(std::vector<std::vector<T>> &v, SlotWindow /*w*/, size_t world) -> void {
-    v.assign(world, std::vector<T>{});
-}
-template <typename T>
-inline auto reset_slots(WindowVec<std::vector<T>> &v, SlotWindow w, size_t /*world*/) -> void {
-    v.reset(w);
-}
-
-// In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
-// recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
-// no-op on the synchronous Shm / single-process paths) and unpacks by source.
-//
-// Move-only and self-completing, because MPI reads send_buffer / recv_buffer until the requests retire.
-// A copy would hand a second owner the same request handles over a different pair of buffers, and a
-// destructor that did not wait would free the ones MPI is still writing into. Moving is safe: a vector
-// move keeps the heap block, so the pointers MPI holds stay valid.
-//
-// The dense arm posts one request and the pairwise arm a pair per active leg, both into `requests`:
-// one wait covers either, so there is no second completion path to keep in step.
+// An in-flight variable all-to-all owning its buffers and layout. recv_counts is valid once
+// begin_alltoallv returns; wait_into completes the payload and unpacks it by source.
+// Move-only and self-draining: MPI reads the buffers until `requests` retire, and a vector move keeps
+// the heap blocks those requests point into.
 template <typename T>
 struct PendingAlltoallv {
     int num_ranks = 0;
-    // The slots this round touches; counts/displs are zero outside it. Set by begin_alltoallv.
-    SlotWindow window;
+    SlotWindow window; // the slots this round touches; counts/displs are zero outside it
     std::vector<int> send_counts;
     std::vector<int> send_displs;
     std::vector<int> recv_counts;
@@ -219,7 +162,6 @@ struct PendingAlltoallv {
 
     ~PendingAlltoallv() { drain(); }
 
-    // Idempotent, so a handle that was waited on through wait_into costs nothing at destruction.
     auto drain() noexcept -> void {
 #ifdef monoprop_ENABLE_MPI
         if (posted != 0) {
@@ -229,14 +171,13 @@ struct PendingAlltoallv {
 #endif
     }
 
-    template <typename Dest>
-    auto wait_into(Dest &recv_data) -> void {
+    auto wait_into(WindowVec<std::vector<T>> &recv_data) -> void {
         drain();
-        reset_slots(recv_data, window, static_cast<size_t>(num_ranks));
-        for (size_t k = 0; k < window.count; ++k) {
-            const size_t i = window.slot(WindowIndex{k});
+        recv_data.reset(window);
+        for (const auto wi : window.indices()) {
+            const size_t i = window.slot(wi);
             const auto lo = recv_buffer.begin() + recv_displs[i];
-            slot_block(recv_data, i).assign(lo, lo + recv_counts[i]);
+            recv_data[wi].assign(lo, lo + recv_counts[i]);
         }
     }
 
@@ -257,15 +198,14 @@ private:
     }
 };
 
-// Debug-only: a caller may supply more slots than the plan reaches, and anything it left outside the
-// window is DROPPED rather than refused -- the silent failure mode a wrong-but-agreed shift produces.
-template <typename Blocks>
-inline auto assert_outside_window_is_empty_([[maybe_unused]] const Blocks &send_data,
-                                            [[maybe_unused]] SlotWindow supplied,
+// Debug-only: blocks the caller left outside the plan's window would be dropped, not refused.
+template <typename T>
+inline auto assert_outside_window_is_empty_([[maybe_unused]] const WindowVec<std::vector<T>> &send_data,
                                             [[maybe_unused]] SlotWindow window) -> void {
 #ifndef NDEBUG
+    const SlotWindow supplied = send_data.window();
     for (size_t i = supplied.base; i < supplied.stop(); ++i) {
-        assert((window.contains(i) || slot_block(send_data, i).empty())
+        assert((window.contains(i) || send_data.at_slot(i).empty())
                && "a block outside the plan's peer window would be dropped in silence");
     }
 #endif
@@ -279,8 +219,7 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
                                  PeerPlan plan) -> void {
     const auto window = pending.window;
     if (known_recv_counts != nullptr) {
-        // Refused, not truncated: a short array would leave a live slot's recv count at 0 while the peer
-        // still sends it, which the pairwise arm turns into an unmatched post rather than a wrong answer.
+        // Refused, not truncated: a short array would leave a posted send unmatched.
         if (known_recv_counts->size() < window.stop()) {
             throw CollectiveArgumentError(
                 std::format("begin_alltoallv: known_recv_counts has {} entries, short of the plan's [{}, {})",
@@ -288,8 +227,8 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
                             window.base,
                             window.stop()));
         }
-        for (size_t k = 0; k < window.count; ++k) {
-            const size_t i = window.slot(WindowIndex{k});
+        for (const auto wi : window.indices()) {
+            const size_t i = window.slot(wi);
             pending.recv_counts[i] = (*known_recv_counts)[i];
         }
         if (self >= 0) {
@@ -301,8 +240,8 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
     }
 
     long long running = 0;
-    for (size_t k = 0; k < window.count; ++k) {
-        const size_t i = window.slot(WindowIndex{k});
+    for (const auto wi : window.indices()) {
+        const size_t i = window.slot(wi);
         pending.recv_displs[i] = checked_mpi_count(running, "Recv displacement");
         running += pending.recv_counts[i];
     }
@@ -314,8 +253,8 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
-template <typename Blocks, typename T = SlotBlockValue<Blocks>>
-[[nodiscard]] inline auto begin_alltoallv(const Blocks &send_data,
+template <typename T>
+[[nodiscard]] inline auto begin_alltoallv(const WindowVec<std::vector<T>> &send_data,
                                           Comm comm,
                                           bool skip_self = false,
                                           const std::vector<int> *known_recv_counts = nullptr,
@@ -326,13 +265,10 @@ template <typename Blocks, typename T = SlotBlockValue<Blocks>>
     require_routable(plan, geom.ranks);
     PendingAlltoallv<T> h;
     h.num_ranks = num_ranks;
-    // The plan IS the mask, dense included -- it is the count == P value of the same window. A caller may
-    // hand a whole [P] array under a sparse plan (the tests do), so the supplied array only has to COVER
-    // the window; assert_outside_window_is_empty_ catches what it leaves outside, which is the silent
-    // drop a wrong-but-agreed shift produces.
+    // The plan's window is the mask. send_data need only cover it; what lies outside must be empty.
     h.window =
         plan.window(static_cast<size_t>(me), static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
-    const SlotWindow supplied = slot_window_of(send_data);
+    const SlotWindow supplied = send_data.window();
     if (h.window.stop() > static_cast<size_t>(num_ranks) || supplied.base > h.window.base
         || supplied.stop() < h.window.stop()) {
         throw CollectiveArgumentError(
@@ -344,33 +280,31 @@ template <typename Blocks, typename T = SlotBlockValue<Blocks>>
                         h.window.stop(),
                         num_ranks));
     }
-    assert_outside_window_is_empty_(send_data, supplied, h.window);
+    assert_outside_window_is_empty_(send_data, h.window);
     h.send_counts.assign(static_cast<size_t>(num_ranks), 0);
     h.send_displs.assign(static_cast<size_t>(num_ranks), 0);
     h.recv_displs.assign(static_cast<size_t>(num_ranks), 0);
 
     const int self = skip_self ? me : -1;
-    // Counts and their prefix in ONE sweep over the window; the rest stay zero from the assign above.
-    // Wide accumulator + checked narrowing: a wrapped count would size send_buffer short and then feed
-    // MPI a negative count/displacement.
+    // Wide accumulator + checked narrowing: a wrapped count would feed MPI a negative count.
     long long running_send = 0;
     const auto window = h.window;
-    for (size_t k = 0; k < window.count; ++k) {
-        const size_t i = window.slot(WindowIndex{k});
-        const size_t n = self >= 0 && std::cmp_equal(i, self) ? size_t{0} : slot_block(send_data, i).size();
+    for (const auto wi : window.indices()) {
+        const size_t i = window.slot(wi);
+        const size_t n = self >= 0 && std::cmp_equal(i, self) ? size_t{0} : send_data.at_slot(i).size();
         const int c = checked_mpi_count(n, "Send count");
         h.send_counts[i] = c;
         h.send_displs[i] = checked_mpi_count(running_send, "Send displacement");
         running_send += c;
     }
     h.send_buffer.resize(static_cast<size_t>(checked_mpi_count(running_send, "Total send count")));
-    for (size_t k = 0; k < window.count; ++k) {
-        const size_t i = window.slot(WindowIndex{k});
+    for (const auto wi : window.indices()) {
+        const size_t i = window.slot(wi);
         const int c = h.send_counts[i];
         if (c == 0) {
             continue;
         }
-        const auto &block = slot_block(send_data, i);
+        const auto &block = send_data.at_slot(i);
         std::copy(block.begin(), block.begin() + c, h.send_buffer.begin() + h.send_displs[i]);
     }
 
@@ -396,7 +330,6 @@ template <typename Blocks, typename T = SlotBlockValue<Blocks>>
     }
 #endif
 
-    // The caller's known-count array is flat [P]; the window masks the entries copied from it.
     prepare_recv_layout_(h, known_recv_counts, self, comm, plan);
 
     // Taken after the resize above: recv_buffer may have reallocated.
@@ -439,11 +372,10 @@ template <typename Blocks, typename T = SlotBlockValue<Blocks>>
                            h.requests.data());
         }
         else {
-            // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer, left
-            // in flight in the handle exactly as MPI_Ialltoallv is.
+            // S == 1 world: point-to-point with the peer, left in flight like MPI_Ialltoallv.
             const SparsePairwiseArgs pairwise{
                 .plan = plan,
-                .me = rank(comm),
+                .me = me,
                 .num_ranks = num_ranks,
                 .comm = comm.mpi,
                 .tag = kFlatPayloadTag,

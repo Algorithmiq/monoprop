@@ -15,7 +15,6 @@
 #include "monoprop/detail/mpi/Exchange.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <format>
 #include <print>
@@ -93,8 +92,7 @@ auto size(const Comm &comm) -> int {
 
 #ifdef monoprop_ENABLE_MPI
 namespace {
-// Cached on the communicator itself rather than in a process-side table: the attribute dies with the
-// communicator, so a recycled MPI_Comm handle cannot inherit another world's answer.
+// Cached as a communicator attribute, so a recycled MPI_Comm handle cannot inherit a stale answer.
 auto routing_keyval() -> int {
     static const int keyval = [] {
         int k = MPI_KEYVAL_INVALID;
@@ -102,30 +100,6 @@ auto routing_keyval() -> int {
         return k;
     }();
     return keyval;
-}
-
-// One allreduce of {v, ~v} pairs under MPI_MAX yields both the max and the min of every field, so
-// max == min == mine is an exact equality test and not a probable one.
-auto agree_routes_pairwise(MPI_Comm comm, int ranks, routing::Config mine) -> bool {
-    const std::array<uint64_t, 6> probe{mine.linear,
-                                        ~mine.linear,
-                                        mine.partitions,
-                                        ~mine.partitions,
-                                        mine.seed,
-                                        ~mine.seed};
-    std::array<uint64_t, 6> agreed{};
-    MPI_Allreduce(probe.data(), agreed.data(), 6, MPI_UINT64_T, MPI_MAX, comm);
-    for (size_t i = 0; i < probe.size(); ++i) {
-        if (agreed[i] != probe[i]) {
-            throw routing::RoutingDisagreement(
-                std::format("routing configuration differs across the {} ranks (this one: {}). "
-                            "monoprop_ROUTING / monoprop_ROUTE_SEED must reach every rank identically -- "
-                            "a disagreement deadlocks the exchange rather than corrupting it.",
-                            ranks,
-                            mine.describe()));
-        }
-    }
-    return routing::routes_pairwise(mine, static_cast<size_t>(ranks));
 }
 } // namespace
 #endif
@@ -196,14 +170,12 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm,
         return;
     }
     if (!plan.dense()) {
-        // S == 1 world: exchange one int with each reachable peer; the rest of the row is zero by
-        // definition, so it must be cleared rather than left from a previous round.
+        // S == 1 world: one int with the peer. Non-peers are zero by definition, so clear them.
         int me = 0;
         MPI_Comm_rank(comm.mpi, &me);
         std::fill(recv_counts, recv_counts + n, 0);
         const PeerLayout one{.block = 1};
-        // Eager by contract: recv_counts is caller memory the caller reads on return, so unlike the
-        // payload round this one cannot be handed on in a handle.
+        // Eager: the caller reads recv_counts on return.
         std::vector<MPI_Request> reqs;
         const SparsePairwiseArgs pairwise{
             .plan = plan,

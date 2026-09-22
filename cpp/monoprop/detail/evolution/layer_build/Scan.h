@@ -208,9 +208,8 @@ template <size_t NumModes, Algebra A, typename PosT, typename GenT>
 template <size_t NumModes>
 struct FusedScanResult {
     std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
-    // The six arrays below are indexed by DESTINATION SLOT through WindowVec::at_slot, and cover only
-    // the slots this generator can reach: S of the P=R*S world under linear routing, all P under
-    // splitmix. See mpi::PeerPlan::window; each carries its own copy of it.
+    // The six arrays below cover only the slots this generator can reach (mpi::PeerPlan::window) and
+    // are addressed by destination slot through WindowVec::at_slot.
     mpi::WindowVec<VecZ> leader_queries;              // serialized leader queries per owner slot
     mpi::WindowVec<std::vector<size_t>> leader_src;   // parallel to leader_queries (source op idx)
     mpi::WindowVec<VecZ> follower_queries;            // serialized follower queries per owner slot
@@ -219,9 +218,8 @@ struct FusedScanResult {
     // leader_src / follower_src. Empty when capture_values is false.
     mpi::WindowVec<std::vector<double>> leader_val;
     mpi::WindowVec<std::vector<double>> follower_val;
-    // Self-owned queries, staged as positions instead of encoded into the window's self slot, and resolved
-    // inline. Order must match that slot's leader_src / follower_src, or resolution attributes the wrong
-    // source. Empty unless the window contains my_rank, i.e. unless this generator's rank shift is zero.
+    // Self-owned queries, staged as positions and resolved inline. Order must match the self slot's
+    // leader_src / follower_src. Empty unless this generator's rank shift is zero.
     SelfQueryStage<NumModes> leader_self;
     SelfQueryStage<NumModes> follower_self;
 };
@@ -232,10 +230,8 @@ struct FusedScanResult {
 // coeff in place by `fused_scale_cos`=cos(2·build_angle), so no cosine set is built and a hit's stored
 // value is post-cos (resolve recovers it via 1/cos).
 //
-// `gen_shift` is router.rank_shift(gen), and `op` must hold only terms `my_rank` owns -- then the owner of
-// M⊕G is rank(M) ^ gen_shift and the linear planes never run per term. Both are what mpi::PeerPlan
-// already assumes; a violation moves ownership silently, so the fast path asserts against dest().
-// `window` must be that plan's window for `my_rank`: it is what the six query arrays are sized to.
+// `gen_shift` must be router.rank_shift(gen) and `op` hold only terms `my_rank` owns, so the owner of
+// M⊕G is rank(M) ^ gen_shift (asserted against dest()). `window` is the plan's window for `my_rank`.
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -261,8 +257,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     res.leader_src.reset(window);
     res.follower_queries.reset(window);
     res.follower_src.reset(window);
-    // Sized on the early-return paths below too, so the fused engine's per-slot src_val_r access is
-    // always in bounds (parallel to leader_src / follower_src).
+    // Sized even on the early returns below, so the fused engine's src_val_r access stays in bounds.
     if (capture_values) {
         res.leader_val.reset(window);
         res.follower_val.reset(window);
@@ -336,8 +331,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         double v_src,
                         bool is_follower) {
             // Single rank: every partner is self-owned, skip the O(W) hash; multi-rank routes by owner.
-            // routing::Router is the only owner function; find_rank (MPIUtils.h) must stay in step with it
-            // or a term is placed and queried on different ranks, which duplicates a row silently.
+            // Must agree with find_rank (both go through routing::Router), or a row duplicates silently.
             size_t r_prime = my_rank;
             if (rank_count != 1) {
                 r_prime = router.dest_from_shift<NumModes>(dense, my_rank, gen_shift);
