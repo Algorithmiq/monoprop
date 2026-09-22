@@ -1,5 +1,6 @@
-# 4 as well as 2: at R = 2 the peer plan can only ever resolve one peer, so every `for k in [0, f)` in
-# the sparse transport stays a single iteration and the f > 1 cases never run.
+# 4 as well as 2: at R = 2 the only shifts are 0 and 1, so a non-zero shift always pairs a rank with
+# its single neighbour and no case distinguishes the shift from the rank index. R = 4 gives shifts
+# 0..3 and a dense pairwise round of 2 * (R - 1) posts, which R = 2 cannot tell from a single leg.
 set(
   monoprop_MPI_TEST_PROCS
   "2;4"

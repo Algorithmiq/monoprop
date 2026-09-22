@@ -39,7 +39,7 @@ larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 
-Three further variables control which MPI rank owns a term; they belong with the
+Two further variables control which MPI rank owns a term; they belong with the
 distribution axis and are documented under [Rank routing](#rank-routing) below.
 
 ```bash
@@ -97,8 +97,11 @@ The one condition is that the per-generator shifts $\{h_d(G)\}$ span $\mathbb{F}
 If they span only $\rho < d$ dimensions, the ranks a query can reach form a coset of a
 $\rho$-dimensional subspace: only $2^{\rho}$ of the $2^{d}$ are ever used and the rest stay
 empty. That is a load-balance failure and not a wrong answer, so it is left as a diagnostic
-rather than enforced at runtime — measured $\rho = 32$ over the 60-site Hubbard's 416
-distinct shifts, against the $d = 7$ that $R = 128$ needs.
+rather than enforced at runtime: a `COMMROUTE` line on stderr reporting the measured $\rho$
+against the $d$ the geometry needs. The diagnostic reads the $d$ routing bits of each shift,
+so its $\rho$ is bounded by $d$ — at $R = 128$ the 60-site Hubbard's 416 distinct shifts
+report the full $\rho = d = 7$. The basis itself is drawn full rank, so a short $\rho$ always
+means the generator set, never the seed.
 
 Within a rank, partitions keep the full-avalanche `splitmix` hash: fanout across shared
 memory is free, so only balance matters there. Routing is therefore two-level. Writing $q$
@@ -112,8 +115,11 @@ $$
 Linear routing is a switch and not a dial: the rank takes all $\log_2 R$ bits from $h$ or
 none of them, and none of them is `splitmix`, which reproduces the dense `hash % (R × S)`
 bit for bit. It therefore requires $R$ to be a power of two; any other rank count has no
-XOR structure to route by and is raised at propagator construction rather than silently
-routed. $R = 1$ is a power of two, takes no rank bit, and so is the dense case already.
+XOR structure to route by, so [MajoranaPropagator][] and [PauliPropagator][] raise at
+construction rather than route silently. Launching a non-power-of-two rank count therefore
+needs `monoprop_ROUTING=splitmix`. $R = 1$ is a power of two, takes no rank bit, and so is
+the dense case already. Linear routing also needs $\log_2 R \le 2N$ — a rank index cannot
+carry more bits than the monomial has — which is likewise raised rather than routed.
 
 A related distributed scheme maps an index by summing its $k$-bit blocks modulo the rank
 count [@Broers2025-or]. That sum is additive modulo that count while the gate acts by XOR,
@@ -125,7 +131,7 @@ that bound into an identity.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `monoprop_ROUTING` | `linear` | `splitmix` selects the dense all-to-all; `linear`, or unset, takes every rank bit from $h$ and requires a power-of-two $R$. Any other value is rejected at startup rather than silently defaulting. |
-| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by two allreduces at propagator construction and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
+| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` from which every rank derives the same basis $\{v_i\}$ with no communication. The seed is redrawn until the basis is full rank, so a seed can never be the reason ranks sit idle. The same value must reach every rank: a mismatch in either of these variables, or in the partition count, is caught by one allreduce the first time a communicator is used and raised, because under linear routing it deadlocks the exchange instead of corrupting it. |
 
 ### Single-node (`MPI.COMM_SELF`)
 
