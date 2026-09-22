@@ -39,7 +39,7 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 
 
 [dependency-groups]
-test = ["pytest>=8.2.2,<9.1", "pytest-cases>=3.8.6,<4"]
+test = ["pytest>=8.2.2,<9.1", "pytest-cases>=3.8.6,<4", "pytest-datadir"]
 
 
 [tool.pytest.ini_options]

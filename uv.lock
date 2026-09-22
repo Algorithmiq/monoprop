@@ -1233,6 +1233,7 @@ dependencies = [
 test = [
     { name = "pytest" },
     { name = "pytest-cases" },
+    { name = "pytest-datadir" },
 ]
 
 [package.metadata]
@@ -1245,6 +1246,7 @@ requires-dist = [
 test = [
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest-datadir" },
 ]
 
 [[package]]
