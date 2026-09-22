@@ -26,16 +26,16 @@ if TYPE_CHECKING:
 
 try:
     import pennylane as qml
-
-    from monoprop import Circuit, ExpGate
-    from monoprop.majorana import MajoranaOperator
-    from monoprop.pauli import Pauli, PauliOperator
-    from monoprop.pennylane_conversion import (
+    from monoprop_pennylane import (
         from_pennylane_circuit,
         from_pennylane_operator,
         to_pennylane_circuit,
         to_pennylane_operator,
     )
+
+    from monoprop import Circuit, ExpGate
+    from monoprop.majorana import MajoranaOperator
+    from monoprop.pauli import Pauli, PauliOperator
 
     _pennylane_available = True
 except ImportError:
@@ -70,14 +70,14 @@ def pennylane_unavailable(monkeypatch: pytest.MonkeyPatch):
     for module_name in pennylane_modules:
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    monkeypatch.delitem(sys.modules, "monoprop.pennylane_conversion", raising=False)
+    monkeypatch.delitem(sys.modules, "monoprop_pennylane.conversion", raising=False)
     monkeypatch.setitem(sys.modules, "pennylane", None)
 
 
 @pytest.mark.usefixtures("pennylane_unavailable")
 def test_import_error_raised_without_pennylane():
     with pytest.raises(ImportError, match="pennylane is required"):
-        importlib.import_module("monoprop.pennylane_conversion")
+        importlib.import_module("monoprop_pennylane.conversion")
 
 
 @requires_pennylane
