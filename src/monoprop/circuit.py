@@ -56,7 +56,7 @@ class ExpGate:
 
     Applies $e^{+i\theta H}$ for driving angle $\theta$ and Hermitian generator
     $H$. Note the **positive** sign: qiskit's ``PauliEvolutionGate`` and ``r<P>`` rotations
-    use $e^{-itH}$, so [monoprop.qiskit_conversion][] negates the generator both ways.
+    use $e^{-itH}$, so the ``monoprop-qiskit`` package negates the generator both ways.
     Every family supplies the **Hermitian** generator -- for a Majorana one that means the
     observable convention: imaginary coefficient for a weight-2 monomial, real for weight-4.
 

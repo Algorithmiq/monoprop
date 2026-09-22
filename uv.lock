@@ -1063,9 +1063,6 @@ dependencies = [
 mpi = [
     { name = "mpi4py" },
 ]
-qiskit = [
-    { name = "qiskit" },
-]
 
 [package.dev-dependencies]
 bench = [
@@ -1091,14 +1088,12 @@ docs = [
     { name = "pylatexenc" },
     { name = "pyscf" },
     { name = "pytest-markdown-docs" },
-    { name = "qiskit" },
 ]
 interactive = [
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "pylatexenc" },
     { name = "pyscf" },
-    { name = "qiskit" },
 ]
 test = [
     { name = "psutil" },
@@ -1126,9 +1121,8 @@ requires-dist = [
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "nanobind-backend", specifier = ">=1.0.0" },
     { name = "numpy", specifier = ">=2" },
-    { name = "qiskit", marker = "extra == 'qiskit'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["mpi", "qiskit"]
+provides-extras = ["mpi"]
 
 [package.metadata.requires-dev]
 bench = [
@@ -1154,14 +1148,12 @@ docs = [
     { name = "pylatexenc" },
     { name = "pyscf" },
     { name = "pytest-markdown-docs" },
-    { name = "qiskit", specifier = ">=2.0.0" },
 ]
 interactive = [
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "pylatexenc" },
     { name = "pyscf" },
-    { name = "qiskit", specifier = ">=2.0.0" },
 ]
 test = [
     { name = "psutil", specifier = ">=7.2" },
