@@ -23,7 +23,6 @@ const MODULES = [
   ['fermi', 'Fermionic & Majorana operators'],
   ['pauli', 'Qubit (Pauli) operators'],
   ['qiskit_conversion', 'Qiskit conversion'],
-  ['pennylane_conversion', 'PennyLane conversion'],
   ['integral_conversion', 'Integral conversion'],
   ['utils', 'Utilities'],
   ['majorana', 'Internal representations'],

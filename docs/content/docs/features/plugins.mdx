@@ -1,0 +1,66 @@
+---
+title: Plugins
+description: The `monoprop.plugins` entry-point convention that conversion packages like monoprop-pennylane attach through.
+---
+
+monoprop core ships no framework-specific conversion code. Circuit/operator
+conversion to and from other frameworks (e.g. PennyLane) lives in its own,
+separately pip-installable distribution -- `monoprop-pennylane` is the
+reference example -- and attaches itself to the `monoprop` namespace through a
+generic plugin mechanism, so installing the package is enough: no manual
+submodule import is required.
+
+## The `monoprop.plugins` entry point
+
+A plugin is any distribution that registers a `monoprop.plugins` entry point
+whose value is an importable module exposing `__all__`. On import, monoprop
+core copies every name in that `__all__` onto the `monoprop` namespace, the
+same way `from module import *` would -- no hook classes, no registry, no
+versioning.
+
+`monoprop-pennylane`'s `pyproject.toml` registers itself this way:
+
+```toml
+[project.entry-points."monoprop.plugins"]
+pennylane = "monoprop_pennylane"
+```
+
+with its top-level `monoprop_pennylane/__init__.py` re-exporting the
+conversion functions and listing them in `__all__`:
+
+```python notest
+from monoprop_pennylane.conversion import (
+    from_pennylane_circuit,
+    from_pennylane_operator,
+    to_pennylane_circuit,
+    to_pennylane_operator,
+)
+
+__all__ = [
+    "from_pennylane_circuit",
+    "from_pennylane_operator",
+    "to_pennylane_circuit",
+    "to_pennylane_operator",
+]
+```
+
+Once `monoprop-pennylane` is installed alongside `monoprop`, its four
+functions are available directly off `monoprop`:
+
+```python notest
+import monoprop
+
+monoprop.from_pennylane_operator(...)
+```
+
+## Writing a plugin
+
+Any distribution can attach to `monoprop` this way: depend on `monoprop`,
+expose the public functionality from one importable module with an accurate
+`__all__`, and register that module under the `monoprop.plugins` entry-point
+group. Plugins are loaded once, at `import monoprop` time, in whatever order
+`importlib.metadata.entry_points` returns them; a name collision between two
+installed plugins (or between a plugin and monoprop core itself) is resolved
+by whichever loads last, so plugin authors should keep their exported names
+scoped to their own framework (e.g. `from_pennylane_operator`, not
+`from_operator`).
