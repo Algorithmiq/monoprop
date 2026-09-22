@@ -96,11 +96,14 @@ def _load_plugins() -> None:
     A plugin is any distribution registering a `monoprop.plugins` entry point whose
     value is an importable module exposing `__all__`; every name in it is copied here,
     the same way `from module import *` would. See `monoprop_pennylane` for the
-    reference implementation.
+    reference implementation. Dunder names (e.g. a plugin's own `__version__`) are never
+    copied, so a plugin can never shadow monoprop core's own identity metadata.
     """
     for entry_point in importlib.metadata.entry_points(group="monoprop.plugins"):
         plugin = entry_point.load()
-        names = getattr(plugin, "__all__", ())
+        names = [
+            name for name in getattr(plugin, "__all__", ()) if not name.startswith("__")
+        ]
         for name in names:
             globals()[name] = getattr(plugin, name)
         # extend() mutates the existing list in place, so `__all__` stays a read (not a

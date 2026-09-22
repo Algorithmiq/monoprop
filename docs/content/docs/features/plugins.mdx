@@ -16,7 +16,11 @@ A plugin is any distribution that registers a `monoprop.plugins` entry point
 whose value is an importable module exposing `__all__`. On import, monoprop
 core copies every name in that `__all__` onto the `monoprop` namespace, the
 same way `from module import *` would -- no hook classes, no registry, no
-versioning.
+versioning. Dunder names (e.g. a plugin's own `__version__`) are the one
+exception: they are never copied, so a plugin can never shadow monoprop
+core's own identity metadata, even though `__version__` is a legitimate,
+independently useful member of the plugin's own `__all__` (see
+`monoprop_pennylane.__all__` below).
 
 `monoprop-pennylane`'s `pyproject.toml` registers itself this way:
 
@@ -63,4 +67,7 @@ group. Plugins are loaded once, at `import monoprop` time, in whatever order
 installed plugins (or between a plugin and monoprop core itself) is resolved
 by whichever loads last, so plugin authors should keep their exported names
 scoped to their own framework (e.g. `from_pennylane_operator`, not
-`from_operator`).
+`from_operator`). Dunder names never collide this way -- they are exempt from
+the splat entirely, not merely last-write-wins -- so a plugin's `__all__` can
+freely include its own `__version__` (as `monoprop_pennylane`'s does) without
+risking monoprop core's.

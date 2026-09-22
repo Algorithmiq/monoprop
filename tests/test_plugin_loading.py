@@ -32,17 +32,21 @@ if TYPE_CHECKING:
     import pytest
 
 
+def _patch_entry_points(
+    monkeypatch: pytest.MonkeyPatch, fake_entry_point: types.SimpleNamespace
+) -> None:
+    def fake_entry_points(*, group: str | None = None) -> list[types.SimpleNamespace]:
+        return [fake_entry_point] if group == "monoprop.plugins" else []
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
+
+
 def test_load_plugins_attaches_names_from_entry_point(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A `monoprop.plugins` entry point's `__all__` names land on the `monoprop` namespace."""
     fake_plugin = types.SimpleNamespace(greet=lambda: "hello", __all__=["greet"])
-    fake_entry_point = types.SimpleNamespace(load=lambda: fake_plugin)
-
-    def fake_entry_points(*, group: str | None = None) -> list[types.SimpleNamespace]:
-        return [fake_entry_point] if group == "monoprop.plugins" else []
-
-    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
+    _patch_entry_points(monkeypatch, types.SimpleNamespace(load=lambda: fake_plugin))
     try:
         importlib.reload(monoprop)
         assert monoprop.greet is fake_plugin.greet
@@ -51,5 +55,36 @@ def test_load_plugins_attaches_names_from_entry_point(
     finally:
         # Undo the patch before reloading again, so monoprop ends up back in the
         # state a normal import would leave it in (real plugins, if any installed).
+        monkeypatch.undo()
+        importlib.reload(monoprop)
+        # `reload` re-executes the module body but never clears an attribute the reloaded
+        # code doesn't re-set, so the fake plugin's `greet` would otherwise linger on the
+        # real `monoprop` module for the rest of the test session.
+        if hasattr(monoprop, "greet"):
+            delattr(monoprop, "greet")
+
+
+def test_load_plugins_never_shadows_dunder_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plugin's own `__version__` (or any dunder) must never overwrite monoprop core's.
+
+    `monoprop_pennylane.__all__` legitimately includes `"__version__"` (so
+    `monoprop_pennylane.__version__` keeps working standalone), so the loader itself, not
+    the plugin, is responsible for never letting a dunder cross the namespace boundary.
+    """
+    original_version = monoprop.__version__
+    sentinel_version = object()
+    fake_plugin = types.SimpleNamespace(
+        __version__=sentinel_version, __all__=["__version__"]
+    )
+    _patch_entry_points(monkeypatch, types.SimpleNamespace(load=lambda: fake_plugin))
+    try:
+        importlib.reload(monoprop)
+        assert monoprop.__version__ is not sentinel_version
+        assert monoprop.__version__ == original_version
+        # Also not duplicated in __all__ (core already lists "__version__" once).
+        assert monoprop.__all__.count("__version__") == 1
+    finally:
         monkeypatch.undo()
         importlib.reload(monoprop)
