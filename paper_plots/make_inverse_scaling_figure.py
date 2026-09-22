@@ -82,27 +82,30 @@ MILLION = 1.0e6
 # used for all three so the three numbers stay like-for-like.
 #
 # Beyond it the reference engines cross a packed-key width boundary. PauliPropagation.jl's
-# is measured at N=576->608 -- an 8.7x single-N jump in the Leonardo full-width sweep and
-# 7.1x in the idle-spectator sweep -- and ppvm has one of its own near N=1024 (2.14x). A
+# sits at N=576->608 in every sweep that straddles it: at v0.8.2 an 8.5x single-N jump in
+# the full-width probe and 7.7x in the idle-spectator sweep, against 8.7x and 7.1x at
+# v0.7.3 -- so the cliff is a property of the 2-bits/qubit packed key and survives the
+# vectorised backend unchanged. ppvm has one of its own near N=1024 (2.14x). A
 # power law fitted across a discontinuity measures where the step falls, not per-term cost
 # in N, and the step is a fixed-width-integer artifact that Figs. 2 and 3 already own.
 # Points above the window are still plotted, de-emphasised, and excluded from every fit.
 FIT_NMAX = 512
 
-# Two coherent readings of the identical rows, because including the cliff is not just an
-# axis choice -- if a point is inside the fit it belongs inside the frame too, and its
-# exponent has to say so.
-#
-#   "clean" fits N <= FIT_NMAX, fades the points beyond it, and scales the axis to the
-#           fitted points, clipping and naming anything outside. The exponent is a per-term
-#           measure uncontaminated by the reference engines' key-width discontinuity.
-#   "cliff" fits every point, fades nothing, and opens the axis until all of them fit. The
-#           exponent then INCLUDES the discontinuity: PauliPropagation.jl reads N^+0.14
-#           clean and N^+0.87 with the cliff in. Nothing on the canvas says which of those
-#           a reader is looking at -- only the _cliff filename and the caption do.
-#
-# (filename suffix, fit every point)
-FIT_MODES = {"clean": ("", False), "cliff": ("_cliff", True)}
+# The panel fits every point it draws, so the drawn range and the fitted range are the same
+# and there is no window a reader cannot see. The cost falls on the reference engines: their
+# exponents then span the key-width discontinuity past FIT_NMAX and partly measure where
+# that step falls rather than per-term cost in N. FIT_NMAX survives as the clean comparison
+# window, which the caption reports beside the drawn numbers so the difference -- the cliff
+# -- is on the record and quotable.
+FIT_ALL_POINTS = True
+
+# Hard ceiling on the y axis, in ns per gate per term. Letting the data set the top means
+# PauliPropagation.jl's post-cliff point at ~112 ns stretches the axis to 3.8 decades and
+# squashes the decade the 1/N actually lives in. Cropping here keeps that decade legible;
+# the reference engine's line simply runs off the top, and the caption carries the value it
+# reaches. Every point is still FITTED -- this crops the view, never the fit.
+Y_TOP_NS = 10.0
+
 
 # Colour carries the engine here (see the module docstring). Okabe-Ito, CVD-safe,
 # and the three chosen hues stay separable in greyscale as well.
@@ -132,12 +135,10 @@ LAYOUTS = {
         # either on a curve or on the 1/N guide, and a box over monoprop's tail would hide
         # the part of the curve the figure is about. Stacked rather than on one line
         # because three entries carrying an exponent each need roughly twice 3.4in.
-        "legend": {
-            "loc": "upper center",
-            "bbox_to_anchor": (0.5, -0.175),
-            "ncol": 1,
-            "labelspacing": 0.3,
-        },
+        # Inside the axes, lower left: with the exponents off the labels the entries are
+        # short, and that corner holds nothing but the tail of the 1/N guide.
+        "legend": {"loc": "lower left", "ncol": 1, "labelspacing": 0.35},
+        "bottom_pad": 3.4,
     },
     "page": {
         "stem": "fig6_inverse_scaling_wide",
@@ -166,8 +167,29 @@ LAYOUTS = {
             "ncol": len(ORDER),
             "columnspacing": 2.4,
         },
+        # Legend is below the axes here, so the floor only needs to clear the guide label.
+        "bottom_pad": 1.5,
     },
 }
+
+# One machine, several names. macOS derives the hostname from DHCP whenever
+# `scutil --get HostName` is unset, so a sweep long enough to span a lease renewal records
+# two or three spellings of the same laptop -- the v0.8.2 Julia sweep caught all three
+# below, mid-run, with `scutil --get LocalHostName` and `--get ComputerName` reporting
+# Aaron-MacbookAir-Work throughout. There is no rule that maps `Mac.localdomain` onto
+# `Aaron-MacbookAir-Work` without being told, so the equivalence is declared here rather
+# than inferred, and check_single_thread prints every raw spelling it collapsed. Rows keep
+# the name they were measured under; nothing rewrites recorded provenance.
+HOST_ALIASES = {
+    "Mac.localdomain": "Aaron-MacbookAir-Work.local",
+    "Aaron-MacbookAir-Work": "Aaron-MacbookAir-Work.local",
+}
+
+
+def canonical_host(host):
+    """The machine a recorded hostname denotes. Unknown names are their own canonical form."""
+    return HOST_ALIASES.get(host, host)
+
 
 # process_time() has a coarse tick, so cpu/wall says nothing on a sub-millisecond run.
 BUSY_MIN_SECONDS = 0.01
@@ -323,10 +345,22 @@ def check_single_thread(records):
     measurement covers all three.
     """
     problems = []
-    hosts = sorted({r["host"] for r in records})
-    if len(hosts) != 1:
-        problems.append(f"rows come from {len(hosts)} hosts: {', '.join(hosts)}")
-    lines = [f"one host: {hosts[0]}" if len(hosts) == 1 else f"hosts: {hosts}"]
+    raw_hosts = sorted({r["host"] for r in records})
+    machines = sorted({canonical_host(h) for h in raw_hosts})
+    if len(machines) != 1:
+        problems.append(
+            f"rows come from {len(machines)} machines: {', '.join(machines)}"
+        )
+    # Say which names were folded together, so a reader can tell "one machine" from "one
+    # hostname" and audit the aliasing instead of taking it on trust.
+    spellings = (
+        "" if raw_hosts == machines else f" (recorded as {', '.join(raw_hosts)})"
+    )
+    lines = [
+        f"one host: {machines[0]}{spellings}"
+        if len(machines) == 1
+        else f"machines: {machines}"
+    ]
     for fam in ORDER:
         rows = [r for r in records if r["engine_family"] == fam]
         threads = sorted({str(r["num_threads"]) for r in rows})
@@ -390,7 +424,7 @@ def _guide(ax, xs, exponent, anchor_xy, label, *, label_frac=0.55):
     )
 
 
-def fig6(lattice, outdir: Path, layout: str = "column", fit_mode: str = "clean"):
+def fig6(lattice, outdir: Path, layout: str = "column"):
     """One panel: ns per gate per term against N, cutoff 6, three engines.
 
     Neither shape is a decade-square -- about 1.5 decades in N against 2.1 in the plotted
@@ -400,28 +434,16 @@ def fig6(lattice, outdir: Path, layout: str = "column", fit_mode: str = "clean")
     the claim survives the reshaping.
     """
     spec = LAYOUTS[layout]
-    suffix, fit_all = FIT_MODES[fit_mode]
     with plt.rc_context(spec["rc"]):
         fig, ax = plt.subplots(figsize=spec["figsize"])
 
-        fits, fitted_ys = {}, {}
+        # Every point drawn solid, as one curve per engine. The N <= FIT_NMAX fit window
+        # still sets the exponents that the caption and stdout report, but it is no longer
+        # drawn: the panel carries no exponents, so there is nothing on it for a fade or a
+        # clip to qualify.
+        fits = _fits(lattice, fit_all=FIT_ALL_POINTS)
         for fam in ORDER:
-            rows = _arm(lattice, fam)
-            fitted, beyond = (rows, []) if fit_all else _split_at_fit_window(rows)
-            xs = [r["num_qubits"] for r in rows]
-            ys = [_per_gate_per_term(r) for r in rows]
-            xf = [r["num_qubits"] for r in fitted]
-            yf = [_per_gate_per_term(r) for r in fitted]
-            fits[fam] = (xs, ys, _exponent(xf, yf))
-            xb = [r["num_qubits"] for r in beyond]
-            yb = [_per_gate_per_term(r) for r in beyond]
-            fitted_ys[fam] = (yf, (xb, yb))
-            ax.plot(xf, yf, **_style(fam))
-            if beyond:
-                # Same colour, style and marker -- only faded, so the continuation reads as
-                # the same engine rather than a fourth series, while staying visibly not
-                # part of the fitted line.
-                ax.plot(xb, yb, **{**_style(fam), "alpha": 0.4})
+            ax.plot(fits[fam][0], fits[fam][1], **_style(fam))
 
         xs = fits["monoprop"][0]
         # One slope ruler, anchored THROUGH monoprop's first point rather than offset from
@@ -444,54 +466,26 @@ def fig6(lattice, outdir: Path, layout: str = "column", fit_mode: str = "clean")
 
         _log_axis(ax, xs, "qubits $N$", "ns per gate, per term")
         ax.set_xlim(xs[0] / 1.12, xs[-1] * 1.12)
-        # Scaled to the FITTED points, whichever those are for this mode -- so "cliff"
-        # opens the axis to hold the post-cliff excursion (3.8 decades) while "clean" keeps
-        # to the decade the exponents live in (2.1) and clips what falls outside. Both ends
-        # are padded from the data rather than hard-coded, so either mode survives a
-        # re-measurement.
-        pools = [yf for yf, _ in fitted_ys.values()]
-        lo = min(min(v) for v in pools)
-        hi = max(max(v) for v in pools)
-        ax.set_ylim(lo / 1.5, hi * 1.4)
-
-        # Anything the clip hides gets a caret at the frame and its value, in the engine's
-        # own colour, so an off-scale point reads as a measurement rather than a gap.
-        for fam in ORDER:
-            for x, y in zip(*fitted_ys[fam][1], strict=True):
-                if y > hi * 1.4:
-                    ax.plot(
-                        [x],
-                        [hi * 1.4],
-                        marker="^",
-                        ms=MARKER_SIZE - 0.6,
-                        color=ENGINE_COLOR[fam],
-                        clip_on=False,
-                        zorder=4,
-                    )
-                    ax.annotate(
-                        f"{y:.0f} ns",
-                        xy=(x, hi * 1.4),
-                        xytext=(0, -11),
-                        textcoords="offset points",
-                        ha="center",
-                        va="top",
-                        fontsize=plt.rcParams["legend.fontsize"] - 0.3,
-                        color=ENGINE_COLOR[fam],
-                    )
+        # Floor from the data, ceiling fixed at Y_TOP_NS (see the constant), so the
+        # reference engine's post-cliff point sits above the crop and its line runs off the
+        # top. The bottom pad is set by the legend, not by taste: it sits inside the
+        # lower-left corner in the column layout, and monoprop's tail descends into that
+        # corner, so the floor has to drop far enough to leave the entries clear of it.
+        lo = min(min(ys) for _, ys, _ in fits.values())
+        ax.set_ylim(lo / spec["bottom_pad"], Y_TOP_NS)
 
         handles = [
             Line2D(
                 [],
                 [],
                 **{**_style(fam), "ms": MARKER_SIZE, "lw": LINE_WIDTH + 0.2},
-                label=f"{ENGINE_LABEL[fam]}  $N^{{{fits[fam][2]:+.2f}}}$",
+                label=ENGINE_LABEL[fam],
             )
             for fam in ORDER
         ]
-        # No legend title: the panel carries no prose at all. The two fit modes are
-        # therefore distinguished only by their FILENAME suffix (_cliff) and by the
-        # caption, so keep the two versions' file names straight -- on the canvas alone,
-        # PauliPropagation.jl's N^+0.14 and N^+0.87 are indistinguishable.
+        # Names only, no exponents and no title: the panel identifies the curves and
+        # nothing else. Every fitted number lives in fig6_caption.txt and in the build's
+        # stdout, which are now the ONLY record of them.
         ax.legend(
             handles=handles,
             frameon=False,
@@ -500,7 +494,7 @@ def fig6(lattice, outdir: Path, layout: str = "column", fit_mode: str = "clean")
             borderaxespad=0.0,
             **spec["legend"],
         )
-        outs = _save(fig, outdir, spec["stem"] + suffix)
+        outs = _save(fig, outdir, spec["stem"])
     return outs, fits
 
 
@@ -586,39 +580,45 @@ def write_caption(
     pl_hi = hi["seconds"] / layers / k_hi * MILLION * 1e3
     slower, more_gates = pl_hi / pl_lo, g_hi / g_lo
     per_engine = points // len({r["cutoff"] for r in lattice})
-    host = min(r["host"] for r in lattice)
+    host = min(canonical_host(r["host"]) for r in lattice)
 
     # The same three exponents fitted over everything, so the effect of excluding the
     # post-cliff points is on the record rather than something a reader has to trust.
-    full = {f: v[2] for f, v in _fits(lattice, fit_all=True).items()}
-    full_str = (
-        f"monoprop N^{full['monoprop']:+.2f}, ppvm N^{full['ppvm']:+.2f} "
-        f"and PauliPropagation.jl N^{full['julia']:+.2f}"
+    # The other window, for comparison: whichever one the panel did NOT fit.
+    other = {f: v[2] for f, v in _fits(lattice, fit_all=not FIT_ALL_POINTS).items()}
+    other_str = (
+        f"monoprop N^{other['monoprop']:+.2f}, ppvm N^{other['ppvm']:+.2f} "
+        f"and PauliPropagation.jl N^{other['julia']:+.2f}"
     )
     beyond = [r["num_qubits"] for r in lat if r["num_qubits"] > FIT_NMAX]
     window = ""
     if beyond:
-        pts = ", ".join(f"N={n}" for n in beyond)
         window = f"""
-Two fit windows, and which figure you have. The panel ships in two versions from the same
-rows, told apart by FILE NAME and by nothing on the canvas. The plain one fades and
-excludes the points beyond N <= {FIT_NMAX} ({pts}) and clips the axis to the fitted decade;
-the _cliff one fits every point and opens the axis until the reference engine's post-cliff
-excursion fits at its true size. Either way ONE window covers all three engines, so the
-three exponents are always like-for-like.
+The fit window. Every exponent above is fitted over every measured point, N = {n_lo}..{n_hi}, so
+the drawn range and the fitted range are the same and there is no window a reader cannot
+see. Nothing on the canvas says even that much -- the legend carries engine names only --
+so this caption is the record.
 
-Beyond N <= {FIT_NMAX} the reference engines cross a packed-key width boundary:
-PauliPropagation.jl's is measured at N=576->608, an 8.7x single-N jump in the Leonardo
-full-width sweep and 7.1x in the idle-spectator sweep, and ppvm has one of its own near
-N=1024 (2.14x). A power law fitted across a discontinuity measures where the step falls
-rather than per-term cost in N, and the step is a fixed-width-integer artifact that Figs. 2
-and 3 already own. Fitted over the whole range instead -- the _cliff version -- the same
-rows give {full_str}.
-The reference engines' numbers inflate, and that inflation IS the cliff. monoprop's
-exponent barely moves ({m[2]:+.2f} to {full["monoprop"]:+.2f}), having no such boundary to cross. The
-N <= {FIT_NMAX} window is therefore the conservative reading: it gives up the widest part of
-monoprop's lead, which at N={n_hi} is {lead_j:.0f}x over PauliPropagation.jl and {lead_p:.0f}x over ppvm.
+That choice has a cost and it falls on the reference engines. Beyond N = {FIT_NMAX} both cross a
+packed-key width boundary: PauliPropagation.jl's is measured at N=576->608, an 8.5x
+single-N jump in the v0.8.2 full-width probe and 7.7x in its idle-spectator sweep (8.7x
+and 7.1x at v0.7.3, so the vectorised backend does not move it), and
+ppvm has one of its own near N=1024 (2.14x). A power law fitted across a discontinuity
+partly measures where the step falls rather than per-term cost in N, and that step is a
+fixed-width-integer artifact which Figs. 2 and 3 already own. Restricted to the clean
+N <= {FIT_NMAX} window the same rows give
+{other_str}.
+PauliPropagation.jl is the one that moves, {other["julia"]:+.2f} to {j[2]:+.2f}: that difference IS the cliff, and
+it flatters monoprop here, so the N <= {FIT_NMAX} numbers are the conservative ones to quote for
+per-term cost. monoprop's own exponent barely moves ({other["monoprop"]:+.2f} to {m[2]:+.2f}), having no such
+boundary to cross. At N={n_hi} monoprop leads PauliPropagation.jl by {lead_j:.0f}x and ppvm by {lead_p:.0f}x.
+
+The y axis is cropped at {Y_TOP_NS:.0f} ns per gate per term, to keep the decade the 1/N lives in
+legible. PauliPropagation.jl's N={n_hi} point is above the crop, at {j[1][-1]:.0f} ns, so its line runs
+off the top of the panel: that point is in the fit and in the numbers above, only not in
+the view.
 """
+
     cutoffs = ""
     if cutoff_evidence and len({r["cutoff"] for r in cutoff_evidence}) > 1:
         src = sorted({r["num_qubits"] for r in cutoff_evidence})
@@ -737,16 +737,6 @@ def main() -> None:
         "cross-reference numbers. No panel is drawn from it.",
     )
     ap.add_argument(
-        "--fit",
-        nargs="+",
-        choices=sorted(FIT_MODES),
-        default=["clean", "cliff"],
-        help="'clean' fits N <= FIT_NMAX, fades the points beyond it and clips the axis to "
-        "the fitted decade; 'cliff' fits every point, opens the axis to hold the "
-        "post-cliff excursion, and says so in the legend (suffix _cliff). Both by "
-        "default. The legend title names whichever window was fitted.",
-    )
-    ap.add_argument(
         "--cutoff-evidence",
         nargs="+",
         type=Path,
@@ -789,12 +779,10 @@ def main() -> None:
 
     outs = []
     for layout in dict.fromkeys(args.layout):  # de-duplicate, keep the given order
-        for fit_mode in dict.fromkeys(args.fit):
-            layout_outs, _ = fig6(lattice, args.outdir, layout, fit_mode)
-            outs += layout_outs
-    # The caption always quotes the CLEAN-window exponents as its headline and the
-    # cliff-included ones beside them, whichever figures were asked for.
-    fits = _fits(lattice)
+        layout_outs, _ = fig6(lattice, args.outdir, layout)
+        outs += layout_outs
+    # Independent of what got rendered, so the caption cannot drift from the panel.
+    fits = _fits(lattice, fit_all=FIT_ALL_POINTS)
     cap = write_caption(
         args.outdir,
         fits,
@@ -806,12 +794,15 @@ def main() -> None:
     )
 
     print(
-        f"\nfitted exponents over N <= {FIT_NMAX}, ns per gate per term "
+        f"\nfitted exponents over N = {min(r['num_qubits'] for r in lattice)}.."
+        f"{max(r['num_qubits'] for r in lattice)}, ns per gate per term "
         "[ideal: -1 (K/N) vs 0 (K)]"
     )
     for cutoff in sorted({r["cutoff"] for r in lattice}):
         for fam in ORDER:
-            rows, _ = _split_at_fit_window(_arm(lattice, fam, cutoff))
+            rows = _arm(lattice, fam, cutoff)
+            if not FIT_ALL_POINTS:
+                rows = _split_at_fit_window(rows)[0]
             e = _exponent(
                 [r["num_qubits"] for r in rows], [_per_gate_per_term(r) for r in rows]
             )

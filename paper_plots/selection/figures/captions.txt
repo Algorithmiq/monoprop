@@ -1,0 +1,28 @@
+Figure caption -- what one gate selection costs as the mode space widens
+========================================================================
+
+LaTeX-ready caption, computed from the plotted rows by make_selection_figure.py --
+edit that script, not this file. Every exponent and range below is measured, never typed.
+
+Encoding: colour and marker = the (ell, p) case, on a light-to-dark single-hue ordinal ramp,
+since the three curves differ in the ORDER of the cost bound rather than in identity. Both axes
+are logarithmic; the dotted line beside each curve is that curve's own N^(ell+p) bound, anchored
+on its widest measured rung. The figure carries no title, so this caption is the only place the
+reference lines and the measurement configuration are stated.
+
+
+Fig. 1  (fig-selection-scaling)  --  Cost of one gate selection
+---------------------------------------------------------------
+
+\textbf{Cost of one gate selection.} Time to select a single gate -- pair enumeration,
+the occupation-flip table and scoring, the three phases timed inside the engine --
+against the mode count $N$, for 3 generator/order cases in the propagated basis, single
+partition, single thread. Building and evolving the observable happen before the clock
+starts. Fitted log-log slopes over the 4 widest rungs of each case: $\ell=2$, $p=1$:
+$N^{3.07}$ against the $N^{3}$ bound, over $N=96$--192; $\ell=2$, $p=2$: $N^{4.22}$
+against the $N^{4}$ bound, over $N=64$--160; $\ell=3$, $p=2$: $N^{5.19}$ against the
+$N^{5}$ bound, over $N=32$--80. Each dotted line is the corresponding $N^{\ell+p}$
+pair-count bound, anchored on the widest measured rung. The measured time exponents
+track the fitted pair-count exponents (3.02), (4.06), (5.19) to within 0.16, and the
+cost of enumerating one pair stays flat at 9--16~ns across the whole sweep, so selection
+costs what enumerating the pairs costs and carries no hidden work on top of it.

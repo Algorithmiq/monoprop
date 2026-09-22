@@ -14,10 +14,10 @@ expectation value agreeing to 1.6e-11 absolute, so the divisors are identical ac
 three curves and the figure script refuses to build if any of that moves. A shared divisor
 cannot manufacture a difference between the curves, only reveal one.
 
-Result. monoprop falls as N^-0.83, close to the ideal 1/N drawn beside it: 0.571 ns at
-N=32 down to 0.0347 ns at N=1024, a 16.4x reduction across a 32x wider system.
-Neither reference engine falls: ppvm N^+0.57, PauliPropagation.jl N^+1.12. Note where they
-start -- at N=32 ppvm is the fastest of the three (0.459 ns against monoprop's 0.571),
+Result. monoprop falls as N^-0.83, close to the ideal 1/N drawn beside it: 0.557 ns at
+N=32 down to 0.0345 ns at N=1024, a 16.1x reduction across a 32x wider system.
+Neither reference engine falls: ppvm N^+0.63, PauliPropagation.jl N^+1.20. Note where they
+start -- at N=32 ppvm is the fastest of the three (0.488 ns against monoprop's 0.557),
 so the ordering is earned over the sweep and not assumed at the origin.
 
 The fit window. Every exponent above is fitted over every measured point, N = 32..1024, so
@@ -33,11 +33,11 @@ ppvm has one of its own near N=1024 (2.14x). A power law fitted across a discont
 partly measures where the step falls rather than per-term cost in N, and that step is a
 fixed-width-integer artifact which Figs. 2 and 3 already own. Restricted to the clean
 N <= 512 window the same rows give
-monoprop N^-0.88, ppvm N^+0.59 and PauliPropagation.jl N^+0.32.
-PauliPropagation.jl is the one that moves, +0.32 to +1.12: that difference IS the cliff, and
+monoprop N^-0.88, ppvm N^+0.57 and PauliPropagation.jl N^+0.43.
+PauliPropagation.jl is the one that moves, +0.43 to +1.20: that difference IS the cliff, and
 it flatters monoprop here, so the N <= 512 numbers are the conservative ones to quote for
 per-term cost. monoprop's own exponent barely moves (-0.88 to -0.83), having no such
-boundary to cross. At N=1024 monoprop leads PauliPropagation.jl by 3864x and ppvm by 78x.
+boundary to cross. At N=1024 monoprop leads PauliPropagation.jl by 3886x and ppvm by 112x.
 
 The y axis is cropped at 10 ns per gate per term, to keep the decade the 1/N lives in
 legible. PauliPropagation.jl's N=1024 point is above the crop, at 134 ns, so its line runs
@@ -46,8 +46,8 @@ the view.
 
 The divisor is not the effect. A falling curve invites the objection that the gate count is
 itself proportional to N, so state the same rows with no gate division at all: a monoprop
-layer of 2047 gates costs 1.98x what a layer of 63 gates costs (36.0 -> 71.1 ms per
-10^6 terms). 32.5x the gates for 1.98x the time. The identical divisor applied to the
+layer of 2047 gates costs 2.01x what a layer of 63 gates costs (35.1 -> 70.7 ms per
+10^6 terms). 32.5x the gates for 2.01x the time. The identical divisor applied to the
 other two engines leaves them flat or rising, so it cannot be the source of the fall.
 
 Nor is the cutoff. This panel draws one arm, so the cutoff-independence comes from the

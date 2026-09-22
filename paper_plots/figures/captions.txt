@@ -16,11 +16,10 @@ fig6_inverse_scaling for a single column, fig6_inverse_scaling_wide for a full-w
 banner at the top of a page, its three engines on one horizontal line beneath the
 axes -- differing only in frame, type size and legend placement. The panel carries no
 prose: one grey slope ruler (the ideal 1/N), the fitted exponents in the legend, and
-nothing else. It ships in two fit modes as well as two shapes: fig6_inverse_scaling*
-fits N <= 512 and fades the points beyond it, fig6_inverse_scaling*_cliff fits every point
-and opens the axis to hold PauliPropagation.jl's post-cliff excursion. Neither panel says on its face which
-window it fitted -- only the _cliff suffix and this caption do -- and the exponents differ
-(N^+0.14 against N^+0.87 for PauliPropagation.jl), so keep the file names straight. Which cutoff is drawn is in fig6_caption.txt. It deviates deliberately from the encoding below --
+nothing else. The panel draws and fits every measured point, and its
+legend carries engine names only, so the exponents appear nowhere on the canvas.
+fig6_caption.txt is the record, and it reports the clean N <= 512 window beside the drawn
+one so the key-width cliff's contribution stays quotable. It deviates deliberately from the encoding below --
 with the cutoff fixed at 6, colour there carries the ENGINE -- while keeping each
 engine's line style and marker unchanged, so identity is still never colour-alone.
 Fig. 5 is the supporting view: the same two sweeps across all three cutoffs.
