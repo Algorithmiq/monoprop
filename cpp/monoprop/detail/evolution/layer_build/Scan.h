@@ -210,8 +210,7 @@ struct FusedScanResult {
     std::vector<CosMask> cos_blocks; // ascending, disjoint, chunk order
     // The six arrays below are indexed by DESTINATION SLOT through WindowVec::at_slot, and cover only
     // the slots this generator can reach: S of the P=R*S world under linear routing, all P under
-    // splitmix. See mpi::PeerPlan::window.
-    mpi::SlotWindow window;
+    // splitmix. See mpi::PeerPlan::window; each carries its own copy of it.
     mpi::WindowVec<VecZ> leader_queries;              // serialized leader queries per owner slot
     mpi::WindowVec<std::vector<size_t>> leader_src;   // parallel to leader_queries (source op idx)
     mpi::WindowVec<VecZ> follower_queries;            // serialized follower queries per owner slot
@@ -258,7 +257,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     assert(window.stop() <= rank_count && window.count != 0);
 
     FusedScanResult<NumModes> res;
-    res.window = window;
     res.leader_queries.reset(window);
     res.leader_src.reset(window);
     res.follower_queries.reset(window);
@@ -345,8 +343,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                 r_prime = router.dest_from_shift<NumModes>(dense, my_rank, gen_shift);
                 assert(r_prime == router.dest<NumModes>(dense)); // an identity, not an approximation
             }
-            // at_slot is the only re-basing door and asserts membership: a destination outside this
-            // generator's window means the shift is wrong, and would otherwise land on another peer.
             if (r_prime == my_rank) {
                 (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
             }

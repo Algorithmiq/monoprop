@@ -43,7 +43,7 @@ struct IncomingProbe {
     // The slots `incoming` covers; senders are named by their index into it, never by a flat slot.
     mpi::SlotWindow window;
     std::vector<size_t> goff;              // window.count+1 flat offsets: g = goff[k] + q
-    DefaultInitVector<uint32_t> sender_wi; // g → sender's WINDOW index (see sender_index/sender_slot)
+    DefaultInitVector<uint32_t> sender_wi; // g -> sender's WINDOW index (see sender_index)
     DefaultInitVector<int> phase_of;       // g → query phase
     // g → word offset of that query inside its sender's buffer; a query ordinal names no position.
     DefaultInitVector<size_t> off_of;
@@ -64,9 +64,8 @@ struct IncomingProbe {
         return std::span<const PosT>(pos_flat).subspan(pos_off[g], k_of[g]);
     }
 
-    //! The two ways to name query g's sender. sender_wi is re-based, so nothing else reads it.
+    //! Query g's sender, re-based onto `window`; compose with window.slot() for the flat slot.
     [[nodiscard]] auto sender_index(size_t g) const -> mpi::WindowIndex { return mpi::WindowIndex{sender_wi[g]}; }
-    [[nodiscard]] auto sender_slot(size_t g) const -> size_t { return window.slot(sender_index(g)); }
 
     //! Builds a dense bitset; only the fully paired minority of callers needs one.
     [[nodiscard]] auto mono_at(size_t g) const -> Monomial<NumModes> {

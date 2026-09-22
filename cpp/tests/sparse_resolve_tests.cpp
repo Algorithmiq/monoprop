@@ -143,7 +143,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
                                      size_t rank_count,
                                      bool fused,
                                      size_t window_base = 0) -> void {
-    // A non-zero base is the case a re-basing bug survives: sender_slot must still name the flat slot.
+    // A non-zero base is the case a re-basing bug survives: the sender must still re-base to its flat slot.
     const mpi::SlotWindow window{.base = window_base, .count = rank_count};
     const auto seed_terms = draw_distinct<NumModes>(rng, n_seed);
     const auto fresh_terms = draw_distinct<NumModes>(rng, n_query);
@@ -211,7 +211,7 @@ auto check_probe_matches_the_queries(std::mt19937_64 &rng,
         BOOST_TEST(pr.k_of[g] == want.count());
         BOOST_TEST(pr.phase_of[g] == expect_phase[g]);
         BOOST_TEST(pr.sender_index(g).value == expect_sender[g]);
-        BOOST_TEST(pr.sender_slot(g) == window.base + expect_sender[g]);
+        BOOST_TEST(pr.window.slot(pr.sender_index(g)) == window.base + expect_sender[g]);
         BOOST_TEST(pr.is_paired_at(g) == monoprop::is_paired<NumModes>(want));
 
         std::vector<uint64_t> key;

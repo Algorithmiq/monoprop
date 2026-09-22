@@ -361,17 +361,17 @@ struct LayerBuildEngine {
                      MatchedEpochSet &matched_scratch,
                      size_t combined_size_,
                      Sink &&sink_,
-                     mpi::PeerPlan plan_ = {}) // dense by default: the tests build the engine directly
+                     mpi::PeerPlan plan_,
+                     mpi::SlotWindow window_)
         : local_op(local_op_),
           comm(comm_),
           R(R_),
           my_rank(my_rank_),
           matched(matched_scratch),
           combined_size(combined_size_),
+          window(window_),
           plan(plan_),
           sink(std::move(sink_)) {
-        const auto geom = mpi::geometry(comm);
-        window = plan.window(my_rank, static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
         assert(window.stop() <= R && window.count != 0);
         queries_r.reset(window);
         src_idx_r.reset(window);
@@ -412,10 +412,11 @@ struct LayerBuildEngine {
                       mpi::WindowVec<std::vector<size_t>> &&src_idx,
                       mpi::WindowVec<std::vector<double>> &&src_val,
                       SelfQueryStage<NumModes> &&self_stage) -> void {
-        // The scan sized its arrays to the same plan, so the two windows must agree exactly -- a mismatch
-        // would re-base every slot against the wrong base.
+        // The scan sized its arrays to the same plan, so all three windows must agree exactly -- a
+        // mismatch would re-base every slot against the wrong base.
         assert(queries.window().base == window.base && queries.window().count == window.count);
         assert(src_idx.window().base == window.base && src_idx.window().count == window.count);
+        assert(src_val.size() == 0 || src_val.window().base == window.base); // empty under GraphSink
         queries_r = std::move(queries);
         src_idx_r = std::move(src_idx);
         self_stage_ = std::move(self_stage);
@@ -460,13 +461,13 @@ struct LayerBuildEngine {
             // Two cursors, since a dropped query has no fixed width; order is the accumulation order.
             size_t src_off = 0;
             size_t dst_off = 0;
-            for (size_t k = 0; k < nq; ++k) {
+            for (size_t qi = 0; qi < nq; ++qi) {
                 const size_t next = QW::next_off(q, form, src_off);
-                if (!matched.is_marked(s[k])) {
+                if (!matched.is_marked(s[qi])) {
                     dst_off += QW::move_query(q, form, src_off, dst_off);
-                    s[kept] = s[k];
+                    s[kept] = s[qi];
                     if (v != nullptr) {
-                        (*v)[kept] = (*v)[k];
+                        (*v)[kept] = (*v)[qi];
                     }
                     ++kept;
                 }
@@ -644,11 +645,10 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
     assert(fused_scale_coeffs == nullptr || (local_coeffs && &local_coeffs->get() == fused_scale_coeffs));
 
-    // An identity generator anticommutes with nothing: the scan returns on its empty fold-column set
-    // with no query, no cosine block and no coefficient swept, and run_exchange's three collectives per
-    // pass would carry no payload. The generator list is replicated, so skipping needs no agreement.
-    // (A zero chemical potential alone contributes 60 of the 60-site Hubbard's 476 generators per
-    // Trotter layer.) No gate is merged: a no-op gate is simply not exchanged for.
+    // An identity generator anticommutes with nothing, so its exchange carries no payload -- but the
+    // collectives fire regardless. The generator list is replicated, so skipping needs no agreement.
+    // Worth the branch: a zero chemical potential alone contributes 60 of the 60-site Hubbard's 476
+    // generators per Trotter layer. No gate is merged; a no-op gate is simply not exchanged for.
     const bool identity_gen = !gen.any();
 
     FusedScanResult<NumModes> fused;
@@ -692,7 +692,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              matched_scratch,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink),
-                                             plan);
+                                             plan,
+                                             scan_window);
         if (!identity_gen) {
             eng.run_exchange(/*is_leader_pass=*/true,
                              std::move(fused.leader_queries),
