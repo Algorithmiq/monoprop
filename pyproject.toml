@@ -49,7 +49,6 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.optional-dependencies]
 mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
-pennylane = ["pennylane>=0.40"]
 
 [dependency-groups]
 dev = ["prek>=0.4", "ruff==0.15.20"]
@@ -68,7 +67,6 @@ interactive = [
   "matplotlib",
   "pylatexenc",
   "qiskit>=2.0.0",
-  "pennylane>=0.40",
   "pyscf",
 ]
 # Dependencies of monoprop's own suite (`tests/`). Deliberately free of workspace
@@ -86,7 +84,7 @@ test = [
 ]
 # What `uv run pytest` needs at the repository root, which also collects the
 # workspace members' suites (see `testpaths`).
-workspace-test = [{ include-group = "test" }, "monoprop-bench-tools"]
+workspace-test = [{ include-group = "test" }, "monoprop-bench-tools", "monoprop-pennylane"]
 bench = [{ include-group = "workspace-test" }, "pytest-benchmark>=5"]
 
 
@@ -114,6 +112,7 @@ exclude = ["packages/bench-third-party"]
 
 [tool.uv.sources]
 monoprop-bench-tools = { workspace = true }
+monoprop-pennylane = { workspace = true }
 
 
 [[tool.dynamic-metadata]]
@@ -189,7 +188,7 @@ addopts = [
 ]
 xfail_strict = true
 filterwarnings = ["error"]
-testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
+testpaths = ["tests", "packages/monoprop-bench-tools/tests", "packages/monoprop-pennylane/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
 python_files = ["test_*.py", "bench_*.py"]
@@ -399,7 +398,7 @@ build-verbosity = 1
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
-test-extras = ["qiskit", "pennylane"]
+test-extras = ["qiskit"]
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]

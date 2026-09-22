@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "monoprop",
     "monoprop-bench-tools",
+    "monoprop-pennylane",
 ]
 
 [[package]]
@@ -1256,9 +1257,6 @@ dependencies = [
 mpi = [
     { name = "mpi4py" },
 ]
-pennylane = [
-    { name = "pennylane" },
-]
 qiskit = [
     { name = "qiskit" },
 ]
@@ -1266,6 +1264,7 @@ qiskit = [
 [package.dev-dependencies]
 bench = [
     { name = "monoprop-bench-tools" },
+    { name = "monoprop-pennylane" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
@@ -1284,7 +1283,6 @@ docs = [
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "nbconvert" },
-    { name = "pennylane" },
     { name = "pylatexenc" },
     { name = "pyscf" },
     { name = "pytest-markdown-docs" },
@@ -1293,7 +1291,6 @@ docs = [
 interactive = [
     { name = "ipykernel" },
     { name = "matplotlib" },
-    { name = "pennylane" },
     { name = "pylatexenc" },
     { name = "pyscf" },
     { name = "qiskit" },
@@ -1309,6 +1306,7 @@ test = [
 ]
 workspace-test = [
     { name = "monoprop-bench-tools" },
+    { name = "monoprop-pennylane" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cases" },
@@ -1324,14 +1322,14 @@ requires-dist = [
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "nanobind-backend", specifier = ">=1.0.0" },
     { name = "numpy", specifier = ">=2" },
-    { name = "pennylane", marker = "extra == 'pennylane'", specifier = ">=0.40" },
     { name = "qiskit", marker = "extra == 'qiskit'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["mpi", "qiskit", "pennylane"]
+provides-extras = ["mpi", "qiskit"]
 
 [package.metadata.requires-dev]
 bench = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "monoprop-pennylane", editable = "packages/monoprop-pennylane" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-benchmark", specifier = ">=5" },
@@ -1350,7 +1348,6 @@ docs = [
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "nbconvert" },
-    { name = "pennylane", specifier = ">=0.40" },
     { name = "pylatexenc" },
     { name = "pyscf" },
     { name = "pytest-markdown-docs" },
@@ -1359,7 +1356,6 @@ docs = [
 interactive = [
     { name = "ipykernel" },
     { name = "matplotlib" },
-    { name = "pennylane", specifier = ">=0.40" },
     { name = "pylatexenc" },
     { name = "pyscf" },
     { name = "qiskit", specifier = ">=2.0.0" },
@@ -1375,6 +1371,7 @@ test = [
 ]
 workspace-test = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "monoprop-pennylane", editable = "packages/monoprop-pennylane" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
@@ -1421,6 +1418,34 @@ provides-extras = ["gpu-cuda12", "gpu-cuda13"]
 
 [package.metadata.requires-dev]
 test = [{ name = "pytest", specifier = ">=8.2.2,<9.1" }]
+
+[[package]]
+name = "monoprop-pennylane"
+source = { editable = "packages/monoprop-pennylane" }
+dependencies = [
+    { name = "monoprop" },
+    { name = "pennylane" },
+]
+
+[package.dev-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cases" },
+    { name = "pytest-datadir" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "monoprop", editable = "." },
+    { name = "pennylane", specifier = ">=0.40" },
+]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
+    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest-datadir" },
+]
 
 [[package]]
 name = "mpi4py"
