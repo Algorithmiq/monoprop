@@ -1067,6 +1067,7 @@ mpi = [
 [package.dev-dependencies]
 bench = [
     { name = "monoprop-bench-tools" },
+    { name = "monoprop-qiskit" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
@@ -1106,6 +1107,7 @@ test = [
 ]
 workspace-test = [
     { name = "monoprop-bench-tools" },
+    { name = "monoprop-qiskit" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cases" },
@@ -1127,6 +1129,7 @@ provides-extras = ["mpi"]
 [package.metadata.requires-dev]
 bench = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "monoprop-qiskit", editable = "packages/monoprop-qiskit" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-benchmark", specifier = ">=5" },
@@ -1166,6 +1169,7 @@ test = [
 ]
 workspace-test = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "monoprop-qiskit", editable = "packages/monoprop-qiskit" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-cases", specifier = ">=3.8.6,<4" },
