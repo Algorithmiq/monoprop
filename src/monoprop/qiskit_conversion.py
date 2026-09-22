@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from monoprop.conversion_utils import _extend_pauli_string
+from monoprop.conversion_utils import extend_pauli_string
 
 try:
     from qiskit import QuantumCircuit
@@ -30,7 +30,7 @@ except ImportError as e:
 
 from monoprop.circuit import Circuit, ExpGate
 from monoprop.pauli import Pauli, PauliOperator
-from monoprop.utils import _validate_system_size
+from monoprop.utils import validate_system_size
 
 PAULI_EVOLUTION_EQUIVALENT = {
     "rx",
@@ -80,7 +80,7 @@ def from_qiskit_operator(
     for label, indices, coeff in qiskit_op.to_sparse_list():
         paulis.append(Pauli(label, indices))
         coeffs.append(coeff)
-    return PauliOperator._from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
+    return PauliOperator.from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
 
 
 def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> SparsePauliOp:
@@ -114,7 +114,7 @@ def to_qiskit_operator(
     num_qubits = num_qubits if num_qubits is not None else pauli_operator.num_qubits
 
     operator = {
-        _extend_pauli_string(p.string, p.qubits, num_qubits): coeff
+        extend_pauli_string(p.string, p.qubits, num_qubits): coeff
         for p, coeff in pauli_operator.terms.items()
     }
 
@@ -125,7 +125,7 @@ def _place_operator(
     local_op: PauliOperator, qubits: tuple[int, ...], num_qubits: int
 ) -> PauliOperator:
     """Remap a local operator on ``0..len(qubits)-1`` onto global ``qubits``, at full width."""
-    return PauliOperator._from_terms(
+    return PauliOperator.from_terms(
         [
             Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits))
             for pauli in local_op.terms
@@ -143,7 +143,7 @@ def _negated(operator: PauliOperator) -> PauliOperator:
     the *generator*, not on the angle, which keeps a converted circuit's ``parameters`` (and hence
     gradients with respect to them) numerically equal to the qiskit evolution times.
     """
-    return PauliOperator._from_terms(
+    return PauliOperator.from_terms(
         list(operator.terms),
         [-coeff for coeff in operator.terms.values()],
         num_qubits=operator.num_qubits,
@@ -187,7 +187,7 @@ def from_qiskit_circuit(
             placed = _place_operator(
                 from_qiskit_operator(g_op.pauli()), qubits, num_qubits
             )
-            generator = PauliOperator._from_terms(
+            generator = PauliOperator.from_terms(
                 list(placed.terms),
                 [-0.5 * coeff for coeff in placed.terms.values()],
                 num_qubits=num_qubits,
@@ -201,7 +201,7 @@ def from_qiskit_circuit(
             parameter = g_op.params[0]
             pauli_string = gate_name[1:].upper()
             # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
-            generator = PauliOperator._from_terms(
+            generator = PauliOperator.from_terms(
                 [Pauli(pauli_string, qubits)], [-0.5], num_qubits=num_qubits
             )
         else:
@@ -227,7 +227,7 @@ def _extend_generator_minimally(
     qubits = sorted({q for p in generator.terms for q in p.qubits})
     localizing_qubit_map = {q: i for i, q in enumerate(qubits)}
     result = {
-        _extend_pauli_string(
+        extend_pauli_string(
             "".join(pauli.string),
             [localizing_qubit_map[q] for q in pauli.qubits],
             len(qubits),
@@ -253,7 +253,7 @@ def to_qiskit_circuit(circuit: Circuit, num_qubits: int) -> QuantumCircuit:
     Returns:
         A qiskit quantum circuit.
     """
-    num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
+    num_qubits = validate_system_size(num_qubits, argument_name="num_qubits")
     if num_qubits != circuit.system_size:
         raise ValueError(
             f"num_qubits={num_qubits} does not match circuit.system_size={circuit.system_size}."

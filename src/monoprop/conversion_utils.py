@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
 
-def _extend_pauli_string(pauli: str, qubits: Sequence[int], n_qubits: int) -> str:
+def extend_pauli_string(pauli: str, qubits: Sequence[int], n_qubits: int) -> str:
     """Pad a local Pauli term with identities into a full ``n_qubits``-wide Pauli string."""
     if len(pauli) != len(qubits):
         raise ValueError("Pauli string and qubits must have the same length")

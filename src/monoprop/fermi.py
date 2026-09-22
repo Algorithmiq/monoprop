@@ -22,7 +22,7 @@ import numpy as np
 
 from .conversion_utils import _n_product
 from .majorana import MajoranaOperator
-from .utils import _validate_system_size
+from .utils import validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -128,7 +128,7 @@ class FermiOperator:
             t if isinstance(t, FermiString) else FermiString(t) for t in terms
         ]
         self.coefficients = list(coefficients)
-        self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        self.num_modes = validate_system_size(num_modes, argument_name="num_modes")
         for term in self.terms:
             for idx, _ in term.expression:
                 if idx >= self.num_modes:
