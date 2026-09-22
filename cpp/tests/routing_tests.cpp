@@ -325,10 +325,9 @@ BOOST_AUTO_TEST_CASE(routing_single_rank_is_dense_and_not_an_error) {
     }
 }
 
-// The transposed basis must be the SAME map, not merely a faster one: a divergence is a silently wrong
-// owner. Pin dest() and rank_shift() against the old bit-walk over both routers, every geometry, and
-// popcounts from empty to full support.
-BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) {
+// A divergence is a silently wrong owner. Pin dest() and rank_shift() against an independent bit-walk
+// over both routers, every geometry, and popcounts from empty to full support.
+BOOST_AUTO_TEST_CASE(routing_dest_is_bit_identical_to_the_reference_bit_walk) {
     std::vector<Monomial<kN>> monos;
     for (const size_t w : {size_t{0},
                            size_t{1},
@@ -345,8 +344,8 @@ BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) 
     }
     BOOST_REQUIRE_EQUAL(monos.size(), 1000U);
 
-    // (R, S), each run under both routers: log2(R) runs 0, 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, so the plane
-    // count varies from none to twelve and R = 1 pins the geometry that is dense under either mode.
+    // (R, S), each run under both routers: log2(R) runs 0, 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, and R = 1
+    // pins the geometry that is dense under either mode.
     const std::vector<std::pair<size_t, size_t>> geometries{{128, 14},
                                                             {16, 1},
                                                             {64, 28},
