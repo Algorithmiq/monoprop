@@ -61,6 +61,8 @@ BOOST_AUTO_TEST_CASE(env_config_parse_uint64_unset_valid_and_rejected) {
     BOOST_CHECK_THROW(parse_uint64("k", "12x"), EnvConfigError);
     BOOST_CHECK_THROW(parse_uint64("k", "-1"), EnvConfigError);                   // strtoull would WRAP it
     BOOST_CHECK_THROW(parse_uint64("k", "18446744073709551616"), EnvConfigError); // ERANGE
+    BOOST_CHECK_THROW(parse_uint64("k", "  12"), EnvConfigError);                 // strtoull would SKIP it
+    BOOST_CHECK_THROW(parse_uint64("k", "+12"), EnvConfigError);
 }
 
 BOOST_AUTO_TEST_CASE(env_config_parse_routing_mode_rejects_a_typo) {

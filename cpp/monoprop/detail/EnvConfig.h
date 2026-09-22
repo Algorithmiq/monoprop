@@ -23,8 +23,7 @@
 #include <string>
 #include <string_view>
 
-// Single home for runtime environment configuration. Kept dependency-free by design, because it is
-// pulled into hot-path headers.
+// Single home for runtime environment configuration, read once per process.
 //
 //   monoprop_NUM_THREADS        positive int (1..1e6), else ignored → num_threads
 //   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
@@ -70,8 +69,10 @@ inline auto parse_uint64(std::string_view name, const char *text) -> std::option
     if (text == nullptr || *text == '\0') {
         return std::nullopt;
     }
-    // strtoull WRAPS a negative literal to a huge unsigned rather than failing, so '-' is rejected here.
-    if (std::string_view{text}.contains('-')) {
+    // strtoull WRAPS a negative literal to a huge unsigned rather than failing, and skips leading
+    // whitespace, so anything but a bare decimal literal is rejected before it is parsed.
+    const std::string_view raw{text};
+    if (raw.find_first_not_of("0123456789") != std::string_view::npos) {
         reject_env(name, text, "a decimal uint64");
     }
     errno = 0;

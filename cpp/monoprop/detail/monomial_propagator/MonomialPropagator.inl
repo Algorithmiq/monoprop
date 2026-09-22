@@ -411,7 +411,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
-    const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() can hit MPI, so never per term
+    const routing::Router router = router_for<NumModes>(comm_); // hoisted, never per term
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
@@ -765,25 +765,26 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void {
-    // One report per rank, so only its partition 0 speaks, and only once whatever the outcome.
+    // One report per rank, so only its partition 0 speaks.
     if (routing_coverage_reported_ || comm_.shm_rank != 0) {
         return;
     }
-    routing_coverage_reported_ = true;
     const routing::Router router = router_for<NumModes>(comm_);
     if (!router.is_linear()) {
+        routing_coverage_reported_ = true;
         return; // splitmix: no subspace to fall short of
     }
     std::vector<uint64_t> shifts;
     shifts.reserve(majoranas.size());
     for (const auto &gate : majoranas) {
         // An out-of-range index is build_evolve_result_'s to reject, gate by gate: converting the whole
-        // list up front would pre-empt that throw.
+        // list up front would pre-empt that throw. Leave the latch clear so a corrected retry still reports.
         if (std::ranges::any_of(gate, [this](size_t i) { return i >= 2 * logical_num_modes_; })) {
             return;
         }
         shifts.push_back(static_cast<uint64_t>(router.rank_shift<NumModes>(indices_to_bitset<NumModes>(gate))));
     }
+    routing_coverage_reported_ = true;
     std::ranges::sort(shifts);
     shifts.erase(std::ranges::unique(shifts).begin(), shifts.end());
     const size_t span = routing::gf2_rank(shifts);
@@ -791,13 +792,17 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
         return;
     }
     // A warning, not a throw: every term still lands on one owner, they just do not cover the ranks.
+    // Capacity, not occupancy: the shifts reach one coset per initially occupied rank, and the initial
+    // operator may already straddle several, so an idle-rank count cannot be read off `span` alone.
     // COMMPLACE's shape -- greppable prefix, rank-identified, one line.
-    const auto line = std::format("COMMROUTE rank={} linear_bits={} shift_rank={} shifts={} idle_ranks={}\n",
-                                  static_cast<size_t>(mpi::rank(comm_)) / router.partitions(),
-                                  router.linear_bits(),
-                                  span,
-                                  shifts.size(),
-                                  router.ranks() - (size_t{1} << span));
+    const auto line =
+        std::format("COMMROUTE rank={} linear_bits={} shift_rank={} shifts={} ranks_per_coset={} rank_cosets={}\n",
+                    static_cast<size_t>(mpi::rank(comm_)) / router.partitions(),
+                    router.linear_bits(),
+                    span,
+                    shifts.size(),
+                    size_t{1} << span,
+                    router.ranks() >> span);
     std::fputs(line.c_str(), stderr);
     std::fflush(stderr);
 }
