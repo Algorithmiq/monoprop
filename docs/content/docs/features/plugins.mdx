@@ -1,6 +1,6 @@
 ---
 title: Plugins
-description: The `monoprop.plugins` entry-point convention that conversion packages like monoprop-pennylane attach through.
+description: The monoprop.plugins entry-point convention that conversion packages like monoprop-pennylane attach through.
 ---
 
 monoprop core ships no framework-specific conversion code. Circuit/operator
@@ -62,12 +62,27 @@ monoprop.from_pennylane_operator(...)
 Any distribution can attach to `monoprop` this way: depend on `monoprop`,
 expose the public functionality from one importable module with an accurate
 `__all__`, and register that module under the `monoprop.plugins` entry-point
-group. Plugins are loaded once, at `import monoprop` time, in whatever order
-`importlib.metadata.entry_points` returns them; a name collision between two
-installed plugins (or between a plugin and monoprop core itself) is resolved
-by whichever loads last, so plugin authors should keep their exported names
-scoped to their own framework (e.g. `from_pennylane_operator`, not
-`from_operator`). Dunder names never collide this way -- they are exempt from
-the splat entirely, not merely last-write-wins -- so a plugin's `__all__` can
-freely include its own `__version__` (as `monoprop_pennylane`'s does) without
-risking monoprop core's.
+group. Plugins are loaded once, at `import monoprop` time, after every name
+monoprop core itself exports is already bound -- a plugin can safely
+`import monoprop` at its own import time, which `monoprop_pennylane` relies
+on implicitly.
+
+Plugins load in whatever order `importlib.metadata.entry_points` returns
+them. A name collision between two installed plugins (or between a plugin
+and monoprop core itself) still resolves by last-write-wins -- the load and
+splat design has no registry to arbitrate it -- but it is never silent: a
+colliding name raises a [`UserWarning`](https://docs.python.org/3/library/exceptions.html#UserWarning)
+naming the plugin and the name, and is never duplicated in `monoprop.__all__`.
+Plugin authors should still keep their exported names scoped to their own
+framework (e.g. `from_pennylane_operator`, not `from_operator`) so this stays
+a rare, deliberate event rather than routine noise. Dunder names never
+collide this way -- they are exempt from the splat entirely, not merely
+last-write-wins -- so a plugin's `__all__` can freely include its own
+`__version__` (as `monoprop_pennylane`'s does) without risking monoprop
+core's.
+
+A plugin that fails to load (an `ImportError` from a missing or broken
+runtime dependency, or any other exception) is skipped with the same kind of
+warning, rather than breaking `import monoprop` for every consumer in the
+environment -- including ones who never touch that plugin, and other,
+working plugins loaded alongside it.

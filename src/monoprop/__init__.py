@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
+import warnings
 
 from ._core import (
     MAX_NUM_MODES,
@@ -87,28 +89,50 @@ if importlib.util.find_spec("qiskit") is not None:
     ]
 
 
-import importlib.metadata
-
-
 def _load_plugins() -> None:
     """Attach every installed monoprop plugin's public API onto this namespace.
 
     A plugin is any distribution registering a `monoprop.plugins` entry point whose
     value is an importable module exposing `__all__`; every name in it is copied here,
     the same way `from module import *` would. See `monoprop_pennylane` for the
-    reference implementation. Dunder names (e.g. a plugin's own `__version__`) are never
-    copied, so a plugin can never shadow monoprop core's own identity metadata.
+    reference implementation. Plugins load only after every name above this function is
+    already bound, so a plugin can safely `import monoprop` at its own import time (as
+    `monoprop_pennylane` does implicitly).
+
+    Dunder names (e.g. a plugin's own `__version__`) are never copied, so a plugin can
+    never shadow monoprop core's own identity metadata. A non-dunder name that would
+    replace an existing, different object already bound here (core's own, or an
+    earlier-loaded plugin's) is still copied -- last-write-wins, per this mechanism's
+    load-and-splat design -- but raises a warning so the collision is never silent, and is
+    never duplicated in `__all__`. A plugin that fails to load (e.g. a missing or broken
+    runtime dependency) is skipped with a warning rather than breaking `import monoprop`
+    for every consumer in the environment, not just the ones using that plugin.
     """
     for entry_point in importlib.metadata.entry_points(group="monoprop.plugins"):
-        plugin = entry_point.load()
+        try:
+            plugin = entry_point.load()
+        except Exception as exc:  # noqa: BLE001 - one broken plugin must not break `import monoprop`
+            warnings.warn(
+                f"monoprop plugin {entry_point.name!r} failed to load: {exc}",
+                stacklevel=2,
+            )
+            continue
         names = [
             name for name in getattr(plugin, "__all__", ()) if not name.startswith("__")
         ]
         for name in names:
-            globals()[name] = getattr(plugin, name)
-        # extend() mutates the existing list in place, so `__all__` stays a read (not a
-        # rebind) of the module-level global -- unlike `+=`, this needs no `global` statement.
-        __all__.extend(names)  # noqa: PYI056
+            value = getattr(plugin, name)
+            # Compare identity, not mere presence: a name already bound to this exact
+            # object (e.g. re-loading the same plugin) is not a collision, only a
+            # different object replacing it is.
+            if globals().get(name, value) is not value:
+                warnings.warn(
+                    f"monoprop plugin {entry_point.name!r} overwrites existing name {name!r}",
+                    stacklevel=2,
+                )
+            globals()[name] = value
+            if name not in __all__:
+                __all__.append(name)  # noqa: PYI056
 
 
 _load_plugins()
