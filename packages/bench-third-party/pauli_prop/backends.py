@@ -118,7 +118,10 @@ def _run_steps(
 
 def run_monoprop(settings: Settings) -> BackendResult:
     from monoprop import PauliPropagator
-    from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
+    from monoprop_qiskit.qiskit_conversion import (
+        from_qiskit_circuit,
+        from_qiskit_operator,
+    )
 
     circ = from_qiskit_circuit(step_circuit(settings), initial_state=[])
     propagator = PauliPropagator(
