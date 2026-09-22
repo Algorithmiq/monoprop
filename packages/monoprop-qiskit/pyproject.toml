@@ -27,7 +27,7 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-  "monoprop>=0.9.2a1.dev0",
+  "monoprop",
   "qiskit>=2.0.0",
 ]
 
