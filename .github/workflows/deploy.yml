@@ -11,6 +11,7 @@ on:
       - VERSION
       - pyproject.toml
       - packages/monoprop-bench-tools/pyproject.toml
+      - packages/monoprop-qiskit/pyproject.toml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,6 +51,11 @@ jobs:
         uses: tj-actions/changed-files@v47.0.6
         with:
           files: packages/monoprop-bench-tools/pyproject.toml
+      - id: changed-qiskit-pyproject
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: tj-actions/changed-files@v47.0.6
+        with:
+          files: packages/monoprop-qiskit/pyproject.toml
       - id: check
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -59,6 +65,7 @@ jobs:
           VERSION_CHANGED: ${{ steps.changed-version.outputs.any_changed }}
           PYPROJECT_CHANGED: ${{ steps.changed-pyproject.outputs.any_changed }}
           BENCH_TOOLS_PYPROJECT_CHANGED: ${{ steps.changed-bench-tools-pyproject.outputs.any_changed }}
+          QISKIT_PYPROJECT_CHANGED: ${{ steps.changed-qiskit-pyproject.outputs.any_changed }}
         run: |
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "should-run=true" >> "$GITHUB_OUTPUT"
@@ -76,8 +83,9 @@ jobs:
           version_changed = os.environ["VERSION_CHANGED"] == "true"
           pyproject_changed = os.environ["PYPROJECT_CHANGED"] == "true"
           bench_tools_changed = os.environ["BENCH_TOOLS_PYPROJECT_CHANGED"] == "true"
+          qiskit_changed = os.environ["QISKIT_PYPROJECT_CHANGED"] == "true"
 
-          if deploy_workflow_changed or version_changed or bench_tools_changed:
+          if deploy_workflow_changed or version_changed or bench_tools_changed or qiskit_changed:
               should_run = True
           elif not pyproject_changed:
               should_run = False
@@ -158,6 +166,27 @@ jobs:
         with:
           name: bench-tools-dist
           path: bench-tools-dist/*
+
+  build-qiskit:
+    name: Build monoprop-qiskit
+    needs: check-pr-changes
+    if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0  # such that hatch-vcs can read the tags
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.1.0
+
+      - name: Build sdist and wheel
+        run: uv build --package monoprop-qiskit --out-dir qiskit-dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qiskit-dist
+          path: qiskit-dist/*
 
   build-wheels:
     needs: check-pr-changes
@@ -254,12 +283,41 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.14.2
 
+  upload_pypi_qiskit:
+    # Separate from `upload_pypi` because it is a separate PyPI project, with its own
+    # trusted-publisher entry
+    name: Upload monoprop-qiskit to PyPI
+    needs: build-qiskit
+    if: github.event_name == 'release' && github.event.action == 'published'
+
+    runs-on: ubuntu-26.04
+    environment: pypi
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: qiskit-dist
+          path: dist
+
+      - name: Generate artifact attestations
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: "dist/*"
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+
   upload_release_assets:
     name: Attach wheels and sdist to GitHub release
     needs:
       - build-sdist
       - build-wheels
       - build-bench-tools
+      - build-qiskit
     if: github.event_name == 'release' && github.event.action == 'published'
 
     runs-on: ubuntu-26.04
@@ -276,6 +334,11 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: bench-tools-dist
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: qiskit-dist
           path: dist
 
       - name: Upload wheels and sdist to release
