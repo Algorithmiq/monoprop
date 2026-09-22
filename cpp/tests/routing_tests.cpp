@@ -437,7 +437,7 @@ BOOST_AUTO_TEST_CASE(routing_more_rank_bits_than_modes_is_refused) {
 // the environment supplies -- and for every d at once, since a prefix of an independent set is one.
 BOOST_AUTO_TEST_CASE(routing_basis_columns_are_independent_at_any_seed) {
     const auto &basis = routing::linear_basis<2 * kN>();
-    BOOST_TEST(routing::gf2_rank(std::vector<uint64_t>(basis.begin(), basis.end())) == routing::kLinearPlanes);
+    BOOST_TEST(routing::gf2_rank(std::vector<uint64_t>(basis.begin(), basis.end())) == routing::kLinearColumns);
     for (size_t d = 1; d <= 12; ++d) {
         std::vector<uint64_t> low;
         low.reserve(basis.size());
