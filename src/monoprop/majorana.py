@@ -123,6 +123,8 @@ class MajoranaOperator:
         self,
         terms: Mapping[Majorana | Sequence[int], complex],
         num_modes: int,
+        *,
+        skip_validation: bool = False,
     ) -> None:
         """Initialize the Majorana operator from a term mapping.
 
@@ -137,10 +139,14 @@ class MajoranaOperator:
                 also authored as a [MajoranaOperator][] (wrapped in
                 [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
+            skip_validation: If ``True``, skip the post-accumulation index-range check. Only
+                pass ``True`` for terms already known to be in range, e.g. from trusted internal
+                code; ``num_modes`` itself is still validated either way.
 
         Raises:
             TypeError: If ``num_modes`` is not an integer.
-            ValueError: If ``num_modes`` is negative or a term index is out of range.
+            ValueError: If ``num_modes`` is negative, or a term index is out of range and
+                ``skip_validation`` is ``False``.
         """
         # Route raw index tuples through Majorana so they get the same non-negative/distinct
         # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
@@ -148,12 +154,13 @@ class MajoranaOperator:
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]
         self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
-        for majorana in majoranas:
-            # majoranas are sorted in here
-            if majorana and majorana[-1] >= 2 * self.num_modes:
-                raise ValueError(
-                    f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
-                )
+        if not skip_validation:
+            for majorana in majoranas:
+                # majoranas are sorted in here
+                if majorana and majorana[-1] >= 2 * self.num_modes:
+                    raise ValueError(
+                        f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
+                    )
         self.terms = self._accumulate(majoranas, list(terms.values()))
 
     @classmethod

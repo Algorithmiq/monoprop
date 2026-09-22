@@ -119,7 +119,13 @@ class PauliOperator:
     PauliOperator is always interpreted in the Jordan-Wigner basis.
     """
 
-    def __init__(self, terms: Mapping[Pauli | str, float], num_qubits: int) -> None:
+    def __init__(
+        self,
+        terms: Mapping[Pauli | str, float],
+        num_qubits: int,
+        *,
+        skip_validation: bool = False,
+    ) -> None:
         """Initialize the Pauli operator from a term mapping.
 
         Args:
@@ -128,26 +134,35 @@ class PauliOperator:
             num_qubits: Total number of qubits the operator acts on. An operator carries its
                 own qubit count so a propagator can be built from it directly; every term must
                 act within ``0..num_qubits-1``.
+            skip_validation: If ``True``, skip the complex-coefficient check and the
+                per-term qubit-range check. Only pass ``True`` for terms already known to be
+                real and in range, e.g. from trusted internal code; ``num_qubits`` itself is
+                still validated either way.
 
         Raises:
             TypeError: If ``num_qubits`` is not an integer.
-            ValueError: If a term acts on a qubit index ``>= num_qubits``.
+            ValueError: If a term has a complex coefficient or acts on a qubit index
+                ``>= num_qubits``, unless ``skip_validation`` is ``True``.
         """
         accumulated: dict[Pauli, float] = defaultdict(float)
         for key, coeff in terms.items():
             pauli = key if isinstance(key, Pauli) else Pauli(key)
-            float_coeff = np.real_if_close(coeff)
-            if np.iscomplexobj(float_coeff):
-                raise ValueError("Operator has complex terms")
+            if skip_validation:
+                float_coeff = coeff.real
+            else:
+                float_coeff = np.real_if_close(coeff)
+                if np.iscomplexobj(float_coeff):
+                    raise ValueError("Operator has complex terms")
             accumulated[pauli] += float(float_coeff)
         self.terms: dict[Pauli, float] = dict(accumulated)
         self.num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
-        for pauli in self.terms:
-            if pauli.qubits and pauli.qubits[-1] >= self.num_qubits:
-                raise ValueError(
-                    f"Pauli term {pauli} acts on a qubit index >= num_qubits="
-                    f"{self.num_qubits}."
-                )
+        if not skip_validation:
+            for pauli in self.terms:
+                if pauli.qubits and pauli.qubits[-1] >= self.num_qubits:
+                    raise ValueError(
+                        f"Pauli term {pauli} acts on a qubit index >= num_qubits="
+                        f"{self.num_qubits}."
+                    )
 
     @classmethod
     def _from_terms(
@@ -155,13 +170,15 @@ class PauliOperator:
         strings: Sequence[Pauli | str],
         coefficients: Sequence[float],
         num_qubits: int | None = None,
+        *,
+        skip_validation: bool = False,
     ) -> PauliOperator:
         """Build from parallel ``strings``/``coefficients`` lists (internal)."""
         accumulated: dict[Pauli, float] = defaultdict(float)
         for string, coeff in zip(strings, coefficients, strict=True):
             pauli = string if isinstance(string, Pauli) else Pauli(string)
             accumulated[pauli] += coeff
-        return cls(accumulated, num_qubits)
+        return cls(accumulated, num_qubits, skip_validation=skip_validation)
 
     def __len__(self) -> int:
         """Number of terms in the operator."""

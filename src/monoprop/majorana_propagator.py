@@ -124,7 +124,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
         terms = self._simulator.evolved_operator(self._bind(parameters), atol)
-        return MajoranaOperator(terms, self.num_modes)
+        return MajoranaOperator(terms, self.num_modes, skip_validation=True)
 
     def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
         """Replace the *initial operator* (existing terms only).

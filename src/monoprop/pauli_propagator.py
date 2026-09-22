@@ -118,7 +118,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         terms: dict[Pauli, complex] = {
             Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
         }
-        return PauliOperator(terms, self.num_qubits)
+        return PauliOperator(terms, self.num_qubits, skip_validation=True)
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.

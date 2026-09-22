@@ -132,6 +132,7 @@ def _place_operator(
         ],
         list(local_op.terms.values()),
         num_qubits=num_qubits,
+        skip_validation=True,
     )
 
 
@@ -147,6 +148,7 @@ def _negated(operator: PauliOperator) -> PauliOperator:
         list(operator.terms),
         [-coeff for coeff in operator.terms.values()],
         num_qubits=operator.num_qubits,
+        skip_validation=True,
     )
 
 
@@ -191,6 +193,7 @@ def from_qiskit_circuit(
                 list(placed.terms),
                 [-0.5 * coeff for coeff in placed.terms.values()],
                 num_qubits=num_qubits,
+                skip_validation=True,
             )
         elif gate_name == "PauliEvolution":
             parameter = g_op.time
@@ -202,7 +205,10 @@ def from_qiskit_circuit(
             pauli_string = gate_name[1:].upper()
             # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)], [-0.5], num_qubits=num_qubits
+                [Pauli(pauli_string, qubits)],
+                [-0.5],
+                num_qubits=num_qubits,
+                skip_validation=True,
             )
         else:
             raise ValueError(

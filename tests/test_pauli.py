@@ -335,6 +335,37 @@ class TestPauliOperator:
         with pytest.raises(ValueError, match="Operator has complex terms"):
             PauliOperator({pauli: 1.0j}, num_qubits=1)
 
+    def test_skip_validation_bypasses_qubit_range_check(self):
+        with pytest.raises(ValueError, match="qubit index"):
+            PauliOperator({"XYZ": 1.0}, num_qubits=2)
+        op = PauliOperator({"XYZ": 1.0}, num_qubits=2, skip_validation=True)
+        assert op.terms == {Pauli("XYZ"): 1.0}
+
+    def test_skip_validation_bypasses_complex_coefficient_check(self):
+        pauli = Pauli("X", 0)
+        with pytest.raises(ValueError, match="Operator has complex terms"):
+            PauliOperator({pauli: 1.0j}, num_qubits=1)
+        op = PauliOperator({pauli: 1.0 + 2.0j}, num_qubits=1, skip_validation=True)
+        assert op.terms == {pauli: 1.0}
+
+    def test_skip_validation_false_matches_default_behavior(self):
+        terms = {"XY": 1.0, "IZ": 0.5}
+        assert PauliOperator(
+            terms, num_qubits=2, skip_validation=False
+        ) == PauliOperator(terms, num_qubits=2)
+
+    def test_skip_validation_still_validates_num_qubits_type(self):
+        with pytest.raises(TypeError, match="num_qubits must be an integer"):
+            PauliOperator({"X": 1.0}, num_qubits="2", skip_validation=True)  # type: ignore[arg-type]
+
+    def test_from_terms_skip_validation_passthrough(self):
+        with pytest.raises(ValueError, match="qubit index"):
+            PauliOperator._from_terms(["XYZ"], [1.0], num_qubits=2)
+        op = PauliOperator._from_terms(
+            ["XYZ"], [1.0], num_qubits=2, skip_validation=True
+        )
+        assert op.terms == {Pauli("XYZ"): 1.0}
+
 
 class TestCircuit:
     def _make_gate(self):
