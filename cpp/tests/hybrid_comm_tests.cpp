@@ -22,6 +22,7 @@
 
 #ifdef monoprop_ENABLE_MPI
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <exception>
@@ -1142,6 +1143,73 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
             BOOST_REQUIRE_EQUAL(static_cast<int>(got[static_cast<size_t>(u)].size()), kLen);
             for (int j = 0; j < kLen; ++j) {
                 BOOST_CHECK_EQUAL(got[static_cast<size_t>(u)][static_cast<size_t>(j)], (src * 1000) + j);
+            }
+        }
+    }
+}
+
+// A layer that spans SEVERAL peer ranks -- a legacy graph, or one built by hand -- must still replay.
+// The rank-uniform gate picks the transport; the peer set is only a narrowing, so a rank whose rows do
+// not pin one peer down keeps the full set and posts point-to-point over all of it. Before, this shape
+// aborted the job from inside guard_partition0_.
+BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_falls_back_to_every_peer) {
+    const int R = world_size();
+    if (R < 4 || (R & (R - 1)) != 0) {
+        return; // two distinct non-self peers is the point, so R = 2 cannot show it
+    }
+    const int me = world_rank();
+    // XOR by 1 and by 2: an involution each, so the count matrix stays symmetric and every rank spans
+    // exactly two peers -- which is what makes this a valid layout the narrowing simply cannot use.
+    // Ascending, because the displacements below are a prefix sum over slots and the checks read blocks
+    // back in that order.
+    const int peers[2] = {std::min(me ^ 1, me ^ 2), std::max(me ^ 1, me ^ 2)};
+    constexpr int kLen = 3;
+
+    for (const int S : {1, 2}) {
+        const int P = R * S;
+        std::vector<std::vector<int>> got(static_cast<size_t>(S));
+        auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+            const int g = (me * S) + u;
+            std::vector<int> counts(static_cast<size_t>(P), 0);
+            std::vector<int> displs(static_cast<size_t>(P), 0);
+            for (const int b : peers) {
+                counts[static_cast<size_t>((b * S) + u)] = kLen;
+            }
+            int run = 0;
+            for (int d = 0; d < P; ++d) {
+                displs[static_cast<size_t>(d)] = run;
+                run += counts[static_cast<size_t>(d)];
+            }
+            std::vector<int> send(static_cast<size_t>(run));
+            for (const int b : peers) {
+                const int d = (b * S) + u;
+                for (int j = 0; j < kLen; ++j) {
+                    send[static_cast<size_t>(displs[static_cast<size_t>(d)] + j)] = (g * 1000) + j;
+                }
+            }
+            std::vector<int> recv(static_cast<size_t>(run), -1);
+            const monoprop::mpi::AlltoallvArgs args{.send = reinterpret_cast<const std::byte *>(send.data()),
+                                                    .send_counts = counts.data(),
+                                                    .send_displs = displs.data(),
+                                                    .recv = reinterpret_cast<std::byte *>(recv.data()),
+                                                    .recv_counts = counts.data(),
+                                                    .recv_displs = displs.data(),
+                                                    .elem = sizeof(int)};
+            hyb.alltoallv(u, args, MPI_INT, monoprop::mpi::PeerPlan{}, /*derive_wire_plan=*/true);
+            got[static_cast<size_t>(u)] = recv;
+        });
+        for (const auto &e : errs) {
+            BOOST_CHECK(e == nullptr);
+        }
+        // Both legs arrive, each carrying its own sender's global id, so a dropped peer fails here.
+        for (int u = 0; u < S; ++u) {
+            const auto &out = got[static_cast<size_t>(u)];
+            BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), 2 * kLen);
+            for (int k = 0; k < 2; ++k) {
+                const int src = (peers[k] * S) + u;
+                for (int j = 0; j < kLen; ++j) {
+                    BOOST_CHECK_EQUAL(out[static_cast<size_t>((k * kLen) + j)], (src * 1000) + j);
+                }
             }
         }
     }

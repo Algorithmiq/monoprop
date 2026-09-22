@@ -125,11 +125,14 @@ public:
     // datatype whose extent is args.elem, and it stays a separate argument because the bundle is shared
     // with the non-MPI-capable transport.
     //
-    // `derive_wire_plan` asks partition 0 to read the peer set off the whole rank's traffic instead of
-    // taking it from the caller. A caller cannot supply it: only partition 0 reaches MPI, and its own row
-    // may be the empty one while a sibling partition holds the rank's only traffic. It must be
-    // rank-uniform (routes_pairwise()), and legal only for a SYMMETRIC layout -- recv counts are the send
-    // counts -- which is what lets the peer set be read off the published recv rows.
+    // `derive_wire_plan` both selects the point-to-point transport and asks partition 0 to read the peer
+    // set off the whole rank's traffic instead of taking it from the caller. A caller cannot supply that
+    // set: only partition 0 reaches MPI, and its own row may be the empty one while a sibling partition
+    // holds the rank's only traffic.
+    //
+    // It must be RANK-UNIFORM -- get it from routes_pairwise() -- because it picks the transport. It puts
+    // no condition on the LAYOUT: a symmetric one (recv counts are the send counts) narrows to a single
+    // peer, and anything else simply keeps the full peer set.
     auto alltoallv(int local_partition,
                    const AlltoallvArgs &args,
                    MPI_Datatype dt,
@@ -267,7 +270,7 @@ private:
 
         // B4: partition 0 moves the payload while peers park at the barrier.
         if (local_partition == 0) {
-            exchange_payload_(dt, args.elem, wire_plan_);
+            exchange_payload_(dt, args.elem, wire_plan_, derive_wire_plan || !wire_plan_.dense());
         }
         sync(); // B4
 
@@ -318,7 +321,7 @@ private:
             wait_count_blocks_();
             fill_recv_col_([this](int a, int t) { return block_sum_(a, t); });
             size_staging_recv_(elem);
-            exchange_payload_(dt, elem, plan);
+            exchange_payload_(dt, elem, plan, !plan.dense());
         }
         sync(); // B4
 
@@ -569,14 +572,15 @@ private:
 
     // The rank-level peer set, read off the rows every partition published before B1 -- the first point
     // with a view wider than one partition's row. Under fanout-1 routing a layer's traffic is all on ONE
-    // rank, so this resolves to a shift; with nothing occupied it resolves to the self peer, whose legs
-    // are then all zero. That keeps the collective-vs-pairwise branch a function of the rank-uniform
-    // routes_pairwise() alone and never of a rank's data, which straddles and hangs.
+    // rank, so this narrows to a shift; with nothing occupied it narrows to the self peer, whose legs are
+    // then all zero.
     //
-    // Both sides are read, because the caller's symmetry claim (recv counts ARE the send counts) is what
-    // licenses reading the peer off the recv rows at all. Anything wider than one rank, or a send side
-    // disagreeing with the recv side, is that claim broken: throw, never fall back to a locally dense
-    // plan, or this rank enters MPI_Alltoallv while its degree-one peers are already in Isend/Irecv.
+    // Narrowing ONLY. The transport is the caller's rank-uniform gate and is not a function of what this
+    // returns, so anything the rows do not pin down -- several peers, or a send side disagreeing with the
+    // recv side -- falls back to the FULL peer set, which visits every rank and can therefore drop
+    // nothing. A legacy or hand-built layer that spans several peers replays correctly, just without the
+    // narrowing. Both sides are read because the symmetry claim (recv counts ARE the send counts) is what
+    // licenses reading the peer off the recv rows at all.
     auto derived_wire_plan_() -> PeerPlan {
         int recv_peer = kNoPeer;
         for (int u = 0; u < s_ && recv_peer != kManyPeers; ++u) {
@@ -596,13 +600,7 @@ private:
         const bool spans_one = recv_peer != kManyPeers && send_peer != kManyPeers;
         const bool sides_agree = recv_peer == kNoPeer || send_peer == kNoPeer || recv_peer == send_peer;
         if (!spans_one || !sides_agree) {
-            throw std::runtime_error(std::format(
-                "routing claims fanout 1, but rank {} of {} has a layer spanning several peer ranks "
-                "(send peer {}, recv peer {}); the layout is not the symmetric one the derived wire plan needs",
-                mpi_rank_,
-                r_,
-                send_peer,
-                recv_peer));
+            return PeerPlan{}; // every rank: nothing to drop, and the wire stays point-to-point
         }
         const int peer = recv_peer != kNoPeer ? recv_peer : (send_peer != kNoPeer ? send_peer : mpi_rank_);
         return PeerPlan{.sparse = true, .shift = mpi_rank_ ^ peer};
@@ -653,11 +651,16 @@ private:
         wait_count_blocks_();
     }
 
-    // The staged payload: one MPI_Alltoallv when dense, else a pair per peer over the same per-rank
-    // counts and displacements (a non-peer's count is zero, so nothing is dropped). `elem` is dt's
-    // extent: needed to reach a block, and known exactly to both callers.
-    auto exchange_payload_(MPI_Datatype dt, size_t elem, PeerPlan plan) -> void {
-        if (plan.dense()) {
+    // The staged payload: one MPI_Alltoallv, or a pair per peer over the same per-rank counts and
+    // displacements (a non-peer's count is zero, so nothing is dropped). `elem` is dt's extent: needed to
+    // reach a block, and known exactly to both callers.
+    //
+    // `pairwise` is the transport and `plan` only the peer set, because the two must be able to differ:
+    // the transport has to be RANK-UNIFORM (a rank inside MPI_Alltoallv waits forever on one posting
+    // Isend/Irecv), while the peer set is whatever this rank's own rows narrow to. A dense peer set on the
+    // point-to-point arm is the full walk, posting only the legs that carry a payload.
+    auto exchange_payload_(MPI_Datatype dt, size_t elem, PeerPlan plan, bool pairwise) -> void {
+        if (!pairwise) {
             MPI_Alltoallv(stage_send_.data(),
                           mpi_send_counts_.data(),
                           mpi_send_displs_.data(),
@@ -669,7 +672,7 @@ private:
                           parent_);
             return;
         }
-        const SparsePairwiseArgs pairwise{
+        const SparsePairwiseArgs post{
             .plan = plan,
             .me = mpi_rank_,
             .num_ranks = r_,
@@ -682,7 +685,7 @@ private:
             .recv = stage_recv_.data(),
             .recv_layout = {.counts = mpi_recv_counts_.data(), .displs = mpi_recv_displs_.data()},
         };
-        const int posted = sparse_pairwise(pairwise, reqs_);
+        const int posted = sparse_pairwise(post, reqs_);
         MPI_Waitall(posted, reqs_.data(), MPI_STATUSES_IGNORE);
     }
 
