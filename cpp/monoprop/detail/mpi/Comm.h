@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #ifdef monoprop_ENABLE_MPI
@@ -169,7 +171,24 @@ struct PeerPlan {
         return SlotWindow{.base = peer_rank * parts,
                           .count = static_cast<size_t>(count(static_cast<int>(ranks))) * parts};
     }
+
+    // `me ^ shift` is a vector index and an MPI rank before anything bounds-checks it, so a shift outside
+    // the rank-index width indexes out of range and names a peer that does not exist. The power-of-two
+    // condition is load-bearing: `shift < ranks` alone does not keep `me ^ shift` under `ranks` otherwise.
+    [[nodiscard]] constexpr auto routable(int ranks) const -> bool {
+        return dense()
+               || (ranks > 0 && std::has_single_bit(static_cast<unsigned>(ranks)) && shift >= 0 && shift < ranks);
+    }
 };
+
+// Every sparse entry point calls this before it indexes, posts or barriers on a plan. Aggregate
+// initialisation is how PeerPlan is meant to be built, so the invariant cannot live in a constructor.
+inline auto require_routable(PeerPlan plan, int ranks) -> void {
+    if (!plan.routable(ranks)) {
+        throw std::invalid_argument(
+            "sparse peer plan is not routable: it needs a power-of-two rank count and 0 <= shift < ranks");
+    }
+}
 
 // Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:
 // ShmComm.h takes the resolve bundle and compiles in non-MPI builds, so neither bundle may name an

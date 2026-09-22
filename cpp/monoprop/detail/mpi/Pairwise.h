@@ -49,7 +49,7 @@ struct PeerLayout {
 
     [[nodiscard]] auto count(int b) const -> int { return counts != nullptr ? counts[b] : block; }
     [[nodiscard]] auto displ(int b) const -> size_t {
-        return static_cast<size_t>(displs != nullptr ? displs[b] : b * block);
+        return displs != nullptr ? static_cast<size_t>(displs[b]) : static_cast<size_t>(b) * static_cast<size_t>(block);
     }
 };
 
@@ -69,19 +69,27 @@ struct SparsePairwiseArgs {
 };
 
 // A variable all-to-all as point-to-point over `args.plan`'s peers: one Irecv/Isend pair each, the self
-// peer copied in place. Counts and displacements are in elements of `args.datatype`, whose extent must
-// be `args.elem`. `reqs` is caller storage, grown then indexed: MPI holds these pointers until the wait,
-// so a reallocating push_back would dangle them.
+// peer copied in place. Counts and displacements are in elements of `args.datatype`, whose extent must be
+// `args.elem`. `reqs` is caller storage, grown then indexed: MPI holds these pointers until the wait, so
+// it cannot be grown inside the loop and a reallocating push_back would dangle what is already posted.
 //
 // POSTS ONLY, and returns how many of `reqs` are live. The caller waits, so the buffers and `reqs` must
-// all outlive that wait. `active_legs` is an upper bound on peers that post; negative means every peer.
-[[nodiscard]] inline auto sparse_pairwise(const SparsePairwiseArgs &args,
-                                          std::vector<MPI_Request> &reqs,
-                                          int active_legs = -1) -> int {
+// all outlive that wait. `reqs` is sized from a pre-pass rather than from a caller's bound, because a
+// bound that turns out to be short cannot be recovered from: by then MPI holds pointers into the old
+// buffer, so neither growing it nor throwing is safe.
+[[nodiscard]] inline auto sparse_pairwise(const SparsePairwiseArgs &args, std::vector<MPI_Request> &reqs) -> int {
+    require_routable(args.plan, args.num_ranks);
     const int num_peers = args.plan.count(args.num_ranks);
-    const int legs = active_legs < 0 || active_legs > num_peers ? num_peers : active_legs;
-    if (const auto capacity = size_t{2} * static_cast<size_t>(legs); reqs.size() < capacity) {
-        reqs.resize(capacity);
+    size_t needed = 0;
+    for (int k = 0; k < num_peers; ++k) {
+        const int peer = args.plan.peer(args.me, k);
+        if (peer != args.me) {
+            needed += static_cast<size_t>(args.recv_layout.count(peer) != 0)
+                      + static_cast<size_t>(args.send_layout.count(peer) != 0);
+        }
+    }
+    if (reqs.size() < needed) {
+        reqs.resize(needed);
     }
     int num_requests = 0;
     for (int k = 0; k < num_peers; ++k) {
@@ -98,8 +106,6 @@ struct SparsePairwiseArgs {
             }
             continue;
         }
-        assert(static_cast<size_t>(num_requests) + 2 <= reqs.size()
-               || (recv_count == 0 && send_count == 0)); // active_legs too small
         if (recv_count != 0) {
             MPI_Irecv(args.recv + (args.recv_layout.displ(peer) * args.elem),
                       recv_count,

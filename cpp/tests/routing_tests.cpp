@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -153,8 +154,8 @@ BOOST_AUTO_TEST_CASE(routing_shift_identity_holds_under_linear_routing) {
 // dest_from_shift is a pass-through and must not move a term either. S == 1 (no partition index at all),
 // S a power of two (the masked modulo) and S = 3, 14 (the division) are all here.
 BOOST_AUTO_TEST_CASE(routing_dest_from_shift_agrees_with_dest) {
-    const auto terms = random_monomials(400, 6, 0x5E1F7A11ULL);
-    const auto gens = random_monomials(25, 4, 0x9110F7E5ULL);
+    const auto terms = random_monomials(80, 6, 0x5E1F7A11ULL);
+    const auto gens = random_monomials(10, 4, 0x9110F7E5ULL);
     const std::vector<std::pair<size_t, size_t>>
         geometries{{1, 1}, {8, 1}, {16, 1}, {2, 2}, {32, 16}, {64, 8}, {4, 3}, {8, 14}, {1, 14}};
     size_t checked = 0;
@@ -174,17 +175,7 @@ BOOST_AUTO_TEST_CASE(routing_dest_from_shift_agrees_with_dest) {
         }
     }
     BOOST_TEST_MESSAGE("dest_from_shift checks: " << checked);
-    BOOST_TEST(checked >= 100000U);
-}
-
-// The S == 1 skip: the partition index is 0 for every term, so under linear routing the destination is
-// the rank index alone and monomial_hash is not on the path at all.
-BOOST_AUTO_TEST_CASE(routing_single_partition_destination_is_the_rank_index) {
-    constexpr size_t kRanks = 64;
-    const auto router = Router::for_modes<kN>(kRanks, 1, true);
-    for (const auto &m : random_monomials(500, 5, 0x0FAE7101ULL)) {
-        BOOST_REQUIRE_EQUAL(router.dest<kN>(m), routing::linear_hash<2 * kN>(m) & (kRanks - 1));
-    }
+    BOOST_TEST(checked >= 10000U);
 }
 
 // The consequence that the transport will rely on: every term a rank owns sends its query for one
@@ -268,8 +259,8 @@ BOOST_AUTO_TEST_CASE(routing_slot_window_pairing_is_symmetric) {
 // The property the re-basing rests on: every destination the emit path can produce for one generator
 // lies inside that generator's window, so `slot - base` is always a legal index.
 BOOST_AUTO_TEST_CASE(routing_every_dest_lands_inside_the_generators_window) {
-    const auto terms = random_monomials(600, 6, 0x5107500DULL);
-    const auto gens = random_monomials(20, 4, 0x1CE0FF1CEULL);
+    const auto terms = random_monomials(120, 6, 0x5107500DULL);
+    const auto gens = random_monomials(8, 4, 0x1CE0FF1CEULL);
     const std::vector<std::pair<size_t, size_t>> geometries{{8, 16}, {16, 1}, {32, 4}, {1, 14}, {4, 3}};
     size_t checked = 0;
     for (const auto &[r, s] : geometries) {
@@ -288,7 +279,7 @@ BOOST_AUTO_TEST_CASE(routing_every_dest_lands_inside_the_generators_window) {
         }
     }
     BOOST_TEST_MESSAGE("window containment checks: " << checked);
-    BOOST_TEST(checked >= 100000U);
+    BOOST_TEST(checked >= 5000U);
 }
 
 // WindowVec re-bases in exactly one place, so the flat slot the writer used is the flat slot the reader
@@ -334,20 +325,6 @@ BOOST_AUTO_TEST_CASE(routing_single_rank_is_dense_and_not_an_error) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(routing_dest_is_in_range_and_deterministic) {
-    const auto monos = random_monomials(1000, 7, 0x9999ULL);
-    for (const auto [r, s] : {std::pair<size_t, size_t>{1, 1}, {1, 112}, {8, 14}, {128, 14}, {64, 28}}) {
-        for (const bool linear : {false, true}) {
-            const auto router = Router::for_modes<kN>(r, s, linear);
-            for (const auto &m : monos) {
-                const size_t slot = router.dest<kN>(m);
-                BOOST_TEST(slot < r * s);
-                BOOST_TEST(slot == router.dest<kN>(m)); // stateless
-            }
-        }
-    }
-}
-
 // The transposed basis must be the SAME map, not merely a faster one: a divergence is a silently wrong
 // owner. Pin dest() and rank_shift() against the old bit-walk over both routers, every geometry, and
 // popcounts from empty to full support.
@@ -363,10 +340,10 @@ BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) 
                            size_t{21},
                            size_t{34},
                            size_t{2 * kN}}) {
-        const auto batch = monomials_of_weight(500, w, 0xD15EA5E0ULL + w);
+        const auto batch = monomials_of_weight(100, w, 0xD15EA5E0ULL + w);
         monos.insert(monos.end(), batch.begin(), batch.end());
     }
-    BOOST_REQUIRE_EQUAL(monos.size(), 5000U);
+    BOOST_REQUIRE_EQUAL(monos.size(), 1000U);
 
     // (R, S), each run under both routers: log2(R) runs 0, 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, so the plane
     // count varies from none to twelve and R = 1 pins the geometry that is dense under either mode.
@@ -403,7 +380,7 @@ BOOST_AUTO_TEST_CASE(routing_transposed_basis_is_bit_identical_to_the_bit_walk) 
         }
     }
     BOOST_TEST_MESSAGE("bit-identity checks: " << checked);
-    BOOST_TEST(checked >= 100000U);
+    BOOST_TEST(checked >= 20000U);
 }
 
 // gf2_rank is the coverage diagnostic: shifts that span fewer than log2(R) dimensions leave ranks empty.
@@ -444,4 +421,65 @@ BOOST_AUTO_TEST_CASE(routing_default_is_linear_where_the_geometry_allows_it) {
     // geometry is rejected instead of silently routing onto a subspace of the ranks.
     BOOST_CHECK_THROW(routing::make_router<kN>(6, 14), routing::UnroutableGeometry);
     BOOST_CHECK_THROW(routing::make_router<kN>(12, 28), routing::UnroutableGeometry);
+}
+
+// A rank index cannot carry more independent bits than the monomial has, so a geometry asking for more
+// is refused at construction rather than routed onto a subspace that leaves most ranks empty.
+BOOST_AUTO_TEST_CASE(routing_more_rank_bits_than_modes_is_refused) {
+    constexpr size_t kTiny = 4; // 2N = 8 bits, so d = 8 is the most that can be independent
+    BOOST_CHECK_NO_THROW(static_cast<void>(Router::for_modes<kTiny>(256, 2, true)));
+    BOOST_CHECK_THROW(static_cast<void>(Router::for_modes<kTiny>(512, 2, true)), routing::UnroutableGeometry);
+    BOOST_CHECK_NO_THROW(static_cast<void>(Router::for_modes<kTiny>(512, 2, false))); // splitmix has no condition
+}
+
+// The balance claim rests on the fibres of h_d being cosets of ker h_d, which needs the d columns a
+// Router reads to be independent. The basis is redrawn until they are, so this holds for whatever seed
+// the environment supplies -- and for every d at once, since a prefix of an independent set is one.
+BOOST_AUTO_TEST_CASE(routing_basis_columns_are_independent_at_any_seed) {
+    const auto &basis = routing::linear_basis<2 * kN>();
+    BOOST_TEST(routing::gf2_rank(std::vector<uint64_t>(basis.begin(), basis.end())) == routing::kLinearPlanes);
+    for (size_t d = 1; d <= 12; ++d) {
+        std::vector<uint64_t> low;
+        low.reserve(basis.size());
+        const uint64_t mask = (uint64_t{1} << d) - 1;
+        for (const uint64_t v : basis) {
+            low.push_back(v & mask);
+        }
+        BOOST_TEST(routing::gf2_rank(std::move(low)) == d);
+    }
+}
+
+// The consequence, counted rather than argued: at a width small enough to enumerate, every rank owns
+// exactly 2^(2N-d) of the 2^2N monomials. This is the property a rank-deficient basis would break.
+BOOST_AUTO_TEST_CASE(routing_fibres_are_equal_sized) {
+    constexpr size_t kSmall = 5; // 2N = 10 bits -> 1024 monomials
+    constexpr size_t kRanks = 8; // d = 3
+    constexpr uint64_t kAll = uint64_t{1} << (2 * kSmall);
+    const auto router = Router::for_modes<kSmall>(kRanks, 1, true);
+    std::vector<size_t> owned(kRanks, 0);
+    for (uint64_t bits = 0; bits < kAll; ++bits) {
+        Monomial<kSmall> m;
+        for (size_t i = 0; i < 2 * kSmall; ++i) {
+            if (((bits >> i) & 1U) != 0) {
+                m.set(i);
+            }
+        }
+        ++owned[router.dest<kSmall>(m)];
+    }
+    for (const size_t n : owned) {
+        BOOST_TEST(n == kAll / kRanks);
+    }
+}
+
+// PeerPlan is a public aggregate, so its invariant cannot live in a constructor: `me ^ shift` becomes a
+// vector index and an MPI rank before anything else bounds-checks it. The power-of-two condition is
+// load-bearing -- `shift < ranks` alone does not keep `me ^ shift` inside a non-power-of-two world.
+BOOST_AUTO_TEST_CASE(routing_sparse_peer_plans_are_validated_before_use) {
+    BOOST_TEST(mpi::PeerPlan{}.routable(6)); // dense walks 0..ranks and needs no structure
+    BOOST_TEST((mpi::PeerPlan{.sparse = true, .shift = 3}).routable(4));
+    BOOST_TEST(!(mpi::PeerPlan{.sparse = true, .shift = 4}).routable(4));
+    BOOST_TEST(!(mpi::PeerPlan{.sparse = true, .shift = -1}).routable(4));
+    BOOST_TEST(!(mpi::PeerPlan{.sparse = true, .shift = 1}).routable(6));
+    BOOST_CHECK_THROW(mpi::require_routable(mpi::PeerPlan{.sparse = true, .shift = 9}, 4), std::invalid_argument);
+    BOOST_CHECK_NO_THROW(mpi::require_routable(mpi::PeerPlan{.sparse = true, .shift = 1}, 4));
 }

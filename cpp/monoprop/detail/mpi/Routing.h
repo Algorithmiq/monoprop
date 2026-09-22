@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -21,32 +22,29 @@
 #include <cstdint>
 #include <format>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/EnvConfig.h"
 
-// The single home for "which flat slot owns this monomial". Two call sites depend on agreeing exactly
-// (Scan.h emits queries by it, MonomialPropagator seeds the operator by it), and a disagreement splits
-// ownership silently rather than crashing -- so both go through this Router and nothing else. Scan.h
-// enters at dest_from_shift, which is dest with the per-generator rank bits taken from the shift.
-//
-// Two-level, because the levels cost differently: across MPI ranks the message COUNT is what hurts, so
-// the rank index is GF(2)-linear in the support and a generator maps every query to one peer; within a
-// rank partitions talk through shared memory, where fanout is free and only balance matters.
+// The single home for "which flat slot owns this monomial". Scan.h emits queries by it and
+// MonomialPropagator seeds the operator by it; if the two disagree, ownership splits silently rather
+// than crashing, so both go through this Router and nothing else.
 //
 //     part = q % S           q = monomial_hash(M) (splitmix, unchanged)
 //     rank = a & (R - 1)     a = linear_hash(M); all log2(R) rank bits, so fanout is 1
 //     flat = rank * S + part
 //
-// Linear or not is a switch and not a dial: the rank takes every bit from the linear hash or none of
-// them. None of them is the splitmix router, which is `q % (R*S)` bit for bit, and R == 1 is that case
-// by construction. R > 1 must then be a power of two, or there is no XOR structure to route by and the
-// geometry is rejected (UnroutableGeometry) rather than silently falling back.
+// Across ranks the message count is the cost, so the rank index is GF(2)-linear in the support and a
+// generator maps every query to one peer. Within a rank fanout is free, so partitions keep splitmix.
 //
-// The derivation, what linear routing buys and what it costs: docs/content/docs/features/parallelism.mdx,
-// under "Rank routing".
+// Linear is a switch, not a dial: the rank takes every bit of the linear hash or none. None of them is
+// `q % (R*S)` bit for bit, and R == 1 is that case by construction. R > 1 must be a power of two, or
+// there is no XOR structure to route by (UnroutableGeometry).
+//
+// Derivation and measurements: docs/content/docs/features/parallelism.mdx, under "Rank routing".
 //
 // Knobs, parsed and validated in EnvConfig.h:
 //   monoprop_ROUTING     linear (default) | splitmix
@@ -63,6 +61,13 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Ranks that resolved different routing configurations. A hang, not a wrong answer: each rank posts
+// receives from the peers its own bits imply, so a rank the env var did not reach waits forever.
+class RoutingDisagreement : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 constexpr auto mix64(uint64_t x) noexcept -> uint64_t {
     x += 0x9E37'79B9'7F4A'7C15ULL;
     x = (x ^ (x >> 30)) * 0xBF58'476D'1CE4'E5B9ULL;
@@ -70,75 +75,18 @@ constexpr auto mix64(uint64_t x) noexcept -> uint64_t {
     return x ^ (x >> 31);
 }
 
-inline auto seed_from_env() -> uint64_t {
-    return config::get().route_seed.value_or(kDefaultSeed);
-}
-
-// One 64-bit vector per Majorana mode. Deterministic from the seed alone, so every rank builds the
-// same table with no communication -- the property find_rank's contract rests on.
-template <size_t NumBits>
-inline auto linear_basis() -> const std::array<uint64_t, NumBits> & {
-    static const auto table = [] {
-        std::array<uint64_t, NumBits> v{};
-        const uint64_t seed = seed_from_env();
-        for (size_t i = 0; i < NumBits; ++i) {
-            v[i] = mix64(mix64(seed) + (static_cast<uint64_t>(i) * 0x9E37'79B9'7F4A'7C15ULL));
-        }
-        return v;
-    }();
-    return table;
-}
-
-// The full 64-bit image, by walking the set bits. Router::dest does NOT use this -- it needs only the
-// low log2(R) bits and takes the transposed form below -- but the map is defined here, and the
-// GF(2)-linearity test and the plane build both read it as the definition.
-template <size_t NumBits>
-[[nodiscard]] inline auto linear_hash(const monoprop::Bitset<NumBits> &bits) noexcept -> uint64_t {
-    const auto &v = linear_basis<NumBits>();
-    uint64_t h = 0;
-    for (size_t i = bits.find_first(); i < NumBits; i = bits.find_next(i)) {
-        h ^= v[i];
-    }
-    return h;
-}
-
 // One per output bit; a Router reads log2(R) of them. Not trimmed to that: the count is geometry, and
-// keying the table on it would build one table per Router instead of one per (seed, width).
+// keying the table on it would build one table per Router instead of one per (seed, width). It is also
+// how many bit-columns linear_basis is drawn full rank over, which is what serves every d at once.
 inline constexpr size_t kLinearPlanes = 64;
 
 template <size_t NumBits>
 inline constexpr size_t kPlaneWords = monoprop::Bitset<NumBits>::num_words();
 
-// The basis transposed: plane j, bit i, is bit j of basis vector i. Then bit j of linear_hash(M) is
-// popcount(M & plane_j) & 1 -- log2(R) * words branch-free AND/XOR/popcount ops instead of a gather
-// whose length is the term's popcount (~20-28 under the production cutoff). Same map, bit for bit.
-//
-// Keyed on the seed and the width alone, never on the geometry, so one table serves every Router; the
-// Router binds a pointer to it at construction and dest() never reaches the static-init guard.
-template <size_t NumBits>
-inline auto linear_planes() -> const std::array<uint64_t, kLinearPlanes * kPlaneWords<NumBits>> & {
-    static const auto table = [] {
-        std::array<uint64_t, kLinearPlanes * kPlaneWords<NumBits>> planes{};
-        const auto &v = linear_basis<NumBits>();
-        for (size_t i = 0; i < NumBits; ++i) {
-            const size_t word = i / 64;
-            const uint64_t bit = uint64_t{1} << (i % 64);
-            for (size_t j = 0; j < kLinearPlanes; ++j) {
-                if (((v[i] >> j) & 1U) != 0) {
-                    planes[(j * kPlaneWords<NumBits>)+word] |= bit;
-                }
-            }
-        }
-        return planes;
-    }();
-    return table;
-}
-
-// GF(2) rank of a set of 64-bit vectors, by Gaussian elimination over the bit columns. The per-generator
-// rank shifts must span at least log2(R) dimensions or the reachable destination ranks form a strict
-// subspace and R - 2^rank ranks stay empty. A balance failure, not a correctness one, so its caller
-// (MonomialPropagator::report_routing_coverage_) warns on stderr rather than gating.
-// Measured: rank 32 for the 60-site Hubbard's 416 distinct shifts, against the 7 bits R = 128 needs.
+// GF(2) rank of a set of 64-bit vectors, by elimination over the bit columns. Two callers: the basis
+// build below, and MonomialPropagator::report_routing_coverage_, which measures the span of the
+// per-generator rank shifts. Those shifts carry only the log2(R) routing bits, so the span it reports
+// is bounded by log2(R) -- it is not the rank of the untruncated 64-bit hashes.
 [[nodiscard]] inline auto gf2_rank(std::vector<uint64_t> vectors) noexcept -> size_t {
     size_t rank = 0;
     for (size_t bit = 0; bit < 64; ++bit) {
@@ -167,17 +115,105 @@ inline auto linear_planes() -> const std::array<uint64_t, kLinearPlanes * kPlane
     return rank;
 }
 
+inline auto seed_from_env() -> uint64_t {
+    return config::get().route_seed.value_or(kDefaultSeed);
+}
+
+// One 64-bit vector per Majorana mode. Deterministic from the seed alone, so every rank builds the
+// same table with no communication -- the property find_rank's contract rests on.
+//
+// Redrawn until the low kLinearPlanes bit-columns are linearly independent, which is what makes the
+// fibres of every Router equal-sized: a Router reads the low d columns, and independence of a column
+// set implies independence of each of its prefixes, so one check covers every d at once. A deficient
+// draw would instead leave 2^d - 2^rank ranks unreachable -- seed 641 at NumBits = 16 spans 6 of 7.
+template <size_t NumBits>
+inline auto linear_basis() -> const std::array<uint64_t, NumBits> & {
+    static const auto table = [] {
+        constexpr size_t num_cols = std::min(kLinearPlanes, NumBits);
+        constexpr uint64_t col_mask = num_cols == 64 ? ~uint64_t{0} : (uint64_t{1} << num_cols) - 1;
+        std::array<uint64_t, NumBits> v{};
+        uint64_t draw = seed_from_env();
+        // Bounded only to keep a pathological seed stream from hanging in a static initialiser; a random
+        // draw is full rank with probability >= 0.288 at the worst width, so this never runs out.
+        for (int attempt = 0; attempt < 1024; ++attempt, draw = mix64(draw)) {
+            std::vector<uint64_t> cols(NumBits);
+            for (size_t i = 0; i < NumBits; ++i) {
+                v[i] = mix64(mix64(draw) + (static_cast<uint64_t>(i) * 0x9E37'79B9'7F4A'7C15ULL));
+                cols[i] = v[i] & col_mask;
+            }
+            if (gf2_rank(std::move(cols)) == num_cols) {
+                return v;
+            }
+        }
+        throw UnroutableGeometry(std::format("no full-rank linear routing basis after 1024 draws from seed {}. "
+                                             "Pick another monoprop_ROUTE_SEED, or set monoprop_ROUTING=splitmix.",
+                                             seed_from_env()));
+    }();
+    return table;
+}
+
+// The full 64-bit image, by walking the set bits. Router::dest does NOT use this -- it needs only the
+// low log2(R) bits and takes the transposed form below -- but the map is defined here, and the
+// GF(2)-linearity test and the plane build both read it as the definition.
+template <size_t NumBits>
+[[nodiscard]] inline auto linear_hash(const monoprop::Bitset<NumBits> &bits) noexcept -> uint64_t {
+    const auto &v = linear_basis<NumBits>();
+    uint64_t h = 0;
+    for (size_t i = bits.find_first(); i < NumBits; i = bits.find_next(i)) {
+        h ^= v[i];
+    }
+    return h;
+}
+
+// The basis transposed: plane j, bit i, is bit j of basis vector i. Then bit j of linear_hash(M) is
+// popcount(M & plane_j) & 1 -- log2(R) * words branch-free AND/XOR/popcount ops instead of a gather
+// whose length is the term's popcount (~20-28 under the production cutoff). Same map, bit for bit.
+//
+// Keyed on the seed and the width alone, never on the geometry, so one table serves every Router; the
+// Router binds a pointer to it at construction and dest() never reaches the static-init guard.
+template <size_t NumBits>
+inline auto linear_planes() -> const std::array<uint64_t, kLinearPlanes * kPlaneWords<NumBits>> & {
+    static const auto table = [] {
+        std::array<uint64_t, kLinearPlanes * kPlaneWords<NumBits>> planes{};
+        const auto &v = linear_basis<NumBits>();
+        for (size_t i = 0; i < NumBits; ++i) {
+            const size_t word = i / 64;
+            const uint64_t bit = uint64_t{1} << (i % 64);
+            for (size_t j = 0; j < kLinearPlanes; ++j) {
+                if (((v[i] >> j) & 1U) != 0) {
+                    planes[(j * kPlaneWords<NumBits>)+word] |= bit;
+                }
+            }
+        }
+        return planes;
+    }();
+    return table;
+}
+
 // Trivially copyable and cheap to build; hold one per build_layer call rather than per term.
 class Router final {
 public:
     // Bound to a monomial width: dest() reads the transposed basis for THAT width, and binding the
     // pointer here is what keeps the static-init guard out of the per-term path. The only way to a
-    // linear router, so an unbound one cannot reach dest(). Throws if `linear` and ranks is not 2^k.
+    // linear router, so an unbound one cannot reach dest().
+    //
+    // Throws unless the geometry can have equal fibres: `ranks` must be 2^k, and log2(ranks) must not
+    // exceed the columns the basis is drawn full-rank over. Beyond that the map cannot be onto, so
+    // 2^d - 2^rank ranks would sit empty.
     template <size_t NumModes>
     [[nodiscard]] static auto for_modes(size_t ranks, size_t partitions, bool linear) -> Router {
+        constexpr size_t max_bits = std::min(kLinearPlanes, 2 * NumModes);
         Router r{ranks, partitions, linear};
+        if (r.linear_bits() > max_bits) {
+            throw UnroutableGeometry(
+                std::format("linear routing over {} modes reaches at most 2^{} ranks, got {}. Launch fewer "
+                            "ranks, or set monoprop_ROUTING=splitmix to keep the dense all-to-all.",
+                            NumModes,
+                            max_bits,
+                            ranks));
+        }
         r.planes_ = linear_planes<2 * NumModes>().data();
-        r.plane_words_ = kPlaneWords<2 * NumModes>;
+        r.plane_bits_ = 2 * NumModes;
         return r;
     }
 
@@ -195,13 +231,7 @@ public:
         return linear_ ? static_cast<size_t>(std::countr_zero(ranks_)) : 0;
     }
 
-    // The same number for a geometry alone, with no monomial width bound: it IS the constructor, so the
-    // resolution and the non-power-of-two throw cannot drift from the router's.
-    [[nodiscard]] static auto bits_for(size_t ranks, bool linear) -> size_t {
-        return Router{ranks, 1, linear}.linear_bits();
-    }
-
-    // Flat destination slot in [0, flat_world). Branch is on a member, so it is perfectly predicted.
+    // Flat destination slot in [0, flat_world).
     template <size_t NumModes>
     [[nodiscard]] [[gnu::always_inline]] auto dest(const Monomial<NumModes> &mono) const noexcept -> size_t {
         if (!linear_) {
@@ -214,11 +244,9 @@ public:
         return (rank * parts_) + part_of_(monomial_hash<NumModes>(mono));
     }
 
-    // The emit path's dest, for a query M^G raised on a term M THIS slot owns. rank(M^G) == rank(M) ^
-    // shift(G) is exact under linear routing, so the planes are a per-generator constant already in hand
-    // and only the partition index is per term. `my_flat` must be this slot's own index and `shift` this
-    // generator's rank_shift, or ownership moves silently -- the same precondition mpi::PeerPlan carries.
-    // Splitmix has no such identity and falls back to dest(), bit for bit.
+    // dest() for a query M^G raised on a term M this slot owns, using rank(M^G) == rank(M) ^ shift(G).
+    // `my_flat` must be this slot's own index and `shift` this generator's rank_shift, or ownership moves
+    // silently -- the same precondition mpi::PeerPlan carries. Splitmix has no such identity.
     template <size_t NumModes>
     [[nodiscard]] [[gnu::always_inline]] auto dest_from_shift(const Monomial<NumModes> &mono,
                                                               size_t my_flat,
@@ -233,8 +261,7 @@ public:
         return (rank * parts_) + part_of_(monomial_hash<NumModes>(mono));
     }
 
-    // The rank-level shift a generator induces: rank(M^G) == rank(M) ^ shift(G). Zero for every G when
-    // the router is not linear. This is what makes the destination predictable.
+    // The rank-level shift a generator induces: rank(M^G) == rank(M) ^ shift(G). Zero when not linear.
     template <size_t NumModes>
     [[nodiscard]] auto rank_shift(const Monomial<NumModes> &gen) const noexcept -> size_t {
         return static_cast<size_t>(linear_low_<NumModes>(gen));
@@ -259,33 +286,22 @@ private:
         }
     }
 
-    // q % S. Every production layout has S in {1,2,4,8,16}, where the modulo is a mask -- and parts_ is a
-    // runtime member, so the compiler cannot strength-reduce it on our behalf. Identical bit for bit.
+    // q % S. parts_ is a runtime member, so the compiler cannot strength-reduce the modulo on our behalf.
     [[nodiscard]] [[gnu::always_inline]] auto part_of_(uint64_t q) const noexcept -> size_t {
-        if (parts_pow2_) {
-            assert(static_cast<size_t>(q & parts_mask_) == static_cast<size_t>(q % parts_));
-            return static_cast<size_t>(q & parts_mask_);
-        }
-        return static_cast<size_t>(q % parts_);
+        return static_cast<size_t>(parts_pow2_ ? (q & parts_mask_) : (q % parts_));
     }
 
-    // Flat slot -> rank index. Flat slots are rank * S + partition (mpi::rank under the hybrid comm).
     [[nodiscard]] [[gnu::always_inline]] auto rank_of_slot_(size_t flat_slot) const noexcept -> size_t {
-        if (parts_pow2_) {
-            assert((flat_slot >> parts_log2_) == flat_slot / parts_);
-            return flat_slot >> parts_log2_;
-        }
-        return flat_slot / parts_;
+        return parts_pow2_ ? (flat_slot >> parts_log2_) : (flat_slot / parts_);
     }
 
-    // linear_hash(M) & (R - 1), one output bit per plane: parity(popcount(M & plane_j)). Folding the
-    // words with XOR before the popcount is the same parity (popcount(x)+popcount(y) == popcount(x^y)
-    // mod 2) for one popcount per bit instead of one per word. A non-linear router reads no plane.
+    // linear_hash(M) & (R - 1), one output bit per plane: parity(popcount(M & plane_j)). XOR-folding the
+    // words before the popcount is the same parity, since popcount(x) + popcount(y) == popcount(x^y) mod 2.
     template <size_t NumModes>
     [[nodiscard]] [[gnu::always_inline]] auto linear_low_(const Monomial<NumModes> &m) const noexcept -> uint64_t {
         constexpr auto num_words = kPlaneWords<2 * NumModes>;
         const size_t bits = linear_bits();
-        assert(bits == 0 || (planes_ != nullptr && plane_words_ == num_words)); // bound at a different width
+        assert(bits == 0 || (planes_ != nullptr && plane_bits_ == 2 * NumModes)); // bound at a different width
         uint64_t acc = 0;
         for (size_t j = 0; j < bits; ++j) {
             const uint64_t *plane = planes_ + (j * num_words);
@@ -305,20 +321,40 @@ private:
     bool parts_pow2_;   // S is 2^k, so `% S` is a mask and `/ S` a shift
     size_t parts_mask_; // S - 1, and parts_log2_ == log2(S); both meaningless unless parts_pow2_
     size_t parts_log2_;
-    const uint64_t *planes_ = nullptr; // [kLinearPlanes x plane_words_], owned by linear_planes()
-    size_t plane_words_ = 0;
+    const uint64_t *planes_ = nullptr; // [kLinearPlanes x kPlaneWords<plane_bits_>], owned by linear_planes()
+    size_t plane_bits_ = 0;            // the width planes_ was built for; dest() must be called at that width
 };
 
-// The mode, before any geometry. Linear unless asked otherwise: measured at the production point it
-// costs nothing on balance (rank occupancy max/mean 1.001 at R=128, all ranks used) and takes messages
-// per rank per layer from 362,712 to 1,397, i.e. from proportional-to-R to flat.
+// The mode, before any geometry. Linear unless asked otherwise.
 inline auto linear_requested() -> bool {
     return config::get().routing_mode.value_or(config::RoutingMode::Linear) == config::RoutingMode::Linear;
 }
 
-// Resolved rank bits for a geometry, without a router: the replay transport gates on the number.
-inline auto linear_bits_for(size_t ranks) -> size_t {
-    return Router::bits_for(ranks, linear_requested());
+// Everything that has to be identical across ranks for the transports to pair up, as raw values rather
+// than a digest, so the agreement collective is an equality test and not a probable one.
+struct Config {
+    uint64_t linear = 0;
+    uint64_t partitions = 1;
+    uint64_t seed = 0;
+
+    static auto from_env(size_t partitions) -> Config {
+        return {.linear = static_cast<uint64_t>(linear_requested()),
+                .partitions = static_cast<uint64_t>(partitions),
+                .seed = seed_from_env()};
+    }
+
+    [[nodiscard]] auto describe() const -> std::string {
+        return std::format("linear={}, partitions={}, seed={}", linear, partitions, seed);
+    }
+};
+
+// Whether a geometry routes point-to-point. Takes the AGREED config rather than re-reading the
+// environment, so the answer is a function of values every rank has already been shown to share.
+// Never throws: the replay path asks this from inside a collective, where an exception on some ranks is
+// itself the deadlock. A geometry linear routing cannot serve simply stays dense, which is always safe
+// -- Router rejects it where it can still be reported.
+[[nodiscard]] inline auto routes_pairwise(const Config &agreed, size_t ranks) -> bool {
+    return agreed.linear != 0 && ranks > 1 && std::has_single_bit(ranks);
 }
 
 template <size_t NumModes>

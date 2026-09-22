@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// post_flat_alltoallv's transport choice (the graph REPLAY path). `wire_bits` alone picks it -- never the
-// layout -- because a data-dependent branch straddles: a rank inside MPI_Ialltoallv waits forever on one
-// that chose point-to-point. Ticket::in_flight() is what tells the two apart: 1 for the collective, two
-// requests per posted leg, 0 for a round with nothing to move.
+// post_flat_alltoallv's transport choice (the graph REPLAY path). The rank-uniform `pairwise` gate
+// alone picks it -- never the layout -- because a data-dependent branch straddles: a rank inside
+// MPI_Ialltoallv waits forever on one that chose point-to-point. Ticket::in_flight() tells the two
+// apart: 1 for the collective, two requests per posted leg, 0 for a round with nothing to move.
 
 #include <boost/test/unit_test.hpp>
 
@@ -28,12 +28,9 @@
 #include "monoprop/detail/mpi/Exchange.h"
 
 #ifdef monoprop_ENABLE_MPI
-#include <bit>
-
 #include <mpi.h>
 #endif
 
-using monoprop::mpi::active_leg_count;
 using monoprop::mpi::Comm;
 using monoprop::mpi::post_flat_alltoallv;
 
@@ -65,28 +62,9 @@ auto world_rank() -> int {
     MPI_Comm_rank(MPI_COMM_WORLD, &r);
     return r;
 }
-// What Evolution's gate resolves to when routing gives fanout 1, which is the default at a power-of-two
-// rank count. Tests must not derive it from their own layout -- that is the straddle.
-auto wire_bits_for(int n) -> int {
-    return std::countr_zero(static_cast<unsigned>(n));
-}
 #endif
 
 } // namespace
-
-// The upper bound the request vector is sized from: a leg counts if EITHER side carries a payload, so a
-// bound too small can never be handed to sparse_pairwise.
-BOOST_AUTO_TEST_CASE(flat_exchange_active_legs_take_either_side) {
-    constexpr int n = 8;
-    std::vector<int> send(static_cast<size_t>(n), 0);
-    std::vector<int> recv(static_cast<size_t>(n), 0);
-    BOOST_CHECK_EQUAL(active_leg_count(send, recv), 0);
-    send[1] = 4;
-    recv[6] = 4;
-    BOOST_CHECK_EQUAL(active_leg_count(send, recv), 2);
-    recv[1] = 4; // same leg, both sides
-    BOOST_CHECK_EQUAL(active_leg_count(send, recv), 2);
-}
 
 // The self leg is a copy, not a message, so a one-rank world posts nothing at all and wait() is a no-op.
 // Same on the non-MPI build, where the fallback self-copy runs instead.
@@ -104,7 +82,7 @@ BOOST_AUTO_TEST_CASE(flat_exchange_self_leg_is_copied_with_nothing_posted) {
                                             .recv_displs = displs.data()},
                                            1,
                                            c,
-                                           /*wire_bits=*/1);
+                                           /*pairwise=*/true);
     BOOST_CHECK_EQUAL(ticket.in_flight(), 0);
     ticket.wait();
     BOOST_CHECK(out == send);
@@ -116,7 +94,7 @@ namespace {
 
 // One round over a symmetric layout, returning what wait() had to drain. `counts` is both sides.
 auto run_round(int n,
-               int wire_bits,
+               bool pairwise,
                const std::vector<int> &counts,
                const std::vector<int> &send,
                std::vector<int> &out) -> int {
@@ -130,7 +108,7 @@ auto run_round(int n,
                                             .recv_displs = displs.data()},
                                            n,
                                            c,
-                                           wire_bits);
+                                           pairwise);
     const int drained = ticket.in_flight();
     ticket.wait();
     return drained;
@@ -138,9 +116,9 @@ auto run_round(int n,
 
 } // namespace
 
-// wire_bits == 0 is today's collective whatever the layout holds -- including the sparse layout the
+// A dense gate is today's collective whatever the layout holds -- including the sparse layout the
 // pairwise arm exists for. The layout must not be able to move the branch.
-BOOST_AUTO_TEST_CASE(flat_exchange_zero_wire_bits_always_takes_the_collective) {
+BOOST_AUTO_TEST_CASE(flat_exchange_dense_gate_always_takes_the_collective) {
     const int n = world_size();
     if (n < 2 || (n % 2) != 0) {
         return;
@@ -158,7 +136,7 @@ BOOST_AUTO_TEST_CASE(flat_exchange_zero_wire_bits_always_takes_the_collective) {
         const auto displs = displs_of(counts);
         std::vector<int> send(static_cast<size_t>(total_of(counts)), me);
         std::vector<int> out(static_cast<size_t>(total_of(counts)), -1);
-        BOOST_CHECK_EQUAL(run_round(n, 0, counts, send, out), 1);
+        BOOST_CHECK_EQUAL(run_round(n, false, counts, send, out), 1);
         for (int i = 0; i < n; ++i) {
             if (counts[static_cast<size_t>(i)] != 0) {
                 BOOST_CHECK_EQUAL(out[static_cast<size_t>(displs[static_cast<size_t>(i)])], i);
@@ -184,7 +162,7 @@ BOOST_AUTO_TEST_CASE(flat_exchange_single_leg_takes_the_pairwise_path) {
         send[static_cast<size_t>(j)] = (me * 1000) + j;
     }
     std::vector<int> out(static_cast<size_t>(len), -1);
-    BOOST_CHECK_EQUAL(run_round(n, wire_bits_for(n), counts, send, out), 2);
+    BOOST_CHECK_EQUAL(run_round(n, true, counts, send, out), 2);
     for (int j = 0; j < len; ++j) {
         BOOST_CHECK_EQUAL(out[static_cast<size_t>(j)], (peer * 1000) + j);
     }
@@ -195,7 +173,7 @@ BOOST_AUTO_TEST_CASE(flat_exchange_single_leg_takes_the_pairwise_path) {
 BOOST_AUTO_TEST_CASE(flat_exchange_dense_layout_on_the_pairwise_arm) {
     const int n = world_size();
     if (n < 2 || (n & (n - 1)) != 0) {
-        return; // off a power of two the gate resolves to 0 bits, i.e. the collective
+        return; // off a power of two the gate resolves to dense, i.e. the collective
     }
     const int me = world_rank();
     const std::vector<int> counts(static_cast<size_t>(n), 1);
@@ -205,7 +183,7 @@ BOOST_AUTO_TEST_CASE(flat_exchange_dense_layout_on_the_pairwise_arm) {
         send[static_cast<size_t>(d)] = (me * 1000) + d;
     }
     std::vector<int> out(static_cast<size_t>(n), -1);
-    BOOST_CHECK_EQUAL(run_round(n, wire_bits_for(n), counts, send, out), 2 * (n - 1));
+    BOOST_CHECK_EQUAL(run_round(n, true, counts, send, out), 2 * (n - 1));
     for (int src = 0; src < n; ++src) {
         BOOST_CHECK_EQUAL(out[static_cast<size_t>(src)], (src * 1000) + me);
     }
@@ -223,7 +201,7 @@ BOOST_AUTO_TEST_CASE(flat_exchange_empty_layout_posts_nothing) {
     BOOST_REQUIRE_EQUAL(total_of(counts), 0);
     const std::vector<int> send(1, 0);
     std::vector<int> out(1, -1); // Evolution sizes an empty round to 1, not 0
-    BOOST_CHECK_EQUAL(run_round(n, wire_bits_for(n), counts, send, out), 0);
+    BOOST_CHECK_EQUAL(run_round(n, true, counts, send, out), 0);
     BOOST_CHECK_EQUAL(out[0], -1);
 }
 

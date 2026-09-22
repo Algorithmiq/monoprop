@@ -102,6 +102,13 @@ struct Geometry {
 };
 monoprop_EXPORT auto geometry(const Comm &comm) -> Geometry;
 
+// Whether this communicator's exchanges go point-to-point, agreed across it once and cached on it, so
+// that a caller who never built a MonomialPropagator is as safe as one who did. The decision comes from
+// the process environment, and ranks that resolve it differently HANG rather than answer differently --
+// so it is never re-derived per exchange, and never left to the caller. Throws RoutingDisagreement on a
+// mismatch, which every rank raises together because the comparison is collective.
+monoprop_EXPORT auto routes_pairwise(const Comm &comm) -> bool;
+
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
     if (comm.kind == Comm::Kind::Shm) {
@@ -172,6 +179,14 @@ inline auto reset_slots(WindowVec<std::vector<T>> &v, SlotWindow w, size_t /*wor
 // In-flight variable-size all-to-all owning its buffers + layout, so several can be in flight.
 // recv_counts is valid on return from begin_alltoallv; wait_into completes the payload transfer (a
 // no-op on the synchronous Shm / single-process paths) and unpacks by source.
+//
+// Move-only and self-completing, because MPI reads send_buffer / recv_buffer until the requests retire.
+// A copy would hand a second owner the same request handles over a different pair of buffers, and a
+// destructor that did not wait would free the ones MPI is still writing into. Moving is safe: a vector
+// move keeps the heap block, so the pointers MPI holds stay valid.
+//
+// The dense arm posts one request and the pairwise arm a pair per active leg, both into `requests`:
+// one wait covers either, so there is no second completion path to keep in step.
 template <typename T>
 struct PendingAlltoallv {
     int num_ranks = 0;
@@ -184,30 +199,61 @@ struct PendingAlltoallv {
     std::vector<T> send_buffer;
     std::vector<T> recv_buffer;
 #ifdef monoprop_ENABLE_MPI
-    MPI_Request request = MPI_REQUEST_NULL; // set only on the Kind::Mpi dense async path
-    std::vector<MPI_Request> requests;      // the Kind::Mpi sparse path's pairs; `posted` of them live
-    int posted = 0;                         // MPI reads send_buffer/recv_buffer until these complete,
-                                            // and both move with the handle, so the pointers hold
+    std::vector<MPI_Request> requests;
+    int posted = 0; // how many of `requests` are live
 #endif
 
-    template <typename Dest>
-    auto wait_into(Dest &recv_data) -> void {
-#ifdef monoprop_ENABLE_MPI
-        if (request != MPI_REQUEST_NULL) {
-            MPI_Wait(&request, MPI_STATUS_IGNORE);
-            request = MPI_REQUEST_NULL;
+    PendingAlltoallv() = default;
+    PendingAlltoallv(const PendingAlltoallv &) = delete;
+    auto operator=(const PendingAlltoallv &) -> PendingAlltoallv & = delete;
+
+    PendingAlltoallv(PendingAlltoallv &&other) noexcept { adopt_(other); }
+
+    auto operator=(PendingAlltoallv &&other) noexcept -> PendingAlltoallv & {
+        if (this != &other) {
+            drain();
+            adopt_(other);
         }
+        return *this;
+    }
+
+    ~PendingAlltoallv() { drain(); }
+
+    // Idempotent, so a handle that was waited on through wait_into costs nothing at destruction.
+    auto drain() noexcept -> void {
+#ifdef monoprop_ENABLE_MPI
         if (posted != 0) {
             MPI_Waitall(posted, requests.data(), MPI_STATUSES_IGNORE);
             posted = 0;
         }
 #endif
+    }
+
+    template <typename Dest>
+    auto wait_into(Dest &recv_data) -> void {
+        drain();
         reset_slots(recv_data, window, static_cast<size_t>(num_ranks));
         for (size_t k = 0; k < window.count; ++k) {
             const size_t i = window.slot(WindowIndex{k});
             const auto lo = recv_buffer.begin() + recv_displs[i];
             slot_block(recv_data, i).assign(lo, lo + recv_counts[i]);
         }
+    }
+
+private:
+    auto adopt_(PendingAlltoallv &other) noexcept -> void {
+        num_ranks = other.num_ranks;
+        window = other.window;
+        send_counts = std::move(other.send_counts);
+        send_displs = std::move(other.send_displs);
+        recv_counts = std::move(other.recv_counts);
+        recv_displs = std::move(other.recv_displs);
+        send_buffer = std::move(other.send_buffer);
+        recv_buffer = std::move(other.recv_buffer);
+#ifdef monoprop_ENABLE_MPI
+        requests = std::move(other.requests);
+        posted = std::exchange(other.posted, 0);
+#endif
     }
 };
 
@@ -233,12 +279,18 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
                                  PeerPlan plan) -> void {
     const auto window = pending.window;
     if (known_recv_counts != nullptr) {
-        const size_t available = known_recv_counts->size();
+        // Refused, not truncated: a short array would leave a live slot's recv count at 0 while the peer
+        // still sends it, which the pairwise arm turns into an unmatched post rather than a wrong answer.
+        if (known_recv_counts->size() < window.stop()) {
+            throw CollectiveArgumentError(
+                std::format("begin_alltoallv: known_recv_counts has {} entries, short of the plan's [{}, {})",
+                            known_recv_counts->size(),
+                            window.base,
+                            window.stop()));
+        }
         for (size_t k = 0; k < window.count; ++k) {
             const size_t i = window.slot(WindowIndex{k});
-            if (i < available) {
-                pending.recv_counts[i] = (*known_recv_counts)[i];
-            }
+            pending.recv_counts[i] = (*known_recv_counts)[i];
         }
         if (self >= 0) {
             pending.recv_counts[static_cast<size_t>(self)] = 0;
@@ -263,14 +315,15 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
 template <typename Blocks, typename T = SlotBlockValue<Blocks>>
-inline auto begin_alltoallv(const Blocks &send_data,
-                            Comm comm,
-                            bool skip_self = false,
-                            const std::vector<int> *known_recv_counts = nullptr,
-                            PeerPlan plan = {}) -> PendingAlltoallv<T> {
+[[nodiscard]] inline auto begin_alltoallv(const Blocks &send_data,
+                                          Comm comm,
+                                          bool skip_self = false,
+                                          const std::vector<int> *known_recv_counts = nullptr,
+                                          PeerPlan plan = {}) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     const int me = rank(comm);
     const auto geom = geometry(comm);
+    require_routable(plan, geom.ranks);
     PendingAlltoallv<T> h;
     h.num_ranks = num_ranks;
     // The plan IS the mask, dense included -- it is the count == P value of the same window. A caller may
@@ -372,6 +425,8 @@ inline auto begin_alltoallv(const Blocks &send_data,
     else {
 #ifdef monoprop_ENABLE_MPI
         if (plan.dense()) {
+            h.requests.resize(1);
+            h.posted = 1;
             MPI_Ialltoallv(h.send_buffer.data(),
                            h.send_counts.data(),
                            h.send_displs.data(),
@@ -381,13 +436,11 @@ inline auto begin_alltoallv(const Blocks &send_data,
                            h.recv_displs.data(),
                            datatype<T>::get(),
                            comm.mpi,
-                           &h.request);
+                           h.requests.data());
         }
         else {
             // S == 1 world: the same pairing as the Hybrid path, one message per reachable peer, left
-            // in flight in the handle exactly as MPI_Ialltoallv is. The buffers MPI holds live in `h`
-            // and travel with it: a vector move keeps its heap block, so returning `h` moves nothing
-            // MPI is reading.
+            // in flight in the handle exactly as MPI_Ialltoallv is.
             const SparsePairwiseArgs pairwise{
                 .plan = plan,
                 .me = rank(comm),

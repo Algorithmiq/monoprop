@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <span>
 #include <utility>
@@ -32,16 +31,6 @@ namespace monoprop::mpi {
 // Precondition, not a diagnostic: MPI_Alltoallv reads one count and one displacement per rank
 // whatever the span holds, so a layout built for a differently sized communicator reads out of bounds.
 auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void;
-
-// Legs carrying a payload in either direction, i.e. an upper bound on what the pairwise path posts.
-[[nodiscard]] inline auto active_leg_count(std::span<const int> send_counts, std::span<const int> recv_counts) -> int {
-    assert(send_counts.size() == recv_counts.size());
-    int legs = 0;
-    for (size_t i = 0; i < send_counts.size(); ++i) {
-        legs += static_cast<int>(send_counts[i] != 0 || recv_counts[i] != 0);
-    }
-    return legs;
-}
 
 // Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
 // exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its requests: the
@@ -108,13 +97,13 @@ private:
 // MPI build -- MPI_Ialltoallv, or Isend/Irecv over the legs that carry a payload (the Ticket completes
 // either); non-MPI build does a per-rank self-copy (recv layout == send layout).
 //
-// `wire_bits` picks the transport and MUST be RANK-UNIFORM: a rank choosing MPI_Ialltoallv waits forever
+// `pairwise` picks the transport and MUST be RANK-UNIFORM: a rank choosing MPI_Ialltoallv waits forever
 // on ranks that chose point-to-point, and no predicate over a rank's OWN row can promise that (rows vary,
-// so any threshold on one straddles). It is the resolved linear-routing bit count when that routing gives
-// fanout 1 -- one destination rank per generator, which is what empties the other legs -- and 0, today's
-// collective, for every other geometry. The caller owns that derivation; see Evolution.cpp.
+// so any threshold on one straddles). Get it from mpi::routes_pairwise(comm), which agrees it across the
+// communicator once; it is true exactly when linear routing gives fanout 1, which is what empties the
+// other legs, and false for every other geometry.
 template <typename T>
-inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm, int wire_bits = 0)
+inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm, bool pairwise = false)
     -> Ticket {
     // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
     // typed pointers plus a datatype. Offsets stay in elements on both paths.
@@ -135,19 +124,16 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
     if (comm.kind == Comm::Kind::Hybrid) {
         // The wire is narrowed inside the verb, not here: only partition 0 reaches MPI, and it cannot
         // name the rank's peer from its own row alone (its row may be the empty one). See HybridComm.
-        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get(), PeerPlan{}, wire_bits);
+        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get(), PeerPlan{}, pairwise);
         return Ticket{};
     }
-    if (wire_bits > 0) {
+    if (pairwise) {
         // Which legs to drop needs no plan and no count round: the count matrix is symmetric, so what
         // this rank sends a peer IS that peer's recv count and both ends drop the same legs on the same
-        // value. The plan stays DENSE -- it walks all N and posts only the non-zero legs, which is
-        // exactly that -- so a mis-derived shift cannot drop a block here; `wire_bits` only chooses the
-        // transport. `legs` sizes the request vector, which a dense plan would otherwise take to 2N.
-        const int legs = active_leg_count(std::span{args.send_counts, static_cast<size_t>(num_ranks)},
-                                          std::span{args.recv_counts, static_cast<size_t>(num_ranks)});
+        // value. The plan stays DENSE -- it walks all N and posts only the non-zero legs -- so a
+        // mis-derived shift cannot drop a block here; `pairwise` only chooses the transport.
         std::vector<MPI_Request> requests;
-        const SparsePairwiseArgs pairwise{
+        const SparsePairwiseArgs post{
             .plan = {},
             .me = rank(comm),
             .num_ranks = num_ranks,
@@ -160,7 +146,7 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
             .recv = reinterpret_cast<std::byte *>(args.recv),
             .recv_layout = {.counts = args.recv_counts, .displs = args.recv_displs},
         };
-        const int posted = sparse_pairwise(pairwise, requests, legs);
+        const int posted = sparse_pairwise(post, requests);
         return {std::move(requests), posted};
     }
     MPI_Request request = MPI_REQUEST_NULL;

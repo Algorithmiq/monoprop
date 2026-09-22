@@ -16,9 +16,6 @@
 
 #include <cstddef>
 #include <cstring>
-#include <format>
-#include <stdexcept>
-#include <vector>
 
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
@@ -68,51 +65,11 @@ inline auto router_for(const mpi::Comm &comm) -> routing::Router {
     return routing::make_router<NumModes>(static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
 }
 
-class RoutingDisagreement : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-// Every participant must resolve the SAME router, and the failure mode if they do not is a hang, not a
-// wrong answer: linear routing makes each rank post receives from the peers its own bits imply, so a
-// rank whose monoprop_ROUTING or _ROUTE_SEED did not reach it waits forever on a peer that never sends.
-// Turning that into an exception at construction costs two allreduces, called once and never per gate.
-//
-// TWO independent digests, not one: allreduce_sum is the only collective in the tree, and a sum is not
-// an equality test -- differing values can add up to mine*world. Both must agree, so a disagreement
-// survives at ~2^-128 rather than ~2^-64. Partitions are in the digest because S enters Router::dest:
-// two ranks differing only in S agree on the mode and the seed and still route apart.
+// Resolve the communicator's transport now rather than at the first exchange, so a misconfigured rank is
+// reported at construction instead of hanging its peers. The answer is cached on the communicator, so
+// every later exchange re-reads it for free. See mpi::routes_pairwise.
 inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
-    const auto world = static_cast<size_t>(mpi::size(comm));
-    if (world <= 1) {
-        return;
-    }
-    const auto geom = mpi::geometry(comm);
-    const auto parts = static_cast<uint64_t>(geom.partitions);
-    const auto linear = static_cast<uint64_t>(routing::linear_requested());
-    const uint64_t seed = routing::seed_from_env();
-    const auto digest = [&](uint64_t salt) {
-        return routing::mix64(routing::mix64(routing::mix64(salt ^ linear) ^ parts) ^ seed);
-    };
-    const uint64_t first = digest(0x9E37'79B9'7F4A'7C15ULL);
-    const uint64_t second = digest(0xC2B2'AE3D'27D4'EB4FULL);
-    const auto agrees = [&](uint64_t mine) {
-        return mpi::allreduce_sum<uint64_t>(mine, comm) == mine * static_cast<uint64_t>(world);
-    };
-    // Both allreduces run on every participant: short-circuiting the second would itself deadlock.
-    const bool ok_first = agrees(first);
-    const bool ok_second = agrees(second);
-    if (!ok_first || !ok_second) {
-        throw RoutingDisagreement(
-            std::format("routing configuration differs across the {} participants (this one: linear={}, "
-                        "partitions={}, seed={}). monoprop_ROUTING / monoprop_ROUTE_SEED must reach every rank "
-                        "identically -- under linear routing a disagreement deadlocks the exchange rather than "
-                        "corrupting it.",
-                        world,
-                        linear,
-                        parts,
-                        seed));
-    }
+    static_cast<void>(mpi::routes_pairwise(comm));
 }
 
 } // namespace monoprop

@@ -15,12 +15,15 @@
 #include "monoprop/detail/mpi/Exchange.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <format>
 #include <print>
 #include <stdexcept>
 
 #ifdef monoprop_ENABLE_MPI
 #include "monoprop/detail/mpi/Pairwise.h"
+#include "monoprop/detail/mpi/Routing.h"
 #endif
 
 namespace monoprop::mpi {
@@ -36,10 +39,9 @@ auto init(int *argc, char ***argv) -> void {
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
         if (provided < required) {
-            MPI_Comm comm = MPI_COMM_WORLD;
             std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
                        "by the partition/MPI hybrid transport.\n");
-            MPI_Abort(comm, 1);
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
 }
@@ -89,6 +91,69 @@ auto size(const Comm &comm) -> int {
 #endif
 }
 
+#ifdef monoprop_ENABLE_MPI
+namespace {
+// Cached on the communicator itself rather than in a process-side table: the attribute dies with the
+// communicator, so a recycled MPI_Comm handle cannot inherit another world's answer.
+auto routing_keyval() -> int {
+    static const int keyval = [] {
+        int k = MPI_KEYVAL_INVALID;
+        MPI_Comm_create_keyval(MPI_COMM_NULL_COPY_FN, MPI_COMM_NULL_DELETE_FN, &k, nullptr);
+        return k;
+    }();
+    return keyval;
+}
+
+// One allreduce of {v, ~v} pairs under MPI_MAX yields both the max and the min of every field, so
+// max == min == mine is an exact equality test and not a probable one.
+auto agree_routes_pairwise(MPI_Comm comm, int ranks, routing::Config mine) -> bool {
+    const std::array<uint64_t, 6> probe{mine.linear,
+                                        ~mine.linear,
+                                        mine.partitions,
+                                        ~mine.partitions,
+                                        mine.seed,
+                                        ~mine.seed};
+    std::array<uint64_t, 6> agreed{};
+    MPI_Allreduce(probe.data(), agreed.data(), 6, MPI_UINT64_T, MPI_MAX, comm);
+    for (size_t i = 0; i < probe.size(); ++i) {
+        if (agreed[i] != probe[i]) {
+            throw routing::RoutingDisagreement(
+                std::format("routing configuration differs across the {} ranks (this one: {}). "
+                            "monoprop_ROUTING / monoprop_ROUTE_SEED must reach every rank identically -- "
+                            "a disagreement deadlocks the exchange rather than corrupting it.",
+                            ranks,
+                            mine.describe()));
+        }
+    }
+    return routing::routes_pairwise(mine, static_cast<size_t>(ranks));
+}
+} // namespace
+#endif
+
+auto routes_pairwise(const Comm &comm) -> bool {
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return comm.hyb->routes_pairwise();
+    }
+    if (comm.kind == Comm::Kind::Mpi) {
+        const int ranks = size(comm);
+        if (ranks <= 1) {
+            return false; // no peer to pair with, and no collective to agree through
+        }
+        void *cached = nullptr;
+        int found = 0;
+        MPI_Comm_get_attr(comm.mpi, routing_keyval(), &cached, &found);
+        if (found != 0) {
+            return reinterpret_cast<intptr_t>(cached) != 0;
+        }
+        const bool pairwise = agree_routes_pairwise(comm.mpi, ranks, routing::Config::from_env(1));
+        MPI_Comm_set_attr(comm.mpi, routing_keyval(), reinterpret_cast<void *>(static_cast<intptr_t>(pairwise)));
+        return pairwise;
+    }
+#endif
+    return false; // Shm is one rank; there is no inter-rank transport to choose
+}
+
 auto geometry(const Comm &comm) -> Geometry {
     if (comm.kind == Comm::Kind::Shm) {
         return {.ranks = 1, .partitions = comm.shm->size()};
@@ -120,6 +185,7 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 }
 
 auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
+    require_routable(plan, geometry(comm).ranks);
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
         return;

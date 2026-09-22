@@ -23,11 +23,13 @@
 #ifdef monoprop_ENABLE_MPI
 
 #include <atomic>
-#include <bit>
 #include <cstddef>
 #include <exception>
 #include <numeric>
+#include <stdexcept>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <mpi.h>
@@ -930,62 +932,54 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_matches_the_dense_arm
         return; // the XOR pairing needs a power-of-two rank count
     }
     const int me = world_rank();
-    int cases = 0;
-    {
-        constexpr int f = 1; // a sparse plan is fanout 1 by construction; f > 1 is no longer expressible
-        for (int shift = 0; shift < R; ++shift) {
-            const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
-            BOOST_REQUIRE_EQUAL(plan.count(R), f);
-            ++cases;
-            for (const int S : {1, 2, 3}) {
-                const int P = R * S;
-                // Peer-masked, so the dense plan carries the identical bytes: its non-peer blocks are
-                // empty rather than absent, and a dense count of zero and a sparse absence must agree.
-                const auto fill = [&](int g) {
-                    std::vector<std::vector<int>> send(static_cast<size_t>(P));
-                    for (int k = 0; k < f; ++k) {
-                        const int b = plan.peer(me, k);
-                        for (int t = 0; t < S; ++t) {
-                            const int d = (b * S) + t;
-                            for (int j = 0; j < muted_count(g, d, S); ++j) {
-                                send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
-                            }
-                        }
-                    }
-                    return send;
-                };
-                std::vector<std::vector<std::vector<int>>> dense(static_cast<size_t>(S));
-                std::vector<std::vector<std::vector<int>>> sparse(static_cast<size_t>(S));
-                auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
-                    const int g = (me * S) + u;
-                    dense[static_cast<size_t>(u)] = resolve_round(hyb, u, P, fill(g), {});
-                    sparse[static_cast<size_t>(u)] = resolve_round(hyb, u, P, fill(g), plan);
-                });
-                for (const auto &e : errs) {
-                    BOOST_CHECK(e == nullptr);
-                }
+    for (int shift = 0; shift < R; ++shift) {
+        const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
+        BOOST_REQUIRE_EQUAL(plan.count(R), 1);
+        for (const int S : {1, 2, 3}) {
+            const int P = R * S;
+            // Peer-masked, so the dense plan carries the identical bytes: its non-peer blocks are
+            // empty rather than absent, and a dense count of zero and a sparse absence must agree.
+            const auto fill = [&](int g) {
+                std::vector<std::vector<int>> send(static_cast<size_t>(P));
+                const int b = plan.peer(me, 0);
                 for (int t = 0; t < S; ++t) {
-                    const int g = (me * S) + t;
-                    const auto &got = sparse[static_cast<size_t>(t)];
-                    const auto &want_dense = dense[static_cast<size_t>(t)];
-                    BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), P);
-                    BOOST_REQUIRE_EQUAL(static_cast<int>(want_dense.size()), P);
-                    for (int src = 0; src < P; ++src) {
-                        const int want = plan.contains(me, src / S) ? muted_count(src, g, S) : 0;
-                        const auto &blk = got[static_cast<size_t>(src)];
-                        BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), want);
-                        BOOST_REQUIRE_EQUAL(static_cast<int>(want_dense[static_cast<size_t>(src)].size()), want);
-                        for (int j = 0; j < want; ++j) {
-                            BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], sparse_tag(src, g, j));
-                            BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)],
-                                              want_dense[static_cast<size_t>(src)][static_cast<size_t>(j)]);
-                        }
+                    const int d = (b * S) + t;
+                    for (int j = 0; j < muted_count(g, d, S); ++j) {
+                        send[static_cast<size_t>(d)].push_back(sparse_tag(g, d, j));
+                    }
+                }
+                return send;
+            };
+            std::vector<std::vector<std::vector<int>>> dense(static_cast<size_t>(S));
+            std::vector<std::vector<std::vector<int>>> sparse(static_cast<size_t>(S));
+            auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
+                const int g = (me * S) + u;
+                dense[static_cast<size_t>(u)] = resolve_round(hyb, u, P, fill(g), {});
+                sparse[static_cast<size_t>(u)] = resolve_round(hyb, u, P, fill(g), plan);
+            });
+            for (const auto &e : errs) {
+                BOOST_CHECK(e == nullptr);
+            }
+            for (int t = 0; t < S; ++t) {
+                const int g = (me * S) + t;
+                const auto &got = sparse[static_cast<size_t>(t)];
+                const auto &want_dense = dense[static_cast<size_t>(t)];
+                BOOST_REQUIRE_EQUAL(static_cast<int>(got.size()), P);
+                BOOST_REQUIRE_EQUAL(static_cast<int>(want_dense.size()), P);
+                for (int src = 0; src < P; ++src) {
+                    const int want = plan.contains(me, src / S) ? muted_count(src, g, S) : 0;
+                    const auto &blk = got[static_cast<size_t>(src)];
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(blk.size()), want);
+                    BOOST_REQUIRE_EQUAL(static_cast<int>(want_dense[static_cast<size_t>(src)].size()), want);
+                    for (int j = 0; j < want; ++j) {
+                        BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)], sparse_tag(src, g, j));
+                        BOOST_CHECK_EQUAL(blk[static_cast<size_t>(j)],
+                                          want_dense[static_cast<size_t>(src)][static_cast<size_t>(j)]);
                     }
                 }
             }
         }
     }
-    BOOST_TEST(cases > 0); // at R < 2 the case is a no-op and must not read as coverage
 }
 
 // shift == 0 at full bits makes this rank its own and only peer, so the count round posts NOTHING:
@@ -1093,13 +1087,14 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer) {
 // every block is then dropped with no hang to show for it. So this case puts the traffic where partition
 // 0 cannot see it, and checks the payload arrives carrying its source's global id.
 //
-// alltoallv's derive_wire_bits has no library caller today, so this is its only exercise.
+// The multi-peer and lossy-plan refusals in the same window are NOT exercised here: they reach MPI
+// through guard_partition0_, which turns a throw into MPI_Abort, so a case for them would take the
+// runner down with it.
 BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
     const int R = world_size();
     if (R < 2 || (R & (R - 1)) != 0) {
         return; // the XOR pairing needs a power-of-two rank count
     }
-    const int bits = std::countr_zero(static_cast<unsigned>(R));
     const int me = world_rank();
     const int peer = me ^ 1; // shift 1, so every rank derives the same pairing
     constexpr int kLen = 5;
@@ -1120,7 +1115,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
                 }
             }
             // Symmetric layout: my peer's carrier partition sends me exactly what I send it, which is
-            // what derive_wire_bits requires and what lets the recv rows name the peer set. One block, so
+            // what the derived plan requires and what lets the recv rows name the peer set. One block, so
             // both displacements are zero.
             std::vector<int> recv(static_cast<size_t>(u == carrier ? kLen : 0), -1);
             const monoprop::mpi::AlltoallvArgs args{.send = reinterpret_cast<const std::byte *>(send.data()),
@@ -1130,7 +1125,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
                                                     .recv_counts = counts.data(),
                                                     .recv_displs = displs.data(),
                                                     .elem = sizeof(int)};
-            hyb.alltoallv(u, args, MPI_INT, monoprop::mpi::PeerPlan{}, /*derive_wire_bits=*/bits);
+            hyb.alltoallv(u, args, MPI_INT, monoprop::mpi::PeerPlan{}, /*derive_wire_plan=*/true);
             got[static_cast<size_t>(u)] = recv;
         });
         for (const auto &e : errs) {
@@ -1150,6 +1145,63 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
             }
         }
     }
+}
+
+// A sparse plan is a public aggregate, so a shift outside the rank-index width reaches the transports
+// as an out-of-range vector index and an invalid MPI rank. Every sparse entry point refuses it first,
+// and it must be an exception rather than an assert: release builds are where it would be indexed.
+BOOST_AUTO_TEST_CASE(hybrid_comm_unroutable_peer_plan_is_refused) {
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const monoprop::mpi::PeerPlan bad{.sparse = true, .shift = R};
+    const int P = R;
+    std::vector<std::vector<int>> send(static_cast<size_t>(P));
+    Comm c{MPI_COMM_WORLD};
+    BOOST_CHECK_THROW(static_cast<void>(monoprop::mpi::begin_alltoallv(send, c, false, nullptr, bad)),
+                      std::invalid_argument);
+    std::vector<int> counts(static_cast<size_t>(P), 0);
+    std::vector<int> got(static_cast<size_t>(P), 0);
+    BOOST_CHECK_THROW(monoprop::mpi::alltoall_counts(counts.data(), got.data(), P, c, bad), std::invalid_argument);
+}
+
+// MPI reads the payload buffers until the requests retire, so the handle that owns them must not be
+// copyable (two owners, one set of requests) and must not be destroyable while they are live.
+BOOST_AUTO_TEST_CASE(hybrid_comm_pending_alltoallv_owns_its_requests) {
+    using Pending = monoprop::mpi::PendingAlltoallv<int>;
+    static_assert(!std::is_copy_constructible_v<Pending>);
+    static_assert(!std::is_copy_assignable_v<Pending>);
+    static_assert(std::is_nothrow_move_constructible_v<Pending>);
+    static_assert(std::is_nothrow_move_assignable_v<Pending>);
+
+    // Dropping a handle without waiting must still complete the transfer, not free the buffers under it.
+    const int R = world_size();
+    if (R < 2 || (R & (R - 1)) != 0) {
+        return;
+    }
+    const int me = world_rank();
+    Comm c{MPI_COMM_WORLD};
+    std::vector<std::vector<int>> send(static_cast<size_t>(R));
+    for (int d = 0; d < R; ++d) {
+        send[static_cast<size_t>(d)] = {(me * 1000) + d};
+    }
+    {
+        auto h = monoprop::mpi::begin_alltoallv(send, c);
+        auto moved = std::move(h); // the requests travel with the buffers MPI is reading
+        std::vector<std::vector<int>> out;
+        moved.wait_into(out);
+        BOOST_REQUIRE_EQUAL(static_cast<int>(out.size()), R);
+        for (int src = 0; src < R; ++src) {
+            BOOST_REQUIRE_EQUAL(out[static_cast<size_t>(src)].size(), 1U);
+            BOOST_CHECK_EQUAL(out[static_cast<size_t>(src)][0], (src * 1000) + me);
+        }
+    }
+    // Same round, never waited on: the destructor has to drain it or the next collective mismatches.
+    {
+        static_cast<void>(monoprop::mpi::begin_alltoallv(send, c));
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
 }
 
 #endif // monoprop_ENABLE_MPI
