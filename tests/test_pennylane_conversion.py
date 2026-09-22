@@ -152,6 +152,16 @@ class TestFromPennylaneOperator:
         result = from_pennylane_operator(op, wires=["a", 0])
         assert result.num_qubits == 2
 
+    def test_explicit_wires_may_include_idle_wires(self):
+        op = qml.ops.LinearCombination([1.0], [qml.PauliX(0)])
+        result = from_pennylane_operator(op, wires=[0, 1])
+        assert result.num_qubits == 2
+
+    def test_rejects_duplicate_explicit_wires(self):
+        op = qml.ops.LinearCombination([1.0], [qml.PauliX(0)])
+        with pytest.raises(ValueError, match="wires must contain unique labels"):
+            from_pennylane_operator(op, wires=[0, 0])
+
 
 @requires_pennylane
 @pytest.mark.pennylane
@@ -189,6 +199,18 @@ class TestToPennylaneOperator:
             PauliOperator({"X": 1.0}, num_qubits=1), wires=["q0"]
         )
         assert result.wires == qml.wires.Wires(["q0"])
+
+    def test_rejects_mismatched_wires_length(self):
+        with pytest.raises(ValueError, match="wires has 1 entries"):
+            to_pennylane_operator(
+                PauliOperator({"XZ": 1.0}, num_qubits=2), wires=["q0"]
+            )
+
+    def test_rejects_duplicate_wires(self):
+        with pytest.raises(ValueError, match="wires must contain unique labels"):
+            to_pennylane_operator(
+                PauliOperator({"XZ": 1.0}, num_qubits=2), wires=["q0", "q0"]
+            )
 
 
 class PennylaneCircuitCase(NamedTuple):
@@ -302,6 +324,19 @@ class TestFromPennylaneCircuit:
         converted = from_pennylane_circuit(qfunc, [], 0.5, wires=(0, 1))
         assert converted.system_size == 2
 
+    def test_qnode_uses_underlying_quantum_function(self):
+        device = qml.device("default.qubit", wires=1)
+
+        @qml.qnode(device)
+        def qnode(theta):
+            qml.RX(theta, wires=0)
+            return qml.expval(qml.PauliZ(0))
+
+        converted = from_pennylane_circuit(qnode, [], 0.5)
+        assert converted.system_size == 1
+        assert converted.parameters == pytest.approx((0.5,))
+        assert len(converted.gates) == 1
+
 
 @requires_pennylane
 @pytest.mark.pennylane
@@ -406,6 +441,16 @@ class TestToPennylaneCircuit:
         )
         with pytest.raises(ValueError, match="wires has 3 entries"):
             to_pennylane_circuit(circuit, wires=(0, 1, 2))
+
+    def test_rejects_duplicate_wires(self):
+        circuit = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=2)),),
+            initial_state=(),
+            system_size=2,
+            parameters=(0.5,),
+        )
+        with pytest.raises(ValueError, match="wires must contain unique labels"):
+            to_pennylane_circuit(circuit, wires=("q0", "q0"))
 
 
 @requires_pennylane
