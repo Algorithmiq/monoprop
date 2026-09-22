@@ -123,8 +123,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
 
-    // Validate the global paired basis before starting partition workers. A child throwing after its
-    // siblings enter a collective poisons the shared-memory transport and masks this configuration error.
+    // Before the partition workers start: a child throwing after its siblings enter a collective
+    // poisons the shared-memory transport and masks this error.
     size_t max_pairs = 0;
     size_t expected_schrodinger_local_terms = 1;
     if (schrodinger_) {
@@ -174,8 +174,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     }
 
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-    check_routing_agreement(comm_); // a disagreement here would hang the first exchange, not corrupt it
-    const routing::Router router = router_for<NumModes>(comm_); // hoisted: geometry() can hit MPI, so never per term
+    check_routing_agreement(comm_);                             // fail here rather than hang the first exchange
+    const routing::Router router = router_for<NumModes>(comm_); // geometry() can hit MPI: never per term
     MonomialList<NumModes> local_heisenberg_terms;
 
     double core_term = 0.0;
@@ -777,8 +777,7 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
     std::vector<uint64_t> shifts;
     shifts.reserve(majoranas.size());
     for (const auto &gate : majoranas) {
-        // An out-of-range index is build_evolve_result_'s to reject, gate by gate: converting the whole
-        // list up front would pre-empt that throw. Leave the latch clear so a corrected retry still reports.
+        // Out-of-range indices are build_evolve_result_'s to reject; leave the latch clear for a retry.
         if (std::ranges::any_of(gate, [this](size_t i) { return i >= 2 * logical_num_modes_; })) {
             return;
         }
@@ -791,10 +790,8 @@ auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<Ve
     if (span >= router.linear_bits()) {
         return;
     }
-    // A warning, not a throw: every term still lands on one owner, they just do not cover the ranks.
-    // Capacity, not occupancy: the shifts reach one coset per initially occupied rank, and the initial
-    // operator may already straddle several, so an idle-rank count cannot be read off `span` alone.
-    // COMMPLACE's shape -- greppable prefix, rank-identified, one line.
+    // A warning: ownership is still correct, the ranks are just under-used. Reports capacity (cosets),
+    // not idle ranks, which also depend on how the initial operator straddles them.
     const auto line =
         std::format("COMMROUTE rank={} linear_bits={} shift_rank={} shifts={} ranks_per_coset={} rank_cosets={}\n",
                     static_cast<size_t>(mpi::rank(comm_)) / router.partitions(),

@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -30,8 +30,7 @@
 //   monoprop_ROUTING            "splitmix" | "linear" → routing_mode
 //   monoprop_ROUTE_SEED         decimal uint64 basis seed → route_seed
 //
-// Both routing knobs THROW on a malformed value instead of falling back: each silently changes the
-// transport, so a typo that defaulted would stay invisible until a performance postmortem.
+// Both routing knobs throw on a malformed value: a silent default would change the transport unseen.
 
 namespace monoprop::config {
 
@@ -69,19 +68,14 @@ inline auto parse_uint64(std::string_view name, const char *text) -> std::option
     if (text == nullptr || *text == '\0') {
         return std::nullopt;
     }
-    // strtoull WRAPS a negative literal to a huge unsigned rather than failing, and skips leading
-    // whitespace, so anything but a bare decimal literal is rejected before it is parsed.
+    // from_chars takes no sign, whitespace or prefix, unlike strtoull, which wraps "-1".
     const std::string_view raw{text};
-    if (raw.find_first_not_of("0123456789") != std::string_view::npos) {
+    std::uint64_t value = 0;
+    const auto [end, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), value, 10);
+    if (ec != std::errc{} || end != raw.data() + raw.size()) {
         reject_env(name, text, "a decimal uint64");
     }
-    errno = 0;
-    char *end = nullptr;
-    const unsigned long long value = std::strtoull(text, &end, 10);
-    if (end == text || *end != '\0' || errno == ERANGE) {
-        reject_env(name, text, "a decimal uint64");
-    }
-    return static_cast<std::uint64_t>(value);
+    return value;
 }
 
 inline auto parse_routing_mode(std::string_view name, const char *text) -> std::optional<RoutingMode> {
