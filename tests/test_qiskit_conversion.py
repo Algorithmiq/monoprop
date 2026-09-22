@@ -24,7 +24,8 @@ try:
     from qiskit import QuantumCircuit
     from qiskit.circuit import QuantumRegister
     from qiskit.circuit.library import PauliEvolutionGate
-    from qiskit.quantum_info import SparsePauliOp
+    from qiskit.quantum_info import Pauli as QiskitPauli
+    from qiskit.quantum_info import SparseObservable, SparsePauliOp
 
     from monoprop import Circuit, ExpGate
     from monoprop.majorana import MajoranaOperator
@@ -40,6 +41,22 @@ try:
 except ImportError:
     _qiskit_available = False
 
+try:
+    # PauliProductRotationGate was added in qiskit 2.4, above this project's qiskit>=2.0 floor.
+    from qiskit.circuit.library import PauliProductRotationGate
+
+    _ppr_gate_available = True
+except ImportError:
+    _ppr_gate_available = False
+
+
+requires_qiskit = pytest.mark.skipif(
+    not _qiskit_available, reason="qiskit not installed"
+)
+requires_ppr_gate = pytest.mark.skipif(
+    not _ppr_gate_available, reason="PauliProductRotationGate requires qiskit>=2.4"
+)
+
 
 def _assert_pauli_circuits_close(converted, expected) -> None:
     assert converted.initial_state == expected.initial_state
@@ -52,11 +69,6 @@ def _assert_pauli_circuits_close(converted, expected) -> None:
         # The generator's Pauli terms carry the qubit placement, so this also
         # checks the gate acts on the right qubits.
         assert got_gate.generator.isclose(exp_gate.generator)
-
-
-requires_qiskit = pytest.mark.skipif(
-    not _qiskit_available, reason="qiskit not installed"
-)
 
 
 @pytest.fixture
@@ -88,6 +100,14 @@ class TestFromQiskitOperator:
         assert isinstance(result, PauliOperator)
         assert len(result) == 1
         assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(1.0)  # qiskit order
+
+    @pytest.mark.parametrize("label", ["XZ", "-XZ", "IY", "Z"])
+    def test_single_pauli_matches_the_sparse_pauli_op_it_denotes(self, label):
+        """A bare Pauli converts like its one-term SparsePauliOp, skipping the simplify()."""
+        assert (
+            from_qiskit_operator(QiskitPauli(label)).terms
+            == from_qiskit_operator(SparsePauliOp(QiskitPauli(label))).terms
+        )
 
     def test_multiple_terms(self):
         op = SparsePauliOp.from_list([("XZ", 1.0), ("IY", 0.5)])
@@ -135,6 +155,21 @@ class TestFromQiskitOperator:
         result = from_qiskit_operator(op)
         assert Pauli("Z") in result.terms
         assert result.num_qubits == 1
+
+    def test_sparse_observable_pauli_terms(self):
+        """A SparseObservable with only Pauli terms converts term-by-term, like a SparsePauliOp."""
+        obs = SparseObservable.from_list([("XZ", 1.0), ("IY", 0.5)])
+        result = from_qiskit_operator(obs)
+        assert len(result) == 2
+        assert result.terms[Pauli("ZX", (0, 1))] == pytest.approx(1.0)  # qiskit order
+        assert result.terms[Pauli("Y", 0)] == pytest.approx(0.5)  # "IY" -> Y on qubit 0
+
+    def test_zero_sparse_observable(self):
+        """A zero SparseObservable has no sparse terms; unpacking them must not raise."""
+        obs = SparseObservable.zero(2)
+        result = from_qiskit_operator(obs)
+        assert result.num_qubits == 2
+        assert all(coeff == 0 for coeff in result.terms.values())
 
 
 @requires_qiskit
@@ -308,6 +343,52 @@ class TestFromQiskitCircuit:
 
         with pytest.raises(ValueError, match="Unsupported gate"):
             from_qiskit_circuit(circuit, [])
+
+    @requires_ppr_gate
+    @pytest.mark.parametrize(
+        ("label", "qubits"),
+        [("XYZ", [1, 2, 6]), ("-XIZ", [3, 0, 5]), ("Z", [2]), ("YY", [5, 4])],
+    )
+    def test_pauli_product_rotation_matches_the_pauli_evolution_route(
+        self, label, qubits
+    ):
+        """A PauliProductRotationGate converts like the PauliEvolutionGate it denotes.
+
+        exp(-i theta P / 2) is an evolution of time theta on the operator P / 2, so the two agree
+        exactly. Comparing them pins the qubit ordering, which is the part that would silently go
+        wrong -- a qiskit label runs last-operand-first over the gate's own qubits, not over the
+        register.
+        """
+        num_qubits = 7
+        gate = PauliProductRotationGate(QiskitPauli(label), 0.7)
+        rotation = QuantumCircuit(num_qubits)
+        rotation.append(gate, qubits)
+
+        placed = ["I"] * num_qubits
+        for position, letter in enumerate(
+            reversed(gate.pauli().to_label().lstrip("+-"))
+        ):
+            placed[num_qubits - 1 - qubits[position]] = letter
+        evolution = QuantumCircuit(num_qubits)
+        evolution.append(
+            PauliEvolutionGate(SparsePauliOp("".join(placed)) * 0.5, gate.params[0]),
+            range(num_qubits),
+        )
+
+        converted = from_qiskit_circuit(rotation, [])
+        reference = from_qiskit_circuit(evolution, [])
+        assert converted.gates[0].generator.terms == reference.gates[0].generator.terms
+        assert converted.parameters[0] == pytest.approx(reference.parameters[0])
+        assert converted.parameters[0] == pytest.approx(gate.params[0])
+
+    @requires_ppr_gate
+    def test_pauli_product_rotation_needs_no_identity_padding(self):
+        """Only the non-identity letters reach the generator, on the qubits they act on."""
+        circuit = QuantumCircuit(5)
+        circuit.append(PauliProductRotationGate(QiskitPauli("XIZ"), 0.4), [1, 3, 4])
+        converted = from_qiskit_circuit(circuit, [])
+        assert converted.gates[0].generator.terms == {Pauli("ZX", (1, 4)): -0.5}
+        assert converted.parameters == (0.4,)
 
 
 @requires_qiskit
