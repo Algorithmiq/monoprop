@@ -17,5 +17,17 @@
 from __future__ import annotations
 
 from monoprop_qiskit._version import __version__
+from monoprop_qiskit.qiskit_conversion import (
+    from_qiskit_circuit,
+    from_qiskit_operator,
+    to_qiskit_circuit,
+    to_qiskit_operator,
+)
 
-__all__ = ["__version__"]
+__all__ = [
+    "__version__",
+    "from_qiskit_circuit",
+    "from_qiskit_operator",
+    "to_qiskit_circuit",
+    "to_qiskit_operator",
+]

@@ -44,10 +44,6 @@ PAULI_EVOLUTION_EQUIVALENT = {
     "ryz",
 }
 
-VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union(
-    {"PauliEvolution", "pauli_product_rotation"}
-)
-
 
 def from_qiskit_operator(
     qiskit_op: SparsePauliOp | SparseObservable | QiskitPauli, *, atol: float = 1e-8
