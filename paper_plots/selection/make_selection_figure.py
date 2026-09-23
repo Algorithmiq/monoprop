@@ -28,8 +28,8 @@ not -- the fitted time exponents land within 0.16 of the fitted pair-count expon
 this script), which is per-pair cost drifting, not extra work.
 
 Reads data/selection_scaling.jsonl and nothing else -- no monoprop build, no engine. Style
-follows the sibling node_scaling package exactly (single-column, DejaVu Serif, one-hue ordinal
-ramp with a marker per curve), since both appear in the same paper.
+is the one the paper first shipped this figure in (DejaVu Sans, Okabe-Ito hues, full box), kept
+so that regenerating it changes the labels and not the look.
 """
 
 from __future__ import annotations
@@ -43,43 +43,24 @@ import matplotlib as mpl
 
 mpl.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter, LogLocator
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DATA = ROOT / "data" / "selection_scaling.jsonl"
 FIGS = ROOT / "figures"
 
-INK, INK2, GRID, GUIDE = "#0b0b0b", "#52514e", "#dedcd6", "#9c9a94"
+# The paper's own look for this figure: matplotlib's DejaVu Sans at default sizes, one
+# colour-blind-safe Okabe-Ito hue per case, a round marker on every rung, and each curve's
+# dotted bound drawn in its own colour so the eye pairs them without a key.
+COLOURS = ["#0072B2", "#D55E00", "#009E73"]
+NOTE = 7  # legend and bound-note size, smaller than the 10 pt ticks and labels
 
-# The same light->dark single-hue ordinal ramp and marker set as node_scaling: the three curves
-# differ in the ORDER of the cost bound (N^3, N^4, N^5), which is a magnitude, so colour encodes
-# rank and the marker carries identity into greyscale print.
-RAMP3 = ["#86b6ef", "#2a78d6", "#0d366b"]
-MARKS = ["o", "s", "^"]
-
-W, H = 3.4, 2.95  # single column, drawn at final size
+W, H = 5.0, 3.6  # drawn at this size and scaled to \linewidth by the paper
 FIT_POINTS = 4  # the widest rungs, where the asymptotic slope is the one being claimed
 
 plt.rcParams.update(
     {
-        "font.family": "serif",
-        "font.serif": ["DejaVu Serif"],
-        "mathtext.fontset": "dejavuserif",
-        "font.size": 8,
-        "axes.labelsize": 8.5,
-        "legend.fontsize": 7.5,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "axes.edgecolor": "#c9c7c0",
-        "axes.labelcolor": INK,
-        "text.color": INK,
-        "xtick.color": INK2,
-        "ytick.color": INK2,
-        "axes.linewidth": 0.7,
-        "legend.frameon": False,
         "figure.dpi": 200,
         "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.02,
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     }
@@ -117,44 +98,32 @@ def fit(rs, field, npoints=FIT_POINTS):
     return sum((x - mx) * (y - my) for x, y in zip(lx, ly, strict=True)) / den
 
 
-def plain_log(axis):
-    """Plain numbers on both tick levels -- the major formatter defaults to scientific notation,
-    so setting only the minor one prints "500 200 10^2" down a single axis."""
-    fmt = FuncFormatter(lambda v, _: f"{v:g}")
-    axis.set_major_formatter(fmt)
-    axis.set_minor_locator(LogLocator(base=10.0, subs=(2.0, 5.0), numticks=20))
-    axis.set_minor_formatter(fmt)
-
-
 def dress(ax):
-    """Log-log, light major grid, no title and no right/top furniture."""
+    """Log-log with matplotlib's default decade ticks, a faint major grid and a full box."""
     ax.set_xscale("log")
     ax.set_yscale("log")
-    plain_log(ax.xaxis)
-    ax.set_xlabel("Modes $N$")
-    ax.set_ylabel("Selection time [s]")
-    ax.grid(True, which="major", color=GRID, lw=0.6, alpha=0.9)
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
+    ax.set_xlabel("modes $N$")
+    ax.set_ylabel("selection time [s]")
+    ax.grid(True, which="major", lw=0.3, alpha=0.5)
     return ax
 
 
-def guide(ax, rs, order):
+def guide(ax, rs, order, colour):
     """The dotted `N^order` bound, anchored on the widest measured rung of its own curve.
 
     Anchoring at the wide end rather than fitting an intercept is what makes the line a BOUND and
     not a second fit: the eye compares slopes over the decade the claim is about, and any
     divergence between measurement and bound opens up to the left where it is visible.
     """
-    xs = [r["num_modes"] for r in rs]
-    x0, y0 = xs[-1], rs[-1]["seconds"]
+    lo, x0, y0 = rs[0]["num_modes"], rs[-1]["num_modes"], rs[-1]["seconds"]
+    xs = [lo * (x0 / lo) ** (k / 31) for k in range(32)]
     ax.plot(
         xs,
         [y0 * (x / x0) ** order for x in xs],
         ls=":",
         lw=0.9,
-        color=GUIDE,
+        alpha=0.6,
+        color=colour,
         zorder=1,
     )
 
@@ -166,21 +135,20 @@ def draw(groups, outdir=FIGS):
     for i, ((ell, p), rs) in enumerate(groups.items()):
         slope_t, slope_pairs = fit(rs, "seconds"), fit(rs, "pairs")
         exp = f"$N^{{{slope_t:.2f}}}$" if slope_t else "measured"
+        colour = COLOURS[i % len(COLOURS)]
         ax.plot(
             [r["num_modes"] for r in rs],
             [r["seconds"] for r in rs],
-            color=RAMP3[i % len(RAMP3)],
-            lw=1.5,
-            marker=MARKS[i % len(MARKS)],
+            color=colour,
+            lw=1.3,
+            marker="o",
             ms=4.0,
             zorder=3,
-            markeredgecolor="white",
-            markeredgewidth=0.6,
             # The paper states the case as (cutoff d, generator degree g) = (2 ell, 2 p), so the
             # legend does too; the records' half-degree `ell`/`p` never reach the page.
             label=rf"$d={2 * ell}$, $g={2 * p}$: {exp}",
         )
-        guide(ax, rs, ell + p)
+        guide(ax, rs, ell + p, colour)
         rows.append(
             {
                 "ell": ell,
@@ -199,7 +167,7 @@ def draw(groups, outdir=FIGS):
         )
     # The keys are stacked in the upper left, the one corner every curve leaves empty: all three
     # rise to the right, so a key there costs no plotted area and needs no reserved headroom.
-    ax.legend(loc="upper left", handlelength=1.5, handletextpad=0.4, borderaxespad=0.4)
+    ax.legend(loc="upper left", fontsize=NOTE, frameon=False)
     # The bound is the same statement for all three curves, so it is annotated once, in the
     # opposite corner, instead of three times in the legend.
     ax.text(
@@ -209,10 +177,10 @@ def draw(groups, outdir=FIGS):
         transform=ax.transAxes,
         ha="right",
         va="bottom",
-        fontsize=7,
-        color=INK2,
+        fontsize=NOTE,
+        alpha=0.7,
     )
-    fig.tight_layout(pad=0.4)
+    fig.tight_layout()
     save(fig, outdir, "fig-selection-scaling")
     return rows
 
