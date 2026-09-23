@@ -10,7 +10,7 @@ discovers every Boost.Test case and registers it twice:
 
 - **`serial`**: the case run in-process with `MPI_COMM_SELF`.
 - **`mpi`** (+ rank-specific `mpi-<n>`): the whole suite wrapped in
-  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2`),
+  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2;4`),
   registered when an MPI launcher is detected.
 
 Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
@@ -88,8 +88,9 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
-  scan routing agreement), `evolution_detail_tests.cpp` (MatchedEpochSet +
-  CutoffContext),
+  scan routing agreement), `routing_tests.cpp` (Router term -> flat-slot map:
+  splitmix equivalence, the linear shift identity, and the coverage diagnostic),
+  `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
@@ -129,7 +130,7 @@ needed.
 
 With an MPI launcher on PATH (`MPIEXEC_EXECUTABLE`, `mpiexec`, or `mpirun`),
 CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
-`monoprop_MPI_TEST_PROCS` (default `2`) — one CTest entry per rank count, not
+`monoprop_MPI_TEST_PROCS` (default `2;4`) — one CTest entry per rank count, not
 per case, because the ranks have to reach the same collectives. Each entry has
 a 600-second timeout, so a collective deadlock fails instead of occupying the
 runner indefinitely. For exhaustive
