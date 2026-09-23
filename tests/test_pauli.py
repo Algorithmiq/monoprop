@@ -213,7 +213,7 @@ class TestPauliOperator:
     def test_get_majorana_operator_requires_num_qubits(self):
         """Constructing with no qubit count raises a clear TypeError."""
         with pytest.raises(TypeError, match="num_qubits must be an integer"):
-            PauliOperator._from_terms(["X"], [1.0], num_qubits=None)
+            PauliOperator.from_terms(["X"], [1.0], num_qubits=None)
 
     def test_str_few_terms(self):
         op = PauliOperator({"XY": 1.0}, num_qubits=2)

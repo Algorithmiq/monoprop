@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import importlib.util
-
 from ._core import (
     MAX_NUM_MODES,
     __build_type__,
@@ -70,18 +68,3 @@ __all__ = [
     "jordan_wigner_basis_change",
     "validate_parameter_mapping",
 ]
-
-if importlib.util.find_spec("qiskit") is not None:
-    from .qiskit_conversion import (
-        from_qiskit_circuit,
-        from_qiskit_operator,
-        to_qiskit_circuit,
-        to_qiskit_operator,
-    )
-
-    __all__ += [
-        "from_qiskit_circuit",
-        "from_qiskit_operator",
-        "to_qiskit_circuit",
-        "to_qiskit_operator",
-    ]

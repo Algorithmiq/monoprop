@@ -16,26 +16,18 @@ import json
 
 import numpy as np
 import pytest
+from monoprop_qiskit.qiskit_conversion import (
+    from_qiskit_circuit,
+    from_qiskit_operator,
+    to_qiskit_operator,
+)
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.primitives import StatevectorEstimator
+from qiskit.quantum_info import SparsePauliOp
 
 from monoprop import PauliPropagator
 from monoprop.pauli import PauliOperator
-from monoprop.qiskit_conversion import from_qiskit_circuit, from_qiskit_operator
-
-try:
-    from qiskit import QuantumCircuit
-    from qiskit.circuit.library import PauliEvolutionGate
-    from qiskit.primitives import StatevectorEstimator
-    from qiskit.quantum_info import SparsePauliOp
-
-    from monoprop.qiskit_conversion import to_qiskit_operator
-
-    _qiskit_available = True
-except ImportError:
-    _qiskit_available = False
-
-requires_qiskit = pytest.mark.skipif(
-    not _qiskit_available, reason="qiskit not installed"
-)
 
 
 @pytest.fixture
@@ -113,8 +105,6 @@ def test_qiskit_with_mp(
     assert np.isclose(test_expval, qiskit_result, atol=1e-6)
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 @pytest.mark.parametrize(
     ("gate", "angle", "qubit", "observable"),
     [

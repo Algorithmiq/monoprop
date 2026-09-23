@@ -25,7 +25,7 @@ import numpy as np
 
 from monoprop.conversion_utils import _parity, _remove_repeated_pairs
 
-from .utils import _validate_system_size
+from .utils import validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -147,7 +147,7 @@ class MajoranaOperator:
         majoranas = [
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]
-        self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        self.num_modes = validate_system_size(num_modes, argument_name="num_modes")
         for majorana in majoranas:
             # majoranas are sorted in here
             if majorana and majorana[-1] >= 2 * self.num_modes:
@@ -169,7 +169,7 @@ class MajoranaOperator:
         ([get_majorana_operator][]) rely on (a mapping cannot carry the same monomial twice).
         """
         obj = cls.__new__(cls)
-        obj.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
+        obj.num_modes = validate_system_size(num_modes, argument_name="num_modes")
         # _accumulate is taking care of the sorting/removing repeating terms
         # so no need to check in here
         obj.terms = cls._accumulate(majoranas, coefficients)

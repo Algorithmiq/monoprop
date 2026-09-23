@@ -19,16 +19,16 @@ from __future__ import annotations
 import pytest
 
 from monoprop.utils import (
-    _validate_system_size,
     jordan_wigner_basis_change,
     validate_basis_change,
+    validate_system_size,
 )
 
 
 def test_validate_system_size_accepts_zero_and_positive() -> None:
     """Zero and positive ints are valid system sizes and round-trip as plain ``int``."""
-    assert _validate_system_size(0, argument_name="num_modes") == 0
-    result = _validate_system_size(5, argument_name="num_modes")
+    assert validate_system_size(0, argument_name="num_modes") == 0
+    result = validate_system_size(5, argument_name="num_modes")
     assert result == 5
     assert type(result) is int
 
@@ -36,7 +36,7 @@ def test_validate_system_size_accepts_zero_and_positive() -> None:
 def test_validate_system_size_rejects_negative() -> None:
     """A negative size is a value error, not a type error, and names the argument."""
     with pytest.raises(ValueError, match="num_modes must be non-negative; got -1"):
-        _validate_system_size(-1, argument_name="num_modes")
+        validate_system_size(-1, argument_name="num_modes")
 
 
 def test_validate_system_size_rejects_bool() -> None:
@@ -46,9 +46,9 @@ def test_validate_system_size_rejects_bool() -> None:
     the ``isinstance(size, int)`` check and be accepted as ``1``/``0``.
     """
     with pytest.raises(TypeError, match=r"num_qubits must be an integer \(not bool\)"):
-        _validate_system_size(True, argument_name="num_qubits")  # noqa: FBT003
+        validate_system_size(True, argument_name="num_qubits")  # noqa: FBT003
     with pytest.raises(TypeError, match=r"num_qubits must be an integer \(not bool\)"):
-        _validate_system_size(False, argument_name="num_qubits")  # noqa: FBT003
+        validate_system_size(False, argument_name="num_qubits")  # noqa: FBT003
 
 
 def test_validate_system_size_rejects_non_integer() -> None:
@@ -56,9 +56,9 @@ def test_validate_system_size_rejects_non_integer() -> None:
     with pytest.raises(
         TypeError, match=r"system_size must be an integer \(not float\)"
     ):
-        _validate_system_size(2.5, argument_name="system_size")
+        validate_system_size(2.5, argument_name="system_size")
     with pytest.raises(TypeError, match=r"system_size must be an integer \(not str\)"):
-        _validate_system_size("4", argument_name="system_size")
+        validate_system_size("4", argument_name="system_size")
 
 
 def test_jordan_wigner_basis_change_single_qubit() -> None:

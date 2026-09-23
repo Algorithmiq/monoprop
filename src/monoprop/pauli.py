@@ -23,12 +23,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .conversion_utils import (
-    _extend_pauli_string,
     _pauli_to_local_slots,
     _pauli_to_majorana,
+    extend_pauli_string,
 )
 from .majorana import MajoranaOperator
-from .utils import _validate_system_size
+from .utils import validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -82,7 +82,7 @@ class Pauli:
         if len(set(qubit_tuple)) != len(qubit_tuple):
             raise ValueError(f"Duplicate qubit indices in Pauli term: {qubit_tuple}.")
         # Left unchecked, a negative index lands on the wrong qubit when the term is widened
-        # (_extend_pauli_string indexes a list) and reaches the engine as a huge unsigned slot.
+        # (extend_pauli_string indexes a list) and reaches the engine as a huge unsigned slot.
         if any(q < 0 for q in qubit_tuple):
             raise ValueError(
                 f"Pauli qubit indices must be non-negative; got {qubit_tuple}."
@@ -141,7 +141,7 @@ class PauliOperator:
                 raise ValueError("Operator has complex terms")
             accumulated[pauli] += float(float_coeff)
         self.terms: dict[Pauli, float] = dict(accumulated)
-        self.num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
+        self.num_qubits = validate_system_size(num_qubits, argument_name="num_qubits")
         for pauli in self.terms:
             if pauli.qubits and pauli.qubits[-1] >= self.num_qubits:
                 raise ValueError(
@@ -150,13 +150,13 @@ class PauliOperator:
                 )
 
     @classmethod
-    def _from_terms(
+    def from_terms(
         cls,
         strings: Sequence[Pauli | str],
         coefficients: Sequence[float],
         num_qubits: int | None = None,
     ) -> PauliOperator:
-        """Build from parallel ``strings``/``coefficients`` lists (internal)."""
+        """Build a PauliOperator from parallel ``strings``/``coefficients`` lists."""
         accumulated: dict[Pauli, float] = defaultdict(float)
         for string, coeff in zip(strings, coefficients, strict=True):
             pauli = string if isinstance(string, Pauli) else Pauli(string)
@@ -219,7 +219,7 @@ class PauliOperator:
         majoranas: list[Sequence[int]] = []
         coefficients: list[complex] = []
         for pauli, coeff in self.terms.items():
-            extended = _extend_pauli_string(pauli.string, pauli.qubits, self.num_qubits)
+            extended = extend_pauli_string(pauli.string, pauli.qubits, self.num_qubits)
             majorana, jw_coeff = _pauli_to_majorana(extended)
             majoranas.append(majorana)
             coefficients.append(jw_coeff * coeff)

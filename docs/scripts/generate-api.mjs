@@ -22,7 +22,7 @@ const MODULES = [
   ['circuit', 'Circuits and gates'],
   ['fermi', 'Fermionic & Majorana operators'],
   ['pauli', 'Qubit (Pauli) operators'],
-  ['qiskit_conversion', 'Qiskit conversion'],
+  ['conversion_utils', 'Conversion utilities'],
   ['integral_conversion', 'Integral conversion'],
   ['utils', 'Utilities'],
   ['majorana', 'Internal representations'],

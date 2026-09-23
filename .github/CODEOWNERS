@@ -2,3 +2,4 @@
 
 src/monoprop/**/*.py @adamglos92
 tests/**/*.py @adamglos92
+packages/monoprop-qiskit/**/*.py @adamglos92

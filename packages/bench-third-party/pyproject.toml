@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "monoprop",
     "monoprop-bench-tools",
+    "monoprop-qiskit",
     "qiskit==2.5.0",
     "tqdm==4.68.3",
     "ppvm==0.1.0",
@@ -32,4 +33,5 @@ python-preference = "only-managed"
 [tool.uv.sources]
 monoprop = { path = "../..", editable = true }
 monoprop-bench-tools = { path = "../monoprop-bench-tools", editable = true }
+monoprop-qiskit = { path = "../monoprop-qiskit", editable = true }
 ppvm = { git = "https://github.com/QuEraComputing/ppvm.git", subdirectory = "ppvm-python", rev = "2570637b145949aadc085871400fdac9322fff54" }

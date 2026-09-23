@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 
-def _validate_system_size(size: int, *, argument_name: str) -> int:
+def validate_system_size(size: int, *, argument_name: str) -> int:
     """Validate and normalize a non-negative system-size argument.
 
     Args:

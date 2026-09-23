@@ -147,6 +147,9 @@ The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/w
 - `packages/monoprop-bench-tools` is the reusable benchmark harness — peak-memory
   measurement, the benchmarked model builders, and the result renderers — published
   separately so scripts and notebooks can depend on it without the repository;
+- `packages/monoprop-qiskit` converts between Qiskit circuits/operators and
+  monoprop's native representations — published separately so users who only
+  need Qiskit interop don't pull monoprop's other optional dependencies;
 - `packages/bench-third-party` holds the cross-engine comparison scripts. It has
   CUDA-specific pins, so it is a standalone uv project with its own lockfile;
 - `benches/` is monoprop's own benchmark suite, which uses the tooling above.

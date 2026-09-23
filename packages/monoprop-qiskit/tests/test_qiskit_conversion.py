@@ -18,28 +18,22 @@ import importlib
 import sys
 
 import pytest
+from monoprop_qiskit.qiskit_conversion import (
+    from_qiskit_circuit,
+    from_qiskit_operator,
+    to_qiskit_circuit,
+    to_qiskit_operator,
+)
 from pytest_cases import case, parametrize_with_cases
+from qiskit import QuantumCircuit
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.quantum_info import Pauli as QiskitPauli
+from qiskit.quantum_info import SparseObservable, SparsePauliOp
 
-try:
-    from qiskit import QuantumCircuit
-    from qiskit.circuit import QuantumRegister
-    from qiskit.circuit.library import PauliEvolutionGate
-    from qiskit.quantum_info import Pauli as QiskitPauli
-    from qiskit.quantum_info import SparseObservable, SparsePauliOp
-
-    from monoprop import Circuit, ExpGate
-    from monoprop.majorana import MajoranaOperator
-    from monoprop.pauli import Pauli, PauliOperator
-    from monoprop.qiskit_conversion import (
-        from_qiskit_circuit,
-        from_qiskit_operator,
-        to_qiskit_circuit,
-        to_qiskit_operator,
-    )
-
-    _qiskit_available = True
-except ImportError:
-    _qiskit_available = False
+from monoprop import Circuit, ExpGate
+from monoprop.majorana import MajoranaOperator
+from monoprop.pauli import Pauli, PauliOperator
 
 try:
     # PauliProductRotationGate was added in qiskit 2.4, above this project's qiskit>=2.0 floor.
@@ -50,9 +44,6 @@ except ImportError:
     _ppr_gate_available = False
 
 
-requires_qiskit = pytest.mark.skipif(
-    not _qiskit_available, reason="qiskit not installed"
-)
 requires_ppr_gate = pytest.mark.skipif(
     not _ppr_gate_available, reason="PauliProductRotationGate requires qiskit>=2.4"
 )
@@ -81,18 +72,16 @@ def qiskit_unavailable(monkeypatch: pytest.MonkeyPatch):
     for module_name in qiskit_modules:
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    monkeypatch.delitem(sys.modules, "monoprop.qiskit_conversion", raising=False)
+    monkeypatch.delitem(sys.modules, "monoprop_qiskit.qiskit_conversion", raising=False)
     monkeypatch.setitem(sys.modules, "qiskit", None)
 
 
 @pytest.mark.usefixtures("qiskit_unavailable")
 def test_import_error_raised_without_qiskit():
     with pytest.raises(ImportError, match="qiskit is required"):
-        importlib.import_module("monoprop.qiskit_conversion")
+        importlib.import_module("monoprop_qiskit.qiskit_conversion")
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 class TestFromQiskitOperator:
     def test_single_term(self):
         op = SparsePauliOp.from_list([("XZ", 1.0)])
@@ -172,8 +161,6 @@ class TestFromQiskitOperator:
         assert all(coeff == 0 for coeff in result.terms.values())
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 class TestToQiskitOperator:
     def test_single_term_reverses_string(self):
         result = to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=2))
@@ -219,8 +206,6 @@ class TestToQiskitOperator:
         to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=2), num_qubits=2)
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 class ToQiskitCircuitCases:
     # ExpGate applies exp(+i theta H) and PauliEvolutionGate exp(-i t H), so the expected qiskit
     # generator carries the NEGATED coefficient at the same evolution time.
@@ -256,8 +241,6 @@ class ToQiskitCircuitCases:
         return circuit, 5, expected_circuit
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 class TestToQiskitCircuit:
     @parametrize_with_cases("circuit, num_qubits, expected", cases=ToQiskitCircuitCases)
     def test_to_qiskit_circuit(self, circuit, num_qubits, expected):
@@ -327,8 +310,6 @@ class QiskitCircuitsCases:
         return circuit, expected
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 class TestFromQiskitCircuit:
     @parametrize_with_cases("circuit, expected", cases=QiskitCircuitsCases)
     def test_valid_circuits(self, circuit, expected):
@@ -391,8 +372,6 @@ class TestFromQiskitCircuit:
         assert converted.parameters == (0.4,)
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 def test_to_qiskit_circuit_rejects_unbound() -> None:
     """to_qiskit_circuit on an unbound circuit raises a clear error, not an IndexError."""
     circuit = Circuit(
@@ -404,8 +383,6 @@ def test_to_qiskit_circuit_rejects_unbound() -> None:
         to_qiskit_circuit(circuit, num_qubits=1)
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 def test_to_qiskit_circuit_rejects_mismatched_num_qubits() -> None:
     """num_qubits must match circuit.system_size, not silently truncate/pad the circuit."""
     circuit = Circuit(
@@ -421,8 +398,6 @@ def test_to_qiskit_circuit_rejects_mismatched_num_qubits() -> None:
         to_qiskit_circuit(circuit, num_qubits=3)
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 def test_to_qiskit_circuit_rejects_majorana_family() -> None:
     """to_qiskit_circuit only understands Pauli circuits; a Majorana-family gate is rejected."""
     circuit = Circuit(
@@ -435,8 +410,6 @@ def test_to_qiskit_circuit_rejects_majorana_family() -> None:
         to_qiskit_circuit(circuit, num_qubits=1)
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 def test_from_to_qiskit_circuit_roundtrip() -> None:
     """Both conversions rewire qubits, so the round trip must land on the same operator.
 
@@ -455,8 +428,6 @@ def test_from_to_qiskit_circuit_roundtrip() -> None:
     )
 
 
-@requires_qiskit
-@pytest.mark.qiskit
 def test_from_qiskit_circuit_rejects_multiple_registers() -> None:
     qreg1 = QuantumRegister(1)
     qreg2 = QuantumRegister(1)

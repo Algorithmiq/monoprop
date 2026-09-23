@@ -33,7 +33,7 @@ from .conversion_utils import (
 )
 from .majorana import MajoranaOperator
 from .pauli import PauliOperator
-from .utils import _validate_system_size
+from .utils import validate_system_size
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -56,7 +56,7 @@ class ExpGate:
 
     Applies $e^{+i\theta H}$ for driving angle $\theta$ and Hermitian generator
     $H$. Note the **positive** sign: qiskit's ``PauliEvolutionGate`` and ``r<P>`` rotations
-    use $e^{-itH}$, so [monoprop.qiskit_conversion][] negates the generator both ways.
+    use $e^{-itH}$, so the ``monoprop-qiskit`` package negates the generator both ways.
     Every family supplies the **Hermitian** generator -- for a Majorana one that means the
     observable convention: imaginary coefficient for a weight-2 monomial, real for weight-4.
 
@@ -231,7 +231,7 @@ class Circuit:
 
         self._state_given = initial_state is not None
         initial_state = tuple(int(i) for i in initial_state or ())
-        system_size = _validate_system_size(system_size, argument_name="system_size")
+        system_size = validate_system_size(system_size, argument_name="system_size")
         self._validate_initial_state(initial_state, system_size)
         self._validate_gate_system_size(gates, system_size)
         # Checked first: the identity-drop below reads gate attributes, so a non-ExpGate must
@@ -434,7 +434,7 @@ class Circuit:
                 two an absent field means.
         """
         indices = [int(p) for p in param_inds]
-        system_size = _validate_system_size(system_size, argument_name="system_size")
+        system_size = validate_system_size(system_size, argument_name="system_size")
         gates: list[ExpGate] = []
         current_index: int | None = None
         current_majoranas: list[tuple[int, ...]] = []
@@ -588,7 +588,7 @@ def expand_monomials(
         per monomial. ``gate_indices[i]`` is the local 0-based index of the authoring gate, so
         the engine can recover gate boundaries; a multi-term gate's monomials share one index.
     """
-    num_qubits = _validate_system_size(num_qubits, argument_name="num_qubits")
+    num_qubits = validate_system_size(num_qubits, argument_name="num_qubits")
     majoranas: list[tuple[int, ...]] = []
     gen_coeffs: list[float] = []
     per_monomial: list[int] = []
