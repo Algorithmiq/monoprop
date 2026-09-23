@@ -176,7 +176,9 @@ def draw(groups, outdir=FIGS):
             zorder=3,
             markeredgecolor="white",
             markeredgewidth=0.6,
-            label=rf"$\ell={ell}$, $p={p}$: {exp}",
+            # The paper states the case as (cutoff d, generator degree g) = (2 ell, 2 p), so the
+            # legend does too; the records' half-degree `ell`/`p` never reach the page.
+            label=rf"$d={2 * ell}$, $g={2 * p}$: {exp}",
         )
         guide(ax, rs, ell + p)
         rows.append(
@@ -203,7 +205,7 @@ def draw(groups, outdir=FIGS):
     ax.text(
         0.98,
         0.03,
-        r"dotted: $N^{\ell+p}$",
+        r"dotted: $N^{(d+g)/2}$",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -253,7 +255,7 @@ def wrap(text, width=88):
 
 def caption(rows):
     cases = "; ".join(
-        rf"$\ell={r['ell']}$, $p={r['p']}$: $N^{{{r['slope_time']:.2f}}}$ against the "
+        rf"$d={2 * r['ell']}$, $g={2 * r['p']}$: $N^{{{r['slope_time']:.2f}}}$ against the "
         rf"$N^{{{r['bound']}}}$ bound, over $N={r['fit_window'][0]}$--{r['fit_window'][-1]}"
         for r in rows
         if r["slope_time"]
@@ -266,7 +268,7 @@ def caption(rows):
         r"basis, single partition, single thread. Building and evolving the observable happen "
         r"before the clock starts. Fitted log-log slopes over the "
         rf"{FIT_POINTS} widest rungs of each case: {cases}. Each dotted "
-        r"line is the corresponding $N^{\ell+p}$ pair-count bound, anchored on the widest "
+        r"line is the corresponding $N^{(d+g)/2}$ pair-count bound, anchored on the widest "
         r"measured rung. The measured time exponents track the fitted pair-count exponents "
         + ", ".join(f"({r['slope_pairs']:.2f})" for r in rows if r["slope_pairs"])
         + r" to within "

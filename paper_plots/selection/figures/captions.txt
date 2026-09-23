@@ -18,11 +18,11 @@ Fig. 1  (fig-selection-scaling)  --  Cost of one gate selection
 the occupation-flip table and scoring, the three phases timed inside the engine --
 against the mode count $N$, for 3 generator/order cases in the propagated basis, single
 partition, single thread. Building and evolving the observable happen before the clock
-starts. Fitted log-log slopes over the 4 widest rungs of each case: $\ell=2$, $p=1$:
-$N^{3.07}$ against the $N^{3}$ bound, over $N=96$--192; $\ell=2$, $p=2$: $N^{4.22}$
-against the $N^{4}$ bound, over $N=64$--160; $\ell=3$, $p=2$: $N^{5.19}$ against the
-$N^{5}$ bound, over $N=32$--80. Each dotted line is the corresponding $N^{\ell+p}$
-pair-count bound, anchored on the widest measured rung. The measured time exponents
-track the fitted pair-count exponents (3.02), (4.06), (5.19) to within 0.16, and the
-cost of enumerating one pair stays flat at 9--16~ns across the whole sweep, so selection
-costs what enumerating the pairs costs and carries no hidden work on top of it.
+starts. Fitted log-log slopes over the 4 widest rungs of each case: $d=4$, $g=2$:
+$N^{3.07}$ against the $N^{3}$ bound, over $N=96$--192; $d=4$, $g=4$: $N^{4.22}$ against
+the $N^{4}$ bound, over $N=64$--160; $d=6$, $g=4$: $N^{5.19}$ against the $N^{5}$ bound,
+over $N=32$--80. Each dotted line is the corresponding $N^{(d+g)/2}$ pair-count bound,
+anchored on the widest measured rung. The measured time exponents track the fitted
+pair-count exponents (3.02), (4.06), (5.19) to within 0.16, and the cost of enumerating
+one pair stays flat at 9--16~ns across the whole sweep, so selection costs what
+enumerating the pairs costs and carries no hidden work on top of it.
