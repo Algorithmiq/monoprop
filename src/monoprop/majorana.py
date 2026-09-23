@@ -99,7 +99,6 @@ class Majorana:
             raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
         sorted_values = _remove_repeated_pairs(tuple(sorted(indices)))
         sign = float(_parity(indices))
-        # Sorted with repeated pairs removed, and signs checked above: canonical by construction.
         return cls(*sorted_values, skip_validation=True), sign
 
     def __eq__(self, other: object) -> bool:
