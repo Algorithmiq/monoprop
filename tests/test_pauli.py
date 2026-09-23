@@ -146,6 +146,20 @@ class TestPauli:
         with pytest.raises(ValueError, match="Duplicate qubit indices"):
             Pauli("XY", (0, 0))
 
+    def test_skip_validation_bypasses_input_checks(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            Pauli("X", -1)
+        assert Pauli("X", -1, skip_validation=True).qubits == (-1,)
+
+    def test_skip_validation_still_canonicalizes(self):
+        assert Pauli("IXY", (2, 1, 0), skip_validation=True) == Pauli("YX", (0, 1))
+
+    def test_operator_skip_validation_forwards_to_string_keys(self):
+        with pytest.raises(ValueError, match="Invalid characters"):
+            PauliOperator({"XA": 1.0}, num_qubits=2)
+        op = PauliOperator({"XA": 1.0}, num_qubits=2, skip_validation=True)
+        assert len(op) == 1
+
 
 class TestPauliOperator:
     def test_basic_construction(self):

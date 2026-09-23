@@ -116,7 +116,8 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         """
         raw = self._simulator.evolved_operator(self._bind(parameters), atol)  # type: ignore[attr-defined]
         terms: dict[Pauli, complex] = {
-            Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
+            Pauli(*_local_slots_to_pauli(slots), skip_validation=True): coeff
+            for slots, coeff in raw.items()
         }
         return PauliOperator(terms, self.num_qubits, skip_validation=True)
 

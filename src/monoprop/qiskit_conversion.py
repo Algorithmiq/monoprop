@@ -78,7 +78,7 @@ def from_qiskit_operator(
     paulis = []
     coeffs = []
     for label, indices, coeff in qiskit_op.to_sparse_list():
-        paulis.append(Pauli(label, indices))
+        paulis.append(Pauli(label, indices, skip_validation=True))
         coeffs.append(coeff)
     return PauliOperator._from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
 
@@ -127,7 +127,11 @@ def _place_operator(
     """Remap a local operator on ``0..len(qubits)-1`` onto global ``qubits``, at full width."""
     return PauliOperator._from_terms(
         [
-            Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits))
+            Pauli(
+                pauli.string,
+                tuple(qubits[q] for q in pauli.qubits),
+                skip_validation=True,
+            )
             for pauli in local_op.terms
         ],
         list(local_op.terms.values()),
@@ -205,7 +209,7 @@ def from_qiskit_circuit(
             pauli_string = gate_name[1:].upper()
             # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)],
+                [Pauli(pauli_string, qubits, skip_validation=True)],
                 [-0.5],
                 num_qubits=num_qubits,
                 skip_validation=True,

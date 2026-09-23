@@ -53,16 +53,25 @@ class Pauli:
 
     __slots__ = ("qubits", "string")
 
-    def __init__(self, string: str, qubits: int | Sequence[int] | None = None) -> None:
+    def __init__(
+        self,
+        string: str,
+        qubits: int | Sequence[int] | None = None,
+        *,
+        skip_validation: bool = False,
+    ) -> None:
         """Initialize the Pauli term.
 
         Args:
             string: Pauli letters (each one of ``I``, ``X``, ``Y``, ``Z``).
             qubits: Qubit index or indices the letters act on; defaults to ``range(len(string))``.
+            skip_validation: If ``True``, skip the letter, length, duplicate and sign checks on
+                the input. Only pass ``True`` for input already known to be valid, e.g. from
+                trusted internal code; the term is still canonicalized either way.
 
         Raises:
             ValueError: On an invalid letter, a string/qubits length mismatch, or a negative or
-                duplicate qubit index.
+                duplicate qubit index, unless ``skip_validation`` is ``True``.
         """
         if qubits is None:
             qubits = range(len(string))
@@ -70,23 +79,26 @@ class Pauli:
             qubits = (qubits,)
         qubit_tuple = tuple(int(q) for q in qubits)
 
-        invalid = set(string) - _VALID_PAULI_CHARS
-        if invalid:
-            raise ValueError(
-                f"Invalid characters in Pauli string: {invalid}. Only I, X, Y, Z are allowed."
-            )
-        if len(string) != len(qubit_tuple):
-            raise ValueError(
-                f"Pauli string {string!r} and qubits {qubit_tuple} must have the same length."
-            )
-        if len(set(qubit_tuple)) != len(qubit_tuple):
-            raise ValueError(f"Duplicate qubit indices in Pauli term: {qubit_tuple}.")
-        # Left unchecked, a negative index lands on the wrong qubit when the term is widened
-        # (_extend_pauli_string indexes a list) and reaches the engine as a huge unsigned slot.
-        if any(q < 0 for q in qubit_tuple):
-            raise ValueError(
-                f"Pauli qubit indices must be non-negative; got {qubit_tuple}."
-            )
+        if not skip_validation:
+            invalid = set(string) - _VALID_PAULI_CHARS
+            if invalid:
+                raise ValueError(
+                    f"Invalid characters in Pauli string: {invalid}. Only I, X, Y, Z are allowed."
+                )
+            if len(string) != len(qubit_tuple):
+                raise ValueError(
+                    f"Pauli string {string!r} and qubits {qubit_tuple} must have the same length."
+                )
+            if len(set(qubit_tuple)) != len(qubit_tuple):
+                raise ValueError(
+                    f"Duplicate qubit indices in Pauli term: {qubit_tuple}."
+                )
+            # Left unchecked, a negative index lands on the wrong qubit when the term is widened
+            # (_extend_pauli_string indexes a list) and reaches the engine as a huge unsigned slot.
+            if any(q < 0 for q in qubit_tuple):
+                raise ValueError(
+                    f"Pauli qubit indices must be non-negative; got {qubit_tuple}."
+                )
 
         pairs = sorted(
             (q, p) for q, p in zip(qubit_tuple, string, strict=True) if p != "I"
@@ -134,10 +146,10 @@ class PauliOperator:
             num_qubits: Total number of qubits the operator acts on. An operator carries its
                 own qubit count so a propagator can be built from it directly; every term must
                 act within ``0..num_qubits-1``.
-            skip_validation: If ``True``, skip the complex-coefficient check and the
-                per-term qubit-range check. Only pass ``True`` for terms already known to be
-                real and in range, e.g. from trusted internal code; ``num_qubits`` itself is
-                still validated either way.
+            skip_validation: If ``True``, skip the complex-coefficient check, the per-term
+                qubit-range check and the [Pauli][] checks on string keys. Only pass ``True``
+                for terms already known to be valid, real and in range, e.g. from trusted
+                internal code; ``num_qubits`` itself is still validated either way.
 
         Raises:
             TypeError: If ``num_qubits`` is not an integer.
@@ -146,7 +158,11 @@ class PauliOperator:
         """
         accumulated: dict[Pauli, float] = defaultdict(float)
         for key, coeff in terms.items():
-            pauli = key if isinstance(key, Pauli) else Pauli(key)
+            pauli = (
+                key
+                if isinstance(key, Pauli)
+                else Pauli(key, skip_validation=skip_validation)
+            )
             if skip_validation:
                 float_coeff = coeff.real
             else:
@@ -176,7 +192,11 @@ class PauliOperator:
         """Build from parallel ``strings``/``coefficients`` lists (internal)."""
         accumulated: dict[Pauli, float] = defaultdict(float)
         for string, coeff in zip(strings, coefficients, strict=True):
-            pauli = string if isinstance(string, Pauli) else Pauli(string)
+            pauli = (
+                string
+                if isinstance(string, Pauli)
+                else Pauli(string, skip_validation=skip_validation)
+            )
             accumulated[pauli] += coeff
         return cls(accumulated, num_qubits, skip_validation=skip_validation)
 

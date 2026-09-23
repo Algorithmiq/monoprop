@@ -51,22 +51,29 @@ class Majorana:
 
     __slots__ = ("indices",)
 
-    def __init__(self, *indices: int) -> None:
+    def __init__(self, *indices: int, skip_validation: bool = False) -> None:
         """Initialize the Majorana monomial from its indices.
 
         Args:
             *indices: The Majorana indices, in sorted ascending order.
+            skip_validation: If ``True``, skip the sign and sortedness checks. Only pass
+                ``True`` for indices already known to be sorted, distinct and non-negative,
+                e.g. from trusted internal code.
 
         Raises:
-            ValueError: If indices are not sorted, or any index is negative or repeated.
+            ValueError: If indices are not sorted, or any index is negative or repeated, unless
+                ``skip_validation`` is ``True``.
         """
-        if any(i < 0 for i in indices):
-            raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
-        is_strictly_increasing = all(x < y for x, y in pairwise(indices))
-        if not is_strictly_increasing:
-            raise ValueError(
-                f"Majorana indices must be distinct and sorted; got {indices}."
-            )
+        if not skip_validation:
+            if any(i < 0 for i in indices):
+                raise ValueError(
+                    f"Majorana indices must be non-negative; got {indices}."
+                )
+            is_strictly_increasing = all(x < y for x, y in pairwise(indices))
+            if not is_strictly_increasing:
+                raise ValueError(
+                    f"Majorana indices must be distinct and sorted; got {indices}."
+                )
 
         self.indices = indices
 
@@ -92,7 +99,8 @@ class Majorana:
             raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
         sorted_values = _remove_repeated_pairs(tuple(sorted(indices)))
         sign = float(_parity(indices))
-        return cls(*sorted_values), sign
+        # Sorted with repeated pairs removed, and signs checked above: canonical by construction.
+        return cls(*sorted_values, skip_validation=True), sign
 
     def __eq__(self, other: object) -> bool:
         """Two Majorana terms are equal when their sorted indices match."""

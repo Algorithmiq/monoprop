@@ -70,6 +70,11 @@ class TestMajorana:
     def test_repr(self):
         assert repr(Majorana(4, 5)) == "Majorana(4, 5)"
 
+    def test_skip_validation_bypasses_input_checks(self):
+        with pytest.raises(ValueError, match="sorted"):
+            Majorana(5, 4, 1)
+        assert Majorana(5, 4, 1, skip_validation=True).indices == (5, 4, 1)
+
 
 def test_majorana_operator_validates_raw_tuple_keys():
     """A raw index-tuple key is canonicalized via from_unsorted and checked for non-negativity."""
