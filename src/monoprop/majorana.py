@@ -146,7 +146,7 @@ class MajoranaOperator:
                 also authored as a [MajoranaOperator][] (wrapped in
                 [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
-            skip_validation: If ``True``, skip the post-accumulation index-range check. Only
+            skip_validation: If ``True``, skip the per-term index-range check. Only
                 pass ``True`` for terms already known to be in range, e.g. from trusted internal
                 code; ``num_modes`` itself is still validated either way.
 
@@ -163,8 +163,7 @@ class MajoranaOperator:
         self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
         if not skip_validation:
             for majorana in majoranas:
-                # majoranas are sorted in here
-                if majorana and majorana[-1] >= 2 * self.num_modes:
+                if majorana and max(majorana) >= 2 * self.num_modes:
                     raise ValueError(
                         f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
                     )

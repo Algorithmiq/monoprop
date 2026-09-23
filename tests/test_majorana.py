@@ -94,8 +94,15 @@ def test_majorana_operator_rejects_index_out_of_range():
     assert op.terms == {(0, 3): 1.0}
 
 
+@pytest.mark.parametrize("key", [(2, 0), (0, 2, 2)])
+def test_majorana_operator_rejects_out_of_range_index_in_raw_key(key):
+    """The range check sees every raw index, not just the last one or those left after canonicalization."""
+    with pytest.raises(ValueError, match="acts on an index >= num_modes=1"):
+        MajoranaOperator({key: 1j}, num_modes=1)
+
+
 def test_majorana_operator_skip_validation_bypasses_index_range_check():
-    """skip_validation=True skips the post-accumulation index-range check."""
+    """skip_validation=True skips the per-term index-range check."""
     with pytest.raises(ValueError, match="acts on an index >= num_modes=2"):
         MajoranaOperator({(0, 4): 1.0}, num_modes=2)
     op = MajoranaOperator({(0, 4): 1.0}, num_modes=2, skip_validation=True)
