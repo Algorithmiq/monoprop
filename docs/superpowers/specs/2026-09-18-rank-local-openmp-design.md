@@ -7,7 +7,7 @@ direction discussed with the owner; it is not a claim that the proposed implemen
 
 Source inspected for this owner-requested current-main refresh: `origin/main` at
 `90d57177c2b0cd93503f88dd931d2f8dd409aa23`, present in rebased `refactor-parallelization` at
-`9bede897d99ac7e2a53442885629d5032f1b7df4`. Only CONTEXT.md and the two planning documents differ between those commits.
+`35f359f095fa3f1d628ca2fdc66c93fef6ea7564`. Only CONTEXT.md and the two planning documents differ between those commits.
 EXISTING means this refreshed source snapshot; PROPOSED means future implementation.
 
 The original planning publication was `38eb13d80a95dd1ac60e762f14f68c9a5925f755` in `refactor-parallelization`.
@@ -20,6 +20,8 @@ These are design approvals, not implementation or publication authority for this
 stores, one shared non-concurrent store and one shared concurrent index. Its evidence can overturn the one-store choice.
 The one-store design and Tasks 1–13 below are conditional, not an instruction to proceed regardless of that result.
 After Task 0, stop for the owner's architecture decision and reconcile both documents before any downstream execution.
+The follow-up interview approved a staged index-phase study and required full-machine MPI-off library acceptance,
+including selected large profiles. These requirements are fixed before results, not deferred to the winning design.
 This amendment authorizes planning only, not mini-app implementation, measurements or remote expenditure.
 
 The owner selected one AWS EC2 `c8a.metal-24xl` for implementation/testing and the initial acceptance campaign.
@@ -29,8 +31,9 @@ Passing the frozen EC2 campaign is sufficient for initial acceptance; production
 until separately qualified. Multi-node qualification is pending a proper HPC cluster/interconnect, not a second EC2
 instance. Observed EC2 topology/software and representative workload sizes still need recording/approval before freezing
 that campaign. The owner approved baseline-only, unscored feasibility calibration before the freeze, once execution is
-separately authorized. Small/medium profiles cover the full geometry sweep; large profiles cover only the full-node
-one- and two-ranks-per-domain configurations. This revision authorizes no runtime work or implementation.
+separately authorized. Small/medium profiles cover the full geometry sweep plus full-machine MPI-off operation;
+selected large profiles cover the two full-node MPI decompositions and full-machine MPI-off operation. This revision
+authorizes no runtime work or implementation.
 
 **Source-drift audit completed:** the owner-requested refresh replaces the superseded
 `290112c8289ab8015eb9a2c7651ac409839c5a88` pin with the main revision above. The audit covered all 43 changed paths,
@@ -64,16 +67,17 @@ First investigate MPI-off index scaling with Task 0 before choosing the ownershi
 proposal is to replace thread-owned operator partitions and their in-process communication protocols with one compact
 operator store per MPI rank, operated on by OpenMP worksharing. Preserve mathematical features, memory footprint and
 performance. Simplification without regressions is the objective; neither one-store variant is a predetermined winner.
-If the owner retains the one-store proposal, its production acceptance assumes each
-rank's CPUs lie within one NUMA domain. Full-node, cross-NUMA L2a is an explicitly allowed diagnostic exception, not a
-required performance gate. The user chooses processes P and threads per process T, and configures the launcher and
-OpenMP runtime to bind/pin processes and threads correctly. The library neither discovers topology nor repairs
-placement.
+Required MPI-enabled acceptance cells keep each rank's CPUs within one NUMA domain; MPI-enabled full-node cross-NUMA
+L2a remains a diagnostic. Separately, a real MPI-disabled build using the full machine is a required library gate,
+even across NUMA domains. A NUMA-local win cannot excuse an MPI-off full-machine regression. The user chooses
+processes P and threads per process T and configures the launcher and OpenMP runtime to bind/pin correctly. The library
+neither discovers topology nor repairs placement.
 
 ## Preliminary architecture experiment (Task 0)
 
-Keep the mini-app an index exercise, not a second propagation engine: one C++ translation unit, standalone CMake file
-and short README under tools/index-miniapp/. Reuse the current OperatorIndex and monomial hashing headers. No library
+Keep the mini-app an index-phase pipeline experiment, not a second propagation engine: one C++ translation unit,
+standalone CMake file and short README under tools/index-miniapp/. Reuse the current OperatorIndex and monomial hashing
+headers. No library
 build/import, MPI, ShmComm, graph, coefficients, inverted index, physics/cutoff logic, trace capture/replay service,
 custom scheduler or benchmark framework. A few local adapter functions, flat batch buffers, self-tests and CSV output
 are sufficient. Stop and reduce scope if implementing the experiment requires a production storage refactor.
@@ -87,7 +91,9 @@ Use one process and one OpenMP team of T workers, including its primary thread. 
 | shared-concurrent | One packed row store and one Boost concurrent index | Parallel probes; caller assigns IDs/initializes rows; parallel index publication |
 
 The per-thread variant models current storage ownership, not the legacy runtime's performance. All variants use the
-same OpenMP harness and global keys/queries. Keep the real packed-row representation, batched position lookup, cached
+same OpenMP harness and global keys/queries. Ownership transfers and packed-row initialization belong in batch timing;
+this is not an isolated container-throughput contest. Shared rows remain caller-initialized, so a concurrent index
+need not fix a row-initialization bottleneck. Keep the real packed-row representation, batched position lookup, cached
 32-bit hashes, exact collision checks and fixed32 row references. For Boost use stable row handles and heterogeneous
 query lookup, not persistent full monomial keys. A row-only use of OperatorIndex may retain its constant empty
 16-slot table, accounted as harness overhead; never populate it or allocate a second size-dependent index. This narrow
@@ -100,31 +106,45 @@ the proposed engine uses separate phases. Include a small flat-buffer owner-buck
 sharded variant and report its cost separately. Do not simulate the old message transport or claim those transfers are
 free. Local IDs may differ between sharding geometries; decoded keys/results and within-geometry ID order must agree.
 
-Use deterministic synthetic position lists: fixed global row/query counts across thread counts, controlled hit/miss
-ratios, short and spilled rows, and natural growth. No full trace corpus or synthetic physics. Begin with a compact
-strong-scaling sweep, not a Cartesian product of every knob. Measure both within one NUMA domain and across the
-allocated machine with one worker per physical core. Full-machine MPI-off results are essential Task 0 evidence, not
-optional merely because the conditional production campaign calls cross-NUMA L2a diagnostic-only. Verify placement
-externally and record first-touch/memory policy; do not add topology or affinity management to the app.
+Stage the study. The first performance pass uses 128 modes, inline length-six keys, and exactly three cases: frozen
+all-hit lookup, growth with 10% misses, and growth with 100% misses. Use two working-set sizes, fixed global row/query
+counts across thread counts, deterministic synthetic position lists and natural growth. No trace corpus or synthetic
+physics. Keep small collision, spilled-row and row-growth correctness checks; defer wider-key, spilled-row performance,
+small-batch and other distribution sensitivities until initial results justify an owner-approved follow-up.
+
+Use a compact physical-core sweep within one NUMA domain and across the allocated machine. Both series matter; do not
+replace the full-machine MPI-off series with an MPI run. Verify placement externally and use identical external memory
+policies across variants. Natural first-touch differences are real consequences of storage ownership/construction and
+count in the comparison, not noise to normalize away. Report locality separately from synchronization effects. An
+explicitly matched interleaved-memory rerun may diagnose a result, but cannot replace it. No app-owned affinity service.
 
 Report complete-batch time, phase times, throughput, speedup against each variant's own T=1 and the per-thread variant
 at the same T, actual workers, per-store imbalance, and fresh-process peak RSS including construction/growth. State
 which costs are omitted, which byte counts are estimates, and when memory placement or noise prevents a conclusion.
-Synthetic index results cannot establish propagation/replay/gradient scaling or full-library parity.
+Call exact key/ID lookup checks index-result agreement, not retained-operator equivalence: the latter also requires
+coefficients. Synthetic index results cannot establish propagation/replay/gradient scaling or full-library parity.
+
+Task 0 has an approved calibration/measurement limit of 2 hours total, including each process's initialization, input
+generation and validation, and phase-profile runs. Setup/build time and costs are accounted separately and need their
+own authorization. Cap each fresh process's peak RSS at min(8 GiB, 25% of observed usable allocation RAM), including
+setup/growth/checking. Record a fixed RAM basis and byte ceiling before trials; retain consumed/remaining time across
+resumption. Stop with incomplete evidence if a limit prevents completion; do not silently extend the budget or claim
+DRAM scaling if the permitted working set cannot establish it. These are external study limits, not a library clamp.
+Approval of limits does not authorize execution.
 
 Task 0 ends with raw results and an owner decision: retain a shared-store path, retain/reconsider sharding, or declare
 the evidence inconclusive. Do not auto-select the fastest lookup kernel or invent a fourth architecture. Any revised
-production design needs an updated spec/plan and approval, including MPI-off acceptance coverage. Keep the existing
-strict library gates as written unless the owner explicitly revises them. Task 0 needs a separately approved execution
-budget; it neither consumes Task 1's two-hour baseline pilot nor supplies its calibration or acceptance samples. The
-later Task 11 trial is integration validation of a retained candidate, not a second container search.
+production design needs an updated spec/plan and approval; it must preserve the now-required MPI-off acceptance
+coverage and strict library gates unless the owner explicitly revises them. Task 0 neither consumes Task 1's separate
+two-hour baseline pilot nor supplies its calibration or acceptance samples. The later Task 11 trial is integration
+validation of a retained candidate, not a second container search.
 
 ## Global constraints
 
-The following constraints describe the conditional one-store path in Tasks 1–13. Task 0 alone permits the explicit
-per-thread-store comparison and requires full-machine MPI-off measurements, including cross-NUMA placement. This is
-not permission to add shards to production or to waive any existing acceptance gate. Reconcile these constraints with
-the owner's post-experiment architecture decision before proceeding.
+The storage constraints describe the conditional one-store path in Tasks 1–13. Task 0 alone permits the explicit
+per-thread-store experiment, not production shards. Full-machine MPI-off measurements are required both in Task 0
+and in full-library acceptance, including cross-NUMA placement. Reconcile the storage design with the owner's
+post-experiment decision without silently weakening that coverage or any numerical/performance gate.
 
 - C++23; retain the GCC 14 / Clang 18 minimum compiler versions and Python 3.11 floor.
 - MPI remains optional and OFF by default; retain working non-MPI wheels.
@@ -144,8 +164,9 @@ the owner's post-experiment architecture decision before proceeding.
 - Do not introduce hidden operator shards, a dense duplicate store, a second persistent full-key store, per-thread
   operators, or full-vector coefficient double buffering. Select any concurrent index only after correctness/memory/time
   evidence; its container name is neither a rejection criterion nor proof of suitability.
-- Required performance cells keep each rank within one NUMA domain. Full-node cross-NUMA L2a is diagnostic-only and
-  cannot replace, excuse or average away any required cell; its numerical correctness is still checked.
+- Required MPI-enabled cells keep each rank within one NUMA domain; MPI-enabled cross-NUMA L2a is diagnostic-only.
+  Actual MPI-disabled full-machine operation is required for small/medium and selected large profiles, even across
+  NUMA domains. Diagnostic results cannot replace, excuse or average away any required cell; correctness still applies.
 - Preserve Majorana and Pauli bases, Heisenberg and Schrödinger pictures, cutoffs, graph build/replay/paring, gradients,
   partial contraction, copying, and initial-operator updates.
 - Final MPI calls execute on the MPI-initializing thread, outside library-created OpenMP regions. Request/validate at
@@ -325,8 +346,9 @@ AWS documents `c8a.metal-24xl` as AMD EPYC 9R45, 96 physical cores/96 vCPUs, one
 [C8a page](https://aws.amazon.com/ec2/instance-types/c8a/) identifies fifth-generation EPYC (Turin) and explicitly
 states that there is no SMT. Do not call a 192-worker run on this instance an SMT-on test; it would oversubscribe its
 physical cores. The exact socket/NUMA layout was not established by the reviewed AWS specifications and must be observed
-on the actual allocation before selecting rank/thread geometries. In particular, do not assume eight NUMA domains or
-approve one rank spanning all 96 cores without checking containment.
+on the actual allocation before selecting rank/thread geometries. Do not assume eight NUMA domains or claim a
+96-core process is NUMA-contained. Verify actual placement for required MPI-off full-machine operation and classify
+MPI-enabled cross-NUMA L2a as diagnostic; both still require distinct physical cores.
 
 These published specifications are not measurements or evidence of parity. C8a does not establish performance on
 Sapphire Rapids, Zen3/Zen4 or HPC hosts with hardware SMT enabled. Those remain separate qualification targets using the
@@ -344,9 +366,10 @@ remains pending; do not substitute a cloud-network experiment or claim HPC fabri
 - The user is responsible for binding/pinning processes and threads to the correct hardware using, for example,
   `OMP_PLACES` + `OMP_PROC_BIND`, `srun --cpu-bind`, and/or `mpiexec` options. Scheduler allocation, rank binding and
   OpenMP places must agree: binding a rank to one core while requesting many threads does not allocate additional cores.
-  Production acceptance keeps each rank's workers within one NUMA domain; avoid overlap with other ranks. Full-node
-  L2a may span domains only as the labelled diagnostic exception described below.
-  Documentation will advise at least one MPI process per NUMA domain used by the allocation; multiple processes may
+  Required MPI-enabled acceptance keeps each rank's workers within one NUMA domain; avoid overlap with other ranks.
+  MPI-enabled cross-NUMA L2a remains diagnostic. Required MPI-off full-machine operation spans the allocated domains
+  in one process and must verify distinct physical-core use without claiming NUMA containment.
+  For MPI deployments, advise at least one MPI process per NUMA domain used by the allocation; multiple processes may
   share a domain using disjoint CPU allocations. The production nodes commonly have four domains per socket, hence
   eight per full dual-socket node, but use the actual configured topology rather than a hard-coded count. Do not infer
   the EC2 topology from that HPC convention. Partial-node runs cover only their allocated domains.
@@ -418,8 +441,9 @@ that allocation with the site before using masks. Mask lists repeat by node-loca
 assumed valid on differently numbered/configured nodes. Binding two ranks to the same entire locality domain does not
 partition its cores. No automatic topology/binding fallback is added to monoprop.
 
-Archive rank/worker masks, physical-core sibling identities and NUMA containment for acceptance. For cross-NUMA L2a,
-record the full-node allocation and actual multi-domain placement explicitly; do not claim single-domain containment.
+Archive rank/worker masks, physical-core sibling identities and, for required MPI-enabled cells, NUMA containment.
+For required MPI-off full-machine runs and diagnostic MPI-enabled cross-NUMA L2a, record the full allocation and actual
+multi-domain placement explicitly; do not claim single-domain containment or substitute multiple MPI ranks.
 These recipes document HPC deployment; they do not convert pending proper-interconnect multi-node qualification into
 completed evidence.
 
@@ -530,13 +554,17 @@ per rank. The candidate uses T OpenMP workers/rank; matched comparisons use T=P.
 | MPI-only control | R=D, T=1 | Required small/medium control, not a fixed-core comparison with L1 |
 | L2b | R=D, T=C/D | Required production shape: one rank/domain |
 | L2b decomposition variant | R=2D, T=floor(C/(2D)) | Required two-ranks/domain comparison where resources permit |
-| L2a | R=1, T=C | Full-node diagnostic, allowed to span NUMA domains |
+| L2a (MPI-enabled) | R=1, T=C | Full-node diagnostic, allowed to span NUMA domains |
+| MPI-off full machine | R=1, T=C, has_mpi=false | Required small/medium and selected large profiles, including cross-NUMA |
 | L3/L4 | Multiple nodes | Pending proper HPC cluster/interconnect qualification |
 
 Use actual balanced subsets when allocation is uneven and record unused cores. Small/medium profiles span the required
-controls; large acceptance profiles use only the two full-node L2b decompositions. Diagnostic L2a may use the same large
-rows, without changing their flags to conceal a capacity/performance failure. If D=1, L2a and L2b coincide: deduplicate
-that shape without removing its required acceptance gate.
+controls plus MPI-off full-machine operation. Selected large profiles use the two full-node MPI decompositions and
+MPI-off full-machine operation, not a new all-sizes Cartesian product. Calibrate shared profiles against the actual
+MPI-disabled baseline too; after freeze, a required baseline/candidate capacity failure blocks acceptance, not grounds
+to shrink a workload or drop a cell. MPI-enabled diagnostic L2a retains the same flags even if it cannot fit.
+If D=1, L2a and L2b coincide: deduplicate within the same build mode without removing a required gate. Never deduplicate
+MPI-off evidence against an MPI-enabled run, even at identical R/T/allocation.
 
 After the Task 0 architecture decision and reconciliation of these conditional production gates, the sequence is:
 
@@ -553,8 +581,10 @@ After the Task 0 architecture decision and reconciliation of these conditional p
 5. Compare five pairs per required cell, adding five more after a failure, using the five metrics defined below. Reuse
    existing reports and record actual term maps/values as well as counts; a term-count match is not numerical proof.
 
-Keep cross-NUMA L2a output in a separately labelled diagnostic inventory/directory, outside the frozen required-cell
-manifest consumed by the acceptance comparator. Its ratios are informative, never a waiver or an acceptance verdict.
+Keep MPI-enabled cross-NUMA L2a output in a separately labelled diagnostic inventory/directory, outside the frozen
+required-cell manifest consumed by the acceptance comparator. Its ratios are informative, never a waiver or an
+acceptance verdict. MPI-off full-machine cells belong IN that required manifest and pass the same five metrics and
+numerical checks; they must not inherit L2a's diagnostic classification merely from their R=1,T=C geometry.
 Diagnose numerical mismatches even there; diagnostic-only describes the performance gate, not permission for wrong
 results. Full-node L2a/L2b contrasts include process/decomposition and local MPI effects. Replacing L2a with a smaller
 NUMA-local run changes resources and cannot claim that same contrast. Historical ladder timings/sizes are examples,
@@ -566,8 +596,10 @@ The initial acceptance gate is a frozen campaign on one c8a.metal-24xl, with at 
 Record the actual socket/NUMA/core layout before selecting required geometries. Include one-rank-per-domain operation
 and an additional two-ranks-per-domain configuration with disjoint physical cores, where resources permit. Both arms use
 identical decomposition/allocation in every comparison; changing ranks only on the candidate cannot rescue a regression.
-Source-reference workloads remain candidates, not approved production sizes. After separate execution authorization,
-use baseline-only, unscored calibration to choose feasible sizes. The approved pilot budget is 2 hours total, excluding
+Also require full-machine single-process MPI-disabled operation in every size tier's selected profiles; an MPI-enabled
+binary at one rank cannot substitute. Source-reference workloads remain candidates, not approved production sizes.
+After separate execution authorization, use baseline-only, unscored calibration to choose feasible sizes. The approved
+pilot budget is 2 hours total, excluding
 builds/setup, with 15 minutes per trial including construction, evaluation and numerical export/validation. If the time
 budget is insufficient, stop and report rather than silently extend it. Target at most 75% of observed usable allocation
 RAM across all ranks, including construction and validation/export temporary storage. Record the RAM basis and byte
@@ -581,10 +613,11 @@ rejected sizes. Do not consult candidate performance when selecting the campaign
 stop calibration rather than justify a smaller test. Resource failures may inform pre-freeze sizing; they are not failed
 acceptance cells. The approved calibration limits do not authorize builds, setup or runtime execution.
 
-Small/medium profiles cover the full geometry sweep with the existing routing requirements. Large profiles cover only
-the full-node one- and two-ranks-per-NUMA-domain configurations, not one-worker runs. This coverage is chosen before
-formal measurements, not used to
-excuse a failed cell later. Select the actual large workloads and sizes from calibration and obtain owner approval.
+Small/medium profiles cover the full geometry sweep with the existing routing requirements, plus MPI-off full-machine
+operation. Selected large profiles cover the full-node one- and two-ranks-per-domain MPI configurations and MPI-off
+full-machine operation, not one-worker runs. This coverage is fixed before results, not chosen by the winning design.
+Select the actual large workloads and common sizes using baseline-only calibration, including the MPI-off baseline,
+and obtain owner approval. Task 1 keeps its 2-hour/15-minute/75% pilot limits; Task 0's 8-GiB cap does not apply here.
 Freeze the complete size-band-specific inventory before formal baseline collection. Calibration results are not
 acceptance samples: collect fresh formal baseline runs after the freeze, even for unchanged configurations. Every
 required cell must pass, but this does not claim parity for omitted workload/geometry combinations or CPU families.
@@ -611,6 +644,8 @@ exactly FIVE metrics: runtime, operation peak sum/max, and whole-construction pe
 exactness must both be true; exit-RSS fallbacks cannot pass. Outer peaks/ratios are diagnostics only: non-exact or
 unknown outer evidence must be labeled honestly but cannot fail an otherwise passing five-metric comparison. All five
 required ratios must be <=1.00. Rank-peak sums are upper bounds, not simultaneous node-footprint measurements.
+For MPI-off single-process cells, sum and max peaks coincide; retain all five fields and gates rather than weakening
+the schema or substituting Task 0's whole-process RSS measurements.
 
 If a ratio exceeds 1.00, repeat the cell for five additional observations on each arm. If the combined median still
 exceeds 1.00, the gate is not passed. Profile and use only the bounded optimization menu in the plan; otherwise stop
@@ -631,9 +666,13 @@ full-plan approval, not an existing pytest node or instrumentation-only edit. Us
 not build a general benchmark framework.
 
 Freeze and archive an owner-approved campaign inventory and digest after unscored calibration and before formal baseline
-collection. It lists every required profile/node/geometry/routing cell for its size band, independently of observations.
-Comparator input must match that inventory, so
-removing a whole cell from both arms cannot pass. Each sample references one fresh timed artifact, one separate fresh
+collection. It lists every required profile/node/build-mode/geometry/routing cell for its size band, independently of
+observations. Include has_mpi in cross-arm identity and verify it from monoprop.has_mpi in each imported binary, with
+binary-linked provenance. Missing/mismatched build modes fail; a single observed rank does not prove MPI is disabled.
+Gate the shared harness's mpi4py import on has_mpi so an installed MPI package cannot initialize MPI in an MPI-off run.
+MPI support/version fields are not applicable there, not invented FUNNELED results. Comparator input must match the
+inventory, so removing a whole cell from both arms cannot pass. Each sample references one fresh timed artifact, one
+separate fresh
 construction artifact, and a matching untimed validation artifact. Join only matching cell/arm/binary/configuration,
 parameters, geometry/routing/allocation and campaign provenance. Timed/construction run IDs and files cannot be reused;
 require five distinct pairs per arm/cell, or ten after prescribed repetition. Validation and placement diagnostics can
@@ -680,8 +719,9 @@ RED/GREEN evidence for new behavior, plus baseline results for preservation test
 manufacture RED by removing earlier plumbing. Use kernel-specific worker observations for threading participation. Do
 not execute past a failed gate or infer approval from this refresh.
 
-The first execution handoff is now the separately authorized Task 0 mini-app, ending at the architecture decision.
-Only after that gate does the baseline-only pilot travel with Task 1 to the authorized execution machine; neither
+The first execution handoff is the separately authorized Task 0 mini-app, ending at the architecture decision. Apply
+its staged first pass and 2-hour/min(8 GiB, 25% RAM) limits; account for setup/build separately. These approvals do not
+authorize launch. Only after that gate does the baseline pilot travel with Task 1 to the authorized host; neither
 experiment must run on the planning host before handoff. Transfer the latest spec, plan and CONTEXT.md, not only the
 historical published planning commit. The Task 1 portion of the remote entry point defines the subsequent baseline-only
 phase ending with a proposed campaign/budget for owner approval, not candidate engine work or a completed Task 1 gate.

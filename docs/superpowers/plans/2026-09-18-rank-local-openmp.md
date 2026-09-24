@@ -24,12 +24,14 @@ execution.
 
 **Status:** Planning only. Refreshed source baseline: current `origin/main` at
 `90d57177c2b0cd93503f88dd931d2f8dd409aa23`, inspected in rebased `refactor-parallelization` at
-`9bede897d99ac7e2a53442885629d5032f1b7df4`. Only CONTEXT.md and these planning documents differ between those commits.
+`35f359f095fa3f1d628ca2fdc66c93fef6ea7564`. Only CONTEXT.md and these planning documents differ between those commits.
 The original planning publication was `38eb13d80a95dd1ac60e762f14f68c9a5925f755`. This owner-requested current-main
 refresh preserves the subsequent approved runtime, compatibility, numerical and failure policies and uncommitted edits.
 The owner has now explicitly reopened the one-store architecture decision through Task 0. Tasks 1–13 retain the
 previously approved one-store proposal as a CONDITIONAL path, not an automatic follow-up. Stop after the mini-app for
-an owner decision; reconcile both documents before proceeding, including the required MPI-off performance coverage.
+an owner decision; reconcile both documents before proceeding. The follow-up interview fixed full-machine MPI-off
+library acceptance for small/medium and selected large profiles before seeing results. Task 0 is a staged index-phase
+pipeline study, not an isolated hash-container contest or a replacement for those library gates.
 On the retained one-store path, OpenMP is mandatory; partition configuration is removed immediately; thread budgets are
 launch-environment-only and captured at construction. The fixed32 capacity reduction remains an explicit consequence,
 not a restriction that predetermines Task 0's architectural conclusion.
@@ -40,7 +42,8 @@ single-instance EC2 campaign is sufficient for initial acceptance; HPC performan
 Multi-node qualification is pending a proper HPC cluster/interconnect, not a cloud-network substitute. Record actual EC2
 topology/software and agree representative workload sizes before freezing the campaign or collecting acceptance data.
 The owner approved baseline-only, unscored sizing trials before the freeze, once separately authorized. Small/medium
-profiles cover the full geometry sweep; large profiles cover only the full-node one- and two-ranks-per-domain cases.
+profiles cover the full geometry sweep plus MPI-off full-machine operation. Selected large profiles cover the two
+full-node MPI decompositions and MPI-off full-machine operation, not a new all-sizes Cartesian product.
 
 No implementation, engine builds/tests or benchmarks are authorized by this revision. All future execution commands
 below are planned, not evidence of passing gates. EXISTING labels describe the inspected baseline; PROPOSED labels
@@ -56,10 +59,10 @@ execution, and retain separate build/calibration authorization, campaign freeze 
 
 ## Global Constraints
 
-The following constraints describe the conditional one-store path in Tasks 1–13. Task 0 alone permits the explicit
-per-thread-store comparison and requires full-machine MPI-off measurements, including cross-NUMA placement. This is
-not permission to add shards to production or to waive any existing acceptance gate. Reconcile these constraints with
-the owner's post-experiment architecture decision before proceeding.
+The storage constraints describe the conditional one-store path in Tasks 1–13. Task 0 alone permits the explicit
+per-thread-store experiment, not production shards. Full-machine MPI-off measurements are required both in Task 0
+and in full-library acceptance, including cross-NUMA placement. Reconcile the storage design with the owner's
+post-experiment decision without silently weakening that coverage or any numerical/performance gate.
 
 - C++23; retain the GCC 14 / Clang 18 minimum compiler versions and Python 3.11 floor.
 - MPI remains optional and OFF by default; retain working non-MPI wheels.
@@ -79,8 +82,9 @@ the owner's post-experiment architecture decision before proceeding.
 - Do not introduce hidden operator shards, a dense duplicate store, a second persistent full-key store, per-thread
   operators, or full-vector coefficient double buffering. Select any concurrent index only after correctness/memory/time
   evidence; its container name is neither a rejection criterion nor proof of suitability.
-- Required performance cells keep each rank within one NUMA domain. Full-node cross-NUMA L2a is diagnostic-only and
-  cannot replace, excuse or average away any required cell; its numerical correctness is still checked.
+- Required MPI-enabled cells keep each rank within one NUMA domain; MPI-enabled cross-NUMA L2a is diagnostic-only.
+  Actual MPI-disabled full-machine operation is required for small/medium and selected large profiles, even across
+  NUMA domains. Diagnostic results cannot replace, excuse or average away any required cell; correctness still applies.
 - Preserve Majorana and Pauli bases, Heisenberg and Schrödinger pictures, cutoffs, graph build/replay/paring, gradients,
   partial contraction, copying, and initial-operator updates.
 - Final MPI calls execute on the MPI-initializing thread, outside library-created OpenMP regions. Request/validate at
@@ -105,9 +109,10 @@ the owner's post-experiment architecture decision before proceeding.
 
 Additional execution rules:
 
-- **No runtime work or implementation is authorized by this planning amendment.** Task 0 needs its own implementation,
-  host and finite measurement-budget authorization; it is not part of Task 1's two-hour baseline-only pilot. After its
-  architecture gate, obtain separate authorization for bounded baseline calibration/build work before campaign approval.
+- **No runtime work or implementation is authorized by this planning amendment.** Task 0's 2-hour and
+  min(8 GiB, 25% RAM) study limits are approved, not permission to launch. Authorize implementation, host/allocation and
+  setup/build separately. Task 1 retains its independent 2-hour/15-minute/75% baseline-only pilot. After Task 0's
+  architecture gate, obtain separate authorization for that baseline calibration/build work before campaign approval.
   Candidate engine changes require
   implementation authorization and an owner-approved frozen campaign. Formal baseline collection also waits for that
   freeze. Simplification without regressions is the goal; reject the architecture if it cannot earn acceptance. The
@@ -115,10 +120,11 @@ Additional execution rules:
 - P (called R in existing code/benchmark geometry) is the user-selected process count; T is the requested threads per
   process, normally set with `monoprop_NUM_THREADS`. Only an unset override selects the OpenMP runtime default. Users
   must allocate enough resources and configure rank/thread binding
-  with OpenMP, `srun --cpu-bind`, and/or `mpiexec` options. Required production cells keep each rank within one NUMA
-  domain; full-node cross-NUMA L2a is a labelled diagnostic exception, never a parity waiver. Do not call a smaller
-  NUMA-local run L2a. Documentation recommends one worker per physical core, including when
-  hardware SMT is enabled. Do not create a topology service/NUMA scheduler, silently change P/T, or enforce that
+  with OpenMP, `srun --cpu-bind`, and/or `mpiexec` options. Required MPI-enabled cells keep each rank within one NUMA
+  domain; MPI-enabled cross-NUMA L2a stays diagnostic. Required MPI-off full-machine cells instead span the allocation
+  in one process. Neither permits a parity waiver or calling a smaller NUMA-local run full-machine. Recommend one
+  worker per physical core, including when hardware SMT is enabled. Do not create a topology service/NUMA scheduler,
+  silently change P/T, or enforce that
   recommendation through library clamping or affinity changes.
 - Do not touch pre-existing `.codegraph/` or `.direnv/`. Use an isolated implementation checkout and a separately built
   baseline. Follow the worktree/GitButler skills for version-control writes; no raw git write commands.
@@ -209,9 +215,10 @@ Never hand off only “tests pass”. No builds/tests/imports/installs/VCS write
 ### Remote entry point: Task 0, then conditional Task 1
 
 The initial handoff is Task 0's standalone mini-app, not a full monoprop build or the baseline pilot. Transfer both
-planning documents and CONTEXT.md; verify the source pin, authorize the small implementation and a finite execution
-budget, and use the selected c8a.metal-24xl unless the owner approves another host. Return results and stop for the
-architecture decision. No Task 1 command below runs until that decision and the corresponding document reconciliation.
+planning documents and CONTEXT.md; verify the source pin, authorize the small implementation and execution within
+Task 0's 2-hour/min(8 GiB, 25% RAM) limits, accounting for setup/build separately. Use c8a.metal-24xl unless
+the owner approves another host. Return results and stop for the architecture decision. No Task 1 command below runs
+until that decision and the corresponding document reconciliation.
 No delegation, provisioning, commits or publication are implied by this handoff.
 
 After that gate, the baseline-only pilot belongs to Task 1. It need not run on the planning machine before handing this
@@ -407,7 +414,11 @@ stock-Python TSan gate, no blanket suppression of engine frames, and no sanitize
 
 **Question:** For one process using T physical cores, how do per-thread stores, a shared single-writer index and a
 shared concurrent index scale under monoprop-like batches? The owner explicitly permits the answer to overturn the
-one-store-per-rank choice. This is an index/ownership experiment, NOT a propagation benchmark or production cutover.
+one-store-per-rank choice. Compare the index-phase pipeline: ownership transfers and packed-row initialization,
+not isolated containers. Owners initialize private rows in parallel; both shared variants initialize rows on the caller.
+The concurrent index only parallelizes publication, so it need not fix a serial row-initialization bottleneck.
+This is NOT a propagation benchmark or production cutover. Exact key/ID checks establish index-result agreement, not
+retained-operator equivalence, which also requires coefficients.
 
 **Size boundary and files:** Create only `tools/index-miniapp/{CMakeLists.txt,main.cpp,README.md}`. One translation unit
 contains the generator, three small adapters, driver and `--self-test`; split no framework out of it. Reuse
@@ -427,8 +438,10 @@ OMP_NUM_THREADS="$T" OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=close \
 ```
 
 This is a proposed smoke-size invocation, not a frozen measurement size or an executed command. Supported variants are
-`per-thread`, `shared-serial`, `shared-concurrent`; modes are `lookup` and `grow`; template widths are 128 and 1024;
-key lengths are 6 (inline) and 16 (spilled), with inline width fixed at 11. Capture omp_get_max_threads once and record
+`per-thread`, `shared-serial`, `shared-concurrent`; modes are `lookup` and `grow`. The first performance pass uses only
+modes=128, key-length=6 and inline width=11. Width 1024 and spilled length-16 fixtures remain small correctness checks;
+their performance studies are deferred, not automatic extra cells. Keep any supporting dispatch minimal, not a generic
+container/type framework. Capture omp_get_max_threads once and record
 the actual team. Optional `--profile` enables phase timers in a separate diagnostic run; normal runs time complete
 batches only, leaving phase fields empty rather than reporting invented zeros. No library environment parser, global
 OpenMP mutation or new public monoprop option. Reject malformed numbers, out-of-range percentages, impossible key/row
@@ -436,10 +449,18 @@ counts and checked-arithmetic overflow before allocation. Keep study sizes below
 report the architectural capacity difference without billion-row stress tests. A worker failure is caught inside its
 region, all workers join, then the process reports failure; do not emit a success row.
 
-- [ ] Obtain separate approval for implementation, host/allocation and finite wall-time/RAM limits before execution.
-  Record source/header and executable hashes, compiler/options, Boost/OpenMP versions, complete commands and placement.
-  Task 0 neither consumes nor extends Task 1's two-hour pilot. Keep its CSV/logs outside the checkout and separate from
-  calibration/acceptance artifacts. No runtime measurements or setup are authorized by adding this task to the plan.
+- [ ] Obtain separate implementation, host/allocation and execution authorization. The approved Task 0 study limit is
+  2 hours total for calibration and measurements, including process initialization, input generation, validation and
+  phase profiles. Account for setup/build time and costs separately; they need separate authorization. Limit each fresh
+  process's peak RSS, with setup/growth/checks, to min(8 GiB, 25% of observed usable allocation RAM). Record the
+  RAM basis and fixed byte ceiling before trials; do not recompute it from falling free memory. Use external monitoring
+  and
+  stop on a limit; add no library resource clamp. Keep all attempts and consumed/remaining time across interruptions.
+  If limits prevent completion, report incomplete evidence; do not extend them or omit losing cells.
+  Record source/header and executable hashes, compiler/options, Boost/OpenMP versions, commands and placement. Task 0
+  neither consumes nor extends Task 1's pilot; its 8-GiB cap does not restrict Task 1's calibrated workloads.
+  Keep CSV/logs outside the checkout, separate from full-library calibration/acceptance. These limits do not authorize
+  runtime measurements, setup or launch.
 - [ ] Add the standalone self-test entry before implementing variants. RED is the absent target/adapter or incorrect
   expected result, not a broken production test. Use ordinary runtime checks that remain active in Release, not assert
   alone. The same driver executes tiny cases through all three variants at requested teams 1/2/3/4 on suitable hardware:
@@ -534,24 +555,27 @@ add_test(NAME index-miniapp-self-test COMMAND index-miniapp --self-test)
   compare runs, but are not the correctness oracle. A timed run with incorrect results is invalid, never fast evidence.
   Run separate ASan/UBSan checks and a qualified OpenMP race check on tiny cases; unsupported tooling stays a reported
   limitation. Do not use sanitizer timings for scaling or expand into the whole library's test matrix.
-- [ ] Start with a compact strong-scaling study: fixed GLOBAL initial rows and total queries across T, never N rows per
-  thread. At modes=128/key-length=6/batch=4096/seed=0, compare lookup at 0% and 50% misses, and growth at 10% and 100%
-  misses, using one small and one memory-resident size chosen before comparative timing. Verify the larger footprint
-  exceeds the relevant last-level cache if claiming DRAM scaling. Choose batches to exercise that footprint, and record
-  initial/final sizes. Sweep 1/2/4/... physical cores plus the exact domain and allocation endpoints, deduplicated.
-  Repeat within one domain and across the allocated machine; a one-domain host needs no duplicate series. Use the same
-  core sets and memory policy for all three variants at a given T. The full-machine MPI-off series is required for this
-  decision, even across NUMA domains; do not replace it with an MPI run or downgrade it to optional L2a diagnostics.
-- [ ] Add only bounded sensitivity checks at T=1, domain-full and machine-full: the same mixed-growth case with
-  length-16 spilled rows, one with modes=1024 (wider PosT), and one batch=64 case. Run all three variants on the same
-  inputs;
-  do not expand every combination into a Cartesian product. If conclusions depend on these cases or are noisy, report
-  that and request targeted follow-up rather than adding containers, weak-scaling campaigns or a trace subsystem.
+- [ ] Run the approved first pass: fixed GLOBAL initial rows and total queries across T, never N rows per thread.
+  At modes=128/key-length=6/batch=4096/seed=0, use exactly three cases: frozen all-hit lookup, growth with 10% misses,
+  and growth with 100% misses. Select one small and one larger memory-resident size before comparative timing, within
+  the common study cap including growth/checking. Verify the accessed footprint exceeds the relevant last-level cache
+  if claiming DRAM scaling; if the cap prevents that, state the limitation rather than enlarging the budget. Choose
+  batches to exercise the footprint and record initial/final sizes. Sweep 1/2/4/... physical cores plus exact domain
+  and allocation endpoints, deduplicated. Repeat within one domain and across the allocated machine; a one-domain host
+  needs no duplicate series. Use the same core sets and external memory policy for all variants at a given T. The
+  full-machine MPI-off series is required, even across NUMA domains; an MPI run cannot replace it.
+- [ ] Report first-pass results before expanding scope. Defer wider-key, spilled-row performance, batch=64 and other
+  hit/miss-distribution sensitivities until those results justify an owner-approved follow-up. Keep tiny correctness
+  fixtures for collisions, both position widths, spilled rows and backing growth; deferring performance cases does not
+  permit incorrect adapters. Qualify conclusions to measured inputs. Do not add a Cartesian product, weak-scaling
+  campaign, containers or a trace subsystem; follow-up cannot silently extend the remaining time/RAM limits.
 - [ ] Verify active worker masks against physical-core/NUMA topology using external tools and OpenMP diagnostics.
-  Record first-touch behavior: per-owner construction naturally places shard pages differently from caller-built
-  shared rows. Do not mistake NUMA placement effects for hash-table locking. A matched externally interleaved-memory
-  rerun may diagnose a reversal, only within the approved budget; never apply it silently to one variant. No internal
-  affinity setter, hwloc dependency or automatic geometry repair. Unknown placement makes scaling evidence incomplete.
+  Record natural first-touch: per-owner and caller-built rows can occupy memory differently under the same external
+  policy. Count that difference as a real ownership/construction consequence; do not normalize away an architectural
+  disadvantage. Separate locality effects from hash-table synchronization in the report. An explicitly matched
+  interleaved-memory rerun may diagnose a result within the budget, but cannot replace the original comparison or apply
+  only to one arm. No internal affinity setter, hwloc dependency or automatic geometry repair. Unknown placement makes
+  scaling evidence incomplete.
 - [ ] Emit a plain CSV row per process with full knobs, requested/actual team sizes, initial/final rows, hits/misses,
   complete-batch and optional phase seconds, queries/second, min/max shard rows, row/spill/index byte estimates where
   available, and validation outcome. Report setup separately. Measure complete batches without fine-grained timers,
@@ -584,8 +608,10 @@ current-library baseline. Do not claim propagation, replay, gradients, MPI or fu
 If an arm is unavailable, placement is unverifiable, correctness fails or the budget ends, report incomplete evidence;
 never declare the remaining arm the winner by default. Stop for the owner's decision to retain a shared-store path,
 retain/reconsider sharding, or gather specified additional evidence. Record that decision and revise the spec and
-Tasks 1–13 accordingly BEFORE proceeding, including MPI-off performance requirements. No fixed mini-app speedup
-threshold replaces that decision or weakens the five full-library gates. Its outputs are never formal Task 1 samples.
+Tasks 1–13 accordingly BEFORE proceeding. Preserve the already-approved required MPI-off full-machine library coverage
+across all three size tiers; do not choose protected configurations after seeing which architecture wins. No fixed
+mini-app speedup threshold replaces the owner decision or weakens the five full-library gates. Task 0 outputs are never
+formal Task 1 samples, and its whole-process RSS cannot certify the library's operation/construction windows.
 
 ### Task 1: Freeze baselines and repair measurement trustworthiness
 
@@ -603,14 +629,17 @@ elsewhere in this plan). Map old P to candidate T workers/rank. On the single ta
 | MPI-only control | R=D, T=1 | Required small/medium, with fewer active cores than full-node L2b |
 | L2b | R=D, T=C_dom | Required one-rank/domain production shape |
 | L2b variant | R=2D, T=floor(C_dom/2) | Required two-ranks/domain shape when C_dom>=2 |
-| L2a | R=1, T=C | Full-node diagnostic; cross-NUMA allocation expressly allowed |
+| L2a (MPI-enabled) | R=1, T=C | Full-node diagnostic; cross-NUMA allocation expressly allowed |
+| MPI-off full machine | R=1, T=C, has_mpi=false | Required small/medium and selected large profiles, including cross-NUMA |
 | L3/L4 | N>1 | Pending proper-interconnect HPC qualification |
 
 D is allocated NUMA domains, C_dom the selected cores/domain, C=D*C_dom. Record actual balanced subsets and unused cores
-rather than infer topology. If D=1 makes L2a identical to required L2b, deduplicate the shape
-without downgrading its required status. Large acceptance profiles use the two L2b decompositions only. A corresponding
-L2a diagnostic must retain the same workload flags even if it cannot fit; report that limitation instead of quietly
-shrinking it. The NUMA-local control cannot substitute for full-node L2a when interpreting L2a/L2b differences.
+rather than infer topology. If D=1 makes MPI-enabled L2a identical to required L2b, deduplicate within that build mode
+without downgrading required status. Never deduplicate MPI-off against MPI-enabled evidence, even at the same R/T.
+Selected large profiles use both L2b decompositions AND actual MPI-off full-machine operation. Calibrate common profile
+sizes using the MPI-off baseline too; a post-freeze capacity failure blocks acceptance, not permission to shrink a
+workload or drop its cell. MPI-enabled diagnostic L2a retains the same flags even if it cannot fit. The NUMA-local
+control cannot substitute for full-machine operation in either build mode.
 
 The practical workflow is baseline-only ladder sizing → owner-approved frozen cells/flags → the same pytest nodes on
 both arms at matched shapes → existing reports plus the five parity metrics and numerical evidence below. Prefer the
@@ -625,8 +654,10 @@ still use fresh processes and --bench-rounds=1 to avoid prior live graphs and fi
 separate construction worker measures setup explicitly. Reuse the existing functions, builders and report files;
 observe/validate/compare only supply the missing evidence joins/checks, not another benchmark framework.
 
-Keep cross-NUMA L2a in a separately labelled diagnostic inventory/output directory, outside the frozen required-cell
-manifest supplied to compare. Never reclassify a failed required cell as diagnostic or use L2a ratios to waive it.
+Keep MPI-enabled cross-NUMA L2a in a separately labelled diagnostic inventory/output directory, outside the frozen
+required-cell manifest supplied to compare. MPI-off full-machine cells belong IN that manifest, with unchanged
+numerical checks and all five parity gates. Never reclassify a failed required cell as diagnostic or use L2a ratios
+to waive it.
 Numerical mismatches in diagnostic runs still require investigation. Historical ladder results are sizing examples,
 not target-machine acceptance evidence. Update its shape/declaration guidance with the candidate cutover.
 
@@ -667,8 +698,9 @@ numactl --hardware
 grep -E 'Cpus_allowed_list|Mems_allowed_list' /proc/self/status
 ```
 
-Use these observations and per-rank placement evidence to select NUMA-contained acceptance geometries. A 1x96 shape is
-canonical L2a only with all 96 allocated physical cores; if it crosses domains, label it diagnostic-only. Missing
+Use these observations to select NUMA-contained MPI acceptance and full-allocation MPI-off geometries. A 1x96 shape is
+full-machine only with all 96 allocated physical cores. If an MPI-enabled run spans domains, it is diagnostic L2a;
+in an actual MPI-disabled build, full-machine operation is required whether or not it crosses domains. Missing
 diagnostic tools require another external observation method, not a library topology dependency. Record hardware SMT
 state, but configure one worker per physical core. Do not add SMT-sibling profiles; HPC/multi-node qualification remains
 separate and pending.
@@ -676,13 +708,14 @@ separate and pending.
 - [ ] Obtain separate authorization for baseline build/calibration work. On c8a.metal-24xl, record sockets/NUMA domains,
   physical cores, hardware SMT state, memory allocation and software stack before choosing geometries. Agree
   representative workloads/sizes and single-instance routing/rank/thread shapes. Initial acceptance is the EC2 campaign,
-  including a two-ranks-per-domain case; all workers use distinct physical cores. Production-HPC performance and
+  including a two-ranks-per-domain case and actual MPI-off full-machine operation in all three selected size tiers;
+  all workers use distinct physical cores. Production-HPC performance and
   multi-node qualification on a proper interconnect remain pending, not prerequisites for initial EC2 acceptance.
   Production's common eight-domain layout is not a hard-coded EC2 topology. Historical profiles below are candidates,
   not an approved campaign.
   Confirm the bounded new paring-construction measurement in that campaign. Record baseline
-  revision, allocation, compiler/flags, MPI version, index width, OpenMP runtime, allocator environment, imported
-  extension path/hash, seed and complete workload configuration before collecting evidence.
+  revision, allocation, compiler/flags, has_mpi, MPI version where applicable, index width, OpenMP runtime, allocator
+  environment, imported extension path/hash, seed and complete workload configuration before collecting evidence.
 - [ ] Before changing engine code, separately build the baseline using R/M. Preserve its environment and binary. Apply
   only the identical measurement-harness changes to both arms; record this overlay's diff/hash. Use the refreshed
   main pin for the baseline and the candidate's starting engine, not the former routing-branch snapshot. Main's basis
@@ -702,7 +735,9 @@ separate and pending.
   Do not run/consult candidate performance to select the inventory. Estimate formal campaign time/cost from the pilot,
   then seek owner approval of sizes, coverage and campaign expenditure before the freeze and formal collection. Do not
   reduce required samples/coverage to fit an unapproved budget. Collect fresh formal baseline samples after the freeze.
-  Never promote calibration runs, even with unchanged parameters. Approval of these limits is not execution permission.
+  Never promote calibration runs, even with unchanged parameters. Include actual MPI-disabled baseline feasibility
+  for small/medium and selected large profiles before freezing shared sizes. No candidate-influenced resizing or
+  removal after freeze. Task 1 limits are independent of Task 0's 8-GiB study; approval is not execution permission.
 - [ ] Add renderer tests independently varying operation and outer exactness: true/false/absent and mixed flags.
   `bmf.py::build_bmf` publishes `peak-memory` from `memhwm`, so gate it on `memhwmexact`; `operation-memory` comes from
   `opmemdelta`, so gate it on `opmemexact`. `report.py::build_report` must label each corresponding metric correctly.
@@ -725,6 +760,15 @@ separate and pending.
   partition setting in the measurement environment, wrong observed R/T, mislabeled arm, and valid explicit/fallback
   candidate declarations. This strict measurement preflight does not restore a removed production getenv reader.
   RED: current multi-rank guard rejects candidate configuration.
+- [ ] Include the build mode in shared preflight and evidence. Read monoprop.has_mpi from the imported extension,
+  record it with the extension hash, and require it to equal identity.has_mpi for both arms. Actual MPI-off cells have
+  has_mpi=false and R=1; a single rank of an MPI-enabled binary cannot substitute. The current conftest imports mpi4py
+  whenever installed: gate that import on monoprop.has_mpi BEFORE touching mpi4py.MPI. For MPI-off, use comm=None and
+  launch directly, with no MPI launcher/initialization or invented MPI thread-support/version values. Apply the same
+  guard in the new driver. Use the identical overlay on both arms, without changing the installed Python API.
+  Tests must cover mpi4py present/absent with has_mpi=false and a trap on attempted MPI import, unchanged MPI-enabled
+  fixture behavior, requested build-mode mismatch, missing build-mode evidence and MPI-off declarations with R>1.
+  Neither an arm label nor absence of mpiexec proves the build mode.
 - [ ] Separate whole-construction measurement is intentional policy, not a repair for nesting. A fresh untimed worker,
   without pytest memory fixtures/session graphs, opens one `HighWaterMark`, constructs inputs/propagator/graph/callable
   as required, runs the operation and retains outputs until close. Record peak sum/max, floor, delta and exactness. Use
@@ -733,20 +777,20 @@ separate and pending.
   JSON schema is
   `{"schema_version":1,"workloads_path":str,"workloads_sha256":str,"cells":[cell]}`. Each cell has unique slug `id`,
   `profile`, `node_id`, `operation`, `measurement_kind` (`pytest` or `driver`), `identity`, `config_digest` and
-  `parameters_digest`. `identity` contains `ranks`, requested `threads`, `index_bits=32`, `cpu_allocation`,
-  `compiler_flags`, resolved `config`, and `routing` (`mode`, derived `bits`, numeric `seed`). Expand the complete
-  size-band-specific inventory below: small/medium profiles use the full geometry sweep, with the existing routing
-  coverage requirements; selected large profiles use only full-node one- and two-ranks-per-domain geometries. Do not
-  generate an all-sizes Cartesian product. Archive the inventory/digest with owner approval. This file, not later
-  observations, is the authoritative expected-cell list. A full cell missing
+  `parameters_digest`. `identity` contains boolean `has_mpi`, `ranks`, requested `threads`, `index_bits=32`,
+  `cpu_allocation`, `compiler_flags`, resolved `config`, and `routing` (`mode`, derived `bits`, numeric `seed`). Expand
+  the size-band-specific inventory below: small/medium profiles use the full geometry sweep and existing routing
+  requirements plus MPI-off full-machine operation. Selected large profiles use the two full-node MPI decompositions
+  and MPI-off full-machine operation. Do not generate an all-sizes Cartesian product. Archive the inventory/digest
+  with owner approval. This file, not later observations, is the authoritative expected-cell list. A full cell missing
   from BOTH arms must fail completeness. Reject duplicate/extra cell IDs and mismatched identities. Do not regenerate or
   shrink the inventory to make observations pass.
 - [ ] `tools/rank-local-openmp-workloads.json` maps `profiles[profile][node_id]` to `operation`, `measurement_kind`,
   `basis`, `picture`, complete `config`, deterministic `parameters`, and `pare_threshold`. `tiny` is the small band and
   calibrated `reference` is medium; each band's `-pared` variant shares its geometry policy. Preserve the existing
   unpared four-family and threshold-1e-10 energy/gradient plus driver-construction coverage. Add `large`/`large-pared`
-  entries for the owner-selected large workloads, restricted to the two full-node decompositions. Profile names do not
-  freeze the historical reference sizes: record every calibrated override explicitly, with no ambiguity within a
+  entries for the owner-selected large workloads at both full-node MPI decompositions and MPI-off full-machine shape.
+  Profile names do not freeze historical reference sizes: record every calibrated override, with no ambiguity within a
   profile/node pair. Define
   config/parameter digests as SHA-256 of UTF-8
   `json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)`. File digests are SHA-256 of exact file
@@ -761,8 +805,8 @@ separate and pending.
   node IDs. Environment/launcher/allocation stay external; the driver installs nothing.
 - [ ] Define the external placement JSON consumed by `--placement`: `schema_version=1`, `artifact_kind="placement"`,
   `arm`, `cell_id`, `binary_hash`, `identity`, `runtime_shape`, `declared`, and `observed`. `declared` contains `ranks`,
-  `threads`, `cpu_allocation` and `settings` (the exact OpenMP/library environment). `observed` contains `ranks`,
-  `threads_per_rank` and `cpu_allocation`, from Task 11's binary-linked representative large-kernel diagnostic. Preserve
+  `threads`, `cpu_allocation` and `settings` (the exact OpenMP/library environment). `observed` contains `has_mpi`,
+  `ranks`, `threads_per_rank` and `cpu_allocation`, from Task 11's binary-linked large-kernel diagnostic. Preserve
   raw launcher/affinity evidence alongside this summary. Baseline shape is `partitions`; candidate shape is `openmp`;
   both must match the campaign R/T/allocation. A limited-team diagnostic cannot establish the requested full-team
   benchmark cell. Small-kernel serial fallback remains allowed and reported. Each artifact records `placement_path` and
@@ -775,8 +819,10 @@ separate and pending.
   records schema version, artifact kind, arm, cell/sample IDs, campaign digest, binary hash, profile/node/operation,
   identity, config/parameter digests and placement reference/hash. Keep pytest raw files in that sample's timed
   subdirectory so labels cannot overwrite another sample. Timed artifacts contain runtime, operation and outer-window
-  fields only; construction artifacts contain construction-window fields only. Do not invent timing for the untimed
-  worker. `validate` writes a separate uniquely named validation artifact under `DIR/ARM/CELL`, without sample ID.
+  fields only; construction artifacts contain construction-window fields only. Every timed, construction and validation
+  artifact records the imported binary's observed has_mpi as well as the expected identity; compare both to the cell and
+  placement evidence. Do not invent timing for the untimed worker. `validate` writes a separate uniquely named
+  validation artifact under `DIR/ARM/CELL`, without sample ID.
 - [ ] Define comparison input as
   `{"schema_version":1,"campaign_sha256":str,"cells":[{"id":str,"baseline":[sample],"candidate":[sample]}]}`. Each
   `sample` contains `sample_id`, `timed_path`, `construction_path`, `validation_path`. `compare` first verifies the
@@ -795,7 +841,8 @@ separate and pending.
   unknown; missing required operation/construction exactness fails acceptance. Include operation/construction
   floor/delta sum/max and persistent bytes as diagnostics, never substitutes for absolute peaks. Keep original raw
   artifact metric names: operation peaks come from opmempeak; outer peaks from memhwm/memhwm_max. Compare exactly FIVE
-  per-cell medians: runtime, operation peak sum/max, construction peak sum/max. All five ratios must be <=1.00. Report
+  per-cell medians: runtime, operation peak sum/max, construction peak sum/max. All five ratios must be <=1.00. At R=1
+  with MPI disabled, sum and max coincide; retain all five fields/gates and the same numerical oracles. Report
   outer ratios separately; an outer-only regression cannot fail this five-metric gate. Reject missing/non-finite
   required measurements rather than use zeros. Derive numerical success by reading validation products below; a
   caller-supplied boolean is insufficient. Exit 0 means all cells pass, 1 means unmet gates (including incomplete
@@ -873,8 +920,9 @@ uv run --no-sync python tools/benchmark-rank-local-openmp.py observe \
   Require equal global key sets, including zero-coefficient stored terms; compare values with the existing
   `test_utils::near` rule from `cpp/tests/TestUtilities.h.in`: `abs(a-b) <= 1e-9 + 1e-7*max(abs(a),abs(b))`,
   componentwise for complex values and gradients. Reject missing/non-finite outputs. Preserve all stricter existing
-  unit-test tolerances; this benchmark comparison does not weaken them. If full validation export cannot fit, stop for
-  an approved smaller equal-arm profile, not an unchecked `numerical_ok=true`.
+  unit-test tolerances; this benchmark comparison does not weaken them. During pre-freeze calibration, export failures
+  may require an approved smaller equal-arm profile. After freeze they block acceptance, not permission to resize or
+  supply an unchecked `numerical_ok=true`.
 - [ ] Link every performance observation to a successful validation artifact for the same binary/configuration/operation
   and compare baseline/candidate validation artifacts. Add tests with wrong energy, a changed gradient entry, one
   missing/extra term, duplicate ownership, replicated identity, non-finite data, stale binary hash and absent
@@ -906,7 +954,7 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
     config = {"gen_length": 4, "obs_terms": 16, "num_generators": 8, "num_modes": 8,
               "cutoff": 6, "seed": 0, "lower_atol": None}
     parameters = [0.0] * 8
-    identity = {"ranks": 1, "threads": 2, "index_bits": 32, "cpu_allocation": "test-cpus",
+    identity = {"has_mpi": False, "ranks": 1, "threads": 2, "index_bits": 32, "cpu_allocation": "test-cpus",
                 "compiler_flags": "test", "config": config,
                 "routing": {"mode": "linear", "bits": 0, "seed": 0}}
     expected, entries = [], {}
@@ -937,9 +985,10 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
                          "runtime_shape": shape,
                          "declared": {"ranks": 1, "threads": 2, "cpu_allocation": "test-cpus",
                                       "settings": settings},
-                         "observed": {"ranks": 1, "threads_per_rank": [2], "cpu_allocation": "test-cpus"}}
+                         "observed": {"has_mpi": False, "ranks": 1, "threads_per_rank": [2],
+                                      "cpu_allocation": "test-cpus"}}
             placement_path = save(f"{name}-{arm}-placement.json", placement)
-            common = {"schema_version": 1, "campaign_sha256": digest(campaign), "arm": arm,
+            common = {"schema_version": 1, "campaign_sha256": digest(campaign), "arm": arm, "has_mpi": False,
                       "cell_id": name, "profile": target["profile"], "node_id": target["node_id"],
                       "operation": "energy", "binary_hash": binary_hash, "identity": identity,
                       "config_digest": target["config_digest"], "parameters_digest": target["parameters_digest"],
@@ -978,9 +1027,11 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
 These two miniature inventory entries use empty-map energy fixtures, not real benchmark measurements. They follow the
 same schema, reference loading and provenance checks as real artifacts; no synthetic-mode bypass is allowed. The
 comparison test does not run physics, acquire placement, or establish actual hardware participation. Add tests for a
-whole required cell deleted from both arms (including a large-profile cell), missing samples, mismatched
-timed/construction pairs, reused measurement files/run IDs, raw calibration output offered as an acceptance artifact,
-missing placement provenance (exit 2), each false/absent exactness flag, unequal
+whole required cell deleted from both arms (including a large MPI-off full-machine cell), missing samples, mismatched
+timed/construction pairs, reused files/run IDs and calibration output offered as acceptance evidence. Also reject
+missing/mismatched has_mpi between inventory, artifacts, placement and binaries; MPI-off declared at R>1; and a D=1
+attempt to deduplicate MPI-off cells against MPI-enabled cells. Check missing placement provenance (exit 2),
+each false/absent exactness flag, unequal
 shape/configuration/index width, and sum-versus-max peaks. For only an outer-peak regression or unknown outer exactness,
 report the diagnostic accurately while allowing the five-metric gate to pass. Operation/construction inexactness still
 fails. The comparator reports that five more observations are needed on first ratio failure; it launches no jobs.
@@ -1015,20 +1066,23 @@ configurations in artifacts, not just a profile label.
   `--hubbard-trotter-steps` profile on both arms before formal baseline collection. A skipped cell is not a pass. Do not
   silently omit graph-heavy cells or bypass the guard on an unverified allocation.
 - [ ] Select required geometries from observed physical cores, not vCPU/SMT-sibling counts. For D allocated domains with
-  C_dom cores each, use `(R,T)=(1,1),(1,C_dom),(D,1),(D,C_dom)`, deduplicated, for small/medium profiles. Required R=1
-  controls use one domain. Add `(2*D,floor(C_dom/2))` with disjoint cores when C_dom>=2; record unused cores. Apply
-  existing routing coverage requirements too. Selected large acceptance profiles use only `(D,C_dom)` and
-  `(2*D,floor(C_dom/2))` from the full-node allocation. Freeze allowed cells per profile;
+  C_dom cores each, keep `(R,T)=(1,1),(1,C_dom),(D,1),(D,C_dom)` for small/medium profiles. These R=1 controls use one
+  domain. Add `(2*D,floor(C_dom/2))` with disjoint cores when C_dom>=2; record unused cores. Preserve MPI routing
+  coverage. Add actual MPI-off `(1,C)` for every small/medium profile and the owner-selected large/large-pared profiles.
+  Selected large acceptance uses `(D,C_dom)` and `(2*D,floor(C_dom/2))` with MPI, plus `(1,C)` without MPI. Freeze
+  has_mpi and geometry per cell; deduplicate only within the same build mode and complete identity. In particular,
+  D=1 never lets an MPI-enabled sample replace required MPI-off evidence. Freeze allowed cells per profile;
   do not reclassify profiles or drop cells after a regression. Uneven domains require approved balanced subsets, not
-  assumed C_dom=96/D. Each old/new pair has identical R/T/core allocation. Old throughput uses R ranks x T partitions;
-  retain an old single-store serial control but never compare only against forced-serial old code.
-- [ ] Run canonical full-node L2a separately as a labelled diagnostic using the same approved model flags at R=1,T=C.
-  It may cross NUMA domains; verify its complete allocation and one worker/core rather than asserting containment.
-  Use separately budgeted existing-suite runs/reports, not required-cell artifacts or an extra driver mode. Do not
-  substitute NUMA-local R=1,T=C_dom and still call it L2a. Record failed/unavailable diagnostics honestly; no diagnostic
-  ratio is a parity gate or waiver. Required L2b geometry remains NUMA-contained; L3/L4 remain pending. Preserve the
-  existing node IDs/term-count fields and add runtime-shape/actual-team metadata. Counts must agree, but the global
-  term-map/value checks below remain necessary.
+  assumed C_dom=96/D. Each pair has identical build mode, R/T/cores and inputs. Baseline uses T partitions per process;
+  never compare only against forced-serial old code. Launch MPI-off directly after verifying not monoprop.has_mpi;
+  its one process spans the allocation without an MPI launcher or fictitious NUMA containment.
+- [ ] Run MPI-enabled canonical full-node L2a separately as a labelled diagnostic with the same model flags at R=1,T=C.
+  It may cross NUMA domains; verify complete allocation and one worker/core rather than claiming containment. Keep its
+  separately budgeted outputs outside required-cell artifacts, not in an extra driver mode. Do not substitute a smaller
+  NUMA-local run or relabel the required MPI-off `(1,C)` cell as diagnostic. Record failed/unavailable diagnostics;
+  no diagnostic ratio is a parity gate or waiver. Required MPI L2b stays NUMA-contained; L3/L4 remain pending. Preserve
+  existing node IDs/term-count fields and add runtime-shape/build-mode/actual-team metadata. Counts alone cannot replace
+  global term-map/value checks.
 - [ ] Use `just capture-baseline` / `just diff-baseline` and `tools/capture-baseline.py --compare` only as supplementary
   small-fixture regression evidence. Its keys include rank, tolerance differs and it lacks operation
   gradients/provenance; it cannot replace the ownership-aware global-map comparator or independent
@@ -1882,21 +1936,31 @@ no container-plugin framework. Do not rename `bench_*` functions or move benchma
   recommended/acceptance configuration. A wider affinity mask is not evidence of extra worker capacity. Record distinct
   physical-core ownership from verified sibling topology across active ranks/workers, not only disjoint logical CPU IDs.
   No required hwloc dependency for the library or measurement helper.
-- [ ] For required cells, the benchmark operator verifies that rank masks and worker places stay within one NUMA domain
-  and the reserved allocation, with no overlap. The separately labelled full-node L2a diagnostic may cross domains;
-  record actual domain/core masks instead of falsely certifying containment. Neither check is library policy. Advise at
-  least one MPI process per allocated NUMA domain, with disjoint cores when several processes share a domain. Use actual
-  topology, not a constant four domains/socket; partial-node runs cover only their allocated domains.
+- [ ] For required MPI-enabled cells, verify that rank masks and worker places stay within one NUMA domain and the
+  reserved allocation, with no overlap. Required MPI-off full-machine cells and diagnostic MPI-enabled cross-NUMA L2a
+  instead record the complete allocation and actual domain/core masks; do not falsely certify containment. In every
+  case verify distinct physical-core use. These checks are measurement requirements, not library policy. For MPI
+  deployments advise at least one process per allocated NUMA domain, with disjoint cores when several share a domain.
+  Use actual topology, not a constant four domains/socket; partial-node runs cover only their allocated domains.
   Do not require one logical CPU per worker mask. Record idle/small-kernel serial fallback versus representative
   large-kernel actual team size separately. Unverifiable placement blocks benchmark evidence, not library construction.
 - [ ] Compare old partitions vs final new threads at identical R,T and routing settings, using Task 1's frozen
-  size-band-specific inventory. Small/medium profiles cover the full sweep; large profiles only the two full-node
-  decompositions. Do not add/remove required cells or reinterpret profile sizes after seeing candidate performance.
+  size-band-specific inventory and equal has_mpi. Small/medium cover the full sweep plus MPI-off full-machine operation;
+  selected large profiles cover both full-node MPI decompositions and MPI-off full-machine operation. Do not add/remove
+  required cells, change build modes or reinterpret profile sizes after seeing candidate performance.
   Freeze the production routing mode in that matrix; additionally require the random reference profile under explicit
   splitmix at R=3 and R=4, plus default linear at R=4 so ownership-dependent imbalance is measured, not only
   unit-tested. Run five alternating **fresh-process** observations per arm/cell; external repetition only,
   `--bench-rounds=1`. Include first-call/cold cache and separately measured repeated warm calls without overlapping
   object construction.
+
+For required MPI-off full-machine observations, select the R (MPI-disabled) build on both arms and verify with
+`uv run --no-sync python -c 'import monoprop, sys; sys.exit(int(monoprop.has_mpi))'` (exit 0 required).
+Use Task 1's direct driver invocation without mpiexec. Set T=C with matching physical-core allocation and OpenMP places;
+the baseline still declares both
+legacy T variables. The shared overlay must avoid importing mpi4py.MPI even if it is installed. Record has_mpi=false
+from the imported binary in timed/construction/validation/placement evidence, not just the requested build setting.
+The usual five fresh observation pairs, numerical oracles and all five ratios apply, including selected large profiles.
 
 Example candidate Open MPI invocation after selecting R (= P), K (ranks/domain), T, LABEL and absolute RESULTS.
 Use K=1 or K=2 for the agreed decomposition profiles. Choose a compatible placement for routing-specific R=3/R=4 cells;
@@ -2178,13 +2242,15 @@ nix develop --command bash -euo pipefail -c '
   and pared graphs. Users choose P/T at launch and bind with OMP_PLACES+OMP_PROC_BIND, srun --cpu-bind and/or mpiexec.
   Normally use monoprop_NUM_THREADS=T; only unset selects the OpenMP runtime default. Present-invalid is an error.
   Capture once during construction, with no reload/setter. Describe no hardware clamp/topology discovery/NUMA
-  validation, possible smaller OpenMP teams, and the within-one-domain allocation assumption. Show matching allocation,
-  rank-binding and thread-place examples, including the one-core-rank-mask pitfall and separately labelled cross-NUMA
-  L2a diagnostic exception. Document one controlling host caller on MPI's initializing thread outside host OpenMP teams,
+  validation and possible smaller OpenMP teams. Distinguish NUMA-contained required MPI cells, MPI-enabled cross-NUMA
+  L2a diagnostics, and required MPI-off full-machine operation spanning domains. Show matching allocation, rank-binding
+  and thread-place examples, including the one-core-rank-mask pitfall and direct MPI-off execution. Document one
+  controlling host caller on MPI's initializing thread outside host OpenMP teams,
   no overlapping use of dependent state or host MPI calls, FUNNELED-or-higher support, caller checks, callable lifetime,
   enforced failed-object invalidation, accepted capacity reduction and numerical contracts. Placement verification for
-  benchmarks does not add a topology dependency. Advise at least one MPI process per allocated NUMA domain and identify
-  actual topology externally; production's common four-domains/socket layout is not universal. Distinguish the selected
+  benchmarks does not add a topology dependency. For MPI deployments advise at least one process per allocated NUMA
+  domain; do not tell MPI-off users to add unavailable MPI ranks to avoid regressions. Identify topology externally;
+  production's common four-domains/socket layout is not universal. Distinguish the selected
   c8a.metal-24xl initial acceptance from pending Intel/AMD HPC qualification. Explicitly recommend against SMT workers,
   even when hardware SMT is enabled, and demonstrate launcher plus OpenMP settings for one worker per physical core.
   Multi-node performance qualification remains pending a proper HPC cluster/interconnect; do not claim it from EC2
@@ -2226,8 +2292,9 @@ nix develop --command bash -euo pipefail -c '
 - [ ] Rank-wide limits and verified one-worker-per-physical-core placement satisfy the single-instance campaign,
   including its two-ranks-per-domain case. HPC-family performance and proper-interconnect multi-node qualification are
   explicitly pending, not falsely passed or silently included in the initial acceptance claim.
-- [ ] Every required runtime and exact peak-memory cell passes Task 11; unsupported or missing measurements are not
-  marked passed.
+- [ ] Every required runtime and exact peak-memory cell passes Task 11, including actual MPI-off full-machine
+  small/medium and selected large profiles. All five metrics and numerical checks apply; a NUMA-local win cannot
+  excuse a full-machine regression. Unsupported or missing measurements are not marked passed.
 - [ ] No legacy runtime, direct hwloc dependency, replacement topology/pinning service or scheduler remains. A selected
   Boost concurrent index passed its bounded tests and affected parity gates, with no duplicate operator/full-key store.
   MPI requests/requires FUNNELED and checks the initializing caller even at higher provided levels.
