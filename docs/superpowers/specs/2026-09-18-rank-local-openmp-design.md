@@ -5,13 +5,22 @@
 This is the design accompanying the implementation plan at `../plans/2026-09-18-rank-local-openmp.md`. It records the
 direction discussed with the owner; it is not a claim that the proposed implementation meets its performance gates.
 
-Source inspected: branch `perf/linear-routing-on-wire`, commit `290112c8289ab8015eb9a2c7651ac409839c5a88`.
+Source inspected for this owner-requested current-main refresh: `origin/main` at
+`90d57177c2b0cd93503f88dd931d2f8dd409aa23`, present in rebased `refactor-parallelization` at
+`9bede897d99ac7e2a53442885629d5032f1b7df4`. Only CONTEXT.md and the two planning documents differ between those commits.
+EXISTING means this refreshed source snapshot; PROPOSED means future implementation.
 
-The planning documents were published in `refactor-parallelization` at `38eb13d80a95dd1ac60e762f14f68c9a5925f755`;
-this policy revision follows the owner's design interview. The owner approved mandatory OpenMP, removal of direct hwloc
-and partition configuration without deprecation aliases, the associated API/ABI and capacity breaks, environment-only
-construction-time thread budgets, and the failure/calling contracts below. These are design approvals, not
-implementation or publication authority for this revision.
+The original planning publication was `38eb13d80a95dd1ac60e762f14f68c9a5925f755` in `refactor-parallelization`.
+This source refresh preserves the subsequent owner-approved policy revisions and uncommitted edits. The owner approved
+mandatory OpenMP, removal of direct hwloc and partition configuration without deprecation aliases, the associated
+API/ABI and capacity breaks, environment-only construction-time thread budgets, and the failure/calling contracts below.
+These are design approvals, not implementation or publication authority for this revision.
+
+**Architecture decision reopened:** the owner now requires Task 0, a small MPI-off index mini-app comparing per-thread
+stores, one shared non-concurrent store and one shared concurrent index. Its evidence can overturn the one-store choice.
+The one-store design and Tasks 1–13 below are conditional, not an instruction to proceed regardless of that result.
+After Task 0, stop for the owner's architecture decision and reconcile both documents before any downstream execution.
+This amendment authorizes planning only, not mini-app implementation, measurements or remote expenditure.
 
 The owner selected one AWS EC2 `c8a.metal-24xl` for implementation/testing and the initial acceptance campaign.
 Production deployments are dual-socket HPC nodes using Intel Sapphire Rapids or AMD Zen3/Zen4/Zen5. Hardware SMT may be
@@ -23,18 +32,99 @@ that campaign. The owner approved baseline-only, unscored feasibility calibratio
 separately authorized. Small/medium profiles cover the full geometry sweep; large profiles cover only the full-node
 one- and two-ranks-per-domain configurations. This revision authorizes no runtime work or implementation.
 
+**Source-drift audit completed:** the owner-requested refresh replaces the superseded
+`290112c8289ab8015eb9a2c7651ac409839c5a88` pin with the main revision above. The audit covered all 43 changed paths,
+including routing/MPI, construction, Python parameter-axis semantics, tests, version/build tooling and documentation.
+The previous d93d63f source-refresh blocker is resolved by this audit and the corresponding plan updates, not by the
+rebase alone. Both measurement arms must start from this refreshed pre-OpenMP engine; do not reuse superseded-engine
+samples as its baseline. Baseline build/calibration authorization, campaign freeze and implementation approval remain
+separate gates. Later semantic source drift still requires review against the plan's refreshed anchor table.
+
+### Findings incorporated from current main
+
+- Routing walks a width-bound, full-rank GF(2) basis; it no longer uses a transposed plane table. Linear geometry
+  requires power-of-two R and log2(R)<=min(2*NumModes,64). A deterministic bounded redraw can change the basis
+  relative to the superseded source, so old physical-rank maps are not a reference for this refactor. Preserve the
+  current map/seed.
+- MPI replay selects a communicator-agreed boolean via mpi::routes_pairwise, not a recomputed bit-count selector.
+  Exact agreement, communicator-scoped caching, sparse-plan validation and multi-peer replay must survive cutover.
+- Construction exchanges accept WindowVec blocks only. LayerBuildEngine receives both plan and window explicitly;
+  each FusedScanResult stream carries its own window. IncomingProbe exposes sender_index, not sender_slot.
+- Both replay Ticket and construction PendingAlltoallv own and drain their requests. Failure guards must protect both
+  lifetimes, including move-assignment and destruction, rather than accidentally wait during exception unwinding.
+- Python incremental Heisenberg graph builds now renumber the parameter axis to match the equivalent composed circuit;
+  preserve this behavior, post-call seed interpretation and the new regression tests for both Python propagators.
+- Packed storage, fixed32 indices, streamed initialization, stable-gradient formulas, benchmark families/windows and
+  centralized build recipes are unchanged from the inspected source. The plan retains their gates and adds the current
+  transport/routing/axis regressions. Source inspection is not runtime, race-freedom or performance evidence.
+
 ## Objective
 
-Replace thread-owned operator partitions and their in-process communication protocols with one compact operator store
-per MPI rank, operated on by OpenMP worksharing. Preserve the mathematical features, memory footprint, and performance
-of the existing library. Simplification without regressions is the objective; the one-store/OpenMP candidate must earn
-acceptance, not be rescued with prohibited replacement machinery if its gates fail. Each MPI rank's assigned CPUs are
-assumed to lie within one NUMA domain. The user chooses the
-number of processes P and requested threads per process T for the resources available, and configures the launcher and
+First investigate MPI-off index scaling with Task 0 before choosing the ownership architecture. The conditional
+proposal is to replace thread-owned operator partitions and their in-process communication protocols with one compact
+operator store per MPI rank, operated on by OpenMP worksharing. Preserve mathematical features, memory footprint and
+performance. Simplification without regressions is the objective; neither one-store variant is a predetermined winner.
+If the owner retains the one-store proposal, its production acceptance assumes each
+rank's CPUs lie within one NUMA domain. Full-node, cross-NUMA L2a is an explicitly allowed diagnostic exception, not a
+required performance gate. The user chooses processes P and threads per process T, and configures the launcher and
 OpenMP runtime to bind/pin processes and threads correctly. The library neither discovers topology nor repairs
 placement.
 
+## Preliminary architecture experiment (Task 0)
+
+Keep the mini-app an index exercise, not a second propagation engine: one C++ translation unit, standalone CMake file
+and short README under tools/index-miniapp/. Reuse the current OperatorIndex and monomial hashing headers. No library
+build/import, MPI, ShmComm, graph, coefficients, inverted index, physics/cutoff logic, trace capture/replay service,
+custom scheduler or benchmark framework. A few local adapter functions, flat batch buffers, self-tests and CSV output
+are sufficient. Stop and reduce scope if implementing the experiment requires a production storage refactor.
+
+Use one process and one OpenMP team of T workers, including its primary thread. Compare exactly three variants:
+
+| Variant | Stores for one global input | Lookup and publication |
+| --- | --- | --- |
+| per-thread | T disjoint current OperatorIndex stores, not T copies of all keys | Each owner probes and inserts serially; owners run in parallel |
+| shared-serial | One current OperatorIndex | Parallel frozen probes; caller assigns IDs, initializes rows and inserts |
+| shared-concurrent | One packed row store and one Boost concurrent index | Parallel probes; caller assigns IDs/initializes rows; parallel index publication |
+
+The per-thread variant models current storage ownership, not the legacy runtime's performance. All variants use the
+same OpenMP harness and global keys/queries. Keep the real packed-row representation, batched position lookup, cached
+32-bit hashes, exact collision checks and fixed32 row references. For Boost use stable row handles and heterogeneous
+query lookup, not persistent full monomial keys. A row-only use of OperatorIndex may retain its constant empty
+16-slot table, accounted as harness overhead; never populate it or allocate a second size-dependent index. This narrow
+mini-app convenience is not an approved production layout. If the supported Boost floor cannot express the adapter,
+report that limitation rather than building another table or silently changing dependencies.
+
+Exercise frozen lookup and repeated probe → ordered missing-ID assignment → row growth/fill → publication → join
+batches. Keep rows immutable during concurrent index operations; do not benchmark simultaneous readers/inserters when
+the proposed engine uses separate phases. Include a small flat-buffer owner-bucketing/result-scatter path for the
+sharded variant and report its cost separately. Do not simulate the old message transport or claim those transfers are
+free. Local IDs may differ between sharding geometries; decoded keys/results and within-geometry ID order must agree.
+
+Use deterministic synthetic position lists: fixed global row/query counts across thread counts, controlled hit/miss
+ratios, short and spilled rows, and natural growth. No full trace corpus or synthetic physics. Begin with a compact
+strong-scaling sweep, not a Cartesian product of every knob. Measure both within one NUMA domain and across the
+allocated machine with one worker per physical core. Full-machine MPI-off results are essential Task 0 evidence, not
+optional merely because the conditional production campaign calls cross-NUMA L2a diagnostic-only. Verify placement
+externally and record first-touch/memory policy; do not add topology or affinity management to the app.
+
+Report complete-batch time, phase times, throughput, speedup against each variant's own T=1 and the per-thread variant
+at the same T, actual workers, per-store imbalance, and fresh-process peak RSS including construction/growth. State
+which costs are omitted, which byte counts are estimates, and when memory placement or noise prevents a conclusion.
+Synthetic index results cannot establish propagation/replay/gradient scaling or full-library parity.
+
+Task 0 ends with raw results and an owner decision: retain a shared-store path, retain/reconsider sharding, or declare
+the evidence inconclusive. Do not auto-select the fastest lookup kernel or invent a fourth architecture. Any revised
+production design needs an updated spec/plan and approval, including MPI-off acceptance coverage. Keep the existing
+strict library gates as written unless the owner explicitly revises them. Task 0 needs a separately approved execution
+budget; it neither consumes Task 1's two-hour baseline pilot nor supplies its calibration or acceptance samples. The
+later Task 11 trial is integration validation of a retained candidate, not a second container search.
+
 ## Global constraints
+
+The following constraints describe the conditional one-store path in Tasks 1–13. Task 0 alone permits the explicit
+per-thread-store comparison and requires full-machine MPI-off measurements, including cross-NUMA placement. This is
+not permission to add shards to production or to waive any existing acceptance gate. Reconcile these constraints with
+the owner's post-experiment architecture decision before proceeding.
 
 - C++23; retain the GCC 14 / Clang 18 minimum compiler versions and Python 3.11 floor.
 - MPI remains optional and OFF by default; retain working non-MPI wheels.
@@ -49,14 +139,18 @@ placement.
   does not clamp T to physical cores or validate NUMA placement.
 - SMT use is not recommended: allocate at most one monoprop worker per physical core, including on SMT-enabled hosts.
   Enforce this through user launch/binding settings and acceptance evidence, not a library hardware policy.
-- Preserve packed operator rows, the keyless hash index, fixed uint32_t TermIndex, sparse state storage, and
-  inverted-index cosine recomputation.
-- Do not introduce boost::concurrent_flat_map, hidden shards, a dense duplicate store, a second persistent key store, a
-  full per-thread operator, or full-vector coefficient double buffering.
+- Preserve packed rows, keyless indexing through row references, fixed uint32_t TermIndex, sparse state storage, and
+  inverted-index cosine recomputation. A bounded Boost concurrent-index experiment may replace the index, not rows.
+- Do not introduce hidden operator shards, a dense duplicate store, a second persistent full-key store, per-thread
+  operators, or full-vector coefficient double buffering. Select any concurrent index only after correctness/memory/time
+  evidence; its container name is neither a rejection criterion nor proof of suitability.
+- Required performance cells keep each rank within one NUMA domain. Full-node cross-NUMA L2a is diagnostic-only and
+  cannot replace, excuse or average away any required cell; its numerical correctness is still checked.
 - Preserve Majorana and Pauli bases, Heisenberg and Schrödinger pictures, cutoffs, graph build/replay/paring, gradients,
   partial contraction, copying, and initial-operator updates.
-- MPI calls execute on the controlling thread outside library-created OpenMP worksharing regions; retain
-  MPI_THREAD_SERIALIZED rather than changing the initialization contract.
+- Final MPI calls execute on the MPI-initializing thread, outside library-created OpenMP regions. Request/validate at
+  least MPI_THREAD_FUNNELED, accepting higher provided levels without relaxing the caller rule. Retain
+  MPI_THREAD_SERIALIZED during legacy Hybrid coexistence; lower the minimum only with its removal in Task 12.
 - No exception escapes an OpenMP structured region; distributed operations fail coherently rather than leaving peers in
   collectives. Enforce invalidation after failed mutation; dependent functionals cannot reuse an invalid owner.
 - No global omp_set_num_threads/omp_set_dynamic/omp_set_nested mutation; each worksharing region receives an explicit
@@ -76,6 +170,8 @@ placement.
 
 ## Architecture
 
+This section describes the one-store candidate, conditional on the Task 0 decision.
+
 Each independent propagator has its rank-local `MPOperator`, primary `MPGraph`, and ordinary MPI communicator. This is
 not a process-wide singleton: copies own independent packed stores; retained functionals may own coefficient/state
 snapshots and pared graphs without cloning the packed store. Keep existing C++ owner-lifetime requirements and Python
@@ -88,6 +184,29 @@ Local kernels read an immutable structure or write preallocated, non-overlapping
 resizes shared containers and publishes structural changes between phases. Initially, insertion into the keyless hash
 table and inverted-index maintenance remain single-writer. This is an explicit performance gate, not an assumption that
 insertion is negligible.
+
+### Bounded concurrent-index experiment
+
+The previous blanket exclusion of boost::concurrent_flat_map is superseded, not a measured rejection. Task 0 first
+compares the three ownership/index designs in isolation. If retained by the owner, compare the packed keyless path with
+that same bounded Boost variant in Task 11 after the full-library baseline campaign is frozen. This later trial tests
+integration and the unchanged acceptance gates; it does not repeat container selection or bypass Task 0. A direct
+`concurrent_flat_map<Monomial,TermIndex>` duplicates full keys; investigate stable row handles and heterogeneous lookup
+into packed rows. Container synchronization does not protect coefficients, overflow storage, inverted indices or
+graph packing. The
+[Boost concurrency guide](https://www.boost.org/doc/libs/1_89_0/libs/unordered/doc/html/unordered/concurrent.html)
+describes visitation and blocking rehash; neither is a drop-in substitute for the current batched query/result contract.
+
+Assign IDs in canonical order, reserve all needed storage on the caller, initialize rows before publication, then join
+before dependent reads. Only the index's insertion/publication is allowed to become concurrent in this experiment;
+other shared structural mutation remains separately governed. Prove exact collision handling, stable external-row
+lifetimes, per-query result alignment and clone ownership. Never store query-buffer views as long-lived keys, allocate
+IDs by worker arrival order, or add a second persistent index beside the reference implementation. Compare separate
+build variants, not two resident stores or a permanent backend selector. Measure lookup/insertion, growth peaks and
+end-to-end construction plus the full affected acceptance cells; an insertion microbenchmark alone cannot select it.
+Task 11 specifies the bounded trial and its tests. Keep or reject it from evidence, without weakening parity gates.
+
+### Kernel and phase sequencing
 
 Only recognized pure `LengthCutoff`/`SupportCutoff` targets may run in worker traversal initially. Ordinary Python and
 C++ constructors accept built-in cutoff configuration and basis-change data, not arbitrary cutoff functions. Opaque
@@ -113,10 +232,21 @@ The freeze boundary in step 1 controls which source rows generate work. Do not c
 
 Replay uses the existing graph and coefficient arrays. Parallelize cosine blocks, endpoint packing, local rotation
 pairs, remote endpoint application, and ordered local reductions. Do not parallelize gate order or parameter order. Keep
-MPI replay transport behavior unchanged. EXISTING: `Evolution.cpp` derives rank-uniform `wire_bits`;
-`detail/mpi/Exchange.h::post_flat_alltoallv` uses a dense `PeerPlan` but posts only nonzero Isend/Irecv legs when
-`wire_bits>0`, otherwise MPI_Ialltoallv. HybridComm derives its sparse plan from all local partitions' rows. Preserve
-plain-MPI sparse on-wire replay at S=1; a new generator-derived replay plan is outside this refactor.
+MPI replay transport behavior unchanged. EXISTING: `Evolution.cpp::begin_flat_exchange` passes
+`mpi::routes_pairwise(comm)` to `detail/mpi/Exchange.h::post_flat_alltoallv(..., bool pairwise=false)`. This
+rank-uniform boolean selects Isend/Irecv or MPI_Ialltoallv; a local layout must never select the transport. Plain MPI
+walks a dense PeerPlan and posts only nonempty remote legs, copying self locally. HybridComm folds every partition's
+send/receive peer summaries: one compatible peer narrows the set, while multiple/disagreeing peers retain every peer
+on the SAME pairwise transport. Empty traffic must not send one rank into a collective. Preserve multi-peer/hand-built
+layer replay and S=1 sparse on-wire replay; a new generator-derived replay plan is outside this refactor.
+
+EXISTING: `Pairwise.h::agree_routes_pairwise` checks raw routing mode, partition count and seed exactly with one
+MPI_MAX allreduce over values and complements. `MPICompat.cpp::routes_pairwise` caches ordinary-MPI results as a
+communicator attribute with no copy callback; new/duplicated communicators agree independently rather than inheriting
+stale raw-handle cache entries. HybridComm agrees during construction; Shm/non-MPI/single-rank ordinary MPI return
+false. `MPIUtils.h::check_routing_agreement` delegates to this path. First use can be collective, and even a cache hit
+queries MPI attributes: all of it belongs on the caller, never workers. At S=1 agreement still covers routing/seed,
+not per-object thread budgets. The error type is `routing::RoutingDisagreement`.
 
 ## Ownership rules
 
@@ -133,18 +263,27 @@ plain-MPI sparse on-wire replay at S=1; a new generator-derived replay plan is o
 | Packed phase words | Not concurrently written merely because record IDs differ | Keep packing serial initially |
 | MPI buffers and requests | Pack before posting; do not mutate in-flight buffers | Controlling thread posts/waits and sizes buffers |
 
-EXISTING: `FusedScanResult<N>` in `Scan.h:208–227` has six `WindowVec` streams plus `leader_self`/`follower_self`.
-`SlotWindow` indices are not flat slots, including when base is nonzero. Preserve the precomputed `gen_shift`, variable
-`QueryWire` records and `QueryForm`; self stages are positions, never serialized wire. Merge only their logical lengths
-and rebase position offsets while preserving source/value alignment. Private query buffers have at most
+EXISTING: `FusedScanResult<N>` in `Scan.h:208–226` has six `WindowVec` streams plus `leader_self`/`follower_self`,
+with no separate result.window member. `build_layer` supplies the same explicit plan/window to scan and engine;
+value streams remain empty when capture is disabled. `SlotWindow::indices()` yields typed WindowIndex values in order;
+they are not flat slots, including when base is nonzero. Resolve a sender as `pr.window.slot(pr.sender_index(g))`.
+Preserve the precomputed `gen_shift`, variable `QueryWire` records and `QueryForm`; self stages are positions, never
+serialized wire. Production `begin_alltoallv`/`wait_into` accept WindowVec blocks, not vector-of-vectors; the latter's
+adapter is test-only in `cpp/tests/SlotBlocks.h`. Known receive counts remain flat-slot indexed and must cover the
+window's stop; short arrays throw rather than silently truncate. Sparse PeerPlan validation rejects invalid geometry
+or shifts before indexing/posting. Do not remove these checks when retiring Hybrid.
+
+Merge self stages by their logical lengths and rebase position offsets while preserving source/value alignment.
+Private query buffers have at most
 O(T*window.count) empty-container metadata, not O(number_of_bitmap_blocks*R). Per-record payload across those buffers
 must be O(total emitted records), never O(T*operator_size). Release/move drained temporary buffers before starting the
 next memory-heavy phase. Before parallel decode, the caller checks variable record boundaries, canonical escaped headers
 (`h.bits == QueryWire<N>::header_bits_for(h.k)`) and position-count prefix sums, sizes arrays once, then workers decode
-into disjoint spans. Frozen probes retain `find_batch_positions` and cached hashes; publication remains serial
-`set_positions` → `bulk_insert_hashed` → reindex. No per-rank or full-store dense monomial reconstruction is allowed.
-Existing bounded paired-only state scoring may still reconstruct its one required monomial; do not turn that exception
-into a batch/store. Task 6 defines the checked preparation sequence.
+into disjoint spans. Frozen probes retain `find_batch_positions` and cached hashes; the initial reference publication is
+serial `set_positions` → `bulk_insert_hashed` → reindex. The bounded Task 11 index trial must preserve these phase and
+row-ID contracts even if hash publication becomes concurrent. No per-rank or full-store dense monomial reconstruction is
+allowed. Existing bounded paired-only scoring may reconstruct its one required monomial; do not turn that exception into
+a batch/store. Task 6 defines the checked preparation sequence.
 
 ## Determinism and numerical contract
 
@@ -165,6 +304,13 @@ into a batch/store. Task 6 defines the checked preparation sequence.
   remain serial: record indices may duplicate. Threaded gates include deep non-singular circuits, vanishing cosine and
   no-record cases from `tests/test_deep_circuit_gradient.py`, plus exact record restoration in
   `cpp/tests/combined_recompute_equivalence.cpp`.
+- Preserve Python's incremental parameter-axis contract (`src/monoprop/monomial_propagator.py::build_graph`):
+  build_graph(a) then build_graph(b) denotes b+a in Heisenberg and a+b in Schrödinger. Heisenberg moves each new block
+  to the low indices, lifting the existing indices; seed_parameters uses the post-call axis. Python rotates that seed
+  for the low-level build and relabels after success. Gate arrival IDs do not change, and multiple monomial layers of
+  one gate keep their shared index. C++ build_graph still consumes parameter_mapping as given; do not move Python's
+  renumbering into it. Preserve tests/test_circuit.py axis, off-build-angle value/gradient, Pauli and seeded-truncation
+  regressions across budgets. This behavior is already in the baseline, not a new OpenMP compatibility break.
 - Near-cutoff tests compare retained operator terms, not just final energies.
 - Preserve streamed `for_each_paired_monomial` initialization order and local reservation/cardinality checks in
   `MonomialPropagator.inl:126–151,197–227`. At S=1 estimates use real ranks, never T. Reject impossible cardinality
@@ -198,7 +344,8 @@ remains pending; do not substitute a cloud-network experiment or claim HPC fabri
 - The user is responsible for binding/pinning processes and threads to the correct hardware using, for example,
   `OMP_PLACES` + `OMP_PROC_BIND`, `srun --cpu-bind`, and/or `mpiexec` options. Scheduler allocation, rank binding and
   OpenMP places must agree: binding a rank to one core while requesting many threads does not allocate additional cores.
-  Each rank's allocation must accommodate its workers within one NUMA domain; avoid unintended overlap with other ranks.
+  Production acceptance keeps each rank's workers within one NUMA domain; avoid overlap with other ranks. Full-node
+  L2a may span domains only as the labelled diagnostic exception described below.
   Documentation will advise at least one MPI process per NUMA domain used by the allocation; multiple processes may
   share a domain using disjoint CPU allocations. The production nodes commonly have four domains per socket, hence
   eight per full dual-socket node, but use the actual configured topology rather than a hard-coded count. Do not infer
@@ -271,7 +418,8 @@ that allocation with the site before using masks. Mask lists repeat by node-loca
 assumed valid on differently numbered/configured nodes. Binding two ranks to the same entire locality domain does not
 partition its cores. No automatic topology/binding fallback is added to monoprop.
 
-Archive observed rank/worker masks, physical-core sibling identities and NUMA containment before accepting measurements.
+Archive rank/worker masks, physical-core sibling identities and NUMA containment for acceptance. For cross-NUMA L2a,
+record the full-node allocation and actual multi-domain placement explicitly; do not claim single-domain containment.
 These recipes document HPC deployment; they do not convert pending proper-interconnect multi-node qualification into
 completed evidence.
 
@@ -300,17 +448,24 @@ At cutover:
    adjustment may reduce actual teams; correctness must not depend on receiving exactly T workers. Verify actual
    placement and participation externally for performance acceptance, not during ordinary construction.
 5. Keep the virtual destructor, virtual `update_initial_operator`, its protected nonvirtual `apply_initial_operator_`
-   helper, and independent virtual `clone_` hook (`MonomialPropagator.h:286–305`). The owner accepts immediate C++
+   helper, and independent virtual `clone_` hook (`MonomialPropagator.h:288–306`). The owner accepts immediate C++
    source/ABI breaks for partition removal in this 0.x library; record release notes and rebuild library/bindings.
    High-level Python mathematical signatures remain unchanged; `_core` loses `partitions` and gains no thread keyword.
 6. Returned term/coefficient ordering may differ from old partition-block order. Validate identical global retained term
    keys and coefficient associations within existing tolerances, not coefficient-only sorted lists. Equal energies and
    gradients alone are insufficient. Keep candidate ordering deterministic across budgets at fixed rank geometry.
 7. Preserve boolean linear/splitmix routing, default linear rejection of unsupported R, generator shifts and peer rules.
+   Keep the full-rank basis draw and width bound log2(R)<=min(2*NumModes,64); the bound uses the C++ template width.
    The owner accepts the splitmix ownership change from `floor((hash % (R*S))/S)` to `hash % R`; do not emulate S with
    hidden shards. Keep `monoprop_ROUTING` and `monoprop_ROUTE_SEED`: these control MPI routing, not thread partitions.
+   Preserve the seed's strict decimal uint64 parser (no sign/whitespace; unset/empty selects its default), separately
+   from the proposed present-empty thread-budget error. COMMROUTE reports ranks_per_coset/rank_cosets, not measured
+   idle ranks; a full-rank basis or spanning generator set alone does not prove an actual retained operator is balanced.
    Test default-linear R=3 rejection separately; successful R=3 suites/benchmarks explicitly use splitmix. Compare
    global maps and per-rank loads/peaks at identical routing/seed/rank geometry.
+8. MPI-using entry must run on MPI's initializing thread, even with SERIALIZED or MULTIPLE support. This deliberately
+   removes the old freedom to move the controlling caller between threads while serializing calls. It does not add a
+   dispatcher, change the GIL policy or permit overlapping dependent-state calls.
 
 Development-only coexistence uses the EXISTING explicit `partitions=1` argument plus `comm.kind==mpi::Comm::Kind::Mpi`
 to select the one-store prototype and capture its environment budget. Legacy Shm/Hybrid children and multi-partition
@@ -325,18 +480,33 @@ all earlier gates; they are not permission to bypass performance or packaging fa
 
 The worksharing helper catches each worker exception, joins the region, and rethrows on the calling thread. Caller-side
 distributed phase guards print the underlying failure and call MPI_Abort when communicator size exceeds one. Catch
-failures inside the lifetime of active exchange tickets, before stack unwinding can wait on peers that never posted; an
-outer catch alone is insufficient. Successful paths explicitly wait as before. For single-rank operation, rethrow the
-original exception. Enforce post-mutation invalidation on the affected propagator: later state-consuming/mutating calls,
-copy/clone and dependent retained functionals reject it before touching state. Existing independent copies remain valid.
+failures inside the lifetime of both `Exchange.h::Ticket` and `MPICompat.h::PendingAlltoallv`, before stack unwinding
+can wait on peers that never posted; an outer catch alone is insufficient. Both handles are move-only and self-draining;
+move assignment drains the destination before adopting incoming requests. Keep request/buffer ownership together and
+never resize live request storage. `Pairwise.h::sparse_pairwise` pre-sizes from actual nonempty remote send/receive
+legs, not a caller-supplied active-leg estimate. Successful paths explicitly wait as before. For single-rank operation,
+rethrow the original exception. Enforce post-mutation invalidation on the affected propagator: later
+state-consuming/mutating calls, copy/clone and dependent retained functionals reject it before touching state.
+Existing independent copies remain valid.
 Pre-mutation validation failures leave a valid object usable; destruction remains safe. There is no rollback or reset
 that revives a failed object. Task 3 defines the invalid flag, entry checks and failure-injection tests.
 
-No rank-local early return may bypass a collective peers will enter. Validate MPI_THREAD_SERIALIZED also when MPI was
-initialized externally. The owner confirms one controlling caller per rank, outside active host OpenMP teams, no
-overlapping calls on the same propagator/dependent functionals and no overlapping host MPI calls. Distributed entry
-from an external OpenMP team remains unsupported; numerical helpers may serialize when nested, but that does not
-expand the public calling contract. Add no process-wide locking service or nested-parallel execution machinery.
+No rank-local early return may bypass a collective peers will enter. In the final runtime, validate provided support
+with MPI_Query_thread, including externally initialized MPI, against MPI_THREAD_FUNNELED. Higher levels are accepted,
+but the owner-approved contract remains one controlling caller per rank: the thread that initialized MPI, outside active
+host OpenMP teams. Serialize dependent-state use and host MPI calls. A different thread making calls one at a time is
+not FUNNELED. Check caller identity before MPI-using entry, including constructors, retained functionals and cleanup.
+Wrong-thread entry is a host-contract violation, not an ordinary distributed operation failure: diagnose and fail fast
+locally without calling MPI_Abort or querying communicators from that thread. Task 3 defines the launcher-supervised
+negative tests. Valid-caller operation failures retain the join/abort/invalidation rules above.
+
+Keep the legacy SERIALIZED requirement while Hybrid workers still call MPI. Task 12 removes that path and lowers the
+requested/required level, updating tests in the same change. Never reinitialize or downgrade host-owned MPI. mpi4py
+normally requests MULTIPLE; record actual provided support rather than claim FUNNELED from the request alone. Numerical
+helpers may serialize when nested, but public distributed entry from an active host OpenMP team remains unsupported.
+Add no process-wide locking service, caller-thread dispatcher or nested-parallel execution machinery. See the
+[MPI initialization/thread contract](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node267.htm), including
+MPI_Is_thread_main; identifying a wrong caller does not permit that caller to communicate or invoke MPI_Abort.
 
 Lazy initialization, allocation, and cache mutation must be outside worker bodies unless storage is strictly
 worker-private. Do not assume `const` means thread-safe: both the inverted index and parity cache have lazy mutation
@@ -344,8 +514,56 @@ today.
 
 ## Performance acceptance and stopping
 
+### Run the existing ladder on both revisions
+
+[benches/LADDER.md](../../../benches/LADDER.md) is the measurement roadmap, not merely a source of historical labels.
+Reuse its benchmark functions, model builders, CLI sizing controls and report outputs. The additional driver is a thin
+execution/validation wrapper for the agreed evidence requirements, not a replacement benchmark suite.
+
+Here use ladder notation: N nodes, C usable physical cores/node, D NUMA domains/node, R ranks/node and P old partitions
+per rank. The candidate uses T OpenMP workers/rank; matched comparisons use T=P. For balanced allocations:
+
+| Rung/control | Single-node candidate shape | Role |
+| --- | --- | --- |
+| L1 | R=1, T=1 | Required single-thread control for small/medium profiles |
+| NUMA-local shared-memory control | R=1, T=C/D | Required small/medium control; do not call it full-node L2a |
+| MPI-only control | R=D, T=1 | Required small/medium control, not a fixed-core comparison with L1 |
+| L2b | R=D, T=C/D | Required production shape: one rank/domain |
+| L2b decomposition variant | R=2D, T=floor(C/(2D)) | Required two-ranks/domain comparison where resources permit |
+| L2a | R=1, T=C | Full-node diagnostic, allowed to span NUMA domains |
+| L3/L4 | Multiple nodes | Pending proper HPC cluster/interconnect qualification |
+
+Use actual balanced subsets when allocation is uneven and record unused cores. Small/medium profiles span the required
+controls; large acceptance profiles use only the two full-node L2b decompositions. Diagnostic L2a may use the same large
+rows, without changing their flags to conceal a capacity/performance failure. If D=1, L2a and L2b coincide: deduplicate
+that shape without removing its required acceptance gate.
+
+After the Task 0 architecture decision and reconciliation of these conditional production gates, the sequence is:
+
+1. On the baseline only, calibrate each ladder row using its preferred control: Hubbard/Pauli `lower_atol`, random
+   Heisenberg `obs_terms`, and random Schrödinger `num_generators` (or the documented mode-count sweep). Keep model
+   structure/seed fixed within each sweep; changing generator count also changes gradient length. Record every override.
+2. Size graph rows against the largest build/energy/gradient peak, not build alone; also account for numerical export
+   and validation. Use existing grouping where it actually shares a graph, not an assumed sharing property.
+3. Obtain approval and freeze exact flags, seeds, routing, placements and required cells. Apply the same flags to each
+   matched rung/arm; pre-freeze workload sizing is not permission to relax oracle tolerances or tune after a regression.
+4. Run the existing pytest nodes on baseline and candidate with unique labels, fresh processes and `--bench-rounds=1`.
+   Preserve the plan's per-operation isolation for formal observations; grouped pilot/diagnostic runs do not certify
+   fresh construction peaks. Add separate construction and numerical-validation passes using the same model builders.
+5. Compare five pairs per required cell, adding five more after a failure, using the five metrics defined below. Reuse
+   existing reports and record actual term maps/values as well as counts; a term-count match is not numerical proof.
+
+Keep cross-NUMA L2a output in a separately labelled diagnostic inventory/directory, outside the frozen required-cell
+manifest consumed by the acceptance comparator. Its ratios are informative, never a waiver or an acceptance verdict.
+Diagnose numerical mismatches even there; diagnostic-only describes the performance gate, not permission for wrong
+results. Full-node L2a/L2b contrasts include process/decomposition and local MPI effects. Replacing L2a with a smaller
+NUMA-local run changes resources and cannot claim that same contrast. Historical ladder timings/sizes are examples,
+not measurements on the target machine.
+
+### Acceptance evidence and stopping rules
+
 The initial acceptance gate is a frozen campaign on one c8a.metal-24xl, with at most one worker per physical core.
-Record the actual socket/NUMA/core layout before selecting geometries. Include one-rank-per-allocated-domain operation
+Record the actual socket/NUMA/core layout before selecting required geometries. Include one-rank-per-domain operation
 and an additional two-ranks-per-domain configuration with disjoint physical cores, where resources permit. Both arms use
 identical decomposition/allocation in every comparison; changing ranks only on the candidate cannot rescue a regression.
 Source-reference workloads remain candidates, not approved production sizes. After separate execution authorization,
@@ -445,24 +663,29 @@ not measurements; CPU binding alone does not enforce a RAM budget.
 
 ## Non-goals
 
-No new executor framework, custom concurrent hash table, GPU backend, load-balancing/repartitioning algorithm,
-asynchronous gate pipeline, GIL-policy change, graph-format redesign, new replay transport, or replacement
+Beyond the bounded existing-library index experiment, no custom concurrent hash table or new executor framework.
+No GPU backend, load-balancing/repartitioning algorithm, asynchronous gate pipeline, GIL-policy change, graph-format
+redesign, new replay transport, or replacement
 topology/affinity-management subsystem. Do not remove useful lifetime/ordering comments merely to lower line count.
 
 ## Execution handoff and supported build routes
 
 All future code/test/build commands in the companion plan are planned, not executed during this document refresh.
-This revision changes planning documentation and the agreed glossary only; no implementation or publication is
-authorized. Before implementation, recheck exact HEAD and the plan's baseline-drift
-table; stop on changed signatures, routing, capacity, numerical or benchmark contracts. Keep 13 gated tasks and record
+This current-main refresh changes the two planning documents only; the existing glossary remains applicable. No
+implementation or publication is authorized. The previously reported source drift is audited and incorporated above.
+Before runtime work, verify the pinned main revision and the plan's refreshed anchor table; stop on subsequent changes
+to signatures, routing, capacity, numerical or benchmark contracts. Keep Task 0 followed by conditional Tasks 1–13;
+record
 RED/GREEN evidence for new behavior, plus baseline results for preservation tests that may already pass. Do not
 manufacture RED by removing earlier plumbing. Use kernel-specific worker observations for threading participation. Do
 not execute past a failed gate or infer approval from this refresh.
 
-The baseline-only pilot travels with Task 1 to the authorized execution machine; it need not run on the planning host
-before handoff. Transfer the latest spec, plan and CONTEXT.md, not only the historical published planning commit.
-The plan's remote entry point defines a bounded first phase ending with a proposed campaign/budget for owner approval,
-not candidate engine work or a completed Task 1 gate. A different execution host does not silently change the agreed
+The first execution handoff is now the separately authorized Task 0 mini-app, ending at the architecture decision.
+Only after that gate does the baseline-only pilot travel with Task 1 to the authorized execution machine; neither
+experiment must run on the planning host before handoff. Transfer the latest spec, plan and CONTEXT.md, not only the
+historical published planning commit. The Task 1 portion of the remote entry point defines the subsequent baseline-only
+phase ending with a proposed campaign/budget for owner approval, not candidate engine work or a completed Task 1 gate.
+A different execution host does not silently change the agreed
 c8a.metal-24xl acceptance target. No machine provisioning, execution or publication is authorized by this clarification.
 
 Required OpenMP must link PUBLIC on both `monoprop-objs` and the shared `monoprop` target, plus installed
