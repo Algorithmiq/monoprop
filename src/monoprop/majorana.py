@@ -163,7 +163,8 @@ class MajoranaOperator:
         self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
         if not skip_validation:
             for majorana in majoranas:
-                if majorana and max(majorana) >= 2 * self.num_modes:
+                # Keys are assumed sorted, so the last index is the largest.
+                if majorana and majorana[-1] >= 2 * self.num_modes:
                     raise ValueError(
                         f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
                     )
