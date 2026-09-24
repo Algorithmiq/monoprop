@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from monoprop.conversion_utils import _extend_pauli_string
 
 try:
@@ -50,7 +52,10 @@ VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union(
 
 
 def from_qiskit_operator(
-    qiskit_op: SparsePauliOp | SparseObservable | QiskitPauli, *, atol: float = 1e-8
+    qiskit_op: SparsePauliOp | SparseObservable | QiskitPauli,
+    *,
+    atol: float = 1e-8,
+    skip_validation: bool = False,
 ) -> PauliOperator:
     """Convert a Qiskit operator to a PauliOperator.
 
@@ -62,9 +67,15 @@ def from_qiskit_operator(
             into a ``SparsePauliOp`` first (see ``SparsePauliOp.from_sparse_observable``), which is
             exponential in its number of single-qubit projector terms.
         atol: Absolute tolerance for the ``simplify()`` run first, which drops smaller terms.
+        skip_validation: If ``True``, skip the check that every coefficient is real; the
+            imaginary parts are then silently dropped. Only pass ``True`` for operators already
+            known to be Hermitian.
 
     Returns:
         A PauliOperator instance representing the given operator.
+
+    Raises:
+        ValueError: If a coefficient is complex, unless ``skip_validation`` is ``True``.
     """
     if isinstance(qiskit_op, SparseObservable):
         qiskit_op = SparsePauliOp.from_sparse_observable(qiskit_op)
@@ -73,14 +84,18 @@ def from_qiskit_operator(
         if isinstance(qiskit_op, QiskitPauli)
         else qiskit_op.simplify(atol=atol)
     )
+    if not skip_validation and np.iscomplexobj(np.real_if_close(qiskit_op.coeffs)):
+        raise ValueError("Operator has complex terms")
     # to_sparse_list() pairs each label with the qubits it acts on directly, unlike the dense
     # to_labels()/coeffs split, which needs every term reversed and widened to num_qubits.
     paulis = []
     coeffs = []
     for label, indices, coeff in qiskit_op.to_sparse_list():
-        paulis.append(Pauli(label, indices))
+        paulis.append(Pauli(label, indices, skip_validation=True))
         coeffs.append(coeff)
-    return PauliOperator._from_terms(paulis, coeffs, num_qubits=qiskit_op.num_qubits)
+    return PauliOperator._from_terms(
+        paulis, coeffs, num_qubits=qiskit_op.num_qubits, skip_validation=True
+    )
 
 
 def _to_qiskit_operator(pauli_dict: dict[str, float], num_qubits: int) -> SparsePauliOp:
@@ -127,11 +142,16 @@ def _place_operator(
     """Remap a local operator on ``0..len(qubits)-1`` onto global ``qubits``, at full width."""
     return PauliOperator._from_terms(
         [
-            Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits))
+            Pauli(
+                pauli.string,
+                tuple(qubits[q] for q in pauli.qubits),
+                skip_validation=True,
+            )
             for pauli in local_op.terms
         ],
         list(local_op.terms.values()),
         num_qubits=num_qubits,
+        skip_validation=True,
     )
 
 
@@ -147,6 +167,7 @@ def _negated(operator: PauliOperator) -> PauliOperator:
         list(operator.terms),
         [-coeff for coeff in operator.terms.values()],
         num_qubits=operator.num_qubits,
+        skip_validation=True,
     )
 
 
@@ -191,6 +212,7 @@ def from_qiskit_circuit(
                 list(placed.terms),
                 [-0.5 * coeff for coeff in placed.terms.values()],
                 num_qubits=num_qubits,
+                skip_validation=True,
             )
         elif gate_name == "PauliEvolution":
             parameter = g_op.time
@@ -202,7 +224,10 @@ def from_qiskit_circuit(
             pauli_string = gate_name[1:].upper()
             # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)], [-0.5], num_qubits=num_qubits
+                [Pauli(pauli_string, qubits, skip_validation=True)],
+                [-0.5],
+                num_qubits=num_qubits,
+                skip_validation=True,
             )
         else:
             raise ValueError(
