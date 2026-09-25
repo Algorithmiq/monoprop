@@ -78,7 +78,7 @@ post-experiment decision without silently weakening that coverage or any numeric
 - SMT use is not recommended: allocate at most one monoprop worker per physical core, including on SMT-enabled hosts.
   Enforce this through user launch/binding settings and acceptance evidence, not a library hardware policy.
 - Preserve packed rows, keyless indexing through row references, fixed uint32_t TermIndex, sparse state storage, and
-  inverted-index cosine recomputation. A bounded Boost concurrent-index experiment may replace the index, not rows.
+  inverted-index cosine recomputation. The Task 11 index A/B may replace the index, not rows.
 - Do not introduce hidden operator shards, a dense duplicate store, a second persistent full-key store, per-thread
   operators, or full-vector coefficient double buffering. Select any concurrent index only after correctness/memory/time
   evidence; its container name is neither a rejection criterion nor proof of suitability.
@@ -141,13 +141,13 @@ Additional execution rules:
 
 | Stage | Tasks | Gate before proceeding |
 | --- | --- | --- |
-| Architecture experiment | 0 | Small MPI-off mini-app, correct three-way comparison, owner architecture decision and reconciled documents |
+| Architecture experiment | 0 | Done: evidence inconclusive for ownership; one store per rank is the working hypothesis (see Task 0 outcome) |
 | Baseline (conditional) | 1 | Task 0 decision, authorized baseline-only calibration, frozen inventory, fresh formal baseline evidence |
 | Small prototype | 2–4 | OpenMP packaging works; one-store serial and threaded replay agree |
-| Shared-store construction | 5–7 | Stable queries/IDs, safety, construction scaling and scratch measured |
+| Shared-store construction | 5–7 | Stable queries/IDs, safety, construction scaling and scratch measured; post-Task-6 architecture go/no-go |
 | Remaining evaluation kernels | 8–9 | Replay, derivative, retained closures and reductions validated |
-| Integration cutover | 10–11 | Both APIs and MPI×threads pass; benchmark parity at final geometry |
-| Removal/release | 12–13 | Old runtime removed, final full matrix and parity rerun |
+| Integration cutover | 10–11 | Go/no-go passed before Task 10; parity at final geometry decides ownership; index A/B in Task 11 |
+| Removal/release | 12–13 | Only after Task 11 confirms the single store; old runtime removed, final full matrix and parity rerun |
 
 One writer per checkout. Kernel and storage tasks are ordered: do not have agents concurrently edit `Engine.h`,
 `Evolution.cpp`, or `MonomialPropagator.inl`. Independent read-only reviews are safe. Do not batch past a failed gate.
@@ -305,6 +305,12 @@ must enter CMake FILE_SETs, not merely compiler include paths.
     not extend that calling contract.
 13. A post-mutation failure invalidates the affected owner and its dependent functionals. Check validity before later
     state access or copying; independent earlier copies remain valid. Pre-mutation validation errors do not poison.
+14. Keep the index swappable for Task 11's A/B trial:
+    - Nothing outside `OperatorIndex` touches the hash table's internals (slot layout, `insert_slot_`, probe chains).
+    - No caller depends on the table's iteration order. Clone and memory accounting go through the public API.
+    - Publication goes through `bulk_insert_hashed`, whose parallel-options argument the packed index may ignore.
+    - The duplicate-key behaviour of `insert_absent_terms` / `bulk_insert` is pinned by a test. Today the packed index
+      indexes both rows; any change is an explicit, reviewed contract change.
 
 ## Build/test command library
 
@@ -501,9 +507,9 @@ enable_testing()
 add_test(NAME index-miniapp-self-test COMMAND index-miniapp --self-test)
 ```
 
-  Keep monoprop_ENABLE_MPI undefined; reject a build where it is defined. Confirm no MPI library is linked. Verify the
-  needed Boost APIs at the supported 1.85 floor, not only on the experiment host. If unavailable, report the concurrent
-  arm as unavailable and stop for a decision; do not silently raise the floor or substitute a different container.
+  Keep monoprop_ENABLE_MPI undefined; reject a build where it is defined. Confirm no MPI library is linked. The owner
+  waived compile/test verification against the Boost 1.85 floor after the first pass; building with the host's Boost
+  (>= 1.85, as `find_package` requires) suffices. Do not silently raise the floor or substitute a different container.
 - [ ] Generate identical deterministic global keys/query batches for every variant and T. Use an injective synthetic
   encoding of logical key ordinals into sorted positions: divide the 2*NumModes positions into key_length disjoint
   bands, encode ordinal digits in that radix, and apply a seed-derived cyclic offset within each band. Reject an
@@ -613,10 +619,29 @@ across all three size tiers; do not choose protected configurations after seeing
 mini-app speedup threshold replaces the owner decision or weakens the five full-library gates. Task 0 outputs are never
 formal Task 1 samples, and its whole-process RSS cannot certify the library's operation/construction windows.
 
+**Task 0 outcome (owner decision):** the evidence is inconclusive for the ownership axis. One packed store per rank
+remains the working hypothesis for Tasks 1–13, and the per-thread (sharded) design stays available through the
+existing partition runtime until Task 12. The ownership decision moves to Task 11's full-library comparison against the
+old partitions, with an earlier diagnostic go/no-go after Task 6. The index axis — current packed index with serial
+publication versus `boost::concurrent_flat_map` with parallel publication — stays open until Task 11's A/B trial.
+Evidence (measured on the target host, not acceptance samples):
+- The mini-app favoured neither design uniformly. Per-thread won growth with 100% new terms; the shared stores won
+  lookups; the concurrent index lost 1.2–2.1× on one core.
+- Instrumented `propagate` on the benchmark models: lookups hit 80–89% on Hubbard and Pauli, and 0% on the random
+  circuits. The scan takes 66–95% of one-core time; lookups take 19–21% on the physics models and 2% on random.
+- In-library Boost trial: +15–18% end-to-end on one core for Hubbard/Pauli at L1 size. Parallel publication gave no gain
+  at per-gate batch sizes; the scan was still serial, so there is no full-machine result.
+
+The results, overlays and budget ledger are archived outside the repository with the Task 0 report. The owner waived
+the Boost 1.85 compile check, as stated above.
+
 ### Task 1: Freeze baselines and repair measurement trustworthiness
 
-**Prerequisite:** Task 0 results have been reviewed by the owner, the architecture selected and both documents
-reconciled. The following remains the conditional one-store campaign, not an automatic continuation of the mini-app.
+**Prerequisite:** Task 0 results have been reviewed by the owner and recorded (see the Task 0 outcome), and both
+documents have been reconciled. The following remains the conditional one-store campaign, not an automatic continuation
+of the mini-app. The formal baseline observations of the partition runtime, including MPI-off full-machine cells,
+are also the sharded reference for the post-Task-6 go/no-go and Task 11's ownership decision. No extra measurement
+framework is needed.
 
 **Benchmark roadmap: use [benches/LADDER.md](../../../benches/LADDER.md), not a new suite.** N is nodes, C is usable
 physical cores/node, R is ranks/node, and the ladder's P is old partitions/rank (not the generic process-count P used
@@ -1616,7 +1641,17 @@ rows, and a prebuilt inverted index.
 
 **Gate:** R/M lookup and fresh-insert tests pass with exact fixed-geometry IDs. Report
 probe/prefix/publication/inverted-index times separately. If serial hash publication dominates, report its Amdahl limit
-and carry the evidence into the bounded Task 11 Boost trial. Do not improvise a custom concurrent table here.
+and carry the evidence into the Task 11 index A/B. Do not improvise a custom concurrent table here. Give
+`bulk_insert_hashed` a trailing `parallel::Options` argument now (the packed index publishes serially and ignores it),
+so the Task 11 variant needs no call-site changes (shared invariant 14).
+
+**Architecture go/no-go (diagnostic, after Task 6 and before Task 10):** with the Task 1 harness, compare the
+one-store prototype against the frozen partition baseline at matched geometries. The prototype has threaded replay
+(Task 4), traversal (Task 5) and frozen lookup (Task 6). Cover L1 (R=1,T=1), the NUMA-local control and MPI-off full
+machine for representative small/medium profiles. These are fresh diagnostic observations, never formal samples, and
+they cannot waive a Task 11 cell. Report per-phase time and peak memory. If the one-store path trails clearly and no
+bounded Task 11 optimization explains a route to parity, stop for the owner's decision before Task 10 removes the
+partition API. This is the last cheap point to revert: only the additive one-store path would be dropped.
 
 ### Task 7: Harden rank-wide capacity and optionally parallelize append-only row fill
 
@@ -1783,6 +1818,9 @@ team size. Global retained term keys must agree, including near cutoffs and stor
 alone is insufficient. A key-set change blocks the gate. Stop and report, never widen tolerances or change truncation.
 
 ### Task 10: Cut over configuration and API semantics to one store
+
+**Prerequisite:** the post-Task-6 go/no-go passed, or the owner explicitly chose to continue. Reverting this task
+later means reverting the API/configuration cutover; the partition runtime itself remains until Task 12.
 
 **Files:**
 - Modify: `cpp/include/monoprop/MonomialPropagator.h`, `cpp/monoprop/detail/monomial_propagator/MonomialPropagator.inl`,
@@ -1953,6 +1991,10 @@ no container-plugin framework. Do not rename `bench_*` functions or move benchma
   unit-tested. Run five alternating **fresh-process** observations per arm/cell; external repetition only,
   `--bench-rounds=1`. Include first-call/cold cache and separately measured repeated warm calls without overlapping
   object construction.
+- [ ] Treat this comparison as the ownership decision recorded in Task 0: one store per rank against the sharded
+  partition runtime, on the frozen campaign with all five gates. If a required cell still fails after the prescribed
+  repetitions, the bounded optimizations and the index A/B below, keep the partition runtime and stop with a
+  regression report. Task 12 does not start, and the owner decides whether to revise the design.
 
 For required MPI-off full-machine observations, select the R (MPI-disabled) build on both arms and verify with
 `uv run --no-sync python -c 'import monoprop, sys; sys.exit(int(monoprop.has_mpi))'` (exit 0 required).
@@ -2032,52 +2074,70 @@ OMP_PLACES=cores is not a worker-count cap, and merely setting OMP_NUM_THREADS d
   Beyond the bounded index trial below, whole-batch streaming/windowing, a custom concurrent table, new transport,
   executor, rank redistribution, full per-thread stores or a persistent duplicate full-key map require a new design.
 
-#### Bounded packed-index versus Boost concurrent-index trial
+#### Index A/B: shared-serial versus shared-concurrent
 
-Task 0 already investigates ownership/index scaling in isolation. This task validates integration of the same Boost
-candidate only if retained by the owner; it is not a second container search. Reuse its feasibility findings and tiny
-fixtures, not its timings as full-library evidence. If the architecture changed, revise this task before executing it.
+Compare two build variants of the same one-store engine, with everything else identical:
+- **shared-serial:** the current packed `OperatorIndex`, parallel frozen probes and serial publication.
+- **shared-concurrent:** the same packed rows indexed by `boost::concurrent_flat_map` over `{row ID, cached hash}`
+  handles, with bulk lookup and parallel publication of preassigned IDs.
 
-This is one development-only index variant, not an unbounded container search or a permanent backend choice.
-It needs authorized implementation/measurement budget; it is not part of the two-hour baseline-only sizing pilot.
-Investigate feasibility from source, then compare focused lookup/insertion/growth measurements and end-to-end build. If
-inadmissible, record the concrete invariant/API/version obstacle, not an unsupported claim that concurrent maps lose.
+The variants differ only inside `OperatorIndex` and at its publication call sites; shared invariant 14 keeps them
+local. This is a development-only A/B between an existing container and the reference, not a container search or a
+permanent backend selector. It needs authorized implementation/measurement budget. Task 0's in-library trial is the
+starting point (archived overlay patch); its timings are not acceptance evidence.
 
-- [ ] Verify the project's supported Boost versions provide the APIs used; do not silently raise the dependency floor
-  from the version available on the experiment host. Use `boost::concurrent_flat_map` as an index into the packed rows,
-  with compact stored row references and heterogeneous position-query lookup. Full monomials, query-buffer spans and a
-  second persistent reference index are forbidden as stored duplicate keys. Hash/equality must represent monomial
-  identity, not compare row IDs as if they were term keys. Retain exact collision checks and cached query hashes.
-- [ ] Preserve the current lookup/batched result contract. Bulk visitation callbacks are not an ordered query/result
-  zip: test hits, misses, repeated queries and output ordinals explicitly. A bounded per-query visitor implementation
-  is an acceptable first trial; do not invent side-effecting hash/equality functions to recover callback order. Never
-  re-enter the same concurrent container from its visitor. Audit index iteration callers: canonical row order comes
-  from row IDs, not concurrent bucket iteration order.
+- [ ] Prerequisite: Tasks 5–6 are complete, so traversal and lookup are parallel. With a serial scan (66–95% of one-core
+  time in Task 0) the variants cannot be told apart at full machine.
+- [ ] Build the variants from one development-branch compile-time option; never keep two resident indices. Run the full
+  C++/Python suites on both during development. Task 0 found bitwise-identical term maps and energies, and one
+  duplicate-key fixture that depends on the contract pinned by invariant 14.
+- [ ] Boost: the owner waived compile/test verification against the 1.85 floor. Bulk visitation exists at 1.85.
+  Container statistics (`BOOST_UNORDERED_ENABLE_STATS`) need Boost 1.86 or newer, are for diagnostic builds only, and
+  serialize on one lock: never time them.
+- [ ] Use `boost::concurrent_flat_map` as an index into the packed rows, with compact stored row references and
+  heterogeneous position-query lookup. Full monomials, query-buffer spans and a second persistent reference index are
+  forbidden as stored duplicate keys. Hash/equality must represent monomial identity, not compare row IDs as if they
+  were term keys. Retain exact collision checks and cached query hashes.
+- [ ] Preserve the batched lookup/result contract.
+  - Use bulk visitation in chunks of at most 16 queries. The visitor receives only matched elements, in no documented
+    order, so it only records `(cached hash, row ID)` pairs.
+  - After the call and outside Boost's locks, match them to queries: a query alone with that hash in its chunk is the
+    match; several such queries (duplicates or a collision) are separated by exact row comparison. Misses produce no
+    call.
+  - Never use side-effecting hash/equality, re-enter the container from a visitor, or assume callback order. A
+    per-query visitor is an acceptable fallback.
+  - Canonical row order comes from row IDs, not bucket iteration.
 - [ ] Complete frozen probing and deterministic missing-ID assignment before any publication. Caller checks fixed32 and
   allocation limits, reserves rows/table, initializes packed rows and overflow entries, then workers publish only the
   index entries for preassigned IDs. No row growth, coefficient resize, overflow mutation, inverted-index mutation,
   graph packing or external-key relocation while map workers run. Indexed row contents remain immutable until the
   index is cleared/rebuilt. Join before dependent reads, structural maintenance or freeing scratch. Preserve remote
   leader → remote follower → deferred self leader → deferred self follower publication phase order and matched timing.
-- [ ] Keep one index per independent packed store; no reference index alongside Boost. Copy/move/clone must bind
-  row-aware hash/equality state to the destination's rows, never a destroyed source. Container synchronization does not
-  make external-row lifetimes safe. Keep exceptions inside Workshare, join, then use existing caller invalidation and
-  distributed-failure boundaries, including during active-ticket lifetime. No worker MPI or scheduling-based ID counter.
+  Callbacks supplied by callers of `bulk_insert` (construction) are not assumed thread-safe: publish those serially.
+- [ ] Keep one index per independent packed store. Copy/move/clone must bind row-aware hash/equality state to the
+  destination's rows, never a destroyed source. Container synchronization does not make external-row lifetimes safe.
+  Keep exceptions inside Workshare, join, then use existing caller invalidation and distributed-failure boundaries,
+  including during active-ticket lifetime. No worker MPI or scheduling-based ID counter.
 - [ ] Extend tests before adoption: deliberate hash collisions with distinct keys; repeated lookup queries; mixed
-  hit/miss batches and exact row IDs at budgets 1/2/3/4; inline and spilled rows; reserve/growth boundaries; duplicate
-  insertion contract; clone lookup after source mutation/destruction; allocation/publication failure invalidation; and
-  end-to-end term/graph equivalence at the same geometry. Preservation tests may already pass; new variant-path and
-  worker-participation tests provide the new-path evidence. Run qualified race checks without blanket suppressions.
-- [ ] Compare separate build variants on identical frozen inputs/allocation. Measure hit/miss lookup, insertion,
-  reserve/rehash time and transient peaks, row/index/overflow bytes, total construction peak and build/propagate time.
-  Then rerun every affected formal cell's five metrics and numerical checks against Task 1's refreshed-main baseline;
-  report the comparison with the packed-index candidate too. No new sizes, higher memory allowance or acceptance waiver.
-  Microbenchmark gains do not override end-to-end regressions. Obtain approval for any spend beyond the approved budget.
-- [ ] If selected, remove the development selector/reference variant before final acceptance and rerun affected gates
-  on that final binary. If rejected, keep the packed index and archive the evidence. If neither can pass, stop: the
-  experiment is permission to investigate an existing container, not to rescue the architecture at any cost.
+  hit/miss batches and exact row IDs at budgets 1/2/3/4; inline and spilled rows; reserve/growth boundaries; the pinned
+  duplicate-key contract; clone lookup after source mutation/destruction; allocation/publication failure invalidation;
+  and end-to-end term/graph equivalence at the same geometry. Add a worker-participation test on the variant path. Run
+  qualified race checks without blanket suppressions.
+- [ ] Measure both variants with the Task 1 harness on identical frozen inputs, allocation and placement: fresh-process
+  pairs, alternating order, all five metrics, plus per-phase lookup/publication/reindex times and peaks. Cover at least:
+  - L1 (R=1,T=1) cells: Task 0 measured shared-concurrent 15–18% slower on Hubbard/Pauli L1;
+  - MPI-off full machine;
+  - the all-new-terms random profiles, where serial publication is the concern;
+  - the physics models (80–89% hits).
+
+  No new sizes, higher memory allowance or acceptance waiver. Microbenchmark gains do not override end-to-end
+  regressions. Obtain approval for any spend beyond the approved budget.
+- [ ] Decide from the required cells, not from index-phase speedups. Record the choice, remove the losing variant and
+  the build option before final acceptance, and rerun the affected gates on the final binary. If neither variant can
+  pass, stop: the A/B is permission to compare an existing container, not to rescue the architecture at any cost.
 
 **Gate:** All required performance/memory cells pass with attached raw observations and numerical/placement evidence.
+The ownership decision and the index A/B outcome are recorded, and only the chosen variant remains.
 Missing required EC2 evidence, capacity failure, persistent serial-publication bottleneck or repeated ratio>1.00 blocks
 removal/acceptance. Report it honestly; the design is not a promise of achievable parity.
 
@@ -2106,7 +2166,9 @@ removal/acceptance. Report it honestly; the design is not a promise of achievabl
 Kind/Shm/Hybrid and associated pointers/constructors/dispatch. Keep non-MPI behavior, ordinary MPI, PeerPlan routing and
 existing typed exchanges. Do not collapse it to a raw alias if that changes overload behavior unnecessarily.
 
-- [ ] Start only after Task 11 parity under separately authorized implementation. The owner approved the immediate
+- [ ] Start only after Task 11 parity, and only if Task 11's ownership decision confirmed the single store, under
+  separately authorized implementation. This is the irreversible step: afterwards, returning to sharding means
+  restoring the partition runtime, transport, topology code and hwloc dependency. The owner approved the immediate
   partition-related C++ extension/ABI break; confirm no runtime path constructs old groups before deleting definitions.
 - [ ] Remove any remaining `partition_group_`, friendship and unused fan-out implementation. Confirm Task 10 already
   removed resolve_partition_count_, public partition/factory arguments and facade-only test users; remove remaining

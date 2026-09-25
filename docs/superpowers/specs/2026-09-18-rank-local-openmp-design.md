@@ -16,12 +16,16 @@ mandatory OpenMP, removal of direct hwloc and partition configuration without de
 API/ABI and capacity breaks, environment-only construction-time thread budgets, and the failure/calling contracts below.
 These are design approvals, not implementation or publication authority for this revision.
 
-**Architecture decision reopened:** the owner now requires Task 0, a small MPI-off index mini-app comparing per-thread
-stores, one shared non-concurrent store and one shared concurrent index. Its evidence can overturn the one-store choice.
-The one-store design and Tasks 1–13 below are conditional, not an instruction to proceed regardless of that result.
-After Task 0, stop for the owner's architecture decision and reconcile both documents before any downstream execution.
-The follow-up interview approved a staged index-phase study and required full-machine MPI-off library acceptance,
-including selected large profiles. These requirements are fixed before results, not deferred to the winning design.
+**Architecture decision (Task 0 outcome):** Task 0 ran on the target c8a.metal-24xl, with owner-approved follow-ups.
+It compared per-thread stores, one shared non-concurrent store and one shared concurrent index, then instrumented and
+trialled the real library. The owner judged the evidence inconclusive for the ownership axis. The one-store design is
+the working hypothesis for Tasks 1–13, not a settled choice.
+- Ownership is decided by Task 11's full-library comparison against the existing partition runtime, which is the
+  sharded design. A diagnostic go/no-go after Task 6 is the last cheap point to revert before Task 10's API cutover.
+- The index axis (current packed index with serial publication versus a Boost concurrent index) stays open until the
+  Task 11 A/B.
+- The follow-up interview approved a staged index-phase study and required full-machine MPI-off library acceptance,
+  including selected large profiles. These requirements are fixed before results, not deferred to the winning design.
 This amendment authorizes planning only, not mini-app implementation, measurements or remote expenditure.
 
 The owner selected one AWS EC2 `c8a.metal-24xl` for implementation/testing and the initial acceptance campaign.
@@ -63,9 +67,10 @@ separate gates. Later semantic source drift still requires review against the pl
 
 ## Objective
 
-First investigate MPI-off index scaling with Task 0 before choosing the ownership architecture. The conditional
-proposal is to replace thread-owned operator partitions and their in-process communication protocols with one compact
-operator store per MPI rank, operated on by OpenMP worksharing. Preserve mathematical features, memory footprint and
+Task 0 investigated MPI-off index scaling; its evidence did not settle the ownership architecture, so full-library
+evidence decides it (Task 11) before the legacy runtime is removed. The working proposal is to replace thread-owned
+operator partitions and their in-process communication protocols with one compact operator store per MPI rank, operated
+on by OpenMP worksharing. Preserve mathematical features, memory footprint and
 performance. Simplification without regressions is the objective; neither one-store variant is a predetermined winner.
 Required MPI-enabled acceptance cells keep each rank's CPUs within one NUMA domain; MPI-enabled full-node cross-NUMA
 L2a remains a diagnostic. Separately, a real MPI-disabled build using the full machine is a required library gate,
@@ -136,15 +141,33 @@ Task 0 ends with raw results and an owner decision: retain a shared-store path, 
 the evidence inconclusive. Do not auto-select the fastest lookup kernel or invent a fourth architecture. Any revised
 production design needs an updated spec/plan and approval; it must preserve the now-required MPI-off acceptance
 coverage and strict library gates unless the owner explicitly revises them. Task 0 neither consumes Task 1's separate
-two-hour baseline pilot nor supplies its calibration or acceptance samples. The later Task 11 trial is integration
-validation of a retained candidate, not a second container search.
+two-hour baseline pilot nor supplies its calibration or acceptance samples. The later Task 11 index A/B is integration
+validation of retained candidates, not a second container search.
+
+**Recorded outcome.** The mini-app favoured no design uniformly:
+- per-thread won growth where 100% of lookups create new terms;
+- the shared stores won lookups;
+- the concurrent index was 1.2–2.1× slower on one core.
+
+Counters in the library's layer builder on the benchmark models showed:
+- lookups hit an existing term 80–89% of the time on Hubbard and Pauli, and almost never on the random circuits;
+- the scan takes 66–95% of one-core time.
+
+An in-library trial replacing the index with `boost::concurrent_flat_map` was 15–18% slower end-to-end on one core for
+Hubbard/Pauli at L1 size. Parallel publication gave no gain at per-gate batch sizes. The scan stayed serial, so the
+trial gives no full-machine result.
+
+The owner judged this inconclusive, kept one store per rank as the working hypothesis, and waived compile/test
+verification against the Boost 1.85 floor. The evidence and patches are archived outside the repository with the Task 0
+report; none of it is acceptance evidence.
 
 ## Global constraints
 
 The storage constraints describe the conditional one-store path in Tasks 1–13. Task 0 alone permits the explicit
 per-thread-store experiment, not production shards. Full-machine MPI-off measurements are required both in Task 0
-and in full-library acceptance, including cross-NUMA placement. Reconcile the storage design with the owner's
-post-experiment decision without silently weakening that coverage or any numerical/performance gate.
+and in full-library acceptance, including cross-NUMA placement. The storage design follows the recorded Task 0 outcome:
+the single store is the working hypothesis, and sharding stays available through the partition runtime until Task 11
+confirms the single store. Neither step may silently weaken that coverage or any numerical/performance gate.
 
 - C++23; retain the GCC 14 / Clang 18 minimum compiler versions and Python 3.11 floor.
 - MPI remains optional and OFF by default; retain working non-MPI wheels.
@@ -160,7 +183,7 @@ post-experiment decision without silently weakening that coverage or any numeric
 - SMT use is not recommended: allocate at most one monoprop worker per physical core, including on SMT-enabled hosts.
   Enforce this through user launch/binding settings and acceptance evidence, not a library hardware policy.
 - Preserve packed rows, keyless indexing through row references, fixed uint32_t TermIndex, sparse state storage, and
-  inverted-index cosine recomputation. A bounded Boost concurrent-index experiment may replace the index, not rows.
+  inverted-index cosine recomputation. The Task 11 index A/B may replace the index, not rows.
 - Do not introduce hidden operator shards, a dense duplicate store, a second persistent full-key store, per-thread
   operators, or full-vector coefficient double buffering. Select any concurrent index only after correctness/memory/time
   evidence; its container name is neither a rejection criterion nor proof of suitability.
@@ -191,7 +214,12 @@ post-experiment decision without silently weakening that coverage or any numeric
 
 ## Architecture
 
-This section describes the one-store candidate, conditional on the Task 0 decision.
+This section describes the one-store candidate, the working hypothesis after Task 0. Task 11 confirms or rejects it
+against the partition runtime before Task 12 deletes that runtime. The diagnostic go/no-go after Task 6 precedes the
+Task 10 API cutover. Keep `OperatorIndex` swappable for the Task 11 index A/B:
+- no code outside it depends on table internals or iteration order;
+- publication goes through `bulk_insert_hashed` with a parallel-options argument the packed index may ignore;
+- the duplicate-key behaviour of bulk insertion is pinned by a test.
 
 Each independent propagator has its rank-local `MPOperator`, primary `MPGraph`, and ordinary MPI communicator. This is
 not a process-wide singleton: copies own independent packed stores; retained functionals may own coefficient/state
@@ -206,26 +234,39 @@ resizes shared containers and publishes structural changes between phases. Initi
 table and inverted-index maintenance remain single-writer. This is an explicit performance gate, not an assumption that
 insertion is negligible.
 
-### Bounded concurrent-index experiment
+### Index A/B: shared-serial versus shared-concurrent
 
-The previous blanket exclusion of boost::concurrent_flat_map is superseded, not a measured rejection. Task 0 first
-compares the three ownership/index designs in isolation. If retained by the owner, compare the packed keyless path with
-that same bounded Boost variant in Task 11 after the full-library baseline campaign is frozen. This later trial tests
-integration and the unchanged acceptance gates; it does not repeat container selection or bypass Task 0. A direct
-`concurrent_flat_map<Monomial,TermIndex>` duplicates full keys; investigate stable row handles and heterogeneous lookup
-into packed rows. Container synchronization does not protect coefficients, overflow storage, inverted indices or
-graph packing. The
+The previous blanket exclusion of boost::concurrent_flat_map is superseded, not a measured rejection. Task 11 compares
+two development-branch build variants of the same one-store engine:
+- **shared-serial:** the current packed keyless index, parallel frozen probes and serial publication.
+- **shared-concurrent:** `boost::concurrent_flat_map` over compact `{row ID, cached hash}` handles into the same packed
+  rows, with heterogeneous exact lookup and parallel publication of preassigned IDs.
+
+The A/B runs only after traversal and lookup are parallel (Tasks 5–6). With a serial scan the variants cannot be told
+apart at full machine. It tests integration and the unchanged acceptance gates; it is not a container search and does
+not bypass the recorded Task 0 outcome. Task 0 measured the concurrent variant 15–18% slower on one core on the physics
+models; the A/B must include those single-thread cells.
+
+A direct `concurrent_flat_map<Monomial,TermIndex>` duplicates full keys and is not permitted. Container synchronization
+does not protect coefficients, overflow storage, inverted indices or graph packing. The
 [Boost concurrency guide](https://www.boost.org/doc/libs/1_89_0/libs/unordered/doc/html/unordered/concurrent.html)
-describes visitation and blocking rehash; neither is a drop-in substitute for the current batched query/result contract.
+describes visitation and blocking rehash. Bulk visitation reports matched elements only, in no documented order. The
+lookup contract is kept by recording `(hash, row)` pairs in the visitor and matching them to queries after the call,
+with exact row comparison when several queries share a hash. Never use side-effecting hash/equality, re-enter the
+container from a visitor, or assume callback order.
 
 Assign IDs in canonical order, reserve all needed storage on the caller, initialize rows before publication, then join
-before dependent reads. Only the index's insertion/publication is allowed to become concurrent in this experiment;
-other shared structural mutation remains separately governed. Prove exact collision handling, stable external-row
-lifetimes, per-query result alignment and clone ownership. Never store query-buffer views as long-lived keys, allocate
-IDs by worker arrival order, or add a second persistent index beside the reference implementation. Compare separate
-build variants, not two resident stores or a permanent backend selector. Measure lookup/insertion, growth peaks and
-end-to-end construction plus the full affected acceptance cells; an insertion microbenchmark alone cannot select it.
-Task 11 specifies the bounded trial and its tests. Keep or reject it from evidence, without weakening parity gates.
+before dependent reads. Only the index's insertion/publication may become concurrent; other shared structural mutation
+remains separately governed. Construction-time key callbacks are not assumed thread-safe and publish serially. Prove
+exact collision handling, stable external-row lifetimes, per-query result alignment and clone ownership. Never store
+query-buffer views as long-lived keys, allocate IDs by worker arrival order, or add a second persistent index beside
+the reference implementation.
+
+Build both variants from one compile-time option, never two resident indices or a permanent backend selector, and run
+the full test suites on both. Decide from the required acceptance cells (five metrics, numerical checks), covering at
+least L1, MPI-off full machine, the all-new-terms random profiles and the physics models. Index-phase speedups alone
+cannot select a variant. Remove the losing variant and the option before acceptance. Task 11 specifies the trial and its
+tests.
 
 ### Kernel and phase sequencing
 
@@ -301,7 +342,7 @@ must be O(total emitted records), never O(T*operator_size). Release/move drained
 next memory-heavy phase. Before parallel decode, the caller checks variable record boundaries, canonical escaped headers
 (`h.bits == QueryWire<N>::header_bits_for(h.k)`) and position-count prefix sums, sizes arrays once, then workers decode
 into disjoint spans. Frozen probes retain `find_batch_positions` and cached hashes; the initial reference publication is
-serial `set_positions` → `bulk_insert_hashed` → reindex. The bounded Task 11 index trial must preserve these phase and
+serial `set_positions` → `bulk_insert_hashed` → reindex. The Task 11 index A/B must preserve these phase and
 row-ID contracts even if hash publication becomes concurrent. No per-rank or full-store dense monomial reconstruction is
 allowed. Existing bounded paired-only scoring may reconstruct its one required monomial; do not turn that exception into
 a batch/store. Task 6 defines the checked preparation sequence.
@@ -566,7 +607,7 @@ to shrink a workload or drop a cell. MPI-enabled diagnostic L2a retains the same
 If D=1, L2a and L2b coincide: deduplicate within the same build mode without removing a required gate. Never deduplicate
 MPI-off evidence against an MPI-enabled run, even at identical R/T/allocation.
 
-After the Task 0 architecture decision and reconciliation of these conditional production gates, the sequence is:
+After the recorded Task 0 outcome and the reconciliation of these production gates, the sequence is:
 
 1. On the baseline only, calibrate each ladder row using its preferred control: Hubbard/Pauli `lower_atol`, random
    Heisenberg `obs_terms`, and random Schrödinger `num_generators` (or the documented mode-count sweep). Keep model
@@ -719,9 +760,9 @@ RED/GREEN evidence for new behavior, plus baseline results for preservation test
 manufacture RED by removing earlier plumbing. Use kernel-specific worker observations for threading participation. Do
 not execute past a failed gate or infer approval from this refresh.
 
-The first execution handoff is the separately authorized Task 0 mini-app, ending at the architecture decision. Apply
-its staged first pass and 2-hour/min(8 GiB, 25% RAM) limits; account for setup/build separately. These approvals do not
-authorize launch. Only after that gate does the baseline pilot travel with Task 1 to the authorized host; neither
+The first execution handoff was the separately authorized Task 0 mini-app, now completed with its outcome recorded
+above. It ran within its staged first pass, the owner-extended 9,200 s study budget and the min(8 GiB, 25% RAM) cap,
+with setup/build accounted separately. The baseline pilot travels with Task 1 to the authorized host; neither
 experiment must run on the planning host before handoff. Transfer the latest spec, plan and CONTEXT.md, not only the
 historical published planning commit. The Task 1 portion of the remote entry point defines the subsequent baseline-only
 phase ending with a proposed campaign/budget for owner approval, not candidate engine work or a completed Task 1 gate.
