@@ -238,10 +238,109 @@ even when they never coexisted.
 `monoprop_PARTITIONS` is mandatory above one rank — the engine's default is `ranks == 1 ? cores : 1`,
 which would silently measure one partition per rank — and the declared shape is recorded in `meta`.
 
+`mpi4py` is imported only when the imported extension reports `monoprop.has_mpi`: importing
+`mpi4py.MPI` initializes MPI, which an MPI-off run must never do, even with `mpi4py` installed. An
+MPI-off build runs one process, launched directly.
+
+Two options declare what a run measures and fail before anything is measured when the process
+contradicts them. `meta` records the declaration, `has_mpi` and the extension's SHA-256:
+
+- `--runtime-shape=partitions` requires `monoprop_PARTITIONS` and `monoprop_NUM_THREADS`, equal and
+  positive. `--runtime-shape=openmp` requires `monoprop_PARTITIONS` unset, and a positive
+  `monoprop_NUM_THREADS`, or with it unset a single positive `OMP_NUM_THREADS`. MPI-off builds must
+  run one rank.
+- `--build-mode=mpi` or `--build-mode=mpi-off` must match the imported extension's `has_mpi`.
+
+Without `--runtime-shape` the multi-rank `monoprop_PARTITIONS` check above still applies.
+
 ```bash
 just bench-build-mpi                           # build once (MPI on)
 monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
+
+### Memory exactness
+
+Each memory window records whether its kernel reset worked on every rank, independently:
+`opmemexact` for the operation window (`opmempeak`, `opmembase`, `opmemdelta`) and `memhwmexact` for
+the outer window (`memhwm`, `memhwm_max`). One never certifies the other.
+
+In `REPORT.md`, a cell from a `false` window reads *non-exact* (the peak fell back to the RSS at
+exit, a lower bound). A cell with no flag, as in artifacts from before the flags existed, reads
+*exactness unknown*. `monoprop-bench-bmf` publishes `peak-memory` only when `memhwmexact` is true
+and `operation-memory` only when `opmemexact` is true, and warns on stderr otherwise. Latency and
+`terms` are unaffected.
+
+An exact window is not byte-exact on a many-core host. The kernel keeps `VmHWM` from per-CPU RSS
+counters that it reads approximately. When threads on many CPUs fault in memory, the recorded peak
+can fall short of a transient that really was resident, by tens of MiB. On a 96-core EC2 host the
+shortfall ranged from 2 to 51 MiB, independent of the transient's size. A single thread loses
+under 1 MiB, and `VmRSS` itself stays exact. Size memory comparisons so that peaks are well above
+this bound.
+
+### Parity evidence for the rank-local OpenMP refactor
+
+`tools/benchmark-rank-local-openmp.py` wraps the pytest suite above to collect the evidence the
+rank-local OpenMP plan (`docs/superpowers/plans/2026-09-18-rank-local-openmp.md`) requires. It adds no benchmarks of its own, apart from the paring-construction measurement below.
+The launcher, CPU binding and environment stay external. The driver checks them against a
+campaign inventory and an external placement file, and refuses to run when they disagree.
+
+It has three modes, each run in a fresh process:
+
+- `observe` measures one campaign cell and writes `DIR/ARM/CELL/SAMPLE/timed.json`. A historical
+  node runs in-process through pytest, and its raw artifacts are kept under `SAMPLE/timed/`. Add
+  `--whole-process` for a separate, untimed run that writes `construction.json`. That window opens
+  before any input is built and closes after the operation's outputs, graph and callable are all
+  still alive.
+- `validate` rebuilds the cell's workload in an untimed process. It records the energy, the full
+  gradient where the operation has one, and, for unpared operations, per-rank term files. Each
+  term file is sorted, gzip-compressed JSON Lines (`.jsonl.gz`, level 1, with a reproducible
+  header), `{"key": [...], "real": x, "imag": y}`, exported with
+  `evolved_operator(parameters, 0.0)`, so coefficients are rounded to `1e-12`. Pared operations
+  record scalars only. For `propagate` without coefficient truncation, validation also checks the
+  result against a graph replay of the same inputs.
+- `compare --campaign FILE --manifest FILE --output FILE` joins baseline and candidate artifacts
+  against the inventory. It exits `0` when every cell passes, `1` for an unmet gate or incomplete
+  coverage, and `2` for malformed or incompatible evidence.
+
+`compare` applies exactly five gates per cell, each a median ratio that must be at most 1.00:
+
+- runtime;
+- operation peak, summed over ranks and per-rank maximum;
+- whole-construction peak, summed over ranks and per-rank maximum.
+
+Both exactness flags must be true. Outer-window peaks are reported as labelled diagnostics and never
+gate. `compare` wants five paired observations per arm and cell, or ten after the prescribed
+repetition, and says when a first failure needs five more.
+
+It rejects evidence that cannot be joined:
+
+- run IDs or measurement files reused anywhere;
+- mismatched identities or build modes;
+- placement files that do not certify the full team;
+- artifacts from another campaign, such as calibration runs.
+
+Numerically, it merges each arm's rank files into a global map and requires equal key sets, with
+coefficients agreeing under `abs(a-b) <= 1e-9 + 1e-7*max(|a|,|b|)`. The Heisenberg identity term,
+replicated on every rank, is checked for agreement and counted once.
+
+`driver::pare_functional_construct[heisenberg|schrodinger]` is the one measurement the driver owns.
+It times only `expectation_value_and_gradient_functional(1e-10)` on a graph built beforehand, and
+keeps the returned callable alive until both memory windows close. `validate` then evaluates that
+callable at the recorded parameters.
+
+```bash
+# Baseline, MPI-off full machine: direct launch, no mpiexec.
+monoprop_PARTITIONS=96 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 taskset -c 0-95 \
+  .venv/bin/python tools/benchmark-rank-local-openmp.py observe --arm baseline \
+  --runtime-shape partitions --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
+  --placement "$PLACEMENT" --output "$RESULTS"
+# Repeat with --whole-process in a new process; run `validate` without --sample-id.
+```
+
+`tools/rank-local-openmp-workloads.json` holds each profile's complete configurations and
+parameter vectors. `tools/rank-local-openmp-campaign.json` is the owner-approved, frozen inventory of
+required cells, each with its identity and digests. `compare` treats that file as authoritative, so
+evidence cannot pass by regenerating either file.
 
 ### Benchmarking ladder
 
@@ -271,8 +370,8 @@ monoprop-bench-bmf benches/results l2b    # results as Bencher Metric Format JSO
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
 | `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
-| `peak-memory` | bytes | the process's peak RSS (`VmHWM`) while the row ran, summed over ranks | +10% |
-| `operation-memory` | bytes | what the timed call added above its own floor, summed over ranks | +10% |
+| `peak-memory` | bytes | the process's peak RSS (`VmHWM`) while the row ran, summed over ranks; only when `memhwmexact` | +10% |
+| `operation-memory` | bytes | what the timed call added above its own floor, summed over ranks; only when `opmemexact` | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
 The `~GiB` columns below are `peak-memory`. `terms` is deterministic for a fixed seed and size, so

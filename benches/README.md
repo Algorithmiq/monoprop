@@ -27,6 +27,11 @@ Everything reusable is in the `monoprop-bench-tools` package
 memory instrumentation, the model builders, and the two renderers that turn a
 run's artifacts into `REPORT.md` and Bencher Metric Format JSON.
 
+`../tools/benchmark-rank-local-openmp.py` drives these benchmarks for the rank-local OpenMP parity
+campaign. It runs a node, a separate whole-construction measurement and an untimed numerical
+validation in fresh processes, then compares two arms against a frozen inventory. See the
+Benchmarks documentation.
+
 Cross-engine comparisons against other propagation libraries live in
 [`../packages/bench-third-party`](../packages/bench-third-party), a standalone uv
 project with its own lockfile.

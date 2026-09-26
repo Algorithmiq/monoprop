@@ -115,6 +115,18 @@ def _delta_sum(spread: dict[str, int] | None) -> int | None:
     return None if spread is None else spread["sum"]
 
 
+def _fmt_exact_mem(num_bytes: int | None, *, flag: bool | None) -> str:
+    """Format a memory cell labelled by the exactness flag of the window it came from.
+
+    ``False`` marks a lower-bound fallback and ``None`` (flag absent, as in legacy artifacts) an
+    unknown exactness; neither is presented as an exact peak. Empty cells stay unlabelled.
+    """
+    text = _fmt_mem(num_bytes)
+    if num_bytes is None or flag is True:
+        return text
+    return f"{text} (non-exact)" if flag is False else f"{text} (exactness unknown)"
+
+
 def _fmt_config(value: object) -> str:
     """Format a config field value compactly (floats via ``g``, else ``str``)."""
     return format(value, "g") if isinstance(value, float) else str(value)
@@ -292,6 +304,8 @@ def build_report(results_dir: Path) -> str:
         sec("memhwm_max"),
         sec("opmemdelta"),
     )
+    # Each window has its own flag; the outer peaks never borrow the operation's, or vice versa.
+    outer_exact, op_exact = sec("memhwmexact"), sec("opmemexact")
 
     all_ops = sorted(
         {op for table in timings.values() for op in table}
@@ -330,7 +344,10 @@ def build_report(results_dir: Path) -> str:
                 "Operation",
                 ops,
                 labels,
-                lambda lbl, op: _fmt_mem(memory.get(lbl, {}).get(op)),
+                lambda lbl, op: _fmt_exact_mem(
+                    memory.get(lbl, {}).get(op),
+                    flag=outer_exact.get(lbl, {}).get(op),
+                ),
                 level=3,
             ),
             *_section(
@@ -339,7 +356,10 @@ def build_report(results_dir: Path) -> str:
                 "Operation",
                 ops,
                 labels,
-                lambda lbl, op: _fmt_mem(memory_max.get(lbl, {}).get(op)),
+                lambda lbl, op: _fmt_exact_mem(
+                    memory_max.get(lbl, {}).get(op),
+                    flag=outer_exact.get(lbl, {}).get(op),
+                ),
                 level=3,
             ),
             *_section(
@@ -348,7 +368,10 @@ def build_report(results_dir: Path) -> str:
                 "Operation",
                 ops,
                 labels,
-                lambda lbl, op: _fmt_mem(_delta_sum(op_delta.get(lbl, {}).get(op))),
+                lambda lbl, op: _fmt_exact_mem(
+                    _delta_sum(op_delta.get(lbl, {}).get(op)),
+                    flag=op_exact.get(lbl, {}).get(op),
+                ),
                 level=3,
             ),
         ]
@@ -363,7 +386,9 @@ def build_report(results_dir: Path) -> str:
         "upper bound on the job total); the max figure is the single worst rank. The "
         "delta figure is what the timed call added above its own floor, which is the one "
         "to compare between operations -- the peaks include whatever an earlier "
-        "operation left resident.",
+        "operation left resident. A memory cell marked non-exact fell back to a lower "
+        "bound because the kernel window could not be reset; one marked exactness "
+        "unknown comes from an artifact that predates the per-window flags.",
         "",
         *_config_table(labels, results),
         *_section(

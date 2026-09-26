@@ -233,6 +233,70 @@ def test_build_report_includes_memory(tmp_path: Path) -> None:
     assert "40.00 MiB" in md
 
 
+_HEIS = "bench_random.py::test_random_energy[heisenberg]"
+
+
+def _memory_rows(md: str, title: str) -> str:
+    """Return one memory table of the Heisenberg section."""
+    start = md.index(title)
+    end = md.index("###", start + len(title))
+    return md[start:end]
+
+
+def test_report_labels_each_memory_metric_by_its_own_exactness(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        memhwm={_HEIS: 52428800},
+        memhwm_max={_HEIS: 41943040},
+        memhwmexact={_HEIS: False},
+        opmemdelta={_HEIS: {"sum": 10485760, "max": 10485760}},
+        opmemexact={_HEIS: True},
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    summed = _memory_rows(md, "Memory (peak RSS, summed across ranks)")
+    worst = _memory_rows(md, "Memory (peak RSS, max across ranks)")
+    delta = _memory_rows(md, "Memory (operation delta, summed across ranks)")
+    assert "50.00 MiB (non-exact)" in summed
+    assert "40.00 MiB (non-exact)" in worst
+    # The exact operation window does not upgrade the outer peaks, and vice versa.
+    assert "10.00 MiB |" in delta
+    assert "(non-exact)" not in delta
+    assert "unknown" not in delta
+
+
+def test_report_marks_absent_exactness_as_unknown(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        memhwm={_HEIS: 52428800},
+        opmemdelta={_HEIS: {"sum": 10485760, "max": 10485760}},
+        memhwmexact={_HEIS: True},
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    summed = _memory_rows(md, "Memory (peak RSS, summed across ranks)")
+    delta = _memory_rows(md, "Memory (operation delta, summed across ranks)")
+    assert "50.00 MiB |" in summed
+    assert "10.00 MiB (exactness unknown)" in delta
+
+
+def test_report_keeps_times_when_memory_is_not_exact(tmp_path: Path) -> None:
+    _write_timings(tmp_path)
+    _write_results(
+        tmp_path,
+        memhwm={_HEIS: 52428800},
+        memhwmexact={_HEIS: False},
+        opmemexact={_HEIS: False},
+        opsize={"heisenberg": {"terms": 132220}},
+    )
+    md = _collapse(report.build_report(tmp_path))
+
+    assert "1.000 ms" in md
+    assert "| Heisenberg | 132,220 |" in md
+
+
 def test_build_report_sorts_labels_numerically(tmp_path: Path) -> None:
     for label in ("np1", "np2", "np10"):
         _write_timings(tmp_path, label)

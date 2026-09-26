@@ -55,8 +55,10 @@ export monoprop_NUM_THREADS=<cores-per-rank>
 ```
 
 For multi-rank runs this is mandatory. The engine otherwise defaults to one partition per rank.
-Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`, and
-`monoprop_threads` in the report's Configuration table.
+Pass `--runtime-shape=partitions` (and `--build-mode=mpi` or `--build-mode=mpi-off`) to have the
+suite refuse a run whose environment, rank count or imported build contradicts that declaration.
+Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`,
+`monoprop_threads`, `declared_shape` and `has_mpi` in the run metadata.
 
 ## Calibrating model size
 

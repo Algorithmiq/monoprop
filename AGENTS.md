@@ -56,6 +56,10 @@ just build-docs
 - Python cases live in `tests/cases.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
   `test_utils::load_case()` from `cpp/tests/TestData.h`.
 - Pytest's fd capture hides C++ stderr such as `COMMPROF`; rerun with `-s`.
+- Benchmark evidence: `pytest benches --runtime-shape=... --build-mode=...` refuses contradictory
+  runs. `tools/benchmark-rank-local-openmp.py` has exactly three modes, `observe`, `validate` and
+  `compare` (see `docs/content/docs/benchmarks.mdx`). Launch MPI-off runs directly: `mpi4py` is
+  never imported when `monoprop.has_mpi` is false.
 - `uv sync` does not relink `bin/monoprop_unit_tests.x` -- compare mtimes and use the standalone
   recipe in `docs/content/docs/building.mdx`.
 - Slow CTest startup in MPI builds is `MPI_Init` fabric probing; see
