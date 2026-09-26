@@ -878,11 +878,12 @@ separate and pending.
   `artifact_kind="validation"` and its own run ID; record `schema_version`, `node_id`, `operation` (one of the five
   operation rows below), `config_digest`, `parameters_digest`, `binary_hash`, `basis`, `picture`, finite `energy`, full
   `gradient` when relevant, `global_term_count`, `graph_layers`, and `term_files` paths to decoded term/coefficient
-  files. Each sorted term file is JSON Lines with `{"key":[indices],"real":number,"imag":number}`; gradient arrays are
-  in optimizer parameter order. `pare_functional_construct` and pared evaluation artifacts omit term files because the
-  pared callable owns a subgraph rather than an independently exported operator; validate its scalar/full gradient
-  against the baseline pared callable. Use deterministic input parameters; a graph benchmark replays at those parameters
-  for validation. The required products are:
+  files. Each sorted term file is gzip-compressed JSON Lines (`.jsonl.gz`) with
+  `{"key":[indices],"real":number,"imag":number}`; gradient arrays are in optimizer parameter order. Uncompressed,
+  truncated or otherwise unreadable term files are malformed evidence. `pare_functional_construct` and pared evaluation
+  artifacts omit term files because the pared callable owns a subgraph rather than an independently exported operator;
+  validate its scalar/full gradient against the baseline pared callable. Use deterministic input parameters; a graph
+  benchmark replays at those parameters for validation. The required products are:
 
 | Operation | Validation products |
 | --- | --- |
@@ -937,17 +938,20 @@ uv run --no-sync python tools/benchmark-rank-local-openmp.py observe \
   coverage.
 - [ ] Export maps with the existing low-level `propagator._simulator.evolved_operator(parameters, 0.0)`; use an empty
   parameter vector after graph-free propagation and the repeated circuit parameters for graph replay. Sort raw encoded
-  index tuples and store real/imaginary coefficient components in per-rank files. These exported coefficients are
-  currently rounded to 1e-12; state that limitation and retain unrounded scalar/gradient checks. Stream-merge sorted
-  rank files when comparing global maps instead of requiring historical rank ownership. For Heisenberg, the binding adds
-  the replicated identity/core term on each rank: retain one copy after checking agreement, **do not sum it R times**.
-  Other duplicated nonidentity terms fail unique ownership; Schrödinger identity follows ordinary owner semantics.
-  Require equal global key sets, including zero-coefficient stored terms; compare values with the existing
-  `test_utils::near` rule from `cpp/tests/TestUtilities.h.in`: `abs(a-b) <= 1e-9 + 1e-7*max(abs(a),abs(b))`,
-  componentwise for complex values and gradients. Reject missing/non-finite outputs. Preserve all stricter existing
-  unit-test tolerances; this benchmark comparison does not weaken them. During pre-freeze calibration, export failures
-  may require an approved smaller equal-arm profile. After freeze they block acceptance, not permission to resize or
-  supply an unchecked `numerical_ok=true`.
+  index tuples and store real/imaginary coefficient components in per-rank gzip files: level 1, with no timestamp or
+  file name in the gzip header, so equal maps give equal bytes. The line format, sort order and rounding are unchanged
+  by compression. The owner approved compression instead of adding storage. On the pilot's term files it measured
+  4.4-16x smaller, and the draft campaign needs about 24 GB per arm instead of about 122 GB on the host's 128 GB volume.
+  These exported coefficients are currently rounded to 1e-12; state that limitation and retain unrounded scalar/gradient
+  checks. Stream-merge sorted rank files when comparing global maps instead of requiring historical rank ownership. For
+  Heisenberg, the binding adds the replicated identity/core term on each rank: retain one copy after checking agreement,
+  **do not sum it R times**. Other duplicated nonidentity terms fail unique ownership; Schrödinger identity follows
+  ordinary owner semantics. Require equal global key sets, including zero-coefficient stored terms; compare values with
+  the existing `test_utils::near` rule from `cpp/tests/TestUtilities.h.in`: `abs(a-b) <= 1e-9 +
+  1e-7*max(abs(a),abs(b))`, componentwise for complex values and gradients. Reject missing/non-finite outputs. Preserve
+  all stricter existing unit-test tolerances; this benchmark comparison does not weaken them. During pre-freeze
+  calibration, export failures may require an approved smaller equal-arm profile. After freeze they block acceptance,
+  not permission to resize or supply an unchecked `numerical_ok=true`.
 - [ ] Link every performance observation to a successful validation artifact for the same binary/configuration/operation
   and compare baseline/candidate validation artifacts. Add tests with wrong energy, a changed gradient entry, one
   missing/extra term, duplicate ownership, replicated identity, non-finite data, stale binary hash and absent
@@ -1089,7 +1093,11 @@ configurations in artifacts, not just a profile label.
   (`MAX_GRAPH_STEPS=2`), so the 29-step Hubbard reference is intentionally a capacity decision: use
   `monoprop_BENCH_ALLOW_BIG_GRAPH=1` only on adequately provisioned hardware, or obtain approval for a fixed lower
   `--hubbard-trotter-steps` profile on both arms before formal baseline collection. A skipped cell is not a pass. Do not
-  silently omit graph-heavy cells or bypass the guard on an unverified allocation.
+  silently omit graph-heavy cells or bypass the guard on an unverified allocation. Owner decision after the pilot:
+  Hubbard graph cells (`build_graph`, `energy`, `gradient`) use 2 Trotter steps on smaller lattices, within the guard.
+  Hubbard `propagate` keeps its 29 steps. The 29-step graph did not fit this host: the pilot killed it above the
+  75% memory target, with at least 147 GiB resident. It may be checked separately on a larger machine; that check is
+  not part of this campaign.
 - [ ] Select required geometries from observed physical cores, not vCPU/SMT-sibling counts. For D allocated domains with
   C_dom cores each, keep `(R,T)=(1,1),(1,C_dom),(D,1),(D,C_dom)` for small/medium profiles. These R=1 controls use one
   domain. Add `(2*D,floor(C_dom/2))` with disjoint cores when C_dom>=2; record unused cores. Preserve MPI routing
@@ -1112,6 +1120,28 @@ configurations in artifacts, not just a profile label.
   small-fixture regression evidence. Its keys include rank, tolerance differs and it lacks operation
   gradients/provenance; it cannot replace the ownership-aware global-map comparator or independent
   exact/finite-difference tests.
+
+**Frozen campaign (owner-approved 2026-09-25):** `tools/rank-local-openmp-campaign.json` (sha256
+`ffde870c77a66c8ce37fb2cc07b39abef976e9d7938b7cea59f43cb407de068a`) lists 250 cells over
+`tools/rank-local-openmp-workloads.json` (sha256 `508b65f1f0eb2171fc4fbd79feba2381054c6dcdd38a614600f5b957ab814416`).
+Neither file may be regenerated or shrunk to make observations pass. The unscored pilot and its size decisions are
+archived outside the repository with the Task 1 handoff report; no pilot output is a formal sample.
+- The observed host has one NUMA domain (D=1, C=C_dom=96). Within each build mode, L1 and the MPI-only control
+  coincide at 1x1, and the NUMA-local control, L2b and L2a coincide at 1x96. There is therefore no separate L2a
+  diagnostic inventory. MPI-off 1x96 cells stay separate and required. The single-thread control runs in the MPI
+  build.
+- `tiny` and `reference` (plus their `-pared` variants) run at MPI 1x1, 1x96 and 2x48 and at MPI-off 1x96.
+  - Each band has 16 unpared nodes. The `-pared` variants cover energy/gradient at threshold 1e-10 for all four
+    families, plus `driver::pare_functional_construct` in both pictures.
+  - Random reference `propagate` and `build_graph`, in both pictures, add 3x32 splitmix, 4x24 splitmix and
+    4x24 linear cells.
+- `large` and `large-pared` run at MPI 1x96 and 2x48 and at MPI-off 1x96. Their sizes (13-68M terms) are set by the
+  cost of validation export, not by RAM.
+- Owner decision on memory: the measured `VmHWM` shortfall is accepted as documented measurement noise for the
+  five gates. With threads on many CPUs, a window can miss up to about 50 MiB of a real transient (see
+  `docs/content/docs/benchmarks.mdx`, "Memory exactness"). The strict <=1.00 gates are not relaxed.
+- The pilot killed one trial above the 75% memory target: the rejected 29-step Hubbard graph. The owner reviewed it;
+  no cell in the campaign needs that graph.
 
 **Gate:** Calibration archive and owner-approved size-band inventory/digest are retained; benchmark tools' unit tests
 and baseline numerical suites pass. Fresh post-freeze baseline observations and placement evidence cover every required

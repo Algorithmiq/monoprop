@@ -5,7 +5,8 @@ default_stages = ["pre-commit", "pre-push"]
 [[repos]]
 repo = "builtin"
 hooks = [
-    { id = "check-added-large-files" },
+    # The frozen parity workloads carry every node's full parameter vector by design (plan, Task 1).
+    { id = "check-added-large-files", exclude = "^tools/rank-local-openmp-workloads\\.json$" },
     { id = "check-case-conflict" },
     { id = "check-merge-conflict" },
     { id = "check-symlinks" },
