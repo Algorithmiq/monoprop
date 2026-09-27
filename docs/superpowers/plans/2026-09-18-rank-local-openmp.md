@@ -632,8 +632,10 @@ Evidence (measured on the target host, not acceptance samples):
 - In-library Boost trial: +15–18% end-to-end on one core for Hubbard/Pauli at L1 size. Parallel publication gave no gain
   at per-gate batch sizes; the scan was still serial, so there is no full-machine result.
 
-The results, overlays and budget ledger are archived outside the repository with the Task 0 report. The owner waived
-the Boost 1.85 compile check, as stated above.
+The results, overlays and budget ledger are archived outside the repository with the Task 0 report, in
+`/home/ubuntu/task0-artifacts/` on the c8a.metal-24xl host (`report.md`, `ledger.md`, `budget.jsonl`). They are
+intentionally uncommitted and will be removed before merging. The owner waived the Boost 1.85 compile check, as stated
+above.
 
 ### Task 1: Freeze baselines and repair measurement trustworthiness
 
@@ -1126,6 +1128,19 @@ configurations in artifacts, not just a profile label.
 `tools/rank-local-openmp-workloads.json` (sha256 `508b65f1f0eb2171fc4fbd79feba2381054c6dcdd38a614600f5b957ab814416`).
 Neither file may be regenerated or shrunk to make observations pass. The unscored pilot and its size decisions are
 archived outside the repository with the Task 1 handoff report; no pilot output is a formal sample.
+- Artifact locations: all Task 1 artifacts are in `/home/ubuntu/task1-artifacts/` on the c8a.metal-24xl host.
+  They are intentionally uncommitted and will be removed before merging. `ledger.md` indexes them and records every
+  hash.
+  - `report.md`: the handoff report. `preflight/`, `provenance/` (overlay patches and hashes) and `findings/`
+    (VmHWM shortfall, gzip measurement) hold its supporting evidence.
+  - `formal/results/baseline/<cell>/`: the formal baseline evidence (s01..s05 timed and construction artifacts plus
+    one validation per cell, about 20 GB). `formal/placements/` and `formal/diagnostics/` hold the per-cell placement
+    files and their raw evidence.
+  - `formal/baseline-index.json` (sha256 `82479d6ff83deb3113306ac1caa1720d25f15a400cbc89b5693f85ffad47fff5`): the
+    baseline half of the Task 11 comparison manifest.
+  - `formal/formal.py`, `formal/verify.py`, `formal/consistency.py` and `pilot/pilot.py`: the operator-side code
+    that collected and checked the evidence, kept as run rather than as reusable tooling.
+  - `pilot/` and `proposal/`: the unscored pilot and the inventory proposal.
 - The observed host has one NUMA domain (D=1, C=C_dom=96). Within each build mode, L1 and the MPI-only control
   coincide at 1x1, and the NUMA-local control, L2b and L2a coincide at 1x96. There is therefore no separate L2a
   diagnostic inventory. MPI-off 1x96 cells stay separate and required. The single-thread control runs in the MPI
