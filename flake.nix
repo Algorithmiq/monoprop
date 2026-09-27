@@ -70,8 +70,9 @@
 
         devShells.default = pkgs.callPackage ./nix/devshell.nix { inherit python; };
 
+        # Both packages configure against the required OpenMP and are import-checked.
         checks = {
-          inherit monoprop;
+          inherit monoprop monoprop-mpi;
         };
 
         formatter = pkgs.nixfmt-tree;

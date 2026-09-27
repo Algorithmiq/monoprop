@@ -239,6 +239,9 @@ jobs:
 
       - name: Set up the build environment
         uses: ./.github/actions/setup
+        # The build below uses clang++, so the setup installs its matching libomp.
+        env:
+          CXX: clang++
         with:
           cache-suffix: clang-tidy-mpi
           mpi: "on"

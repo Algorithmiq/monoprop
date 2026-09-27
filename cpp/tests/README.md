@@ -122,6 +122,12 @@ name and cannot address suite-nested cases, tests use flat
   rails + MPGraph bounds).
 - **Exchange layout preconditions**: `exchange_layout_precondition_tests.cpp`
   (the layout width check, driven through ShmComm).
+- **OpenMP worksharing**: `openmp_workshare_tests.cpp` (`parallel::for_blocks`:
+  exactly-once visits, serial and nested fallbacks, budget and bound validation,
+  unchanged runtime settings, joined worker exceptions, and actual multi-worker
+  participation, which is skipped when the runtime cannot provide two workers).
+  Run it in fresh processes under `OMP_DYNAMIC=TRUE`, `OMP_DYNAMIC=FALSE` and
+  `OMP_THREAD_LIMIT=1` when changing the helper.
 
 New `*.cpp` files are auto-discovered on the next configure — no CMake edit
 needed.

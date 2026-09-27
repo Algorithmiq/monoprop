@@ -14,6 +14,10 @@ This script can install Boost Unordered, Boost Test, msgpack-cxx, and hwloc.
 Each component can be skipped with the corresponding option.
 The default installation prefix is /usr/local.
 
+OpenMP is also required but is not installed here: it comes with the compiler.
+GCC ships libgomp; Clang needs the matching libomp (e.g. libomp-18-dev for
+clang++-18, or Homebrew's libomp with OpenMP_ROOT pointing at it).
+
 Arguments:
     INSTALL_PREFIX      Directory to install dependencies (default: /usr/local)
 
@@ -215,6 +219,7 @@ echo
 echo "Dependencies installation completed successfully!"
 echo "Install location: $INSTALL_PREFIX"
 echo "Make sure to set CMAKE_PREFIX_PATH=$INSTALL_PREFIX when building monoprop"
+echo "OpenMP is not installed by this script; it must come with your compiler (see --help)"
 
 # Show what was installed
 echo

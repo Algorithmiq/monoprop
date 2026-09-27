@@ -69,8 +69,16 @@ runs:
           esac
         fi
 
+        # OpenMP is required. g++ ships libgomp; a Linux Clang needs the libomp of its own
+        # version, even when the runner already provides the compiler.
+        if [[ "$RUNNER_OS" != "macOS" && "${CXX:-}" == clang++* ]]; then
+          packages+=("libomp${CXX#clang++}-dev")
+        fi
+
         if [[ "$RUNNER_OS" == "macOS" ]]; then
           brew install "${packages[@]}"
+          # Homebrew's libomp is keg-only; CMake's FindOpenMP searches OpenMP_ROOT.
+          echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
         else
           sudo apt-get update
           sudo apt-get install -y "${packages[@]}"

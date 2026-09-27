@@ -16,6 +16,10 @@ on:
       - VERSION
       - pyproject.toml
       - CMakeLists.txt
+      - cmake/**
+      - cpp/**/CMakeLists.txt
+      - cpp/tests/find_package_smoke/**
+      - cpp/tests/link_export_probe/**
       - src/monoprop/bindings/CMakeLists.txt
 
 concurrency:
@@ -41,8 +45,8 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31.11.1
 
-      # Builds `checks.monoprop`, which is the non-MPI package, so the build below
-      # reuses this store path rather than compiling twice.
+      # Builds `checks.monoprop` and `checks.monoprop-mpi`, so the build below reuses
+      # both store paths rather than compiling twice.
       - name: Check flake
         run: nix flake check --print-build-logs
 
@@ -64,6 +68,15 @@ jobs:
             just --version
             pkg-config --modversion hwloc
             mpicc --version
+          '
+
+      # Configures, links and runs the installed-package consumer, which instantiates the
+      # OpenMP worksharing template, with the shell's compiler and OpenMP runtime.
+      - name: Check the OpenMP consumer from the dev shell
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            monoprop_ENABLE_MPI=OFF just build --group workspace-test
+            just test-find-package
           '
 
   flake-result:

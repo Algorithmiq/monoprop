@@ -62,6 +62,9 @@ just build-docs
   never imported when `monoprop.has_mpi` is false.
 - `uv sync` does not relink `bin/monoprop_unit_tests.x` -- compare mtimes and use the standalone
   recipe in `docs/content/docs/building.mdx`.
+- OpenMP is a required build dependency in every configuration (`OpenMP::OpenMP_CXX`, linked PUBLIC on
+  both `monoprop-objs` and `monoprop`, `find_dependency` in the package config). The worksharing
+  primitive is `detail/parallel/Workshare.h::for_blocks`. Never call `omp_set_*` from the library.
 - Slow CTest startup in MPI builds is `MPI_Init` fabric probing; see
   `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 - Sanitizer rebuild and test:

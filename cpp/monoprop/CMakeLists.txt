@@ -43,12 +43,15 @@ target_include_directories(
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
 )
 
+# OpenMP is linked on both targets: the shared library is assembled from TARGET_OBJECTS and does not
+# inherit monoprop-objs' link requirements, so it needs its own link against the runtime.
 target_link_libraries(
   monoprop-objs
   PUBLIC
     monoprop-sanitizers
     Boost::boost
     Threads::Threads
+    OpenMP::OpenMP_CXX
     $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
   PRIVATE
     PkgConfig::HWLOC
@@ -105,6 +108,7 @@ target_compile_features(monoprop INTERFACE cxx_std_23)
 target_link_libraries(
   monoprop
   PUBLIC
+    OpenMP::OpenMP_CXX
     $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
   INTERFACE
     Boost::boost

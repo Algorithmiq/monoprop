@@ -26,6 +26,15 @@ without MPI, so a from-source build is required for multi-rank runs.
 - Python 3.11 or newer and the `uv` package manager (for the bindings)
 - an MPI implementation such as Open MPI (only for MPI builds)
 - `hwloc` (version 2.9+) and `pkg-config` (required so CMake can locate `hwloc`)
+- OpenMP for C++, in every build — with or without MPI, and even when you only
+  run one thread; there is no OpenMP-disabled build. Use the runtime that matches
+  your compiler:
+  - **GCC** ships its own `libgomp`; nothing extra is needed;
+  - **Clang on Linux** needs the `libomp` of the same LLVM version, e.g.
+    `libomp-18-dev` for `clang++-18` on Debian/Ubuntu;
+  - **Apple Clang** needs Homebrew's `libomp`. It is keg-only, so point CMake at
+    it with `export OpenMP_ROOT="$(brew --prefix libomp)"` before building, and
+    before configuring a project that consumes the installed package.
 
 The repository ships a [DevContainer](https://containers.dev/) with all of the
 above pre-configured; opening the folder in VS Code and rebuilding the container is
@@ -41,6 +50,10 @@ The repository is also a [Nix flake](https://wiki.nixos.org/wiki/Flakes):
 | `nix build .#monoprop` | the Python package, built without MPI |
 | `nix build .#monoprop-mpi` | the same package with `monoprop_ENABLE_MPI=ON` |
 | `nix run` | a Python interpreter with `monoprop` importable |
+
+The packages and the shell take OpenMP from the compiler: GCC's `libgomp` on Linux,
+and `llvmPackages.openmp` wherever the standard environment's compiler is Clang
+(macOS). `nix flake check` builds both packages.
 
 Inside `nix develop` the `uv sync` and `just` workflows below apply unchanged. The
 shell sets two variables that only matter on NixOS: `UV_PYTHON_PREFERENCE=only-system`,
@@ -63,7 +76,7 @@ The packaged build deviates from the `uv` build in three places, all in
 
 Use the exported overlay when monoprop must share a downstream project's Python
 and native dependency package set. Following the downstream `nixpkgs` input avoids
-introducing a second Python, Boost, hwloc, or MPI closure:
+introducing a second Python, Boost, hwloc, OpenMP, or MPI closure:
 
 ```nix
 {
@@ -222,7 +235,10 @@ link dependencies merely because the consuming project already has an `MPI::MPI_
 package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that
 exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
 usage requirement the package fails to export. It compiles the same source as the in-tree
-probe, so the two cannot drift.
+probe, so the two cannot drift. The probe drives both the Majorana and the Pauli basis and
+instantiates the internal OpenMP worksharing template in its own translation unit, so the
+consumer only builds if the imported `monoprop::monoprop` target carries OpenMP's compile
+and link flags — the consumer project adds none of its own.
 
 ### Debug tree
 

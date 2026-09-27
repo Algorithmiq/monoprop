@@ -26,11 +26,18 @@
 //      build_graph(), graph_memory_usage(), and expectation_value_and_gradient().
 //  (b) the partition path (detail/partition/CpuTopology.h), via a partitions > 1 construction, which is
 //      the only way to make PartitionGroup actually place and pin partition-worker threads.
+// It also checks the installed usage requirements a consumer inherits:
+//  (c) the OpenMP worksharing template (detail/parallel/Workshare.h), instantiated in this translation
+//      unit, so OpenMP compile and link flags must reach the consumer through the imported target alone;
+//  (d) the Pauli basis, alongside the Majorana graph chain in (a).
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/parallel/Workshare.h"
 
 #include <complex>
+#include <cstddef>
+#include <cstdlib>
 #include <optional>
 #include <print>
 #include <vector>
@@ -76,6 +83,52 @@ auto run_graph_build_chain() -> void {
                  grad.size());
 }
 
+// Without the imported target's OpenMP compile flags the pragmas in Workshare.h would silently compile
+// out, so check for them explicitly rather than rely on a link failure.
+#ifndef _OPENMP
+#error "monoprop::monoprop did not propagate the OpenMP compile flags to this consumer"
+#endif
+
+// Instantiates for_blocks here: its region, and the omp_* calls it makes, are compiled and linked in
+// the consumer. The body only writes its own element; library calls stay outside the region.
+auto run_openmp_workshare_chain() -> void {
+    constexpr size_t kBlocks = 257;
+    std::vector<size_t> squares(kBlocks, 0);
+    monoprop::detail::parallel::for_blocks(kBlocks, {.threads = 2}, [&](size_t b) { squares[b] = b * b; });
+    size_t sum = 0;
+    for (const auto s : squares) {
+        sum += s;
+    }
+    const size_t expected = (kBlocks - 1) * kBlocks * (2 * kBlocks - 1) / 6;
+    std::println(stderr, "[link_export_probe] openmp chain: blocks={} sum={} expected={}", kBlocks, sum, expected);
+    if (sum != expected) {
+        std::println(stderr, "[link_export_probe] openmp chain: FAILED");
+        std::exit(1);
+    }
+}
+
+// The Pauli basis: slots 2q/2q+1 are qubit q's x/z planes, so {0, 1} is Z on qubit 0 and {0} is X.
+auto run_pauli_chain() -> void {
+    constexpr size_t kQubits = 3;
+    OperatorDict observable;
+    observable[VecZ{0, 1}] = std::complex<double>{1.0, 0.0};
+
+    MonomialPropagator<kQubits> sim(observable,
+                                    /*cutoff=*/2 * kQubits,
+                                    VecZ{},
+                                    /*schrodinger_cutoff=*/std::nullopt,
+                                    MPI_COMM_SELF,
+                                    /*lower_atol=*/std::nullopt,
+                                    /*upper_atol=*/std::nullopt,
+                                    CutoffType::Support,
+                                    /*basis_change=*/std::nullopt,
+                                    /*logical_num_modes=*/kQubits,
+                                    Basis::Pauli);
+    sim.propagate(std::vector<VecZ>{{0}}, VecZ{0}, VecD{1.0}, VecD{0.3});
+
+    std::println(stderr, "[link_export_probe] pauli chain: size={}", sim.size());
+}
+
 // Drives PartitionGroup's constructor: partitions > 1 is required for the facade to actually exist, so
 // enumerate_physical_cores / affinity_mask_words / summarize_masks / format_place_line / partition_cpusets /
 // pin_this_thread all run for real (not merely compiled) on the master threads it spawns.
@@ -106,6 +159,8 @@ auto main() -> int {
     monoprop::mpi::init();
     run_graph_build_chain();
     run_partition_chain();
+    run_openmp_workshare_chain();
+    run_pauli_chain();
     monoprop::mpi::finalize();
     std::println(stderr, "[link_export_probe] OK");
     return 0;
