@@ -6,6 +6,11 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 set positional-arguments := true
 
+# Recipes are linewise, with no shebangs: each line runs in its own shell, and state that must
+# span lines is joined with `\`. Comment lines inside a recipe are not echoed or run.
+
+set ignore-comments := true
+
 version := `uvx setuptools-scm | tr -d '\n'`
 project_source_dir := `pwd | tr -d '\n'`
 docs_dir := "build/docs"
@@ -87,14 +92,12 @@ test-cpp-mpi LABEL='':
 # once per entry. Extra arguments go to pytest, e.g. `just test-py-mpi "1;2;4" -m mpi`.
 
 test-py-mpi RANKS='' *PYTEST_ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    shift 1
-    requested_ranks={{ quote(RANKS) }}
-    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"
-    for r in ${ranks//;/ }; do
-      echo "Running the Python test suite with ${r} MPI rank(s)"
-      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
+    @shift 1; \
+    requested_ranks={{ quote(RANKS) }}; \
+    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
+    for r in ${ranks//;/ }; do \
+      echo "Running the Python test suite with ${r} MPI rank(s)"; \
+      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"; \
     done
 
 # Build MPI-enabled, then run every leg. The C++
@@ -110,14 +113,11 @@ test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
 # Build and run a consumer project against the installed package.
 
 test-find-package BUILD_DIR='build/find-package-smoke':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    build_dir={{ quote(BUILD_DIR) }}
-    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
-    cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
+    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"; \
+    cmake -S cpp/tests/find_package_smoke -B {{ quote(BUILD_DIR) }} \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
-    cmake --build "$build_dir"
-    "$build_dir/smoke"
+    cmake --build {{ quote(BUILD_DIR) }}
+    {{ quote(BUILD_DIR) }}/smoke
 
 # The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
 # Tsan), the matching monoprop_SANITIZER define, and CC=clang CXX=clang++. TSan needs Clang;
@@ -135,6 +135,10 @@ ubsan_options := "halt_on_error=1:print_stacktrace=1"
 tsan_openmp_options := "ignore_noninstrumented_modules=1"
 sanitizer_log := project_source_dir / "sanitizer-log"
 
+# Invokes this justfile's helper recipes from shell() and from recipe lines.
+
+just_self := quote(just_executable()) + " --justfile " + quote(justfile())
+
 
 # The compiler that built the sanitizer tree, which may differ from $CXX. It decides which
 # sanitizer runtime to preload and which checks apply.
@@ -142,17 +146,25 @@ sanitizer_log := project_source_dir / "sanitizer-log"
 _sanitizer-cxx:
     @sed -n 's/^set(CMAKE_CXX_COMPILER "\(.*\)")$/\1/p' {{ build_dir }}/CMakeFiles/*/CMakeCXXCompiler.cmake
 
+# "clang" or "gcc": which compiler built the sanitizer tree.
+
+_sanitizer-compiler:
+    @cxx="$({{ just_self }} _sanitizer-cxx)"; \
+    if [[ "$("$cxx" --version)" == *clang* ]]; then echo clang; else echo gcc; fi
+
+# The ASan runtime of the compiler that built the sanitizer tree; Clang and GCC name it differently.
+
+_asan-runtime:
+    @"$({{ just_self }} _sanitizer-cxx)" -print-file-name={{ if shell(just_self + ' _sanitizer-compiler') == 'clang' { 'libclang_rt.asan-' + arch() + '.so' } else { 'libasan.so' } }}
+
+# Helper output is read with shell(), not $(...): a failed command substitution in an environment
+# prefix does not stop bash -e, while a failed shell() stops the recipe.
+#
+# Under Clang, detect_invalid_pointer_pairs gives a false positive before main in every test
+# binary (on a std::initializer_list built during static initialization), so it is GCC-only.
+
 test-cpp-asan:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Under Clang, detect_invalid_pointer_pairs gives a false positive before main in every test
-    # binary (on a std::initializer_list built during static initialization), so it is GCC-only.
-    pointer_pairs=1
-    cxx=$({{ just_executable() }} --justfile {{ justfile() }} _sanitizer-cxx)
-    if [[ "$("$cxx" --version)" == *clang* ]]; then
-      pointer_pairs=0
-    fi
-    ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs=$pointer_pairs:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
+    ASAN_OPTIONS="detect_leaks=1:leak_check_at_exit=1:detect_stack_use_after_return=1:detect_invalid_pointer_pairs={{ if shell(just_self + ' _sanitizer-compiler') == 'clang' { '0' } else { '1' } }}:check_initialization_order=1:strict_init_order=1:strict_string_checks=1:halt_on_error=1" \
     LSAN_OPTIONS="suppressions={{ project_source_dir }}/.github/lsan.supp" \
     UBSAN_OPTIONS="{{ ubsan_options }}" \
       ctest --test-dir {{ build_dir }} --output-on-failure
@@ -161,19 +173,11 @@ test-cpp-asan:
 # here; the C++ leg covers those. ASan needs libstdc++ preloaded too, or its __cxa_throw
 # interceptor does not resolve. pytest replaces stderr, so the reports go to log files.
 # Limit this instrumented run to monoprop's suite rather than collecting workspace packages.
-# The preloaded ASan runtime must match the compiler that built the extension.
+# The preloaded ASan runtime must match the compiler that built the extension. Clang does not
+# ship libstdc++, so GCC provides it either way.
 
 test-py-asan:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cxx=$({{ just_executable() }} --justfile {{ justfile() }} _sanitizer-cxx)
-    if [[ "$("$cxx" --version)" == *clang* ]]; then
-      runtime=$("$cxx" -print-file-name=libclang_rt.asan-"$(uname -m)".so)
-    else
-      runtime=$("$cxx" -print-file-name=libasan.so)
-    fi
-    # Clang does not ship libstdc++, so ask GCC for it either way.
-    LD_PRELOAD="$runtime:$(g++ -print-file-name=libstdc++.so.6)" \
+    LD_PRELOAD="{{ shell(just_self + ' _asan-runtime') }}:$(g++ -print-file-name=libstdc++.so.6)" \
     ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
     UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
       uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
@@ -181,18 +185,16 @@ test-py-asan:
 # Print what test-py-asan sent to the log files. Silent when the tests themselves failed.
 
 sanitizer-reports:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    shopt -s nullglob
-    files=({{ sanitizer_log }}.*)
-    if (( ${#files[@]} == 0 )); then
-      echo "No sanitizer report was written; the failure came from the tests themselves."
-      exit 0
-    fi
-    for f in "${files[@]}"; do
-      echo "::group::$(basename "$f")"
-      cat "$f"
-      echo "::endgroup::"
+    @shopt -s nullglob; \
+    files=({{ sanitizer_log }}.*); \
+    if (( ${#files[@]} == 0 )); then \
+      echo "No sanitizer report was written; the failure came from the tests themselves."; \
+      exit 0; \
+    fi; \
+    for f in "${files[@]}"; do \
+      echo "::group::$(basename "$f")"; \
+      cat "$f"; \
+      echo "::endgroup::"; \
     done
 
 # TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
@@ -202,159 +204,99 @@ test-cpp-tsan:
     TSAN_OPTIONS="halt_on_error=1:history_size=4:{{ tsan_openmp_options }}" \
       ctest --test-dir {{ build_dir }} --output-on-failure -R "(partition_|shm_comm_)"
 
+# Shared by both gcovr passes of code-coverage-collect; each adds the build tree and its output.
+
+gcovr_args := "--gcov-executable gcov --gcov-ignore-parse-errors --exclude-throw-branches --exclude-unreachable-branches --filter '^(cpp|src)/' --exclude '^(cpp/)?tests/' --merge-lines"
+
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
 
 code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    mpi={{ quote(MPI) }}
-    build_dir={{ quote(BUILD_DIR) }}
-    output_dir={{ quote(OUTPUT_DIR) }}
-    export GCOV_EXIT_AT_ERROR=1
-    if [[ "$mpi" != "on" && "$mpi" != "off" ]]; then
-      echo "MPI must be 'on' or 'off', got: $mpi" >&2
-      exit 2
-    fi
-
-    sync_args=({{ uv_sync }})
-    if [[ "$mpi" == "off" ]]; then
-      sync_args+=({{ no_mpi_extra }})
-    fi
-    sync_args+=(--group workspace-test --reinstall-package monoprop)
-    # The top-level recipe isolates local rebuilds from a wheel cached for the other variant.
-    if [[ "${monoprop_COVERAGE_NO_CACHE:-OFF}" == "ON" ]]; then
-      sync_args+=(--no-cache)
-    fi
-
-    SKBUILD_BUILD_DIR="$build_dir" \
+    @[[ {{ quote(MPI) }} == on || {{ quote(MPI) }} == off ]] || { echo "MPI must be 'on' or 'off', got: "{{ quote(MPI) }} >&2; exit 2; }
+    # The top-level recipe passes monoprop_COVERAGE_NO_CACHE=ON to isolate local rebuilds from a
+    # wheel cached for the other variant.
+    SKBUILD_BUILD_DIR={{ quote(BUILD_DIR) }} \
       SKBUILD_CMAKE_BUILD_TYPE=Coverage \
-      monoprop_ENABLE_MPI="$mpi" \
-      "${sync_args[@]}"
-
-    rm -rf "$output_dir"
-    mkdir -p "$output_dir"
-    find "$build_dir" -type f -name '*.gcda' -delete
+      monoprop_ENABLE_MPI={{ quote(MPI) }} \
+      {{ uv_sync }} {{ if MPI == 'off' { no_mpi_extra } else { '' } }} \
+      --group workspace-test --reinstall-package monoprop \
+      {{ if env('monoprop_COVERAGE_NO_CACHE', 'OFF') == 'ON' { '--no-cache' } else { '' } }}
+    rm -rf {{ quote(OUTPUT_DIR) }}
+    mkdir -p {{ quote(OUTPUT_DIR) }}
+    find {{ quote(BUILD_DIR) }} -type f -name '*.gcda' -delete
     uv run --no-sync coverage erase
-
-    uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
-    if [[ "$mpi" == "on" ]]; then
-      # The coverage lane runs in a container as root.
-      export OMPI_ALLOW_RUN_AS_ROOT=1
-      export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-      {{ mpiexec }} -n 2 \
-        uv run --no-sync coverage run --parallel-mode \
-          -m pytest tests --with-mpi -m mpi
+    GCOV_EXIT_AT_ERROR=1 uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
+    # The coverage lane runs in a container as root.
+    if [[ {{ quote(MPI) }} == on ]]; then \
+      GCOV_EXIT_AT_ERROR=1 OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+        {{ mpiexec }} -n 2 \
+        uv run --no-sync coverage run --parallel-mode -m pytest tests --with-mpi -m mpi; \
     fi
-
-    gcovr_args=(
-      --gcov-executable gcov
-      --gcov-ignore-parse-errors
-      --exclude-throw-branches
-      --exclude-unreachable-branches
-      --filter '^(cpp|src)/'
-      --exclude '^(cpp/)?tests/'
-      --merge-lines
-      "$build_dir"
-    )
-    GCOV_EXIT_AT_ERROR=1 uvx gcovr "${gcovr_args[@]}" \
-      --json "$output_dir/cpp-through-python.json" \
+    GCOV_EXIT_AT_ERROR=1 uvx gcovr {{ gcovr_args }} {{ quote(BUILD_DIR) }} \
+      --json {{ quote(OUTPUT_DIR) }}/cpp-through-python.json \
       --json-pretty
-
-    ctest --test-dir "$build_dir" \
+    GCOV_EXIT_AT_ERROR=1 ctest --test-dir {{ quote(BUILD_DIR) }} \
       --output-on-failure \
       --no-tests=error \
       --label-exclude mpi
-    if [[ "$mpi" == "on" ]]; then
-      ctest --test-dir "$build_dir" \
+    if [[ {{ quote(MPI) }} == on ]]; then \
+      GCOV_EXIT_AT_ERROR=1 ctest --test-dir {{ quote(BUILD_DIR) }} \
         --output-on-failure \
         --no-tests=error \
-        --label-regex mpi
+        --label-regex mpi; \
     fi
-
-    GCOV_EXIT_AT_ERROR=1 uvx gcovr "${gcovr_args[@]}" \
-      --json "$output_dir/cpp-total.json" \
+    GCOV_EXIT_AT_ERROR=1 uvx gcovr {{ gcovr_args }} {{ quote(BUILD_DIR) }} \
+      --json {{ quote(OUTPUT_DIR) }}/cpp-total.json \
       --json-pretty
-
-    if [[ "$mpi" == "on" ]]; then
-      uv run --no-sync python - "$output_dir/cpp-total.json" <<'PY'
-    import json
-    import sys
-    from pathlib import Path
-
-    report = json.loads(Path(sys.argv[1]).read_text())
-    covered = []
-    for entry in report["files"]:
-        path = entry["file"].replace("\\", "/")
-        if "/detail/mpi/" not in f"/{path}":
-            continue
-        if any(line.get("count", 0) > 0 for line in entry.get("lines", [])):
-            covered.append(path)
-
-    if not any(path.endswith("/MPICompat.cpp") for path in covered):
-        raise SystemExit("MPICompat.cpp has no covered lines")
-    if len(covered) < 2:
-        raise SystemExit(f"expected coverage in at least two MPI sources, found: {covered}")
-    print("Covered MPI sources:", *covered, sep="\n  ")
-    PY
+    if [[ {{ quote(MPI) }} == on ]]; then \
+      uv run --no-sync python tools/check-mpi-coverage.py {{ quote(OUTPUT_DIR) }}/cpp-total.json; \
     fi
-
-    shopt -s nullglob
-    shards=(.coverage.*)
-    if (( ${#shards[@]} == 0 )); then
-      echo "No parallel Python coverage files were produced" >&2
-      exit 1
-    fi
-    mv "${shards[@]}" "$output_dir/"
+    @shopt -s nullglob; \
+    shards=(.coverage.*); \
+    if (( ${#shards[@]} == 0 )); then \
+      echo "No parallel Python coverage files were produced" >&2; \
+      exit 1; \
+    fi; \
+    mv "${shards[@]}" {{ quote(OUTPUT_DIR) }}/
 
 # Combine the raw data from serial and MPI collection runs into the stable report names consumed by
 # Codecov, SonarQube, and the local HTML recipe.
 
 code-coverage-aggregate SERIAL_DIR MPI_DIR OUTPUT_DIR='.':
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    serial_dir={{ quote(SERIAL_DIR) }}
-    mpi_dir={{ quote(MPI_DIR) }}
-    output_dir={{ quote(OUTPUT_DIR) }}
-    mkdir -p "$output_dir"
-    rm -f "$output_dir/.coverage" \
-      "$output_dir/python-coverage.xml" \
-      "$output_dir/python-coverage.info" \
-      "$output_dir/cpp-coverage-through-python-bindings.xml" \
-      "$output_dir/cpp-coverage-through-python-bindings-sonar.xml" \
-      "$output_dir/cpp-coverage-through-python-bindings.info" \
-      "$output_dir/cpp-coverage.xml" \
-      "$output_dir/cpp-coverage-sonar.xml" \
-      "$output_dir/cpp-coverage.info"
-
+    mkdir -p {{ quote(OUTPUT_DIR) }}
+    rm -f {{ quote(OUTPUT_DIR) }}/.coverage \
+      {{ quote(OUTPUT_DIR) }}/python-coverage.xml \
+      {{ quote(OUTPUT_DIR) }}/python-coverage.info \
+      {{ quote(OUTPUT_DIR) }}/cpp-coverage-through-python-bindings.xml \
+      {{ quote(OUTPUT_DIR) }}/cpp-coverage-through-python-bindings-sonar.xml \
+      {{ quote(OUTPUT_DIR) }}/cpp-coverage-through-python-bindings.info \
+      {{ quote(OUTPUT_DIR) }}/cpp-coverage.xml \
+      {{ quote(OUTPUT_DIR) }}/cpp-coverage-sonar.xml \
+      {{ quote(OUTPUT_DIR) }}/cpp-coverage.info
     uvx --from coverage coverage combine \
-      --data-file "$output_dir/.coverage" \
-      "$serial_dir" "$mpi_dir"
+      --data-file {{ quote(OUTPUT_DIR) }}/.coverage \
+      {{ quote(SERIAL_DIR) }} {{ quote(MPI_DIR) }}
     uvx --from coverage coverage xml \
-      --data-file "$output_dir/.coverage" \
-      -o "$output_dir/python-coverage.xml"
+      --data-file {{ quote(OUTPUT_DIR) }}/.coverage \
+      -o {{ quote(OUTPUT_DIR) }}/python-coverage.xml
     uvx --from coverage coverage lcov \
-      --data-file "$output_dir/.coverage" \
-      -o "$output_dir/python-coverage.info"
+      --data-file {{ quote(OUTPUT_DIR) }}/.coverage \
+      -o {{ quote(OUTPUT_DIR) }}/python-coverage.info
     # coverage.py emits repo-relative SF: paths while gcovr emits absolute ones.
     sed -i 's|^SF:\([^/]\)|SF:{{ project_source_dir }}/\1|' \
-      "$output_dir/python-coverage.info"
-
+      {{ quote(OUTPUT_DIR) }}/python-coverage.info
     uvx gcovr \
-      --add-tracefile "$serial_dir/cpp-through-python.json" \
-      --add-tracefile "$mpi_dir/cpp-through-python.json" \
-      --cobertura "$output_dir/cpp-coverage-through-python-bindings.xml" \
-      --sonarqube "$output_dir/cpp-coverage-through-python-bindings-sonar.xml" \
-      --lcov "$output_dir/cpp-coverage-through-python-bindings.info"
-
+      --add-tracefile {{ quote(SERIAL_DIR) }}/cpp-through-python.json \
+      --add-tracefile {{ quote(MPI_DIR) }}/cpp-through-python.json \
+      --cobertura {{ quote(OUTPUT_DIR) }}/cpp-coverage-through-python-bindings.xml \
+      --sonarqube {{ quote(OUTPUT_DIR) }}/cpp-coverage-through-python-bindings-sonar.xml \
+      --lcov {{ quote(OUTPUT_DIR) }}/cpp-coverage-through-python-bindings.info
     uvx gcovr \
-      --add-tracefile "$serial_dir/cpp-total.json" \
-      --add-tracefile "$mpi_dir/cpp-total.json" \
-      --cobertura "$output_dir/cpp-coverage.xml" \
-      --sonarqube "$output_dir/cpp-coverage-sonar.xml" \
-      --lcov "$output_dir/cpp-coverage.info"
+      --add-tracefile {{ quote(SERIAL_DIR) }}/cpp-total.json \
+      --add-tracefile {{ quote(MPI_DIR) }}/cpp-total.json \
+      --cobertura {{ quote(OUTPUT_DIR) }}/cpp-coverage.xml \
+      --sonarqube {{ quote(OUTPUT_DIR) }}/cpp-coverage-sonar.xml \
+      --lcov {{ quote(OUTPUT_DIR) }}/cpp-coverage.info
 
 # Render combined reports locally. lcov and genhtml are intentionally unnecessary in CI.
 
