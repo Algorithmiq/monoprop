@@ -1252,6 +1252,51 @@ is still OpenMP-enabled.
 OpenMP template and both basis APIs using installed targets only. RED: missing imported OpenMP dependency/header; GREEN:
 clean consumer finds/links/runs with no manual flags or source includes. No engine behavior changes yet.
 
+**Task 2 outcome (2026-09-27):** gate passed on GCC 15.2 and Clang 18.1.8 Linux; other platforms pending.
+- Helper contract as implemented, which later tasks rely on:
+  - `for_blocks` throws `std::invalid_argument` for a budget below one and `std::length_error` for
+    `count > PTRDIFF_MAX`, before any block runs, on every path.
+  - It runs serially and in ascending order when `min(threads, count) <= 1` or `omp_get_level() > 0`, so any
+    enclosing region counts, active or not.
+  - In the parallel path each worker stops taking blocks after its own first exception. The lowest worker ID's
+    exception is rethrown after the join.
+- Tests: `cpp/tests/openmp_workshare_tests.cpp` has 13 flat cases. The participation case is skipped by a
+  Boost precondition when the runtime cannot provide a two-worker region.
+  - RED: missing header, then `undefined reference to omp_get_thread_num` without the CMake dependency, then
+    the installed consumer missing `Workshare.h`.
+  - GREEN: 4 of 4 requested workers observed under `OMP_DYNAMIC=TRUE/FALSE` with both libgomp and libomp;
+    `OMP_THREAD_LIMIT=1` stays correct with the participation case skipped; hundreds of fresh processes
+    without failure. Injected helper mutations were all caught.
+- R and M suites pass: splitmix R=1–4 and linear R=1,2,4, in C++ and Python. `just test-find-package` passes
+  for the R, M, Clang and repaired-wheel installs. A copy of the installed config without
+  `find_dependency(OpenMP)` fails to configure, so that line is load-bearing.
+- The engine has no OpenMP code yet, and GNU ld's default `--as-needed` drops libgomp. The GCC `_core.abi3.so`
+  and `libmonoprop.so` are byte-identical to the Task 1 baselines, and a locally repaired wheel bundles no
+  OpenMP runtime. Verify runtime bundling and delocation once library code uses OpenMP (Task 4 onward, and
+  Task 13).
+- Dependency routes:
+  - Homebrew `libomp`, found through `OpenMP_ROOT=$(brew --prefix libomp)` in the setup action, the macOS
+    cibuildwheel environment and the docs. Downstream macOS consumers need the same variable.
+  - The setup action installs `libomp<ver>-dev` whenever `CXX=clang++<ver>` on Linux. The devcontainer adds
+    `libomp-dev` for its default clang.
+  - Nix adds `llvmPackages.openmp` when `stdenv.cc.isClang`, and the flake checks include `monoprop-mpi`.
+    `nix.yml` gains a dev-shell `just build` + `just test-find-package` step.
+  - The clang-tidy job in `qa-analysis.yml` sets `CXX: clang++` for setup, so it receives libomp.
+  - Hwloc is unchanged.
+- Verified only on Linux x86_64 (GCC, Clang, local wheel with auditwheel). Nix, macOS/Homebrew, the devcontainer
+  and cibuildwheel/delocate have not run; they are pending CI or a suitable host.
+- Build-route note: `cmake --build --preset skbuild-release` cannot rebuild a tree that `uv sync` created,
+  because its cached `CMAKE_MAKE_PROGRAM` points at the deleted build-isolation ninja. Rebuild through the R/M
+  `uv sync` commands instead, and check binary mtimes and hashes.
+  - Keep M and Clang builds apart from R with `UV_PROJECT_ENVIRONMENT=<venv>` and
+    `--config-settings-package='monoprop:build-dir=build/<name>/{build_type}'`.
+  - Use `--all-extras` for comparable pytest counts: without mpi4py the communicator-parametrized cases are
+    not collected.
+- Artifacts: `/home/ubuntu/task2-artifacts/` on the c8a.metal-24xl host. `report.md` indexes the numbered
+  logs, build scripts, mutant runs and the wheel. They are intentionally uncommitted and will be removed before
+  merging. The frozen campaign/workload files and the Task 1 artifacts and baseline binaries were verified
+  unchanged.
+
 ### Task 3: Plumb per-object budgets and distributed failure boundaries
 
 **Files:**
