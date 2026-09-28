@@ -1586,6 +1586,75 @@ BOOST_AUTO_TEST_CASE(openmp_cos_mask_exact) {
 persistent buffer. If replay is already bandwidth-bound with regressions, stop/profile rather than proceed on assumed
 speedup.
 
+**Task 4 outcome (2026-09-28):** the owner accepted the gate, with the high-budget losses and the lack of a
+`propagate` gain on record. Correctness gates pass on GCC 15.2 (R, M) and Clang 18.1.8/libomp (R) Linux. Other
+platforms are pending.
+- Contracts as implemented, which later tasks rely on:
+  - `scale_cos_lazy` runs one logical range per `kColumnBlockWords` (1024) fold words.
+    - Row parity is fetched on the caller for each call.
+    - Scratch is a `std::array` on the worker's stack, never the caller's `column_block_scratch()`.
+    - Tail masking stays global through `apply_fold_mask`.
+  - `scale_cos_mask` runs one range per 1024 stored mask blocks. It relies on ascending, distinct, word-aligned
+    bases.
+  - `apply_fused_contract` keeps its phases, each joined before the next:
+    1. The insert snapshots are gathered into the existing `RotationRec::v_tgt`.
+    2. The optional cosine phase runs.
+    3. The records are applied in ranges of 1024.
+  - Every record range calls one out-of-line `[[gnu::noinline]] apply_fused_record_range`, so the compiler's
+    FMA contraction of `cos·c + sin·φ·v` is identical at every budget. Without it, fused-scale `propagate` differed
+    from Task 3 by 1 ulp. Task 9 evaluates explicit `std::fma`.
+  - A kernel stays serial below two ranges; the thresholds are fixed until Task 11.
+  - Debug builds assert `fused_add_owners_unique(fc)` on every apply.
+  - The kernels take a defaulted, test-only range observer (`NoRangeObserver` in production); there is no
+    production callback. Accumulators, index materialization and every other routine stay serial.
+- Tests:
+  - `openmp_kernel_tests.cpp` has 11 cases, with `KernelTestSupport.h`.
+  - `combined_recompute_equivalence.cpp` adds two synthetic multi-block lazy-fold cases: tails, cold parity,
+    Majorana, Pauli, empty columns and index growth.
+  - `fused_cos_sweep_tests.cpp` adds four cases: real-path records with one add-owner per slot in both pictures
+    (cross-rank halves under MPI), exact serial/threaded prototypes, and fused and two-pass agreement with replay at
+    the existing tolerances.
+  - Two `openmp_env_kernels_*` reruns cover `OMP_THREAD_LIMIT=2` and `OMP_DYNAMIC=TRUE`.
+  - The failure scenario `active-ticket cosine-worker` throws from worker 1 while a Ticket is posted.
+  - RED: participation failed with the kernels serial, while the exactness cases already passed as preservation.
+    GREEN: 3–4 distinct workers observed in every kernel's own ranges, on libgomp and libomp.
+  - Six mutants were all killed, three of them by TSan. Stress: 800 fresh processes, no failures.
+  - Coefficients are bitwise equal across budgets. Six library paths are bitwise equal to Task 3.
+- Final runs on fresh rebuilds:
+  - R: ctest 352/352; pytest 840 passed, 13 skipped.
+  - Clang: 352/352; 840 passed.
+  - ASan/UBSan: 352/352; 819 passed.
+  - M: ctest serial 382/382; linear R=1,2,4 and splitmix R=1-4 MPI ctest and `--with-mpi` pytest pass.
+  - `just test-find-package` passes on R and M.
+- TSan qualifies only with Clang + libomp + Archer and one `called_from_lib:libomp.so.5` suppression. GCC's libgomp
+  reports false races on known-safe code, so it is unsupported (`building.mdx`).
+- Replay diagnostics (owner-approved budget; 102 of 180 min used; diagnostic, not acceptance evidence):
+  - Setup: Task 4 R build, prototype selected, allocation read before import, one worker per core.
+  - One-store speedup at the best budget:
+
+    | Case | Speedup | Budget |
+    | --- | --- | --- |
+    | random energy, Heisenberg | 5.3× | T=48 |
+    | random energy, Schrödinger | 24× | T=96 |
+    | Pauli-127 energy | 2.3× | T=16 |
+    | gradient | 1.44× | — |
+    | pared energy | 1.2× | — |
+    | `propagate` | none | — |
+
+  - Losses: 7% (E1, T=96 against T=48), 9% (E4, T≥48 against T=16), 0.8% (`propagate`, T≥48 against T=1).
+    `OMP_WAIT_POLICY=PASSIVE` made them worse, so worker spinning is not the cause.
+  - Synthetic kernels scale 20–54× at T=48, so replay is limited by serial work (Tasks 5, 8, 9) and small layers,
+    not by the kernels. Peak memory is flat across budgets.
+  - Against the baseline partition runtime (90d5717) at the same T:
+    - One thread: within 0.95–1.07.
+    - T≥16: the partitions are 1.2–35× faster, the largest gaps in gradient and `propagate`.
+    - The baseline's peak grows with T by up to 0.38 GiB.
+- Not run: `just build-docs`, and the Nix, macOS/Homebrew, devcontainer and wheel-repair routes.
+  - Wheel bundling of the now-used OpenMP runtime is still to be checked (Task 13).
+- Artifacts: `/home/ubuntu/task4-artifacts/` on the c8a.metal-24xl host (`report.md`, `ledger.md`,
+  `replay-results.md`, `diag/`). They are intentionally uncommitted. The frozen campaign and workload files, the
+  Task 1 artifacts, and the baseline binaries and worktrees were verified unchanged.
+
 ### Task 5: Deterministic parallel bitmap traversal and query generation
 
 **Files:**
@@ -1967,9 +2036,23 @@ through `EvalRequest.parallel` under the approved numerical policy; implementati
   post-call-seed tests from `tests/test_circuit.py`: gradients must use the equivalent composed circuit's parameter
   order, including multi-monomial gates sharing one index. Cross-rank-count sums need not be bitwise
   equal; don't widen tolerances to pass them.
+- [ ] Evaluate explicit `std::fma` for multiply-add updates whose result currently depends on compiler contraction.
+  Task 4 found that the fused-scale insert arms of `apply_fused_contract` (`cos·c + sin·φ·v`, two products) round
+  differently depending on where the compiler fuses: same source, 1-ulp differences between inlining contexts. Task
+  4 pins them with one out-of-line `apply_fused_record_range`. That makes serial and threaded runs bitwise equal within
+  one binary, not across binaries or compilers.
+  - Inventory the affected expressions: fused apply, the scan's fused cosine sweep, replay endpoint and derivative
+    updates, and the new block partials. Single-product `c += a·b` updates already have only one possible fusion.
+  - Compare three options on the same inputs: the current contraction-dependent code, explicit `std::fma` with one
+    documented association, and contraction disabled for the affected translation units.
+  - Measure each option's retained-key and coefficient differences against the frozen baseline, with existing
+    tolerances. Also measure runtime on `-march=native` builds and on builds without FMA hardware (sanitizer, Debug,
+    and the wheel flags actually used), where `std::fma` becomes a software call.
+  - Adopt `std::fma` only with an owner-approved numerical-policy decision covering those differences and costs. Never
+    guard it by `__FMA__` silently, and never use it to hide a tolerance failure. Record the decision either way.
 
 **Gate:** Existing serial API guarantees remain intact; new numerical association is documented and deterministic by
-team size. Global retained term keys must agree, including near cutoffs and stored zeros; matching energies/gradients
+team size. The `std::fma` evaluation is recorded with its measurements and decision. Global retained term keys must agree, including near cutoffs and stored zeros; matching energies/gradients
 alone is insufficient. A key-set change blocks the gate. Stop and report, never widen tolerances or change truncation.
 
 ### Task 10: Cut over configuration and API semantics to one store
