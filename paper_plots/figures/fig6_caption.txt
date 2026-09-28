@@ -22,12 +22,11 @@ Note where they start -- at N=32 monoprop leads ppvm by only 1.5x and PauliPropa
 1.8x, against 41x and 50x by N=512, so the gap is opened over the sweep and not assumed at the
 origin.
 
-The fit window. Every exponent above is fitted over N <= 512, the one window every engine was
-measured across; the points beyond it are drawn but enter no fit. PauliPropagation.jl stops at
-N=512: its N=1024 point was not measured, because past the packed-key cliff described next
-that single point runs for hours, and above N = 512 it could not enter a like-for-like fit in
-any case. Nothing on the canvas says even that much -- the legend carries engine names only --
-so this caption is the record.
+The fit window. Every exponent above, and in the legend, is fitted over N <= 512, the one
+window every engine was measured across; the points beyond it are drawn but enter no fit.
+PauliPropagation.jl stops at N=512: its N=1024 point was not measured, because past the
+packed-key cliff described next that single point runs for hours, and above N = 512 it could
+not enter a like-for-like fit in any case.
 
 Beyond N = 512 PauliPropagation.jl crosses a packed-key width boundary, measured at
 N=576->608: an 8.5x single-N jump in the v0.8.2 full-width probe and 7.7x in its

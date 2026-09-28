@@ -133,12 +133,9 @@ LAYOUTS = {
             "ytick.labelsize": 7.0,
             "legend.fontsize": 6.8,
         },
-        # Below the axes, frameless and stacked: at column width every in-axes corner is
-        # either on a curve or on the 1/N guide, and a box over monoprop's tail would hide
-        # the part of the curve the figure is about. Stacked rather than on one line
-        # because three entries carrying an exponent each need roughly twice 3.4in.
-        # Inside the axes, lower left: with the exponents off the labels the entries are
-        # short, and that corner holds nothing but the tail of the 1/N guide.
+        # Inside the axes, lower left, frameless and stacked: that corner holds nothing but
+        # the tail of the 1/N guide, and stacking keeps the exponent-carrying entries
+        # inside 3.4in.
         "legend": {"loc": "lower left", "ncol": 1, "labelspacing": 0.35},
         "bottom_pad": 3.4,
     },
@@ -492,9 +489,8 @@ def fig6(lattice, outdir: Path, layout: str = "column"):
         fig, ax = plt.subplots(figsize=spec["figsize"])
 
         # Every point drawn solid, as one curve per engine. The N <= FIT_NMAX fit window
-        # still sets the exponents that the caption and stdout report, but it is no longer
-        # drawn: the panel carries no exponents, so there is nothing on it for a fade or a
-        # clip to qualify.
+        # sets the exponents the legend, the caption and stdout report; the window itself is
+        # not drawn.
         fits = _fits(lattice, fit_all=FIT_ALL_POINTS)
         for fam in ORDER:
             ax.plot(fits[fam][0], fits[fam][1], **_style(fam))
@@ -533,13 +529,12 @@ def fig6(lattice, outdir: Path, layout: str = "column"):
                 [],
                 [],
                 **{**_style(fam), "ms": MARKER_SIZE, "lw": LINE_WIDTH + 0.2},
-                label=ENGINE_LABEL[fam],
+                label=f"{ENGINE_LABEL[fam]}  $\\propto N^{{{fits[fam][2]:+.2f}}}$",
             )
             for fam in ORDER
         ]
-        # Names only, no exponents and no title: the panel identifies the curves and
-        # nothing else. Every fitted number lives in fig6_caption.txt and in the build's
-        # stdout, which are now the ONLY record of them.
+        # Each engine's headline exponent beside its name, from the same fits the caption
+        # and stdout report, so the numbers on the panel cannot drift from them.
         ax.legend(
             handles=handles,
             frameon=False,
@@ -801,9 +796,7 @@ def _window_section(fits, lattice):
     return (
         "\n"
         + _para(
-            f"The fit window. Every exponent above is {fitted}.{stop_note} Nothing on the "
-            "canvas says even that much -- the legend carries engine names only -- so this "
-            "caption is the record."
+            f"The fit window. Every exponent above, and in the legend, is {fitted}.{stop_note}"
         )
         + "\n\n"
         + _para(
