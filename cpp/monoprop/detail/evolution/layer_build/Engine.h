@@ -592,7 +592,9 @@ static inline auto empty_coeffs() -> const VecD & {
 }
 
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
-template <size_t NumModes>
+// The scan may run on workers (fused_find_and_collect); resolution, missing-ID assignment, insertion,
+// publication and graph packing stay on the caller. `observer` is the scan's test seam (NoRangeObserver).
+template <size_t NumModes, class Observer = NoRangeObserver>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
                  const CutoffFn<NumModes> &cutoff_fn,
@@ -609,7 +611,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana,
-                 parallel::Options options = {}) -> std::shared_ptr<LayerCore> {
+                 parallel::Options options = {},
+                 const Observer &observer = {}) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
@@ -649,30 +652,40 @@ auto build_layer(MPOperator<NumModes> &local_op,
     if (!identity_gen) {
         double *const sweep_ptr = fused_scale ? fused_scale_coeffs->data() : nullptr;
         fused = with_algebra<NumModes>(basis, [&]<typename A>() {
-            return fused_find_and_collect<NumModes, A>(local_op,
-                                                       gen,
-                                                       cut_eval,
-                                                       cut_st,
-                                                       coeffs,
-                                                       only_rotate_len_k,
-                                                       scan_window,
-                                                       my_rank,
-                                                       router,
-                                                       gen_shift,
-                                                       /*capture_values=*/use_fused,
-                                                       sweep_ptr,
-                                                       cos_build,
-                                                       options);
+            return fused_find_and_collect<NumModes, A, Observer>(local_op,
+                                                                 gen,
+                                                                 cut_eval,
+                                                                 cut_st,
+                                                                 coeffs,
+                                                                 only_rotate_len_k,
+                                                                 scan_window,
+                                                                 my_rank,
+                                                                 router,
+                                                                 gen_shift,
+                                                                 /*capture_values=*/use_fused,
+                                                                 sweep_ptr,
+                                                                 cos_build,
+                                                                 options,
+                                                                 observer);
         });
         if (fused.cos_blocks.size() == 1) {
             // The serial scan produces a single cosine block set — take it wholesale.
             cos_all = std::move(fused.cos_blocks[0]);
         }
         else {
-            // Cosine block sets are disjoint and ascending; concatenate in order.
+            // A threaded scan produces one set per word range, in range order: the ranges own disjoint
+            // ascending words, so concatenating in order keeps the blocks ascending and disjoint.
+            size_t blocks = 0;
             for (const auto &block : fused.cos_blocks) {
+                blocks += block.blocks.size();
+            }
+            cos_all.blocks.reserve(blocks);
+            for (auto &block : fused.cos_blocks) {
+                assert(block.blocks.empty() || cos_all.blocks.empty()
+                       || cos_all.blocks.back().first < block.blocks.front().first);
                 cos_all.total_count += block.total_count;
                 cos_all.blocks.insert(cos_all.blocks.end(), block.blocks.begin(), block.blocks.end());
+                CosMask{}.blocks.swap(block.blocks); // release each range's copy as soon as it is appended
             }
         }
         fused.cos_blocks = std::vector<CosMask>{};

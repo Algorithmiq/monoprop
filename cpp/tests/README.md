@@ -149,11 +149,23 @@ name and cannot address suite-nested cases, tests use flat
   from the real build path (one add-owner per slot, both pictures, cross-rank halves under MPI) in
   `fused_cos_sweep_tests.cpp`. `openmp_env_kernels_*` rerun them under `OMP_THREAD_LIMIT=2` and
   `OMP_DYNAMIC=TRUE`.
+- **Threaded scan**: the `openmp_scan_*` cases compare the threaded bitmap scan
+  (`fused_find_and_collect` over word ranges, merged in range order) with budget one byte for byte:
+  every window slot's wire records, sources and values, both self stages, the cosine set and the
+  fused-sweep coefficients. `ScanTestSupport.h` builds a synthetic operator of four fold blocks per
+  rank and the scenario matrix (one rank, linear zero and non-zero shifts with non-zero window bases,
+  dense splitmix at three and four ranks; dense, sparse and empty pivots; Majorana and Pauli; caps,
+  cutoffs, atol boundaries, capture, fused sweep). They live in `evolution_detail_tests.cpp`,
+  `pauli_build_layer_tests.cpp`, `exact_upper_atol_rescue.cpp`, `majorana_cutoff_tests.cpp` (opaque
+  and basis-change cutoffs stay serial), `sparse_query_tests.cpp` (the merge itself) and
+  `fused_cos_sweep_tests.cpp` (full construction: rows, row IDs, graph layers and coefficients at
+  budgets 1-4). The scan's participation is read from its own ranges through the same observer.
 - **Distributed failure driver**: `mpi_failure_driver.cpp` is not part of the unit runner (the glob
   excludes it). The MPI build compiles it into `monoprop_mpi_failure_driver.x`, and
   `run_mpi_failure_scenario.cmake` runs each scenario on two ranks with a 30 s timeout, as the
   `mpi_failure_*` CTest entries. `active-ticket cosine-worker` throws from a worker of the threaded
-  cosine kernel while a replay Ticket is posted.
+  cosine kernel while a replay Ticket is posted; `before-exchange scan-worker` throws from a worker
+  of the threaded scan while the peer enters the query exchange.
 
 New `*.cpp` files are auto-discovered on the next configure, with no CMake edit
 needed. A file with its own `main()` must be excluded from the glob, as

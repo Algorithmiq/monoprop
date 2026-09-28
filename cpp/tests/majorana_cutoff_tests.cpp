@@ -26,9 +26,11 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ScanTestSupport.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 
 using namespace monoprop;
 using cd = std::complex<double>;
@@ -192,6 +194,12 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     BOOST_TEST((opaque_ev.support_cutoff() == nullptr));
     BOOST_TEST(!opaque_ev.max_slot_bound().has_value());
 
+    // Only the typed built-in cutoffs may run in scan workers. A stateless lambda is still opaque: the
+    // evaluator cannot see what it does, and constness of the std::function says nothing about it.
+    BOOST_TEST(length_ev.parallel_safe());
+    BOOST_TEST(support_ev.parallel_safe());
+    BOOST_TEST(!opaque_ev.parallel_safe());
+
     // passes_with_popcount: pc <= cutoff short-circuits to true; otherwise it equals a direct eval.
     Monomial<N> unpaired; // length 4, not paired
     unpaired.set(0);
@@ -341,4 +349,41 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_generate_paired_op_matches_the_enumeration)
     for (size_t i = 0; i < seen.size(); ++i) {
         BOOST_TEST(listed[i] == seen[i]);
     }
+}
+
+// An opaque cutoff keeps the scan on the calling thread at any budget, in one range, with the same result;
+// so does the basis-change cutoff, whose closure is conservatively treated as opaque.
+BOOST_AUTO_TEST_CASE(openmp_scan_opaque_cutoff_stays_serial) {
+    using scan_test::Expect;
+    const scan_test::Geometry solo{"one rank", 1, 1, false, 0};
+    const auto gen = scan_test::mono_of_bits({14, 20, 33, 47});
+    const CutoffFn<32> opaque = [](const Monomial<32> &m) { return m.count() <= 6; };
+    BOOST_TEST(!detail::CutoffEvaluator<32>(opaque).parallel_safe());
+    scan_test::check_threaded_matches_serial(solo,
+                                             {.label = "opaque lambda", .gen = gen, .cutoff = opaque},
+                                             Expect::output);
+    scan_test::check_threaded_matches_serial(
+        solo,
+        {.label = "opaque lambda, fused", .gen = gen, .cutoff = opaque, .capture = true, .fused_scale = true},
+        Expect::output);
+
+    // Identity basis change: the predicate is a real basis-change closure, and its decisions equal the plain
+    // length cutoff's, so the serial fallback must also reproduce the typed, threaded scan.
+    MonomialList<32> identity;
+    for (size_t b = 0; b < 64; ++b) {
+        Monomial<32> row{};
+        row.set(63 - b); // change_basis reads row 2N-1-pos for bit pos
+        identity.push_back(row);
+    }
+    const auto changed = detail::cutoff_function_basis_change<32>(CutoffType::Length, 6, identity);
+    BOOST_TEST(!detail::CutoffEvaluator<32>(changed).parallel_safe());
+    scan_test::check_threaded_matches_serial(solo,
+                                             {.label = "basis change", .gen = gen, .cutoff = changed},
+                                             Expect::output);
+    const auto typed = scan_test::run_scan(solo,
+                                           {.label = "typed", .gen = gen, .cutoff = detail::LengthCutoff<32>{6}},
+                                           {.threads = 4});
+    const auto via_basis =
+        scan_test::run_scan(solo, {.label = "basis change", .gen = gen, .cutoff = changed}, {.threads = 4});
+    scan_test::check_same_scan(typed, via_basis, false);
 }

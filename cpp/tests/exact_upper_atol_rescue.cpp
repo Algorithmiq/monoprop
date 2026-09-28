@@ -18,6 +18,7 @@
 #include <optional>
 #include <vector>
 
+#include "ScanTestSupport.h"
 #include "TestUtilities.h"
 
 // upper_atol rescue: a structural cutoff of 0 rejects every non-identity partner, and upper_atol = 0
@@ -77,3 +78,37 @@ MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixtur
 MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World)
 
 #undef MAKE_ZERO_CUTOFF_RESCUE_TEST
+
+// The atol boundaries decide per term from the pre-scale coefficient in whichever range owns it: a lower atol
+// equal to a term's |sin|·|c| drops it, an upper atol equal to it rescues a partner the cutoff rejects. The
+// threaded scan must make exactly the serial decisions, with and without value capture and the fused sweep.
+BOOST_AUTO_TEST_CASE(openmp_scan_atol_boundaries_match_serial) {
+    using scan_test::Atol;
+    using scan_test::Expect;
+    const auto gen = scan_test::mono_of_bits({14, 20, 33, 47});
+    const auto tight = monoprop::detail::LengthCutoff<32>{2};
+    for (const scan_test::Geometry g :
+         {scan_test::Geometry{"one rank", 1, 1, false, 0}, scan_test::Geometry{"splitmix R=4", 4, 1, false, 1}}) {
+        for (const bool capture : {false, true}) {
+            scan_test::check_threaded_matches_serial(
+                g,
+                {.label = "lower atol at a term", .gen = gen, .atol = Atol::lower_equal, .capture = capture},
+                Expect::output);
+            scan_test::check_threaded_matches_serial(g,
+                                                     {.label = "upper atol rescue",
+                                                      .gen = gen,
+                                                      .cutoff = tight,
+                                                      .atol = Atol::upper_equal,
+                                                      .capture = capture},
+                                                     Expect::output);
+        }
+        scan_test::check_threaded_matches_serial(g,
+                                                 {.label = "upper atol rescue, fused cos sweep",
+                                                  .gen = gen,
+                                                  .cutoff = tight,
+                                                  .atol = Atol::upper_equal,
+                                                  .capture = true,
+                                                  .fused_scale = true},
+                                                 Expect::output);
+    }
+}

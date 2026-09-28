@@ -23,7 +23,9 @@
 #include <utility>
 
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/Engine.h"
 #include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
@@ -81,6 +83,36 @@ struct PropagatorTestAccess {
         p.extend_coeffs_from_current_picture_if_needed_(*g.coeffs);
         g.apply_angle = p.schrodinger_ ? -build_angle : build_angle;
         return g;
+    }
+
+    // One graph-only layer (no coefficients, not appended to the graph) built by the real build_layer on the
+    // propagator's operator, budget and communicator, under the propagator's own operation guard, with a
+    // test observer on the scan's ranges. The operator may grow, so the object is for inspection only.
+    template <class Observer>
+    static auto build_layer_observed(Propagator &p, const VecZ &gate, const Observer &observer)
+        -> std::shared_ptr<LayerCore> {
+        return p.run_operation_(true, [&](bool &mutation_started) {
+            const auto gen = indices_to_bitset_checked<NumModes>(gate, 2 * p.logical_num_modes_);
+            mutation_started = true;
+            return build_layer<NumModes>(p.mp_op_,
+                                         gen,
+                                         p.cutoff_fn_,
+                                         p.lower_atol_,
+                                         std::nullopt,
+                                         p.upper_atol_,
+                                         std::nullopt,
+                                         std::nullopt,
+                                         p.matched_scratch_,
+                                         p.comm_,
+                                         nullptr,
+                                         nullptr,
+                                         p.schrodinger_,
+                                         nullptr,
+                                         nullptr,
+                                         p.basis_,
+                                         p.parallel_,
+                                         observer);
+        });
     }
 
     static auto partition_count(const Propagator &p) -> int {

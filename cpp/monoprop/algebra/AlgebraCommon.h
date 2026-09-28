@@ -223,6 +223,16 @@ public:
 
     auto support_cutoff() const -> const SupportCutoff<NumModes> * { return support_cutoff_; }
 
+    /*!
+     * \brief Whether scan workers may evaluate this cutoff concurrently.
+     *
+     * True only when the predicate is one of the typed built-in cutoffs (LengthCutoff, SupportCutoff),
+     * whose evaluation reads only their own immutable fields. Any other predicate is opaque, even a
+     * stateless lambda: the evaluator cannot inspect it, and a const std::function says nothing about what
+     * its target does. Opaque predicates, including the basis-change closures, keep the serial scan.
+     */
+    auto parallel_safe() const noexcept -> bool { return length_cutoff_ != nullptr || support_cutoff_ != nullptr; }
+
     auto operator()(const Monomial<NumModes> &mono) const -> bool {
         if (length_cutoff_ != nullptr) {
             return (*length_cutoff_)(mono);

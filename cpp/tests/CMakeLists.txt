@@ -149,7 +149,7 @@ monoprop_add_launch_env_case(
 # participation must not depend on receiving the full budget.
 set(
   _monoprop_kernel_cases
-  "openmp_cos_mask_exact,openmp_cos_mask_workers_participate,openmp_cos_lazy_workers_participate,openmp_fused_apply_exact_on_disjoint_records,openmp_fused_apply_workers_participate,openmp_kernel_worker_failures_join_before_rethrow,combined_threaded_lazy_fold_matches_oracle,fused_real_records_have_one_add_owner_and_apply_exactly,fused_threaded_prototype_matches_serial_prototype_exactly"
+  "openmp_cos_mask_exact,openmp_cos_mask_workers_participate,openmp_cos_lazy_workers_participate,openmp_fused_apply_exact_on_disjoint_records,openmp_fused_apply_workers_participate,openmp_kernel_worker_failures_join_before_rethrow,combined_threaded_lazy_fold_matches_oracle,fused_real_records_have_one_add_owner_and_apply_exactly,fused_threaded_prototype_matches_serial_prototype_exactly,openmp_scan_ranges_match_serial_majorana,openmp_scan_workers_participate,openmp_scan_worker_failure_joins_before_rethrow,openmp_scan_prepares_cold_caches_on_the_caller,openmp_scan_pauli_ranges_match_serial,openmp_scan_threaded_construction_matches_serial_exactly,openmp_scan_construction_workers_participate"
 )
 monoprop_add_launch_env_case(
   openmp_env_kernels_thread_limit_2
@@ -218,6 +218,10 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
   monoprop_add_failure_scenario(worker_throw worker-throw "" "injected worker failure" "UNGUARDED")
   monoprop_add_failure_scenario(
     before_exchange before-exchange "" "injected failure in the scan" "UNGUARDED|NOT REACHED"
+  )
+  # Worker 1 of the scan's two-worker team owns word range 1; peers enter the query exchange normally.
+  monoprop_add_failure_scenario(
+    before_exchange_scan_worker before-exchange scan-worker "scan range 1 on OpenMP worker 1" "UNGUARDED|NOT REACHED"
   )
   monoprop_add_failure_scenario(
     active_ticket active-ticket ticket "injected failure while the replay Ticket" "UNGUARDED"

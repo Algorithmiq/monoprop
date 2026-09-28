@@ -35,6 +35,7 @@
 
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/parallel/Options.h"
@@ -42,36 +43,8 @@
 
 namespace monoprop::detail {
 
-/*!
- * \brief The kinds of logical work range a threaded kernel reports to its range observer (see NoRangeObserver).
- */
-enum class KernelRange {
-    cos_lazy,     //!< scale_cos_lazy: one range per kColumnBlockWords fold words.
-    cos_mask,     //!< scale_cos_mask: one range per kCosMaskRangeBlocks stored mask blocks.
-    fused_gather, //!< apply_fused_contract insert snapshots: one range per kFusedRecordRange records.
-    fused_apply,  //!< apply_fused_contract rotations: one range per kFusedRecordRange records.
-};
-
-/*!
- * \brief The observer production kernels use: it does nothing and compiles away.
- *
- * A kernel calls `prepare(kind, ranges)` once on the calling thread before any range runs, then
- * `visit(kind, range)` at the start of each logical range, from whichever thread owns that range. Tests
- * substitute an observer that records the worker of each range; that seam is the only reason the kernels
- * take an observer, and no production caller passes one.
- */
-struct NoRangeObserver {
-    auto prepare(KernelRange /*kind*/, size_t /*ranges*/) const noexcept -> void {}
-    auto visit(KernelRange /*kind*/, size_t /*range*/) const noexcept -> void {}
-};
-
 //! Stored mask blocks (one 64-bit word each) per scale_cos_mask range: as many words as a fold block.
 inline constexpr size_t kCosMaskRangeBlocks = kColumnBlockWords;
-
-//! Number of `per_range`-sized logical ranges covering `items`.
-inline constexpr auto logical_ranges(size_t items, size_t per_range) -> size_t {
-    return (items + per_range - 1) / per_range;
-}
 
 // Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore.
 template <size_t NumModes>

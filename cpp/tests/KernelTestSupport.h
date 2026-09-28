@@ -46,7 +46,7 @@ namespace kernel_test {
 
 using monoprop::detail::KernelRange;
 
-inline constexpr size_t kKinds = 4;
+inline constexpr size_t kKinds = 5;
 
 // What one kernel invocation reported for one kind of range.
 struct RangeSlots {

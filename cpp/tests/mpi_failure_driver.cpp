@@ -23,6 +23,8 @@
 //
 //   worker-throw                     worksharing worker throws inside a retained-functional evaluation
 //   before-exchange                  a build fails in the scan, before the first query exchange
+//   before-exchange scan-worker      a worker of the threaded scan throws in one of its word ranges, before
+//                                    the first query exchange the peers enter
 //   active-ticket ticket|pending     a failure while a replay Ticket / construction PendingAlltoallv is posted
 //   active-ticket cosine-worker      a worker of the threaded cosine kernel throws while the replay Ticket is
 //                                    posted
@@ -32,7 +34,9 @@
 #include <mpi.h>
 #include <omp.h>
 
+#include <algorithm>
 #include <complex>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -139,6 +143,60 @@ auto before_exchange(int rank) -> void {
     build(sim);
     if (rank == 0) {
         say(rank, "INJECTION NOT REACHED: the scan never evaluated the cutoff");
+    }
+}
+
+// Throws from one word range of the real threaded scan, on whichever worker owns it.
+struct ThrowingScanObserver {
+    int rank;
+    auto prepare(detail::KernelRange, size_t) const noexcept -> void {}
+    auto visit(detail::KernelRange kind, size_t range) const -> void {
+        if (rank == 0 && kind == detail::KernelRange::scan && range == 1) {
+            throw std::runtime_error(
+                std::format("injected failure in scan range {} on OpenMP worker {}", range, omp_get_thread_num()));
+        }
+    }
+};
+
+// Enough terms that each rank's store spans two fold blocks, so the scan really opens a two-worker team.
+constexpr size_t kWideModes = 16;
+
+auto scan_worker(int rank) -> void {
+    OperatorDict ham;
+    uint64_t state = 0x5CA3ULL;
+    while (ham.size() < 200000) {
+        VecZ idx;
+        while (idx.size() < 6) { // weight 6: C(32, 6) ~ 9e5 distinct terms, and an imaginary Hermitian coefficient
+            state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+            const size_t m = (state >> 33) % (2 * kWideModes);
+            if (std::ranges::find(idx, m) == idx.end()) {
+                idx.push_back(m);
+            }
+        }
+        std::ranges::sort(idx);
+        ham[idx] = std::complex<double>{0.0, 1e-3};
+    }
+    ::setenv("monoprop_NUM_THREADS", "2", 1);
+    MonomialPropagator<kWideModes> sim(ham,
+                                       2 * kWideModes,
+                                       VecZ{0, 1},
+                                       std::nullopt,
+                                       MPI_COMM_WORLD,
+                                       std::nullopt,
+                                       std::nullopt,
+                                       CutoffType::Length,
+                                       std::nullopt,
+                                       kWideModes,
+                                       Basis::Majorana,
+                                       /*partitions=*/1);
+    say(rank,
+        std::format("{} local terms, {} words, budget {}",
+                    sim.size(),
+                    sim.mp_op().inverted_index().words(),
+                    detail::PropagatorTestAccess<kWideModes>::options(sim).threads));
+    (void)detail::PropagatorTestAccess<kWideModes>::build_layer_observed(sim, VecZ{0, 5}, ThrowingScanObserver{rank});
+    if (rank == 0) {
+        say(rank, "INJECTION NOT REACHED: the scan ran in fewer than two ranges");
     }
 }
 
@@ -294,6 +352,9 @@ auto main(int argc, char **argv) -> int {
     try {
         if (scenario == "worker-throw") {
             worker_throw(rank);
+        }
+        else if (scenario == "before-exchange" && option == "scan-worker") {
+            scan_worker(rank);
         }
         else if (scenario == "before-exchange") {
             before_exchange(rank);

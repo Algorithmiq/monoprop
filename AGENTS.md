@@ -72,9 +72,10 @@ just build-docs
   separates validation from mutation (`run_operation_`): a failure after mutation starts invalidates the
   object and aborts a multi-rank ordinary communicator (`mpi::operation_failed`). Catch failures inside
   posted `Ticket`/`PendingAlltoallv` lifetimes, never only at the outermost level.
-- Threaded kernels (`scale_cos_*`, `apply_fused_contract`) take a defaulted test-only range observer;
-  participation tests read it (`cpp/tests/KernelTestSupport.h`). Serial and threaded runs must agree
-  bitwise. TSan evidence needs Clang + libomp + Archer; GCC's libgomp gives false reports (`building.mdx`).
+- Threaded kernels (`scale_cos_*`, `apply_fused_contract`, the `fused_find_and_collect` scan) take a
+  defaulted test-only range observer; participation tests read it (`cpp/tests/KernelTestSupport.h`,
+  `ScanTestSupport.h`). Serial and threaded runs must agree bitwise. Scan workers only traverse frozen
+  storage and merge in range order; only typed cutoffs (`CutoffEvaluator::parallel_safe`) run on them. TSan evidence needs Clang + libomp + Archer; GCC's libgomp gives false reports (`building.mdx`).
 - `cpp/tests/mpi_failure_driver.cpp` has its own `main()`, excluded from the unit-runner glob;
   `ctest -L mpi_failure` runs its two-rank abort scenarios (30 s timeout; a timeout is a hang).
 - Slow CTest startup in MPI builds is `MPI_Init` fabric probing; see
