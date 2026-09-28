@@ -700,6 +700,10 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
         settings_snapshot,
     )
 
+    # Read before importing monoprop: loading it starts the OpenMP runtime, which (with OMP_PLACES set and
+    # binding on) may bind this thread to the first place, so a later read sees that place, not the allocation.
+    local_cpus = sorted(os.sched_getaffinity(0))
+
     import monoprop  # noqa: PLC0415
 
     identity = cell["identity"]
@@ -731,7 +735,6 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
 
     binary = Path(monoprop._core.__file__)
     binary_hash = file_sha256(binary)
-    local_cpus = sorted(os.sched_getaffinity(0))
     everyone = (
         local_cpus
         if comm is None
