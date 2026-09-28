@@ -1753,6 +1753,59 @@ window/self regressions, not only the old serial path. GREEN: exact serial/threa
 graph fields at fixed geometry. Ordered query/row/graph equivalence, no callback-thread contract change, no lazy-cache
 races. Construction bitmap-traversal time and peak scratch are recorded separately from resolution.
 
+**Task 5 outcome (2026-09-28):** the owner accepted the gate, with the high-budget losses and the unexplained P1
+peak growth on record. Correctness gates pass on GCC 15.2 (R, M) and Clang 18.1.8/libomp (R) Linux. Other platforms
+are pending.
+- Contracts as implemented, which later tasks rely on:
+  - `fused_find_and_collect` prepares the inverted index and row parity on the caller, then splits the words into
+    `scan_ranges(words, options)` = `min(threads, ceil(words/1024))` contiguous runs of whole fold blocks
+    (`scan_range_words`). Range IDs depend on the word count and budget only, never on the actual team.
+  - Each range runs `fused_find_and_collect_range` into a private `FusedScanResult`. It never calls a lazy accessor,
+    acquires its thread_local scratch on the executing thread, masks only the global tail word and, in fused mode,
+    scales only its own sources, once, after capturing the pre-scale value.
+  - `merge_scan_ranges` joins the pieces in range order, stream by stream: checked totals, one reservation, the
+    first buffer moved when it holds the stream or has room, drained buffers released (swapped, not cleared).
+    Self stages merge through `SelfQueryStage::push`; cosine sets stay one per range, ascending and disjoint, and
+    `build_layer` concatenates them.
+  - `CutoffEvaluator::parallel_safe()` is true only for typed `LengthCutoff`/`SupportCutoff`. Opaque predicates,
+    basis-change closures and scans below two ranges run the unchanged serial scan on the caller.
+  - The test-only observer seam (`KernelRange`, `NoRangeObserver`, `logical_ranges`) moved to
+    `layer_build/Common.h` and gained `KernelRange::scan`. `build_layer` forwards a defaulted observer.
+  - Resolution, missing-ID assignment, insertion, publication, graph packing and `scaled_count` are unchanged.
+- Tests:
+  - `cpp/tests/ScanTestSupport.h` builds a four-fold-block synthetic operator per rank and compares every stream,
+    both self stages, the cosine set and the coefficients byte for byte at budgets 2-4 against budget 1.
+  - The `openmp_scan_*` cases span one rank, linear zero/non-zero shifts with non-zero window bases, dense splitmix
+    at three and four ranks, dense/sparse/empty pivots, Majorana and Pauli J(G), caps, cutoff 0, atol boundaries,
+    capture, the fused sweep, cold caches, the merge itself, and opaque/basis-change serial fallback.
+  - Full construction at budgets 1-4 gives identical rows, row IDs, graph layers and coefficients in both pictures.
+  - Failures: a scan worker throw joins before rethrow and invalidates the propagator; the new two-rank scenario
+    `before-exchange scan-worker` aborts promptly under both routings.
+  - RED: the tests did not compile without the helper, then failed every multi-range expectation with traversal
+    forced serial while exactness passed. GREEN: 2-4 distinct workers in the scan's own ranges.
+  - Seven mutants were all killed, one by TSan. Stress: 800 fresh processes, no failures. Serial scan digests and
+    Task 4's cross-revision probe are bitwise equal to Task 4 at every budget checked.
+- Final runs on fresh rebuilds: R, Clang and ASan/UBSan ctest 366/366 (pytest 840, 840, 819 passed); TSan (Clang +
+  libomp + Archer, same single suppression) 85/85 with no reports; M serial 396/396, linear R=1,2,4 and splitmix
+  R=1-4 MPI ctest and `--with-mpi` pytest pass; `just test-find-package` passes on R and M.
+- Construction diagnostics (owner-approved budget; 18 of 60 min used; diagnostic, not acceptance evidence):
+  - End-to-end speedup at the best budget: random Heisenberg `build_graph` 4.8× (T=48), random Schrödinger
+    `build_graph` 11.8× (T=96), Pauli-127 `build_graph` 1.55× (T=4), random Heisenberg `propagate` 5.0× (T=48;
+    Task 4 had no gain).
+  - Traversal alone scales 18-21× on the random cases and 3× on Pauli-127. Resolution, deferred insertion,
+    finalisation and the replay step stay serial and now bound B1 and B4.
+  - Losses: `propagate` 18% slower at T=96 than T=48; Pauli-127 4.5% slower at T≥48 than T=16; random Heisenberg
+    `build_graph` 2% slower at T=96 than T=48.
+  - The serial ordered merge grows with the range count, to 28-37% of traversal time at high T. It is a Task 11
+    bounded-optimisation candidate.
+  - Memory: the threaded scan's simultaneous private+merged heap peak never exceeded the serial scan's, so the
+    two-pass exact fill was not needed. Process peak grows 0.5-7% at T>1; `MALLOC_ARENA_MAX=1` removes it for the
+    Schrödinger and Pauli cases (glibc per-thread arenas), but `propagate`'s +2.9% remains unexplained.
+- Not run: `just build-docs`, and the Nix, macOS/Homebrew, devcontainer and wheel-repair routes.
+- Artifacts: `/home/ubuntu/task5-artifacts/` on the c8a.metal-24xl host (`report.md`, `ledger.md`,
+  `diag-results.md`, `diag/`). They are intentionally uncommitted. The frozen campaign and workload files, the
+  Task 1 artifacts, and the baseline binaries and worktrees were verified unchanged.
+
 ### Task 6: Parallel frozen lookup while retaining serial insertion
 
 **Files:**
