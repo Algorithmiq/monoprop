@@ -1464,6 +1464,70 @@ cases are baseline preservation evidence, not RED for a feature already shipped 
 entry point; runtime global settings unchanged; failure tests do not hang. Public/exported signature ABI change is
 recorded for a coordinated library/bindings rebuild.
 
+**Task 3 outcome (2026-09-27):** gate passed on GCC 15.2 (R and M) and Clang 18.1.8/libomp (R) Linux, after one
+fix to the Task 1 harness that the change required (see below). Kernels are still serial. Other platforms pending.
+- Contracts as implemented, which later tasks rely on:
+  - `resolve_thread_budget`/`capture_thread_budget` (exported, installed) follow the parser rules above. Only
+    explicit `partitions == 1` on a `Kind::Mpi` communicator captures a budget, once per object. Everything else,
+    including Shm/Hybrid children and facades, keeps `{.threads = 1}`. Copies and retained functionals keep the
+    captured value. A parse error is `PropagatorConfigError` on one rank and `MPI_Abort` on several.
+  - `run_operation_` separates validation from mutation with a `mutation_started` flag. A later failure calls
+    `invalidate_()` and then `mpi::operation_failed()`. That applies to every non-facade object on an ordinary
+    communicator, not only the prototype. It aborts when the communicator has more than one rank, and rethrows
+    the original exception otherwise. Facades rethrow through their legacy path. Validation that used to be
+    interleaved with mutation now runs first: generator, initial-operator and basis-change indices.
+  - Guards sit inside the `Ticket` lifetime in `evolve_step` and `state_operator_derivative_local`, around local
+    work before each allreduce in `ev`/`ev_and_grad`, and around each `wait_into` inside its `PendingAlltoallv`
+    lifetime in `run_exchange`. `build_layer` has no whole-body guard: the propagator's operation guard covers it.
+  - The requested and required MPI level stay `MPI_THREAD_SERIALIZED`. `mpi::init` checks the level actually
+    provided whether MPI was host- or library-initialized, and the prototype constructor calls
+    `require_thread_support()`.
+  - `require_initializing_thread()` uses `MPI_Is_thread_main`. On a wrong thread it prints a diagnostic and calls
+    `std::abort()` with no MPI calls. It guards only the MPI-using prototype entries, retained functionals included.
+  - White-box access for tests goes through a befriended `detail::PropagatorTestAccess`, which the library never
+    defines.
+- Tests:
+  - `openmp_runtime_tests.cpp` has 23 cases.
+  - Five fresh-process `openmp_env_*` CTest entries cover budgets 1 and 3, the OpenMP default,
+    `OMP_THREAD_LIMIT=2`, and `OMP_PROC_BIND=false` for the affinity check.
+  - `tests/test_openmp_config.py` has 13 cases, and `mpi_utils_tests.cpp` gains a `routes_pairwise` cache case.
+  - `mpi_failure_driver.cpp` is excluded from the unit-runner glob and registered as eight `mpi_failure_*` entries.
+  - RED: invalid budgets were silently accepted (9 Python failures), and the C++ build failed on missing headers.
+  - Six R mutants and three failure-driver mutants were all killed. Without the abort, or without the guard
+    inside the Ticket lifetime, the scenarios hang until the 30 s timeout.
+- Final R and M runs on fresh rebuilds:
+  - R: ctest 333/333; pytest 840 passed, 13 skipped (after the harness fix).
+  - M serial: ctest 363/363; pytest 827 passed, 26 skipped.
+  - Splitmix R=1-4 and linear R=1,2,4: C++ suites and failure scenarios pass; `--with-mpi` pytest passes.
+  - `just test-find-package` passes on R and M, including a new prototype chain.
+  - Clang: 333/333 and 840 passed.
+  - Generated bindings are byte-identical to Task 2's.
+- Failure scenarios, two ranks with a 30 s timeout: all eight end with a nonzero exit in 2 s or less and print
+  the expected diagnostic.
+  - Provided levels equal the requested ones (SINGLE, FUNNELED, SERIALIZED, MULTIPLE), so the
+    insufficient-level case really runs; mpi4py 4.1.2 provides MULTIPLE.
+  - A wrong-thread entry exits with SIGABRT (134) and prints no `MPI_Abort` text.
+- The exported `evolve_step`, `evolve_operator` and `state_operator_derivative_local` changed signature (trailing
+  `Options`, serial default). Rebuild the library, the bindings and C++ consumers together (`building.mdx`).
+- Linkage: `_core.abi3.so` and `libmonoprop.so` now NEED the OpenMP runtime (`libgomp.so.1` or `libomp.so.5`),
+  so Task 2's "no libgomp" finding no longer holds. Check wheel bundling and delocation again in Task 13.
+- Harness finding, fixed with owner approval:
+  - With `OMP_PLACES` set and binding on, the runtime binds the initial thread to the first place. libgomp does
+    it when the library loads, libomp at the first OpenMP call. This is OpenMP applying the user's placement;
+    monoprop calls no affinity API.
+  - `tools/benchmark-rank-local-openmp.py` read `sched_getaffinity(0)` after `import monoprop`, so it rejected the
+    documented candidate launch on GCC builds, and `test_observe_rejects_contradictory_evidence[change2]` failed.
+  - `open_context` now reads the allocation before importing monoprop. Afterwards R pytest gives 840 passed; the
+    harness tests pass on R, Clang, M and MPI with 2 ranks.
+  - For the baseline binary, which loads no OpenMP runtime, both orders read the same mask, so collected evidence is
+    unaffected. Apply the same edit to the baseline worktrees' copy of the tool before any Task 11 baseline reruns.
+  - Still open: `memory/cpu.py` reports the diagnostic `affinity_cpus` after the import, so under libgomp binding it
+    reports 1. It is metadata, not a gate.
+- Not run: `just build-docs`, the Nix, macOS/Homebrew and devcontainer routes, and the wheel repair routes.
+- Artifacts: `/home/ubuntu/task3-artifacts/` on the c8a.metal-24xl host (`report.md`, `ledger.md`, `logs/`).
+  They are intentionally uncommitted. The frozen campaign and workload files, Task 1 artifacts and baseline
+  binaries were verified unchanged.
+
 ### Task 4: Prototype cosine and fused updates without structural concurrency
 
 **Files:**
