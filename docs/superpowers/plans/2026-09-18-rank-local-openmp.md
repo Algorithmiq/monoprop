@@ -1520,7 +1520,8 @@ fix to the Task 1 harness that the change required (see below). Kernels are stil
   - `open_context` now reads the allocation before importing monoprop. Afterwards R pytest gives 840 passed; the
     harness tests pass on R, Clang, M and MPI with 2 ranks.
   - For the baseline binary, which loads no OpenMP runtime, both orders read the same mask, so collected evidence is
-    unaffected. Apply the same edit to the baseline worktrees' copy of the tool before any Task 11 baseline reruns.
+    unaffected. The same edit is applied to the tool copy in both baseline worktrees, which now match the committed
+    tool (sha256 `2207529f…`). Their harness tests pass, including MPI with 2 ranks, and their binaries are unchanged.
   - Still open: `memory/cpu.py` reports the diagnostic `affinity_cpus` after the import, so under libgomp binding it
     reports 1. It is metadata, not a gate.
 - Not run: `just build-docs`, the Nix, macOS/Homebrew and devcontainer routes, and the wheel repair routes.
@@ -2116,6 +2117,9 @@ modify `cpp/monoprop/detail/operator/OperatorIndex.h`, its immediate MPOperator/
 `cpp/tests/{operator_index_tests,sparse_resolve_tests,simulator_copy_tests}.cpp`. Keep any adapter private and narrow;
 no container-plugin framework. Do not rename `bench_*` functions or move benchmark files.
 
+- [ ] Before measuring, check that both arms run identical measurement code. The baseline worktrees hold uncommitted
+  copies of `tools/benchmark-rank-local-openmp.py`. Their sha256 must equal the candidate's committed copy (after
+  Task 3: `2207529f…`, which reads the allocation before importing monoprop). Re-sync them after any later tool change.
 - [ ] Add metadata for `has_mpi`, MPI requested/provided thread support, requested/effective team size, OpenMP runtime,
   OMP_NUM_THREADS/PLACES/PROC_BIND/DYNAMIC/THREAD_LIMIT, any library override, routing mode/effective linear bits/seed,
   launcher command, rank/worker CPU masks, NUMA IDs, revision/dirty overlay and extension path/hash. Collect placement
