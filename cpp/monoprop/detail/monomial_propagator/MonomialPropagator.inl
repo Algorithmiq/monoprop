@@ -40,6 +40,8 @@
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
+#include "monoprop/detail/mpi/OperationFailure.h"
+#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/partition/PartitionGroup.h"
 
 namespace monoprop {
@@ -98,6 +100,14 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
       cutoff_type_{cutoff_type},
       basis_change_{basis_change},
       basis_{basis} {
+    // Transitional one-store prototype: explicit partitions=1 on an ordinary communicator (also the non-MPI
+    // build's only kind). Shm/Hybrid partition children and facades keep serial options and their legacy
+    // configuration. Checked before any MPI work in this constructor.
+    if (partitions == 1 && comm.kind == mpi::Comm::Kind::Mpi) {
+        one_store_ = true;
+        mpi::require_initializing_thread();
+        capture_one_store_budget_();
+    }
     if (logical_num_modes_ == 0 || logical_num_modes_ > NumModes) {
         throw PropagatorConfigError(
             std::format("logical_num_modes ({}) must be in the range [1, {}].", logical_num_modes_, NumModes));
@@ -238,7 +248,7 @@ MonomialPropagator<NumModes>::~MonomialPropagator() = default;
 
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
-    : schrodinger_(other.schrodinger_),
+    : schrodinger_(checked_source_(other).schrodinger_),
       comm_(other.comm_),
       cutoff_fn_(other.cutoff_fn_),
       mp_op_(other.mp_op_),
@@ -256,7 +266,82 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       basis_(other.basis_),
       partition_group_(other.partition_group_
                            ? std::make_unique<detail::partition::PartitionGroup<NumModes>>(*other.partition_group_)
-                           : nullptr) {}
+                           : nullptr),
+      parallel_(other.parallel_),
+      one_store_(other.one_store_) {}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::checked_source_(const MonomialPropagator &other) -> const MonomialPropagator & {
+    other.require_valid_();
+    return other;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::require_valid_() const -> void {
+    if (invalid_) {
+        throw InvalidPropagatorError(
+            "This propagator is no longer usable: an earlier operation failed after it had started changing the "
+            "operator, graph or cached state, so that state is incomplete. Construct a new propagator (or use a "
+            "copy made before the failure); the failed object can only be destroyed.");
+    }
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::enter_operation_(bool uses_mpi) const -> void {
+    if (uses_mpi && one_store_) {
+        mpi::require_initializing_thread();
+    }
+    require_valid_();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::mutation_failed_(std::exception_ptr error) -> void {
+    invalidate_();
+    // A facade's failure has already passed through its partitions' own poison/abort paths.
+    if (!partition_group_) {
+        mpi::operation_failed(comm_, error);
+    }
+    std::rethrow_exception(error);
+}
+
+template <size_t NumModes>
+template <typename Body>
+auto MonomialPropagator<NumModes>::run_operation_(bool uses_mpi, Body &&body) -> decltype(auto) {
+    enter_operation_(uses_mpi);
+    bool mutation_started = false;
+    try {
+        return std::forward<Body>(body)(mutation_started);
+    }
+    catch (...) {
+        if (!mutation_started) {
+            throw;
+        }
+        mutation_failed_(std::current_exception());
+    }
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::capture_one_store_budget_() -> void {
+    try {
+        mpi::require_thread_support();
+        try {
+            parallel_ = detail::parallel::capture_thread_budget();
+        }
+        catch (const std::invalid_argument &e) {
+            throw PropagatorConfigError(e.what());
+        }
+    }
+    catch (...) {
+        mpi::operation_failed(comm_, std::current_exception());
+    }
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::validate_generators_(const std::vector<VecZ> &majoranas) const -> void {
+    for (const auto &gate : majoranas) {
+        (void)indices_to_bitset_checked<NumModes>(gate, 2 * logical_num_modes_);
+    }
+}
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t {
@@ -405,33 +490,47 @@ auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
-    ++initial_operator_epoch_;
-    if (partition_group_) {
-        // The facade holds no local terms of its own, so the return is empty.
-        for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
-        return {};
-    }
-    const routing::Router router = router_for<NumModes>(comm_); // hoisted, never per term
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
-
-    OperatorDict new_op;
-    for (const auto &[ind, coeff] : op_dict) {
-        const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
-        if (ind.empty()) { // Core term, store in all
-            core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
-            continue;
+    return run_operation_(true, [&](bool &mutation_started) -> std::pair<MonomialList<NumModes>, VecD> {
+        if (partition_group_) {
+            for (const auto &[ind, coeff] : op_dict) {
+                (void)indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
+            }
+            mutation_started = true;
+            ++initial_operator_epoch_;
+            // The facade holds no local terms of its own, so the return is empty.
+            for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
+            return {};
         }
-        if (my_rank == find_rank<NumModes>(mono, router)) {
-            const auto mono_indices = bitset_to_indices<NumModes>(mono);
-            new_op[mono_indices] = coeff;
-        }
-    }
+        const routing::Router router = router_for<NumModes>(comm_); // hoisted, never per term
+        const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
-    return mp_op_.update_initial_operator(new_op, schrodinger_);
+        // Read-only pass: every index is checked before anything, the epoch included, changes.
+        OperatorDict new_op;
+        std::optional<double> new_core_term;
+        for (const auto &[ind, coeff] : op_dict) {
+            const auto mono = indices_to_bitset_checked<NumModes>(ind, 2 * logical_num_modes_);
+            if (ind.empty()) { // Core term, store in all
+                new_core_term = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
+                continue;
+            }
+            if (my_rank == find_rank<NumModes>(mono, router)) {
+                const auto mono_indices = bitset_to_indices<NumModes>(mono);
+                new_op[mono_indices] = coeff;
+            }
+        }
+
+        mutation_started = true;
+        ++initial_operator_epoch_;
+        if (new_core_term) {
+            core_term_ = *new_core_term;
+        }
+        return mp_op_.update_initial_operator(new_op, schrodinger_);
+    });
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_data() const -> std::vector<LayerData> {
+    require_valid_();
     require_single_partition_("graph_data()");
     std::vector<LayerData> layers;
     const auto num_layers = graph_.layers();
@@ -523,6 +622,12 @@ auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_typ
         throw CutoffConfigError(std::format("basis_change must have exactly 2*logical_num_modes ({}) rows; got {}.",
                                             2 * logical_num_modes_,
                                             basis_change->size()));
+    }
+    // regenerate_cutoff_fn_ would reject these too, but only after an update started changing settings.
+    if (basis_change.has_value()) {
+        for (const auto &row : *basis_change) {
+            (void)indices_to_bitset_checked<NumModes>(row, 2 * logical_num_modes_);
+        }
     }
 }
 
@@ -630,10 +735,10 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                        extend_coeffs_from_current_picture_if_needed_(coeffs);
 
                        Layer layer(std::move(storage));
-                       detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
-                           detail::scale_cos_mask(c, *cos, v);
+                       detail::LayerCosScale cos_scale = [cos, options = parallel_](size_t, double *c, double v) {
+                           detail::scale_cos_mask(c, *cos, v, options);
                        };
-                       evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
+                       evolve_step(coeffs, layer, apply_angle, comm_, cos_scale, parallel_);
                    });
 }
 
@@ -659,7 +764,7 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
             bool fused_scale = false;
             build_evolve_result_(mono, rot_len, std::cref(*op_coeffs), build_angle, &cos, &fc, op_coeffs, &fused_scale);
             extend_coeffs_from_current_picture_if_needed_(*op_coeffs);
-            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale);
+            detail::apply_fused_contract(fc, *op_coeffs, cos, apply_angle, schrodinger_, fused_scale, parallel_);
         });
 }
 
@@ -670,61 +775,63 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
                                                std::optional<size_t> only_rotate_len_k) -> void {
-    validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
-    if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) {
-            s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
-        });
-        return;
-    }
-    if (majoranas.empty()) {
-        return;
-    }
-    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
-
-    VecZ local_gates;
-    if (gate_indices.has_value()) {
-        local_gates = std::move(*gate_indices);
-    }
-    else {
-        local_gates.resize(majoranas.size());
-        std::iota(local_gates.begin(), local_gates.end(), size_t{0});
-    }
-    validate_gate_indices(local_gates, majoranas.size());
-    const size_t gate_offset = n_gates();
-    for (auto &g : local_gates) {
-        g += gate_offset;
-    }
-
-    if (!parameters.has_value()) {
-        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
-    }
-    else {
-        // map_params() indexes `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
-        validate_parameters_length(*parameters, parameter_mapping);
-        // Coefficient-informed build: seed by contracting the existing graph so atol truncation sees
-        // realistic coefficients. That graph covers the parameter prefix [0, m).
-        VecD seed;
-        if (graph_layers() > 0) {
-            const auto existing = graph_gate_arrays_();
-            const size_t m = expected_num_params(existing.first);
-            // The per-mapping check above only covers this call's indices, which may all sit above the
-            // prefix the stored graph needs. Truncating instead would replay the existing graph at a silently
-            // different point on the axis, and map_params would fail one layer down on the sliced vector.
-            if (parameters->size() < m) {
-                throw SeedParametersTooShort(
-                    std::format("Coefficient-informed build_graph() needs at least {} parameter value(s) to replay the "
-                                "existing {}-layer graph as a seed, but got {}.",
-                                m,
-                                graph_layers(),
-                                parameters->size()));
-            }
-            const VecD existing_params(parameters->begin(), parameters->begin() + static_cast<std::ptrdiff_t>(m));
-            seed = contract_partially(existing_params, false);
+    run_operation_(true, [&](bool &mutation_started) {
+        // Validation: identical on every rank and partition, and before any state changes.
+        validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+        if (majoranas.empty()) {
+            return;
+        }
+        validate_coefficient_lengths(parameter_mapping, gen_coeffs);
+        validate_generators_(majoranas);
+        VecZ local_gates;
+        if (gate_indices.has_value()) {
+            local_gates = *gate_indices;
         }
         else {
-            seed = current_picture_coeffs_();
+            local_gates.resize(majoranas.size());
+            std::iota(local_gates.begin(), local_gates.end(), size_t{0});
         }
+        validate_gate_indices(local_gates, majoranas.size());
+        std::optional<VecD> seed_params;
+        if (parameters.has_value()) {
+            // map_params() indexes `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
+            validate_parameters_length(*parameters, parameter_mapping);
+            if (graph_layers() > 0) {
+                // Coefficient-informed build: seed by contracting the existing graph so atol truncation sees
+                // realistic coefficients. That graph covers the parameter prefix [0, m).
+                const size_t m = expected_num_params(graph_gate_arrays_().first);
+                // The per-mapping check above only covers this call's indices, which may all sit above the
+                // prefix the stored graph needs. Truncating instead would replay the existing graph at a
+                // silently different point on the axis, and map_params would fail one layer down on the
+                // sliced vector.
+                if (parameters->size() < m) {
+                    throw SeedParametersTooShort(std::format(
+                        "Coefficient-informed build_graph() needs at least {} parameter value(s) to replay the "
+                        "existing {}-layer graph as a seed, but got {}.",
+                        m,
+                        graph_layers(),
+                        parameters->size()));
+                }
+                seed_params.emplace(parameters->begin(), parameters->begin() + static_cast<std::ptrdiff_t>(m));
+            }
+        }
+
+        mutation_started = true;
+        if (partition_group_) {
+            for_each_partition_([&](MonomialPropagator &s) {
+                s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
+            });
+            return;
+        }
+        const size_t gate_offset = n_gates();
+        for (auto &g : local_gates) {
+            g += gate_offset;
+        }
+        if (!parameters.has_value()) {
+            evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
+            return;
+        }
+        const VecD seed = seed_params ? contract_partially(*seed_params, false) : current_picture_coeffs_();
         evolve_mode_graph_with_coeffs_(majoranas,
                                        parameter_mapping,
                                        gen_coeffs,
@@ -732,7 +839,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                        *parameters,
                                        seed,
                                        only_rotate_len_k);
-    }
+    });
 }
 
 template <size_t NumModes>
@@ -741,26 +848,31 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              const VecD &gen_coeffs,
                                              const VecD &parameters,
                                              std::optional<size_t> only_rotate_len_k) -> void {
-    validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
-    if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) {
-            s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
-        });
-        return;
-    }
-    if (majoranas.empty()) {
-        return;
-    }
-    validate_coefficient_lengths(parameter_mapping, gen_coeffs);
-    validate_parameters_length(parameters, parameter_mapping);
-    if (graph_layers() > 0) {
-        throw GraphStateConflict(std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
-                                             "propagate() evolves and contracts in place and assumes no stored graph. "
-                                             "Call contract_partially() to fold the existing graph first, or use "
-                                             "build_graph() to extend it.",
-                                             graph_layers()));
-    }
-    evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    run_operation_(true, [&](bool &mutation_started) {
+        validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+        if (majoranas.empty()) {
+            return;
+        }
+        validate_coefficient_lengths(parameter_mapping, gen_coeffs);
+        validate_parameters_length(parameters, parameter_mapping);
+        validate_generators_(majoranas);
+        if (graph_layers() > 0) {
+            throw GraphStateConflict(
+                std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
+                            "propagate() evolves and contracts in place and assumes no stored graph. "
+                            "Call contract_partially() to fold the existing graph first, or use "
+                            "build_graph() to extend it.",
+                            graph_layers()));
+        }
+        mutation_started = true;
+        if (partition_group_) {
+            for_each_partition_([&](MonomialPropagator &s) {
+                s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+            });
+            return;
+        }
+        evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    });
 }
 
 template <size_t NumModes>
@@ -849,7 +961,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          schrodinger_,
                                          fused_scale_coeffs,
                                          fused_scale,
-                                         basis_);
+                                         basis_,
+                                         parallel_);
 }
 
 template <size_t NumModes>
@@ -863,10 +976,13 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
     graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param), param_index, gen_coeff, gate_index);
 }
 
+/// Per-layer cosine callbacks replaying `graph` against `inverted_index`; each closure captures `options`
+/// for its kernels. The closures keep raw pointers into the index, so they must not outlive it.
 template <size_t NumModes>
 auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
                          const MPGraphView &graph,
-                         Basis basis = Basis::Majorana) -> detail::CosCallbacks;
+                         Basis basis = Basis::Majorana,
+                         detail::parallel::Options options = {}) -> detail::CosCallbacks;
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs,
@@ -874,12 +990,13 @@ auto MonomialPropagator<NumModes>::evolve_operator_with_recompute_(VecD &&coeffs
                                                                    const VecD &params) -> VecD {
     const auto &inverted_index = mp_op_.inverted_index();
     // Only the scale side is consumed; build both through the shared builder for consistency.
-    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_).scale;
-    return evolve_operator(std::move(coeffs), graph, params, comm_, cos_scale);
+    auto cos_scale = build_cos_callbacks<NumModes>(inverted_index, graph, basis_, parallel_).scale;
+    return evolve_operator(std::move(coeffs), graph, params, comm_, cos_scale, parallel_);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
+    require_valid_();
     if (partition_group_) {
         return first_partition_().n_gates();
     }
@@ -896,45 +1013,43 @@ auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_mapping) -> void {
-    if (partition_group_) {
-        for_each_partition_([&](MonomialPropagator &s) { s.set_parameter_mapping(parameter_mapping); });
-        return;
-    }
-    const size_t count = graph_.layers();
-    const size_t gates = n_gates();
+    run_operation_(false, [&](bool &mutation_started) {
+        const size_t count = graph_layers();
+        const size_t gates = n_gates();
+        const bool per_layer = parameter_mapping.size() == count;
+        if (!per_layer && parameter_mapping.size() != gates) {
+            throw GraphStateConflict(std::format("parameter_mapping has {} entries; expected {} (per graph "
+                                                 "layer) or {} (per gate).",
+                                                 parameter_mapping.size(),
+                                                 count,
+                                                 gates));
+        }
+        mutation_started = true;
+        if (partition_group_) {
+            for_each_partition_([&](MonomialPropagator &s) { s.set_parameter_mapping(parameter_mapping); });
+            return;
+        }
 
-    // The LayerCore is shared and immutable, so relabelling copies it and replaces the layer's core.
-    auto relabel = [this](size_t layer, size_t new_param_index) {
-        auto &target = graph_.get_layer(layer);
-        auto new_core = std::make_shared<LayerCore>(target.core());
-        new_core->param_index = new_param_index;
-        if (const CosMask *pruned = target.pruned_cos()) {
-            target = Layer(std::move(new_core), *pruned);
-        }
-        else {
-            target = Layer(std::move(new_core));
-        }
-    };
+        // The LayerCore is shared and immutable, so relabelling copies it and replaces the layer's core.
+        auto relabel = [this](size_t layer, size_t new_param_index) {
+            auto &target = graph_.get_layer(layer);
+            auto new_core = std::make_shared<LayerCore>(target.core());
+            new_core->param_index = new_param_index;
+            if (const CosMask *pruned = target.pruned_cos()) {
+                target = Layer(std::move(new_core), *pruned);
+            }
+            else {
+                target = Layer(std::move(new_core));
+            }
+        };
 
-    if (parameter_mapping.size() == count) {
-        // Per-layer mapping in optimizer order.
         for (size_t layer = 0; layer < count; ++layer) {
-            relabel(layer, parameter_mapping[count - 1 - layer]);
+            // Per-layer mapping in optimizer order; per-gate mapping indexed by absolute gate index.
+            relabel(layer,
+                    per_layer ? parameter_mapping[count - 1 - layer]
+                              : parameter_mapping[graph_.get_layer_traversal(layer).gate_index()]);
         }
-    }
-    else if (parameter_mapping.size() == gates) {
-        // Per-gate mapping, indexed by absolute gate index.
-        for (size_t layer = 0; layer < count; ++layer) {
-            relabel(layer, parameter_mapping[graph_.get_layer_traversal(layer).gate_index()]);
-        }
-    }
-    else {
-        throw GraphStateConflict(std::format("parameter_mapping has {} entries; expected {} (per graph "
-                                             "layer) or {} (per gate).",
-                                             parameter_mapping.size(),
-                                             count,
-                                             gates));
-    }
+    });
 }
 
 template <size_t NumModes>
@@ -956,8 +1071,10 @@ auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ,
 }
 
 template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, const MPGraphView &graph, Basis basis)
-    -> detail::CosCallbacks {
+auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
+                         const MPGraphView &graph,
+                         Basis basis,
+                         detail::parallel::Options options) -> detail::CosCallbacks {
     struct LayerCos {
         bool recomputes_cos = false;
         detail::LazyFold<NumModes> recipe{}; // used iff recomputes_cos
@@ -982,21 +1099,22 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index, 
     }
 
     const auto *sc = &inverted_index;
-    detail::LayerCosScale cos_scale = [cache, sc](size_t i, double *c, double v) {
+    // Parity words are fetched inside each call, never cached here: they move whenever the store grows.
+    detail::LayerCosScale cos_scale = [cache, sc, options](size_t i, double *c, double v) {
         const auto &e = (*cache)[i];
         if (!e.recomputes_cos) {
-            detail::scale_cos_mask(c, *e.filtered, v);
+            detail::scale_cos_mask(c, *e.filtered, v, options);
         }
         else {
-            detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v);
+            detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v, options);
         }
     };
-    detail::LayerCosAccumulate cos_acc = [cache, sc](size_t i, double *s, double *h, double v, double sec) {
+    detail::LayerCosAccumulate cos_acc = [cache, sc, options](size_t i, double *s, double *h, double v, double sec) {
         const auto &e = (*cache)[i];
         if (!e.recomputes_cos) {
-            return detail::accumulate_cos_mask(s, h, *e.filtered, v, sec);
+            return detail::accumulate_cos_mask(s, h, *e.filtered, v, sec, options);
         }
-        return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
+        return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec, options);
     };
     detail::LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<TermIndex> &out) {
         const auto &e = (*cache)[i];
@@ -1034,10 +1152,12 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     VecD op = mp_op_.get_operator();
     const auto core_term = this->core_term();
     const auto comm = comm_;
+    const auto options = parallel_;
 
     const auto expected_layers = graph_layers();
-    // Aliased rather than copied: the check below needs the live counter, like graph->layers().
-    const auto *epoch = &initial_operator_epoch_;
+    // The owner is referenced, not copied: the checks below need its live validity and epoch counter,
+    // like graph->layers(). The callable already must not outlive it (see build_cos_callbacks below).
+    auto *owner = this;
     const auto expected_epoch = initial_operator_epoch_;
     const auto &inverted_index = mp_op_.inverted_index();
 
@@ -1063,7 +1183,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
 
     // The folds keep raw column pointers into this propagator's inverted index, so the returned callable
     // must not outlive the propagator.
-    auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
+    auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_, options);
 
     return [func = std::move(func),
             core_term,
@@ -1073,121 +1193,182 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
             parameter_mapping,
             gen_coeffs,
             num_params,
-            epoch,
+            owner,
             expected_epoch,
             expected_layers,
             cos = std::move(cos),
-            comm](const VecD &params) -> R {
-        validate_expected_initial_operator(*epoch, expected_epoch);
+            comm,
+            options](const VecD &params) -> R {
+        owner->enter_operation_(true);
+        validate_expected_initial_operator(owner->initial_operator_epoch_, expected_epoch);
         validate_functional_call(params, num_params);
         validate_expected_graph_layers(graph->layers(), expected_layers);
-        return func(EvalRequest{.e_core = core_term,
-                                .state = state,
-                                .op = op,
-                                .parameter_mapping = parameter_mapping,
-                                .gen_coeffs = gen_coeffs,
-                                .graph = graph->replay_view(),
-                                .params = params},
-                    comm,
-                    cos);
+        // Evaluation warms the owner's lazy caches (inverted-index parity) and per-thread scratch, so any
+        // failure from here on invalidates the owner.
+        try {
+            return func(EvalRequest{.e_core = core_term,
+                                    .state = state,
+                                    .op = op,
+                                    .parameter_mapping = parameter_mapping,
+                                    .gen_coeffs = gen_coeffs,
+                                    .graph = graph->replay_view(),
+                                    .params = params,
+                                    .parallel = options},
+                        comm,
+                        cos);
+        }
+        catch (...) {
+            owner->mutation_failed_(std::current_exception());
+        }
     };
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<double> pare_threshold)
     -> std::function<double(const VecD &)> {
-    if (partition_group_) {
-        // Each partition allreduces internally, so partition 0 is the global value. The group is captured by
-        // raw pointer, so the returned callable must not outlive this propagator.
-        auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
-            map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
-        auto *grp = partition_group_.get();
-        return [grp, fns](const VecD &params) -> double {
-            return detail::partition::collect_on_all(*grp,
-                                                     [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
-        };
-    }
-    return make_functional_(ev_fn, pare_threshold);
+    return run_operation_(true, [&](bool &mutation_started) -> std::function<double(const VecD &)> {
+        // Building a functional warms lazy caches and may pare the graph, which communicates.
+        mutation_started = true;
+        if (partition_group_) {
+            // Each partition allreduces internally, so partition 0 is the global value. The group is captured
+            // by raw pointer, so the returned callable must not outlive this propagator.
+            auto fns = std::make_shared<std::vector<std::function<double(const VecD &)>>>(
+                map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_functional(pare_threshold); }));
+            auto *grp = partition_group_.get();
+            return [this, grp, fns, check = facade_functional_check_()](const VecD &params) -> double {
+                check(params);
+                try {
+                    return detail::partition::collect_on_all(*grp, [&](int r) {
+                        return (*fns)[static_cast<size_t>(r)](params);
+                    })[0];
+                }
+                catch (...) {
+                    mutation_failed_(std::current_exception());
+                }
+            };
+        }
+        return make_functional_(ev_fn, pare_threshold);
+    });
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std::optional<double> pare_threshold)
     -> std::function<std::pair<double, VecD>(const VecD &)> {
-    if (partition_group_) {
-        auto fns = std::make_shared<std::vector<std::function<std::pair<double, VecD>(const VecD &)>>>(map_partitions_(
-            [&](MonomialPropagator &s) { return s.expectation_value_and_gradient_functional(pare_threshold); }));
-        auto *grp = partition_group_.get();
-        return [grp, fns](const VecD &params) -> std::pair<double, VecD> {
-            return detail::partition::collect_on_all(*grp,
-                                                     [&](int r) { return (*fns)[static_cast<size_t>(r)](params); })[0];
-        };
-    }
-    return make_functional_(ev_and_grad_fn, pare_threshold);
+    using Functional = std::function<std::pair<double, VecD>(const VecD &)>;
+    return run_operation_(true, [&](bool &mutation_started) -> Functional {
+        mutation_started = true;
+        if (partition_group_) {
+            auto fns = std::make_shared<std::vector<Functional>>(map_partitions_(
+                [&](MonomialPropagator &s) { return s.expectation_value_and_gradient_functional(pare_threshold); }));
+            auto *grp = partition_group_.get();
+            return [this, grp, fns, check = facade_functional_check_()](const VecD &params) -> std::pair<double, VecD> {
+                check(params);
+                try {
+                    return detail::partition::collect_on_all(*grp, [&](int r) {
+                        return (*fns)[static_cast<size_t>(r)](params);
+                    })[0];
+                }
+                catch (...) {
+                    mutation_failed_(std::current_exception());
+                }
+            };
+        }
+        return make_functional_(ev_and_grad_fn, pare_threshold);
+    });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::facade_functional_check_() -> std::function<void(const VecD &)> {
+    // The partitions' own functionals repeat these checks; doing them here first keeps a rejected
+    // argument from invalidating the facade.
+    const auto num_params = expected_num_params(graph_gate_arrays_().first);
+    const auto expected_layers = graph_layers();
+    const auto expected_epoch = initial_operator_epoch_;
+    return [this, num_params, expected_layers, expected_epoch](const VecD &params) {
+        enter_operation_(true);
+        validate_expected_initial_operator(initial_operator_epoch_, expected_epoch);
+        validate_functional_call(params, num_params);
+        validate_expected_graph_layers(graph_layers(), expected_layers);
+    };
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value(const VecD &parameters) -> double {
     if (partition_group_) {
-        // Each partition allreduces internally, so every partition returns the global value; take partition 0.
-        return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value(parameters); })[0];
+        return run_operation_(true, [&](bool &mutation_started) -> double {
+            validate_functional_call(parameters, expected_num_params(graph_gate_arrays_().first));
+            mutation_started = true;
+            // Each partition allreduces internally, so every partition returns the global value; take partition 0.
+            return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value(parameters); })[0];
+        });
     }
+    // The functional carries the entry checks and the failure policy for both steps.
     return expectation_value_functional(std::nullopt)(parameters);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::expectation_value_and_gradient(const VecD &parameters) -> std::pair<double, VecD> {
     if (partition_group_) {
-        // As in expectation_value(): the gradient is allreduced inside each partition.
-        return map_partitions_([&](MonomialPropagator &s) { return s.expectation_value_and_gradient(parameters); })[0];
+        return run_operation_(true, [&](bool &mutation_started) -> std::pair<double, VecD> {
+            validate_functional_call(parameters, expected_num_params(graph_gate_arrays_().first));
+            mutation_started = true;
+            // As in expectation_value(): the gradient is allreduced inside each partition.
+            return map_partitions_(
+                [&](MonomialPropagator &s) { return s.expectation_value_and_gradient(parameters); })[0];
+        });
     }
     return expectation_value_and_gradient_functional(std::nullopt)(parameters);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bool inplace) -> VecD {
-    if (partition_group_) {
-        return concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
-    }
-    const auto gate_arrays = graph_gate_arrays_();
-    const auto &parameter_mapping = gate_arrays.first;
-    const auto &gen_coeffs = gate_arrays.second;
-    validate_parameters_length(parameters, parameter_mapping);
+    return run_operation_(true, [&](bool &mutation_started) -> VecD {
+        const auto gate_arrays = graph_gate_arrays_();
+        const auto &parameter_mapping = gate_arrays.first;
+        const auto &gen_coeffs = gate_arrays.second;
+        validate_parameters_length(parameters, parameter_mapping);
+        // Past validation every path reads lazily built caches or consumes the graph.
+        mutation_started = true;
+        if (partition_group_) {
+            return concat_partitions_([&](MonomialPropagator &s) { return s.contract_partially(parameters, inplace); });
+        }
 
-    if (parameters.empty()) {
-        return current_picture_coeffs_();
-    }
+        if (parameters.empty()) {
+            return current_picture_coeffs_();
+        }
 
-    const size_t num_majoranas = parameter_mapping.size();
-    // Inplace slicing produces an owned MPGraph that must be bound to a named local before viewing
-    // (never view a temporary); slice_view() views this graph's still-live layers directly.
-    if (schrodinger_) {
-        const auto &state = mp_op_.dense_state();
-        const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
-        VecD evolved_state;
+        const size_t num_majoranas = parameter_mapping.size();
+        // Inplace slicing produces an owned MPGraph that must be bound to a named local before viewing
+        // (never view a temporary); slice_view() views this graph's still-live layers directly.
+        if (schrodinger_) {
+            const auto &state = mp_op_.dense_state();
+            const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
+            VecD evolved_state;
+            if (inplace) {
+                const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
+                evolved_state = evolve_operator_with_recompute_(VecD(state), sliced.replay_view(), mapped_params);
+                mp_op_.state_coeffs = evolved_state;
+            }
+            else {
+                evolved_state =
+                    evolve_operator_with_recompute_(VecD(state), graph_.slice_view(num_majoranas), mapped_params);
+            }
+            return evolved_state;
+        }
+
+        const auto &op = mp_op_.get_operator();
+        const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0, true);
+        VecD evolved_op;
         if (inplace) {
             const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
-            evolved_state = evolve_operator_with_recompute_(VecD(state), sliced.replay_view(), mapped_params);
-            mp_op_.state_coeffs = evolved_state;
+            evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
+            mp_op_.op_coeffs = evolved_op;
         }
         else {
-            evolved_state =
-                evolve_operator_with_recompute_(VecD(state), graph_.slice_view(num_majoranas), mapped_params);
+            evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);
         }
-        return evolved_state;
-    }
-
-    const auto &op = mp_op_.get_operator();
-    const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0, true);
-    VecD evolved_op;
-    if (inplace) {
-        const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
-        evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
-        mp_op_.op_coeffs = evolved_op;
-    }
-    else {
-        evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);
-    }
-    return evolved_op;
+        return evolved_op;
+    });
 }
 
 template <size_t NumModes>
@@ -1214,10 +1395,15 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
         });
         return terms;
     };
-    if (!partition_group_) {
-        return collect(*this);
-    }
-    return concat_partitions_(collect);
+    return run_operation_(true, [&](bool &mutation_started) -> std::vector<Term> {
+        // Checked here as well as in contract_partially, so that a rejected argument leaves this object usable.
+        validate_parameters_length(parameters, graph_gate_arrays_().first);
+        mutation_started = true;
+        if (!partition_group_) {
+            return collect(*this);
+        }
+        return concat_partitions_(collect);
+    });
 }
 
 } // namespace monoprop

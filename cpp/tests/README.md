@@ -76,6 +76,10 @@ name and cannot address suite-nested cases, tests use flat
 - **`dense_query_reference.h`**: the retired dense query record, frozen as the
   independent oracle for `sparse_query_tests.cpp`. Test-only, and not kept in
   sync with the wire format.
+- **`PropagatorTestAccess.h`**: white-box access that `MonomialPropagator` befriends but the library
+  never defines. Tests use it to read an object's captured thread budget and validity, and to
+  inject failures through existing protected members: a throwing cutoff predicate, or a custom
+  functional body.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -128,9 +132,20 @@ name and cannot address suite-nested cases, tests use flat
   participation, which is skipped when the runtime cannot provide two workers).
   Run it in fresh processes under `OMP_DYNAMIC=TRUE`, `OMP_DYNAMIC=FALSE` and
   `OMP_THREAD_LIMIT=1` when changing the helper.
+- **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the budget parser and
+  its capture, per-object budgets through copies and retained functionals, and legacy paths that
+  stay serial. It also checks that OpenMP settings and affinity are unchanged, that old low-level
+  calls default to serial options, and that a failed mutation or evaluation invalidates the owner
+  while validation errors do not. `cpp/tests/CMakeLists.txt` reruns some of these cases as
+  `openmp_env_*` entries, each in a fresh process with a fixed launch environment.
+- **Distributed failure driver**: `mpi_failure_driver.cpp` is not part of the unit runner (the glob
+  excludes it). The MPI build compiles it into `monoprop_mpi_failure_driver.x`, and
+  `run_mpi_failure_scenario.cmake` runs each scenario on two ranks with a 30 s timeout, as the
+  `mpi_failure_*` CTest entries.
 
-New `*.cpp` files are auto-discovered on the next configure — no CMake edit
-needed.
+New `*.cpp` files are auto-discovered on the next configure, with no CMake edit
+needed. A file with its own `main()` must be excluded from the glob, as
+`mpi_failure_driver.cpp` is.
 
 ## MPI Test Configuration
 

@@ -37,6 +37,7 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -245,7 +246,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             size_t gen_shift,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
-                            double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
+                            double fused_scale_cos = 1.0,
+                            [[maybe_unused]] parallel::Options options = {}) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const size_t rank_count = router.flat_world();

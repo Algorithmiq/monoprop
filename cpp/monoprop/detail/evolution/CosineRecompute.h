@@ -36,6 +36,7 @@
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -207,8 +208,11 @@ inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) ->
 }
 
 template <size_t NumModes>
-auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
-    -> void {
+auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
+                    const LazyFold<NumModes> &r,
+                    double *coeff,
+                    double cos_val,
+                    [[maybe_unused]] parallel::Options options = {}) -> void {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     std::vector<uint64_t> &blk = column_block_scratch();
@@ -229,7 +233,8 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          double *state,
                          double *ham,
                          double cos_val,
-                         double sec_val) -> double {
+                         double sec_val,
+                         [[maybe_unused]] parallel::Options options = {}) -> double {
     const size_t mask_words = r.fold.mask_words;
     const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     double loc = 0.0;
@@ -248,15 +253,22 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
     return loc;
 }
 
-inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) -> void {
+inline auto scale_cos_mask(double *coeff,
+                           const CosMask &cos,
+                           double cos_val,
+                           [[maybe_unused]] parallel::Options options = {}) -> void {
     const size_t n = cos.blocks.size();
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
         for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
     }
 }
-inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
-    -> double {
+inline auto accumulate_cos_mask(double *state,
+                                double *ham,
+                                const CosMask &cos,
+                                double cos_val,
+                                double sec_val,
+                                [[maybe_unused]] parallel::Options options = {}) -> double {
     const size_t n = cos.blocks.size();
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {

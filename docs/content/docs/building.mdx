@@ -36,6 +36,12 @@ without MPI, so a from-source build is required for multi-rank runs.
     it with `export OpenMP_ROOT="$(brew --prefix libomp)"` before building, and
     before configuring a project that consumes the installed package.
 
+  The library calls the OpenMP runtime itself, so both `libmonoprop` and the Python
+  extension link it. The runtime therefore starts when monoprop loads. If you set
+  `OMP_PLACES` and leave binding enabled, it binds the importing thread to the first
+  place at that point. That is OpenMP applying your placement request, not monoprop:
+  monoprop never changes affinity. Set `OMP_PROC_BIND=false` if you want no binding.
+
 The repository ships a [DevContainer](https://containers.dev/) with all of the
 above pre-configured; opening the folder in VS Code and rebuilding the container is
 the quickest route to a working environment.
@@ -238,7 +244,15 @@ usage requirement the package fails to export. It compiles the same source as th
 probe, so the two cannot drift. The probe drives both the Majorana and the Pauli basis and
 instantiates the internal OpenMP worksharing template in its own translation unit, so the
 consumer only builds if the imported `monoprop::monoprop` target carries OpenMP's compile
-and link flags — the consumer project adds none of its own.
+and link flags — the consumer project adds none of its own. It also constructs the one-store
+prototype (`partitions=1`), whose constructor template calls the library's out-of-line thread
+budget and MPI thread checks, so an unexported helper fails the consumer's link.
+
+The exported low-level entry points (`evolve_step`, `evolve_operator` and
+`state_operator_derivative_local`) take a trailing thread budget with a serial default. Existing
+source keeps compiling, but the exported symbols changed. Rebuild C++ consumers, `libmonoprop` and
+the Python bindings together, from the same monoprop build. The installed headers now include
+`detail/parallel/ThreadBudget.h` and `detail/mpi/OperationFailure.h`.
 
 ### Debug tree
 

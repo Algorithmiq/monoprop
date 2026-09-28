@@ -11,6 +11,7 @@ target_sources(
         "HybridComm.h"
         "MPICompat.h"
         "MPIUtils.h"
+        "OperationFailure.h"
         "Pairwise.h"
         "PartitionBarrier.h"
         "Routing.h"

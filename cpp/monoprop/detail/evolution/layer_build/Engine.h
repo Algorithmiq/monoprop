@@ -36,8 +36,10 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
+#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -347,6 +349,8 @@ struct LayerBuildEngine {
     // This gate's destination ranks (mpi::PeerPlan), derived once in build_layer.
     mpi::PeerPlan plan;
     Sink sink;
+    // The owning propagator's thread budget, forwarded to the resolve kernels.
+    parallel::Options options;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      mpi::Comm comm_,
@@ -356,7 +360,8 @@ struct LayerBuildEngine {
                      size_t combined_size_,
                      Sink &&sink_,
                      mpi::PeerPlan plan_,
-                     mpi::SlotWindow window_)
+                     mpi::SlotWindow window_,
+                     parallel::Options options_ = {})
         : local_op(local_op_),
           comm(comm_),
           R(R_),
@@ -365,7 +370,8 @@ struct LayerBuildEngine {
           combined_size(combined_size_),
           window(window_),
           plan(plan_),
-          sink(std::move(sink_)) {
+          sink(std::move(sink_)),
+          options(options_) {
         assert(window.stop() <= R && window.count != 0);
         queries_r.reset(window);
         src_idx_r.reset(window);
@@ -421,12 +427,16 @@ struct LayerBuildEngine {
         }
         mpi::WindowVec<VecZ> &send = sink.send_buffer(queries_r, src_val_r, combined_qv_);
         mpi::WindowVec<VecZ> inc_q;
-        mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan).wait_into(inc_q);
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, matched, combined_size, sink);
+        // Each round completes inside its handle's lifetime and under the guard, so a failure after posting
+        // never reaches the handle's draining destructor while a peer is still inside the round.
+        auto query_round = mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan);
+        mpi::guard_distributed(comm, [&] { query_round.wait_into(inc_q); });
+        auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, matched, combined_size, sink, options);
         std::vector<int> resp_recv = response_recv_counts();
         mpi::WindowVec<std::vector<typename Sink::Response>> inc_r;
         // Answers retrace the queries over an XOR involution, so the same plan holds.
-        mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan).wait_into(inc_r);
+        auto response_round = mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan);
+        mpi::guard_distributed(comm, [&] { response_round.wait_into(inc_r); });
         process_responses<NumModes>(inc_r, src_idx_r, queries_r, my_rank, sink);
     }
 
@@ -598,7 +608,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  bool schrodinger = false,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
-                 Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
+                 Basis basis = Basis::Majorana,
+                 parallel::Options options = {}) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
@@ -650,7 +661,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        gen_shift,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
-                                                       cos_build);
+                                                       cos_build,
+                                                       options);
         });
         if (fused.cos_blocks.size() == 1) {
             // The serial scan produces a single cosine block set — take it wholesale.
@@ -675,7 +687,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              /*combined_size=*/local_op.store->size(),
                                              std::move(sink),
                                              plan,
-                                             scan_window);
+                                             scan_window,
+                                             options);
         if (!identity_gen) {
             eng.run_exchange(/*is_leader_pass=*/true,
                              std::move(fused.leader_queries),

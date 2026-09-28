@@ -5,5 +5,8 @@ target_sources(
       TYPE HEADERS
       FILES
         "Options.h"
+        "ThreadBudget.h"
         "Workshare.h"
 )
+
+target_sources(monoprop-objs PRIVATE ThreadBudget.cpp)

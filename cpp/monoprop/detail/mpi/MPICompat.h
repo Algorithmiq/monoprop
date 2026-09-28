@@ -43,6 +43,35 @@
 namespace monoprop::mpi {
 
 #ifdef monoprop_ENABLE_MPI
+/// The MPI thread support monoprop requests and requires. SERIALIZED, not FUNNELED, while the legacy
+/// Hybrid transport still calls MPI from its partition-0 workers.
+inline constexpr int kRequiredThreadLevel = MPI_THREAD_SERIALIZED;
+
+/// Whether \a provided thread support satisfies \a required; MPI orders the levels
+/// SINGLE < FUNNELED < SERIALIZED < MULTIPLE. A higher level never relaxes the initializing-thread rule.
+constexpr auto thread_level_satisfies(int provided, int required) noexcept -> bool {
+    return provided >= required;
+}
+
+/// The MPI constant naming a thread support level, for diagnostics.
+constexpr auto thread_level_name(int level) noexcept -> const char * {
+    if (level == MPI_THREAD_SINGLE) {
+        return "MPI_THREAD_SINGLE";
+    }
+    if (level == MPI_THREAD_FUNNELED) {
+        return "MPI_THREAD_FUNNELED";
+    }
+    if (level == MPI_THREAD_SERIALIZED) {
+        return "MPI_THREAD_SERIALIZED";
+    }
+    if (level == MPI_THREAD_MULTIPLE) {
+        return "MPI_THREAD_MULTIPLE";
+    }
+    return "an unknown MPI thread level";
+}
+
+/// Initialize MPI at kRequiredThreadLevel unless the host already did, then check the level actually
+/// provided in either case, aborting if it is too low. Host-initialized MPI is never reinitialized.
 monoprop_EXPORT auto init(int *argc = nullptr, char ***argv = nullptr) -> void;
 monoprop_EXPORT auto finalize() -> void;
 
@@ -89,6 +118,18 @@ struct datatype {
 inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void {}
 inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
+
+/// Check that initialized MPI provides at least kRequiredThreadLevel, whoever initialized it.
+/// \throws MpiThreadLevelUnsupported if it does not. A no-op without MPI or before MPI is initialized.
+monoprop_EXPORT auto require_thread_support() -> void;
+
+/// Fail fast unless the caller is the thread that initialized MPI.
+///
+/// A call from any other thread breaks the host contract, whatever thread support MPI provides: it prints a
+/// diagnostic and calls std::abort without calling MPI_Abort or any other communication, so the launcher
+/// must end the peers. A no-op without MPI or while MPI is not initialized. Guard the one-store path only;
+/// the legacy Hybrid transport legitimately calls MPI from its partition workers.
+monoprop_EXPORT auto require_initializing_thread() -> void;
 
 monoprop_EXPORT auto rank(const Comm &comm) -> int;
 monoprop_EXPORT auto size(const Comm &comm) -> int;

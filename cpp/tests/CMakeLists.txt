@@ -23,6 +23,8 @@ file(
   CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
 )
+# Its own main() ends every scenario by aborting the job, so it stays out of the unit runner.
+list(FILTER _tests_cpps EXCLUDE REGEX "/mpi_failure_driver\\.cpp$")
 
 add_executable(monoprop_unit_tests.x ${_tests_cpps})
 
@@ -83,5 +85,143 @@ discover_tests(
   SERIAL_ENVIRONMENT
   ${_monoprop_serial_env_entries}
 )
+
+# Fresh processes for the construction-time thread budget: each entry reruns one unit case under its own
+# launch environment, since an object captures monoprop_NUM_THREADS once, when it is constructed.
+function(monoprop_add_launch_env_case NAME CASE)
+  cmake_parse_arguments("" "" "" "ENVIRONMENT;ENVIRONMENT_MODIFICATION" ${ARGN})
+  add_test(
+    NAME ${NAME}
+    COMMAND
+      monoprop_unit_tests.x --run_test=${CASE}
+  )
+  set(
+    _environment
+    ${_monoprop_serial_env_entries}
+    ${_ENVIRONMENT}
+  )
+  set_tests_properties(
+    ${NAME}
+    PROPERTIES
+      LABELS
+        "unit;openmp_env"
+      ENVIRONMENT
+        "${_environment}"
+  )
+  if(_ENVIRONMENT_MODIFICATION)
+    set_tests_properties(
+      ${NAME}
+      PROPERTIES
+        ENVIRONMENT_MODIFICATION
+          "${_ENVIRONMENT_MODIFICATION}"
+    )
+  endif()
+endfunction()
+
+monoprop_add_launch_env_case(
+  openmp_env_prototype_budget_1
+  openmp_prototype_budget_matches_the_launch_environment
+  ENVIRONMENT "monoprop_NUM_THREADS=1;monoprop_TEST_EXPECT_BUDGET=1"
+)
+monoprop_add_launch_env_case(
+  openmp_env_prototype_budget_3
+  openmp_prototype_budget_matches_the_launch_environment
+  ENVIRONMENT "monoprop_NUM_THREADS=3;monoprop_TEST_EXPECT_BUDGET=3"
+)
+# Unset library override: the OpenMP runtime default decides.
+monoprop_add_launch_env_case(
+  openmp_env_prototype_budget_openmp_default_3
+  openmp_prototype_budget_matches_the_launch_environment
+  ENVIRONMENT "OMP_NUM_THREADS=3;monoprop_TEST_EXPECT_BUDGET=3"
+  ENVIRONMENT_MODIFICATION "monoprop_NUM_THREADS=unset:"
+)
+monoprop_add_launch_env_case(
+  openmp_env_runtime_thread_limit_2
+  openmp_runtime_limited_team_keeps_the_captured_budget
+  ENVIRONMENT "monoprop_NUM_THREADS=3;OMP_THREAD_LIMIT=2;monoprop_TEST_EXPECT_BUDGET=3"
+)
+monoprop_add_launch_env_case(
+  openmp_env_no_affinity_change
+  openmp_propagator_work_does_not_change_affinity
+  ENVIRONMENT "OMP_PROC_BIND=false"
+)
+
+# Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
+# only the MPI test leg runs them.
+if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
+  add_executable(monoprop_mpi_failure_driver.x mpi_failure_driver.cpp)
+  target_include_directories(
+    monoprop_mpi_failure_driver.x
+    PRIVATE
+      ${CMAKE_CURRENT_LIST_DIR}
+      ${CMAKE_CURRENT_BINARY_DIR}
+  )
+  target_link_libraries(
+    monoprop_mpi_failure_driver.x
+    PRIVATE
+      monoprop-sanitizers
+      monoprop-objs
+      PkgConfig::HWLOC
+  )
+
+  set(_monoprop_abort_diagnostic "aborting the communicator")
+  function(
+    monoprop_add_failure_scenario
+    NAME
+    SCENARIO
+    OPTION
+    EXPECT
+    FORBID
+  )
+    add_test(
+      NAME mpi_failure_${NAME}
+      COMMAND
+        ${CMAKE_COMMAND} "-DMPIEXEC=${_monoprop_mpiexec}"
+        "-DNUMPROC_FLAG=${_monoprop_mpiexec_numproc_flag}"
+        "-DPREFLAGS=${MPIEXEC_PREFLAGS}"
+        "-DDRIVER=$<TARGET_FILE:monoprop_mpi_failure_driver.x>"
+        "-DSCENARIO=${SCENARIO}" "-DOPTION=${OPTION}" "-DEXPECT=${EXPECT}"
+        "-DFORBID=${FORBID}" -DTIMEOUT_SECONDS=30 -P
+        "${CMAKE_CURRENT_LIST_DIR}/run_mpi_failure_scenario.cmake"
+    )
+    set_tests_properties(
+      mpi_failure_${NAME}
+      PROPERTIES
+        LABELS
+          "mpi;mpi_failure"
+        TIMEOUT
+          90
+        SKIP_RETURN_CODE
+          77
+        # As for the suite's MPI variants: CI containers may run as root.
+        ENVIRONMENT
+          "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+    )
+  endfunction()
+
+  monoprop_add_failure_scenario(worker_throw worker-throw "" "injected worker failure" "UNGUARDED")
+  monoprop_add_failure_scenario(
+    before_exchange before-exchange "" "injected failure in the scan" "UNGUARDED|NOT REACHED"
+  )
+  monoprop_add_failure_scenario(
+    active_ticket active-ticket ticket "injected failure while the replay Ticket" "UNGUARDED"
+  )
+  monoprop_add_failure_scenario(
+    active_pending active-ticket pending "injected failure while a PendingAlltoallv" "UNGUARDED"
+  )
+  monoprop_add_failure_scenario(
+    insufficient_thread_level_single insufficient-thread-level single "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
+  )
+  monoprop_add_failure_scenario(
+    insufficient_thread_level_funneled insufficient-thread-level funneled "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
+  )
+  # Local fail-fast: the offending thread must not call MPI_Abort (or anything else in MPI).
+  monoprop_add_failure_scenario(
+    wrong_thread_entry_serialized wrong-thread-entry serialized "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
+  )
+  monoprop_add_failure_scenario(
+    wrong_thread_entry_multiple wrong-thread-entry multiple "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
+  )
+endif()
 
 add_subdirectory(link_export_probe)

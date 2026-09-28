@@ -19,6 +19,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -34,7 +35,8 @@ inline auto apply_fused_contract(FusedContract &fc,
                                  const CosMask &cos,
                                  double param,
                                  bool schrodinger,
-                                 bool fused_scale) -> void {
+                                 bool fused_scale,
+                                 parallel::Options options = {}) -> void {
     // (1) insert records: v_tgt is the freshly-inserted term's pre-cos coeff, readable only now op_coeffs
     // is extended. Needed only in Schrödinger — a Heisenberg fresh insert has coeff 0, so skip the gather.
     if (schrodinger) {
@@ -48,7 +50,7 @@ inline auto apply_fused_contract(FusedContract &fc,
     const double sin_val = std::sin(2 * param);
     double *const c = op_coeffs.data();
     if (!fused_scale) {
-        scale_cos_mask(c, cos, cos_val);
+        scale_cos_mask(c, cos, cos_val, options);
     }
 
     // (3) One pass over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one add (pivot

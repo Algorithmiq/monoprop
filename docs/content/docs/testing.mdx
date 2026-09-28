@@ -109,6 +109,28 @@ one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Each MPI entry times out after 600 seconds, preventing a
 collective deadlock from occupying the runner indefinitely.
 
+A few cases also run again as separate `openmp_env_*` entries, each a fresh process with its own
+launch environment. They cover `monoprop_NUM_THREADS=1` and `=3`, the OpenMP default with the
+variable unset, `OMP_THREAD_LIMIT=2`, and `OMP_PROC_BIND=false` for the affinity check. They are
+needed because a propagator reads its thread budget once, when it is constructed.
+
+The MPI build also registers `mpi_failure_*` entries, labelled `mpi` and `mpi_failure`, from
+`cpp/tests/mpi_failure_driver.cpp`. That driver has its own `main()`, so the unit-runner glob
+excludes it. Each entry launches two ranks through `cpp/tests/run_mpi_failure_scenario.cmake`, with
+a 30-second timeout. Rank 0 fails in one of these ways while its peer follows the normal phase:
+
+- a worksharing worker throws;
+- the scan fails before the first exchange;
+- a failure happens while a replay `Ticket` or a construction `PendingAlltoallv` is posted;
+- host-initialized MPI provides only `SINGLE` or `FUNNELED`;
+- a guarded call arrives from a `std::thread` under `SERIALIZED` or `MULTIPLE`.
+
+An entry passes only on a prompt nonzero exit with the expected diagnostic. A timeout means a rank
+was left blocked, and it fails the entry. The wrong-thread cases rely on the launcher ending the
+peers of a process that aborts, which is Open MPI's default. `ctest -L mpi_failure` runs just
+these entries. If the MPI library grants more thread support than a scenario requests, that
+scenario reports itself as skipped instead of passing.
+
 CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
 lane fails if its MPI variant was not registered. Standalone MPI-enabled C++
 test executables initialize MPI before constructing propagators and destroy the

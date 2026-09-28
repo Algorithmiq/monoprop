@@ -26,6 +26,7 @@
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/OperationFailure.h"
 
 namespace monoprop {
 namespace {
@@ -424,38 +425,47 @@ auto state_operator_derivative_local(VecD &state,
                                      LayerAngle angle,
                                      mpi::Comm comm,
                                      const detail::LayerCosAccumulate &cos_acc,
-                                     const detail::CosRecordView &record) -> double {
+                                     const detail::CosRecordView &record,
+                                     [[maybe_unused]] detail::parallel::Options options) -> double {
     const TrigValues trig(angle.param, angle.gen_coeff);
     const auto layer = graph.get_layer_traversal(layer_idx);
     const auto my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = layer.cross_rank_rank_count();
 
     auto &snap = derivative_snapshot_scratch();
-    snapshot_remote_endpoints(state, op, layer, my_rank, snap);
-
-    // The self slot reads its entry op off the post-cos slots, which a record overwrites first.
-    const bool self_pre = record.count > 0 && my_rank < R;
-    if (self_pre) {
-        const auto slot = layer.cross_rank_self_slot();
-        snap.self_recv_op.resize(slot.sin_send_count);
-        for (size_t k = 0; k < slot.sin_send_count; ++k) {
-            snap.self_recv_op[k] = op[detail::slot_sin_recv_index(slot, k)];
+    // Snapshots and packing may throw on this rank alone before it posts: guarded, since peers post regardless.
+    auto in_flight = mpi::guard_distributed(comm, [&] {
+        snapshot_remote_endpoints(state, op, layer, my_rank, snap);
+        // The self slot reads its entry op off the post-cos slots, which a record overwrites first.
+        if (record.count > 0 && my_rank < R) {
+            const auto slot = layer.cross_rank_self_slot();
+            snap.self_recv_op.resize(slot.sin_send_count);
+            for (size_t k = 0; k < slot.sin_send_count; ++k) {
+                snap.self_recv_op[k] = op[detail::slot_sin_recv_index(slot, k)];
+            }
         }
-    }
+        // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
+        return begin_cross_rank_derivative_exchange(snap, layer, comm);
+    });
+    const bool self_pre = record.count > 0 && my_rank < R;
 
-    // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
-    auto in_flight = begin_cross_rank_derivative_exchange(snap, layer, comm);
-
-    // A = Σ s_old·h_pre over all anticommuting indices, endpoints included — hence the subtraction below.
-    // Pre-dividing lets the kernel's own ×sec land back on the recorded value; restore fixes up the rest.
-    detail::predivide_cos_record(op.data(), record, trig.cos_val);
-    const double A = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val) * trig.sec_val;
-    detail::restore_cos_record(op.data(), record);
-
+    // Caught here, while in_flight still owns posted requests: unwinding past it would wait on peers.
     EndpointContrib ep;
-    if (my_rank < R) {
-        ep = apply_self_slot_derivative_paired(state, op, layer, trig, self_pre ? snap.self_recv_op.data() : nullptr);
-    }
+    const double A = mpi::guard_distributed(comm, [&] {
+        // A = Σ s_old·h_pre over all anticommuting indices, endpoints included — hence the subtraction below.
+        // Pre-dividing lets the kernel's own ×sec land back on the recorded value; restore fixes up the rest.
+        detail::predivide_cos_record(op.data(), record, trig.cos_val);
+        const double a = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val) * trig.sec_val;
+        detail::restore_cos_record(op.data(), record);
+        if (my_rank < R) {
+            ep = apply_self_slot_derivative_paired(state,
+                                                   op,
+                                                   layer,
+                                                   trig,
+                                                   self_pre ? snap.self_recv_op.data() : nullptr);
+        }
+        return a;
+    });
     const auto remote = finish_cross_rank_derivative_exchange(state, op, layer, snap, trig, in_flight);
     ep = combine_endpoint_contrib(ep, remote);
 
@@ -481,14 +491,17 @@ auto evolve_step_traversal_impl(VecD &op,
     const auto self_slot = layer.cross_rank_self_slot();
     const size_t self_b_count = self_slot.sin_send_count;
     VecD self_b_snapshot;
-    self_b_snapshot.resize(self_b_count);
-    for (size_t k = 0; k < self_b_count; ++k) {
-        self_b_snapshot[k] = op[detail::slot_sin_send_index(self_slot, k)];
-    }
-
     // Pack + start the exchange before the cos scan so partner values are pre-cos and the transfer overlaps.
-    auto in_flight = begin_cross_rank_evolution_exchange(op, layer, comm);
-    cos_scale(layer_idx, op_data, cos_val);
+    // A throw before posting is guarded too: the peers post and wait regardless.
+    auto in_flight = mpi::guard_distributed(comm, [&] {
+        self_b_snapshot.resize(self_b_count);
+        for (size_t k = 0; k < self_b_count; ++k) {
+            self_b_snapshot[k] = op[detail::slot_sin_send_index(self_slot, k)];
+        }
+        return begin_cross_rank_evolution_exchange(op, layer, comm);
+    });
+    // Caught here, while in_flight still owns posted requests: unwinding past it would wait on peers.
+    mpi::guard_distributed(comm, [&] { cos_scale(layer_idx, op_data, cos_val); });
     finish_cross_rank_evolution_exchange(op, layer, sin_val, in_flight);
 
     // Self-slot sin_recv entries: op[i] is already cos-scaled, so only the sine term is added.
@@ -499,18 +512,24 @@ auto evolve_step_traversal_impl(VecD &op,
 }
 } // namespace
 
+// The kernels are still serial, so `options` is accepted but not yet consumed below this level.
 auto evolve_step(VecD &op,
                  const MPGraphView &graph,
                  double param,
                  size_t layer_idx,
                  mpi::Comm comm,
-                 const detail::LayerCosScale &cos_scale) -> void {
+                 const detail::LayerCosScale &cos_scale,
+                 [[maybe_unused]] detail::parallel::Options options) -> void {
     evolve_step_traversal_impl(op, graph.get_layer_traversal(layer_idx), param, layer_idx, comm, cos_scale);
 }
 
 // A standalone Layer replays as a one-layer graph, so layer_idx 0 is the only cosine set to select.
-auto evolve_step(VecD &op, const Layer &layer, double param, mpi::Comm comm, const detail::LayerCosScale &cos_scale)
-    -> void {
+auto evolve_step(VecD &op,
+                 const Layer &layer,
+                 double param,
+                 mpi::Comm comm,
+                 const detail::LayerCosScale &cos_scale,
+                 [[maybe_unused]] detail::parallel::Options options) -> void {
     evolve_step_traversal_impl(op, layer.traversal(), param, 0, comm, cos_scale);
 }
 
@@ -518,11 +537,12 @@ auto evolve_operator(VecD &&coeffs,
                      const MPGraphView &graph,
                      const VecD &params,
                      mpi::Comm comm,
-                     const detail::LayerCosScale &cos_scale) -> VecD {
+                     const detail::LayerCosScale &cos_scale,
+                     detail::parallel::Options options) -> VecD {
     // Evolved in place in the caller's moved-from vector, then handed back: no per-layer copy.
     VecD evolved = std::move(coeffs);
     for (size_t i = 0; i < graph.layers(); ++i) {
-        evolve_step(evolved, graph, params[i], i, comm, cos_scale);
+        evolve_step(evolved, graph, params[i], i, comm, cos_scale, options);
     }
     return evolved;
 }

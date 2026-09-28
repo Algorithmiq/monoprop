@@ -46,6 +46,46 @@ Which MPI rank owns a term is set separately; see [Rank routing](#rank-routing).
 export monoprop_NUM_THREADS=8
 ```
 
+### One-store prototype (transitional)
+
+monoprop is moving from thread-owned partitions to one operator store per MPI rank, worked on by
+OpenMP threads. While both runtimes coexist, the new path is selected only by the low-level
+`partitions=1` argument (the C++ constructor, or `monoprop._core.MonomialPropagatorNNN(...,
+partitions=1)`) on an ordinary communicator, with or without MPI. The default constructors and
+multi-partition runs are unchanged.
+
+- **Thread budget.** The prototype reads `monoprop_NUM_THREADS` once, when it is constructed. A set
+  value must be decimal digits for a number from 1 to 2147483647 (leading zeros are fine). An empty
+  value, a sign, spaces, a list, zero or an overflowing value raises a `RuntimeError` naming the
+  variable, and never falls back. When the variable is unset, the OpenMP runtime default
+  (`omp_get_max_threads()`, normally `OMP_NUM_THREADS`) applies. The budget is not clamped to the
+  cores you have; placement belongs to `OMP_PLACES`, `OMP_PROC_BIND` and your launcher. Copies and
+  retained callables keep the budget, and a later change to the environment only affects new objects.
+- **Serial kernels, for now.** The budget reaches every kernel, but no kernel runs in parallel yet.
+- **Calling thread.** Every call that can use MPI (construction, operations, retained callables)
+  must come from the thread that initialized MPI, whatever thread support MPI provides. A call from
+  another thread prints a diagnostic and aborts that process without communicating; the launcher
+  then ends the other ranks.
+- **MPI thread support.** Construction checks that MPI provides at least `MPI_THREAD_SERIALIZED`,
+  whether monoprop or your program (mpi4py, for example) initialized it. mpi4py's default,
+  `MPI_THREAD_MULTIPLE`, is fine.
+- **Invalid settings in a multi-rank run** abort the job: the other ranks are already on their way
+  into collective setup.
+
+## Failed operations
+
+An operation that fails after it started changing a propagator (building or extending a graph,
+propagating, evaluating, contracting, or updating the initial operator) leaves the propagator
+unusable. Every later operation on it, copying it, and every callable it returned then raise a
+`RuntimeError` that asks you to construct a new propagator. Copies made before the failure keep
+working. Argument errors (wrong lengths, out-of-range indices, crossed tolerances and so on) are
+raised before anything changes, so the propagator stays usable.
+
+With MPI and more than one rank, a failure on one rank cannot be handed back to your program
+without leaving the other ranks blocked in communication. monoprop therefore prints the rank and the
+error to stderr and calls `MPI_Abort`. On a single rank, and without MPI, you get the original
+exception. Multi-partition runs keep their existing handling.
+
 ## Placement report
 
 Building a propagator writes one `COMMPLACE` line per rank to stderr, naming the

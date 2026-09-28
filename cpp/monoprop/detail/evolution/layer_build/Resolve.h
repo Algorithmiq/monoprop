@@ -28,6 +28,7 @@
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
+#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -88,7 +89,8 @@ struct IncomingProbe {
 template <size_t NumModes>
 auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
                             MPOperator<NumModes> &op,
-                            QueryForm form) -> IncomingProbe<NumModes> {
+                            QueryForm form,
+                            [[maybe_unused]] parallel::Options options = {}) -> IncomingProbe<NumModes> {
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingProbe<NumModes>::PosT;
     IncomingProbe<NumModes> pr;
@@ -195,9 +197,10 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
                       bool is_leader_pass,
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
-                      Sink &sink) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
+                      Sink &sink,
+                      parallel::Options options = {}) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form());
+    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), options);
     // The pairing is an XOR involution, so the response window is the query window.
     mpi::WindowVec<std::vector<Resp>> responses(pr.window);
     for (const auto wi : pr.window.indices()) {

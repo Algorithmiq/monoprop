@@ -22,6 +22,7 @@
 
 #include "monoprop/Evolution.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
+#include "monoprop/detail/mpi/OperationFailure.h"
 
 namespace monoprop {
 
@@ -154,22 +155,30 @@ auto prepare_evolved_operator(const EvalRequest &request, mpi::Comm comm, const 
     }
     auto &scratch = eval_scratch();
     fill_mapped_params(scratch.mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, 1.0, true);
-    scratch.op = request.op;
-    if (!record) {
-        scratch.op = evolve_operator(std::move(scratch.op), request.graph, scratch.mapped_params, comm, cos.scale);
-        return;
-    }
-
-    // Step layer by layer so each record is taken while op still holds that layer's pre-layer values.
+    // Decided from the replicated parameters alone, so every rank rejects a missing callback together.
     const size_t layers = request.graph.layers();
-    if (layout_cos_records(layers, scratch) && !cos.indices) {
+    if (record && layout_cos_records(layers, scratch) && !cos.indices) {
         throw MissingLayerCallback("A layer whose cosine vanishes requires a cos_indices (reverse) callback.");
     }
-    for (size_t i = 0; i < layers; ++i) {
-        record_pre_layer(scratch, request.graph, cos.indices, i);
-        evolve_step(scratch.op, request.graph, scratch.mapped_params[i], i, comm, cos.scale);
-    }
-    scratch.cos_offset[layers] = scratch.cos_values.size();
+    // Local work between the per-layer exchanges; each exchange guards its own in-flight phase.
+    mpi::guard_distributed(comm, [&] {
+        scratch.op = request.op;
+        if (!record) {
+            scratch.op = evolve_operator(std::move(scratch.op),
+                                         request.graph,
+                                         scratch.mapped_params,
+                                         comm,
+                                         cos.scale,
+                                         request.parallel);
+            return;
+        }
+        // Step layer by layer so each record is taken while op still holds that layer's pre-layer values.
+        for (size_t i = 0; i < layers; ++i) {
+            record_pre_layer(scratch, request.graph, cos.indices, i);
+            evolve_step(scratch.op, request.graph, scratch.mapped_params[i], i, comm, cos.scale, request.parallel);
+        }
+        scratch.cos_offset[layers] = scratch.cos_values.size();
+    });
 }
 
 } // namespace
@@ -288,17 +297,20 @@ auto ev(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &
     // The allreduce is unconditional -- ShmComm's is barrier-synced, so short-circuiting an empty local
     // sum past it would deadlock every peer.
     if (request.params.empty()) {
-        return request.e_core + mpi::allreduce_sum(request.state.dot(request.op), comm);
+        const double local = mpi::guard_distributed(comm, [&] { return request.state.dot(request.op); });
+        return request.e_core + mpi::allreduce_sum(local, comm);
     }
 
     prepare_evolved_operator(request, comm, cos, /*record=*/false);
-    return request.e_core + mpi::allreduce_sum(request.state.dot(eval_scratch().op), comm);
+    const double local = mpi::guard_distributed(comm, [&] { return request.state.dot(eval_scratch().op); });
+    return request.e_core + mpi::allreduce_sum(local, comm);
 }
 
 auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos)
     -> std::pair<double, VecD> {
     if (request.params.empty()) {
-        return {request.e_core + mpi::allreduce_sum(request.state.dot(request.op), comm), VecD(0)};
+        const double local = mpi::guard_distributed(comm, [&] { return request.state.dot(request.op); });
+        return {request.e_core + mpi::allreduce_sum(local, comm), VecD(0)};
     }
 
     // cos.scale is checked in prepare_evolved_operator, shared by both paths; cos.accumulate is this path's own.
@@ -310,7 +322,7 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     // this path needs it dense. Densifying into the shared scratch keeps energy-only runs from ever
     // building one.
     auto &scratch = eval_scratch();
-    request.state.scatter_into(scratch.state);
+    mpi::guard_distributed(comm, [&] { request.state.scatter_into(scratch.state); });
     prepare_evolved_operator(request, comm, cos, /*record=*/true);
 
     auto &state_ = scratch.state;
@@ -318,20 +330,24 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     const auto expectation_value = mpi::allreduce_sum(inner_product(state_, op_), comm);
 
     const auto &parameter_mapping = request.parameter_mapping;
-    scratch.gradient.assign(request.params.size(), 0.0);
-    for (size_t i = 0; i < parameter_mapping.size(); ++i) {
-        const auto idx = parameter_mapping.size() - 1 - i;
-        const auto param_ind = parameter_mapping[i];
-        scratch.gradient[param_ind] +=
-            state_operator_derivative_local(state_,
-                                            op_,
-                                            request.graph,
-                                            idx,
-                                            {.gen_coeff = request.gen_coeffs[i], .param = request.params[param_ind]},
-                                            comm,
-                                            cos.accumulate,
-                                            layer_record_in(scratch, idx));
-    }
+    // Local work between the per-layer exchanges and before the gradient allreduce.
+    mpi::guard_distributed(comm, [&] {
+        scratch.gradient.assign(request.params.size(), 0.0);
+        for (size_t i = 0; i < parameter_mapping.size(); ++i) {
+            const auto idx = parameter_mapping.size() - 1 - i;
+            const auto param_ind = parameter_mapping[i];
+            scratch.gradient[param_ind] += state_operator_derivative_local(
+                state_,
+                op_,
+                request.graph,
+                idx,
+                {.gen_coeff = request.gen_coeffs[i], .param = request.params[param_ind]},
+                comm,
+                cos.accumulate,
+                layer_record_in(scratch, idx),
+                request.parallel);
+        }
+    });
 
     mpi::allreduce_sum_inplace(scratch.gradient, comm);
     return {request.e_core + expectation_value, scratch.gradient};

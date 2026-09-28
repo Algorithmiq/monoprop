@@ -29,10 +29,14 @@
 // It also checks the installed usage requirements a consumer inherits:
 //  (c) the OpenMP worksharing template (detail/parallel/Workshare.h), instantiated in this translation
 //      unit, so OpenMP compile and link flags must reach the consumer through the imported target alone;
-//  (d) the Pauli basis, alongside the Majorana graph chain in (a).
+//  (d) the Pauli basis, alongside the Majorana graph chain in (a);
+//  (e) the one-store prototype (partitions = 1), whose constructor template calls the out-of-line
+//      capture_thread_budget(), require_thread_support() and require_initializing_thread(), and whose
+//      operations reach the exported evolve/derivative entry points with their trailing Options.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/parallel/Workshare.h"
 
 #include <complex>
@@ -153,6 +157,32 @@ auto run_partition_chain() -> void {
     std::println(stderr, "[link_export_probe] partition chain: size={}", sim.size());
 }
 
+auto run_one_store_prototype_chain() -> void {
+    constexpr size_t kModes = 2;
+    OperatorDict ham;
+    ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+    MonomialPropagator<kModes> sim(ham,
+                                   2 * kModes,
+                                   VecZ{0, 1},
+                                   /*schrodinger_cutoff=*/std::nullopt,
+                                   MPI_COMM_SELF,
+                                   /*lower_atol=*/std::nullopt,
+                                   /*upper_atol=*/std::nullopt,
+                                   CutoffType::Length,
+                                   /*basis_change=*/std::nullopt,
+                                   /*logical_num_modes=*/kModes,
+                                   Basis::Majorana,
+                                   /*partitions=*/1);
+    sim.build_graph(std::vector<VecZ>{{0, 2}, {1, 3}}, VecZ{0, 1}, VecD{1.0, 1.0});
+    const auto [value, grad] = sim.expectation_value_and_gradient(VecD{0.1, 0.2});
+    const auto budget = monoprop::detail::parallel::capture_thread_budget();
+    std::println(stderr,
+                 "[link_export_probe] one-store prototype chain: budget={} value={} grad_size={}",
+                 budget.threads,
+                 value,
+                 grad.size());
+}
+
 } // namespace
 
 auto main() -> int {
@@ -161,6 +191,7 @@ auto main() -> int {
     run_partition_chain();
     run_openmp_workshare_chain();
     run_pauli_chain();
+    run_one_store_prototype_chain();
     monoprop::mpi::finalize();
     std::println(stderr, "[link_export_probe] OK");
     return 0;

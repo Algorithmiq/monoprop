@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <print>
 #include <stdexcept>
@@ -31,17 +33,22 @@ namespace monoprop::mpi {
 auto init(int *argc, char ***argv) -> void {
     auto initialized = 0;
     MPI_Initialized(&initialized);
+    int provided = MPI_THREAD_SINGLE;
     if (!initialized) {
         // serialized (not funneled): under the hybrid the one-at-a-time MPI calls come from each rank's
         // partition-0 master, not the main thread. mpi4py already requests >= serialized.
-        auto required = MPI_THREAD_SERIALIZED;
-        auto provided = 0;
-        MPI_Init_thread(argc, argv, required, &provided);
-        if (provided < required) {
-            std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
-                       "by the partition/MPI hybrid transport.\n");
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
+        MPI_Init_thread(argc, argv, kRequiredThreadLevel, &provided);
+    }
+    else {
+        // Host-initialized: never reinitialize, and never assume the host's request was granted.
+        MPI_Query_thread(&provided);
+    }
+    if (!thread_level_satisfies(provided, kRequiredThreadLevel)) {
+        std::print("Sorry, the MPI library provides {} but monoprop requires {}, which the partition/MPI hybrid "
+                   "transport needs.\n",
+                   thread_level_name(provided),
+                   thread_level_name(kRequiredThreadLevel));
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
 }
 
@@ -53,6 +60,51 @@ auto finalize() -> void {
     }
 }
 #endif // monoprop_ENABLE_MPI
+
+auto require_thread_support() -> void {
+#ifdef monoprop_ENABLE_MPI
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (initialized == 0) {
+        return;
+    }
+    int provided = MPI_THREAD_SINGLE;
+    MPI_Query_thread(&provided);
+    if (!thread_level_satisfies(provided, kRequiredThreadLevel)) {
+        throw MpiThreadLevelUnsupported(
+            std::format("monoprop requires {} support from MPI, but the initialized MPI library provides {}. "
+                        "Initialize MPI with MPI_Init_thread requesting {} or MPI_THREAD_MULTIPLE (mpi4py requests "
+                        "MPI_THREAD_MULTIPLE by default).",
+                        thread_level_name(kRequiredThreadLevel),
+                        thread_level_name(provided),
+                        thread_level_name(kRequiredThreadLevel)));
+    }
+#endif
+}
+
+auto require_initializing_thread() -> void {
+#ifdef monoprop_ENABLE_MPI
+    // MPI_Initialized, MPI_Finalized and MPI_Is_thread_main may be called from any thread; nothing else is.
+    int initialized = 0;
+    int finalized = 0;
+    MPI_Initialized(&initialized);
+    MPI_Finalized(&finalized);
+    if (initialized == 0 || finalized != 0) {
+        return;
+    }
+    int is_main = 0;
+    MPI_Is_thread_main(&is_main);
+    if (is_main == 0) {
+        std::fputs("monoprop: an operation that uses MPI was called from a thread other than the thread that "
+                   "initialized MPI. monoprop requires every such call to come from the thread that initialized "
+                   "MPI, whatever thread support MPI provides. This process stops here without communicating; "
+                   "the launcher ends its peers.\n",
+                   stderr);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
+}
 
 auto rank(const Comm &comm) -> int {
     if (comm.kind == Comm::Kind::Shm) {
