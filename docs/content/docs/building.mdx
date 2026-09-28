@@ -339,6 +339,26 @@ just test-cpp-tsan
 TSan is scoped to the concurrency surface — the partition and `ShmComm` tests —
 which is where its reports are worth the runtime cost.
 
+The OpenMP kernels (`openmp_*` tests) need an OpenMP runtime that TSan understands. GCC's libgomp is
+not instrumented, so TSan reports false races even on correct parallel loops; do not read its
+output as evidence either way. Clang with LLVM's libomp and its Archer tool works, with the runtime's
+own internal locking suppressed:
+
+```bash
+CXX=clang++ CC=clang SKBUILD_CMAKE_BUILD_TYPE=Tsan \
+SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=tsan;monoprop_ENABLE_MPI=OFF" \
+uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
+
+echo 'called_from_lib:libomp.so.5' > libomp.supp
+OMP_TOOL_LIBRARIES="$(clang++ -print-resource-dir)/../../libarcher.so" \
+TSAN_OPTIONS="halt_on_error=1:history_size=4:suppressions=$PWD/libomp.supp" \
+  ctest --test-dir build/editable/Tsan --output-on-failure --no-tests=error -R 'openmp_'
+```
+
+Check a new toolchain first with a small known-racy and known-safe OpenMP program: the safe one must
+stay silent and the racy one must be reported in your own frames. The Archer path varies by
+distribution (on Debian and Ubuntu, `/usr/lib/llvm-<version>/lib/libarcher.so`).
+
 There is no ThreadSanitizer equivalent of the ASan Python leg. TSan does not
 support `dlopen` of instrumented libraries, so loading an instrumented `_core`
 into a stock interpreter crashes during TSan initialisation; exercising the

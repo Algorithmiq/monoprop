@@ -138,10 +138,22 @@ name and cannot address suite-nested cases, tests use flat
   calls default to serial options, and that a failed mutation or evaluation invalidates the owner
   while validation errors do not. `cpp/tests/CMakeLists.txt` reruns some of these cases as
   `openmp_env_*` entries, each in a fresh process with a fixed launch environment.
+- **Threaded kernels**: `openmp_kernel_tests.cpp` covers the threaded cosine scaling
+  (`scale_cos_mask`, `scale_cos_lazy`) and fused rotation apply (`apply_fused_contract`): bitwise
+  agreement of every budget with budget one, small work staying serial, joined worker exceptions,
+  and participation. Participation is read from a test-only range observer (`KernelTestSupport.h`)
+  that each kernel calls at the start of its own logical ranges; production code passes the empty
+  `NoRangeObserver`, so a team opened anywhere else never counts. Lazy folds over a synthetic
+  multi-block inverted index are checked against the materialised-fold oracle in
+  `combined_recompute_equivalence.cpp` (cold parity cache, tails, index growth), and fused records
+  from the real build path (one add-owner per slot, both pictures, cross-rank halves under MPI) in
+  `fused_cos_sweep_tests.cpp`. `openmp_env_kernels_*` rerun them under `OMP_THREAD_LIMIT=2` and
+  `OMP_DYNAMIC=TRUE`.
 - **Distributed failure driver**: `mpi_failure_driver.cpp` is not part of the unit runner (the glob
   excludes it). The MPI build compiles it into `monoprop_mpi_failure_driver.x`, and
   `run_mpi_failure_scenario.cmake` runs each scenario on two ranks with a 30 s timeout, as the
-  `mpi_failure_*` CTest entries.
+  `mpi_failure_*` CTest entries. `active-ticket cosine-worker` throws from a worker of the threaded
+  cosine kernel while a replay Ticket is posted.
 
 New `*.cpp` files are auto-discovered on the next configure, with no CMake edit
 needed. A file with its own `main()` must be excluded from the glob, as

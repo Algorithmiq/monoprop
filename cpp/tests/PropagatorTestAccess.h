@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
@@ -46,6 +47,41 @@ struct PropagatorTestAccess {
     }
 
     static auto clone(const Propagator &p) -> std::unique_ptr<Propagator> { return p.clone_(); }
+
+    // The live coefficients of the propagator's picture: the operator (Heisenberg) or the state (Schrödinger).
+    static auto picture_coeffs(const Propagator &p) -> const VecD & {
+        return p.schrodinger_ ? p.mp_op_.state_coeffs : p.mp_op_.op_coeffs;
+    }
+
+    // One gate of the ContractImmediately path (evolve_mode_contract_immediately_) up to, not including,
+    // apply_fused_contract: the real build and coefficient extension, so a test can inspect the records the
+    // build produced and run the apply itself on the returned coefficient vector.
+    struct ContractedGate {
+        FusedContract fc;
+        CosMask cos;
+        bool fused_scale = false;
+        VecD *coeffs = nullptr; // the picture's live coefficients, already extended
+        double apply_angle = 0.0;
+    };
+    static auto contract_gate(Propagator &p,
+                              const VecZ &gate,
+                              std::optional<size_t> only_rotate_len_k,
+                              double build_angle) -> ContractedGate {
+        (void)p.current_picture_coeffs_();
+        ContractedGate g;
+        g.coeffs = p.schrodinger_ ? &p.mp_op_.state_coeffs : &p.mp_op_.op_coeffs;
+        (void)p.build_evolve_result_(gate,
+                                     only_rotate_len_k,
+                                     std::cref(*g.coeffs),
+                                     build_angle,
+                                     &g.cos,
+                                     &g.fc,
+                                     g.coeffs,
+                                     &g.fused_scale);
+        p.extend_coeffs_from_current_picture_if_needed_(*g.coeffs);
+        g.apply_angle = p.schrodinger_ ? -build_angle : build_angle;
+        return g;
+    }
 
     static auto partition_count(const Propagator &p) -> int {
         return p.partition_group_ ? p.partition_group_->partition_count() : 0;

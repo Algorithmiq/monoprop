@@ -61,7 +61,12 @@ multi-partition runs are unchanged.
   (`omp_get_max_threads()`, normally `OMP_NUM_THREADS`) applies. The budget is not clamped to the
   cores you have; placement belongs to `OMP_PLACES`, `OMP_PROC_BIND` and your launcher. Copies and
   retained callables keep the budget, and a later change to the environment only affects new objects.
-- **Serial kernels, for now.** The budget reaches every kernel, but no kernel runs in parallel yet.
+- **Threaded kernels so far.** Two kernels use the budget: the per-gate cosine scaling (graph
+  replay during evaluation and contraction, and the two-pass path of in-place propagation) and the
+  rotation apply of in-place `propagate`. Each splits its work into fixed blocks of 1024 bitmap words
+  or 1024 rotation records and stays serial below two blocks, so small operators see no threads.
+  Results are bitwise identical at every budget. Graph construction (scan, lookup, insertion),
+  reductions and the gradient's endpoint work are still serial.
 - **Calling thread.** Every call that can use MPI (construction, operations, retained callables)
   must come from the thread that initialized MPI, whatever thread support MPI provides. A call from
   another thread prints a diagnostic and aborts that process without communicating; the launcher

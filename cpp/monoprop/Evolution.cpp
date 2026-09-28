@@ -512,7 +512,8 @@ auto evolve_step_traversal_impl(VecD &op,
 }
 } // namespace
 
-// The kernels are still serial, so `options` is accepted but not yet consumed below this level.
+// The layer's cosine scaling runs threaded through the budget captured in `cos_scale`; the endpoint work
+// below it is still serial, so `options` itself is not yet consumed at this level.
 auto evolve_step(VecD &op,
                  const MPGraphView &graph,
                  double param,

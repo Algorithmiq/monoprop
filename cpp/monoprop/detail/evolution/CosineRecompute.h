@@ -29,6 +29,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -37,8 +38,40 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/parallel/Options.h"
+#include "monoprop/detail/parallel/Workshare.h"
 
 namespace monoprop::detail {
+
+/*!
+ * \brief The kinds of logical work range a threaded kernel reports to its range observer (see NoRangeObserver).
+ */
+enum class KernelRange {
+    cos_lazy,     //!< scale_cos_lazy: one range per kColumnBlockWords fold words.
+    cos_mask,     //!< scale_cos_mask: one range per kCosMaskRangeBlocks stored mask blocks.
+    fused_gather, //!< apply_fused_contract insert snapshots: one range per kFusedRecordRange records.
+    fused_apply,  //!< apply_fused_contract rotations: one range per kFusedRecordRange records.
+};
+
+/*!
+ * \brief The observer production kernels use: it does nothing and compiles away.
+ *
+ * A kernel calls `prepare(kind, ranges)` once on the calling thread before any range runs, then
+ * `visit(kind, range)` at the start of each logical range, from whichever thread owns that range. Tests
+ * substitute an observer that records the worker of each range; that seam is the only reason the kernels
+ * take an observer, and no production caller passes one.
+ */
+struct NoRangeObserver {
+    auto prepare(KernelRange /*kind*/, size_t /*ranges*/) const noexcept -> void {}
+    auto visit(KernelRange /*kind*/, size_t /*range*/) const noexcept -> void {}
+};
+
+//! Stored mask blocks (one 64-bit word each) per scale_cos_mask range: as many words as a fold block.
+inline constexpr size_t kCosMaskRangeBlocks = kColumnBlockWords;
+
+//! Number of `per_range`-sized logical ranges covering `items`.
+inline constexpr auto logical_ranges(size_t items, size_t per_range) -> size_t {
+    return (items + per_range - 1) / per_range;
+}
 
 // Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore.
 template <size_t NumModes>
@@ -207,24 +240,47 @@ inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) ->
     }
 }
 
-template <size_t NumModes>
+/*!
+ * \brief Multiply every coefficient in a layer's recomputed cosine set by `cos_val`.
+ *
+ * Each kColumnBlockWords fold block is one logical range, so the ranges touch disjoint coefficients.
+ *
+ * \param sc       The inverted index the fold reads; must not change during the call.
+ * \param r        The layer's fold recipe.
+ * \param coeff    Coefficients, covering at least `r.fold.mask_words * 64` rows or the index rows.
+ * \param cos_val  The factor.
+ * \param options  Thread budget.
+ * \param observer Test seam; see NoRangeObserver.
+ */
+template <size_t NumModes, class Observer = NoRangeObserver>
 auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
                     const LazyFold<NumModes> &r,
                     double *coeff,
                     double cos_val,
-                    [[maybe_unused]] parallel::Options options = {}) -> void {
+                    parallel::Options options = {},
+                    const Observer &observer = {}) -> void {
     const size_t mask_words = r.fold.mask_words;
-    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
-    std::vector<uint64_t> &blk = column_block_scratch();
-    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
+    // Fetched here, on the caller, for this call only: row_parity_words() builds its cache lazily, so it must
+    // never run in a worker, and the pointer moves whenever the index grows.
+    const uint64_t *const row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    const std::span<const size_t> columns{r.columns.data(), r.columns.size()};
+    const size_t ranges = logical_ranges(mask_words, kColumnBlockWords);
+    observer.prepare(KernelRange::cos_lazy, ranges);
+    parallel::for_blocks(ranges, options, [&](size_t range) {
+        observer.visit(KernelRange::cos_lazy, range);
+        // Worker-private: never the caller's thread_local column_block_scratch(). combine_columns_block
+        // writes every word of [bb, be) before any is read.
+        std::array<uint64_t, kColumnBlockWords> blk;
+        const size_t bb = range * kColumnBlockWords;
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
+        combine_columns_block<NumModes>(sc, columns, blk.data(), bb, be);
+        // apply_fold_mask compares wi with the fold's global last word, so only the real tail is masked.
         for (size_t wi = bb; wi < be; ++wi) {
             for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
                 coeff[i] *= cos_val;
             });
         }
-    }
+    });
 }
 
 template <size_t NumModes>
@@ -253,15 +309,35 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
     return loc;
 }
 
-inline auto scale_cos_mask(double *coeff,
-                           const CosMask &cos,
-                           double cos_val,
-                           [[maybe_unused]] parallel::Options options = {}) -> void {
+/*!
+ * \brief Multiply every coefficient in a stored cosine mask by `cos_val`, leaving all others untouched.
+ *
+ * Each kCosMaskRangeBlocks run of mask blocks is one logical range. CosMask blocks are ascending with
+ * distinct word-aligned bases, so the ranges touch disjoint coefficients.
+ *
+ * \param coeff    Coefficients, covering every index in `cos`.
+ * \param cos      The mask.
+ * \param cos_val  The factor.
+ * \param options  Thread budget.
+ * \param observer Test seam; see NoRangeObserver.
+ */
+template <class Observer = NoRangeObserver>
+auto scale_cos_mask(double *coeff,
+                    const CosMask &cos,
+                    double cos_val,
+                    parallel::Options options = {},
+                    const Observer &observer = {}) -> void {
     const size_t n = cos.blocks.size();
-    for (size_t k = 0; k < n; ++k) {
-        const auto [base, bits] = cos.blocks[k];
-        for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
-    }
+    const size_t ranges = logical_ranges(n, kCosMaskRangeBlocks);
+    observer.prepare(KernelRange::cos_mask, ranges);
+    parallel::for_blocks(ranges, options, [&](size_t range) {
+        observer.visit(KernelRange::cos_mask, range);
+        const size_t hi = std::min(n, (range + 1) * kCosMaskRangeBlocks);
+        for (size_t k = range * kCosMaskRangeBlocks; k < hi; ++k) {
+            const auto [base, bits] = cos.blocks[k];
+            for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
+        }
+    });
 }
 inline auto accumulate_cos_mask(double *state,
                                 double *ham,

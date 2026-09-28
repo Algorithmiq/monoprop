@@ -145,6 +145,22 @@ monoprop_add_launch_env_case(
   openmp_propagator_work_does_not_change_affinity
   ENVIRONMENT "OMP_PROC_BIND=false"
 )
+# The threaded cosine and fused-apply kernels under runtime-limited and dynamic teams: exact results and
+# participation must not depend on receiving the full budget.
+set(
+  _monoprop_kernel_cases
+  "openmp_cos_mask_exact,openmp_cos_mask_workers_participate,openmp_cos_lazy_workers_participate,openmp_fused_apply_exact_on_disjoint_records,openmp_fused_apply_workers_participate,openmp_kernel_worker_failures_join_before_rethrow,combined_threaded_lazy_fold_matches_oracle,fused_real_records_have_one_add_owner_and_apply_exactly,fused_threaded_prototype_matches_serial_prototype_exactly"
+)
+monoprop_add_launch_env_case(
+  openmp_env_kernels_thread_limit_2
+  "${_monoprop_kernel_cases}"
+  ENVIRONMENT "OMP_THREAD_LIMIT=2"
+)
+monoprop_add_launch_env_case(
+  openmp_env_kernels_dynamic_teams
+  "${_monoprop_kernel_cases}"
+  ENVIRONMENT "OMP_DYNAMIC=TRUE"
+)
 
 # Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
 # only the MPI test leg runs them.
@@ -205,6 +221,10 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
   )
   monoprop_add_failure_scenario(
     active_ticket active-ticket ticket "injected failure while the replay Ticket" "UNGUARDED"
+  )
+  # Worker 1 of the kernel's two-worker team owns range 2, so the failure starts off the calling thread.
+  monoprop_add_failure_scenario(
+    active_ticket_cosine_worker active-ticket cosine-worker "cosine range 2 on OpenMP worker 1 while the replay Ticket" "UNGUARDED"
   )
   monoprop_add_failure_scenario(
     active_pending active-ticket pending "injected failure while a PendingAlltoallv" "UNGUARDED"

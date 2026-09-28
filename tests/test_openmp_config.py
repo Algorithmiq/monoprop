@@ -101,7 +101,8 @@ def test_prototype_accepts_valid_budgets_without_changing_results() -> None:
         outcome = _probe(budget, {"OMP_NUM_THREADS": "2"}, partitions=1)
         assert outcome["ok"], (budget, outcome)
         energies.append(outcome["energy"])
-    # Kernels are still serial, so every budget gives the same numbers.
+    # Threaded kernels give bitwise-identical results at every budget (and this problem is too small
+    # to leave their serial paths anyway).
     assert all(e == energies[0] for e in energies)
 
 

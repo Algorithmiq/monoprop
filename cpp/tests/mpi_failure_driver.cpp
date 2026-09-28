@@ -24,6 +24,8 @@
 //   worker-throw                     worksharing worker throws inside a retained-functional evaluation
 //   before-exchange                  a build fails in the scan, before the first query exchange
 //   active-ticket ticket|pending     a failure while a replay Ticket / construction PendingAlltoallv is posted
+//   active-ticket cosine-worker      a worker of the threaded cosine kernel throws while the replay Ticket is
+//                                    posted
 //   insufficient-thread-level single|funneled   host-initialized MPI below the required level
 //   wrong-thread-entry serialized|multiple      a guarded entry called from a non-initializing std::thread
 
@@ -35,6 +37,7 @@
 #include <cstdlib>
 #include <exception>
 #include <format>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -46,6 +49,7 @@
 #include "monoprop/Evolution.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/parallel/Workshare.h"
@@ -147,6 +151,40 @@ auto active_ticket(int rank) -> void {
     const detail::LayerCosScale scale = [rank](size_t, double *, double) {
         if (rank == 0) {
             throw std::runtime_error("injected failure while the replay Ticket is in flight");
+        }
+    };
+    say(rank, "posting the replay exchange");
+    evolve_step(coeffs, view, 0.3, 0, MPI_COMM_WORLD, scale);
+}
+
+// Throws from one logical range of a real kernel, on whichever worker owns it.
+struct ThrowingRangeObserver {
+    auto prepare(detail::KernelRange, size_t) const noexcept -> void {}
+    auto visit(detail::KernelRange, size_t range) const -> void {
+        if (range == 2) {
+            throw std::runtime_error(std::format("injected failure in cosine range {} on OpenMP worker {} while the "
+                                                 "replay Ticket is in flight",
+                                                 range,
+                                                 omp_get_thread_num()));
+        }
+    }
+};
+
+auto active_ticket_cosine_worker(int rank) -> void {
+    auto sim = make_prototype();
+    build(sim);
+    VecD coeffs = sim.mp_op().get_operator();
+    const auto view = sim.graph().replay_view();
+    // A stored mask of four kernel ranges, so the kernel really opens a team; the real layer is tiny.
+    CosMask mask;
+    for (size_t w = 0; w < 4 * detail::kCosMaskRangeBlocks; ++w) {
+        mask.blocks.emplace_back(w * 64, ~uint64_t{0});
+        mask.total_count += 64;
+    }
+    auto scratch = std::make_shared<VecD>(mask.blocks.size() * 64, 1.0);
+    const detail::LayerCosScale scale = [rank, mask, scratch](size_t, double *, double v) {
+        if (rank == 0) {
+            detail::scale_cos_mask(scratch->data(), mask, v, {.threads = 2}, ThrowingRangeObserver{});
         }
     };
     say(rank, "posting the replay exchange");
@@ -262,6 +300,9 @@ auto main(int argc, char **argv) -> int {
         }
         else if (scenario == "active-ticket" && option == "ticket") {
             active_ticket(rank);
+        }
+        else if (scenario == "active-ticket" && option == "cosine-worker") {
+            active_ticket_cosine_worker(rank);
         }
         else if (scenario == "active-ticket" && option == "pending") {
             active_pending(rank, size);

@@ -16,8 +16,8 @@
 //
 // Budgets are captured from monoprop_NUM_THREADS when an object is constructed. Cases that need a specific
 // launch environment are also registered as separate fresh-process CTest entries (see CMakeLists.txt);
-// the rest set the variable around one construction with ScopedEnv and restore it afterwards. Kernels are
-// still serial here, so these tests check what reaches each object, never parallel execution.
+// the rest set the variable around one construction with ScopedEnv and restore it afterwards. These tests
+// check what reaches each object; kernel-level parallel execution is covered by openmp_kernel_tests.cpp.
 
 #include <boost/test/unit_test.hpp>
 
