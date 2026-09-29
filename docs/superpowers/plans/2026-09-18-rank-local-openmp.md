@@ -1,5 +1,12 @@
 # Rank-local OpenMP Implementation Plan
 
+> **Superseded implementation path — 2026-09-29.** Use the
+> [sharded OpenMP plan](2026-09-29-sharded-openmp.md) and its
+> [design](../specs/2026-09-29-sharded-openmp-design.md) for new work. Tasks 0–6, their outcomes and the failed
+> architecture checkpoint are preserved below. Task 1's frozen inventory, formal baseline and evidence protocol
+> remain the reference imported by the replacement plan. Tasks 7–13 and conflicting historical execution directions
+> are superseded, not an authorized queue. New implementation and measurements require separate approval.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Read both documents completely; full-plan execution
 > requires explicit approval. Task 0 now precedes all downstream work and ends with an owner architecture decision.

@@ -1,5 +1,12 @@
 # Rank-local OpenMP parallelization design
 
+> **Superseded architecture — 2026-09-29.** The post-Task-6 diagnostic rejected the one-store path. Use the
+> [sharded OpenMP design](2026-09-29-sharded-openmp-design.md) and its
+> [implementation plan](../plans/2026-09-29-sharded-openmp.md) for the replacement direction. The text below remains
+> the historical experiment specification, including policies later superseded; it is not current execution
+> authority. Tasks 0–6 and Task 1's frozen evidence remain in the
+> [historical plan](../plans/2026-09-18-rank-local-openmp.md). Its Tasks 7–13 must not be resumed.
+
 ## Status and authority
 
 This is the design accompanying the implementation plan at `../plans/2026-09-18-rank-local-openmp.md`. It records the
