@@ -20,6 +20,7 @@ from monoprop_cirq._version import __version__
 from monoprop_cirq.conversion import (
     from_cirq_circuit,
     from_cirq_operator,
+    to_cirq_circuit,
     to_cirq_operator,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "__version__",
     "from_cirq_circuit",
     "from_cirq_operator",
+    "to_cirq_circuit",
     "to_cirq_operator",
 ]

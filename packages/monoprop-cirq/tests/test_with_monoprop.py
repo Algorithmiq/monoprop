@@ -15,17 +15,20 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING
+import json
 
 import cirq
 import numpy as np
 import pytest
-from monoprop_cirq import from_cirq_circuit, from_cirq_operator
+from monoprop_cirq import (
+    from_cirq_circuit,
+    from_cirq_operator,
+    to_cirq_circuit,
+    to_cirq_operator,
+)
 
-from monoprop import Circuit, PauliPropagator
-
-if TYPE_CHECKING:
-    from monoprop.pauli import PauliOperator
+from monoprop import Circuit, ExpGate, PauliPropagator
+from monoprop.pauli import Pauli, PauliOperator
 
 
 def _cirq_expectation(
@@ -153,3 +156,79 @@ def test_separately_converted_operator_and_circuit_align():
         from_cirq_circuit(circuit, []), from_cirq_operator(observable), cutoff=len(_Q)
     )
     assert got == pytest.approx(expected, abs=1e-10)
+
+
+def test_to_cirq_circuit_matches_monoprop():
+    """A monoprop circuit and its Cirq conversion give the same expectation value."""
+    num_qubits = 3
+    circuit = Circuit(
+        gates=(
+            ExpGate(
+                PauliOperator(
+                    {Pauli("XZ", (0, 2)): 0.8, Pauli("Y", 1): -0.4},
+                    num_qubits=num_qubits,
+                )
+            ),
+            ExpGate(PauliOperator({Pauli("ZZ", (1, 2)): 1.3}, num_qubits=num_qubits)),
+            ExpGate(PauliOperator({Pauli("Y", 0): 0.6}, num_qubits=num_qubits)),
+        ),
+        parameters=(0.7, -0.35, 1.2),
+        initial_state=(0, 2),
+        system_size=num_qubits,
+    )
+    observable = from_cirq_operator(_dense_observable(_Q), qubit_order=_Q)
+
+    expected = _monoprop_expectation(circuit, observable, cutoff=num_qubits)
+    got = _cirq_expectation(
+        to_cirq_circuit(circuit), to_cirq_operator(observable), [0, 2], _Q
+    )
+    assert got == pytest.approx(expected, abs=1e-10)
+
+
+_NUM_QUBITS = 12
+_OCCUPIED_QUBITS = list(range(1, _NUM_QUBITS, 2))
+
+
+def _cirq_evolution(qubits: list[cirq.Qid]) -> cirq.Circuit:
+    """A 12-qubit evolution circuit mixing commuting-sum exponentials, entanglers and rotations."""
+    q = qubits
+    windows = [
+        0.5 * cirq.X(q[0]) * cirq.Z(q[1]) + 0.2 * cirq.Z(q[1]),
+        0.1 * cirq.Z(q[3]) + 0.1 * cirq.Z(q[2]) * cirq.Z(q[3]),
+        0.7 * cirq.Y(q[4]) + 0.1 * cirq.Y(q[5]),
+        0.5 * cirq.Z(q[6]) + 0.6 * cirq.Z(q[6]) * cirq.Z(q[7]),
+    ]
+    return cirq.Circuit(
+        [
+            cirq.PauliSumExponential(w, exponent=t)
+            for w, t in zip(windows, (0.2, 0.1, 0.3, 0.1))
+        ],
+        (cirq.CNOT**0.4)(q[7], q[8]),
+        (cirq.ISWAP**0.3)(q[9], q[10]),
+        (cirq.CZ**0.6)(q[11], q[1]),
+        cirq.rx(0.3)(q[2]),
+        cirq.ry(-0.2)(q[5]),
+    )
+
+
+@pytest.fixture
+def hamiltonian_lih(lazy_shared_datadir) -> cirq.PauliSum:
+    path = lazy_shared_datadir / "hamiltonian_lih.json"
+    with path.open() as f:
+        hamiltonian = json.load(f)
+    num_qubits = max((len(label) for label in hamiltonian), default=0)
+    return to_cirq_operator(PauliOperator(hamiltonian, num_qubits=num_qubits))
+
+
+def test_cirq_with_mp(hamiltonian_lih: cirq.PauliSum):
+    """Integration test: a Cirq-built problem propagated with the PauliPropagator."""
+    qubits = cirq.LineQubit.range(_NUM_QUBITS)
+    evolution = _cirq_evolution(qubits)
+
+    expected = _cirq_expectation(evolution, hamiltonian_lih, _OCCUPIED_QUBITS, qubits)
+    got = _monoprop_expectation(
+        from_cirq_circuit(evolution, _OCCUPIED_QUBITS, qubit_order=qubits),
+        from_cirq_operator(hamiltonian_lih, qubit_order=qubits),
+        cutoff=_NUM_QUBITS,
+    )
+    assert got == pytest.approx(expected, abs=1e-8)

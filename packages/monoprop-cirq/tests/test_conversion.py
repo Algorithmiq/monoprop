@@ -21,11 +21,18 @@ from typing import Any, NamedTuple
 import cirq
 import numpy as np
 import pytest
+import scipy.linalg
 import sympy
-from monoprop_cirq import from_cirq_circuit, from_cirq_operator, to_cirq_operator
+from monoprop_cirq import (
+    from_cirq_circuit,
+    from_cirq_operator,
+    to_cirq_circuit,
+    to_cirq_operator,
+)
 from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, ExpGate
+from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
 
 
@@ -407,3 +414,71 @@ class TestFromCirqCircuit:
         circuit = cirq.Circuit(cirq.XPowGate(dimension=3)(qutrit))
         with pytest.raises(ValueError, match="Only qubits are supported"):
             from_cirq_circuit(circuit, [], qubit_order=[qutrit])
+
+
+class TestToCirqCircuit:
+    def test_matches_exponential_of_each_generator(self):
+        """PauliSumExponential is exactly exp(+i theta H), so the unitary matches with no phase."""
+        q = cirq.LineQubit.range(3)
+        first = {Pauli("Z", 0): 0.5, Pauli("ZZ", (1, 2)): 0.3}
+        second = {Pauli("XY", (0, 2)): -1.2}
+        circuit = _pauli_circuit([first, second], [0.7, -0.4], 3)
+        first_matrix = (0.5 * cirq.Z(q[0]) + 0.3 * cirq.Z(q[1]) * cirq.Z(q[2])).matrix(
+            q
+        )
+        second_matrix = cirq.PauliSum.wrap(-1.2 * cirq.X(q[0]) * cirq.Y(q[2])).matrix(q)
+        expected = scipy.linalg.expm(-0.4j * second_matrix) @ scipy.linalg.expm(
+            0.7j * first_matrix
+        )
+        result = to_cirq_circuit(circuit)
+        np.testing.assert_allclose(result.unitary(qubit_order=q), expected, atol=1e-12)
+
+    def test_shared_parameter_drives_both_gates(self):
+        q = cirq.LineQubit.range(2)
+        gates = (
+            ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=2), index=0),
+            ExpGate(PauliOperator({Pauli("X", 1): 1.0}, num_qubits=2), index=0),
+        )
+        circuit = Circuit(gates=gates, parameters=(0.4,), system_size=2)
+        result = to_cirq_circuit(circuit)
+        expected = cirq.Circuit(
+            cirq.PauliSumExponential(cirq.Z(q[0]), exponent=0.4),
+            cirq.PauliSumExponential(cirq.X(q[1]), exponent=0.4),
+        )
+        np.testing.assert_allclose(
+            result.unitary(qubit_order=q), expected.unitary(qubit_order=q), atol=1e-12
+        )
+
+    def test_identity_term_dropped(self):
+        circuit = _pauli_circuit([{Pauli(""): 2.0, Pauli("Z", 0): 1.0}], [0.3], 1)
+        (op,) = to_cirq_circuit(circuit).all_operations()
+        assert op.pauli_string == cirq.PauliString(cirq.Z(cirq.LineQubit(0)))
+
+    def test_custom_qubits(self):
+        a, b = cirq.GridQubit(0, 0), cirq.GridQubit(0, 1)
+        circuit = _pauli_circuit([{Pauli("XY", (0, 1)): 1.0}], [0.3], 2)
+        result = to_cirq_circuit(circuit, qubits=[b, a])
+        (op,) = result.all_operations()
+        assert op.pauli_string == cirq.X(b) * cirq.Y(a)
+
+    def test_unbound_circuit_raises(self):
+        circuit = Circuit(
+            gates=(ExpGate(PauliOperator({Pauli("X", 0): 1.0}, num_qubits=1)),),
+            system_size=1,
+        )
+        with pytest.raises(ValueError, match="needs a bound circuit"):
+            to_cirq_circuit(circuit)
+
+    def test_rejects_majorana_family(self):
+        circuit = Circuit(
+            gates=(ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=1)),),
+            system_size=1,
+            parameters=(0.5,),
+        )
+        with pytest.raises(TypeError, match="majorana-family gate"):
+            to_cirq_circuit(circuit)
+
+    def test_wrong_qubit_count_raises(self):
+        circuit = _pauli_circuit([{Pauli("X", 0): 1.0}], [0.5], 2)
+        with pytest.raises(ValueError, match="qubits has 3 entries"):
+            to_cirq_circuit(circuit, qubits=cirq.LineQubit.range(3))

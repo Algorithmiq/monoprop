@@ -320,3 +320,55 @@ def from_cirq_circuit(
         initial_state=tuple(initial_state),
         system_size=num_qubits,
     )
+
+
+def to_cirq_circuit(
+    circuit: Circuit, *, qubits: Sequence[cirq.Qid] | None = None
+) -> cirq.Circuit:
+    """Convert a [Circuit][monoprop.circuit.Circuit] to a Cirq circuit.
+
+    Each gate becomes one ``cirq.PauliSumExponential(generator, exponent=theta)``, which Cirq
+    defines as exactly ``exp(+i theta generator)``, the [ExpGate][monoprop.circuit.ExpGate]
+    convention, so no sign flip is applied. Cirq expands it into one ``cirq.PauliStringPhasor``
+    per generator term; identity terms, a global phase, are dropped. The initial state is not
+    included: prepend ``cirq.X`` on ``circuit.initial_state`` to prepare it.
+
+    Args:
+        circuit: A bound, qubit (Pauli) [Circuit][monoprop.circuit.Circuit].
+        qubits: The Cirq qubits to use, with qubit ``i`` placed on ``qubits[i]``. Defaults to
+            ``cirq.LineQubit.range(circuit.system_size)``.
+
+    Returns:
+        A Cirq circuit.
+
+    Raises:
+        ValueError: If ``circuit`` is unbound, or ``qubits`` does not have
+            ``circuit.system_size`` distinct entries.
+        TypeError: If ``circuit`` holds a Majorana-family gate rather than a Pauli one.
+    """
+    qubit_tuple = _output_qubits(circuit.system_size, qubits)
+    if len(circuit.parameters) != circuit.n_parameters:
+        raise ValueError(
+            f"to_cirq_circuit needs a bound circuit: it has {circuit.n_parameters} "
+            f"parameter(s) but {len(circuit.parameters)} angle value(s)."
+        )
+    operations: list[cirq.PauliSumExponential] = []
+    for gate, param_index in zip(circuit.gates, circuit.resolved_mapping, strict=True):
+        if not isinstance(gate.generator, PauliOperator):
+            raise TypeError(
+                "to_cirq_circuit requires a qubit (Pauli) circuit; got a "
+                f"{circuit.family}-family gate."
+            )
+        generator = cirq.PauliSum.from_pauli_strings(
+            [
+                _to_pauli_string(pauli, coeff, qubit_tuple)
+                for pauli, coeff in gate.generator.terms.items()
+                if pauli.qubits
+            ]
+        )
+        operations.append(
+            cirq.PauliSumExponential(
+                generator, exponent=circuit.parameters[param_index]
+            )
+        )
+    return cirq.Circuit(operations)
