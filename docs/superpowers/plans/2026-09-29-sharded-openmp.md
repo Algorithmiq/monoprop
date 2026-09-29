@@ -24,6 +24,9 @@ replacement documents, not executing this plan. No implementation, build, experi
 is authorized by these checkboxes. Review subsequent source differences before starting; never reset to a historical
 pin.
 
+Progress: S0 was separately authorized, executed and accepted by the owner on 2026-09-29 (outcome under Task S0).
+S1 has not started and needs its own authorization.
+
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
 Its Task 1 frozen inventory, artifacts and measurement protocol remain authoritative where imported below. New task IDs
@@ -51,8 +54,12 @@ are **S0–S8** to prevent confusion with that experiment. Task 6 is not the per
 - Use traversal for query-producing bitmap work, and prefix-sum for cumulative offsets. Do not call both a scan.
 - Build/artifact isolation is mandatory; do not alter baseline environments, archived evidence or unrelated checkout
   data.
-- Before an authorized push, run `prek run --all-files` and relevant tests; previous notebook waivers do not carry
-  forward.
+- Before an authorized push, run `prek run --all-files` and relevant tests, and fix every finding the change
+  introduces. Standing owner waiver (recorded at S0 acceptance, 2026-09-29), valid for the whole execution of this
+  plan: ignore the pre-existing `ruff check` findings in `docs/notebooks/chemistry/chemistry.ipynb`,
+  `docs/notebooks/fermi_hubbard/fermi_hubbard.ipynb` and `docs/notebooks/kicked_ising/kicked_ising.ipynb` (49 at
+  S0). Do not edit those notebooks to silence them. The waiver covers no other file, hook or finding; report any new
+  finding in those notebooks, or any change in their count, rather than treating it as waived.
 
 ## Evidence pins and scope
 
@@ -214,7 +221,25 @@ body with `(size_t shard, TeamFailure&)`, then returns the error without rethrow
 records its own slot and returns the collective checkpoint decision. Every phase result is checked; false ends the
 common sequence without invoking later phase bodies. No MPI, configuration check or topology query.
 
-- [ ] Add a real-team test and run it before implementation; the absent helper is the initial compile RED:
+**Outcome:** implemented and **accepted by the owner on 2026-09-29**. Start: `f31174c`. Handoff with the
+contract, the barrier/generation/join argument, commands, toolchains and full evidence:
+`/home/ubuntu/s0-artifacts/HANDOFF.md` (outside the checkout).
+
+- Interface as specified, plus a `TeamBody` concept that requires a noexcept orchestration body; `run_team` rejects a
+  nonpositive budget before the region. The checkpoint uses `omp masked` (the non-deprecated `master`).
+- RED: the registered test failed to compile only on the missing `monoprop/detail/sharded/Team.h`. GREEN: 17 flat
+  `sharded_team_*` cases in fresh `sharded_team_env_t{1,2,4}` and `_t4_passive` launches observed 1/2/4 distinct
+  workers; GCC/libgomp and Clang 18/libomp R (413/413), GCC ASan/UBSan (413/413), GCC M with Open MPI 5.0.10
+  (459/459, compatibility only), R pytest (767 passed, 25 skipped). `for_blocks` preservation passed under dynamic and
+  thread-limited teams.
+- 13 `Team.h` mutants: 12 fail specific assertions (an asynchronously changing stop flag fails the generation case at
+  T>=2 only); a failing worker that skips the checkpoint shows only as a bounded 120 s timeout.
+- Clang/libomp/Archer TSan qualified with known-safe/racy probes; the real tests are silent, and the missing-leading-
+  barrier mutant is reported in `TeamFailure::record`. The installed `find_package_smoke` consumer instantiates
+  `Team.h` through `monoprop::monoprop` for the R, M and Clang packages.
+- Pending: macOS, Linux aarch64, wheels, Nix and minimum-version compiler routes.
+
+- [x] Add a real-team test and run it before implementation; the absent helper is the initial compile RED:
 
 ```cpp
 namespace parallel = monoprop::detail::parallel;
@@ -233,7 +258,7 @@ BOOST_AUTO_TEST_CASE(sharded_team_visits_each_owner) {
 }
 ```
 
-- [ ] Implement a checkpoint-stable decision, not a single asynchronously changing stop flag. A valid initial shape
+- [x] Implement a checkpoint-stable decision, not a single asynchronously changing stop flag. A valid initial shape
   has owner-written `errors_` and primary-written `proceed_`:
 
 ```cpp
@@ -255,12 +280,12 @@ auto TeamFailure::checkpoint() noexcept -> bool {
   Clarify `Options` as a requested budget: the reduced-team guarantee belongs to `for_blocks`, not every consumer.
   The sharded team requires exactly T; this documentation change must not add actual-team checks or weaken the generic
   helper's existing behavior.
-- [ ] Test T=1/2/4, empty work, nonprimary failure, simultaneous failures, primary-only work, skipped later mutation and
+- [x] Test T=1/2/4, empty work, nonprimary failure, simultaneous failures, primary-only work, skipped later mutation and
   delayed-worker checkpoint stability. Add a mutation check that removes synchronization/actual work and makes the
   corresponding tests fail; use bounded test timeouts rather than treating a hang as success.
-- [ ] Run the focused R tests with `-R '^sharded_team_'`, qualified sanitizer probes and installed-header compilation.
+- [x] Run the focused R tests with `-R '^sharded_team_'`, qualified sanitizer probes and installed-header compilation.
   Keep whole-body callbacks noexcept; every potentially throwing operation belongs inside a protected phase.
-- [ ] Hand off the helper and barrier/lifetime argument. Do not add MPI or start an experiment in this task.
+- [x] Hand off the helper and barrier/lifetime argument. Do not add MPI or start an experiment in this task.
 
 ## Task S1: Owner-initialized shard state and copy semantics
 
@@ -634,7 +659,8 @@ rg -n 'hwloc|pkg.?config|SHARDED_OPENMP_PROTOTYPE' \
   as final. Retain the baseline and original formal evidence.
 - [ ] Self-review the diff against the spec and record unresolved numerical/concurrency/MPI concerns. Independent review
   requires separate authorization to delegate; do not silently spawn reviewers. Before any authorized push, run
-  `prek run --all-files` and relevant tests and fix findings; no inherited unrelated-error waiver.
+  `prek run --all-files` and relevant tests and fix findings; the only waiver is the standing notebook Ruff waiver in
+  the global constraints.
 - [ ] Present final acceptance evidence and residual platform/HPC risks to the owner. Only separately authorized
   integration/publication closes the refactor. Do not start the following numerical experiments automatically.
 
