@@ -22,6 +22,13 @@ Boost.Test, pytest. Monoprop's direct hwloc dependency is removed with the legac
 **Spec:** [Rank-local OpenMP design](../specs/2026-09-18-rank-local-openmp-design.md). Read both documents before
 execution.
 
+**Decision after Task 6 (owner, 2026-09-29):** the one-store design is not pursued further. The post-Task-6
+architecture go/no-go showed it clearly trailing the partition baseline at full machine, with no credible bounded route
+to parity (see "Architecture go/no-go outcome" after Task 6). The architecture will be re-designed and the re-design
+keeps the sharding: thread-owned operator stores stay. Tasks 7–13 below describe the abandoned one-store path and are
+superseded; do not execute them. Tasks 0–6 remain as the record of the experiment, and Task 1's frozen campaign and
+formal baseline stay the reference for the re-design. A new spec and plan are required before further implementation.
+
 **Status:** Planning only. Refreshed source baseline: current `origin/main` at
 `90d57177c2b0cd93503f88dd931d2f8dd409aa23`, inspected in rebased `refactor-parallelization` at
 `35f359f095fa3f1d628ca2fdc66c93fef6ea7564`. Only CONTEXT.md and these planning documents differ between those commits.
@@ -144,10 +151,10 @@ Additional execution rules:
 | Architecture experiment | 0 | Done: evidence inconclusive for ownership; one store per rank is the working hypothesis (see Task 0 outcome) |
 | Baseline (conditional) | 1 | Task 0 decision, authorized baseline-only calibration, frozen inventory, fresh formal baseline evidence |
 | Small prototype | 2–4 | OpenMP packaging works; one-store serial and threaded replay agree |
-| Shared-store construction | 5–7 | Stable queries/IDs, safety, construction scaling and scratch measured; post-Task-6 architecture go/no-go |
-| Remaining evaluation kernels | 8–9 | Replay, derivative, retained closures and reductions validated |
-| Integration cutover | 10–11 | Go/no-go passed before Task 10; parity at final geometry decides ownership; index A/B in Task 11 |
-| Removal/release | 12–13 | Only after Task 11 confirms the single store; old runtime removed, final full matrix and parity rerun |
+| Shared-store construction | 5–7 | Tasks 5–6 done; post-Task-6 go/no-go ran and failed (see its outcome); Task 7 superseded |
+| Remaining evaluation kernels | 8–9 | Superseded by the post-Task-6 decision to re-design while keeping the sharding |
+| Integration cutover | 10–11 | Superseded: the one-store path does not proceed to the API cutover |
+| Removal/release | 12–13 | Superseded: the partition runtime is kept |
 
 One writer per checkout. Kernel and storage tasks are ordered: do not have agents concurrently edit `Engine.h`,
 `Evolution.cpp`, or `MonomialPropagator.inl`. Independent read-only reviews are safe. Do not batch past a failed gate.
@@ -1929,6 +1936,77 @@ machine for representative small/medium profiles. These are fresh diagnostic obs
 they cannot waive a Task 11 cell. Report per-phase time and peak memory. If the one-store path trails clearly and no
 bounded Task 11 optimization explains a route to parity, stop for the owner's decision before Task 10 removes the
 partition API. This is the last cheap point to revert: only the additive one-store path would be dropped.
+
+**Task 6 outcome (2026-09-29):** correctness gates pass on GCC 15.2 (R, M) and Clang 18.1.8/libomp (R) Linux;
+other platforms are pending. The performance findings below are recorded, not accepted: the work ended at the
+architecture decision that follows.
+- Contracts as implemented:
+  - `probe_frozen_positions` splits position-list queries into 256-query blocks, each one `find_batch_positions`
+    call with absolute offsets into the shared buffer and sliced counts, outputs and hashes. It checks equal
+    lengths and in-bounds spans before any block runs. The store stays frozen until every worker joins.
+  - `probe_incoming_queries` validates every sender stream on the caller before any decode, with
+    `QueryWire::checked_extent`: ternary phase, k and gap-width bounds, canonical escaped counts, whole records
+    including the fused value word, and a final offset equal to the buffer size. It checks the prefixes and
+    allocates each array once at its exact size. Workers decode disjoint blocks; `read_positions` rejects any
+    size_t position at or above 2N before narrowing. After the frozen probe, the caller checks the row-ID ceiling
+    and assigns misses in sender-window/query order. `miss_g` is `vector<size_t>`. Malformed input throws
+    `MalformedQueryStream`; the plan's `0x8037e` fixture is rejected before any payload read.
+  - `resolve_incoming` scatters on workers only for a sink with `static constexpr bool parallel_resolve = true`
+    and a true `parallel_resolve_enabled()` (`GraphSink`, Heisenberg `ContractSink`). Schrödinger scoring and
+    generic sinks stay serial; debug builds assert unique leader marks. It runs inside `guard_distributed`.
+  - The self lookup runs in windows of at most 4096 queries (at most 16 probe blocks), with serial filtering,
+    gathering and emission, and no insertion between windows. Publication order and the single-writer
+    grow → `set_positions` → `bulk_insert_hashed` → reindex sequence are unchanged. `bulk_insert_hashed` gained
+    a trailing `parallel::Options` that the packed index ignores. The duplicate-key behaviour is pinned by
+    `bulk_insert_duplicate_keys_are_both_indexed`.
+  - The observer seam gained `KernelRange::{decode,incoming_probe,self_probe,scatter}`, forwarded through
+    `build_layer` and `LayerBuildEngine`.
+- Tests:
+  - New and extended cases in `sparse_resolve_tests`, `sparse_query_tests`, `operator_index_tests`,
+    `mpi_fresh_insert_equivalence` and `fused_cos_sweep_tests`.
+  - Four `mpi_failure_resolve_worker_*` scenarios: the self probe fails before the exchange; the decode, incoming
+    probe and scatter fail during the response round. All abort in about 0.4 s.
+  - RED: compile failure without the helper and API, then a malformed-stream test failing with the unchecked
+    walk, and participation failing with the regions forced serial while exactness passes. Nine mutants were
+    all killed.
+  - Serial and threaded results are bitwise equal at budgets 1–4 and 8, and at world sizes 2–4. The Task 5
+    cross-revision probe is bitwise equal at budgets 1, 4 and 16.
+  - Final runs: R, Clang and ASan ctest 392/392; TSan (Clang + libomp + Archer, same suppression) 117/117 with
+    no reports; M serial 422/422, MPI splitmix 18/18, linear 17/17; `--with-mpi` pytest passes. Stress: 800
+    fresh processes, no failures.
+- Phase diagnostic (owner-approved; 23 of 60 min): end-to-end build at T=96 is 4.1× (B1), 8.4× (B2) and 1.5× (B4)
+  over T=1. Serial fractions at T=1 bound speedup at 5.9×, 15.5× and 4.4×. Hash publication and reindex take 6% of
+  B1's time at T=1 and 28% at T=96. Under libgomp at T≥48, Task 6 is slower than Task 5 (B1 +19%, B2 +42% at T=96)
+  because many 16-thread self-probe regions interleave with 96-thread ones. libomp shows no regression, and the
+  serial self probe restores Task 5 times. This was left unfixed.
+- Artifacts: `/home/ubuntu/task6-artifacts/` (`report.md`, `ledger.md`, `design.md`, `diag-results.md`,
+  `arch-results.md`, `diag/`, `arch/`, `logs/`). They are intentionally uncommitted. The frozen campaign and
+  workload files, the Task 1 artifacts and the baseline binaries and worktrees were verified unchanged.
+
+**Architecture go/no-go outcome (owner decision, 2026-09-29): re-design, keeping the sharding.**
+- The diagnostic (owner-approved; 150 of 180 min) covered 96 frozen cells (`tiny` and `reference`, all 16 nodes,
+  at mpi-1x1, mpi-1x96 and off-1x96). Each cell had 3 alternating fresh pairs through the Task 1 driver. The
+  prototype was selected by a recorded `partitions=1` adapter, and results were written outside the formal
+  evidence.
+  - Numerics: every cell matched the formal baseline (global keys and coefficients, energies, gradients), with
+    exact windows.
+  - L1: runtime ratios 0.94–1.04 (reference); memory at parity.
+  - Full machine (mpi-1x96, and MPI-off 1x96): 0 of 16 reference cells at runtime ≤ 1.00, with ratios of
+    2.0–62× (gradient Schrödinger 62×, gradient Heisenberg 31×, build_graph Heisenberg 7.2×). Peaks were mostly
+    lower (0.5–0.96), except Hubbard (up to 1.15).
+- No credible bounded route: at T=96 the prototype's parallel scan alone takes longer than the baseline's whole
+  operation (build_graph Heisenberg 0.465 s vs 0.399 s; Schrödinger 1.34 s vs 0.50 s). Removing every remaining
+  serial phase in Tasks 7–11 would therefore still leave these cells above 1.00. Evaluation would need to be
+  11–62× faster.
+- Decision: the one-store-per-rank design is abandoned before Task 10's API cutover, so the partition API and
+  runtime are unchanged. The architecture is re-designed and keeps the sharding. Tasks 7–13 are superseded. The
+  Task 2–6 changes stay on this branch as the record of the experiment, and the re-design's spec and plan decide
+  what to keep or revert. Pending that plan, carry forward:
+  - OpenMP is a required dependency.
+  - Task 3's per-object budgets and its invalidation and distributed-failure contracts apply to every
+    ordinary-communicator object.
+  - The exported functions' trailing `Options` parameter is a C++ ABI change.
+  - The prototype kernels are reachable only through explicit `partitions=1`.
 
 ### Task 7: Harden rank-wide capacity and optionally parallelize append-only row fill
 
