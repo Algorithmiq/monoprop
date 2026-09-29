@@ -162,6 +162,48 @@ monoprop_add_launch_env_case(
   ENVIRONMENT "OMP_DYNAMIC=TRUE"
 )
 
+# The fixed-team phase primitive (detail/sharded/Team.h) assumes exactly T workers, so its cases run only under
+# exact-team launches, never under the limited or dynamic teams above, which test for_blocks' reduced-team contract.
+# Each T is a fresh process; cases that need a nonprimary worker are left out of T = 1. The passive-wait launch parks
+# waiting workers, which widens the windows the checkpoint-generation cases probe.
+set(
+  _monoprop_sharded_team_single_cases
+  "sharded_team_visits_each_owner,sharded_team_observes_worker_identity,sharded_team_keeps_owner_across_phases,sharded_team_primary_only_phase_runs_on_the_caller,sharded_team_empty_owners_reach_the_checkpoint,sharded_team_publishes_writes_to_the_next_phase,sharded_team_single_worker_failure_is_returned_after_join,sharded_team_failure_is_returned_not_rethrown,sharded_team_failure_selects_the_lowest_recorded_slot,sharded_team_preserves_the_original_exception,sharded_team_fresh_invocation_has_no_stale_failure,sharded_team_rejects_a_nonpositive_budget_before_the_region,sharded_team_leaves_runtime_settings_unchanged,sharded_team_launch_supplies_the_expected_team"
+)
+foreach(_threads IN ITEMS 1 2 4)
+  if(_threads EQUAL 1)
+    set(_cases "${_monoprop_sharded_team_single_cases}")
+  else()
+    set(_cases "sharded_team_*")
+  endif()
+  set(
+    _team_environment
+    "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${_threads}"
+  )
+  monoprop_add_launch_env_case(
+    sharded_team_env_t${_threads}
+    "${_cases}"
+    ENVIRONMENT "${_team_environment}"
+  )
+  set_tests_properties(
+    sharded_team_env_t${_threads}
+    PROPERTIES
+      TIMEOUT
+        120
+  )
+endforeach()
+monoprop_add_launch_env_case(
+  sharded_team_env_t4_passive
+  "sharded_team_*"
+  ENVIRONMENT "monoprop_NUM_THREADS=4;OMP_NUM_THREADS=4;OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=4"
+)
+set_tests_properties(
+  sharded_team_env_t4_passive
+  PROPERTIES
+    TIMEOUT
+      120
+)
+
 # Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
 # only the MPI test leg runs them.
 if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)

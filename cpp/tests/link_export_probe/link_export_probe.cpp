@@ -33,17 +33,22 @@
 //  (e) the one-store prototype (partitions = 1), whose constructor template calls the out-of-line
 //      capture_thread_budget(), require_thread_support() and require_initializing_thread(), and whose
 //      operations reach the exported evolve/derivative entry points with their trailing Options.
+//  (f) the fixed-team phase primitive (detail/sharded/Team.h), instantiated here like (c): its region,
+//      barriers and masked construct must compile and link through the imported target's OpenMP flags.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/parallel/Workshare.h"
+#include "monoprop/detail/sharded/Team.h"
 
 #include <complex>
 #include <cstddef>
 #include <cstdlib>
+#include <exception>
 #include <optional>
 #include <print>
+#include <stdexcept>
 #include <vector>
 
 // Forces every member function of MonomialPropagator<NumModes> to be compiled for these two
@@ -107,6 +112,37 @@ auto run_openmp_workshare_chain() -> void {
     std::println(stderr, "[link_export_probe] openmp chain: blocks={} sum={} expected={}", kBlocks, sum, expected);
     if (sum != expected) {
         std::println(stderr, "[link_export_probe] openmp chain: FAILED");
+        std::exit(1);
+    }
+}
+
+// Teams at the captured budget: in the first, every owner publishes in one phase and reads its neighbour's value in
+// the next; in the second, the last owner fails and its exception must come back as the returned error.
+auto run_sharded_team_chain() -> void {
+    namespace sharded = monoprop::detail::sharded;
+    const auto options = monoprop::detail::parallel::capture_thread_budget();
+    const auto threads = static_cast<size_t>(options.threads);
+    std::vector<size_t> published(threads, 0);
+    std::vector<size_t> seen(threads, 0);
+    const auto ok = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
+        if (sharded::phase(failure, shard, [&] { published[shard] = shard + 1; })) {
+            sharded::phase(failure, shard, [&] { seen[shard] = published[(shard + 1) % threads]; });
+        }
+    });
+    const auto failed = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
+        sharded::phase(failure, shard, [&] {
+            if (shard + 1 == threads) {
+                throw std::runtime_error("expected");
+            }
+        });
+    });
+    auto correct = !ok && static_cast<bool>(failed);
+    for (size_t shard = 0; shard < threads; ++shard) {
+        correct = correct && seen[shard] == (shard + 1) % threads + 1;
+    }
+    std::println(stderr, "[link_export_probe] sharded team chain: team={} correct={}", threads, correct);
+    if (!correct) {
+        std::println(stderr, "[link_export_probe] sharded team chain: FAILED");
         std::exit(1);
     }
 }
@@ -190,6 +226,7 @@ auto main() -> int {
     run_graph_build_chain();
     run_partition_chain();
     run_openmp_workshare_chain();
+    run_sharded_team_chain();
     run_pauli_chain();
     run_one_store_prototype_chain();
     monoprop::mpi::finalize();

@@ -19,13 +19,15 @@
 namespace monoprop::detail::parallel {
 
 /*!
- * \brief Thread budget for one worksharing region.
+ * \brief A requested thread budget, never a global OpenMP runtime setting.
  *
- * The budget is an upper bound on the workers a region requests, never a global OpenMP runtime setting.
- * The runtime may provide fewer workers; correctness never depends on receiving the full budget.
+ * The value is what a region requests, not a promise of what the runtime supplies. Whether a consumer
+ * tolerates fewer workers is that consumer's contract: for_blocks() stays correct with any smaller team,
+ * including its serial and nested fallbacks, while sharded::run_team() assumes the launch supplies exactly
+ * `threads` workers and has no reduced-team path.
  */
 struct Options {
-    int threads = 1; //!< Validated positive per-object budget; not a global runtime setting.
+    int threads = 1; //!< Requested positive per-object budget; not a global runtime setting.
 };
 
 } // namespace monoprop::detail::parallel

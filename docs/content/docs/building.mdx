@@ -246,7 +246,9 @@ instantiates the internal OpenMP worksharing template in its own translation uni
 consumer only builds if the imported `monoprop::monoprop` target carries OpenMP's compile
 and link flags — the consumer project adds none of its own. It also constructs the one-store
 prototype (`partitions=1`), whose constructor template calls the library's out-of-line thread
-budget and MPI thread checks, so an unexported helper fails the consumer's link.
+budget and MPI thread checks, so an unexported helper fails the consumer's link. It also runs the
+header-only fixed-team phase primitive (`detail/sharded/Team.h`), whose barriers must compile through
+the same imported OpenMP flags.
 
 The exported low-level entry points (`evolve_step`, `evolve_operator` and
 `state_operator_derivative_local`) take a trailing thread budget with a serial default. Existing

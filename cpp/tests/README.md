@@ -132,6 +132,19 @@ name and cannot address suite-nested cases, tests use flat
   participation, which is skipped when the runtime cannot provide two workers).
   Run it in fresh processes under `OMP_DYNAMIC=TRUE`, `OMP_DYNAMIC=FALSE` and
   `OMP_THREAD_LIMIT=1` when changing the helper.
+- **Fixed-team phase primitive**: `sharded_team_tests.cpp` covers `detail/sharded/Team.h`
+  (`run_team`, `phase`, `TeamFailure`): each owner runs once on its own OpenMP worker, the primary is
+  the calling thread, owners keep their worker across phases, empty owners reach every checkpoint,
+  writes are visible in the next phase, failures (including non-`std::exception` values) are returned
+  after the join from the lowest failing worker and suppress later phases, a fast worker's failure
+  cannot change an earlier checkpoint's decision, and OpenMP settings are unchanged. Workers only fill
+  preallocated observation slots; all assertions run after the join. The multi-phase failure cases keep
+  every worker reaching the same number of checkpoints, so a broken checkpoint shows up as divergent
+  decisions instead of a deadlock. `cpp/tests/CMakeLists.txt` reruns them as `sharded_team_env_t1`,
+  `_t2`, `_t4` and `_t4_passive`, fresh processes with `monoprop_NUM_THREADS=OMP_NUM_THREADS=T` and
+  `OMP_DYNAMIC=FALSE`; cases that need a nonprimary worker skip below T=2 and are left out of the T=1
+  launch. The helper assumes exactly T workers, so these cases never run under the limited or dynamic
+  teams of `openmp_env_kernels_*`, which test `for_blocks`' reduced-team contract.
 - **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the budget parser and
   its capture, per-object budgets through copies and retained functionals, and legacy paths that
   stay serial. It also checks that OpenMP settings and affinity are unchanged, that old low-level

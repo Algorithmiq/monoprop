@@ -114,6 +114,12 @@ launch environment. They cover `monoprop_NUM_THREADS=1` and `=3`, the OpenMP def
 variable unset, `OMP_THREAD_LIMIT=2`, and `OMP_PROC_BIND=false` for the affinity check. They are
 needed because a propagator reads its thread budget once, when it is constructed.
 
+The fixed-team phase primitive (`detail/sharded/Team.h`) has its own fresh-process entries,
+`sharded_team_env_t1`, `_t2`, `_t4` and `_t4_passive` (the last with `OMP_WAIT_POLICY=PASSIVE`). Each
+sets `monoprop_NUM_THREADS` and `OMP_NUM_THREADS` to T with `OMP_DYNAMIC=FALSE`, because the primitive
+assumes the launch supplies exactly T workers. Run them with
+`ctest --test-dir <build> --no-tests=error -R '^sharded_team_env_'`; the T=4 entries need four cores.
+
 The MPI build also registers `mpi_failure_*` entries, labelled `mpi` and `mpi_failure`, from
 `cpp/tests/mpi_failure_driver.cpp`. That driver has its own `main()`, so the unit-runner glob
 excludes it. Each entry launches two ranks through `cpp/tests/run_mpi_failure_scenario.cmake`, with
