@@ -70,6 +70,11 @@ class TestMajorana:
     def test_repr(self):
         assert repr(Majorana(4, 5)) == "Majorana(4, 5)"
 
+    def test_skip_validation_bypasses_input_checks(self):
+        with pytest.raises(ValueError, match="sorted"):
+            Majorana(5, 4, 1)
+        assert Majorana(5, 4, 1, skip_validation=True).indices == (5, 4, 1)
+
 
 def test_majorana_operator_validates_raw_tuple_keys():
     """A raw index-tuple key is canonicalized via from_unsorted and checked for non-negativity."""
@@ -87,6 +92,26 @@ def test_majorana_operator_rejects_index_out_of_range():
     # The boundary index 3 is still valid (2 * num_modes - 1).
     op = MajoranaOperator({(0, 3): 1.0}, num_modes=2)
     assert op.terms == {(0, 3): 1.0}
+
+
+def test_majorana_operator_skip_validation_bypasses_index_range_check():
+    """skip_validation=True skips the per-term index-range check."""
+    with pytest.raises(ValueError, match="acts on an index >= num_modes=2"):
+        MajoranaOperator({(0, 4): 1.0}, num_modes=2)
+    op = MajoranaOperator({(0, 4): 1.0}, num_modes=2, skip_validation=True)
+    assert op.terms == {(0, 4): 1.0}
+
+
+def test_majorana_operator_skip_validation_false_matches_default_behavior():
+    terms = {(1, 0): 1.0, (2, 3): 0.5}
+    assert MajoranaOperator(
+        terms, num_modes=4, skip_validation=False
+    ) == MajoranaOperator(terms, num_modes=4)
+
+
+def test_majorana_operator_skip_validation_still_validates_num_modes_type():
+    with pytest.raises(TypeError, match="num_modes must be an integer"):
+        MajoranaOperator({(0, 1): 1.0}, num_modes="4", skip_validation=True)  # type: ignore[arg-type]
 
 
 def test_from_dense_arrays_groups_by_param_ind():

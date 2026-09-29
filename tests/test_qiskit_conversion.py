@@ -137,6 +137,15 @@ class TestFromQiskitOperator:
         with pytest.raises(ValueError, match="complex terms"):
             from_qiskit_operator(op)
 
+    def test_skip_validation_drops_imaginary_parts(self):
+        op = SparsePauliOp.from_list([("XZ", 1.0 + 0.5j)])
+        result = from_qiskit_operator(op, skip_validation=True)
+        assert result.terms == {Pauli("ZX", (0, 1)): pytest.approx(1.0)}
+
+    def test_raises_for_complex_phase_of_single_pauli(self):
+        with pytest.raises(ValueError, match="complex terms"):
+            from_qiskit_operator(QiskitPauli("iX"))
+
     def test_preserves_coefficient_magnitude(self):
         op = SparsePauliOp.from_list([("IZ", 0.75 + 0j)])
         result = from_qiskit_operator(op)
