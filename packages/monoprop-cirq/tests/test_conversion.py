@@ -16,12 +16,47 @@ from __future__ import annotations
 
 import importlib
 import sys
+from typing import Any, NamedTuple
 
 import cirq
+import numpy as np
 import pytest
-from monoprop_cirq import from_cirq_operator, to_cirq_operator
+import sympy
+from monoprop_cirq import from_cirq_circuit, from_cirq_operator, to_cirq_operator
+from pytest_cases import parametrize_with_cases
 
+from monoprop import Circuit, ExpGate
 from monoprop.pauli import Pauli, PauliOperator
+
+
+def _assert_pauli_circuits_close(converted, expected) -> None:
+    assert converted.initial_state == expected.initial_state
+    assert converted.system_size == expected.system_size
+    assert len(converted) == len(expected)
+    assert list(converted.resolved_mapping) == list(expected.resolved_mapping)
+    assert len(converted.parameters) == len(expected.parameters)
+    for got, exp in zip(converted.parameters, expected.parameters):
+        assert got == pytest.approx(exp)
+    for got_gate, exp_gate in zip(converted.gates, expected.gates):
+        # The generator's Pauli terms carry the qubit placement, so this also
+        # checks the gate acts on the right qubits.
+        assert got_gate.generator.isclose(exp_gate.generator)
+
+
+def _pauli_circuit(
+    generators: list[dict[Pauli, float]],
+    parameters: list[float],
+    num_qubits: int,
+    initial_state: tuple[int, ...] = (),
+) -> Circuit:
+    return Circuit(
+        gates=tuple(
+            ExpGate(PauliOperator(g, num_qubits=num_qubits)) for g in generators
+        ),
+        parameters=tuple(parameters),
+        initial_state=initial_state,
+        system_size=num_qubits,
+    )
 
 
 @pytest.fixture
@@ -171,3 +206,204 @@ class TestToCirqOperator:
         q = cirq.LineQubit(0)
         with pytest.raises(ValueError, match="duplicate"):
             to_cirq_operator(PauliOperator({"XX": 1.0}, num_qubits=2), qubits=[q, q])
+
+
+class CirqCircuitCase(NamedTuple):
+    """A ``(circuit, kwargs, expected)`` case consumed by ``parametrize_with_cases``."""
+
+    circuit: Any
+    kwargs: dict[str, Any]
+    expected: Any
+
+
+class CirqCircuitsCases:
+    # Every expected generator is written out by hand from the gate's definition, e.g.
+    # CZ**t = exp(i pi t |11><11|) = exp(i t (pi/4) (ZZ - ZI - IZ)) up to phase.
+    def case_rx_keeps_radians(self):
+        q = cirq.LineQubit(0)
+        expected = _pauli_circuit([{Pauli("X", 0): -0.5}], [0.7], 1)
+        return CirqCircuitCase(cirq.Circuit(cirq.rx(0.7)(q)), {}, expected)
+
+    def case_x_pow_drops_global_shift(self):
+        q = cirq.LineQubit(0)
+        gate = cirq.XPowGate(exponent=0.3, global_shift=0.2)
+        expected = _pauli_circuit([{Pauli("X", 0): -np.pi / 2}], [0.3], 1)
+        return CirqCircuitCase(cirq.Circuit(gate(q)), {}, expected)
+
+    def case_t_gate(self):
+        q = cirq.LineQubit(0)
+        expected = _pauli_circuit([{Pauli("Z", 0): -np.pi / 2}], [0.25], 1)
+        return CirqCircuitCase(cirq.Circuit(cirq.T(q)), {}, expected)
+
+    def case_cz_power_on_reversed_qubits(self):
+        q = cirq.LineQubit.range(3)
+        generator = {
+            Pauli("ZZ", (0, 2)): np.pi / 4,
+            Pauli("Z", 0): -np.pi / 4,
+            Pauli("Z", 2): -np.pi / 4,
+        }
+        expected = _pauli_circuit([generator], [0.3], 3)
+        return CirqCircuitCase(cirq.Circuit((cirq.CZ**0.3)(q[2], q[0])), {}, expected)
+
+    def case_cnot_power_control_above_target(self):
+        q = cirq.LineQubit.range(2)
+        generator = {
+            Pauli("XZ", (0, 1)): np.pi / 4,
+            Pauli("Z", 1): -np.pi / 4,
+            Pauli("X", 0): -np.pi / 4,
+        }
+        expected = _pauli_circuit([generator], [0.5], 2)
+        return CirqCircuitCase(cirq.Circuit((cirq.CNOT**0.5)(q[1], q[0])), {}, expected)
+
+    def case_pauli_string_phasor(self):
+        q = cirq.LineQubit.range(3)
+        phasor = cirq.PauliStringPhasor(
+            cirq.X(q[0]) * cirq.Z(q[2]), exponent_neg=0.3, exponent_pos=0.1
+        )
+        expected = _pauli_circuit([{Pauli("XZ", (0, 2)): -np.pi / 2}], [0.2], 3)
+        return CirqCircuitCase(cirq.Circuit(phasor), {}, expected)
+
+    def case_pauli_sum_exponential(self):
+        """Expands into one phasor per term: exp(i t c P) is the phasor with relative exponent
+        -2 t c / pi."""
+        q = cirq.LineQubit.range(3)
+        exponential = cirq.PauliSumExponential(
+            0.5 * cirq.Z(q[0]) + 0.3 * cirq.Z(q[1]) * cirq.Z(q[2]), exponent=0.7
+        )
+        expected = _pauli_circuit(
+            [{Pauli("Z", 0): -np.pi / 2}, {Pauli("ZZ", (1, 2)): -np.pi / 2}],
+            [-2 * 0.7 * 0.5 / np.pi, -2 * 0.7 * 0.3 / np.pi],
+            3,
+        )
+        return CirqCircuitCase(cirq.Circuit(exponential), {}, expected)
+
+    def case_pauli_string_operation(self):
+        q = cirq.LineQubit.range(2)
+        expected = _pauli_circuit([{Pauli("XY", (0, 1)): -np.pi / 2}], [1.0], 2)
+        return CirqCircuitCase(cirq.Circuit(cirq.X(q[0]) * cirq.Y(q[1])), {}, expected)
+
+    def case_identity_and_global_phase_skipped(self):
+        q = cirq.LineQubit(0)
+        circuit = cirq.Circuit(
+            cirq.I(q), cirq.global_phase_operation(1j), cirq.rz(0.6)(q)
+        )
+        expected = _pauli_circuit([{Pauli("Z", 0): -0.5}], [0.6], 1)
+        return CirqCircuitCase(circuit, {}, expected)
+
+    def case_tagged_op_inside_subcircuit(self):
+        q = cirq.LineQubit(0)
+        subcircuit = cirq.FrozenCircuit(cirq.ry(0.4)(q).with_tags("tag"))
+        expected = _pauli_circuit([{Pauli("Y", 0): -0.5}], [0.4], 1)
+        # use_repetition_ids is explicit because cirq-core 1.5 warns about its changing default.
+        subcircuit_op = cirq.CircuitOperation(subcircuit, use_repetition_ids=False)
+        return CirqCircuitCase(cirq.Circuit(subcircuit_op), {}, expected)
+
+    def case_resolved_symbol(self):
+        q = cirq.LineQubit(0)
+        circuit = cirq.Circuit(cirq.rx(sympy.Symbol("a"))(q))
+        expected = _pauli_circuit([{Pauli("X", 0): -0.5}], [0.3], 1)
+        return CirqCircuitCase(circuit, {"param_resolver": {"a": 0.3}}, expected)
+
+    def case_constant_term_in_pauli_sum_exponential(self):
+        """The constant becomes a qubit-less phasor, a global phase that must not add a gate."""
+        q = cirq.LineQubit.range(2)
+        exponential = cirq.PauliSumExponential(
+            0.5 * cirq.Z(q[0]) + 0.3 * cirq.X(q[1]) + 2.0, exponent=0.7
+        )
+        expected = _pauli_circuit(
+            [{Pauli("Z", 0): -np.pi / 2}, {Pauli("X", 1): -np.pi / 2}],
+            [-2 * 0.7 * 0.5 / np.pi, -2 * 0.7 * 0.3 / np.pi],
+            2,
+        )
+        return CirqCircuitCase(cirq.Circuit(exponential), {}, expected)
+
+    def case_symbol_expression(self):
+        q = cirq.LineQubit.range(3)
+        a = sympy.Symbol("a")
+        circuit = cirq.Circuit((cirq.ZZ ** (2 * a))(q[0], q[1]), cirq.rx(a)(q[2]))
+        expected = _pauli_circuit(
+            [{Pauli("ZZ", (0, 1)): -np.pi / 2}, {Pauli("X", 2): -0.5}], [0.6, 0.3], 3
+        )
+        return CirqCircuitCase(circuit, {"param_resolver": {"a": 0.3}}, expected)
+
+    def case_grid_qubits_with_explicit_order(self):
+        a, b = cirq.GridQubit(0, 1), cirq.GridQubit(0, 0)
+        circuit = cirq.Circuit((cirq.ZZ**0.2)(a, b), cirq.rx(0.1)(a))
+        expected = _pauli_circuit(
+            [{Pauli("ZZ", (0, 1)): -np.pi / 2}, {Pauli("X", 0): -0.5}], [0.2, 0.1], 2
+        )
+        return CirqCircuitCase(circuit, {"qubit_order": [a, b]}, expected)
+
+    def case_idle_qubit_from_explicit_order(self):
+        q = cirq.LineQubit.range(2)
+        expected = _pauli_circuit([{Pauli("X", 0): -0.5}], [0.5], 2)
+        return CirqCircuitCase(
+            cirq.Circuit(cirq.rx(0.5)(q[0])), {"qubit_order": q}, expected
+        )
+
+
+class TestFromCirqCircuit:
+    @parametrize_with_cases("circuit, kwargs, expected", cases=CirqCircuitsCases)
+    def test_valid_circuits(self, circuit, kwargs, expected):
+        _assert_pauli_circuits_close(from_cirq_circuit(circuit, [], **kwargs), expected)
+
+    def test_initial_state_passed_through(self):
+        q = cirq.LineQubit.range(3)
+        converted = from_cirq_circuit(cirq.Circuit(cirq.rx(0.1)(q[2])), [0, 2])
+        assert converted.initial_state == (0, 2)
+
+    def test_unsupported_gate_raises(self):
+        gate = cirq.PhasedXZGate(
+            x_exponent=0.1, z_exponent=0.2, axis_phase_exponent=0.3
+        )
+        with pytest.raises(ValueError, match="Unsupported gate"):
+            from_cirq_circuit(cirq.Circuit(gate(cirq.LineQubit(0))), [])
+
+    def test_non_commuting_generator_raises(self):
+        with pytest.raises(ValueError, match="do not commute"):
+            from_cirq_circuit(cirq.Circuit(cirq.H(cirq.LineQubit(0))), [])
+
+    def test_measurement_raises(self):
+        q = cirq.LineQubit(0)
+        circuit = cirq.Circuit(cirq.rx(0.1)(q), cirq.measure(q, key="m"))
+        with pytest.raises(ValueError, match="drop_terminal_measurements"):
+            from_cirq_circuit(circuit, [])
+        converted = from_cirq_circuit(cirq.drop_terminal_measurements(circuit), [])
+        assert len(converted) == 1
+
+    def test_unresolved_symbol_raises(self):
+        circuit = cirq.Circuit(cirq.rx(sympy.Symbol("a"))(cirq.LineQubit(0)))
+        with pytest.raises(ValueError, match=r"unresolved parameters \['a'\]"):
+            from_cirq_circuit(circuit, [])
+
+    def test_grid_qubits_need_explicit_order(self):
+        circuit = cirq.Circuit(cirq.rx(0.1)(cirq.GridQubit(0, 0)))
+        with pytest.raises(ValueError, match="Cannot infer a qubit ordering"):
+            from_cirq_circuit(circuit, [])
+
+    def test_frozen_circuit_input(self):
+        converted = from_cirq_circuit(
+            cirq.FrozenCircuit(cirq.rx(0.2)(cirq.LineQubit(0))), []
+        )
+        _assert_pauli_circuits_close(
+            converted, _pauli_circuit([{Pauli("X", 0): -0.5}], [0.2], 1)
+        )
+
+    def test_empty_circuit_with_explicit_order(self):
+        converted = from_cirq_circuit(
+            cirq.Circuit(), [], qubit_order=cirq.LineQubit.range(2)
+        )
+        assert len(converted) == 0
+        assert converted.system_size == 2
+
+    def test_controlled_rotation_raises_with_decompose_hint(self):
+        q = cirq.LineQubit.range(2)
+        circuit = cirq.Circuit(cirq.rx(0.3).controlled()(q[0], q[1]))
+        with pytest.raises(ValueError, match=r"Unsupported gate.*cirq\.decompose"):
+            from_cirq_circuit(circuit, [])
+
+    def test_qudit_rejected(self):
+        qutrit = cirq.LineQid(0, dimension=3)
+        circuit = cirq.Circuit(cirq.XPowGate(dimension=3)(qutrit))
+        with pytest.raises(ValueError, match="Only qubits are supported"):
+            from_cirq_circuit(circuit, [], qubit_order=[qutrit])
