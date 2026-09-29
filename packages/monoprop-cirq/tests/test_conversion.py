@@ -366,6 +366,12 @@ class TestFromCirqCircuit:
         with pytest.raises(ValueError, match="Unsupported gate"):
             from_cirq_circuit(cirq.Circuit(gate(cirq.LineQubit(0))), [])
 
+    def test_non_unitary_pauli_string_raises(self):
+        q = cirq.LineQubit.range(2)
+        circuit = cirq.Circuit(0.5 * cirq.X(q[0]) * cirq.Z(q[1]))
+        with pytest.raises(ValueError, match="not unitary"):
+            from_cirq_circuit(circuit, [])
+
     def test_non_commuting_generator_raises(self):
         with pytest.raises(ValueError, match="do not commute"):
             from_cirq_circuit(cirq.Circuit(cirq.H(cirq.LineQubit(0))), [])

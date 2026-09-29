@@ -34,11 +34,21 @@ propagator.expectation_value()
 ## Qubits
 
 By default `cirq.LineQubit(x)` becomes qubit `x`, so an observable and a circuit
-converted separately agree on every qubit even when they touch different ones. Any
-other qubit type (`cirq.GridQubit`, `cirq.NamedQubit`) needs an explicit
+converted separately agree on every qubit's index even when they touch different
+ones. The width, though, ends at the highest qubit each one touches, and a
+propagator needs the observable and the circuit to be equally wide. When one of them
+skips the other's highest qubit, such as a single-qubit observable on a larger
+circuit, pass the same `qubit_order=cirq.LineQubit.range(n)` to both:
+
+```python notest
+qubits = cirq.LineQubit.range(3)
+observable = from_cirq_operator(cirq.Z(qubits[0]), qubit_order=qubits)
+circuit = from_cirq_circuit(cirq_circuit, [], qubit_order=qubits)
+```
+
+Any other qubit type (`cirq.GridQubit`, `cirq.NamedQubit`) needs an explicit
 `qubit_order=`, either a list of qubits or a `cirq.QubitOrder` such as
-`cirq.QubitOrder.DEFAULT`. So does a circuit that leaves qubits idle past the highest
-one it touches. Qudits of any dimension other than 2 are rejected.
+`cirq.QubitOrder.DEFAULT`. Qudits of any dimension other than 2 are rejected.
 
 ## Gates
 

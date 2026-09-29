@@ -89,6 +89,9 @@ _GATE_CASES = {
         0.5 * cirq.Z(_Q[0]) * cirq.X(_Q[1]) - 0.3 * cirq.Y(_Q[2]), exponent=0.9
     ),
     "pauli_string": cirq.X(_Q[0]) * cirq.Y(_Q[1]) * cirq.Z(_Q[2]),
+    # A unit-modulus coefficient is a global phase, so these are still unitary.
+    "pauli_string_negated": -cirq.X(_Q[0]) * cirq.Z(_Q[2]),
+    "pauli_string_imaginary": 1j * cirq.Y(_Q[1]),
     # The hint the unsupported-gate error gives: decompose into supported gates first.
     "decomposed_h": cirq.decompose(cirq.H(_Q[1])),
     "decomposed_controlled_rx": cirq.decompose(cirq.rx(0.8).controlled()(_Q[2], _Q[0])),
@@ -144,7 +147,7 @@ def test_separately_converted_operator_and_circuit_align():
     """Default ordering keys on LineQubit.x, so pieces touching different qubits still line up.
 
     The observable skips qubit 0; ordering each object by its own sorted qubits would put its
-    qubit 1 on the circuit's qubit 0.
+    qubit 1 on the circuit's qubit 0. Both touch _Q[2], so their default widths match as well.
     """
     circuit = cirq.Circuit(
         cirq.ry(0.4)(_Q[0]), (cirq.CNOT**0.7)(_Q[0], _Q[1]), cirq.rx(0.9)(_Q[2])
@@ -154,6 +157,24 @@ def test_separately_converted_operator_and_circuit_align():
     expected = _cirq_expectation(circuit, observable, [], _Q)
     got = _monoprop_expectation(
         from_cirq_circuit(circuit, []), from_cirq_operator(observable), cutoff=len(_Q)
+    )
+    assert got == pytest.approx(expected, abs=1e-10)
+
+
+def test_operator_narrower_than_circuit_with_shared_order():
+    """The default width ends at each object's highest LineQubit, so an observable that skips
+    the circuit's highest qubit needs the circuit's qubit_order to get the same width."""
+    circuit = cirq.Circuit(
+        cirq.ry(0.4)(_Q[0]), (cirq.CNOT**0.7)(_Q[0], _Q[1]), cirq.rx(0.9)(_Q[2])
+    )
+    observable = cirq.Z(_Q[0]) + 0.5 * cirq.X(_Q[1])
+    assert from_cirq_operator(observable).num_qubits == 2
+
+    expected = _cirq_expectation(circuit, observable, [], _Q)
+    got = _monoprop_expectation(
+        from_cirq_circuit(circuit, [], qubit_order=_Q),
+        from_cirq_operator(observable, qubit_order=_Q),
+        cutoff=len(_Q),
     )
     assert got == pytest.approx(expected, abs=1e-10)
 

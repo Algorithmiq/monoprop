@@ -48,8 +48,11 @@ to_cirq_circuit(from_cirq_circuit(circuit, [0]))
 ## Conventions
 
 - **Qubits.** `cirq.LineQubit(x)` becomes qubit `x`, so an observable and a circuit converted
-  separately line up. Other qubit types (`cirq.GridQubit`, `cirq.NamedQubit`) need an explicit
-  `qubit_order=`, either a list of qubits or a `cirq.QubitOrder`.
+  separately agree on qubit indices. Each is as wide as the highest qubit it touches, and a
+  propagator needs both to be equally wide, so when one skips the other's highest qubit pass the
+  same `qubit_order=cirq.LineQubit.range(n)` to both. Other qubit types (`cirq.GridQubit`,
+  `cirq.NamedQubit`) need an explicit `qubit_order=`, either a list of qubits or a
+  `cirq.QubitOrder`.
 - **Gates.** Every `cirq.EigenGate` whose generator has commuting Pauli terms converts exactly:
   rotations, X/Y/Z/XX/YY/ZZ powers, `CZ`, `CNOT`, `ISWAP`, `SWAP`, `CCZ`, `CCX` and their powers.
   So do `cirq.PauliStringPhasor`, `cirq.PauliSumExponential` and Pauli-string operations. The

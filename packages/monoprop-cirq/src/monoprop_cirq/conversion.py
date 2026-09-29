@@ -56,9 +56,9 @@ def _qubit_index(
     An explicit ``qubit_order`` resolves the way Cirq resolves one: a list pins the order (and may
     include untouched qubits), a ``cirq.QubitOrder`` such as ``cirq.QubitOrder.DEFAULT`` orders the
     touched qubits. Without one, ``cirq.LineQubit(x)`` becomes qubit ``x`` in a ``max(x) + 1``-wide
-    system, so an operator and a circuit converted separately agree on every qubit even when they
-    touch different ones. Sorting each object's own qubits would not, which is why no other qubit
-    type has a default.
+    system, so an operator and a circuit converted separately agree on every qubit's index even
+    when they touch different ones. Sorting each object's own qubits would not, which is why no
+    other qubit type has a default. Their widths still differ unless both touch the highest qubit.
     """
     touched = frozenset(touched)
     if qubit_order is not None:
@@ -133,8 +133,10 @@ def from_cirq_operator(
             ``cirq.PauliString``, a single-qubit Pauli operation such as ``cirq.Z(q)``, or a scalar.
         qubit_order: The qubit ordering, with its ``i``-th qubit becoming qubit ``i``: a list of
             qubits (which may include untouched ones) or a ``cirq.QubitOrder``. Defaults to
-            ``cirq.LineQubit(x)`` becoming qubit ``x``, so it is required for any other qubit type
-            and for an operator that touches no qubit.
+            ``cirq.LineQubit(x)`` becoming qubit ``x`` in a system as wide as the highest one
+            touched, so it is required for any other qubit type and for an operator that touches
+            no qubit. Pass the circuit's order, e.g. ``cirq.LineQubit.range(n)``, when the
+            operator does not touch the circuit's highest qubit, so that both have the same width.
         atol: Absolute tolerance below which a term's coefficient is dropped.
         skip_validation: If ``True``, skip the check that every coefficient is real; the
             imaginary parts are then silently dropped. Only pass ``True`` for operators already
@@ -233,7 +235,13 @@ def _operation_terms(
         matrix, parameter = _eigen_gate_generator(op.gate)
         return _matrix_terms(matrix, tuple(index[q] for q in op.qubits)), parameter
     if isinstance(op, cirq.PauliString):
-        # A Pauli product P is exp(-i pi/2 P) up to phase.
+        # A coefficient of modulus other than 1 makes the operation non-unitary; one of modulus 1
+        # is a global phase, and the Pauli product P is exp(-i pi/2 P) up to phase.
+        if not cirq.has_unitary(op):
+            raise ValueError(
+                f"Unsupported gate {op!r}: it is not unitary, since its coefficient does not "
+                "have modulus 1."
+            )
         return {_to_pauli(op, index): -np.pi / 2}, 1.0
     raise ValueError(f"Unsupported gate {op!r}. {_UNSUPPORTED_HINT}")
 
@@ -263,7 +271,8 @@ def from_cirq_circuit(
         initial_state: The reference state (occupied qubit indices).
         qubit_order: The qubit ordering, as for ``from_cirq_operator``. Defaults to
             ``cirq.LineQubit(x)`` becoming qubit ``x``; pass it explicitly for any other qubit
-            type, or when the circuit leaves qubits idle past the highest one it touches.
+            type, or when the circuit leaves qubits idle past the highest one it touches, e.g.
+            to match the width of an observable.
         param_resolver: Values for the circuit's sympy symbols, applied with
             ``cirq.resolve_parameters`` before conversion.
 
