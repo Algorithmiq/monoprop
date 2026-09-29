@@ -1,0 +1,72 @@
+---
+title: Cirq conversion
+description: Converting Cirq Pauli operators and qubit circuits to and from monoprop with the monoprop-cirq package.
+---
+
+The `monoprop-cirq` package converts [Cirq](https://quantumai.google/cirq) Pauli
+operators and qubit circuits to and from monoprop, so a problem built in Cirq can be
+propagated with [PauliPropagator][] and handed back. It is a separate distribution
+in the repository's `packages/` directory that depends on `cirq-core`;
+`uv sync --all-groups` installs it into a checkout's environment.
+
+| Function | Converts |
+| --- | --- |
+| `from_cirq_operator` | a `cirq.PauliSum`, `cirq.PauliString` or single-qubit Pauli operation to a [PauliOperator][monoprop.pauli.PauliOperator] |
+| `to_cirq_operator` | a [PauliOperator][monoprop.pauli.PauliOperator] to a `cirq.PauliSum` |
+| `from_cirq_circuit` | a Cirq circuit to a [Circuit][monoprop.circuit.Circuit] |
+| `to_cirq_circuit` | a bound [Circuit][monoprop.circuit.Circuit] to a Cirq circuit of `cirq.PauliSumExponential` gates |
+
+```python notest
+import cirq
+from monoprop_cirq import from_cirq_circuit, from_cirq_operator
+
+from monoprop import PauliPropagator
+
+q = cirq.LineQubit.range(2)
+circuit = cirq.Circuit((cirq.CNOT**0.3)(q[0], q[1]), cirq.rz(0.2)(q[1]))
+observable = cirq.Z(q[0]) * cirq.Z(q[1]) + 0.5 * cirq.X(q[1])
+
+propagator = PauliPropagator(from_cirq_operator(observable), [0], cutoff=2)
+propagator.propagate(from_cirq_circuit(circuit, [0]))
+propagator.expectation_value()
+```
+
+## Qubits
+
+By default `cirq.LineQubit(x)` becomes qubit `x`, so an observable and a circuit
+converted separately agree on every qubit even when they touch different ones. Any
+other qubit type (`cirq.GridQubit`, `cirq.NamedQubit`) needs an explicit
+`qubit_order=`, either a list of qubits or a `cirq.QubitOrder` such as
+`cirq.QubitOrder.DEFAULT`. So does a circuit that leaves qubits idle past the highest
+one it touches. Qudits of any dimension other than 2 are rejected.
+
+## Gates
+
+An operation converts when it equals $e^{itG}$ up to a global phase, for a generator
+$G$ whose Pauli terms pairwise commute. Each one becomes one
+[ExpGate][monoprop.circuit.ExpGate] with its own parameter. That covers every such
+`cirq.EigenGate` (rotations, the X/Y/Z/XX/YY/ZZ powers, `cirq.CZ`, `cirq.CNOT`,
+`cirq.ISWAP`, `cirq.SWAP`, `cirq.CCZ`, `cirq.CCX` and their powers, `cirq.givens`,
+`cirq.riswap`), `cirq.PauliStringPhasor`, `cirq.PauliSumExponential` and Pauli-string
+operations. The parameter is the gate's exponent, or its angle in radians for
+`cirq.rx`/`ry`/`rz`; constant factors go on the generator.
+
+Global phases are dropped, including a gate's `global_shift`, `cirq.I`,
+`cirq.global_phase_operation` and the constant term of a `cirq.PauliSumExponential`.
+`cirq.CircuitOperation` subcircuits are unrolled. Other gates raise a `ValueError`:
+`cirq.H`, whose generator terms do not commute, `cirq.PhasedXZGate`, `cirq.FSimGate`
+and controlled rotations. Run `cirq.decompose` on them first.
+
+## Measurements and symbols
+
+Measurements raise; drop terminal ones with `cirq.drop_terminal_measurements`. Sympy
+symbols must be resolved, e.g. with
+`from_cirq_circuit(..., param_resolver={"theta": 0.3})`.
+
+## Initial state
+
+The reference state is passed as `initial_state`, not as gates. `to_cirq_circuit`
+leaves it out, so prepend `cirq.X` on `circuit.initial_state` to run its result in
+Cirq. It emits one `cirq.PauliSumExponential(H, exponent=theta)` per gate, which Cirq
+defines as exactly $e^{i\theta H}$, the [ExpGate][monoprop.circuit.ExpGate]
+convention.
