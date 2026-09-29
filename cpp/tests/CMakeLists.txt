@@ -145,11 +145,11 @@ monoprop_add_launch_env_case(
   openmp_propagator_work_does_not_change_affinity
   ENVIRONMENT "OMP_PROC_BIND=false"
 )
-# The threaded cosine and fused-apply kernels under runtime-limited and dynamic teams: exact results and
+# The threaded cosine, fused-apply, scan and resolve kernels under runtime-limited and dynamic teams: exact results and
 # participation must not depend on receiving the full budget.
 set(
   _monoprop_kernel_cases
-  "openmp_cos_mask_exact,openmp_cos_mask_workers_participate,openmp_cos_lazy_workers_participate,openmp_fused_apply_exact_on_disjoint_records,openmp_fused_apply_workers_participate,openmp_kernel_worker_failures_join_before_rethrow,combined_threaded_lazy_fold_matches_oracle,fused_real_records_have_one_add_owner_and_apply_exactly,fused_threaded_prototype_matches_serial_prototype_exactly,openmp_scan_ranges_match_serial_majorana,openmp_scan_workers_participate,openmp_scan_worker_failure_joins_before_rethrow,openmp_scan_prepares_cold_caches_on_the_caller,openmp_scan_pauli_ranges_match_serial,openmp_scan_threaded_construction_matches_serial_exactly,openmp_scan_construction_workers_participate"
+  "openmp_cos_mask_exact,openmp_cos_mask_workers_participate,openmp_cos_lazy_workers_participate,openmp_fused_apply_exact_on_disjoint_records,openmp_fused_apply_workers_participate,openmp_kernel_worker_failures_join_before_rethrow,combined_threaded_lazy_fold_matches_oracle,fused_real_records_have_one_add_owner_and_apply_exactly,fused_threaded_prototype_matches_serial_prototype_exactly,openmp_scan_ranges_match_serial_majorana,openmp_scan_workers_participate,openmp_scan_worker_failure_joins_before_rethrow,openmp_scan_prepares_cold_caches_on_the_caller,openmp_scan_pauli_ranges_match_serial,openmp_scan_threaded_construction_matches_serial_exactly,openmp_scan_construction_workers_participate,openmp_probe_frozen_positions_matches_one_batch,openmp_probe_frozen_positions_workers_participate,openmp_incoming_probe_threaded_matches_serial,openmp_incoming_decode_and_probe_workers_participate,openmp_incoming_decode_worker_failure_joins_before_probing,openmp_resolve_scatter_threaded_matches_serial,openmp_resolve_scatter_workers_participate,openmp_self_windows_match_serial,openmp_mixed_self_and_remote_publication_order,openmp_self_probe_construction_workers_participate"
 )
 monoprop_add_launch_env_case(
   openmp_env_kernels_thread_limit_2
@@ -223,6 +223,19 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
   monoprop_add_failure_scenario(
     before_exchange_scan_worker before-exchange scan-worker "scan range 1 on OpenMP worker 1" "UNGUARDED|NOT REACHED"
   )
+  # Resolve workers: the self probe fails before the query exchange; the incoming decode, frozen probe and
+  # scatter fail after the query round while the peers enter the response round. Worker 1 owns the last range.
+  foreach(_phase self-probe decode incoming-probe scatter)
+    string(
+      REPLACE "-"
+      "_"
+      _phase_name
+      "${_phase}"
+    )
+    monoprop_add_failure_scenario(
+      resolve_worker_${_phase_name} resolve-worker ${_phase} "${_phase} range [0-9]+ on OpenMP worker 1" "UNGUARDED|NOT REACHED"
+    )
+  endforeach()
   monoprop_add_failure_scenario(
     active_ticket active-ticket ticket "injected failure while the replay Ticket" "UNGUARDED"
   )

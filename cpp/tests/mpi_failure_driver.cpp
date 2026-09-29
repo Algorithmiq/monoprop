@@ -25,6 +25,11 @@
 //   before-exchange                  a build fails in the scan, before the first query exchange
 //   before-exchange scan-worker      a worker of the threaded scan throws in one of its word ranges, before
 //                                    the first query exchange the peers enter
+//   resolve-worker self-probe        a worker of the threaded self probe throws, before the first query
+//                                    exchange the peers enter
+//   resolve-worker decode|incoming-probe|scatter
+//                                    a worker of the threaded incoming decode / frozen probe / scatter throws
+//                                    after the query round, while the peers enter the response round
 //   active-ticket ticket|pending     a failure while a replay Ticket / construction PendingAlltoallv is posted
 //   active-ticket cosine-worker      a worker of the threaded cosine kernel throws while the replay Ticket is
 //                                    posted
@@ -284,6 +289,72 @@ auto wrong_thread(int rank) -> void {
     }
 }
 
+// Throws from the last logical range of one resolve phase on rank 0, so with a two-worker team the failure
+// starts on worker 1, off the calling thread. Only the first call of that phase with two or more ranges throws.
+struct ThrowingResolveObserver {
+    int rank;
+    detail::KernelRange kind;
+    const char *label;
+    std::shared_ptr<size_t> ranges = std::make_shared<size_t>(0);
+
+    auto prepare(detail::KernelRange k, size_t n) const noexcept -> void {
+        if (k == kind && *ranges < 2) {
+            *ranges = n;
+        }
+    }
+    auto visit(detail::KernelRange k, size_t range) const -> void {
+        if (rank == 0 && k == kind && *ranges >= 2 && range + 1 == *ranges) {
+            throw std::runtime_error(
+                std::format("injected failure in {} range {} on OpenMP worker {}", label, range, omp_get_thread_num()));
+        }
+    }
+};
+
+auto resolve_worker(int rank, std::string_view phase) -> void {
+    OperatorDict ham;
+    uint64_t state = 0x5CA3ULL;
+    while (ham.size() < 200000) {
+        VecZ idx;
+        while (idx.size() < 6) {
+            state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+            const size_t m = (state >> 33) % (2 * kWideModes);
+            if (std::ranges::find(idx, m) == idx.end()) {
+                idx.push_back(m);
+            }
+        }
+        std::ranges::sort(idx);
+        ham[idx] = std::complex<double>{0.0, 1e-3};
+    }
+    ::setenv("monoprop_NUM_THREADS", "2", 1);
+    MonomialPropagator<kWideModes> sim(ham,
+                                       2 * kWideModes,
+                                       VecZ{0, 1},
+                                       std::nullopt,
+                                       MPI_COMM_WORLD,
+                                       std::nullopt,
+                                       std::nullopt,
+                                       CutoffType::Length,
+                                       std::nullopt,
+                                       kWideModes,
+                                       Basis::Majorana,
+                                       /*partitions=*/1);
+    const auto kind = phase == "self-probe" ? detail::KernelRange::self_probe
+                      : phase == "decode"   ? detail::KernelRange::decode
+                      : phase == "scatter"  ? detail::KernelRange::scatter
+                                            : detail::KernelRange::incoming_probe;
+    say(rank,
+        std::format("{} local terms, budget {}",
+                    sim.size(),
+                    detail::PropagatorTestAccess<kWideModes>::options(sim).threads));
+    (void)detail::PropagatorTestAccess<kWideModes>::build_layer_observed(
+        sim,
+        VecZ{0, 5},
+        ThrowingResolveObserver{rank, kind, phase.data()});
+    if (rank == 0) {
+        say(rank, std::format("INJECTION NOT REACHED: the {} phase ran in fewer than two ranges", phase));
+    }
+}
+
 auto parse_level(std::string_view name) -> std::optional<int> {
     if (name == "single") {
         return MPI_THREAD_SINGLE;
@@ -355,6 +426,11 @@ auto main(int argc, char **argv) -> int {
         }
         else if (scenario == "before-exchange" && option == "scan-worker") {
             scan_worker(rank);
+        }
+        else if (scenario == "resolve-worker"
+                 && (option == "self-probe" || option == "decode" || option == "incoming-probe"
+                     || option == "scatter")) {
+            resolve_worker(rank, option);
         }
         else if (scenario == "before-exchange") {
             before_exchange(rank);

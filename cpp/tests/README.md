@@ -160,12 +160,26 @@ name and cannot address suite-nested cases, tests use flat
   and basis-change cutoffs stay serial), `sparse_query_tests.cpp` (the merge itself) and
   `fused_cos_sweep_tests.cpp` (full construction: rows, row IDs, graph layers and coefficients at
   budgets 1-4). The scan's participation is read from its own ranges through the same observer.
+- **Threaded resolution**: `sparse_resolve_tests.cpp` compares the incoming probe (checked
+  preparation, decode, `probe_frozen_positions`, predicted IDs, publication) at budgets 2-8 with
+  budget one over empty/all-hit/all-miss/mixed inputs, 255/256/257-query boundaries, empty senders,
+  non-zero window bases, narrow and wide positions, spilled rows, escaped counts, Plain and Fused
+  records and a prebuilt inverted index. It rejects malformed streams (including the noncanonical
+  escape `QueryWire<128>` `0x8037e`) before any decode, invalid decoded positions before any probe,
+  keeps the scatter serial for sinks without `parallel_resolve` and for the Schrödinger
+  `ContractSink`, and checks self windows of 4096 and the publication order across leader/follower
+  passes. `sparse_query_tests.cpp` covers `QueryWire::checked_extent` and position validation,
+  `operator_index_tests.cpp` pins the duplicate-key behaviour of bulk insertion, and
+  `mpi_fresh_insert_equivalence.cpp` compares budgets exactly and reads participation at world size.
+  `PhaseLog`/`AccumulatingObserver` keep every call of a phase that runs per window or per pass.
 - **Distributed failure driver**: `mpi_failure_driver.cpp` is not part of the unit runner (the glob
   excludes it). The MPI build compiles it into `monoprop_mpi_failure_driver.x`, and
   `run_mpi_failure_scenario.cmake` runs each scenario on two ranks with a 30 s timeout, as the
   `mpi_failure_*` CTest entries. `active-ticket cosine-worker` throws from a worker of the threaded
   cosine kernel while a replay Ticket is posted; `before-exchange scan-worker` throws from a worker
-  of the threaded scan while the peer enters the query exchange.
+  of the threaded scan while the peer enters the query exchange. `resolve-worker self-probe` throws
+  from the self probe before the query exchange, and `resolve-worker decode|incoming-probe|scatter`
+  from the incoming phases after the query round, while the peer enters the response round.
 
 New `*.cpp` files are auto-discovered on the next configure, with no CMake edit
 needed. A file with its own `main()` must be excluded from the glob, as

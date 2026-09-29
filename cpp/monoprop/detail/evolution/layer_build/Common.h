@@ -32,11 +32,15 @@ namespace monoprop::detail {
  * \brief The kinds of logical work range a threaded kernel reports to its range observer (see NoRangeObserver).
  */
 enum class KernelRange {
-    cos_lazy,     //!< scale_cos_lazy: one range per kColumnBlockWords fold words.
-    cos_mask,     //!< scale_cos_mask: one range per kCosMaskRangeBlocks stored mask blocks.
-    fused_gather, //!< apply_fused_contract insert snapshots: one range per kFusedRecordRange records.
-    fused_apply,  //!< apply_fused_contract rotations: one range per kFusedRecordRange records.
-    scan,         //!< fused_find_and_collect: one range per contiguous run of whole fold blocks (scan_ranges).
+    cos_lazy,       //!< scale_cos_lazy: one range per kColumnBlockWords fold words.
+    cos_mask,       //!< scale_cos_mask: one range per kCosMaskRangeBlocks stored mask blocks.
+    fused_gather,   //!< apply_fused_contract insert snapshots: one range per kFusedRecordRange records.
+    fused_apply,    //!< apply_fused_contract rotations: one range per kFusedRecordRange records.
+    scan,           //!< fused_find_and_collect: one range per contiguous run of whole fold blocks (scan_ranges).
+    decode,         //!< probe_incoming_queries record decode: one range per kProbeBlockQueries queries.
+    incoming_probe, //!< probe_frozen_positions over incoming queries: one range per kProbeBlockQueries queries.
+    self_probe,     //!< probe_frozen_positions over one self window: one range per kProbeBlockQueries queries.
+    scatter,        //!< resolve_incoming on_resolved scatter: one range per kResolveScatterBlock queries.
 };
 
 /*!

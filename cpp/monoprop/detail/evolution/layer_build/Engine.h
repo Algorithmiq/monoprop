@@ -75,6 +75,9 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
+    // on_resolved for distinct queries may run concurrently after prepare(): each writes only its own
+    // acc[slot].in_entries element, which prepare() sized. Certifies nothing about the other methods.
+    static constexpr bool parallel_resolve = true;
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
     [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
     using Response = TermIndex;
@@ -196,6 +199,10 @@ struct GraphSink {
 template <size_t NumModes>
 struct ContractSink {
     static constexpr bool wants_values = true;
+    // on_resolved for distinct queries may run concurrently after prepare() in Heisenberg: each writes only its
+    // own cross_half element and reads the pre-insert coefficients. Schrodinger scoring stays serial, see
+    // parallel_resolve_enabled(). Certifies nothing about the other methods (on_response_block appends).
+    static constexpr bool parallel_resolve = true;
     // This rank receives fused records, but on_response_block is handed its own plain queries_r;
     // reading the wrong form there decodes a neighbouring record's phase, i.e. a coefficient sign flip.
     [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Fused; }
@@ -231,6 +238,9 @@ struct ContractSink {
     [[gnu::always_inline]] auto emit_deferred(size_t k, size_t idx, size_t src, int phase, double v_src) -> void {
         fc.inserts[def_base_ + k] = RotationRec{src, idx, v_src, /*v_tgt=*/0.0, static_cast<int32_t>(phase)};
     }
+
+    //! The Schrodinger fresh-insert arm scores the state through mono_at; it keeps the serial scatter.
+    [[nodiscard]] auto parallel_resolve_enabled() const -> bool { return !schrodinger; }
 
     // Cross-rank (R>1). Send buffer = queries interleaved with their v_src stream into `scratch`
     // (combined_qv_), so one alltoallv carries query + value.
@@ -311,7 +321,8 @@ struct ContractSink {
 };
 
 // Owns build_layer's machinery over a compile-time Sink policy. combined_size = the pre-layer operator size.
-template <size_t NumModes, typename Sink>
+// `Observer` is the test seam of the threaded resolve phases (see NoRangeObserver).
+template <size_t NumModes, typename Sink, class Observer = NoRangeObserver>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
 
@@ -351,6 +362,7 @@ struct LayerBuildEngine {
     Sink sink;
     // The owning propagator's thread budget, forwarded to the resolve kernels.
     parallel::Options options;
+    Observer observer;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      mpi::Comm comm_,
@@ -361,7 +373,8 @@ struct LayerBuildEngine {
                      Sink &&sink_,
                      mpi::PeerPlan plan_,
                      mpi::SlotWindow window_,
-                     parallel::Options options_ = {})
+                     parallel::Options options_ = {},
+                     const Observer &observer_ = {})
         : local_op(local_op_),
           comm(comm_),
           R(R_),
@@ -371,7 +384,8 @@ struct LayerBuildEngine {
           window(window_),
           plan(plan_),
           sink(std::move(sink_)),
-          options(options_) {
+          options(options_),
+          observer(observer_) {
         assert(window.stop() <= R && window.count != 0);
         queries_r.reset(window);
         src_idx_r.reset(window);
@@ -431,7 +445,18 @@ struct LayerBuildEngine {
         // never reaches the handle's draining destructor while a peer is still inside the round.
         auto query_round = mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan);
         mpi::guard_distributed(comm, [&] { query_round.wait_into(inc_q); });
-        auto resp = resolve_incoming<NumModes>(inc_q, local_op, is_leader_pass, matched, combined_size, sink, options);
+        // The peers may already be inside the response round, so a failure here (a malformed stream, a
+        // decode/probe/scatter worker, publication) aborts rather than unwinds.
+        auto resp = mpi::guard_distributed(comm, [&] {
+            return resolve_incoming<NumModes>(inc_q,
+                                              local_op,
+                                              is_leader_pass,
+                                              matched,
+                                              combined_size,
+                                              sink,
+                                              options,
+                                              observer);
+        });
         std::vector<int> resp_recv = response_recv_counts();
         mpi::WindowVec<std::vector<typename Sink::Response>> inc_r;
         // Answers retrace the queries over an XOR involution, so the same plan holds.
@@ -498,7 +523,8 @@ struct LayerBuildEngine {
                                           std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
         }
-        local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
+        local_op.store
+            ->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; }, options);
         local_op.reindex_after_growth(base, n_miss);
     }
 
@@ -520,35 +546,52 @@ private:
         return counts;
     }
 
-    // Batched self-resolve over the index's group-prefetch find_batch; hits/misses are emitted to the sink
-    // in query order. `lv` is the per-query v_src array parallel to `ls` (read only when Sink::wants_values).
-    static constexpr size_t kResolveBatch = 64;
+    // Self-resolve scratch for one window of at most kSelfProbeWindow queries, reused across windows and both
+    // passes: gathered offsets (absolute into the stage), counts, results, hashes and the emission payload.
+    std::vector<size_t> self_pos_off_;
+    std::vector<uint32_t> self_k_of_;
+    std::vector<size_t> self_found_;
+    std::vector<uint32_t> self_hash_;
+    std::vector<int> self_phase_;
+    std::vector<size_t> self_src_;
+    std::vector<double> self_val_; // ContractSink only
+
+    // Self-resolve in bounded windows. For each window, on the caller: stable follower filtering (leaders skip
+    // it) and a gather into the scratch; then probe_frozen_positions (KernelRange::self_probe) on workers over
+    // at most 16 blocks; then, on the caller, hit/miss emission in original order. Nothing is inserted between
+    // windows or passes: misses keep their positions and hashes for insert_deferred_self_misses. `lv` is the
+    // per-query v_src array parallel to `ls` (read only when Sink::wants_values).
     auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
         -> void {
         const size_t op_size = local_op.store->size();
-        // Gathered per batch because a matched follower is skipped; offsets stay absolute into pos_flat.
-        std::array<size_t, kResolveBatch> pos_off;
-        std::array<uint32_t, kResolveBatch> k_of;
-        std::array<uint32_t, kResolveBatch> hashes;
-        std::array<int, kResolveBatch> phases;
-        std::array<size_t, kResolveBatch> srcs;
-        std::array<double, kResolveBatch> vals;
-        std::array<size_t, kResolveBatch> found;
         const size_t hi = self_stage_.size();
+        const size_t cap = std::min(hi, kSelfProbeWindow);
+        if (self_pos_off_.size() < cap) {
+            self_pos_off_.resize(cap);
+            self_k_of_.resize(cap);
+            self_found_.resize(cap);
+            self_hash_.resize(cap);
+            self_phase_.resize(cap);
+            self_src_.resize(cap);
+            if constexpr (Sink::wants_values) {
+                self_val_.resize(cap);
+            }
+        }
+        const std::span<const RowPosT> stage_pos(self_stage_.pos_flat.data(), self_stage_.positions());
         size_t q = 0;
         while (q < hi) {
             size_t m = 0;
-            for (; q < hi && m < kResolveBatch; ++q) {
+            for (; q < hi && m < kSelfProbeWindow; ++q) {
                 const size_t src = ls[q];
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
                 }
-                pos_off[m] = self_stage_.pos_off[q];
-                k_of[m] = self_stage_.k_of[q];
-                phases[m] = self_stage_.phase_of[q];
-                srcs[m] = src;
+                self_pos_off_[m] = self_stage_.pos_off[q];
+                self_k_of_[m] = self_stage_.k_of[q];
+                self_phase_[m] = self_stage_.phase_of[q];
+                self_src_[m] = src;
                 if constexpr (Sink::wants_values) {
-                    vals[m] = (*lv)[q];
+                    self_val_[m] = (*lv)[q];
                 }
                 ++m;
             }
@@ -556,30 +599,36 @@ private:
                 break;
             }
             // The hashes come back because a miss needs one at insert, folded from these same positions.
-            local_op.store->find_batch_positions(std::span<const RowPosT>(self_stage_.pos_flat),
-                                                 std::span<const size_t>(pos_off).first(m),
-                                                 std::span<const uint32_t>(k_of).first(m),
-                                                 std::span<size_t>(found).first(m),
-                                                 std::span<uint32_t>(hashes).first(m));
+            probe_frozen_positions<NumModes>(*local_op.store,
+                                             stage_pos,
+                                             std::span<const size_t>(self_pos_off_).first(m),
+                                             std::span<const uint32_t>(self_k_of_).first(m),
+                                             std::span<size_t>(self_found_).first(m),
+                                             std::span<uint32_t>(self_hash_).first(m),
+                                             options,
+                                             observer,
+                                             KernelRange::self_probe);
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {
-                    v_src = vals[j];
+                    v_src = self_val_[j];
                 }
+                const size_t found = self_found_[j];
                 // kNotFound == kMissingIndex == size_t max, so one bound check covers both.
-                if (found[j] < op_size) {
+                if (found < op_size) {
                     // Freshly inserted partners (found >= combined_size) skip the mark: combined_size bounds it.
-                    if (is_leader_pass && found[j] < combined_size) {
-                        matched.mark(found[j]);
+                    if (is_leader_pass && found < combined_size) {
+                        matched.mark(found);
                     }
-                    sink.self_hit(srcs[j], found[j], phases[j], v_src);
+                    sink.self_hit(self_src_[j], found, self_phase_[j], v_src);
                 }
                 else {
                     // The stage dies with this pass and the misses are flushed after both, so copy now.
                     const size_t at = deferred_pos_flat_.size();
-                    const auto *const first = self_stage_.pos_flat.data() + pos_off[j];
-                    deferred_pos_flat_.insert(deferred_pos_flat_.end(), first, first + k_of[j]);
-                    deferred_self_misses.push_back({at, k_of[j], hashes[j], srcs[j], phases[j], v_src});
+                    const auto *const first = self_stage_.pos_flat.data() + self_pos_off_[j];
+                    deferred_pos_flat_.insert(deferred_pos_flat_.end(), first, first + self_k_of_[j]);
+                    deferred_self_misses.push_back(
+                        {at, self_k_of_[j], self_hash_[j], self_src_[j], self_phase_[j], v_src});
                 }
             }
         }
@@ -592,8 +641,9 @@ static inline auto empty_coeffs() -> const VecD & {
 }
 
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
-// The scan may run on workers (fused_find_and_collect); resolution, missing-ID assignment, insertion,
-// publication and graph packing stay on the caller. `observer` is the scan's test seam (NoRangeObserver).
+// The scan (fused_find_and_collect), the incoming decode and frozen probes, the self probe and a certified
+// sink's scatter may run on workers; validation, missing-ID assignment, insertion, publication, inverted-index
+// maintenance and graph packing stay on the caller. `observer` is the test seam of those phases (NoRangeObserver).
 template <size_t NumModes, class Observer = NoRangeObserver>
 auto build_layer(MPOperator<NumModes> &local_op,
                  const Monomial<NumModes> &gen,
@@ -692,16 +742,17 @@ auto build_layer(MPOperator<NumModes> &local_op,
     }
 
     auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
-        LayerBuildEngine<NumModes, Sink> eng(local_op,
-                                             comm,
-                                             R,
-                                             my_rank,
-                                             matched_scratch,
-                                             /*combined_size=*/local_op.store->size(),
-                                             std::move(sink),
-                                             plan,
-                                             scan_window,
-                                             options);
+        LayerBuildEngine<NumModes, Sink, Observer> eng(local_op,
+                                                       comm,
+                                                       R,
+                                                       my_rank,
+                                                       matched_scratch,
+                                                       /*combined_size=*/local_op.store->size(),
+                                                       std::move(sink),
+                                                       plan,
+                                                       scan_window,
+                                                       options,
+                                                       observer);
         if (!identity_gen) {
             eng.run_exchange(/*is_leader_pass=*/true,
                              std::move(fused.leader_queries),

@@ -22,7 +22,9 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -763,4 +765,149 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_moves_the_first_useful_buffer) {
     BOOST_TEST(merged.leader_src.at_slot(1).capacity() == 5U);
     BOOST_TEST(merged.leader_self.size() == 3U);
     BOOST_TEST(merged.leader_self.pos_flat.data() == stage_data);
+}
+
+// --- checked record boundaries and decoded-position validation (resolver input is untrusted) ---------------
+
+namespace {
+
+// A single hand-packed header word: phase field, k field (and the wide-k field when escaped), gw field.
+template <size_t N>
+auto header_word(uint64_t phase_field, uint64_t k_field, std::optional<uint64_t> long_k, uint64_t gw) -> size_t {
+    using QW = QueryWire<N>;
+    uint64_t w = phase_field | (k_field << QW::kPhaseBits);
+    size_t at = QW::kPhaseBits + QW::kKBits;
+    if (long_k) {
+        w |= *long_k << at;
+        at += QW::kLongKBits;
+    }
+    w |= gw << at;
+    return static_cast<size_t>(w);
+}
+
+template <size_t N>
+auto expect_malformed(const VecZ &buf, QueryForm form, size_t off, const char *label) -> void {
+    BOOST_TEST_CONTEXT(label) {
+        BOOST_CHECK_THROW((void)QueryWire<N>::checked_extent(buf, form, off), MalformedQueryStream);
+    }
+}
+
+} // namespace
+
+// Every record push() can produce passes the check, which reports exactly the words the decoder consumes, plus
+// the fused value word. Covers the whole (k, gw) surface at 128 modes, the escape boundary and full width.
+BOOST_AUTO_TEST_CASE(sparse_record_checked_extent_accepts_every_canonical_record) {
+    const auto check = []<size_t N>(std::integral_constant<size_t, N>, const std::vector<uint16_t> &pos, int phase) {
+        using QW = QueryWire<N>;
+        for (const auto form : {QueryForm::Plain, QueryForm::Fused}) {
+            VecZ buf;
+            const size_t words = QW::push(buf, pos, phase);
+            if (form == QueryForm::Fused) {
+                QW::push_value(buf, -0.25);
+            }
+            const auto ext = QW::checked_extent(buf, form, 0);
+            BOOST_TEST(ext.k == pos.size());
+            BOOST_TEST(ext.words == buf.size());
+            BOOST_TEST(ext.words == words + (form == QueryForm::Fused ? 1U : 0U));
+            std::vector<uint16_t> out(pos.size());
+            const auto d = QW::read_query(buf, form, 0, out);
+            BOOST_TEST(d.next == ext.words);
+            BOOST_TEST(out == pos, boost::test_tools::per_element());
+        }
+    };
+    size_t cells = 0;
+    for (size_t k = 0; k <= 40U; ++k) {
+        for (size_t gw = 0; gw <= QueryWire<128>::kPosBits; ++gw) {
+            const auto pos = gap_shaped(k, gw, QueryWire<128>::kBits);
+            if (pos.size() != k || (k < 2U && gw > 0U)) {
+                continue;
+            }
+            check(std::integral_constant<size_t, 128>{}, pos, static_cast<int>(k % 3U) - 1);
+            ++cells;
+        }
+    }
+    BOOST_TEST(cells == 353U);
+    for (const size_t k : {size_t{30}, size_t{31}, size_t{32}, size_t{200}, size_t{2048}}) {
+        check(std::integral_constant<size_t, 1024>{}, strided(k, 0, k == 2048 ? 1 : 3, 2048), 1);
+    }
+    check(std::integral_constant<size_t, 250>{}, std::vector<uint16_t>{0, 257, 499}, -1);
+}
+
+// The plan's fixture: one Plain word at 128 modes with phase +1, an escaped k = 6, gw = 8 and no payload. The
+// decoder would consume 20 header bits + 8 + 5*8 = 68 bits (two words), but the canonical k = 6 header is 11
+// bits, so the unchecked size calculation claims 59 bits, one word, and the decode would read past the buffer.
+BOOST_AUTO_TEST_CASE(sparse_record_checked_extent_rejects_the_noncanonical_escape) {
+    using QW = QueryWire<128>;
+    const VecZ buf{size_t{0x8037e}};
+    const auto h = QW::header_at(buf, 0);
+    BOOST_TEST(h.phase == 1);
+    BOOST_TEST(h.k == 6U);
+    BOOST_TEST(h.gw == 8U);
+    BOOST_TEST(h.bits == 20U);
+    BOOST_TEST(QW::header_bits_for(h.k) == 11U);
+    BOOST_TEST(QW::words_at(buf, 0) == 1U); // the undercount the check exists to catch
+    expect_malformed<128>(buf, QueryForm::Plain, 0, "0x8037e alone");
+    // Padding that makes the decoder's read fit does not make the header canonical.
+    expect_malformed<128>(VecZ{size_t{0x8037e}, 0, 0}, QueryForm::Plain, 0, "0x8037e padded");
+    expect_malformed<128>(VecZ{size_t{0x8037e}, 0}, QueryForm::Fused, 0, "0x8037e fused");
+}
+
+BOOST_AUTO_TEST_CASE(sparse_record_checked_extent_rejects_malformed_headers_and_boundaries) {
+    using QW8 = QueryWire<8>; // kBits 16, kPosBits 4, kLongKBits 5
+    expect_malformed<8>(VecZ{}, QueryForm::Plain, 0, "offset at the end");
+    expect_malformed<8>(VecZ{header_word<8>(3, 0, std::nullopt, 0)}, QueryForm::Plain, 0, "phase field 3");
+    expect_malformed<8>(VecZ{header_word<8>(1, 31, 20, 0)}, QueryForm::Plain, 0, "escaped k above kMaxPositions");
+    expect_malformed<8>(VecZ{header_word<8>(1, 31, 3, 0)}, QueryForm::Plain, 0, "escaped k below kKEscape");
+    expect_malformed<8>(VecZ{header_word<8>(1, 2, std::nullopt, QW8::kPosBits + 1)}, QueryForm::Plain, 0, "gw");
+    // A fused record without its value word, and a two-word record cut to one.
+    VecZ fused;
+    QW8::push(fused, std::vector<uint16_t>{1, 4}, 1);
+    expect_malformed<8>(fused, QueryForm::Fused, 0, "fused value word missing");
+    using QW = QueryWire<1024>;
+    VecZ wide;
+    const size_t words = QW::push(wide, strided(40, 0, 50, 2048), -1);
+    BOOST_REQUIRE(words >= 2U);
+    wide.pop_back();
+    expect_malformed<1024>(wide, QueryForm::Plain, 0, "truncated multiword record");
+    // A valid record followed by a lone partial word: the second record's header claims more than remains.
+    VecZ tail;
+    QW::push(tail, std::vector<uint16_t>{3}, 1);
+    const auto first = QW::checked_extent(tail, QueryForm::Plain, 0);
+    tail.push_back(wide[0]);
+    expect_malformed<1024>(tail, QueryForm::Plain, first.words, "trailing partial record");
+}
+
+// read_positions checks the cumulative size_t position before narrowing it to the output type: each must stay
+// below 2*NumModes, which also bounds the next addition and keeps the positions strictly ascending.
+BOOST_AUTO_TEST_CASE(sparse_record_decode_rejects_positions_outside_the_width) {
+    // 250 modes: a 9-bit first position reaches 511 although only 0..499 exist.
+    {
+        using QW = QueryWire<250>;
+        VecZ buf;
+        QW::push(buf, std::vector<uint16_t>{505}, 1);
+        std::vector<uint16_t> out(1);
+        BOOST_CHECK_THROW((void)QW::read_positions(buf, 0, out), MalformedQueryStream);
+        VecZ ok;
+        QW::push(ok, std::vector<uint16_t>{499}, 1);
+        BOOST_CHECK_NO_THROW((void)QW::read_positions(ok, 0, out));
+    }
+    // 32 modes: a gap walks past position 63.
+    {
+        using QW = QueryWire<32>;
+        VecZ buf;
+        QW::push(buf, std::vector<uint16_t>{10, 70}, -1);
+        std::vector<uint8_t> out(QW::kBits); // room for any k the header could claim
+        BOOST_CHECK_THROW((void)QW::read_positions(buf, 0, out), MalformedQueryStream);
+    }
+    // 128 modes into the store's uint8: 257 would narrow to 1, and 300 to 44, both "valid" after narrowing.
+    {
+        using QW = QueryWire<128>;
+        for (const auto &pos : {std::vector<uint16_t>{1, 257}, std::vector<uint16_t>{100, 200, 300}}) {
+            VecZ buf;
+            QW::push(buf, pos, 1);
+            BOOST_REQUIRE_NO_THROW((void)QW::checked_extent(buf, QueryForm::Plain, 0));
+            std::vector<uint8_t> out(QW::kBits);
+            BOOST_CHECK_THROW((void)QW::read_query(buf, QueryForm::Plain, 0, out), MalformedQueryStream);
+        }
+    }
 }

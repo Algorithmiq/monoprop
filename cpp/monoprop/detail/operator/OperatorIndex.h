@@ -32,6 +32,7 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -44,7 +45,8 @@ public:
 // those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
 // ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
-// Single-writer: one partition, one thread; parallelism is cross-partition.
+// Single-writer: every mutation (growth, set, overflow, table insertion) runs on one thread. The const lookups
+// (find, find_batch, find_batch_positions) may run concurrently only while nothing mutates the store.
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -363,8 +365,14 @@ public:
     // bulk_insert with the hashes already in hand: same precondition (n distinct rows, already written,
     // at consecutive indices) and the same slot assignment. `hashes[k]` must be fold_hash of the key of
     // row base+k -- a wrong one leaves the row unfindable, which surfaces later as a duplicate insert.
+    // Neither this nor bulk_insert deduplicates: two rows with one key are both indexed and find() returns
+    // the first (pinned by operator_index_tests). `options` is the publication seam an alternative index may
+    // use to publish in parallel; this packed table ignores it and always inserts serially, in order.
     template <typename HashFn>
-    auto bulk_insert_hashed(size_t n, mapped_type base, HashFn &&hash_at) -> void {
+    auto bulk_insert_hashed(size_t n,
+                            mapped_type base,
+                            HashFn &&hash_at,
+                            [[maybe_unused]] parallel::Options options = {}) -> void {
         if (n == 0) {
             return;
         }

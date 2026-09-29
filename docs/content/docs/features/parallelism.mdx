@@ -61,16 +61,22 @@ multi-partition runs are unchanged.
   (`omp_get_max_threads()`, normally `OMP_NUM_THREADS`) applies. The budget is not clamped to the
   cores you have; placement belongs to `OMP_PLACES`, `OMP_PROC_BIND` and your launcher. Copies and
   retained callables keep the budget, and a later change to the environment only affects new objects.
-- **Threaded kernels so far.** Three kernels use the budget: the per-gate cosine scaling (graph
+- **Threaded kernels so far.** These kernels use the budget: the per-gate cosine scaling (graph
   replay during evaluation and contraction, and the two-pass path of in-place propagation), the
-  rotation apply of in-place `propagate`, and the bitmap scan that finds each gate's anticommuting
-  terms and emits their partner queries during graph construction and in-place `propagate`. Each
-  splits its work into fixed blocks of 1024 bitmap words or 1024 rotation records and stays serial
-  below two blocks, so small operators see no threads. The scan's word ranges are merged back in
-  source order, so queries, new term IDs and graphs are the same at every budget, and results are
-  bitwise identical. The scan stays serial for a cutoff other than the built-in length or support
-  cutoffs, including a `basis_change` cutoff. Partner lookup, insertion, graph packing, reductions
-  and the gradient's endpoint work are still serial.
+  rotation apply of in-place `propagate`, the bitmap scan that finds each gate's anticommuting
+  terms and emits their partner queries, and the partner lookup that follows it, during graph
+  construction and in-place `propagate`. Each splits its work into fixed blocks (1024 bitmap words,
+  1024 rotation records, 256 looked-up partners) and stays serial below two blocks, so small
+  operators see no threads. The scan's word ranges are merged back in source order, so queries, new
+  term IDs and graphs are the same at every budget, and results are bitwise identical. The scan
+  stays serial for a cutoff other than the built-in length or support cutoffs, including a
+  `basis_change` cutoff.
+- **Partner lookup.** A rank looks up the partners it owns itself in windows of up to 4096, and
+  checks and decodes the partner queries other ranks send it before looking them up. Both lookups
+  read a store that nothing changes meanwhile. New terms still get their IDs in a fixed order and
+  are inserted by one thread, in the same rounds as before, and a received query stream that is
+  truncated or not canonically encoded is rejected before it is decoded. Insertion, graph packing,
+  reductions and the gradient's endpoint work are still serial.
 - **Calling thread.** Every call that can use MPI (construction, operations, retained callables)
   must come from the thread that initialized MPI, whatever thread support MPI provides. A call from
   another thread prints a diagnostic and aborts that process without communicating; the launcher

@@ -604,3 +604,42 @@ BOOST_AUTO_TEST_CASE(openmp_scan_worker_failure_invalidates_the_propagator) {
     BOOST_CHECK_THROW(sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs), InvalidPropagatorError);
     BOOST_CHECK_THROW((void)WideAccess::clone(sim), InvalidPropagatorError);
 }
+
+// The real build_layer on one rank resolves every partner itself: its self probe runs in bounded windows whose
+// 256-query blocks run inside the probe's own region.
+BOOST_AUTO_TEST_CASE(openmp_self_probe_construction_workers_participate,
+                     *boost::unit_test::precondition(kernel_test::runtime_offers_two_workers)) {
+    const auto data = wide_case();
+    auto sim = wide_prototype(data, false, 4, MPI_COMM_SELF);
+    kernel_test::PhaseLog log;
+    (void)WideAccess::build_layer_observed(sim, data.majoranas[0], kernel_test::AccumulatingObserver{&log});
+    const auto calls = log.of(monoprop::detail::KernelRange::self_probe);
+    BOOST_TEST_REQUIRE(!calls.empty());
+    const auto *widest = *std::ranges::max_element(calls, {}, [](const auto *c) { return c->worker.size(); });
+    BOOST_TEST_REQUIRE(widest->worker.size() >= 4U);
+    kernel_test::check_participation(kernel_test::slots_of(*widest), widest->worker.size(), "build_layer self probe");
+    for (const auto *c : calls) {
+        BOOST_TEST(c->worker.size() <= 16U);
+    }
+    BOOST_TEST(log.of(monoprop::detail::KernelRange::decode).empty()); // one rank: nothing crosses the wire
+    BOOST_TEST(!WideAccess::is_invalid(sim));
+}
+
+// A self-probe worker's failure inside the real build path is joined and rethrown before any self miss is
+// published; the propagator's operation guard then invalidates the object.
+BOOST_AUTO_TEST_CASE(openmp_self_probe_worker_failure_invalidates_the_propagator) {
+    const auto data = wide_case();
+    auto sim = wide_prototype(data, false, 3, MPI_COMM_SELF);
+    kernel_test::PhaseLog log;
+    BOOST_CHECK_THROW((void)WideAccess::build_layer_observed(
+                          sim,
+                          data.majoranas[0],
+                          kernel_test::AccumulatingObserver{&log, monoprop::detail::KernelRange::self_probe, 0, 1}),
+                      std::runtime_error);
+    const auto calls = log.of(monoprop::detail::KernelRange::self_probe);
+    BOOST_TEST_REQUIRE(calls.size() == 1U);
+    BOOST_TEST(calls[0]->visits.at(1) == 1);
+    BOOST_TEST(WideAccess::is_invalid(sim));
+    BOOST_CHECK_THROW(sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs), InvalidPropagatorError);
+    BOOST_CHECK_THROW((void)WideAccess::clone(sim), InvalidPropagatorError);
+}

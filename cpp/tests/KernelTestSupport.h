@@ -46,7 +46,7 @@ namespace kernel_test {
 
 using monoprop::detail::KernelRange;
 
-inline constexpr size_t kKinds = 5;
+inline constexpr size_t kKinds = 9;
 
 // What one kernel invocation reported for one kind of range.
 struct RangeSlots {
@@ -88,6 +88,61 @@ struct RecordingObserver {
         }
     }
 };
+
+// Keeps every prepare() call, for kernels that run once per window or once per exchange pass (the self probe,
+// the incoming decode/probe/scatter): prepare appends a fresh record on the calling thread, and each range's
+// owner writes only its own slots of the newest record. Records are inspected after the kernel has joined.
+struct PhaseLog {
+    struct Call {
+        KernelRange kind;
+        std::vector<int> worker; // -1 if never visited
+        std::vector<int> team;
+        std::vector<int> level;
+        std::vector<int> visits;
+    };
+    std::vector<Call> calls;
+
+    //! The calls of one kind, in order.
+    [[nodiscard]] auto of(KernelRange kind) const -> std::vector<const Call *> {
+        std::vector<const Call *> out;
+        for (const auto &c : calls) {
+            if (c.kind == kind) {
+                out.push_back(&c);
+            }
+        }
+        return out;
+    }
+};
+
+struct AccumulatingObserver {
+    PhaseLog *log;
+    KernelRange throw_kind = KernelRange::cos_lazy;
+    size_t throw_call = SIZE_MAX; // which call of throw_kind, counted from zero
+    size_t throw_range = SIZE_MAX;
+
+    auto prepare(KernelRange kind, size_t ranges) const -> void {
+        log->calls.push_back({kind,
+                              std::vector<int>(ranges, -1),
+                              std::vector<int>(ranges, 0),
+                              std::vector<int>(ranges, 0),
+                              std::vector<int>(ranges, 0)});
+    }
+    auto visit(KernelRange kind, size_t range) const -> void {
+        auto &c = log->calls.back();
+        c.worker[range] = omp_get_thread_num();
+        c.team[range] = omp_get_num_threads();
+        c.level[range] = omp_get_level();
+        ++c.visits[range];
+        if (kind == throw_kind && range == throw_range && log->of(kind).size() == throw_call + 1) {
+            throw std::runtime_error("injected resolve worker failure");
+        }
+    }
+};
+
+// A PhaseLog call as RangeSlots, so the participation/serial checks below apply to it.
+inline auto slots_of(const PhaseLog::Call &c) -> RangeSlots {
+    return RangeSlots{.prepares = 1, .worker = c.worker, .team = c.team, .level = c.level, .visits = c.visits};
+}
 
 // Evidence that one kernel's own ranges ran on several workers of a region the kernel opened.
 struct Participation {

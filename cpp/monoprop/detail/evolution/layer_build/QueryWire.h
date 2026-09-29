@@ -19,8 +19,11 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <ranges>
 #include <span>
+#include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -31,6 +34,14 @@ namespace monoprop::detail {
 
 /*! @brief `Fused` records carry a trailing value word after the positions; `Plain` ones do not. */
 enum class QueryForm { Plain, Fused };
+
+/*! @brief A received query stream that no QueryWire::push sequence could have produced: a truncated or
+ *  noncanonical record, an out-of-range header field, or positions outside the term's width.
+ */
+class MalformedQueryStream : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
 
 /*! @brief One term's wire record for a cross-rank query: its ascending set-bit positions,
  *  gap-coded, plus a phase.
@@ -186,6 +197,51 @@ struct QueryWire {
         return words_of_header(header_at(buf, off));
     }
 
+    /*! @brief A validated record's position count and its words, the fused value word included. */
+    struct RecordExtent {
+        size_t k;     //!< positions the record decodes to
+        size_t words; //!< words from the record start to the next record
+    };
+
+    /*! @brief Validates the record at `off` in `buf` without reading past the buffer, and returns its extent.
+     *
+     *  Checks, in order: `off` names a word of `buf`; the phase field is ternary; k <= kMaxPositions; gw <=
+     *  kPosBits; the header is canonical (`h.bits == header_bits_for(h.k)`, so an escaped count is at least
+     *  kKEscape); and the whole record, value word included for `Fused`, fits the rest of the buffer. A
+     *  noncanonical escape would otherwise make words_of_header() undercount what read_positions() consumes.
+     *  Positions themselves are checked by read_positions(), which decodes them.
+     *
+     *  \throws MalformedQueryStream naming the failed check.
+     */
+    [[nodiscard]] static auto checked_extent(WireView buf, QueryForm form, size_t off) -> RecordExtent {
+        if (off >= buf.size()) {
+            throw MalformedQueryStream(
+                std::format("QueryWire: no record at word {} of a {}-word stream", off, buf.size()));
+        }
+        const Header h = header_at(buf, off);
+        const auto malformed = [&](std::string_view what) {
+            return MalformedQueryStream(std::format("QueryWire: malformed record at word {}: {}", off, what));
+        };
+        if (h.phase > 1) {
+            throw malformed("the phase field is not ternary");
+        }
+        if (h.k > kMaxPositions) {
+            throw malformed(std::format("{} positions exceed the width's {}", h.k, kMaxPositions));
+        }
+        if (h.gw > kPosBits) {
+            throw malformed(std::format("gap width {} exceeds {}", h.gw, kPosBits));
+        }
+        if (h.bits != header_bits_for(h.k)) {
+            throw malformed(std::format("a noncanonical escaped count {}", h.k));
+        }
+        // Every term fits kMaxPositions <= 65535 positions of at most 16 bits, so gap_bits cannot wrap.
+        const size_t words = words_of_header(h) + (form == QueryForm::Fused ? 1U : 0U);
+        if (words > buf.size() - off) {
+            throw malformed(std::format("{} words needed, {} remain", words, buf.size() - off));
+        }
+        return {h.k, words};
+    }
+
     [[nodiscard]] static auto k_at(WireView buf, size_t off) noexcept -> size_t { return header_at(buf, off).k; }
     [[nodiscard]] static auto phase_at(WireView buf, size_t off) noexcept -> int { return header_at(buf, off).phase; }
 
@@ -238,18 +294,32 @@ struct QueryWire {
     /*! @brief Decodes the record at `off` into `out`, whose element type is deduced so the resolve
      *  path can decode straight into the store's narrower position width.
      *
-     *  `Decoded::next` names the word just past the positions, excluding any value word.
+     *  The record must lie within `buf` (checked_extent() establishes that for received streams) and `out`
+     *  must hold its k positions. Each cumulative position is checked below kBits as a size_t, before it is
+     *  narrowed to the output type: that also bounds the next gap's addition, so the positions are strictly
+     *  ascending and cannot wrap. `Decoded::next` names the word just past the positions, excluding any value
+     *  word.
+     *
+     *  \throws MalformedQueryStream if a position is outside [0, kBits); `out` is then partly written.
      */
     template <std::ranges::contiguous_range Out>
     static auto read_positions(WireView buf, size_t off, Out &&out) -> Decoded {
         using OutT = std::ranges::range_value_t<Out>;
         const Header h = header_at(buf, off);
         Reader r{buf, off, h.bits};
+        const auto check = [&](size_t pos) {
+            if (pos >= kBits) {
+                throw MalformedQueryStream(
+                    std::format("QueryWire: record at word {} decodes position {} of a {}-bit term", off, pos, kBits));
+            }
+        };
         if (h.k != 0) {
             auto prev = static_cast<size_t>(r.get(kPosBits));
+            check(prev);
             out[0] = static_cast<OutT>(prev);
             for (size_t j = 1; j < h.k; ++j) {
                 prev += static_cast<size_t>(r.get(h.gw)) + 1U;
+                check(prev);
                 out[j] = static_cast<OutT>(prev);
             }
         }
