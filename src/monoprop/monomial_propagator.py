@@ -556,14 +556,14 @@ class MonomialPropagator(ABC, Generic[T_op]):
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
 
+    @abstractmethod
     def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
         """Encode one operator term into the raw index tuple the engine keys terms by.
 
-        The front-end counterpart to the decode ``evolved_operator`` performs; a default rather than
-        an abstract method, so a front-end with no term encoding still constructs and only needs
-        this for [evolved_operator_coefficients][]. Implementations *validate* canonical terms
-        rather than normalizing them: the encode is order-insensitive, and a normalizing encode has
-        no coefficient to put the reordering's sign on.
+        The front-end counterpart to the decode ``evolved_operator`` performs, and what
+        [evolved_operator_coefficients][] keys its probes with. Implementations *validate* canonical
+        terms rather than normalizing them: the encode is order-insensitive, and a normalizing
+        encode has no coefficient to put the reordering's sign on.
 
         Args:
             term: A single operator term.
@@ -571,10 +571,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The term's engine index tuple: Majorana indices, or symplectic slots in the Pauli basis.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement _term_slots, so it cannot look up "
-            "individual evolved coefficients."
-        )
 
     def evolved_operator_coefficients(
         self,

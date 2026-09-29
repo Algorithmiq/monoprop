@@ -285,10 +285,7 @@ public:
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
-    /// Coefficients of the requested monomials only, in query order; a term the operator does not carry yields 0.
-    /// As evolved_operator_terms(), but the index is probed with the caller's keys rather than enumerated.
-    /// Keys must be canonical -- the encode is order-insensitive, so an unsorted or repeated index
-    /// drops the reordering's sign. Non-inplace. Rank-local.
+    /// As evolved_operator_terms(), but only for requested terms. Keys must be canonical.
     auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
