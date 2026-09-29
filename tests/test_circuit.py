@@ -765,6 +765,250 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     np.testing.assert_allclose(twice.expval(params), problem.exact_expval)
 
 
+@pytest.mark.parametrize(
+    ("make_propagator", "equivalent_circuit"),
+    [
+        (_propagator, lambda a, b: b + a),
+        (_schrodinger_propagator, lambda a, b: a + b),
+    ],
+    ids=["heisenberg", "schrodinger"],
+)
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_incremental_build_wires_the_picture_s_equivalent_circuit(
+    fixture: str, make_propagator, equivalent_circuit
+) -> None:
+    """An incremental build's axis matches the one-call build of the equivalent circuit.
+
+    Heisenberg consumes each call's gates back-to-front, so ``build_graph(a); build_graph(b)``
+    is the circuit ``b + a`` and must be numbered like it; Schrodinger's equivalent is ``a + b``.
+    Asserted away from the build angles and on the gradient: a mis-wired axis can still land on
+    the right value at one parameter vector, but not on a whole gradient.
+    """
+    problem = load_problem(DATA / f"{fixture}.msgpack")
+    gates = problem.monomial_circuit.to_circuit().gates
+    split = len(gates) // 2
+
+    def block(gate_slice: slice) -> Circuit:
+        return Circuit(
+            _rebase(gates[gate_slice]),
+            initial_state=problem.monomial_circuit.initial_state,
+            system_size=problem.n_modes,
+        )
+
+    a, b = block(slice(None, split)), block(slice(split, None))
+
+    incremental = make_propagator(problem)
+    incremental.build_graph(a)
+    incremental.build_graph(b)
+
+    single = make_propagator(problem)
+    single.build_graph(equivalent_circuit(a, b))
+
+    assert incremental.parameter_mapping == single.parameter_mapping
+    theta = np.linspace(-0.7, 0.9, incremental.n_parameters)
+    value, gradient = incremental.expectation_value_and_gradient(theta)
+    ref_value, ref_gradient = single.expectation_value_and_gradient(theta)
+    np.testing.assert_allclose(value, ref_value)
+    np.testing.assert_allclose(gradient, ref_gradient)
+
+
+_INCREMENTAL_HAM = MajoranaOperator(
+    {
+        (0, 1): 1.0j,
+        (2, 3): 0.7j,
+        (4, 5): 0.5j,
+        (0, 1, 2, 3): 0.4,
+        (0, 1, 4, 5): 0.3,
+        (2, 3, 4, 5): 0.25,
+        (0, 2, 3, 5): 0.2,
+    },
+    num_modes=3,
+)
+_INCREMENTAL_STATE = [0]
+# Overlapping supports, so the gate order -- and therefore the wiring -- is observable.
+_INCREMENTAL_GENS = [
+    {(0, 2): 1.0j},
+    {(0, 4): 1.0j},
+    {(2, 4): 1.0j},
+    {(1, 3): 1.0j},
+    {(1, 5): 1.0j},
+    {(3, 5): 1.0j},
+]
+# One gate, two commuting monomials: its layers must stay on one shared parameter index.
+_INCREMENTAL_MULTI = {(0, 2): 1.0j, (1, 3): 1.0j}
+
+
+def _incremental_propagator(**kwargs: object) -> MajoranaPropagator:
+    """Heisenberg propagator on a 3-mode problem, at a cutoff that truncates nothing."""
+    return MajoranaPropagator(
+        _INCREMENTAL_HAM,
+        _INCREMENTAL_STATE,
+        cutoff=6,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def _block(*generators: dict, angles: tuple[float, ...] = ()) -> Circuit:
+    """One build_graph call's worth of gates, angle-indexed 0.. in gate order."""
+    return Circuit(
+        [
+            ExpGate(MajoranaOperator(generator, num_modes=3), index=i)
+            for i, generator in enumerate(generators)
+        ],
+        system_size=3,
+        parameters=angles,
+        initial_state=_INCREMENTAL_STATE,
+    )
+
+
+def _compose(blocks: list[Circuit]) -> Circuit:
+    composed = blocks[0]
+    for block in blocks[1:]:
+        composed = composed + block
+    return composed
+
+
+def test_incremental_heisenberg_moves_each_block_to_the_front_of_the_axis() -> None:
+    """Three extensions of different widths reproduce the equivalent circuit's numbering.
+
+    An appended block takes the low indices *as a block*, keeping its own gates' relative order,
+    so a chain of single-monomial gates lands on the identity axis.
+    """
+    gens = _INCREMENTAL_GENS
+    blocks = [
+        _block(gens[0], gens[1]),
+        _block(gens[2]),
+        _block(gens[3], gens[4], gens[5]),
+    ]
+    incremental = _incremental_propagator()
+    for block in blocks:
+        incremental.build_graph(block)
+
+    single = _incremental_propagator()
+    single.build_graph(_compose(list(reversed(blocks))))
+
+    assert incremental.parameter_mapping == list(range(6))
+    assert incremental.parameter_mapping == single.parameter_mapping
+    theta = [0.31, -0.47, 0.23, 0.55, -0.19, 0.4]
+    np.testing.assert_allclose(
+        incremental.expectation_value(theta), single.expectation_value(theta)
+    )
+
+
+def test_incremental_reindex_keeps_a_multi_monomial_gate_on_one_index() -> None:
+    """A two-monomial gate's layers still share one index after an extension rotates the axis.
+
+    With ``n_gates < graph_layers`` the renumbering has to be a per-layer relabelling.
+    """
+    blocks = [
+        _block(_INCREMENTAL_MULTI, _INCREMENTAL_GENS[2]),
+        _block(_INCREMENTAL_MULTI),
+    ]
+    incremental = _incremental_propagator()
+    for block in blocks:
+        incremental.build_graph(block)
+
+    single = _incremental_propagator()
+    single.build_graph(_compose(list(reversed(blocks))))
+
+    assert incremental.n_gates == 3
+    assert incremental.graph_layers == 5
+    assert incremental.parameter_mapping == [0, 0, 1, 1, 2]
+    assert incremental.parameter_mapping == single.parameter_mapping
+    theta = [0.31, -0.47, 0.23]
+    value, gradient = incremental.expectation_value_and_gradient(theta)
+    ref_value, ref_gradient = single.expectation_value_and_gradient(theta)
+    np.testing.assert_allclose(value, ref_value)
+    np.testing.assert_allclose(gradient, ref_gradient)
+
+
+# Overlapping, mutually anticommuting supports, so the gate order is observable here too. The
+# first entry is one gate of two commuting terms, giving `graph_layers > n_gates`.
+_INCREMENTAL_PAULI_GENS = [
+    {Pauli("XX", (0, 1)): 1.0, Pauli("ZZ", (0, 1)): 1.0},
+    {Pauli("YZ", (1, 2)): 1.0},
+    {Pauli("X", 1): 1.0},
+    {Pauli("ZX", (0, 2)): 1.0},
+]
+
+
+def _pauli_propagator() -> PauliPropagator:
+    """Heisenberg qubit propagator on 3 qubits, at a weight cutoff that truncates nothing."""
+    return PauliPropagator(
+        PauliOperator({Pauli("ZZ", (0, 1)): 1.0, Pauli("Z", 2): 0.5}, num_qubits=3),
+        [0],
+        cutoff=3,
+    )
+
+
+def _pauli_block(*generators: dict) -> Circuit:
+    """One build_graph call's worth of qubit gates, angle-indexed 0.. in gate order."""
+    return Circuit(
+        [
+            ExpGate(PauliOperator(generator, num_qubits=3), index=i)
+            for i, generator in enumerate(generators)
+        ],
+        system_size=3,
+        initial_state=[0],
+    )
+
+
+def test_incremental_build_wires_the_equivalent_circuit_for_pauli() -> None:
+    """The axis contract is the shared engine's, so PauliPropagator obeys it as well.
+
+    Same invariant as the Majorana legs: ``build_graph(a); build_graph(b)`` is the circuit
+    ``b + a`` in Heisenberg and is numbered like it, on the axis, the value and the gradient.
+    """
+    gens = _INCREMENTAL_PAULI_GENS
+    a = _pauli_block(gens[0], gens[1])
+    b = _pauli_block(gens[2], gens[3])
+
+    incremental = _pauli_propagator()
+    incremental.build_graph(a)
+    incremental.build_graph(b)
+
+    single = _pauli_propagator()
+    single.build_graph(b + a)
+
+    # The two-term gate keeps its layers on one index through the rotation.
+    assert incremental.n_gates == 4
+    assert incremental.graph_layers == 5
+    assert incremental.parameter_mapping == [0, 1, 2, 2, 3]
+    assert incremental.parameter_mapping == single.parameter_mapping
+
+    theta = [0.31, -0.47, 0.23, 0.55]
+    value, gradient = incremental.expectation_value_and_gradient(theta)
+    ref_value, ref_gradient = single.expectation_value_and_gradient(theta)
+    np.testing.assert_allclose(value, ref_value)
+    np.testing.assert_allclose(gradient, ref_gradient)
+
+
+def test_extend_seed_parameters_are_read_on_the_post_call_axis() -> None:
+    """A Heisenberg seed is indexed like the axis the call leaves behind, not like the old one.
+
+    Seeded there, the extension's coefficient-informed truncation reproduces the one-call build
+    of the equivalent circuit exactly -- same kept terms, same value.
+    """
+    gens = _INCREMENTAL_GENS
+    existing = _block(gens[0], gens[1], gens[2], angles=(0.9, -0.7, 0.5))
+    appended = _block(gens[3], gens[4], angles=(1.4, -1.3))
+    # Heisenberg's equivalent circuit is `appended + existing`, so its parameter vector is the
+    # axis the second build_graph leaves behind -- exactly the seed that call wants.
+    equivalent = appended + existing
+    theta = list(equivalent.parameters)
+
+    def signature(prop: MajoranaPropagator) -> tuple:
+        return prop.graph_size(), prop.size(), prop.expectation_value(theta)
+
+    single = _incremental_propagator(lower_atol=0.1)
+    single.build_graph(equivalent)
+
+    seeded = _incremental_propagator(lower_atol=0.1)
+    seeded.build_graph(existing, seed_parameters=existing.parameters)
+    seeded.build_graph(appended, seed_parameters=theta)
+    assert signature(seeded) == signature(single)
+
+
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     """Extending a non-empty graph with seed_parameters regenerates the seed internally."""
@@ -970,8 +1214,8 @@ def test_inplace_contraction_resets_the_parameter_axis() -> None:
 
 def test_extend_without_seed_builds_structurally() -> None:
     """Extending a non-empty graph without a seed builds the new layers structurally (no
-    raise, no silent corruption); the result matches a single-call build, and an explicit
-    full-axis seed is still accepted."""
+    raise, no silent corruption); the result matches the single-call build of the equivalent
+    circuit (Heisenberg, so ``c2 + c1``), and an explicit full-axis seed is still accepted."""
     c1 = Circuit(
         gates=(ExpGate(MajoranaOperator({(4, 5): -1.0j}, num_modes=8)),),
         initial_state=(),
@@ -987,7 +1231,7 @@ def test_extend_without_seed_builds_structurally() -> None:
     params = [0.3, 0.4]
 
     single = _small_propagator(lower_atol=1e-15)
-    single.build_graph(c1 + c2)
+    single.build_graph(c2 + c1)
     reference = single.expval(params)
 
     extended = _small_propagator(lower_atol=1e-15)

@@ -14,11 +14,15 @@
 
 #pragma once
 
+#include <cstddef>
 #include <span>
 #include <utility>
 #include <vector>
 
 #include "monoprop/detail/mpi/MPICompat.h"
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/Pairwise.h"
+#endif
 
 // Keeps #ifdef monoprop_ENABLE_MPI out of the consumers; non-MPI builds get self-copy stubs.
 
@@ -28,11 +32,9 @@ namespace monoprop::mpi {
 // whatever the span holds, so a layout built for a differently sized communicator reads out of bounds.
 auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void;
 
-// Idempotent completion handle for a posted payload transfer; move-only, so a request is waited on
-// exactly once. wait() is a no-op on the blocking path and in non-MPI builds. Owns its request: the
-// destructor completes anything still in flight, because a dropped in-flight MPI_Ialltoallv -- what an
-// exception between post and wait does -- keeps writing into a thread_local buffer the next exchange
-// reallocates.
+// Move-only, idempotent completion handle for a posted payload transfer. The destructor waits: a
+// dropped in-flight transfer keeps writing into a thread_local buffer the next exchange reallocates.
+// Moving is safe because a vector move keeps the request block MPI points into.
 class [[nodiscard("call wait() on the Ticket to complete the posted transfer")]] Ticket {
 public:
     Ticket() = default;
@@ -43,8 +45,8 @@ public:
 #ifdef monoprop_ENABLE_MPI
         if (this != &other) {
             wait(); // never drop a request this handle already owns
-            request_ = other.request_;
-            other.request_ = MPI_REQUEST_NULL;
+            requests_ = std::move(other.requests_);
+            posted_ = std::exchange(other.posted_, 0);
         }
 #endif
         (void)other;
@@ -54,28 +56,40 @@ public:
 
     auto wait() -> void {
 #ifdef monoprop_ENABLE_MPI
-        if (request_ != MPI_REQUEST_NULL) {
-            MPI_Wait(&request_, MPI_STATUS_IGNORE);
-            request_ = MPI_REQUEST_NULL;
+        if (posted_ != 0) {
+            MPI_Waitall(posted_, requests_.data(), MPI_STATUSES_IGNORE);
+            posted_ = 0;
         }
 #endif
     }
 
+    // Requests wait() still has to drain: 1 for the collective, two per pairwise leg, 0 for none.
+    [[nodiscard]] auto in_flight() const -> int {
 #ifdef monoprop_ENABLE_MPI
-    explicit Ticket(MPI_Request request) : request_(request) {}
+        return posted_;
+#else
+        return 0;
+#endif
+    }
+
+#ifdef monoprop_ENABLE_MPI
+    Ticket(std::vector<MPI_Request> requests, int posted) : requests_(std::move(requests)), posted_(posted) {}
 
 private:
-    MPI_Request request_ = MPI_REQUEST_NULL;
+    std::vector<MPI_Request> requests_; // the collective's one request, or the pairwise legs
+    int posted_ = 0;                    // live entries of requests_
 #endif
 };
 
-// Never skipped on zero total: all ranks must participate or the collective deadlocks. Non-blocking
-// (MPI_Ialltoallv) in an MPI build (the Ticket completes it); non-MPI build does a per-rank self-copy
-// (recv layout == send layout).
+// Never skipped on zero total: every rank must take part. Non-blocking under MPI (MPI_Ialltoallv, or
+// Isend/Irecv over the non-empty legs); the non-MPI build self-copies.
+//
+// `pairwise` picks the transport and MUST be rank-uniform, or a rank in MPI_Ialltoallv waits forever on
+// one that went point-to-point. Take it from mpi::routes_pairwise(comm), never from a rank's own layout.
 template <typename T>
-inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm) -> Ticket {
-    // The in-process transports address the buffers as raw bytes; MPI_Ialltoallv below still takes the
-    // typed pointers plus a datatype. Offsets stay in elements on both paths.
+inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm, bool pairwise = false)
+    -> Ticket {
+    // In-process transports take raw bytes, MPI takes typed pointers; offsets are in elements on both.
     if (comm.kind == Comm::Kind::Shm) {
         // Synchronous: the transfer completes here, so the Ticket's wait() is a no-op. ShmComm needs no
         // send counts: its peers pull using the publisher's displacements.
@@ -91,11 +105,31 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get());
+        // Narrowed inside the verb: only there is the whole rank's traffic visible.
+        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get(), PeerPlan{}, pairwise);
         return Ticket{};
     }
-    (void)num_ranks;
-    MPI_Request request = MPI_REQUEST_NULL;
+    if (pairwise) {
+        // Dense plan: walk every rank and post only non-empty legs, so nothing can be dropped. The layout
+        // is symmetric, so both ends skip the same legs.
+        std::vector<MPI_Request> requests;
+        const SparsePairwiseArgs post{
+            .plan = {},
+            .me = rank(comm),
+            .num_ranks = num_ranks,
+            .comm = comm.mpi,
+            .tag = kFlatReplayTag,
+            .datatype = datatype<T>::get(),
+            .elem = sizeof(T),
+            .send = reinterpret_cast<const std::byte *>(args.send),
+            .send_layout = {.counts = args.send_counts, .displs = args.send_displs},
+            .recv = reinterpret_cast<std::byte *>(args.recv),
+            .recv_layout = {.counts = args.recv_counts, .displs = args.recv_displs},
+        };
+        const int posted = sparse_pairwise(post, requests);
+        return {std::move(requests), posted};
+    }
+    std::vector<MPI_Request> request(1, MPI_REQUEST_NULL);
     MPI_Ialltoallv(args.send,
                    args.send_counts,
                    args.send_displs,
@@ -105,8 +139,8 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
                    args.recv_displs,
                    datatype<T>::get(),
                    comm.mpi,
-                   &request);
-    return Ticket(request);
+                   request.data());
+    return {std::move(request), 1};
 #else
     for (int i = 0; i < num_ranks; ++i) {
         const int c = args.recv_counts[i];
