@@ -26,7 +26,8 @@ pin.
 
 Progress: S0 was separately authorized, executed and accepted by the owner on 2026-09-29 (outcome under Task S0).
 S1 was separately authorized and implemented on 2026-09-29 (outcome under Task S1); owner acceptance is not recorded
-here. S2 has not started and needs its own authorization.
+here. S2 was separately authorized and implemented on 2026-09-30 (outcome under Task S2); owner acceptance is not
+recorded here. S3 has not started and needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -405,13 +406,60 @@ buffer. `resolve_published` performs checked decode/probe/scatter/publication wi
 preserves response order and leader marks. Existing `finish(CosMask&&, CosMask*)` remains the finalization seam.
 These methods perform no MPI, barrier or nested worksharing; `SlotWindow` stays a data-layout type, not a communicator.
 
-- [ ] Add differential fixtures with same-shard, other-local-shard and empty destinations; mixed hits/misses; all-hit,
+**Outcome:** implemented on 2026-09-30; **owner acceptance pending**. Start: `a56daac`. Handoff with the
+interfaces, phase sequence, buffer-lifetime table, ordering/numerical/failure arguments, memory accounting, commands,
+toolchains and full evidence: `/home/ubuntu/s2-artifacts/HANDOFF.md` (outside the checkout).
+
+- `detail/sharded/Construction.h`: `build_graph` and `propagate` over P=1, T shards in one `run_team` for the whole
+  gate loop, with `ConstructionContext`, `GraphCircuit`/`PropagationCircuit`, the test-only
+  `NoConstructionObserver` and `gather_published`. Argument errors throw before the team. Phase failures are returned
+  after the join as `ConstructionOutcome{error, mutation_started}`, never rethrown. `mutation_started` is false only
+  if the pre-mutation frame phase failed; there is no rollback.
+- Per gate: traversal and leader prepare, then leader resolution, then leader consume and follower prepare, then
+  follower resolution, then follower consume and finish/apply. That is five checkpoints for an exchanging gate; an
+  identity gate skips the exchange, and T=1 keeps same-shard resolution only. Destinations read other shards'
+  published blocks as spans in ascending flat-source order. Opaque cutoffs and basis-change closures traverse every
+  shard on the primary, in an exclusive phase that every worker enters. Within-shard kernels get serial `Options{}`.
+- Engine: `prepare_exchange`, `resolve_published`, `consume_published`, the extracted `scan_gate` and
+  `stamp_layer_metadata`. The communicator left the engine: the legacy transport is the `run_exchange(comm, plan, …)`
+  adapter over the same phases, with unchanged request lifetimes and guards. The resolver, the response path and the
+  sink callbacks take read-only views (`mpi::views_of`). `MPOperator::current_picture` and
+  `extend_from_current_picture` were extracted, and the propagator delegates to them.
+- `QueryWire::Writer::put`/`flush` were `noexcept` but call `push_back`. RED: an injected allocation failure while
+  encoding a query hit `std::terminate`; removing only `noexcept` made the sweeps pass. This also fixes the legacy
+  path.
+- RED: the registered test failed to compile only on the missing `Construction.h`. GREEN: 17 flat
+  `sharded_construction_*` cases in fresh `sharded_construction_env_t{1,2,4}` launches (15/17/17 cases). At (1,T),
+  every shard's rows, IDs, coefficients, caches and graph layers are bit-identical to the legacy partition child, and
+  so are the query/source/value/answer streams of every pass. Because both paths share the phases, the cases also
+  check an independent insertion-order reference, an independent coefficient-map propagator, the frozen
+  `random_exact` energy and the cross-T global retained maps. They also cover participation, empty and identity
+  inputs, the span seam (nonzero windows, empty senders, 255/256/257 queries, narrow and wide positions, the
+  malformed `QueryWire<128>` fixture), self streams beyond 4096, throws in every phase, kernel and publication
+  failures, and allocation sweeps.
+- 11 mutants were all detected, with no hangs. The shared-engine order and follower-filter mutants pass the legacy
+  comparison and are caught only by the independent references. A race mutant is reported by TSan/Archer.
+- Results:
+  - GCC/libgomp R: 455/455, the fixed-T launches 10/10, pytest 767 passed, 25 skipped.
+  - Clang 18/libomp R: 455/455.
+  - GCC ASan/UBSan: 455/455.
+  - GCC M with Open MPI 5.0.10: 485/485 + 16/16 (every `mpi_failure_*` scenario), pytest 821 passed, 32 skipped
+    (legacy compatibility only).
+  - Clang/libomp/Archer TSan, qualified with known-safe/racy probes: silent on `sharded_*` at T=1/2/4 and on
+    `openmp_*`.
+  - The installed `find_package_smoke` consumer compiles `Construction.h` alone (chain h) through
+    `monoprop::monoprop` for the R, M and Clang packages.
+- Not in S2: coefficient-informed `build_graph`, replay, energy, gradients and paring (S3), rank-level integration
+  (S4) and P>1 (S5). Allocation injection is unavailable under Clang sanitizers and GCC TSan. Pending: macOS, Linux
+  aarch64, wheels, Nix and minimum-version compiler routes.
+
+- [x] Add differential fixtures with same-shard, other-local-shard and empty destinations; mixed hits/misses; all-hit,
   all-miss, fresh growth/reindex; Plain/Fused forms; both sinks; and fixed-geometry row/graph/query/response equality.
   A genuine RED must show missing sharded behavior/owner participation, not merely rename passing serial assertions.
-- [ ] Split `run_exchange` at the above boundaries and adapt incoming containers to immutable spans without duplicating
+- [x] Split `run_exchange` at the above boundaries and adapt incoming containers to immutable spans without duplicating
   whole local query buffers. `QueryWire::WireView` already exists; preserve its checks and generalize the remaining
   owning-container callers. Use `window.indices()`/`window.slot(wi)`/`at_slot(flat)` correctly.
-- [ ] Implement leader then follower orchestration with published views. The pass order is executable structure:
+- [x] Implement leader then follower orchestration with published views. The pass order is executable structure:
 
 ```text
 owner traversal -> publish outgoing -> resolve destination-owned queries -> publish responses
@@ -421,12 +469,12 @@ owner traversal -> publish outgoing -> resolve destination-owned queries -> publ
 
   Each arrow is a lifetime/synchronization boundary, not a new local collective API. Fixed source order must match
   `ShmComm`'s historical order. Pass serial `parallel::Options{}` to reused within-shard kernels.
-- [ ] Keep same-shard position stages unencoded, bounded self lookup and deferred hashes. Preserve scatter before
+- [x] Keep same-shard position stages unencoded, bounded self lookup and deferred hashes. Preserve scatter before
   insertion, graph versus fused response types, Schrödinger scoring, cosine tails/pivots and paired cutoff exceptions.
   Retain the malformed `QueryWire<128>` Plain fixture `VecZ{size_t{0x8037e}}` and checked overflow tests.
-- [ ] Test throw sites at traversal, decode, publication and finalization. Observers record actual shard owners in those
+- [x] Test throw sites at traversal, decode, publication and finalization. Observers record actual shard owners in those
   bodies; no empty-region proxy. Test opaque callback/basis-change supported paths without assuming thread safety.
-- [ ] Run `-R '^(sharded_construction_|sparse_|operator_index_|fused_|pauli_)'` plus relevant cutoff tests, verifying
+- [x] Run `-R '^(sharded_construction_|sparse_|operator_index_|fused_|pauli_)'` plus relevant cutoff tests, verifying
   the selection is nonempty and broad enough. Hand off exact fixed-geometry/global-map evidence and buffer live ranges.
 
 ## Task S3: Snapshot-safe replay, energy, gradients and paring
