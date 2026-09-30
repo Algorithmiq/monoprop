@@ -25,7 +25,8 @@ is authorized by these checkboxes. Review subsequent source differences before s
 pin.
 
 Progress: S0 was separately authorized, executed and accepted by the owner on 2026-09-29 (outcome under Task S0).
-S1 has not started and needs its own authorization.
+S1 was separately authorized and implemented on 2026-09-29 (outcome under Task S1); owner acceptance is not recorded
+here. S2 has not started and needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -308,10 +309,49 @@ The initializer consumes `size_t shard` and returns `std::unique_ptr<ShardState<
 owner-local initialization. Caller-side configuration/router/MPI setup precedes it. New state and source copies
 preserve captured T.
 
-- [ ] Add fixtures for each basis/picture, empty owners, replicated identity, source mutation after copy, invalid-source
+**Outcome:** implemented on 2026-09-29; **owner acceptance pending**. Start: `4cdffac`. Handoff with the
+interfaces, seeding/ownership/copy/cleanup arguments, commands, toolchains, memory model and full evidence:
+`/home/ubuntu/s1-artifacts/HANDOFF.md` (outside the checkout).
+
+- `detail/sharded/State.h`: `ShardState` (the existing `MPOperator`, `MPGraph` and `MatchedEpochSet`), `Shards`,
+  `make_shards`, `seed_shards`, `copy_shards`, and per-shard `total_size`/`operator_memory_usage`/
+  `graph_memory_usage`. Caller-side preparation (`validate_initial_operator`, which returns the identity core term,
+  `paired_basis_bounds`, `packed_inline_width`, `OperatorSeed`) is separate from the owner-local `seed_operator`. The
+  legacy single-store constructor now seeds through the same `seed_operator`; `MPOperator::initialize_caches` holds
+  the extracted Heisenberg-sparse/Schrödinger-dense warm-up. A defaulted test-only `NoShardObserver` is called
+  inside each owner's seed and copy body. Arguments are checked before the team, including `threads < 1` before any
+  container size; there is no actual-team or cross-rank check.
+- `MPOperator()` was `noexcept` although its store initializer allocates. RED: a real injected allocation failure
+  hit `std::terminate`; removing only `noexcept` made the sweeps pass.
+- RED: the registered test failed to compile only on the missing `State.h`. GREEN: 19 flat `sharded_state_*` cases
+  in fresh `sharded_state_env_t{1,2,4}` launches (16/19/19 cases). They check a field-by-field partition oracle at
+  (1,T), plus an independent test-side reference, because the oracle now shares `seed_operator`. They also check flat
+  ownership at P=1/2/4 linear and P=3 splitmix, identity roles, empty owners, cache selection and pending entries,
+  exact and independent copies with shared layer cores, the captured budget and the real owner guard (preservation).
+  Failure cases cover primary, nonprimary and concurrent owners. Allocation-failure sweeps fail every site of the
+  seed, copy and legacy-constructor paths, with no leak and the source left intact. The test-only
+  `cpp/tests/AllocationProbe.cpp` replaces global new/delete in the unit-test executable and is compiled out under
+  Clang sanitizers and GCC TSan.
+- 11 `State.h`/`MPOperator.h` mutants (lost ownership, caller-side copy, lost copy mapping, wrong flat owner,
+  identity per shard, global reserve, swallowed errors, leaked siblings, store theft, Heisenberg densification,
+  restored `noexcept`) are all detected, with no hangs. A materialize-the-basis-per-owner mutant would be
+  state-identical and is guarded by review only.
+- Results:
+  - GCC/libgomp R: 435/435 and pytest 767 passed, 25 skipped.
+  - Clang 18/libomp R: 435/435.
+  - GCC ASan/UBSan: 435/435.
+  - GCC M with Open MPI 5.0.10: 465/465 + 16/16 and pytest 821 passed, 32 skipped (compatibility only).
+  - Clang/libomp/Archer TSan, qualified with known-safe/racy probes: silent on the real cases, and a publication-race
+    mutant is reported.
+  - The installed `find_package_smoke` consumer compiles `State.h` alone (chain g) through `monoprop::monoprop` for
+    the R, M and Clang packages.
+- Pending: macOS, Linux aarch64, wheels, Nix, minimum-version compiler routes and actual P>1 sharded runs (S5).
+  Public runtime integration is S4 work.
+
+- [x] Add fixtures for each basis/picture, empty owners, replicated identity, source mutation after copy, invalid-source
   rejection and constructor failure. Verify the union of shard keys matches the existing partition oracle at fixed P/T.
   For each owner, the test checks `router.dest<NumModes>(key)` against its flat owner ID.
-- [ ] Implement first-touch with only the pointer vector allocated on the caller; the protected owner body allocates the
+- [x] Implement first-touch with only the pointer vector allocated on the caller; the protected owner body allocates the
   substantial state. The helper's central pattern is:
 
 ```cpp
@@ -328,13 +368,13 @@ return shards;
   Caller distributed guards must still abort peers on failed distributed initialization. No requests may be owned by
   this helper when it rethrows. Audit allocating `noexcept` constructors, including the current default `MPOperator`
   constructor, before claiming catchable allocation-failure coverage.
-- [ ] Extract seeding rather than copying full child constructors. Preserve hash ownership, streamed Schrödinger paired
+- [x] Extract seeding rather than copying full child constructors. Preserve hash ownership, streamed Schrödinger paired
   basis generation, per-shard reserve and lazy-cache ownership. Reuse existing deep-store-copy and
   immutable-core-sharing semantics. Preserve rank-level virtual clone/update hooks; do not recreate
   `PartitionChildFactory` privately.
-- [ ] Run `-R '^sharded_state_'` at supported separate launches; prove stores are distinct, owner allocation occurs in
+- [x] Run `-R '^sharded_state_'` at supported separate launches; prove stores are distinct, owner allocation occurs in
   the owner body, copied budget is unchanged and earlier independent copies survive invalidation of another instance.
-- [ ] Hand off memory accounting for state, graph sharing and retained scratch. No global operator mirror or benchmark.
+- [x] Hand off memory accounting for state, graph sharing and retained scratch. No global operator mirror or benchmark.
 
 ## Task S2: Direct-buffer construction and graph-free propagation
 
