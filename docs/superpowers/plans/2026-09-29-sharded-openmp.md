@@ -27,7 +27,8 @@ pin.
 Progress: S0 was separately authorized, executed and accepted by the owner on 2026-09-29 (outcome under Task S0).
 S1 was separately authorized and implemented on 2026-09-29 (outcome under Task S1); owner acceptance is not recorded
 here. S2 was separately authorized and implemented on 2026-09-30 (outcome under Task S2); owner acceptance is not
-recorded here. S3 has not started and needs its own authorization.
+recorded here. S3 was separately authorized and implemented on 2026-09-30 (outcome under Task S3); owner acceptance
+is not recorded here. S4 has not started and needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -503,10 +504,53 @@ changing callers. Requests/callbacks are prebuilt views with T entries and no sh
 single-store functions as low-level compatibility/reference paths where appropriate; new detail functions need exports
 if public template instantiation calls them across the shared-library boundary.
 
-- [ ] Add exact small shard-pair fixtures where one owner overwrites a coefficient before another consumes its old
+**Outcome:** implemented on 2026-09-30; **owner acceptance pending**. Start: `0c2503b`. Handoff with the
+interfaces, phase and buffer-lifetime tables, ordering/numerical/callback/failure arguments, memory accounting,
+commands, toolchains and full evidence: `/home/ubuntu/s3-artifacts/HANDOFF.md` (outside the checkout).
+
+- `detail/sharded/Evaluation.h`/`.cpp`: `ev_sharded` and `ev_and_grad_sharded` (one team for forward and reverse;
+  the communicator is touched only on the caller, and a phase failure reaches `mpi::operation_failed` before the
+  reduction), the S4 seam `evaluate_shards` (per-shard terms and gradients plus the error, returned after the join),
+  `combine_contributions`/`combine_gradients` (ascending-shard fold), `replay_shards` (partial contraction),
+  exported owner-local forward phases with `replay_forward_in_team`, and `prepare_retained`/`RetainedEvaluation`
+  for retained and pared functionals. `Construction.h` gains coefficient-informed `build_graph_informed` (seed
+  replay and per-gate new-layer replay in the same team). `detail::pare_graph_owner` takes the flat owner;
+  `detail::make_cos_callbacks` and `full_cos_mask` moved to `CosineRecompute.h`; `CosCallbacks::owner_parallel`
+  marks library-built callbacks (anything else runs on the primary in an exclusive phase).
+- Each replay step publishes pre-cosine endpoint snapshots into a double buffer: one checkpoint per step, partners
+  never read live coefficients. The kernels were extracted into the library-internal
+  `detail/evolution/LayerReplay.h`, shared with the rewired legacy `Evolution.cpp`/`MPFunctions.cpp`.
+- Contraction fidelity: the inlined legacy derivative fuses `cos_acc(...)*sec` into `A - ep.cos_terms`. A first
+  out-of-line derivative changed legacy gradient bits versus HEAD in record-bearing cases; the final form keeps the
+  legacy code inline and gives the sharded path the raw accumulation. A cross-build public-API probe shows legacy
+  results bit-identical to HEAD (GCC, Clang, MPI) and the sharded results equal legacy bitwise.
+- RED: the registered test failed to compile only on the missing `Evaluation.h`. GREEN: 20 flat
+  `sharded_evaluation_*` cases in fresh `sharded_evaluation_env_t{1,2,4}` launches: bitwise equality with the legacy
+  partitions (per-shard evolved operators and terms, energies, every gradient component, pared functionals, partial
+  contraction in both pictures, informed builds); independent map-propagator, frozen-energy, closed-form and
+  finite-difference references including the `test_deep_circuit_gradient.py` cases; layouts, identity, records,
+  lifetimes, participation, opaque callbacks and failures including allocation sweeps.
+- 14 mutants (missing snapshots, wrong publication buffer, self pairing, records, restore, contraction, fold order,
+  identity per shard, empty pruned mask, opaque on owners, informed replay, swallowed error) are all detected, with
+  no hangs; a single-buffer race mutant is reported by TSan/Archer.
+- Results:
+  - GCC/libgomp R: 478/478 and pytest 767 passed, 25 skipped.
+  - Clang 18/libomp R: 478/478.
+  - GCC ASan/UBSan: 478/478, no reports.
+  - GCC M with Open MPI 5.0.10: 508/508 + 16/16 (every `mpi_failure_*` scenario) and pytest 821 passed, 32 skipped
+    (legacy compatibility only).
+  - Clang/libomp/Archer TSan, qualified with known-safe/racy probes: silent on `sharded_*` at T=1/2/4 and on
+    `openmp_*`.
+  - The installed `find_package_smoke` consumer (chain i) calls both exported evaluators through
+    `monoprop::monoprop` for the R, M and Clang packages.
+- Also reformatted three S2 files that were not clang-format clean at `0c2503b` (whitespace only).
+- Pending: macOS, Linux aarch64, wheels, Nix, minimum-version compiler routes, the Python ASan leg and P>1 sharded
+  runs (S5). Rank-level wiring of these seams into `MonomialPropagator` is S4 work.
+
+- [x] Add exact small shard-pair fixtures where one owner overwrites a coefficient before another consumes its old
   endpoint; only a published snapshot can pass. Cover empty owners, identity once, sparse/duplicate dot/scatter and
   repeated parameter indices, then finite-difference/reference gradients and pared/unpared functionals.
-- [ ] Extract pure owner-local operations from the existing replay/derivative begin/apply/finish functions. Publish only
+- [x] Extract pure owner-local operations from the existing replay/derivative begin/apply/finish functions. Publish only
   needed endpoint values, not a full new operator mirror. Preserve this ordering:
 
 ```text
@@ -517,7 +561,7 @@ snapshot/pack all required endpoints -> publish -> independent self/local work
 
   Keep each self pair together; no adjacent-pair reinterpretation. Forward and derivative scratch must stay valid
   across phases. Reuse legitimate mathematical snapshots; account for retained TLS versus per-instance scratch.
-- [ ] Implement ordered local combination. For every result position, the reference fold is:
+- [x] Implement ordered local combination. For every result position, the reference fold is:
 
 ```cpp
 auto total = 0.0;
@@ -528,9 +572,9 @@ for (size_t shard = 0; shard < contributions.size(); ++shard) {
 
   Add core/identity only once using existing semantics. Do not parallelize this fold with a new floating-point
   association, change `std::fma` policy or remove `[[gnu::noinline]] apply_fused_record_range` without neutrality proof.
-- [ ] Verify record thresholds, vanishing cosine, restoration after derivative calls, signs in both pictures/bases,
+- [x] Verify record thresholds, vanishing cosine, restoration after derivative calls, signs in both pictures/bases,
   basis changes, incremental graph axes, repeated evaluation, copies, updates and functional owner lifetimes.
-- [ ] Run `-R '^(sharded_evaluation_|pare_|combined_|evolution_)'`, the named Python numerical suites and qualified
+- [x] Run `-R '^(sharded_evaluation_|pare_|combined_|evolution_)'`, the named Python numerical suites and qualified
   sanitizers. Compare retained operators as well as energy/gradient; performance work is not part of this task.
 
 ## Task S4: Integrated MPI-off prototype and first architecture checkpoint
