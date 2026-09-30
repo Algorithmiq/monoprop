@@ -143,6 +143,30 @@ struct MaskSummary {
  */
 [[nodiscard]] monoprop_EXPORT auto place_line_is_new(std::string_view line) -> bool;
 
+/*! @brief What the last partition_cpusets() call decided, process-wide.
+ *
+ * Placement belongs to the process, not to a propagator, so one record answers "did the partition
+ * threads get pinned, and if not, why not" for whatever asked last. Refusal is silent by design --
+ * pinning is performance-only -- and silence measured 24.6x on propagate at 256 partitions over 128
+ * cores, so the outcome is recorded rather than only printed.
+ */
+struct PlacementReport {
+    bool pinned = false;      //!< false ⇒ the request was refused and every partition thread runs unpinned
+    size_t cores_visible = 0; //!< physical cores in the calling thread's effective allowed mask
+    size_t groups = 0;        //!< co-located ranks those cores were split between; 1 once a per-rank mask collapses it
+    size_t partitions = 0;    //!< partitions this rank asked to place
+    uint64_t decisions = 0;   //!< placements this process has decided, this one included; 0 ⇒ none yet
+};
+
+//! Snapshot of that record. Locked, so it is safe from any thread; `decisions` tells a fresh verdict from a stale one.
+[[nodiscard]] auto placement_report() -> PlacementReport;
+
+/*! @brief The one-line "threads run unpinned" message for @p report, newline-terminated.
+ *  Returned rather than written so the stderr print and the binding's RuntimeWarning cannot drift apart,
+ *  and so the text is testable without an oversubscribed host.
+ */
+[[nodiscard]] auto format_unpinned_line(const PlacementReport &report) -> std::string;
+
 //! Whether the launcher has already handed this rank a private slice of the node, or the node's CPUs are shared.
 enum class NodeMask { Shared, PerRank };
 
@@ -162,6 +186,7 @@ enum class NodeMask { Shared, PerRank };
  *          @p group_count x @p n cores are visible (@p n under PerRank).
  *
  * @note Under NodeMask::PerRank the group split is skipped: our share is already this rank's alone.
+ * @note Records the outcome in placement_report() whether or not it could place.
  */
 monoprop_EXPORT auto partition_cpusets(size_t n,
                                        size_t group_index = 0,

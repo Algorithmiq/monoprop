@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 import numpy as np
 
+from monoprop._core import warn_if_unpinned
 from monoprop._dispatch import dispatch
 
 from .circuit import (
@@ -129,6 +130,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
             comm=comm,
             basis=basis,
         )
+        # Unpinned partition threads cost 16-25x and say so only on C++ stderr, which pytest's
+        # fd capture swallows. Emitted here, on the thread that placed them, because PyErr_WarnEx
+        # needs the GIL and the partition masters hold none. stack_level=3 names the caller's
+        # constructor rather than this line.
+        warn_if_unpinned(stack_level=3)
 
     @classmethod
     def from_circuit(

@@ -23,6 +23,7 @@
 #include "monoprop/Info.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/partition/CpuTopology.h"
 
 using namespace monoprop;
 using namespace nanobind::literals;
@@ -93,6 +94,33 @@ auto basis_enum_2_str(Basis basis) -> std::string {
             throw std::invalid_argument("Unknown Basis enum value");
     }
 }
+
+/* An unpinned placement costs 16-25x on propagate and says so only on C++ stderr, which pytest's
+ * file-descriptor capture swallows without `-s`. A RuntimeWarning reaches pytest.warns and the
+ * caller's warning filters, so a harness can fail closed on it.
+ *
+ * PyErr_WarnEx runs Python code and so needs the GIL, which the partition master threads never hold;
+ * this is called from a binding entry point on the constructing thread, which does. That same GIL
+ * serialises `warned_through`, which is what keeps the report of an EARLIER placement from being
+ * re-announced by a construction that placed nothing.
+ */
+auto warn_if_unpinned(int stack_level) -> bool {
+    static uint64_t warned_through = 0;
+    const auto report = monoprop::detail::partition::placement_report();
+    if (report.decisions == warned_through) {
+        return false;
+    }
+    warned_through = report.decisions;
+    if (report.pinned) {
+        return false;
+    }
+    auto text = monoprop::detail::partition::format_unpinned_line(report);
+    text.pop_back(); // the newline belongs to the stderr line; a warning message carries its own
+    if (PyErr_WarnEx(PyExc_RuntimeWarning, text.c_str(), stack_level) < 0) {
+        throw nb::python_error(); // the caller's filter turned this warning into an error
+    }
+    return true;
+}
 } // namespace monoprop::bindings::detail
 
 NB_MODULE(_core, m) {
@@ -129,6 +157,26 @@ NB_MODULE(_core, m) {
           &monoprop::antihermitian_generator_correction,
           "indices"_a,
           "Get the generator correction for a Majorana operator (represented by indices).");
+    m.def(
+        "placement_report",
+        [] {
+            const auto r = monoprop::detail::partition::placement_report();
+            nb::dict out;
+            out["pinned"] = r.pinned;
+            out["cores_visible"] = r.cores_visible;
+            out["groups"] = r.groups;
+            out["partitions"] = r.partitions;
+            out["decisions"] = r.decisions;
+            return out;
+        },
+        "What the last partition placement decided, process-wide: pinned, cores_visible, groups, "
+        "partitions, decisions. decisions == 0 means no placement has been attempted yet, and "
+        "pinned False means every partition thread runs on whatever mask the launcher left.");
+    m.def("warn_if_unpinned",
+          &monoprop::bindings::detail::warn_if_unpinned,
+          "stack_level"_a = 1,
+          "Raise a RuntimeWarning if the most recent placement ran unpinned, once per placement. "
+          "Returns whether it warned.");
     // clang-format off
     @_BINDINGS_BODY_@
     // clang-format on
