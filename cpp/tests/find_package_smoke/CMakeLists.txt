@@ -5,5 +5,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(monoprop CONFIG REQUIRED)
 
-add_executable(smoke ../link_export_probe/link_export_probe.cpp)
+add_executable(
+  smoke
+  ../link_export_probe/link_export_probe.cpp
+  ../link_export_probe/sharded_state_chain.cpp
+)
 target_link_libraries(smoke PRIVATE monoprop::monoprop)

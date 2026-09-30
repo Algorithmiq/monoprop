@@ -35,6 +35,8 @@
 //      operations reach the exported evolve/derivative entry points with their trailing Options.
 //  (f) the fixed-team phase primitive (detail/sharded/Team.h), instantiated here like (c): its region,
 //      barriers and masked construct must compile and link through the imported target's OpenMP flags.
+//  (g) owner-initialized shard state (detail/sharded/State.h) in sharded_state_chain.cpp, whose only monoprop
+//      include is that header: seeding, owner copies, counts and a failing initializer through the imported target.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -55,6 +57,9 @@
 // representative widths, regardless of which ones main() below happens to call.
 template class monoprop::MonomialPropagator<2>;
 template class monoprop::MonomialPropagator<6>;
+
+// Defined in sharded_state_chain.cpp.
+auto run_sharded_state_chain() -> bool;
 
 namespace {
 
@@ -227,6 +232,10 @@ auto main() -> int {
     run_partition_chain();
     run_openmp_workshare_chain();
     run_sharded_team_chain();
+    if (!run_sharded_state_chain()) {
+        std::println(stderr, "[link_export_probe] sharded state chain: FAILED");
+        return 1;
+    }
     run_pauli_chain();
     run_one_store_prototype_chain();
     monoprop::mpi::finalize();

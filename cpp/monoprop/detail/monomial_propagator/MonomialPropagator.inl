@@ -43,6 +43,7 @@
 #include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/partition/PartitionGroup.h"
+#include "monoprop/detail/sharded/State.h"
 
 namespace monoprop {
 
@@ -135,16 +136,14 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
 
     // Before the partition workers start: a child throwing after its siblings enter a collective
     // poisons the shared-memory transport and masks this error.
-    size_t max_pairs = 0;
-    size_t expected_schrodinger_local_terms = 1;
+    std::optional<detail::sharded::PairedBasisBounds> paired;
     if (schrodinger_) {
-        const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
-        max_pairs = sc / 2 + sc % 2;
-        const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
-        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
-        const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
         const size_t world_slots = n_partitions * static_cast<size_t>(mpi::size(comm));
-        const size_t share = global_terms / std::max<size_t>(1, world_slots);
+        paired = detail::sharded::paired_basis_bounds(*schrodinger_cutoff, logical_num_modes_, world_slots);
+        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
+        const bool uncountable = !paired->countable();
+        const size_t global_terms = paired->global_terms;
+        const size_t share = paired->share;
         if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
             const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
             const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
@@ -158,7 +157,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                             per_slot,
                             world_slots));
         }
-        expected_schrodinger_local_terms = std::max<size_t>(1, share);
     }
 
     if (n_partitions > 1) {
@@ -186,61 +184,23 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
     check_routing_agreement(comm_);                             // fail here rather than hang the first exchange
     const routing::Router router = router_for<NumModes>(comm_); // geometry() can hit MPI: never per term
-    MonomialList<NumModes> local_heisenberg_terms;
 
-    double core_term = 0.0;
-    for (const auto &[indices, coefficient] : initial_operator) {
-        const auto majorana_bitset = indices_to_bitset_checked<NumModes>(indices, 2 * logical_num_modes_);
-        const auto encoded_coeff = algebra_encode_coeff<NumModes>(basis_, coefficient, majorana_bitset);
+    // The core (identity) term is stored separately: it is orders of magnitude larger than the other terms.
+    const double core_term =
+        detail::sharded::validate_initial_operator<NumModes>(initial_operator, basis_, logical_num_modes_);
 
-        // Store the core term separately as it is orders of magnitude larger than the other terms
-        if (indices.empty()) {
-            core_term = encoded_coeff;
-            continue;
-        }
-        if (my_rank == find_rank<NumModes>(majorana_bitset, router)) {
-            mp_op_.init_op_map[majorana_bitset] = encoded_coeff;
-            local_heisenberg_terms.push_back(majorana_bitset);
-        }
-    }
-
-    // Schrodinger's initial rows are the global paired basis, hash-partitioned over the P = R*S world
-    // slots; Heisenberg's local_heisenberg_terms was already filtered to this slot's share above. Hence the
-    // two reserves: a global count needs its 1/P share, a local one already is the share.
-    const size_t expected_local_terms =
-        schrodinger_ ? expected_schrodinger_local_terms : std::max<size_t>(1, local_heisenberg_terms.size());
-
-    // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
+    // Must run before seeding: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
-    mp_op_.store = std::make_unique<detail::OperatorIndex<NumModes>>(packed_inline_width_());
-    mp_op_.store->reserve(expected_local_terms);
-    // Store replaced: drop the stale lazy inverted index so it rebuilds against the new store.
-    mp_op_.inverted_index_.reset();
-
-    size_t i = 0;
-    // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here. A row
-    // index is a position in the kept subsequence, so the enumeration order below is load-bearing.
-    const auto keep_if_owned = [&](const Monomial<NumModes> &mono) {
-        if (my_rank == find_rank<NumModes>(mono, router)) {
-            mp_op_.append_term(mono);
-            mp_op_.store->emplace(mono, i++);
-        }
-    };
-    if (schrodinger_) {
-        // PartitionGroup constructs the S partitions concurrently on their own
-        // masters, so a list here would hold P full copies of the global basis at one instant.
-        for_each_paired_monomial<NumModes>(max_pairs, logical_num_modes_, keep_if_owned);
-    }
-    else {
-        for (const auto &mono : local_heisenberg_terms) { // already this slot's share; the test is a no-op
-            keep_if_owned(mono);
-        }
-    }
-
-    mp_op_.initial_state = initial_state;
+    // This slot is flat owner my_rank of its communicator's (R, S) world, seeded exactly as a sharded owner is.
+    const auto seed = detail::sharded::OperatorSeed<NumModes>{.initial_operator = initial_operator,
+                                                              .initial_state = initial_state,
+                                                              .router = router,
+                                                              .basis = basis_,
+                                                              .logical_num_modes = logical_num_modes_,
+                                                              .paired = paired,
+                                                              .inline_width = packed_inline_width_()};
+    mp_op_ = detail::sharded::seed_operator(seed, my_rank);
     core_term_ = core_term;
-
-    initialize_operator_caches_();
 }
 
 template <size_t NumModes>
@@ -474,17 +434,7 @@ auto MonomialPropagator<NumModes>::partitioned_graph_memory_usage_() const -> Gr
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::packed_inline_width_() const -> size_t {
-    constexpr size_t kMax = detail::OperatorIndex<NumModes>::kMaxInlinePositions;
-    constexpr size_t kDefault = detail::OperatorIndex<NumModes>::kDefaultInlinePositions;
-    if (schrodinger_) {
-        return kDefault;
-    }
-    // The bound is already in physical slots (CutoffEvaluator::max_slot_bound), so nothing to scale.
-    const auto bound = detail::CutoffEvaluator<NumModes>(cutoff_fn_).max_slot_bound();
-    if (!bound) {
-        return kDefault;
-    }
-    return std::min<size_t>(*bound, kMax);
+    return detail::sharded::packed_inline_width<NumModes>(schrodinger_, cutoff_fn_);
 }
 
 template <size_t NumModes>
@@ -648,18 +598,7 @@ auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
-    (void)mp_op_.get_operator();
-    // Heisenberg warms the sparse state only; densifying here would defeat it. Schrödinger's dense vector
-    // IS the live evolved vector.
-    if (schrodinger_) {
-        (void)mp_op_.dense_state();
-    }
-    else {
-        (void)mp_op_.sparse_state();
-    }
-    (void)mp_op_.inverted_index();
-    mp_op_.op_coeffs.shrink_to_fit();
-    mp_op_.shrink_state_to_fit();
+    mp_op_.initialize_caches(schrodinger_);
 }
 
 template <size_t NumModes>

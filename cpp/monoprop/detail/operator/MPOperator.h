@@ -80,7 +80,8 @@ struct MPOperator {
     Basis basis{Basis::Majorana};
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_{std::nullopt};
 
-    MPOperator() noexcept = default;
+    // Not noexcept: the store's member initializer allocates, and an allocation failure must reach the caller.
+    MPOperator() = default;
     MPOperator(MPOperator &&) noexcept = default;
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
@@ -182,6 +183,22 @@ struct MPOperator {
         state_rows_.shrink_to_fit();
         state_vals_.shrink_to_fit();
         state_coeffs.shrink_to_fit();
+    }
+
+    // Materialize the caches every operation expects after construction or a gate loop: pending initial entries
+    // placed onto their rows, the picture's state, then the inverted index. Heisenberg warms the sparse state only;
+    // densifying it here would defeat it. Schrödinger's dense vector IS the live evolved vector.
+    auto initialize_caches(bool schrodinger) -> void {
+        (void)get_operator();
+        if (schrodinger) {
+            (void)dense_state();
+        }
+        else {
+            (void)sparse_state();
+        }
+        (void)inverted_index();
+        op_coeffs.shrink_to_fit();
+        shrink_state_to_fit();
     }
 
     // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.

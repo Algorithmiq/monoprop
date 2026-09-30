@@ -145,6 +145,23 @@ name and cannot address suite-nested cases, tests use flat
   `OMP_DYNAMIC=FALSE`; cases that need a nonprimary worker skip below T=2 and are left out of the T=1
   launch. The helper assumes exactly T workers, so these cases never run under the limited or dynamic
   teams of `openmp_env_kernels_*`, which test `for_blocks`' reduced-team contract.
+- **Owner-initialized shard state**: `sharded_state_tests.cpp` covers `detail/sharded/State.h`
+  (`make_shards`, `seed_shards`, `copy_shards`, `ShardState`). Seeding is checked field by field
+  against the legacy partition oracle at geometry (1, T), built on the test thread outside the team,
+  and against a reference derived in the test from the router, the paired-basis enumeration and the
+  store (the legacy constructor now seeds through the same extracted function, so the oracle alone
+  cannot catch a change to it). Further cases cover flat ownership `rank * T + shard` at several
+  (P, T) geometries, identity handling, empty owners, sparse/dense cache selection, pending entries,
+  per-shard counts and accounting, exact and independent copies with shared graph cores, the captured
+  budget, the rank-level validity guard (preservation evidence), and initializer failures on primary,
+  nonprimary and concurrent owners. `AllocationProbe.cpp` replaces the global `operator new`/`delete`
+  family for the whole unit-test executable: it counts per-thread allocation, tracks live bytes, and
+  can make the n-th allocation of one owner throw `std::bad_alloc`. The seed, copy and legacy
+  constructor sweeps use it to fail every allocation site in turn and check for a caught exception,
+  no leak and an intact source. The library calls a test-only observer (`NoShardObserver` in
+  production) inside each owner's seed or copy body; tests use it to record the executing worker and
+  its allocated bytes. `sharded_state_env_t1`, `_t2` and `_t4` rerun the cases in fresh exact-team
+  processes, as for the team primitive.
 - **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the budget parser and
   its capture, per-object budgets through copies and retained functionals, and legacy paths that
   stay serial. It also checks that OpenMP settings and affinity are unchanged, that old low-level

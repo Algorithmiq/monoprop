@@ -204,6 +204,31 @@ set_tests_properties(
       120
 )
 
+# Owner-initialized shard state (detail/sharded/State.h) under the same exact-team launches: one fresh process per T,
+# never a limited or dynamic team. Cases that need a nonprimary worker are left out of T = 1.
+set(
+  _monoprop_sharded_state_single_cases
+  "sharded_state_make_shards_initializes_each_owner_once,sharded_state_seed_matches_the_partition_oracle,sharded_state_seed_matches_an_independent_reference,sharded_state_routed_rows_belong_to_their_flat_owner,sharded_state_keeps_sparse_heisenberg_and_dense_schrodinger_caches,sharded_state_counts_and_accounting_sum_over_shards,sharded_state_rejects_invalid_arguments_before_the_team,sharded_state_copy_is_exact_and_owner_allocated,sharded_state_copies_mutate_independently,sharded_state_graph_cores_are_shared_and_lists_independent,sharded_state_copy_keeps_the_captured_budget,sharded_state_invalid_source_is_rejected_by_the_owner_guard,sharded_state_initializer_failure_on_the_primary_is_returned,sharded_state_seed_allocation_failures_are_catchable,sharded_state_copy_allocation_failures_leave_sources_intact,sharded_state_legacy_constructor_allocation_failures_are_catchable"
+)
+foreach(_threads IN ITEMS 1 2 4)
+  if(_threads EQUAL 1)
+    set(_cases "${_monoprop_sharded_state_single_cases}")
+  else()
+    set(_cases "sharded_state_*")
+  endif()
+  monoprop_add_launch_env_case(
+    sharded_state_env_t${_threads}
+    "${_cases}"
+    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
+  )
+  set_tests_properties(
+    sharded_state_env_t${_threads}
+    PROPERTIES
+      TIMEOUT
+        300
+  )
+endforeach()
+
 # Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
 # only the MPI test leg runs them.
 if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)

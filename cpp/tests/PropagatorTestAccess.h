@@ -27,6 +27,7 @@
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
 #include "monoprop/detail/parallel/Options.h"
+#include "monoprop/detail/sharded/State.h"
 
 namespace monoprop::detail {
 
@@ -49,6 +50,17 @@ struct PropagatorTestAccess {
     }
 
     static auto clone(const Propagator &p) -> std::unique_ptr<Propagator> { return p.clone_(); }
+
+    // A deep copy of this single store's operator, graph and matched marks as one shard state, behind the
+    // propagator's own validity guard: an invalid owner is rejected before anything is copied. A test bridge from
+    // legacy stores to sharded state, not a production conversion.
+    static auto shard_state(const Propagator &p) -> std::unique_ptr<sharded::ShardState<NumModes>> {
+        p.require_valid_();
+        auto state = std::make_unique<sharded::ShardState<NumModes>>(p.mp_op_, p.schrodinger_);
+        state->graph = p.graph_;
+        state->matched = p.matched_scratch_;
+        return state;
+    }
 
     // The live coefficients of the propagator's picture: the operator (Heisenberg) or the state (Schrödinger).
     static auto picture_coeffs(const Propagator &p) -> const VecD & {

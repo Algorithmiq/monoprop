@@ -120,6 +120,11 @@ sets `monoprop_NUM_THREADS` and `OMP_NUM_THREADS` to T with `OMP_DYNAMIC=FALSE`,
 assumes the launch supplies exactly T workers. Run them with
 `ctest --test-dir <build> --no-tests=error -R '^sharded_team_env_'`; the T=4 entries need four cores.
 
+The owner-initialized shard state (`detail/sharded/State.h`) follows the same pattern with
+`sharded_state_env_t1`, `_t2` and `_t4`. Select both with `-R '^sharded_(team|state)_env_'`. The unit-test
+executable replaces the global `operator new`/`delete` family (`cpp/tests/AllocationProbe.cpp`) so these
+cases can inject real allocation failures; the library and installed consumers are unaffected.
+
 The MPI build also registers `mpi_failure_*` entries, labelled `mpi` and `mpi_failure`, from
 `cpp/tests/mpi_failure_driver.cpp`. That driver has its own `main()`, so the unit-runner glob
 excludes it. Each entry launches two ranks through `cpp/tests/run_mpi_failure_scenario.cmake`, with

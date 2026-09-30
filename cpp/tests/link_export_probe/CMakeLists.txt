@@ -6,7 +6,11 @@
 # ld64 errors on undefined symbols by default, so no flag is needed there ("-Wl,-undefined,error" is
 # accepted but deprecated, and warns).
 
-add_executable(monoprop_link_export_probe.x link_export_probe.cpp)
+add_executable(
+  monoprop_link_export_probe.x
+  link_export_probe.cpp
+  sharded_state_chain.cpp
+)
 
 # monoprop-sanitizers is a no-op interface library outside a sanitizer build. Under one, libmonoprop.so
 # is ASan-instrumented; without this, the probe executable itself is not, so the ASan runtime reaches
