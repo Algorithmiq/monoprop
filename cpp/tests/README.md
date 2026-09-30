@@ -162,6 +162,24 @@ name and cannot address suite-nested cases, tests use flat
   production) inside each owner's seed or copy body; tests use it to record the executing worker and
   its allocated bytes. `sharded_state_env_t1`, `_t2` and `_t4` rerun the cases in fresh exact-team
   processes, as for the team primitive.
+- **Direct-buffer construction**: `sharded_construction_tests.cpp` covers `detail/sharded/Construction.h`
+  (`build_graph`, `propagate`, `gather_published`) and the owner-local engine phases it drives
+  (`LayerBuildEngine::prepare_exchange`, `resolve_published`, `consume_published`). At geometry (1, T)
+  every shard's rows, IDs, coefficients, caches and graph layers, and the query/source/value/answer
+  streams of every pass, equal those of the legacy partition child, which the tests drive gate by gate
+  through `PropagatorTestAccess::for_each_store`. Because both paths share the extracted phases, the
+  cases also check an independent insertion-order reference, an independent coefficient-map propagator,
+  the frozen exact energy of `random_exact.msgpack`, and, across T, the global retained map of the
+  in-process single store under the plan's map tolerance. Further cases cover participation (every
+  owner's work runs on its own worker inside one team, kernels serial on the owner), the primary-only
+  traversal for opaque cutoffs and basis changes, empty circuits, operators and owners, identity gates,
+  the published-view seam (nonzero window bases, empty senders, 255/256/257-query blocks, narrow and
+  wide positions, the malformed Plain `QueryWire<128>` fixture), same-shard streams beyond one 4096-query
+  window, and failures (an injected throw in every phase, kernel, decode and publication failures,
+  concurrent failures, and `AllocationProbe` sweeps) that must join, suppress later phases, report
+  whether mutation started and leave earlier copies intact. The test observer records visits,
+  streams and kernel ranges per shard. `sharded_construction_env_t1`, `_t2` and `_t4` rerun the cases in
+  fresh exact-team processes, as for the team primitive.
 - **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the budget parser and
   its capture, per-object budgets through copies and retained functionals, and legacy paths that
   stay serial. It also checks that OpenMP settings and affinity are unchanged, that old low-level

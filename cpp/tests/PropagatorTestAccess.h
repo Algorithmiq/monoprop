@@ -18,6 +18,7 @@
 // defines it, so it adds no production API: tests use it to observe the captured thread budget and to
 // inject failures at real mutation and evaluation boundaries through existing protected members.
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -26,6 +27,7 @@
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Engine.h"
+#include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/sharded/State.h"
 
@@ -126,6 +128,94 @@ struct PropagatorTestAccess {
                                          observer);
         });
     }
+
+    // Runs `fn(r, store)` on every legacy store of `p`: each partition child r of a facade, concurrently on the
+    // partition group's own workers, or `p` itself as store 0 when it is a single store. A reference oracle for
+    // sharded tests only.
+    template <class Fn>
+    static auto for_each_store(Propagator &p, Fn &&fn) -> void {
+        if (p.partition_group_) {
+            p.partition_group_->run_on_all(
+                [&](int r) { fn(static_cast<size_t>(r), p.partition_group_->partition(r)); });
+        }
+        else {
+            fn(size_t{0}, p);
+        }
+    }
+
+    // One gate of the legacy graph build (propagate_one_ without the append): the real build_layer on the store's
+    // own operator, cutoff, bound and communicator, with a test observer on its kernels and exchange phases.
+    template <class Observer>
+    static auto graph_gate_observed(Propagator &p,
+                                    const VecZ &gate,
+                                    std::optional<size_t> only_rotate_len_k,
+                                    const Observer &observer) -> std::shared_ptr<LayerCore> {
+        const auto gen = indices_to_bitset_checked<NumModes>(gate, 2 * p.logical_num_modes_);
+        return build_layer<NumModes>(p.mp_op_,
+                                     gen,
+                                     p.cutoff_fn_,
+                                     p.lower_atol_,
+                                     std::nullopt,
+                                     p.upper_atol_,
+                                     std::nullopt,
+                                     only_rotate_len_k,
+                                     p.matched_scratch_,
+                                     p.comm_,
+                                     nullptr,
+                                     nullptr,
+                                     p.schrodinger_,
+                                     nullptr,
+                                     nullptr,
+                                     p.basis_,
+                                     p.parallel_,
+                                     observer);
+    }
+
+    // One whole gate of the legacy ContractImmediately path (evolve_mode_contract_immediately_), build, extension
+    // and apply, with a test observer on its kernels and exchange phases.
+    template <class Observer>
+    static auto contract_gate_observed(Propagator &p,
+                                       const VecZ &gate,
+                                       std::optional<size_t> only_rotate_len_k,
+                                       double build_angle,
+                                       const Observer &observer) -> void {
+        (void)p.current_picture_coeffs_();
+        VecD *coeffs = p.schrodinger_ ? &p.mp_op_.state_coeffs : &p.mp_op_.op_coeffs;
+        const auto gen = indices_to_bitset_checked<NumModes>(gate, 2 * p.logical_num_modes_);
+        CosMask cos;
+        FusedContract fc;
+        bool fused_scale = false;
+        (void)build_layer<NumModes>(p.mp_op_,
+                                    gen,
+                                    p.cutoff_fn_,
+                                    p.lower_atol_,
+                                    std::cref(*coeffs),
+                                    p.upper_atol_,
+                                    build_angle,
+                                    only_rotate_len_k,
+                                    p.matched_scratch_,
+                                    p.comm_,
+                                    &cos,
+                                    &fc,
+                                    p.schrodinger_,
+                                    coeffs,
+                                    &fused_scale,
+                                    p.basis_,
+                                    p.parallel_,
+                                    observer);
+        p.extend_coeffs_from_current_picture_if_needed_(*coeffs);
+        apply_fused_contract(fc,
+                             *coeffs,
+                             cos,
+                             p.schrodinger_ ? -build_angle : build_angle,
+                             p.schrodinger_,
+                             fused_scale,
+                             p.parallel_,
+                             observer);
+    }
+
+    // The legacy gate loop's closing cache warm-up (run_gate_loop_).
+    static auto finish_gate_loop(Propagator &p) -> void { p.initialize_operator_caches_(); }
 
     static auto partition_count(const Propagator &p) -> int {
         return p.partition_group_ ? p.partition_group_->partition_count() : 0;

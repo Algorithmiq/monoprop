@@ -40,6 +40,7 @@ namespace {
 // resolve_range_ touches only wants_values and self_hit, so the engine drives without the cross-rank sink surface.
 struct RecordingSink {
     static constexpr bool wants_values = false;
+    using Response = TermIndex;                  // named by the engine's exchange phases, which this case never calls
     std::vector<std::pair<size_t, size_t>> hits; // (src, found)
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
@@ -149,13 +150,11 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     matched.begin_gate(op.size());
 
     detail::LayerBuildEngine<8, RecordingSink> eng(op,
-                                                   mpi::Comm{},
                                                    /*R_=*/1,
                                                    /*my_rank_=*/0,
                                                    matched,
                                                    combined_size,
                                                    RecordingSink{},
-                                                   mpi::PeerPlan{},
                                                    mpi::SlotWindow{.base = 0, .count = 1});
     // The self leg is staged as positions, never encoded, so this feeds the stage the scan would fill.
     using Eng = detail::LayerBuildEngine<8, RecordingSink>;

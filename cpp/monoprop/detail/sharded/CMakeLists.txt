@@ -4,6 +4,7 @@ target_sources(
     FILE_SET headers
       TYPE HEADERS
       FILES
+        "Construction.h"
         "State.h"
         "Team.h"
 )

@@ -37,6 +37,9 @@
 //      barriers and masked construct must compile and link through the imported target's OpenMP flags.
 //  (g) owner-initialized shard state (detail/sharded/State.h) in sharded_state_chain.cpp, whose only monoprop
 //      include is that header: seeding, owner copies, counts and a failing initializer through the imported target.
+//  (h) direct-buffer construction (detail/sharded/Construction.h) in sharded_construction_chain.cpp, whose only
+//      monoprop include is that header: one-team propagation and graph construction over the captured budget's
+//      shards through the imported target.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -60,6 +63,8 @@ template class monoprop::MonomialPropagator<6>;
 
 // Defined in sharded_state_chain.cpp.
 auto run_sharded_state_chain() -> bool;
+// Defined in sharded_construction_chain.cpp.
+auto run_sharded_construction_chain() -> bool;
 
 namespace {
 
@@ -234,6 +239,10 @@ auto main() -> int {
     run_sharded_team_chain();
     if (!run_sharded_state_chain()) {
         std::println(stderr, "[link_export_probe] sharded state chain: FAILED");
+        return 1;
+    }
+    if (!run_sharded_construction_chain()) {
+        std::println(stderr, "[link_export_probe] sharded construction chain: FAILED");
         return 1;
     }
     run_pauli_chain();

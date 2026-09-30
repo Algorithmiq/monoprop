@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -135,6 +136,25 @@ private:
     SlotWindow win_{};
     std::vector<T> v_;
 };
+
+/*!
+ * \brief Read-only span views of every block of `blocks`, over the same window.
+ *
+ * Copies no payload: view `wi` aliases `blocks[wi]`, so `blocks` must outlive the views and must not be resized
+ * while they are read. An empty block yields an empty view, and a window with a nonzero base keeps its base.
+ *
+ * \param blocks One owning block per window slot.
+ * \return One view per window slot, in slot order.
+ */
+template <typename T>
+[[nodiscard]] auto views_of(const WindowVec<std::vector<T>> &blocks) -> WindowVec<std::span<const T>> {
+    const SlotWindow w = blocks.window();
+    WindowVec<std::span<const T>> views(w);
+    for (const auto wi : w.indices()) {
+        views[wi] = std::span<const T>(blocks[wi]);
+    }
+    return views;
+}
 
 // Which destination ranks a round can touch. Dense (the default) is every rank and the collective path;
 // sparse is the single peer `me ^ shift` that linear routing implies. XOR is an involution, so every

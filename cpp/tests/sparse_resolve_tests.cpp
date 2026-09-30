@@ -1005,7 +1005,7 @@ struct AppendingSink {
                      size_t,
                      size_t ip,
                      const detail::IncomingProbe<N> &,
-                     const mpi::WindowVec<VecZ> &) -> Response {
+                     detail::QueryWire<N>::WireView) -> Response {
         order.push_back(g);
         return static_cast<TermIndex>(ip);
     }
@@ -1349,7 +1349,6 @@ auto run_self(const std::vector<Monomial<N>> &seeds,
     };
     if constexpr (Contract) {
         ObservedEngine<N, detail::ContractSink<N>> eng(op,
-                                                       mpi::Comm{},
                                                        1,
                                                        0,
                                                        matched,
@@ -1362,7 +1361,6 @@ auto run_self(const std::vector<Monomial<N>> &seeds,
                                                                                .inv_cos = 1.0,
                                                                                .schrodinger = false,
                                                                                .basis = Basis::Majorana},
-                                                       mpi::PeerPlan{},
                                                        window,
                                                        {.threads = threads},
                                                        AccumulatingObserver{&run.log});
@@ -1382,13 +1380,11 @@ auto run_self(const std::vector<Monomial<N>> &seeds,
     }
     else {
         ObservedEngine<N, detail::GraphSink<N>> eng(op,
-                                                    mpi::Comm{},
                                                     1,
                                                     0,
                                                     matched,
                                                     combined,
                                                     detail::GraphSink<N>(1, 0),
-                                                    mpi::PeerPlan{},
                                                     window,
                                                     {.threads = threads},
                                                     AccumulatingObserver{&run.log});
@@ -1546,16 +1542,8 @@ BOOST_AUTO_TEST_CASE(openmp_mixed_self_and_remote_publication_order) {
         auto op = make_op<N>(seeds);
         detail::MatchedEpochSet matched;
         const size_t combined = op.size();
-        detail::LayerBuildEngine<N, detail::GraphSink<N>> eng(op,
-                                                              mpi::Comm{},
-                                                              2,
-                                                              0,
-                                                              matched,
-                                                              combined,
-                                                              detail::GraphSink<N>(2, 0),
-                                                              mpi::PeerPlan{},
-                                                              window,
-                                                              {.threads = threads});
+        detail::LayerBuildEngine<N, detail::GraphSink<N>>
+            eng(op, 2, 0, matched, combined, detail::GraphSink<N>(2, 0), window, {.threads = threads});
         stage_self<N>(eng, self_leader, self_leader_srcs);
         eng.resolve_self_queries(true);
         const auto resp_leader = detail::resolve_incoming<N>(remote(remote_leader),

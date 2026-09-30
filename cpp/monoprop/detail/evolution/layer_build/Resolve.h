@@ -177,7 +177,10 @@ auto check_fits(const Vec &v, size_t n, const char *what) -> void {
  * \brief Read-only phases 1-2 of the exchange: validate, decode and probe the received queries, then assign
  * each miss its predicted row ID.
  *
- * `form` says whether the records are fused (ContractSink) or plain (GraphSink). In order:
+ * `incoming` holds one serialized stream per sender window slot: owning `VecZ` blocks as a transport unpacked them, or
+ * read-only views of buffers another owner published (QueryWire::WireView); the streams are only read and must stay
+ * unchanged until this returns. `form` says whether the records are fused (ContractSink) or plain (GraphSink). In
+ * order:
  *   1. On the caller, every sender stream is walked in window order with QueryWire::checked_extent, so a
  *      malformed header, a noncanonical escape or a truncated record is rejected before any payload is read.
  *      The query and position prefixes, sender narrowing and vector limits are checked, every per-query array
@@ -196,8 +199,9 @@ auto check_fits(const Vec &v, size_t n, const char *what) -> void {
  *         for invalid positions, rethrown after the join and before probing).
  * \throws TermIndexCeilingReached if the misses would pass the row-ID ceiling.
  */
-template <size_t NumModes, class Observer = NoRangeObserver>
-auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
+template <size_t NumModes, class Stream, class Observer = NoRangeObserver>
+    requires std::convertible_to<const Stream &, typename QueryWire<NumModes>::WireView>
+auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialized, one stream per sender slot
                             MPOperator<NumModes> &op,
                             QueryForm form,
                             parallel::Options options = {},
@@ -218,7 +222,7 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
     pr.goff.assign(senders + 1, 0);
     size_t positions = 0;
     for (size_t k = 0; k < senders; ++k) {
-        const VecZ &buf = incoming[mpi::WindowIndex{k}];
+        const typename QW::WireView buf = incoming[mpi::WindowIndex{k}];
         size_t nq = 0;
         for (size_t off = 0; off < buf.size();) {
             const auto ext = QW::checked_extent(buf, form, off);
@@ -260,7 +264,7 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
     // were validated above, so reading them again cannot leave the buffer.
     size_t pos_at = 0;
     for (size_t k = 0; k < senders; ++k) {
-        const VecZ &buf = incoming[mpi::WindowIndex{k}];
+        const typename QW::WireView buf = incoming[mpi::WindowIndex{k}];
         size_t off = 0;
         for (size_t g = pr.goff[k]; g < pr.goff[k + 1]; ++g) {
             const auto h = QW::header_at(buf, off);
@@ -282,7 +286,7 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
         const size_t hi = std::min(n, (block + 1) * kProbeBlockQueries);
         for (size_t g = block * kProbeBlockQueries; g < hi; ++g) {
             const size_t k = pr.sender_wi[g];
-            const VecZ &buf = incoming[mpi::WindowIndex{k}];
+            const typename QW::WireView buf = incoming[mpi::WindowIndex{k}];
             const auto d = QW::read_query(buf,
                                           form,
                                           pr.off_of[g],
@@ -410,8 +414,12 @@ auto sink_resolves_in_parallel(const Sink &sink) -> bool {
 // Threading: decode and probe as probe_incoming_queries; the scatter runs on workers only for a sink that
 // certifies it (sink_resolves_in_parallel), otherwise on the caller; publication stays on the caller, after
 // the scatter, which reads pre-insert coefficients. `observer` is the test seam (see NoRangeObserver).
-template <size_t NumModes, typename Sink, class Observer = NoRangeObserver>
-auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
+//
+// `incoming` is as for probe_incoming_queries: owning blocks or read-only views of published buffers, unchanged until
+// this returns. The sink's on_resolved receives the sender's stream as a QueryWire::WireView.
+template <size_t NumModes, class Stream, typename Sink, class Observer = NoRangeObserver>
+    requires std::convertible_to<const Stream &, typename QueryWire<NumModes>::WireView>
+auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one stream per sender slot
                       MPOperator<NumModes> &op,
                       bool is_leader_pass,
                       MatchedEpochSet &matched,
@@ -444,7 +452,7 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
             const mpi::WindowIndex s = pr.sender_index(g);
             const size_t q = g - pr.goff[s.value];
             const size_t ip = pr.idx_of[g];
-            responses[s][q] = sink.on_resolved(g, s, q, ip, pr, incoming);
+            responses[s][q] = sink.on_resolved(g, s, q, ip, pr, typename QueryWire<NumModes>::WireView(incoming[s]));
             if (is_leader_pass && ip < combined_size) {
                 matched.mark(ip);
             }
@@ -470,9 +478,12 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
 
 // Querier rank (any cross-rank sink): fold each resolver response into a querier-side record. The self/
 // local slot was already resolved inline, so it is skipped here. inc_r[k][q] answers query q sent to
-// the window's k-th slot.
-template <size_t NumModes, typename Sink>
-auto process_responses(const mpi::WindowVec<std::vector<typename Sink::Response>> &inc_r,
+// the window's k-th slot. `inc_r` holds owning response blocks or read-only views of blocks the resolver
+// published; either way the sink receives each block, its sources and its plain query stream as views, and
+// records them in window order, preserving each block's query order.
+template <size_t NumModes, typename Sink, class Responses>
+    requires std::convertible_to<const Responses &, std::span<const typename Sink::Response>>
+auto process_responses(const mpi::WindowVec<Responses> &inc_r,
                        const mpi::WindowVec<std::vector<size_t>> &src_idx,
                        const mpi::WindowVec<VecZ> &queries, // serialized query buffers (for phase recovery)
                        size_t my_rank,
@@ -485,7 +496,10 @@ auto process_responses(const mpi::WindowVec<std::vector<typename Sink::Response>
         if (r == my_rank) {
             continue;
         }
-        sink.on_response_block(r, inc_r[wi], src_idx[wi], queries[wi]);
+        sink.on_response_block(r,
+                               std::span<const typename Sink::Response>(inc_r[wi]),
+                               std::span<const size_t>(src_idx[wi]),
+                               typename QueryWire<NumModes>::WireView(queries[wi]));
     }
 }
 

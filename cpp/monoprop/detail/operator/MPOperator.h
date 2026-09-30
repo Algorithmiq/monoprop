@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -177,6 +178,27 @@ struct MPOperator {
         state_coeffs.resize(size(), 0.0);
         scatter_state_rows_from_(cur_len, state_coeffs);
         return state_coeffs;
+    }
+
+    // The picture's live coefficients: the operator with its pending initial entries placed (Heisenberg), or the
+    // dense state with its new rows scored (Schrödinger). Both extend to the store size.
+    auto current_picture(bool schrodinger) -> const VecD & { return schrodinger ? dense_state() : get_operator(); }
+
+    // Grow `coeffs` to the store size after a layer's inserts: the current picture's values for rows it lacks, then
+    // zeros. When `coeffs` is the picture's own live vector, bringing the picture up to date is the whole extension
+    // (a fresh Heisenberg row picks up a pending initial entry; a fresh Schrödinger row is scored).
+    auto extend_from_current_picture(VecD &coeffs, bool schrodinger) -> void {
+        if (coeffs.size() >= size()) {
+            return;
+        }
+        const auto &current = current_picture(schrodinger);
+        if (&coeffs == &current) {
+            return;
+        }
+        if (coeffs.size() < current.size()) {
+            coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
+        }
+        coeffs.resize(size(), 0.0);
     }
 
     auto shrink_state_to_fit() -> void {

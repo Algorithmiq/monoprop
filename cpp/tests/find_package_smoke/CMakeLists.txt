@@ -9,5 +9,6 @@ add_executable(
   smoke
   ../link_export_probe/link_export_probe.cpp
   ../link_export_probe/sharded_state_chain.cpp
+  ../link_export_probe/sharded_construction_chain.cpp
 )
 target_link_libraries(smoke PRIVATE monoprop::monoprop)

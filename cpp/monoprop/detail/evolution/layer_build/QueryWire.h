@@ -100,14 +100,18 @@ struct QueryWire {
         int phase;   //!< the record's ternary phase
     };
 
-    /*! @brief Bit-packs variable-width fields into `buf`, one 64-bit word at a time. */
+    /*! @brief Bit-packs variable-width fields into `buf`, one 64-bit word at a time.
+     *
+     *  put() and flush() append to `buf`, so they may throw std::bad_alloc; they are deliberately not noexcept,
+     *  which would turn an allocation failure while encoding a query into std::terminate.
+     */
     struct Writer {
         VecZ &buf;
         uint64_t cur = 0;
         size_t nbits = 0; //!< bits held in cur, always less than 64
         size_t words = 0;
 
-        [[gnu::always_inline]] auto put(uint64_t v, size_t width) noexcept -> void {
+        [[gnu::always_inline]] auto put(uint64_t v, size_t width) -> void {
             if (width == 0) {
                 return;
             }
@@ -125,7 +129,7 @@ struct QueryWire {
             nbits = nbits + width - 64U;
         }
 
-        auto flush() noexcept -> void {
+        auto flush() -> void {
             if (nbits != 0) {
                 buf.push_back(static_cast<size_t>(cur));
                 ++words;

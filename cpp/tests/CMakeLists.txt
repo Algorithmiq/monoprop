@@ -229,6 +229,31 @@ foreach(_threads IN ITEMS 1 2 4)
   )
 endforeach()
 
+# Direct-buffer construction and propagation (detail/sharded/Construction.h) under the same exact-team launches: one
+# fresh process per T. Cases that need a nonprimary worker are left out of T = 1. A timeout is a hang, not a pass.
+set(
+  _monoprop_sharded_construction_single_cases
+  "sharded_construction_graph_matches_legacy_partitions,sharded_construction_propagation_matches_legacy_partitions,sharded_construction_rows_follow_the_ordering_contract,sharded_construction_propagation_matches_an_independent_reference,sharded_construction_maps_agree_across_team_sizes,sharded_construction_owners_do_their_own_work,sharded_construction_opaque_cutoff_traverses_on_the_primary,sharded_construction_empty_operators_circuits_and_identity,sharded_construction_published_views_cover_the_window,sharded_construction_published_resolution_matches_owning_blocks,sharded_construction_large_self_streams_match_legacy,sharded_construction_wide_terms_match_legacy,sharded_construction_failure_in_each_phase_suppresses_later_work,sharded_construction_allocation_failures_are_contained,sharded_construction_rejects_invalid_arguments_before_the_team"
+)
+foreach(_threads IN ITEMS 1 2 4)
+  if(_threads EQUAL 1)
+    set(_cases "${_monoprop_sharded_construction_single_cases}")
+  else()
+    set(_cases "sharded_construction_*")
+  endif()
+  monoprop_add_launch_env_case(
+    sharded_construction_env_t${_threads}
+    "${_cases}"
+    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
+  )
+  set_tests_properties(
+    sharded_construction_env_t${_threads}
+    PROPERTIES
+      TIMEOUT
+        900
+  )
+endforeach()
+
 # Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
 # only the MPI test leg runs them.
 if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)

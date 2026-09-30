@@ -248,9 +248,9 @@ and link flags — the consumer project adds none of its own. It also constructs
 prototype (`partitions=1`), whose constructor template calls the library's out-of-line thread
 budget and MPI thread checks, so an unexported helper fails the consumer's link. It also runs the
 header-only fixed-team phase primitive (`detail/sharded/Team.h`), whose barriers must compile through
-the same imported OpenMP flags, and the owner-initialized shard state (`detail/sharded/State.h`) from a
-separate translation unit that includes only that header, so the installed header must be
-self-contained.
+the same imported OpenMP flags, and the owner-initialized shard state (`detail/sharded/State.h`) and the
+direct-buffer construction engine (`detail/sharded/Construction.h`), each from a separate translation unit that
+includes only that header, so the installed headers must be self-contained.
 
 The exported low-level entry points (`evolve_step`, `evolve_operator` and
 `state_operator_derivative_local`) take a trailing thread budget with a serial default. Existing

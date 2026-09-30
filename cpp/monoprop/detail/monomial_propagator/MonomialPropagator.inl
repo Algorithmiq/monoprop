@@ -603,24 +603,12 @@ auto MonomialPropagator<NumModes>::initialize_operator_caches_() -> void {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::current_picture_coeffs_() -> const VecD & {
-    return schrodinger_ ? mp_op_.dense_state() : mp_op_.get_operator();
+    return mp_op_.current_picture(schrodinger_);
 }
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void {
-    if (coeffs.size() >= mp_op_.size()) {
-        return;
-    }
-
-    const auto &current = current_picture_coeffs_();
-    if (&coeffs == &current) {
-        return;
-    }
-
-    if (coeffs.size() < current.size()) {
-        coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
-    }
-    coeffs.resize(mp_op_.size(), 0.0);
+    mp_op_.extend_from_current_picture(coeffs, schrodinger_);
 }
 
 template <size_t NumModes>
