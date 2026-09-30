@@ -40,6 +40,9 @@
 //  (h) direct-buffer construction (detail/sharded/Construction.h) in sharded_construction_chain.cpp, whose only
 //      monoprop include is that header: one-team propagation and graph construction over the captured budget's
 //      shards through the imported target.
+//  (i) sharded evaluation (detail/sharded/Evaluation.h) in sharded_evaluation_chain.cpp, whose first monoprop include
+//      is that header: a coefficient-informed extension replaying its seed in-team, a retained functional, and runtime
+//      calls to the exported ev_sharded() and ev_and_grad_sharded() through the imported target.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -65,6 +68,8 @@ template class monoprop::MonomialPropagator<6>;
 auto run_sharded_state_chain() -> bool;
 // Defined in sharded_construction_chain.cpp.
 auto run_sharded_construction_chain() -> bool;
+// Defined in sharded_evaluation_chain.cpp.
+auto run_sharded_evaluation_chain() -> bool;
 
 namespace {
 
@@ -243,6 +248,10 @@ auto main() -> int {
     }
     if (!run_sharded_construction_chain()) {
         std::println(stderr, "[link_export_probe] sharded construction chain: FAILED");
+        return 1;
+    }
+    if (!run_sharded_evaluation_chain()) {
+        std::println(stderr, "[link_export_probe] sharded evaluation chain: FAILED");
         return 1;
     }
     run_pauli_chain();

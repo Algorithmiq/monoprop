@@ -180,6 +180,25 @@ name and cannot address suite-nested cases, tests use flat
   whether mutation started and leave earlier copies intact. The test observer records visits,
   streams and kernel ranges per shard. `sharded_construction_env_t1`, `_t2` and `_t4` rerun the cases in
   fresh exact-team processes, as for the team primitive.
+- **Snapshot-safe evaluation**: `sharded_evaluation_tests.cpp` covers `detail/sharded/Evaluation.h`
+  (`evaluate_shards`, `ev_sharded`, `ev_and_grad_sharded`, `replay_shards`, `prepare_retained`, the
+  owner-local forward replay phases and the ascending-shard folds), the owner-local paring seam
+  `detail::pare_graph_owner` and coefficient-informed construction (`sharded::build_graph_informed`). At
+  geometry (1, T) every shard's evolved operator and local term, the energy and every gradient component
+  equal the legacy partitions' bitwise, for every basis/picture fixture, deep-amplification and vanishing-cosine
+  parameters, pared and unpared functionals, and partial contraction in both pictures; informed builds (first
+  and incremental, with seed replay) equal the legacy children's rows, coefficients and layers. The replay and
+  derivative kernels are shared with the legacy evaluator (`detail/evolution/LayerReplay.h`), so the cases also
+  check an independent coefficient-map propagator, the frozen exact energy of `random_exact.msgpack`,
+  single-gate closed-form fits and central finite differences, including the cases of
+  `tests/test_deep_circuit_gradient.py`. Further cases cover whole self pairs, other-local-shard and
+  multi-peer layouts, empty owners and no-work layers, the identity counted once, empty parameters and
+  missing callbacks, repeated parameters and duplicate records, an empty stored pruned mask (replays nothing),
+  interleaved instances, copies and index growth under retained callbacks, participation (every owner's
+  work runs on its own worker; opaque callbacks run on the primary in an exclusive phase), and failures in
+  every phase, in callbacks, paring and informed construction, plus `AllocationProbe` sweeps run from a fresh
+  host thread so every worker starts with cold thread-local scratch. `sharded_evaluation_env_t1`, `_t2` and
+  `_t4` rerun the cases in fresh exact-team processes, as for the team primitive.
 - **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the budget parser and
   its capture, per-object budgets through copies and retained functionals, and legacy paths that
   stay serial. It also checks that OpenMP settings and affinity are unchanged, that old low-level

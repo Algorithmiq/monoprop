@@ -20,8 +20,8 @@
 
 #include <cmath>
 #include <complex>
-#include <exception>
 #include <cstddef>
+#include <exception>
 #include <print>
 #include <vector>
 
@@ -64,10 +64,11 @@ auto run_sharded_construction_chain() -> bool {
     auto shards = sharded::seed_shards(options, seed, 0);
     const std::vector<Mono> gates{mono({1, 2})};
     const std::vector<double> angles{0.3};
-    const auto propagated = sharded::propagate<kModes>(options,
-                                                       shards,
-                                                       ctx,
-                                                       {.generators = gates, .mapped_params = angles, .only_rotate_len_k = {}});
+    const auto propagated =
+        sharded::propagate<kModes>(options,
+                                   shards,
+                                   ctx,
+                                   {.generators = gates, .mapped_params = angles, .only_rotate_len_k = {}});
     double norm = 0.0;
     size_t rows = 0;
     for (const auto &s : shards) {

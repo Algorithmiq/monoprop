@@ -120,9 +120,10 @@ sets `monoprop_NUM_THREADS` and `OMP_NUM_THREADS` to T with `OMP_DYNAMIC=FALSE`,
 assumes the launch supplies exactly T workers. Run them with
 `ctest --test-dir <build> --no-tests=error -R '^sharded_team_env_'`; the T=4 entries need four cores.
 
-The owner-initialized shard state (`detail/sharded/State.h`) and the direct-buffer construction and propagation
-engine (`detail/sharded/Construction.h`) follow the same pattern with `sharded_state_env_t1`, `_t2` and `_t4` and
-`sharded_construction_env_t1`, `_t2` and `_t4`. Select all of them with `-R '^sharded_'`. The unit-test
+The owner-initialized shard state (`detail/sharded/State.h`), the direct-buffer construction and propagation
+engine (`detail/sharded/Construction.h`) and the snapshot-safe evaluation (`detail/sharded/Evaluation.h`) follow
+the same pattern with `sharded_state_env_t1`, `_t2` and `_t4`, `sharded_construction_env_t1`, `_t2` and `_t4`
+and `sharded_evaluation_env_t1`, `_t2` and `_t4`. Select all of them with `-R '^sharded_'`. The unit-test
 executable replaces the global `operator new`/`delete` family (`cpp/tests/AllocationProbe.cpp`) so these
 cases can inject real allocation failures; the library and installed consumers are unaffected.
 

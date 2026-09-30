@@ -5,6 +5,9 @@ target_sources(
       TYPE HEADERS
       FILES
         "Construction.h"
+        "Evaluation.h"
         "State.h"
         "Team.h"
 )
+
+target_sources(monoprop-objs PRIVATE Evaluation.cpp)

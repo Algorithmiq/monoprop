@@ -1002,56 +1002,7 @@ auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
                          const MPGraphView &graph,
                          Basis basis,
                          detail::parallel::Options options) -> detail::CosCallbacks {
-    struct LayerCos {
-        bool recomputes_cos = false;
-        detail::LazyFold<NumModes> recipe{}; // used iff recomputes_cos
-        const CosMask *filtered = nullptr;   // points into a pruned layer's stored cos
-    };
-    auto cache = std::make_shared<std::vector<LayerCos>>();
-    cache->reserve(graph.layers());
-    for (size_t i = 0; i < graph.layers(); ++i) {
-        const auto &layer = graph.get_layer(i);
-        LayerCos entry;
-        if (const CosMask *pruned = layer.pruned_cos(); pruned != nullptr) {
-            entry.recomputes_cos = false;
-            entry.filtered = pruned;
-        }
-        else {
-            entry.recomputes_cos = true;
-            const auto t = layer.traversal();
-            const auto gen = detail::generator_from_words<NumModes>(t.generator_words());
-            entry.recipe = detail::make_lazy_fold<NumModes>(inverted_index, gen, t.scaled_count(), basis);
-        }
-        cache->push_back(std::move(entry));
-    }
-
-    const auto *sc = &inverted_index;
-    // Parity words are fetched inside each call, never cached here: they move whenever the store grows.
-    detail::LayerCosScale cos_scale = [cache, sc, options](size_t i, double *c, double v) {
-        const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
-            detail::scale_cos_mask(c, *e.filtered, v, options);
-        }
-        else {
-            detail::scale_cos_lazy<NumModes>(*sc, e.recipe, c, v, options);
-        }
-    };
-    detail::LayerCosAccumulate cos_acc = [cache, sc, options](size_t i, double *s, double *h, double v, double sec) {
-        const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
-            return detail::accumulate_cos_mask(s, h, *e.filtered, v, sec, options);
-        }
-        return detail::accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec, options);
-    };
-    detail::LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<TermIndex> &out) {
-        const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
-            detail::cos_indices_mask(*e.filtered, out);
-            return;
-        }
-        detail::cos_indices_lazy<NumModes>(*sc, e.recipe, out);
-    };
-    return {.scale = std::move(cos_scale), .accumulate = std::move(cos_acc), .indices = std::move(cos_inds)};
+    return detail::make_cos_callbacks<NumModes>(inverted_index, graph, basis, options);
 }
 
 template <size_t NumModes>
@@ -1093,10 +1044,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     std::shared_ptr<const MPGraph> graph;
     if (pare_threshold.has_value()) {
         auto full_cos_of_layer = [this, &inverted_index](size_t i) -> CosMask {
-            const auto layer = graph_.get_layer_traversal(i);
-            const auto gen = detail::generator_from_words<NumModes>(layer.generator_words());
-            const auto combined = detail::make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis_);
-            return detail::fold_to_cos_mask<NumModes>(combined);
+            return detail::full_cos_mask<NumModes>(inverted_index, graph_.get_layer_traversal(i), basis_);
         };
         // Threshold the picture's driving vector: the Hamiltonian in Schrödinger, the state otherwise.
         const auto keep = schrodinger_ ? indices_above(op, *pare_threshold) : state.indices_above(*pare_threshold);

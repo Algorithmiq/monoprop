@@ -23,6 +23,8 @@
 #include <optional>
 #include <utility>
 
+#include "monoprop/Evolution.h"
+#include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
@@ -216,6 +218,34 @@ struct PropagatorTestAccess {
 
     // The legacy gate loop's closing cache warm-up (run_gate_loop_).
     static auto finish_gate_loop(Propagator &p) -> void { p.initialize_operator_caches_(); }
+
+    // The legacy evaluator's inputs for this single store, as make_functional_ snapshots them: the state (sparse
+    // Heisenberg scores or the dense Schrödinger state), the un-evolved operator and the optimizer-order gate arrays.
+    static auto evaluation_state(Propagator &p) -> EvalState {
+        if (p.schrodinger_) {
+            return EvalState::dense(p.mp_op_.dense_state());
+        }
+        const auto sparse = p.mp_op_.sparse_state();
+        return EvalState::sparse(p.mp_op_.size(), sparse.rows, sparse.values);
+    }
+
+    static auto gate_arrays(const Propagator &p) -> std::pair<VecZ, VecD> { return p.graph_gate_arrays_(); }
+
+    // The legacy energy evaluation's forward replay of this store at `params`: ev()'s evolved operator, through the
+    // store's own communicator and budget. On a partition child it communicates, so every child must run it together
+    // (for_each_store).
+    static auto evaluation_operator(Propagator &p, const VecD &params) -> VecD {
+        const auto [mapping, gen_coeffs] = p.graph_gate_arrays_();
+        const auto view = p.graph_.replay_view();
+        const auto cos = build_cos_callbacks<NumModes>(p.mp_op_.inverted_index(), view, p.basis_, p.parallel_);
+        VecD op = p.mp_op_.get_operator();
+        return evolve_operator(std::move(op),
+                               view,
+                               map_params(params, mapping, gen_coeffs, 1.0, true),
+                               p.comm_,
+                               cos.scale,
+                               p.parallel_);
+    }
 
     static auto partition_count(const Propagator &p) -> int {
         return p.partition_group_ ? p.partition_group_->partition_count() : 0;

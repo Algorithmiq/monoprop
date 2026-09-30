@@ -67,6 +67,12 @@ struct CosCallbacks {
     LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty
     LayerCosAccumulate accumulate; ///< reverse path; required by the gradient only
     LayerCosIndices indices;       ///< reverse path; required by the gradient only
+    /// Provenance, not a property of the closures: set only by detail::make_cos_callbacks() (behind
+    /// build_cos_callbacks()), whose closures touch only their own inverted index (including its lazy caches), graph
+    /// layers and the calling thread's scratch. Distinct owners' sets marked this way may then run concurrently, each
+    /// on one thread at a time. Anything else is opaque and runs one owner at a time, on the primary thread of a
+    /// sharded evaluation.
+    bool owner_parallel = false;
 };
 
 } // namespace monoprop::detail

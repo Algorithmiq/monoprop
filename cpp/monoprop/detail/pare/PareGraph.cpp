@@ -87,14 +87,18 @@ auto mark_cross_rank_endpoints_kept(const LayerTraversal &layer, size_t my_rank,
 
 } // namespace
 
-auto pare_graph(const MPGraph &graph,
-                const VecZ &nonzero_inds,
-                size_t local_index_count,
-                bool schrodinger,
-                mpi::Comm comm,
-                const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
+} // namespace monoprop
+
+namespace monoprop::detail {
+
+auto pare_graph_owner(const MPGraph &graph,
+                      const VecZ &nonzero_inds,
+                      size_t local_index_count,
+                      bool schrodinger,
+                      size_t flat_owner,
+                      const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
     const size_t num_layers = graph.layers();
-    const auto my_rank = static_cast<size_t>(mpi::rank(comm));
+    const size_t my_rank = flat_owner;
 
     std::vector<char> nodes_to_keep(local_index_count, 0);
     for (auto idx : nonzero_inds) {
@@ -123,6 +127,24 @@ auto pare_graph(const MPGraph &graph,
     }
 
     return MPGraph(graph.is_schrodinger(), std::move(layers));
+}
+
+} // namespace monoprop::detail
+
+namespace monoprop {
+
+auto pare_graph(const MPGraph &graph,
+                const VecZ &nonzero_inds,
+                size_t local_index_count,
+                bool schrodinger,
+                mpi::Comm comm,
+                const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
+    return detail::pare_graph_owner(graph,
+                                    nonzero_inds,
+                                    local_index_count,
+                                    schrodinger,
+                                    static_cast<size_t>(mpi::rank(comm)),
+                                    full_cos_of_layer);
 }
 
 } // namespace monoprop

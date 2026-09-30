@@ -254,6 +254,32 @@ foreach(_threads IN ITEMS 1 2 4)
   )
 endforeach()
 
+# Snapshot-safe replay, energy, gradients, retained/pared functionals and coefficient-informed construction
+# (detail/sharded/Evaluation.h, Construction.h) under the same exact-team launches: one fresh process per T. Cases that
+# need a nonprimary worker are left out of T = 1. A timeout is a hang, not a pass.
+set(
+  _monoprop_sharded_evaluation_single_cases
+  "sharded_evaluation_matches_legacy_partitions,sharded_evaluation_identity_once_and_empty_parameters,sharded_evaluation_rejects_invalid_arguments_before_the_team,sharded_evaluation_matches_independent_references,sharded_evaluation_deep_circuit_gradients,sharded_evaluation_repeated_parameters_and_duplicate_records,sharded_evaluation_pared_functionals_match_legacy,sharded_evaluation_empty_stored_mask_applies_nothing,sharded_evaluation_repeated_instances_copies_and_index_growth,sharded_evaluation_partial_contraction_matches_legacy,sharded_evaluation_informed_construction_matches_legacy,sharded_evaluation_informed_decisions_follow_the_replayed_coefficients,sharded_evaluation_owners_do_their_own_work,sharded_evaluation_opaque_callbacks_run_on_the_primary,sharded_evaluation_combination_folds_in_shard_order,sharded_evaluation_failure_in_each_phase_suppresses_later_work,sharded_evaluation_callback_paring_and_construction_failures,sharded_evaluation_allocation_failures_are_contained"
+)
+foreach(_threads IN ITEMS 1 2 4)
+  if(_threads EQUAL 1)
+    set(_cases "${_monoprop_sharded_evaluation_single_cases}")
+  else()
+    set(_cases "sharded_evaluation_*")
+  endif()
+  monoprop_add_launch_env_case(
+    sharded_evaluation_env_t${_threads}
+    "${_cases}"
+    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
+  )
+  set_tests_properties(
+    sharded_evaluation_env_t${_threads}
+    PROPERTIES
+      TIMEOUT
+        900
+  )
+endforeach()
+
 # Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
 # only the MPI test leg runs them.
 if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)

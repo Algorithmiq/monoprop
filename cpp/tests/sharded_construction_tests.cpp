@@ -235,7 +235,10 @@ auto pauli_circuit() -> Circuit {
 }
 
 auto data_circuit(const test_utils::CaseData &data) -> Circuit {
-    return {.gates = data.majoranas, .mapping = data.param_inds, .gen_coeffs = data.gen_coeffs, .params = data.parameters};
+    return {.gates = data.majoranas,
+            .mapping = data.param_inds,
+            .gen_coeffs = data.gen_coeffs,
+            .params = data.parameters};
 }
 
 // A basis change that permutes the slots pairwise, so the opaque closure really differs from the plain cutoff.
@@ -378,15 +381,14 @@ auto seed(const Fixture &f, parallel::Options options) -> Sharded<N> {
     }
     // The legacy constructor sizes rows from the plain cutoff (the basis change never affects the width).
     const auto width_fn = monoprop::detail::cutoff_function<N>(f.cutoff_type, f.cutoff, f.logical);
-    const auto seed_inputs =
-        sharded::OperatorSeed<N>{.initial_operator = f.op,
-                                 .initial_state = f.initial_state,
-                                 .router = router,
-                                 .basis = f.basis,
-                                 .logical_num_modes = f.logical,
-                                 .paired = paired,
-                                 .inline_width = sharded::packed_inline_width<N>(paired.has_value(),
-                                                                                 f.basis_change ? cutoff_fn : width_fn)};
+    const auto seed_inputs = sharded::OperatorSeed<N>{
+        .initial_operator = f.op,
+        .initial_state = f.initial_state,
+        .router = router,
+        .basis = f.basis,
+        .logical_num_modes = f.logical,
+        .paired = paired,
+        .inline_width = sharded::packed_inline_width<N>(paired.has_value(), f.basis_change ? cutoff_fn : width_fn)};
     return {.f = f, .cutoff_fn = cutoff_fn, .router = router, .shards = sharded::seed_shards(options, seed_inputs, 0)};
 }
 
@@ -859,9 +861,9 @@ namespace {
 // are dropped), then its deferred same-shard leader misses, then its same-shard follower misses.
 template <size_t N>
 struct OrderReference {
-    std::vector<std::vector<Monomial<N>>> rows;       // per shard, in row order
-    std::map<Key, std::pair<size_t, size_t>> where;   // key -> (shard, row)
-    size_t cross_matches = 0;                          // leader hits that marked a row of another shard
+    std::vector<std::vector<Monomial<N>>> rows;     // per shard, in row order
+    std::map<Key, std::pair<size_t, size_t>> where; // key -> (shard, row)
+    size_t cross_matches = 0;                       // leader hits that marked a row of another shard
     size_t self_misses = 0;
     size_t cross_misses = 0;
 
@@ -870,8 +872,10 @@ struct OrderReference {
         rows[shard].push_back(m);
     }
 
-    auto gate(const Monomial<N> &gen, const routing::Router &router, Basis basis, const std::function<bool(const Monomial<N> &)> &cutoff)
-        -> void {
+    auto gate(const Monomial<N> &gen,
+              const routing::Router &router,
+              Basis basis,
+              const std::function<bool(const Monomial<N> &)> &cutoff) -> void {
         const size_t threads = rows.size();
         const auto [fold, odd] = with_algebra<N>(basis, [&]<typename A>() {
             return std::pair{A::fold_generator(gen), A::fold_needs_odd_correction(gen)};
@@ -987,7 +991,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rows_follow_the_ordering_contract) {
     const auto options = team_options();
     const size_t threads = team_size();
     auto cases = legacy_cases();
-    cases.resize(2); // Majorana, both pictures
+    cases.resize(2);                    // Majorana, both pictures
     cases.push_back(legacy_cases()[9]); // Pauli Heisenberg
     size_t cross_matches = 0;
     for (const auto &cs : cases) {
@@ -1091,7 +1095,8 @@ auto reference_propagate(RetainedMap map,
                     continue;
                 }
                 const auto partner = m ^ gen;
-                const int phase = A::emit_phase(A::rotation_sign(ctx, m, partner), m.count(), gen.count(), (m & gen).count());
+                const int phase =
+                    A::emit_phase(A::rotation_sign(ctx, m, partner), m.count(), gen.count(), (m & gen).count());
                 next[key] += c * v;
                 next[key_of<N>(partner)] += sn * static_cast<double>(phase) * v;
             }
@@ -1412,9 +1417,9 @@ BOOST_AUTO_TEST_CASE(sharded_construction_empty_operators_circuits_and_identity)
                     for (size_t t = 0; t < threads; ++t) {
                         BOOST_TEST((digest<kN>(*s.shards[t]) == legacy_digest<kN>(p, t)), "shard " << t);
                         // Empty owners reach every checkpoint: the frame, every gate's finish, the caches.
-                        BOOST_TEST(static_cast<size_t>(std::ranges::count_if(
-                                       logs[t].visits,
-                                       [](const Visit &v) { return v.work == W::finalize; }))
+                        BOOST_TEST(static_cast<size_t>(
+                                       std::ranges::count_if(logs[t].visits,
+                                                             [](const Visit &v) { return v.work == W::finalize; }))
                                    == c.gates.size());
                     }
                 }
@@ -1492,17 +1497,29 @@ auto resolve_both(const std::vector<Monomial<N>> &seeds,
         const auto window = incoming.window();
         auto engine = [&] {
             if constexpr (Fused) {
-                return monoprop::detail::LayerBuildEngine<N, Sink>(
-                    op,
-                    world,
-                    owner,
-                    matched,
-                    op.size(),
-                    Sink{.R = world, .my_rank = owner, .fc = fc, .op_coeffs = coeffs, .fused_scale = false, .inv_cos = 1.0, .schrodinger = false, .basis = Basis::Majorana},
-                    window);
+                return monoprop::detail::LayerBuildEngine<N, Sink>(op,
+                                                                   world,
+                                                                   owner,
+                                                                   matched,
+                                                                   op.size(),
+                                                                   Sink{.R = world,
+                                                                        .my_rank = owner,
+                                                                        .fc = fc,
+                                                                        .op_coeffs = coeffs,
+                                                                        .fused_scale = false,
+                                                                        .inv_cos = 1.0,
+                                                                        .schrodinger = false,
+                                                                        .basis = Basis::Majorana},
+                                                                   window);
             }
             else {
-                return monoprop::detail::LayerBuildEngine<N, Sink>(op, world, owner, matched, op.size(), Sink(world, owner), window);
+                return monoprop::detail::LayerBuildEngine<N, Sink>(op,
+                                                                   world,
+                                                                   owner,
+                                                                   matched,
+                                                                   op.size(),
+                                                                   Sink(world, owner),
+                                                                   window);
             }
         }();
         mpi::WindowVec<std::vector<typename Sink::Response>> answers;
@@ -1555,8 +1572,10 @@ BOOST_AUTO_TEST_CASE(sharded_construction_published_views_cover_the_window) {
     mpi::WindowVec<VecZ> from4(mpi::SlotWindow{.base = 4, .count = 1}); // does not reach owner 3
     from4.at_slot(4) = {5};
     const std::vector<const mpi::WindowVec<VecZ> *> published{&from2, nullptr, &from4};
-    const auto gathered = sharded::gather_published<size_t>(
-        mpi::SlotWindow{.base = 1, .count = 5}, 3, 2, std::span<const mpi::WindowVec<VecZ> *const>(published));
+    const auto gathered = sharded::gather_published<size_t>(mpi::SlotWindow{.base = 1, .count = 5},
+                                                            3,
+                                                            2,
+                                                            std::span<const mpi::WindowVec<VecZ> *const>(published));
     BOOST_TEST((gathered.window() == mpi::SlotWindow{.base = 1, .count = 5}));
     BOOST_TEST(gathered.at_slot(1).empty()); // not a local owner
     BOOST_TEST(gathered.at_slot(2).data() == from2.at_slot(3).data());
@@ -1587,13 +1606,18 @@ BOOST_AUTO_TEST_CASE(sharded_construction_published_resolution_matches_owning_bl
         }
         // Mixed, all-hit and all-miss senders.
         // Clang cannot capture a structured binding under OpenMP, so the pair is unpacked by name.
-        for (const auto &shape : {std::pair{size_t{255}, 0}, std::pair{size_t{256}, 0}, std::pair{size_t{257}, 0},
-                                  std::pair{size_t{256}, 1}, std::pair{size_t{257}, 2}}) {
+        for (const auto &shape : {std::pair{size_t{255}, 0},
+                                  std::pair{size_t{256}, 0},
+                                  std::pair{size_t{257}, 0},
+                                  std::pair{size_t{256}, 1},
+                                  std::pair{size_t{257}, 2}}) {
             const size_t count = shape.first;
             const int pattern = shape.second;
             const mpi::SlotWindow window{.base = 3, .count = 3};
             std::vector<std::vector<Monomial<N>>> per_sender(3);
-            const auto hit = [&](size_t q, size_t modulus) { return pattern == 1 || (pattern == 0 && q % modulus == 0); };
+            const auto hit = [&](size_t q, size_t modulus) {
+                return pattern == 1 || (pattern == 0 && q % modulus == 0);
+            };
             for (size_t q = 0; q < count; ++q) {
                 per_sender[0].push_back(hit(q, 2) ? seeds[q] : fresh(width(q)));
                 per_sender[2].push_back(hit(q, 3) ? seeds[300 + (q % 290)] : fresh(width(q * 7)));
@@ -1611,7 +1635,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_published_resolution_matches_owning_bl
                 // Owner 4 resolves; slot 4 (its own) is the empty sender.
                 const auto [owning, viewed] = fused ? resolve_both<N, true>(seeds, incoming, 4, 6)
                                                     : resolve_both<N, false>(seeds, incoming, 4, 6);
-                BOOST_TEST((owning == viewed), "N=" << N << " count=" << count << " pattern=" << pattern << " fused=" << fused);
+                BOOST_TEST((owning == viewed),
+                           "N=" << N << " count=" << count << " pattern=" << pattern << " fused=" << fused);
             }
         }
     };
@@ -1746,8 +1771,11 @@ auto group_of(W work) -> int {
             return 4;
         case W::caches:
             return 5;
+        case W::seed:
+        case W::replay:
+            return 6; // informed construction only; never reported by these cases
     }
-    return 6;
+    return 7;
 }
 
 auto order_of(size_t step, W work) -> std::pair<long long, int> {
@@ -1790,12 +1818,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later
     const auto cs = legacy_cases()[0];
     const auto cross_works = {W::resolve_leaders, W::consume_leaders, W::resolve_followers, W::consume_followers};
     for (const bool fused : {false, true}) {
-        std::vector<W> works = {W::frame,
-                                W::traverse,
-                                W::prepare_leaders,
-                                W::prepare_followers,
-                                W::finalize,
-                                W::caches};
+        std::vector<W> works =
+            {W::frame, W::traverse, W::prepare_leaders, W::prepare_followers, W::finalize, W::caches};
         if (fused) {
             works.push_back(W::picture);
             works.push_back(W::apply);
@@ -1807,8 +1831,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later
             for (const size_t shard : {size_t{0}, threads - 1}) {
                 const bool loop = work != W::frame && work != W::picture && work != W::caches;
                 const size_t step = loop ? 1 : sharded::kNoStep;
-                BOOST_TEST_CONTEXT((fused ? "propagate" : "graph") << " work " << static_cast<int>(work) << " shard "
-                                                                   << shard) {
+                BOOST_TEST_CONTEXT((fused ? "propagate" : "graph")
+                                   << " work " << static_cast<int>(work) << " shard " << shard) {
                     auto s = seed<kN>(cs.f, options);
                     const auto copy = sharded::copy_shards(options, s.shards);
                     std::vector<ShardDigest> copy_before;
@@ -1817,8 +1841,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later
                     }
                     auto logs = make_logs(threads);
                     const Probe probe{.logs = &logs, .capture = false, .fail = {{work, step, shard}}};
-                    const auto outcome = fused ? run_propagate<kN>(s, cs.c, cs.k, probe)
-                                               : run_graph<kN>(s, cs.c, cs.k, probe);
+                    const auto outcome =
+                        fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
                     BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
                     BOOST_TEST(message_of(outcome.error)
                                == std::format("injected failure: work {} step {} shard {}",
@@ -1857,9 +1881,17 @@ BOOST_AUTO_TEST_CASE(sharded_construction_kernel_decode_and_publication_failures
         const char *message;
     };
     const std::vector<Scenario> scenarios = {
-        {"decode", false, KernelFailure{threads - 1, KernelRange::decode, 1, 0}, std::nullopt, "injected kernel failure"},
+        {"decode",
+         false,
+         KernelFailure{threads - 1, KernelRange::decode, 1, 0},
+         std::nullopt,
+         "injected kernel failure"},
         {"scatter", true, KernelFailure{1, KernelRange::scatter, 0, 0}, std::nullopt, "injected kernel failure"},
-        {"fused apply", true, KernelFailure{threads - 1, KernelRange::fused_apply, 2, 0}, std::nullopt, "injected kernel failure"},
+        {"fused apply",
+         true,
+         KernelFailure{threads - 1, KernelRange::fused_apply, 2, 0},
+         std::nullopt,
+         "injected kernel failure"},
         {"leader publication", false, std::nullopt, std::pair{threads - 1, true}, "injected publication failure"},
         {"follower publication", true, std::nullopt, std::pair{size_t{0}, false}, "injected publication failure"},
     };
@@ -1869,8 +1901,12 @@ BOOST_AUTO_TEST_CASE(sharded_construction_kernel_decode_and_publication_failures
             const auto copy = sharded::copy_shards(options, s.shards);
             const auto copy_digest = digest<kN>(*copy[0]);
             auto logs = make_logs(threads);
-            const Probe probe{.logs = &logs, .capture = false, .kernel_fail = sc.kernel, .publication_fail = sc.publication};
-            const auto outcome = sc.fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
+            const Probe probe{.logs = &logs,
+                              .capture = false,
+                              .kernel_fail = sc.kernel,
+                              .publication_fail = sc.publication};
+            const auto outcome =
+                sc.fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
             BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
             BOOST_TEST(message_of(outcome.error) == sc.message);
             BOOST_TEST(outcome.mutation_started);
@@ -1942,8 +1978,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
                         const Probe probe{.logs = &logs,
                                           .capture = false,
                                           .alloc = AllocAt{site.work, site.step, site.shard, nth}};
-                        const auto outcome = fused ? run_propagate<kN>(s, cs.c, cs.k, probe)
-                                                   : run_graph<kN>(s, cs.c, cs.k, probe);
+                        const auto outcome =
+                            fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
                         disarm_team();
                         failed = static_cast<bool>(outcome.error);
                         if (failed) {
@@ -1987,17 +2023,18 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_t
     const auto gens = generators<kN>(cs.f, cs.c);
     VecZ gate_indices(gens.size());
     const auto good = s.ctx();
-    const auto graph = [&](const sharded::ConstructionContext<kN> &ctx, std::span<const double> coeffs, std::optional<size_t> k) {
-        return sharded::build_graph<kN>(options,
-                                        s.shards,
-                                        ctx,
-                                        {.generators = gens,
-                                         .parameter_mapping = cs.c.mapping,
-                                         .gen_coeffs = coeffs,
-                                         .gate_indices = gate_indices,
-                                         .only_rotate_len_k = k},
-                                        Probe{.logs = &logs});
-    };
+    const auto graph =
+        [&](const sharded::ConstructionContext<kN> &ctx, std::span<const double> coeffs, std::optional<size_t> k) {
+            return sharded::build_graph<kN>(options,
+                                            s.shards,
+                                            ctx,
+                                            {.generators = gens,
+                                             .parameter_mapping = cs.c.mapping,
+                                             .gen_coeffs = coeffs,
+                                             .gate_indices = gate_indices,
+                                             .only_rotate_len_k = k},
+                                            Probe{.logs = &logs});
+        };
     BOOST_CHECK_THROW((void)graph(good, std::span<const double>(cs.c.gen_coeffs).first(2), std::nullopt),
                       std::invalid_argument);
     BOOST_CHECK_THROW((void)graph(good, cs.c.gen_coeffs, 2 * kN + 1), std::runtime_error);
@@ -2008,8 +2045,12 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_t
     wrong_rank.rank = 1;
     BOOST_CHECK_THROW((void)graph(wrong_rank, cs.c.gen_coeffs, std::nullopt), std::invalid_argument);
     sharded::Shards<kN> short_shards;
-    BOOST_CHECK_THROW((void)sharded::propagate<kN>(options, short_shards, good, {.generators = gens, .mapped_params = {}, .only_rotate_len_k = std::nullopt}),
-                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        (void)sharded::propagate<kN>(options,
+                                     short_shards,
+                                     good,
+                                     {.generators = gens, .mapped_params = {}, .only_rotate_len_k = std::nullopt}),
+        std::invalid_argument);
     BOOST_TEST((digest<kN>(*s.shards[0]) == before));
     for (const auto &log : logs) {
         BOOST_TEST(log.visits.empty());

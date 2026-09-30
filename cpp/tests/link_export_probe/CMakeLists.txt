@@ -11,6 +11,7 @@ add_executable(
   link_export_probe.cpp
   sharded_state_chain.cpp
   sharded_construction_chain.cpp
+  sharded_evaluation_chain.cpp
 )
 
 # monoprop-sanitizers is a no-op interface library outside a sanitizer build. Under one, libmonoprop.so
