@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1223,15 +1224,17 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
     -> std::vector<std::complex<double>> {
-    std::vector<Monomial<NumModes>> keys;
-    keys.reserve(terms.size());
-    for (const auto &term : terms) {
-        // Checked: these are user-supplied indices, and the unchecked encode would write out of bounds.
-        keys.push_back(indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_));
-    }
+    // Checked: these are user-supplied indices. Past the storage width the unchecked encode's bit
+    // position underflows into an out-of-bounds write; between the logical and storage widths it
+    // encodes a monomial outside this propagator's system, which reads back 0 instead of raising.
+    auto keys = terms | std::views::transform([this](const VecZ &term) {
+                    return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                })
+                | std::ranges::to<std::vector<Monomial<NumModes>>>();
 
-    // `p` is always unpartitioned here (a partition, or *this), so indexing() is available.
-    const auto probe = [&](MonomialPropagator &p) -> std::vector<std::complex<double>> {
+    // `p` is always unpartitioned here (a partition, or *this), so indexing() is available. It is
+    // the subject rather than a capture: map_partitions_ invokes this once per partition.
+    const auto probe = [this, &parameters, &keys](MonomialPropagator &p) -> std::vector<std::complex<double>> {
         const VecD evolved = p.contract_partially(parameters, false);
         std::vector<size_t> rows(keys.size());
         p.indexing().find_batch(keys.data(), keys.size(), rows.data());
