@@ -457,16 +457,13 @@ Stage 3. Shared-core PRs land on `main` as they are ready.
 
 **Deucalion (development).**
 
-- Modules: `OpenMPI/5.0.10-GCC-15.2.0` and `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`, which loads
-  `CUDA/13.3.0`, `UCX-CUDA` and `GDRCopy`. A single GCCcore (15.2.0) loads without conflicts.
+- Modules: `OpenMPI/5.0.10-GCC-15.2.0` and `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0-CMake`, which loads
+  `CUDA/13.3.0`, `UCX-CUDA` and `GDRCopy`. A single GCCcore (15.2.0) loads without conflicts. The
+  `-CMake` variant of the NCCL module installs NCCL's CMake config (`lib64/cmake/NCCL/`, D14); the
+  admins added it after the original module turned out to lack the config (Appendix A.2).
 - Driver: R580 (580.167.08), natively CUDA 13.0. The 13.3 runtime works through CUDA's minor version
   compatibility, so builds embed SASS for every target, never depend on the driver compiling PTX, and
   use no API newer than CUDA 13.0.
-- **NCCL CMake config:** the Deucalion module was built without NCCL's CMake config
-  (`lib/cmake/NCCL/` is missing); the admins have been asked to fix it. Until then, build the same NCCL
-  version with CMake into a private prefix (`cmake -S nccl -B build -DCMAKE_INSTALL_PREFIX=<prefix>`,
-  architecture limited to `sm_80`), add the prefix to `CMAKE_PREFIX_PATH`, and keep `LD_LIBRARY_PATH`
-  pointing at the same `lib` directory at runtime.
 - Jobs: nodes are shared by default, so benchmarks use `--exclusive`; 32 CPUs are billed per GPU.
 
 **Compiler flags.** `-std=c++23`; no `--expt-relaxed-constexpr`; `-Werror cross-execution-space-call`;
@@ -563,18 +560,16 @@ negligible at ladder size and dominant only for small operators.
 
 All belong to Stage 0 unless stated otherwise.
 
-1. **NCCL CMake config on Deucalion:** requested from the admins; private build as the workaround
-   (Section 12).
-2. **All-to-all efficiency (optional):** rerun `xchg win 0` with a larger maximum size (4 GiB) to see
+1. **All-to-all efficiency (optional):** rerun `xchg win 0` with a larger maximum size (4 GiB) to see
    where it levels off, and with `NCCL_P2P_READ_ENABLE=0` (an internal NCCL switch to write mode).
-3. **`xor 2` repeat:** a single run measured ~72 GB/s against ~78 GB/s for the other pairings; repeat to
+2. **`xor 2` repeat:** a single run measured ~72 GB/s against ~78 GB/s for the other pairings; repeat to
    tell noise from a link-level difference.
-4. **Rotation fraction** of the ladder circuits, from CPU graphs.
-5. **CPU build and tests with GCC 15.2,** MPI variant included; fixes land on `main`.
-6. **Safety-net check:** nvcc must reject device calls to host-only functions under D7's flags. If it
+3. **Rotation fraction** of the ladder circuits, from CPU graphs.
+4. **CPU build and tests with GCC 15.2,** MPI variant included; fixes land on `main`.
+5. **Safety-net check:** nvcc must reject device calls to host-only functions under D7's flags. If it
    does not, the equivalence tests are the only safety net and Section 7 says so.
-7. **Bug report (optional):** the `std::popcount` miscompile in device code (Appendix A.3), for NVIDIA.
-8. **Production toolchains** per site (Stage 3).
+6. **Bug report (optional):** the `std::popcount` miscompile in device code (Appendix A.3), for NVIDIA.
+7. **Production toolchains** per site (Stage 3).
 
 ## Appendix A: Deucalion data
 
@@ -636,8 +631,19 @@ NVIDIA-SMI 580.167.08    Driver Version: 580.167.08    CUDA Version: 13.0
 GPU 0: NVIDIA A100-SXM4-40GB
 ```
 
-NCCL CMake config: `ls $EBROOTNCCL/lib*/cmake/NCCL/` fails (`No such file or directory`) for
-`/eb/x86_64/software/NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`.
+NCCL CMake config: the original module `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0` was built without it
+(`ls $EBROOTNCCL/lib*/cmake/NCCL/` fails with `No such file or directory` for
+`/eb/x86_64/software/NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`). On request, the admins added a `-CMake`
+variant that installs it:
+
+```text
+$ ls $EBROOTNCCL/lib*/cmake/NCCL/
+/eb/x86_64/software/NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0-CMake/lib64/cmake/NCCL/:
+NCCLConfig.cmake  NCCLConfigVersion.cmake  NCCLTargets.cmake  NCCLTargets-release.cmake
+
+/eb/x86_64/software/NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0-CMake/lib/cmake/NCCL/:
+NCCLConfig.cmake  NCCLConfigVersion.cmake  NCCLTargets.cmake  NCCLTargets-release.cmake
+```
 
 ### A.3 Compiler probes
 
