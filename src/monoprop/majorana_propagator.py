@@ -164,9 +164,9 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
     def _encode_terms(self, terms: Sequence[OperatorTerm]) -> list[tuple[int, ...]]:
         """Encode Majorana terms into the engine's index tuples.
 
-        Majorana indices are the engine's keys, so this only unwraps each term. Raw sequences are
-        held to what [Majorana][monoprop.majorana.Majorana] accepts; for a non-canonical product
-        use [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] instead.
+        Majorana indices are the engine's keys, so this only unwraps each term. For a
+        non-canonical product use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] instead.
 
         Args:
             terms: [Majorana][monoprop.majorana.Majorana] terms, or raw index sequences.
