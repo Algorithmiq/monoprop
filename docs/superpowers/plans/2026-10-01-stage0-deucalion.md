@@ -22,7 +22,7 @@ Appendix A (Deucalion data).
 
 ## Global Constraints
 
-- Modules: `OpenMPI/5.0.10-GCC-15.2.0` and `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0-CMake`, which load
+- Modules: `OpenMPI/5.0.10-GCC-15.2.0` and `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`, which load
   GCC 15.2.0 and CUDA 13.3.0 (spec Section 12).
 - Driver R580 (CUDA 13.0): nothing may rely on PTX compiled by the driver at load time.
 - Slurm: GPU partitions `dev-a100-40`/`dev-a100-80` (1 node, 4 h) and `normal-a100-40`/`normal-a100-80`
@@ -98,7 +98,7 @@ On `feat-gpu-port` (`git switch feat-gpu-port && git pull`), create `tools/deuca
 # NCCL 2.30.4 with its CMake config, plus the newest Boost >= 1.85 built with GCC 15.2.0.
 
 module purge
-module load OpenMPI/5.0.10-GCC-15.2.0 NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0-CMake || return 1
+module load OpenMPI/5.0.10-GCC-15.2.0 NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0 || return 1
 
 # Lmod's terse listing goes to stderr and may tag the default version with "(default)".
 boost_module="$(module -t avail Boost 2>&1 \

@@ -460,10 +460,10 @@ Stage 3. Shared-core PRs land on `main` as they are ready.
 
 **Deucalion (development).**
 
-- Modules: `OpenMPI/5.0.10-GCC-15.2.0` and `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0-CMake`, which loads
-  `CUDA/13.3.0`, `UCX-CUDA` and `GDRCopy`. A single GCCcore (15.2.0) loads without conflicts. The
-  `-CMake` variant of the NCCL module installs NCCL's CMake config (`lib64/cmake/NCCL/`, D14); the
-  admins added it after the original module turned out to lack the config (Appendix A.2).
+- Modules: `OpenMPI/5.0.10-GCC-15.2.0` and `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`, which loads
+  `CUDA/13.3.0`, `UCX-CUDA` and `GDRCopy`. A single GCCcore (15.2.0) loads without conflicts. The NCCL
+  module installs NCCL's CMake config (`lib64/cmake/NCCL/`, D14); the admins rebuilt it after the first
+  build turned out to lack the config (Appendix A.2).
 - Driver: R580 (580.167.08), natively CUDA 13.0. The 13.3 runtime works through CUDA's minor version
   compatibility, so builds embed SASS for every target, never depend on the driver compiling PTX, and
   use no API newer than CUDA 13.0.
@@ -634,10 +634,11 @@ NVIDIA-SMI 580.167.08    Driver Version: 580.167.08    CUDA Version: 13.0
 GPU 0: NVIDIA A100-SXM4-40GB
 ```
 
-NCCL CMake config: the original module `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0` was built without it
-(`ls $EBROOTNCCL/lib*/cmake/NCCL/` fails with `No such file or directory` for
-`/eb/x86_64/software/NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`). On request, the admins added a `-CMake`
-variant that installs it:
+NCCL CMake config: the first build of `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0` lacked it
+(`ls $EBROOTNCCL/lib*/cmake/NCCL/` failed with `No such file or directory` for
+`/eb/x86_64/software/NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0`). On request, the admins first provided a
+`-CMake` variant of the module, then rebuilt `NCCL/2.30.4-GCCcore-15.2.0-CUDA-13.3.0` itself with the
+config, which is the module the port uses. The `-CMake` variant's listing:
 
 ```text
 $ ls $EBROOTNCCL/lib*/cmake/NCCL/
@@ -649,7 +650,7 @@ NCCLConfig.cmake  NCCLConfigVersion.cmake  NCCLTargets.cmake  NCCLTargets-releas
 ```
 
 A minimal CMake project (`cmake_minimum_required(VERSION 3.28)`, `LANGUAGES CXX CUDA`,
-`find_package(NCCL 2.29.7 CONFIG REQUIRED)`) configures successfully with this module loaded.
+`find_package(NCCL 2.29.7 CONFIG REQUIRED)`) configured successfully with the `-CMake` variant loaded.
 
 ### A.3 Compiler probes
 
