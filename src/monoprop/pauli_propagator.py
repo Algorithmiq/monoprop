@@ -124,9 +124,6 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
     def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
         """Encode a qubit Pauli term into the engine's symplectic slots.
 
-        Slots are an engine-internal encoding, so only [Pauli][monoprop.pauli.Pauli] terms are
-        accepted; a raw slot sequence is rejected rather than passed through.
-
         Args:
             term: A [Pauli][monoprop.pauli.Pauli] term.
 
