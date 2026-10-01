@@ -645,6 +645,9 @@ NCCLConfig.cmake  NCCLConfigVersion.cmake  NCCLTargets.cmake  NCCLTargets-releas
 NCCLConfig.cmake  NCCLConfigVersion.cmake  NCCLTargets.cmake  NCCLTargets-release.cmake
 ```
 
+A minimal CMake project (`cmake_minimum_required(VERSION 3.28)`, `LANGUAGES CXX CUDA`,
+`find_package(NCCL 2.29.7 CONFIG REQUIRED)`) configures successfully with this module loaded.
+
 ### A.3 Compiler probes
 
 `probe.cu`:
