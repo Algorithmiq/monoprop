@@ -7,7 +7,7 @@ inputs:
   python-version:
     description: Python version handed to setup-uv.
     required: false
-    default: "3.11"
+    default: "3.12"
   cache-suffix:
     description: >-
       setup-uv cache key suffix. Must differ per build configuration, or a
