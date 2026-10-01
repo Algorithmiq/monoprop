@@ -195,8 +195,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             all_from_terms = False
 
         if not all_from_terms and not _are_canonical(encoded):
-            # The bulk check only reports *that* some term is non-canonical. Re-encoding term by
-            # term raises naming the offender, at the cost of a pass a valid query never makes.
+            # Re-encoding term by term raises naming the offender.
             for indices in encoded:
                 Majorana(*indices)
         return encoded
