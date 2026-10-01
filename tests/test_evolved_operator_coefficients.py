@@ -142,6 +142,37 @@ def test_majorana_accepts_majorana_terms(prop_and_params) -> None:
     np.testing.assert_array_equal(from_tuples, from_objects)
 
 
+def test_mixed_term_forms_in_one_query(prop_and_params) -> None:
+    """Majorana objects and raw tuples interleave: the query is encoded term by term."""
+    prop, parameters = prop_and_params
+
+    evolved = prop.evolved_operator(parameters, atol=0.0)
+    terms = list(evolved.terms)[:6]
+    mixed = [Majorana(*term) if i % 2 else term for i, term in enumerate(terms)]
+
+    coefficients = prop.evolved_operator_coefficients(mixed, parameters)
+
+    np.testing.assert_allclose(
+        coefficients, [evolved.terms[term] for term in terms], atol=1e-12
+    )
+
+
+def test_non_canonical_term_in_a_long_query_names_the_offender(prop_and_params) -> None:
+    """Canonicality is checked over the whole query at once, so the raise names the term anyway.
+
+    The bulk check reports only *that* a term is non-canonical; a second per-term pass, which a
+    valid query never makes, is what raises.
+    """
+    prop, parameters = prop_and_params
+
+    evolved = prop.evolved_operator(parameters, atol=0.0)
+    terms = list(evolved.terms)[:200]
+    terms.insert(150, (14, 0))
+
+    with pytest.raises(ValueError, match=r"got \(14, 0\)"):
+        prop.evolved_operator_coefficients(terms, parameters)
+
+
 def test_absent_term_reads_back_zero(serial_comm) -> None:
     """A term the evolved operator does not carry is 0, not a raise and not noise."""
     prop = PauliPropagator(

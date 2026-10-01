@@ -557,19 +557,21 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """
 
     @abstractmethod
-    def _term_slots(self, term: OperatorTerm) -> tuple[int, ...]:
-        """Encode one operator term into the raw index tuple the engine keys terms by.
+    def _encode_terms(self, terms: Sequence[OperatorTerm]) -> list[tuple[int, ...]]:
+        """Encode operator terms into the raw index tuples the engine keys terms by.
 
         The front-end counterpart to the decode ``evolved_operator`` performs, and what
         [evolved_operator_coefficients][] keys its probes with. Implementations *validate* canonical
         terms rather than normalizing them: the encode is order-insensitive, and a normalizing
-        encode has no coefficient to put the reordering's sign on.
+        encode has no coefficient to put the reordering's sign on. The whole query is passed at
+        once so that validation can run over all of its indices in one pass.
 
         Args:
-            term: A single operator term.
+            terms: The operator terms to encode, in query order.
 
         Returns:
-            The term's engine index tuple: Majorana indices, or symplectic slots in the Pauli basis.
+            One engine index tuple per term, in query order: Majorana indices, or symplectic slots
+            in the Pauli basis.
         """
 
     def evolved_operator_coefficients(
@@ -586,7 +588,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
         Terms must be canonical; for a Majorana product that is not, use
         [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
-        returns.
+        returns. Raw index sequences are checked here, so a long query of
+        [Majorana][monoprop.majorana.Majorana] terms, which are canonical by construction, skips
+        that check.
 
         Args:
             terms: The operator terms to look up.
@@ -600,7 +604,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             ValueError: If a term is not a canonical monomial.
             RuntimeError: If a term index lies outside the propagator's own system.
         """
-        slots = [self._term_slots(term) for term in terms]
+        slots = self._encode_terms(list(terms))
         return np.asarray(
             self._simulator.evolved_operator_coefficients(
                 self._bind(parameters), slots
