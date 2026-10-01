@@ -49,6 +49,7 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.optional-dependencies]
 mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
+pennylane = ["pennylane>=0.40"]
 
 [dependency-groups]
 dev = ["prek>=0.4", "ruff==0.15.20"]
@@ -67,6 +68,7 @@ interactive = [
   "matplotlib",
   "pylatexenc",
   "qiskit>=2.0.0",
+  "pennylane>=0.40",
   "pyscf",
 ]
 # Dependencies of monoprop's own suite (`tests/`). Deliberately free of workspace
@@ -196,6 +198,7 @@ markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
   "qiskit: mark test as requiring qiskit (optional dependency)",
+  "pennylane: mark test as requiring pennylane (optional dependency)",
 ]
 required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
 
@@ -396,7 +399,7 @@ build-verbosity = 1
 skip = ["*-musllinux_*"]
 test-command = "python -m pytest {package}/tests"
 test-groups = ["test"]
-test-extras = ["qiskit"]
+test-extras = ["qiskit", "pennylane"]
 
 [tool.cibuildwheel.linux]
 before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
