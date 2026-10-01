@@ -284,10 +284,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_rejects_explicit_partitions) {
             return std::string(e.what()).find("monoprop_NUM_THREADS") != std::string::npos;
         });
     }
-    BOOST_CHECK_THROW(construct(0,
-                                [](mpi::Comm) -> std::unique_ptr<MonomialPropagator<8>> {
-                                    return nullptr;
-                                }),
+    BOOST_CHECK_THROW(construct(0, [](mpi::Comm) -> std::unique_ptr<MonomialPropagator<8>> { return nullptr; }),
                       PropagatorConfigError);
     // The obsolete environment selector is rejected, whatever its value; it never selects a geometry.
     for (const char *value : {"off", "1", "4", "auto", ""}) {
@@ -317,7 +314,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_owns_t_routed_shards) {
             for (size_t t = 0; t < team; ++t) {
                 BOOST_TEST(shards[t]->graph.layers() == sim->graph_layers());
                 shards[t]->op.store->for_each([&](const auto &mono, size_t) {
-                    BOOST_TEST(router.dest<kN>(mono) == t); // flat owner rank * T + t at rank 0
+                    BOOST_TEST(router.dest<kN>(mono) == t);                      // flat owner rank * T + t at rank 0
                     BOOST_TEST(keys.insert(bitset_to_indices<kN>(mono)).second); // no key on two shards
                     ++rows;
                 });
@@ -379,7 +376,9 @@ BOOST_AUTO_TEST_CASE(sharded_root_owners_do_the_work_of_every_operation) {
         visits = recorder.visits();
         check_owner_visits(visits, team, what);
         for (size_t t = 0; t < team; ++t) {
-            BOOST_TEST_CONTEXT(what << " shard " << t) { BOOST_TEST(count(visits, seam, work, t) == per_shard); }
+            BOOST_TEST_CONTEXT(what << " shard " << t) {
+                BOOST_TEST(count(visits, seam, work, t) == per_shard);
+            }
         }
         recorder.clear();
     };
@@ -713,25 +712,23 @@ BOOST_AUTO_TEST_CASE(sharded_root_failures_after_mutation_invalidate_the_root) {
                                 {Seam::construction, static_cast<int>(CW::finalize), last, 2},
                                 none,
                                 [](MP &sim) { build(sim); });
-    check_post_mutation_failure("propagation apply",
-                                {Seam::construction, static_cast<int>(CW::apply), last, 0},
-                                none,
-                                [](MP &sim) {
-                                    sim.propagate(lih().majoranas, lih().param_inds, lih().gen_coeffs, params());
-                                });
     check_post_mutation_failure(
-        "informed seed replay",
-        {Seam::construction, static_cast<int>(CW::seed), last, 1},
-        built,
-        [](MP &sim) {
-            VecD doubled = params();
-            doubled.insert(doubled.end(), params().begin(), params().end());
-            VecZ shifted = lih().param_inds;
-            for (auto &p : shifted) {
-                p += params().size();
-            }
-            sim.build_graph(lih().majoranas, shifted, lih().gen_coeffs, std::nullopt, doubled);
-        });
+        "propagation apply",
+        {Seam::construction, static_cast<int>(CW::apply), last, 0},
+        none,
+        [](MP &sim) { sim.propagate(lih().majoranas, lih().param_inds, lih().gen_coeffs, params()); });
+    check_post_mutation_failure("informed seed replay",
+                                {Seam::construction, static_cast<int>(CW::seed), last, 1},
+                                built,
+                                [](MP &sim) {
+                                    VecD doubled = params();
+                                    doubled.insert(doubled.end(), params().begin(), params().end());
+                                    VecZ shifted = lih().param_inds;
+                                    for (auto &p : shifted) {
+                                        p += params().size();
+                                    }
+                                    sim.build_graph(lih().majoranas, shifted, lih().gen_coeffs, std::nullopt, doubled);
+                                });
     check_post_mutation_failure("retained preparation",
                                 {Seam::evaluation, static_cast<int>(EW::retain), last, std::nullopt},
                                 built,
@@ -826,7 +823,9 @@ BOOST_AUTO_TEST_CASE(sharded_root_allocation_failures_are_catchable) {
     const auto data = load_case_data<8>("random_exact.msgpack");
     using Small = MonomialPropagator<8>;
     using SmallAccess = monoprop::detail::PropagatorTestAccess<8>;
-    const auto make_small = [&] { return Small(data.hamiltonian, 16, data.initial_state, std::nullopt, MPI_COMM_SELF); };
+    const auto make_small = [&] {
+        return Small(data.hamiltonian, 16, data.initial_state, std::nullopt, MPI_COMM_SELF);
+    };
     auto reference = make_small();
     reference.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double expected = reference.expectation_value(data.parameters);

@@ -238,7 +238,8 @@ auto MonomialPropagator<NumModes>::mutation_failed_(std::exception_ptr error) ->
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::sole_shard_(const char *what) const -> const detail::sharded::ShardState<NumModes> & {
+auto MonomialPropagator<NumModes>::sole_shard_(const char *what) const
+    -> const detail::sharded::ShardState<NumModes> & {
     require_valid_();
     if (shards_.size() != 1) {
         throw MultiPartitionUnsupported(
@@ -452,8 +453,9 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
             .graph = circuit,
             .mapped_params = mapped_params,
             .seed_params = seed_params ? std::optional<std::span<const double>>(*seed_params) : std::nullopt};
-        finish_construction_(detail::sharded::build_graph_informed<NumModes>(parallel_, shards_, ctx, informed, observer),
-                             mutation_started);
+        finish_construction_(
+            detail::sharded::build_graph_informed<NumModes>(parallel_, shards_, ctx, informed, observer),
+            mutation_started);
     });
 }
 
@@ -602,7 +604,8 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
     // Views of the retained snapshots and `params`, built for this call only. A failure up to and including the
     // evaluator's own argument checks happens before its team and mutates nothing.
     const auto requests = retained.requests(params);
-    auto outcome = detail::sharded::evaluate_shards(requests, retained.callbacks, retained.options, gradient, observer_);
+    auto outcome =
+        detail::sharded::evaluate_shards(requests, retained.callbacks, retained.options, gradient, observer_);
     // The team has run: owners warmed their lazy caches and per-thread scratch.
     if (mutation_started != nullptr) {
         *mutation_started = true;
@@ -638,8 +641,8 @@ auto MonomialPropagator<NumModes>::expectation_value_functional(std::optional<do
     return run_operation_(true, [&](bool &mutation_started) -> std::function<double(const VecD &)> {
         // Prepared once; every call reuses the snapshots. The callbacks borrow the shards' inverted indices, so the
         // callable must not outlive this propagator.
-        auto retained =
-            std::make_shared<const detail::sharded::RetainedEvaluation>(prepare_retained_(pare_threshold, mutation_started));
+        auto retained = std::make_shared<const detail::sharded::RetainedEvaluation>(
+            prepare_retained_(pare_threshold, mutation_started));
         const auto expected_epoch = initial_operator_epoch_;
         return [owner = this, expected_epoch, retained](const VecD &params) -> double {
             owner->enter_operation_(true);
@@ -655,8 +658,8 @@ auto MonomialPropagator<NumModes>::expectation_value_and_gradient_functional(std
     -> std::function<std::pair<double, VecD>(const VecD &)> {
     using Functional = std::function<std::pair<double, VecD>(const VecD &)>;
     return run_operation_(true, [&](bool &mutation_started) -> Functional {
-        auto retained =
-            std::make_shared<const detail::sharded::RetainedEvaluation>(prepare_retained_(pare_threshold, mutation_started));
+        auto retained = std::make_shared<const detail::sharded::RetainedEvaluation>(
+            prepare_retained_(pare_threshold, mutation_started));
         const auto expected_epoch = initial_operator_epoch_;
         return [owner = this, expected_epoch, retained](const VecD &params) -> std::pair<double, VecD> {
             owner->enter_operation_(true);
@@ -739,9 +742,9 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
     for (size_t shard = 0; shard < threads; ++shard) {
         auto &state = *shards_[shard];
         const VecD &picture = state.op.current_picture(schrodinger_);
-        const MPGraphView view =
-            inplace ? sliced[shard].emplace(state.graph.slice_graph(num_layers, true)).replay_view()
-                    : state.graph.slice_view(num_layers);
+        const MPGraphView view = inplace
+                                     ? sliced[shard].emplace(state.graph.slice_graph(num_layers, true)).replay_view()
+                                     : state.graph.slice_view(num_layers);
         requests.push_back(detail::sharded::ReplayRequest{.coeffs = picture, .graph = view});
         callbacks.push_back(
             detail::make_cos_callbacks<NumModes>(state.op.inverted_index(), view, basis_, detail::parallel::Options{}));
