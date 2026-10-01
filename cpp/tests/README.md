@@ -19,7 +19,10 @@ skip (with a message) when run with too few.
 The custom `main()` in `unit_tests.cpp` initializes MPI and forces
 `monoprop_PARTITIONS=off`, so white-box tests observe the single-partition engine.
 A test that needs the partition runtime must pass an explicit `partitions=` argument
-(see `partition_equivalence_tests.cpp`).
+(see `partition_equivalence_tests.cpp`). In a `monoprop_SHARDED_OPENMP_PROTOTYPE=ON`
+build `main()` instead defaults `monoprop_NUM_THREADS` to 1 (an explicit value wins),
+because the prototype rejects the partition selector and ordinary cases inspect a
+single shard; see "Sharded prototype build" below.
 
 ## Building Tests
 
@@ -251,6 +254,38 @@ name and cannot address suite-nested cases, tests use flat
 New `*.cpp` files are auto-discovered on the next configure, with no CMake edit
 needed. A file with its own `main()` must be excluded from the glob, as
 `mpi_failure_driver.cpp` is.
+
+## Sharded prototype build
+
+`sharded_root_tests.cpp` compiles only with `monoprop_SHARDED_OPENMP_PROTOTYPE=ON`. It covers the integrated
+root (`MonomialPropagator` over `detail/sharded/*`, `ShardedPropagator.inl`): T routed shards at the (1, T)
+router, aggregates over every shard with shared metadata counted once, the raw-accessor rule (the actual
+sole shard at T = 1, `MultiPartitionUnsupported` naming the T = 1 launch otherwise), rejection of the legacy
+controls, actual-worker participation in seeding, copies, construction and publication, informed seed
+replay, propagation, retained preparation, forward replay, reverse derivatives, contraction and the root's
+own owner phases (an opaque basis-change cutoff traverses on the primary), per-shard export and contraction
+blocks, initial-operator routing, remapping with replaced immutable cores, independent copies, pre-mutation
+rejections, post-mutation invalidation from failures injected in each of those phases (and in result
+combination and export), functional epoch/graph guards, contained seed/copy failures and an
+`AllocationProbe` sweep. Observation and injection go through `PropagatorTestAccess` and the test-only
+`detail/sharded/RootObserver.h`; production passes a null observer. `sharded_root_env_t1`, `_t2` and `_t4`
+rerun the cases in fresh exact-team processes. Numerical parity with the legacy runtime at the same (1, T)
+geometry, and across T, is checked from separate processes by `tests/test_sharded_openmp.py`, because the
+two class definitions must never share a process.
+
+Migration ledger for the prototype build (S4). Default builds keep every row executable.
+
+| Suite or registration | Prototype build | Coverage there |
+| --- | --- | --- |
+| `partition_equivalence_tests.cpp`, `partition_group_clone_tests.cpp` | Preserved in OFF builds | Legacy facade and the obsolete child-factory extension; the prototype rejects both controls (`sharded_root_rejects_explicit_partitions`) |
+| `sharded_state_tests.cpp`, `sharded_construction_tests.cpp`, `sharded_evaluation_tests.cpp` | Preserved in OFF builds (live legacy partition oracles) | The same seam code through the root (`sharded_root_*`); bitwise legacy comparison at (1, T) from a separate process (`tests/test_sharded_openmp.py`) |
+| `openmp_runtime_tests.cpp`; `openmp_env_prototype_budget_*`, `openmp_env_runtime_thread_limit_2`, `openmp_env_no_affinity_change` | Preserved in OFF builds (one-store prototype, partitions, limited teams) | Budget capture and copies (`sharded_root_owns_t_routed_shards`, `..._copies_are_owner_allocated_and_independent`), strict parser (`tests/test_openmp_config.py`, `tests/test_sharded_openmp.py`), invalidation (`sharded_root_failures_after_mutation_invalidate_the_root`) |
+| `fused_cos_sweep_tests.cpp` and its `openmp_env_kernels_*` cases | Preserved in OFF builds (one-store cross-budget raw IDs) | Fused propagation through the root against legacy partitions, bitwise, and across T (`tests/test_sharded_openmp.py`); the remaining `openmp_env_kernels_*` cases still run |
+| `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`, `mpi_failure_*`, the `*_mpi_2`/`*_mpi_4` suite variants | Preserved in OFF + MPI builds (multi-rank legacy) | `sharded_root_multirank_rejected_mpi_2` (negative coverage); P > 1 support is S5 |
+| `ctor_validation_tests.cpp` | Kept, adapted | The oversized Schrödinger case uses T shards instead of `partitions=2` |
+| Other suites that construct propagators (`build_graph`, `exact_upper_atol_rescue`, `gate_boundaries`, `mp_operator`, `mpfunctions`, `pauli_build_layer`, `simulator_copy`, `update_initial_operator`, ...) | Kept as T = 1 raw-layout tests | Unchanged assertions on the sole shard |
+| `PropagatorTestAccess.h` | Rewritten for the prototype | Legacy members only in OFF builds; `shards()`, `router()`, `observe()` and `construct_observed()` in prototype builds |
+| `link_export_probe` | Kept, adapted | Chains (b) and (e) check the rejection; chain (j) runs the root's public operations through `monoprop::monoprop` |
 
 ## MPI Test Configuration
 

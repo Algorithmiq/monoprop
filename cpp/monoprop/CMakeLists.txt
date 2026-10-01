@@ -17,10 +17,13 @@ target_sources(
     Validation.cpp
 )
 
+# PUBLIC/INTERFACE, never private: both macros change template definitions and class layout, so the bindings, the
+# tests and installed consumers must see exactly the library's value.
 target_compile_definitions(
   monoprop-objs
   PUBLIC
     $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_SHARDED_OPENMP_PROTOTYPE}>:monoprop_SHARDED_OPENMP_PROTOTYPE>
 )
 
 # flags to prepend
@@ -101,6 +104,7 @@ target_compile_definitions(
   monoprop
   INTERFACE
     $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
+    $<$<BOOL:${monoprop_SHARDED_OPENMP_PROTOTYPE}>:monoprop_SHARDED_OPENMP_PROTOTYPE>
 )
 
 target_compile_features(monoprop INTERFACE cxx_std_23)

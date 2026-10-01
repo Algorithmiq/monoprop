@@ -38,6 +38,12 @@ benchmark framework. It has exactly three modes:
 The launcher, allocation, binding and environment are external: ``observe`` and ``validate``
 run under whatever ``mpiexec`` (MPI builds) or direct launch (MPI-off builds) supplies them, and
 check what they observe against the campaign cell and the placement evidence.
+
+Each arm is tied to the runtime its binary was compiled with, read from the measured extension
+file itself (``runtime_identity``): the candidate arm (shape ``openmp``) only runs on a sharded
+OpenMP prototype build, the baseline arm (shape ``partitions``) never does, and ``compare``
+refuses candidate evidence without that positive identity. Neither arm can be selected by
+relabelling an argument or an environment variable.
 """
 
 from __future__ import annotations
@@ -635,6 +641,7 @@ class Context:
     has_mpi: bool
     binary_path: str
     binary_hash: str
+    runtime_identity: dict[str, Any]
     declared: dict[str, Any]
     cpu_allocation: str
     placement_path: str
@@ -697,6 +704,8 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
         declared_shape,
         import_mpi,
         require_arm_shape,
+        require_shape_runtime,
+        runtime_identity,
         settings_snapshot,
     )
 
@@ -734,7 +743,14 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
         raise EvidenceError(msg)
 
     binary = Path(monoprop._core.__file__)
-    binary_hash = file_sha256(binary)
+    try:
+        identity_of_binary = runtime_identity(
+            binary, getattr(monoprop._core, "__runtime_identity__", None)
+        )
+        require_shape_runtime(args.runtime_shape, identity_of_binary)
+    except PreflightError as exc:
+        raise EvidenceError(str(exc)) from exc
+    binary_hash = identity_of_binary["sha256"]
     everyone = (
         local_cpus
         if comm is None
@@ -763,6 +779,7 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
         has_mpi=bool(has_mpi),
         binary_path=str(binary),
         binary_hash=binary_hash,
+        runtime_identity=identity_of_binary,
         declared=declared,
         cpu_allocation=cpu_allocation,
         placement_path=str(placement_path),
@@ -797,6 +814,7 @@ def common_fields(
         "parameters_digest": cell["parameters_digest"],
         "binary_path": ctx.binary_path,
         "binary_hash": ctx.binary_hash,
+        "runtime_identity": ctx.runtime_identity,
         "has_mpi": ctx.has_mpi,
         "observed": {"ranks": ctx.size, "cpu_allocation": ctx.cpu_allocation},
         "declared": ctx.declared,
@@ -1585,6 +1603,37 @@ class _Evidence:
         return self.cache[path]
 
 
+#: The runtime each arm's binary must have been compiled with (see ``runtime_identity``).
+ARM_RUNTIMES = {"baseline": "legacy", "candidate": "sharded"}
+
+
+def check_runtime_identity(artifact: dict[str, Any], arm: str, what: str) -> None:
+    """Require an artifact's recorded binary identity to match its arm.
+
+    Candidate evidence must carry a positive, marker-backed sharded identity for the very binary
+    it names. Baseline evidence may predate the field (the frozen partition baseline's records);
+    when present it must be legacy, so a sharded binary cannot stand in for the baseline.
+    """
+    identity = artifact.get("runtime_identity")
+    if identity is None and arm == "baseline":
+        return
+    if not isinstance(identity, dict):
+        msg = f"{what} lacks the runtime identity of its binary"
+        raise EvidenceError(msg)
+    if identity.get("sha256") != artifact.get("binary_hash"):
+        msg = f"{what}: runtime identity was read from a different binary"
+        raise EvidenceError(msg)
+    if identity.get("runtime") != ARM_RUNTIMES[arm]:
+        msg = (
+            f"{what}: the {arm} arm needs a binary built with the {ARM_RUNTIMES[arm]} runtime, "
+            f"not {identity.get('runtime')!r}"
+        )
+        raise EvidenceError(msg)
+    if arm == "candidate" and identity.get("marked") is not True:
+        msg = f"{what}: a candidate binary must carry the sharded runtime marker"
+        raise EvidenceError(msg)
+
+
 def _check_join(
     artifact: dict[str, Any],
     expected: dict[str, Any],
@@ -1592,6 +1641,7 @@ def _check_join(
     placement_cache: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
     """Require an artifact to belong to exactly this cell/arm/binary/configuration."""
+    check_runtime_identity(artifact, expected["arm"], what)
     for key in _JOIN_FIELDS:
         if key not in artifact:
             msg = f"{what} lacks {key}"

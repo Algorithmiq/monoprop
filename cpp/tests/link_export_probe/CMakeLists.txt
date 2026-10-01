@@ -26,6 +26,13 @@ target_link_libraries(
     monoprop
 )
 
+# (j): the consumer must inherit exactly the build's runtime selection through the imported target.
+target_compile_definitions(
+  monoprop_link_export_probe.x
+  PRIVATE
+    monoprop_EXPECT_SHARDED_PROTOTYPE=$<BOOL:${monoprop_SHARDED_OPENMP_PROTOTYPE}>
+)
+
 if(NOT APPLE)
   target_link_options(monoprop_link_export_probe.x PRIVATE "-Wl,--no-undefined")
 endif()

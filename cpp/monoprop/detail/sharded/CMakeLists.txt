@@ -6,6 +6,7 @@ target_sources(
       FILES
         "Construction.h"
         "Evaluation.h"
+        "RootObserver.h"
         "State.h"
         "Team.h"
 )

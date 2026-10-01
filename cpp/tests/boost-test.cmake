@@ -53,7 +53,16 @@ function(discover_tests TARGET)
     ctest_tests_file
     "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_tests-${args_hash}.cmake"
   )
-  if(_monoprop_mpiexec AND monoprop_ENABLE_MPI)
+  # The sharded prototype supports one rank until S5, so its build registers no multi-rank suite variants; its
+  # multi-rank rejection has a dedicated launch (cpp/tests/CMakeLists.txt).
+  if(
+    _monoprop_mpiexec
+    AND
+      monoprop_ENABLE_MPI
+    AND
+      NOT
+        monoprop_SHARDED_OPENMP_PROTOTYPE
+  )
     set(_enable_mpi_variants "ON")
   else()
     set(_enable_mpi_variants "OFF")

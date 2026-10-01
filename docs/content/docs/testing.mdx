@@ -127,6 +127,31 @@ and `sharded_evaluation_env_t1`, `_t2` and `_t4`. Select all of them with `-R '^
 executable replaces the global `operator new`/`delete` family (`cpp/tests/AllocationProbe.cpp`) so these
 cases can inject real allocation failures; the library and installed consumers are unaffected.
 
+A `monoprop_SHARDED_OPENMP_PROTOTYPE=ON` build ([Building](/building)) tests the integrated sharded
+root instead. `sharded_root_tests.cpp` drives its public operations with private shard inspection, actual
+worker observation and failure injection, rerun as `sharded_root_env_t1`, `_t2` and `_t4`:
+
+```bash
+ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -R '^sharded_root'
+```
+
+In that build the unit-test `main()` defaults `monoprop_NUM_THREADS` to 1 instead of setting
+`monoprop_PARTITIONS`, which the prototype rejects. The S1 to S3 seam suites, which compare against live
+legacy partitions, are not compiled there; nor are the other suites that need the legacy root (the list
+is `_monoprop_legacy_root_suites` in `cpp/tests/CMakeLists.txt`, with the migration ledger in
+`cpp/tests/README.md`). The multi-rank suite variants and `mpi_failure_*` scenarios are legacy-only too;
+an MPI prototype build registers `sharded_root_multirank_rejected_mpi_2` instead. The Python
+integration tests launch a fresh interpreter per T:
+
+```bash
+monoprop_TEST_EXPECT_RUNTIME=sharded monoprop_TEST_LEGACY_PYTHON="$LEGACY_ENV/bin/python" \
+  UV_PROJECT_ENVIRONMENT="$PROTO_ENV" uv run --no-sync pytest tests/test_sharded_openmp.py -v
+```
+
+`monoprop_TEST_LEGACY_PYTHON` names a separately built legacy environment. Its processes run at
+`monoprop_PARTITIONS=T` for a bitwise comparison at the same (1, T) geometry; without it those cases skip.
+`monoprop_TEST_EXPECT_RUNTIME` makes a mislabelled build fail instead of skip.
+
 The MPI build also registers `mpi_failure_*` entries, labelled `mpi` and `mpi_failure`, from
 `cpp/tests/mpi_failure_driver.cpp`. That driver has its own `main()`, so the unit-runner glob
 excludes it. Each entry launches two ranks through `cpp/tests/run_mpi_failure_scenario.cmake`, with

@@ -56,6 +56,18 @@ _TINY = [
 ]
 _FAMILIES = ("build_graph", "propagate", "energy", "gradient")
 
+# The runtime the imported extension was compiled with: a sharded prototype build serves only the
+# ``openmp`` shape, a legacy build only ``partitions`` (preflight.require_shape_runtime).
+_SHARDED_MARKER = "monoprop-runtime=sharded-openmp-prototype"
+_LEGACY_MARKER = "monoprop-runtime=legacy-partitions"
+SHARDED_BUILD = getattr(monoprop._core, "__runtime_identity__", None) == _SHARDED_MARKER
+_legacy_build = pytest.mark.skipif(
+    SHARDED_BUILD, reason="needs a legacy (partition) build"
+)
+_sharded_build = pytest.mark.skipif(
+    not SHARDED_BUILD, reason="needs a sharded prototype build"
+)
+
 # These tests launch their own processes (pytest, the driver, mpiexec). Inside a multi-rank MPI test
 # job every rank would repeat those launches nested in the parent job, so they run outside one.
 _IN_MPI_JOB = (
@@ -104,11 +116,13 @@ def test_suite_records_independent_exactness_for_all_four_families(
     _needs_bench_tools()
     results = tmp_path / "results"
     results.mkdir()
+    # The sharded prototype rejects the partition selector; its single shard comes from the budget.
+    shape = {} if SHARDED_BUILD else {"monoprop_PARTITIONS": "1"}
     env = _bench_env(
         monoprop_BENCH_LABEL="tiny",
         monoprop_BENCH_RESULTS=str(results),
-        monoprop_PARTITIONS="1",
         monoprop_NUM_THREADS="1",
+        **shape,
     )
     proc = _run_benches(
         *_TINY,
@@ -196,12 +210,19 @@ def test_suite_rejects_contradictory_declarations(
 @pytest.mark.parametrize(
     ("args", "env"),
     [
-        (
+        pytest.param(
             ["--runtime-shape=partitions", "--build-mode=mpi-off"],
             {"monoprop_PARTITIONS": "2", "monoprop_NUM_THREADS": "2"},
+            marks=_legacy_build,
         ),
-        (["--runtime-shape=openmp"], {"monoprop_NUM_THREADS": "2"}),
-        (["--runtime-shape=openmp"], {"OMP_NUM_THREADS": "2"}),
+        pytest.param(
+            ["--runtime-shape=openmp"],
+            {"monoprop_NUM_THREADS": "2"},
+            marks=_sharded_build,
+        ),
+        pytest.param(
+            ["--runtime-shape=openmp"], {"OMP_NUM_THREADS": "2"}, marks=_sharded_build
+        ),
         (["--build-mode=mpi-off"], {}),
         ([], {}),
     ],
@@ -214,6 +235,23 @@ def test_suite_accepts_valid_declarations(args: list[str], env: dict[str, str]) 
 
 
 @_launches
+def test_suite_rejects_a_shape_its_binary_cannot_serve() -> None:
+    # A well-formed declaration of the other runtime's shape: only the binary's own identity decides.
+    _needs_bench_tools()
+    if SHARDED_BUILD:
+        args, env = (
+            ["--runtime-shape=partitions"],
+            {"monoprop_PARTITIONS": "2", "monoprop_NUM_THREADS": "2"},
+        )
+    else:
+        args, env = ["--runtime-shape=openmp"], {"monoprop_NUM_THREADS": "2"}
+    proc = _run_benches("--collect-only", "-q", *args, env=_bench_env(**env))
+
+    assert proc.returncode != 0
+    assert "cannot change which runtime a binary contains" in proc.stdout + proc.stderr
+
+
+@_launches
 @pytest.mark.skipif(
     not monoprop.has_mpi or shutil.which("mpiexec") is None,
     reason="needs an MPI extension and mpiexec",
@@ -221,12 +259,13 @@ def test_suite_accepts_valid_declarations(args: list[str], env: dict[str, str]) 
 @pytest.mark.parametrize(
     ("args", "env", "ok"),
     [
-        # The legacy guard alone would reject this candidate shape above one rank.
-        (["--runtime-shape=openmp"], {"monoprop_NUM_THREADS": "1"}, True),
+        # The legacy guard alone would reject this candidate shape above one rank. Each shape is accepted
+        # only from the binary whose runtime serves it.
+        (["--runtime-shape=openmp"], {"monoprop_NUM_THREADS": "1"}, SHARDED_BUILD),
         (
             ["--runtime-shape=partitions"],
             {"monoprop_PARTITIONS": "1", "monoprop_NUM_THREADS": "1"},
-            True,
+            not SHARDED_BUILD,
         ),
         (["--runtime-shape=partitions"], {"monoprop_NUM_THREADS": "1"}, False),
         ([], {}, False),
@@ -271,6 +310,20 @@ def test_multi_rank_shape_preflight(
 #
 # The plan's miniature inventory: two empty-map energy fixtures following the real schema,
 # reference loading and provenance checks. No synthetic-mode bypass exists in the driver.
+
+
+def _identity_field(arm: str, binary_hash: str) -> dict:
+    """The runtime identity an observation records: positive for a candidate, absent (frozen) for a baseline."""
+    if arm == "baseline":
+        return {}
+    return {
+        "runtime_identity": {
+            "runtime": "sharded",
+            "marked": True,
+            "attribute": _SHARDED_MARKER,
+            "sha256": binary_hash,
+        }
+    }
 
 
 @_launches
@@ -396,6 +449,8 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
                 "parameters_digest": target["parameters_digest"],
                 "placement_path": placement_path,
                 "placement_sha256": digest(placement),
+                # A historical baseline record has no runtime identity; a candidate must carry one.
+                **_identity_field(arm, binary_hash),
             }
             validation = {
                 **common,
@@ -653,6 +708,7 @@ class Evidence:
             "parameters_digest": cell["parameters_digest"],
             "placement_path": placement,
             "placement_sha256": _digest(json.loads(Path(placement).read_bytes())),
+            **_identity_field(arm, self.binary(arm, cell["identity"])),
         }
 
     def terms(self, cell: dict, arm: str, ranks: list[list[tuple]]) -> list[str]:
@@ -1695,6 +1751,12 @@ def _fake_context(driver):
         has_mpi=False,
         binary_path="x",
         binary_hash="0" * 64,
+        runtime_identity={
+            "runtime": "legacy",
+            "marked": False,
+            "attribute": None,
+            "sha256": "0" * 64,
+        },
         declared={},
         cpu_allocation="0",
         placement_path="p",
@@ -2059,11 +2121,11 @@ def _e2e_campaign(root: Path, *, has_mpi: bool = False) -> tuple[str, dict]:
         placement = {
             "schema_version": 1,
             "artifact_kind": "placement",
-            "arm": "baseline",
+            "arm": _E2E_ARM,
             "cell_id": cell["id"],
             "binary_hash": binary,
             "identity": cell["identity"],
-            "runtime_shape": "partitions",
+            "runtime_shape": _E2E_SHAPE,
             "declared": {
                 "ranks": 1,
                 "threads": 1,
@@ -2092,10 +2154,15 @@ def _serial_comm():
     return MPI.COMM_SELF
 
 
+# The end-to-end runs measure the imported build as the arm its runtime serves: a legacy build as the
+# baseline (with the partition selector), a sharded prototype build as the candidate (without it).
+_E2E_ARM = "candidate" if SHARDED_BUILD else "baseline"
+_E2E_OTHER_ARM = "baseline" if SHARDED_BUILD else "candidate"
+_E2E_SHAPE = "openmp" if SHARDED_BUILD else "partitions"
 _E2E_SETTINGS = {
     "monoprop_NUM_THREADS": "1",
-    "monoprop_PARTITIONS": "1",
     "OMP_NUM_THREADS": "1",
+    **({} if SHARDED_BUILD else {"monoprop_PARTITIONS": "1"}),
 }
 
 
@@ -2118,9 +2185,9 @@ def _observe_args(
 ) -> list[str]:
     return [
         "--arm",
-        "baseline",
+        _E2E_ARM,
         "--runtime-shape",
-        "partitions",
+        _E2E_SHAPE,
         "--campaign",
         campaign,
         "--cell-id",
@@ -2152,15 +2219,15 @@ def test_observe_and_validate_write_complete_joined_artifacts(tmp_path: Path) ->
 
         cell = loaded.cells[cell_id]
         timed = json.loads(
-            (out / "baseline" / cell_id / "s00" / "timed.json").read_text()
+            (out / _E2E_ARM / cell_id / "s00" / "timed.json").read_text()
         )
         built = json.loads(
-            (out / "baseline" / cell_id / "s00" / "construction.json").read_text()
+            (out / _E2E_ARM / cell_id / "s00" / "construction.json").read_text()
         )
-        (validation_path,) = (out / "baseline" / cell_id).glob("validation-*.json")
+        (validation_path,) = (out / _E2E_ARM / cell_id).glob("validation-*.json")
         validation = json.loads(validation_path.read_text())
         expected = {
-            "arm": "baseline",
+            "arm": _E2E_ARM,
             "cell_id": cell_id,
             "campaign_sha256": loaded.sha256,
             "binary_hash": timed["binary_hash"],
@@ -2176,6 +2243,11 @@ def test_observe_and_validate_write_complete_joined_artifacts(tmp_path: Path) ->
         for artifact in (timed, built, validation):
             driver._check_join(artifact, expected, cell_id, placement_cache)
             assert artifact["has_mpi"] is False
+            # The binary's own runtime, read from the measured file.
+            assert artifact["runtime_identity"]["runtime"] == (
+                "sharded" if SHARDED_BUILD else "legacy"
+            )
+            assert artifact["runtime_identity"]["sha256"] == artifact["binary_hash"]
         assert timed["runtime_seconds"] > 0
         assert timed["op_exact"] is True
         assert timed["outer_exact"] is True
@@ -2213,8 +2285,28 @@ def test_observe_and_validate_write_complete_joined_artifacts(tmp_path: Path) ->
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"arm": "candidate"}, "arm"),
-        ({"env": {"monoprop_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}}, "partitions"),
+        ({"arm": _E2E_OTHER_ARM}, "arm"),
+        # The selector the declared shape needs is missing (legacy), or present where it must not be (sharded).
+        (
+            {
+                "env": {"monoprop_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
+                if not SHARDED_BUILD
+                else {**_E2E_SETTINGS, "monoprop_PARTITIONS": "1"}
+            },
+            "partitions",
+        ),
+        # Relabelling both the arm and the shape (with a consistent environment) cannot select the other
+        # runtime: the measured binary's identity decides.
+        (
+            {
+                "arm": _E2E_OTHER_ARM,
+                "shape": "partitions" if SHARDED_BUILD else "openmp",
+                "env": {**_E2E_SETTINGS, "monoprop_PARTITIONS": "1"}
+                if SHARDED_BUILD
+                else {"monoprop_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
+            },
+            "cannot change which runtime",
+        ),
         ({"env": {**_E2E_SETTINGS, "OMP_PLACES": "cores"}}, "settings differ"),
         ({"env": {**_E2E_SETTINGS, "monoprop_ROUTING": "splitmix"}}, "routing"),
         ({"has_mpi": True}, "has_mpi"),
@@ -2232,15 +2324,18 @@ def test_observe_rejects_contradictory_evidence(
     )
     if "arm" in change:
         args[1] = change["arm"]
+    if "shape" in change:
+        args[3] = change["shape"]
     env = _bench_env(**change.get("env", _E2E_SETTINGS))
     proc = _driver_run("observe", *args, "--sample-id", "s00", env=env)
 
     assert proc.returncode == 2
     assert message in proc.stderr
-    assert not (tmp_path / "r" / "baseline" / cell / "s00" / "timed.json").exists()
+    assert not (tmp_path / "r" / _E2E_ARM / cell / "s00" / "timed.json").exists()
 
 
 @_launches
+@_legacy_build  # two ranks: the sharded prototype supports one until S5
 @pytest.mark.skipif(
     not monoprop.has_mpi or shutil.which("mpiexec") is None,
     reason="needs an MPI extension and mpiexec",
@@ -2392,3 +2487,186 @@ def test_replay_stream_comparison_needs_no_second_file(tmp_path: Path) -> None:
     assert same["ok"] is True
     assert moved["ok"] is False
     assert list(tmp_path.iterdir()) == [own]
+
+
+# ------------------------------------------------------------------------ binary runtime identity
+
+
+def _preflight():
+    return pytest.importorskip("monoprop_bench_tools.preflight")
+
+
+@pytest.mark.parametrize(
+    ("content", "attribute", "runtime", "marked"),
+    [
+        (b"..." + _SHARDED_MARKER.encode() + b"...", _SHARDED_MARKER, "sharded", True),
+        (b"..." + _LEGACY_MARKER.encode() + b"...", _LEGACY_MARKER, "legacy", True),
+        # The preserved partition baseline predates the marker: legacy, by its absence.
+        (b"a historical extension", None, "legacy", False),
+    ],
+)
+def test_runtime_identity_is_read_from_the_binary(
+    tmp_path: Path,
+    content: bytes,
+    attribute: str | None,
+    runtime: str,
+    marked: bool,  # noqa: FBT001 - parametrized
+) -> None:
+    preflight = _preflight()
+    binary = tmp_path / "_core.so"
+    binary.write_bytes(content)
+    identity = preflight.runtime_identity(binary, attribute)
+    assert identity == {
+        "runtime": runtime,
+        "marked": marked,
+        "attribute": attribute,
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("content", "attribute"),
+    [
+        # A module claiming the candidate while its file is legacy, and the reverse.
+        (_LEGACY_MARKER.encode(), _SHARDED_MARKER),
+        (_SHARDED_MARKER.encode(), _LEGACY_MARKER),
+        # A historical binary cannot acquire an identity by attribute alone.
+        (b"historical", _SHARDED_MARKER),
+        (_SHARDED_MARKER.encode(), None),
+        (_SHARDED_MARKER.encode() + _LEGACY_MARKER.encode(), _SHARDED_MARKER),
+    ],
+)
+def test_runtime_identity_rejects_disagreement(
+    tmp_path: Path, content: bytes, attribute: str | None
+) -> None:
+    preflight = _preflight()
+    binary = tmp_path / "_core.so"
+    binary.write_bytes(content)
+    with pytest.raises(preflight.PreflightError):
+        preflight.runtime_identity(binary, attribute)
+
+
+def test_runtime_marker_split_across_scan_chunks_is_found(tmp_path: Path) -> None:
+    preflight = _preflight()
+    binary = tmp_path / "_core.so"
+    content = b"x" * 5 + _SHARDED_MARKER.encode() + b"y" * 3
+    binary.write_bytes(content)
+    for chunk in (1, 7, 16, 64):
+        sha, found = preflight._scan(binary, chunk)
+        assert found == {"sharded"}, chunk
+        assert sha == hashlib.sha256(content).hexdigest()
+
+
+def test_a_shape_needs_the_runtime_that_serves_it() -> None:
+    preflight = _preflight()
+    sharded = {"runtime": "sharded"}
+    legacy = {"runtime": "legacy"}
+    preflight.require_shape_runtime("openmp", sharded)
+    preflight.require_shape_runtime("partitions", legacy)
+    # A legacy binary declared as openmp would run its partition runtime under the candidate label.
+    with pytest.raises(preflight.PreflightError, match="cannot change which runtime"):
+        preflight.require_shape_runtime("openmp", legacy)
+    with pytest.raises(preflight.PreflightError, match="cannot change which runtime"):
+        preflight.require_shape_runtime("partitions", sharded)
+
+
+def test_the_imported_extension_identifies_its_own_runtime() -> None:
+    preflight = _preflight()
+    identity = preflight.runtime_identity(
+        Path(monoprop._core.__file__),
+        getattr(monoprop._core, "__runtime_identity__", None),
+    )
+    assert identity["marked"] is True
+    assert identity["runtime"] == ("sharded" if SHARDED_BUILD else "legacy")
+
+
+@pytest.mark.parametrize(
+    ("arm", "change"),
+    [
+        ("candidate", {"runtime_identity": None}),
+        (
+            "candidate",
+            {
+                "runtime_identity": {
+                    "runtime": "legacy",
+                    "marked": True,
+                    "attribute": _LEGACY_MARKER,
+                }
+            },
+        ),
+        (
+            "candidate",
+            {
+                "runtime_identity": {
+                    "runtime": "sharded",
+                    "marked": False,
+                    "attribute": None,
+                }
+            },
+        ),
+        (
+            "baseline",
+            {
+                "runtime_identity": {
+                    "runtime": "sharded",
+                    "marked": True,
+                    "attribute": _SHARDED_MARKER,
+                }
+            },
+        ),
+        ("baseline", {"runtime_identity": "legacy"}),
+    ],
+)
+def test_compare_rejects_an_arm_whose_binary_has_the_wrong_runtime(
+    tmp_path: Path, arm: str, change: dict
+) -> None:
+    evidence, cell = _one_cell(tmp_path)
+    identity = change["runtime_identity"]
+    if isinstance(identity, dict):
+        identity = {**identity, "sha256": Evidence.binary(arm, cell["identity"])}
+    extra = {"timed_extra": {"runtime_identity": identity}}
+    manifest = evidence.manifest([evidence.passing(cell, **{arm: extra})])
+
+    code, report = evidence.compare(manifest)
+    assert code == 2
+    assert "runtime" in " ".join(report["errors"])
+
+
+def test_compare_rejects_an_identity_read_from_another_binary(tmp_path: Path) -> None:
+    evidence, cell = _one_cell(tmp_path)
+    forged = {
+        "runtime": "sharded",
+        "marked": True,
+        "attribute": _SHARDED_MARKER,
+        "sha256": "f" * 64,
+    }
+    manifest = evidence.manifest(
+        [
+            evidence.passing(
+                cell, candidate={"construction_extra": {"runtime_identity": forged}}
+            )
+        ]
+    )
+
+    code, report = evidence.compare(manifest)
+    assert code == 2
+    assert "different binary" in " ".join(report["errors"])
+
+
+def test_compare_accepts_a_recorded_legacy_baseline(tmp_path: Path) -> None:
+    # New baseline observations record their identity; frozen ones predate it. Both are legacy.
+    evidence, cell = _one_cell(tmp_path)
+    legacy = {
+        "runtime": "legacy",
+        "marked": False,
+        "attribute": None,
+        "sha256": Evidence.binary("baseline", cell["identity"]),
+    }
+    extra = {
+        "timed_extra": {"runtime_identity": legacy},
+        "construction_extra": {"runtime_identity": legacy},
+    }
+    manifest = evidence.manifest([evidence.passing(cell, baseline=extra)])
+
+    code, report = evidence.compare(manifest)
+    assert code == 0, report

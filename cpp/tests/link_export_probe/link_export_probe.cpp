@@ -43,6 +43,9 @@
 //  (i) sharded evaluation (detail/sharded/Evaluation.h) in sharded_evaluation_chain.cpp, whose first monoprop include
 //      is that header: a coefficient-informed extension replaying its seed in-team, a retained functional, and runtime
 //      calls to the exported ev_sharded() and ev_and_grad_sharded() through the imported target.
+//  (j) the inherited runtime selection: the consumer sees monoprop_SHARDED_OPENMP_PROTOTYPE exactly when the build
+//      expected it (monoprop_EXPECT_SHARDED_PROTOTYPE, set by the consumer's CMake). In a prototype build, (b) and
+//      (e) check that the legacy controls are rejected, and the integrated root runs every public operation.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -50,6 +53,8 @@
 #include "monoprop/detail/parallel/Workshare.h"
 #include "monoprop/detail/sharded/Team.h"
 
+#include <algorithm>
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdlib>
@@ -58,6 +63,14 @@
 #include <print>
 #include <stdexcept>
 #include <vector>
+
+#if defined(monoprop_EXPECT_SHARDED_PROTOTYPE)
+#if monoprop_EXPECT_SHARDED_PROTOTYPE && !defined(monoprop_SHARDED_OPENMP_PROTOTYPE)
+#error "expected a sharded prototype package, but monoprop::monoprop did not carry monoprop_SHARDED_OPENMP_PROTOTYPE"
+#elif !monoprop_EXPECT_SHARDED_PROTOTYPE && defined(monoprop_SHARDED_OPENMP_PROTOTYPE)
+#error "expected a legacy package, but monoprop::monoprop carries monoprop_SHARDED_OPENMP_PROTOTYPE"
+#endif
+#endif
 
 // Forces every member function of MonomialPropagator<NumModes> to be compiled for these two
 // representative widths, regardless of which ones main() below happens to call.
@@ -192,6 +205,28 @@ auto run_partition_chain() -> void {
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
 
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    // The prototype must reject the legacy control rather than build a facade.
+    try {
+        MonomialPropagator<kModes> rejected(ham,
+                                            2 * kModes,
+                                            VecZ{0, 1},
+                                            std::nullopt,
+                                            MPI_COMM_SELF,
+                                            std::nullopt,
+                                            std::nullopt,
+                                            CutoffType::Length,
+                                            std::nullopt,
+                                            kModes,
+                                            Basis::Majorana,
+                                            /*partitions=*/2);
+        std::println(stderr, "[link_export_probe] partition chain: FAILED (partitions=2 accepted)");
+        std::exit(1);
+    }
+    catch (const PropagatorConfigError &) {
+        std::println(stderr, "[link_export_probe] partition chain: partitions=2 rejected");
+    }
+#else
     MonomialPropagator<kModes> sim(ham,
                                    2 * kModes,
                                    VecZ{0, 1},
@@ -206,12 +241,34 @@ auto run_partition_chain() -> void {
                                    /*partitions=*/2);
 
     std::println(stderr, "[link_export_probe] partition chain: size={}", sim.size());
+#endif
 }
 
 auto run_one_store_prototype_chain() -> void {
     constexpr size_t kModes = 2;
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    try {
+        MonomialPropagator<kModes> rejected(ham,
+                                            2 * kModes,
+                                            VecZ{0, 1},
+                                            std::nullopt,
+                                            MPI_COMM_SELF,
+                                            std::nullopt,
+                                            std::nullopt,
+                                            CutoffType::Length,
+                                            std::nullopt,
+                                            kModes,
+                                            Basis::Majorana,
+                                            /*partitions=*/1);
+        std::println(stderr, "[link_export_probe] one-store prototype chain: FAILED (partitions=1 accepted)");
+        std::exit(1);
+    }
+    catch (const PropagatorConfigError &) {
+        std::println(stderr, "[link_export_probe] one-store prototype chain: partitions=1 rejected");
+    }
+#else
     MonomialPropagator<kModes> sim(ham,
                                    2 * kModes,
                                    VecZ{0, 1},
@@ -232,7 +289,61 @@ auto run_one_store_prototype_chain() -> void {
                  budget.threads,
                  value,
                  grad.size());
+#endif
 }
+
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The integrated root through the imported target only: every public operation family, checked against itself
+// (graph against graph-free propagation, direct against retained evaluation, unique exported keys).
+auto run_sharded_root_chain() -> bool {
+    constexpr size_t kModes = 6;
+    OperatorDict ham;
+    ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
+    ham[VecZ{2, 3}] = std::complex<double>{0.0, 0.5};
+    ham[VecZ{0, 3, 4, 7}] = std::complex<double>{0.25, 0.0};
+    ham[VecZ{}] = std::complex<double>{1.5, 0.0};
+    const VecZ state{0, 1, 2};
+    const std::vector<VecZ> gates{{0, 2}, {1, 4}, {3, 5}, {2, 7}, {0, 9}};
+    const VecZ mapping{0, 1, 0, 2, 1};
+    const VecD gen{1.0, -0.5, 1.0, 0.75, 1.0};
+    const VecD params{0.3, -0.2, 0.7};
+    const auto make = [&] { return MonomialPropagator<kModes>(ham, 2 * kModes, state, std::nullopt, MPI_COMM_SELF); };
+    auto graph = make();
+    graph.build_graph(gates, mapping, gen);
+    auto direct = make();
+    direct.propagate(gates, mapping, gen, params);
+    const double energy = graph.expectation_value(params);
+    const auto [value, gradient] = graph.expectation_value_and_gradient(params);
+    const auto pared = graph.expectation_value_and_gradient_functional(1e-3)(params);
+    auto informed = make();
+    informed.build_graph(gates, mapping, gen, std::nullopt, params);
+    auto copy = graph;
+    copy.update_initial_operator(OperatorDict{{VecZ{0, 1}, std::complex<double>{0.0, 2.0}}});
+    const auto terms = graph.evolved_operator_terms(params, 0.0);
+    std::vector<VecZ> keys;
+    for (const auto &[key, coeff] : terms) {
+        keys.push_back(key);
+    }
+    std::ranges::sort(keys);
+    const bool unique = std::ranges::adjacent_find(keys) == keys.end();
+    const auto contracted = graph.contract_partially(params, true);
+    const double after = graph.expectation_value(VecD{});
+    const double reference = direct.expectation_value(VecD{});
+    const auto close = [](double a, double b) { return std::abs(a - b) <= 1e-10 * (1.0 + std::abs(a)); };
+    const auto threads = monoprop::detail::parallel::capture_thread_budget().threads;
+    const bool correct = close(energy, reference) && energy == value && gradient.size() == params.size()
+                         && close(pared.first, energy) && close(after, energy) && unique && terms.size() == graph.size()
+                         && contracted.size() == graph.size() && graph.graph_layers() == 0
+                         && copy.expectation_value(params) != energy && informed.graph_layers() == gates.size();
+    std::println(stderr,
+                 "[link_export_probe] sharded root chain: team={} energy={} terms={} correct={}",
+                 threads,
+                 energy,
+                 terms.size(),
+                 correct);
+    return correct;
+}
+#endif
 
 } // namespace
 
@@ -256,6 +367,12 @@ auto main() -> int {
     }
     run_pauli_chain();
     run_one_store_prototype_chain();
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    if (!run_sharded_root_chain()) {
+        std::println(stderr, "[link_export_probe] sharded root chain: FAILED");
+        return 1;
+    }
+#endif
     monoprop::mpi::finalize();
     std::println(stderr, "[link_export_probe] OK");
     return 0;

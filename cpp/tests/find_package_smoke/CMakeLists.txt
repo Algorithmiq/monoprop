@@ -13,3 +13,14 @@ add_executable(
   ../link_export_probe/sharded_evaluation_chain.cpp
 )
 target_link_libraries(smoke PRIVATE monoprop::monoprop)
+
+# The runtime selection the caller expects of this package; defaults to what the package reports. Pass
+# -DSMOKE_EXPECT_SHARDED_PROTOTYPE=ON/OFF to check an installed package independently.
+if(NOT DEFINED SMOKE_EXPECT_SHARDED_PROTOTYPE)
+  set(SMOKE_EXPECT_SHARDED_PROTOTYPE "${monoprop_SHARDED_OPENMP_PROTOTYPE}")
+endif()
+target_compile_definitions(
+  smoke
+  PRIVATE
+    monoprop_EXPECT_SHARDED_PROTOTYPE=$<BOOL:${SMOKE_EXPECT_SHARDED_PROTOTYPE}>
+)

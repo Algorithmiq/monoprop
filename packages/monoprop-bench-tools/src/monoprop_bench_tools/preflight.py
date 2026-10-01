@@ -15,27 +15,40 @@
 """Runtime-shape and build-mode preflight shared by the benchmark suite and the parity driver.
 
 A measurement declares how its process is laid out -- ``partitions`` (the legacy runtime, which
-reads ``monoprop_PARTITIONS``) or ``openmp`` (one store per rank, sized by
+reads ``monoprop_PARTITIONS``) or ``openmp`` (the sharded OpenMP root, whose shard count is
 ``monoprop_NUM_THREADS`` or, when that is unset, the OpenMP runtime default). The preflight checks
-that declaration against the launch environment, the observed rank count and the build mode of
-the extension actually imported, so that neither an arm label nor the absence of ``mpiexec`` can
-stand in for evidence.
+that declaration against the launch environment, the observed rank count, the build mode of the
+extension actually imported and the runtime that extension was compiled with, so that neither an
+arm label, an environment setting nor the absence of ``mpiexec`` can stand in for evidence.
 
 This is measurement policy, not library configuration: the library parses its own settings.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
 #: The two process layouts a measurement may declare.
 RUNTIME_SHAPES = ("partitions", "openmp")
 
 #: The runtime shape each comparison arm must declare.
 ARM_SHAPES = {"baseline": "partitions", "candidate": "openmp"}
+
+#: Literals the extension embeds (``src/monoprop/bindings/bindings.cpp.in``) and exposes as
+#: ``_core.__runtime_identity__``; chosen by the compile definition that selects the runtime.
+#: A binary built before the marker existed (the preserved partition baseline) carries neither.
+RUNTIME_MARKERS = {
+    "sharded": b"monoprop-runtime=sharded-openmp-prototype",
+    "legacy": b"monoprop-runtime=legacy-partitions",
+}
+
+#: The runtime each shape must be served by: only a sharded build can measure ``openmp``.
+SHAPE_RUNTIMES = {"partitions": "legacy", "openmp": "sharded"}
 
 # Launch settings that change what a measurement runs; everything else in the environment is
 # irrelevant to the comparison and is kept out of recorded evidence.
@@ -200,6 +213,87 @@ def declared_shape(
         "has_mpi": has_mpi,
         "settings": settings_snapshot(env),
     }
+
+
+def _scan(binary: Path, chunk: int = 1 << 20) -> tuple[str, set[str]]:
+    """Return the file's SHA-256 and which runtime markers it contains, streaming it.
+
+    Streamed in bounded chunks, overlapping by a marker's length, so the scan neither holds the
+    whole binary nor raises the process's memory high-water mark before a measurement.
+    """
+    overlap = max(len(marker) for marker in RUNTIME_MARKERS.values()) - 1
+    sha = hashlib.sha256()
+    found: set[str] = set()
+    tail = b""
+    with binary.open("rb") as handle:
+        while block := handle.read(chunk):
+            sha.update(block)
+            window = tail + block
+            found.update(
+                name for name, marker in RUNTIME_MARKERS.items() if marker in window
+            )
+            tail = window[-overlap:]
+    return sha.hexdigest(), found
+
+
+def runtime_identity(binary: Path, attribute: object) -> dict[str, Any]:
+    """Return the runtime an extension binary was compiled with, from its own bytes.
+
+    Development provenance for the sharded OpenMP refactor, never a runtime selector: the
+    literal is found in the file whose hash a measurement records, and must agree with the
+    attribute the imported module reports.
+
+    Args:
+        binary: The extension file the process imported (``monoprop._core.__file__``).
+        attribute: Its ``__runtime_identity__``, or ``None`` when the module has none.
+
+    Returns:
+        ``runtime`` (``"sharded"`` or ``"legacy"``), ``marked`` (whether the binary carries a
+        marker at all), ``attribute`` and the binary's ``sha256``.
+
+    Raises:
+        PreflightError: If the binary carries both markers, or the attribute disagrees with the
+            marker it carries (or claims one that a historical binary lacks).
+    """
+    sha, found = _scan(binary)
+    present = [name for name in RUNTIME_MARKERS if name in found]
+    if len(present) > 1:
+        msg = f"{binary} carries both runtime markers; its identity is ambiguous."
+        raise PreflightError(msg)
+    expected = RUNTIME_MARKERS[present[0]].decode() if present else None
+    if attribute != expected:
+        msg = (
+            f"{binary} reports __runtime_identity__={attribute!r}, but its bytes carry "
+            f"{expected!r}; the module and the measured file disagree."
+        )
+        raise PreflightError(msg)
+    return {
+        "runtime": present[0] if present else "legacy",
+        "marked": bool(present),
+        "attribute": attribute,
+        "sha256": sha,
+    }
+
+
+def require_shape_runtime(runtime_shape: str, identity: Mapping[str, Any]) -> None:
+    """Reject a declared shape that the measured binary's runtime cannot serve.
+
+    Raises:
+        PreflightError: If ``runtime_shape`` is unknown, or ``openmp`` is declared for a legacy
+            binary (which would silently run the partition runtime) or ``partitions`` for a
+            sharded one (which rejects the partition selector).
+    """
+    expected = SHAPE_RUNTIMES.get(runtime_shape)
+    if expected is None:
+        msg = f"Unknown runtime shape {runtime_shape!r}; expected one of {RUNTIME_SHAPES}."
+        raise PreflightError(msg)
+    if identity.get("runtime") != expected:
+        msg = (
+            f"Runtime shape {runtime_shape!r} needs a {expected} binary, but the imported "
+            f"extension was built with the {identity.get('runtime')!r} runtime; a label or "
+            "an environment setting cannot change which runtime a binary contains."
+        )
+        raise PreflightError(msg)
 
 
 def import_mpi(*, has_mpi: bool) -> Any:

@@ -16,7 +16,8 @@
 
 // White-box access for tests only. MonomialPropagator befriends this template but the library never
 // defines it, so it adds no production API: tests use it to observe the captured thread budget and to
-// inject failures at real mutation and evaluation boundaries through existing protected members.
+// inject failures at real mutation and evaluation boundaries through existing protected members. In a
+// sharded prototype build it also inspects the root's actual shards and attaches the test-only RootObserver.
 
 #include <functional>
 #include <memory>
@@ -32,6 +33,10 @@
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/sharded/State.h"
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+#include "monoprop/detail/mpi/Routing.h"
+#include "monoprop/detail/sharded/RootObserver.h"
+#endif
 
 namespace monoprop::detail {
 
@@ -47,13 +52,14 @@ struct PropagatorTestAccess {
     // build after the operation has started mutating.
     static auto set_cutoff_fn(Propagator &p, CutoffFn<NumModes> fn) -> void { p.cutoff_fn_ = std::move(fn); }
 
+    static auto clone(const Propagator &p) -> std::unique_ptr<Propagator> { return p.clone_(); }
+
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     // The existing protected functional factory, with a caller-supplied evaluation body.
     template <typename Fn>
     static auto make_functional(Propagator &p, Fn &&fn, std::optional<double> pare_threshold = std::nullopt) {
         return p.make_functional_(std::forward<Fn>(fn), pare_threshold);
     }
-
-    static auto clone(const Propagator &p) -> std::unique_ptr<Propagator> { return p.clone_(); }
 
     // A deep copy of this single store's operator, graph and matched marks as one shard state, behind the
     // propagator's own validity guard: an invalid owner is rejected before anything is copied. A test bridge from
@@ -252,6 +258,31 @@ struct PropagatorTestAccess {
     }
 
     static auto partition(const Propagator &p, int r) -> const Propagator & { return p.partition_group_->partition(r); }
+#else
+    // --- Sharded prototype root (monoprop_SHARDED_OPENMP_PROTOTYPE) ---------------------------------------------
+
+    using Observer = sharded::RootObserver;
+
+    // The root's actual shard states, for private inspection; never a production accessor.
+    static auto shards(const Propagator &p) -> const sharded::Shards<NumModes> & { return p.shards_; }
+
+    // The (1, T) router the root prepared at construction.
+    static auto router(const Propagator &p) -> const routing::Router & { return *p.router_; }
+
+    static auto core_term(const Propagator &p) -> double { return p.core_term_; }
+
+    static auto epoch(const Propagator &p) -> size_t { return p.initial_operator_epoch_; }
+
+    // Attach (or, with null, detach) a test observer; copies made while attached inherit it.
+    static auto observe(Propagator &p, const Observer *observer) -> void { p.observer_ = observer; }
+
+    // Construct through the public constructor's body with `observer` attached, so seeding is observed too.
+    template <typename... Args>
+    static auto construct_observed(const Observer *observer, Args &&...args) -> std::unique_ptr<Propagator> {
+        return std::unique_ptr<Propagator>(
+            new Propagator(typename Propagator::ObservedTag{}, observer, std::forward<Args>(args)...));
+    }
+#endif
 };
 
 } // namespace monoprop::detail

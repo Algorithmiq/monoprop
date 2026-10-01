@@ -49,7 +49,12 @@ auto make_oversized_partitioned_schrodinger() -> MonomialPropagator<64> {
                                   std::nullopt,
                                   /*logical_num_modes=*/64,
                                   Basis::Majorana,
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+                                  // The prototype rejects explicit partitions; its T shards are the flat owners.
+                                  /*partitions=*/0);
+#else
                                   /*partitions=*/2);
+#endif
 }
 
 // Construct with the full argument list; individual cases vary just the field(s) under test.

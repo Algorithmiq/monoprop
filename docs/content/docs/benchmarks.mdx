@@ -317,7 +317,21 @@ It rejects evidence that cannot be joined:
 - run IDs or measurement files reused anywhere;
 - mismatched identities or build modes;
 - placement files that do not certify the full team;
-- artifacts from another campaign, such as calibration runs.
+- artifacts from another campaign, such as calibration runs;
+- an arm whose binary was built with the wrong runtime.
+
+Each arm is bound to the runtime its extension was compiled with, read from the measured file
+itself. A build sets `_core.__runtime_identity__` and embeds the same literal
+(`monoprop-runtime=sharded-openmp-prototype` or `monoprop-runtime=legacy-partitions`). `observe` and
+`validate` require the attribute to agree with the bytes of the file whose SHA-256 they record. Only
+a sharded OpenMP prototype build can serve `--runtime-shape openmp` (the candidate arm); a legacy
+build, including the preserved partition baseline, which predates the marker, serves only
+`partitions`. `compare` refuses candidate evidence without a marker-backed sharded identity for its
+own binary, and baseline evidence that records a sharded one. The baseline's frozen records carry no
+identity field and remain consumable. This is development provenance for the temporary prototype
+selector, not a runtime switch: relabelling `--arm`, `--runtime-shape` or the environment cannot
+change which runtime a binary contains. The benchmark suite's `--runtime-shape` preflight applies
+the same check.
 
 Numerically, it merges each arm's rank files into a global map and requires equal key sets, with
 coefficients agreeing under `abs(a-b) <= 1e-9 + 1e-7*max(|a|,|b|)`. The Heisenberg identity term,
@@ -335,6 +349,17 @@ monoprop_PARTITIONS=96 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 taskset -c 0-9
   --runtime-shape partitions --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
   --placement "$PLACEMENT" --output "$RESULTS"
 # Repeat with --whole-process in a new process; run `validate` without --sample-id.
+```
+
+The candidate arm uses its own prototype environment and the ordinary public constructors, with no
+partition selector and no constructor overlay; the selector is rejected there:
+
+```bash
+# Candidate, MPI-off full machine: a monoprop_SHARDED_OPENMP_PROTOTYPE=ON environment, exact team.
+monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 OMP_DYNAMIC=FALSE taskset -c 0-95 \
+  "$CANDIDATE_ENV"/bin/python tools/benchmark-rank-local-openmp.py observe --arm candidate \
+  --runtime-shape openmp --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
+  --placement "$PLACEMENT" --output "$RESULTS"
 ```
 
 `tools/rank-local-openmp-workloads.json` holds each profile's complete configurations and

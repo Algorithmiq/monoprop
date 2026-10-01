@@ -61,7 +61,13 @@ from monoprop_bench_tools.models import (
     build_random_propagator,
     make_random_problem,
 )
-from monoprop_bench_tools.preflight import PreflightError, declared_shape, import_mpi
+from monoprop_bench_tools.preflight import (
+    PreflightError,
+    declared_shape,
+    import_mpi,
+    require_shape_runtime,
+    runtime_identity,
+)
 
 import monoprop
 
@@ -263,6 +269,9 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         "monoprop_core_md5": _core_md5(),
         "monoprop_core_sha256": _core_sha256(),
         "monoprop_core_path": str(getattr(monoprop._core, "__file__", "unavailable")),
+        "monoprop_runtime_identity": getattr(
+            monoprop._core, "__runtime_identity__", None
+        ),
         "has_mpi": _HAS_MPI,
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
@@ -312,15 +321,22 @@ def _require_shape(config: pytest.Config) -> dict[str, Any] | None:
         raise pytest.UsageError(msg)
     if runtime_shape is not None:
         try:
-            return declared_shape(
+            shape = declared_shape(
                 runtime_shape,
                 os.environ,
                 ranks=_size(),
                 has_mpi=_HAS_MPI,
                 expected_has_mpi=expected_has_mpi,
             )
+            # The declared shape must be one the imported binary's own runtime serves.
+            identity = runtime_identity(
+                Path(monoprop._core.__file__),
+                getattr(monoprop._core, "__runtime_identity__", None),
+            )
+            require_shape_runtime(runtime_shape, identity)
         except PreflightError as exc:
             raise pytest.UsageError(str(exc)) from exc
+        return {**shape, "runtime_identity": identity}
     if _size() > 1 and not os.environ.get("monoprop_PARTITIONS"):  # noqa: SIM112
         msg = (
             "monoprop_PARTITIONS is unset on a run of "

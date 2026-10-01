@@ -25,8 +25,14 @@ static auto init() -> bool {
 }
 
 auto main(int argc, char* argv[]) -> int {
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    // The prototype rejects the obsolete partition selector, and an ordinary case runs at launch-time T = 1 unless
+    // its registration sets a team (overwrite=0, so an explicit environment value wins); see cpp/tests/README.md.
+    setenv("monoprop_NUM_THREADS", "1", 0);
+#else
     // overwrite=0, so an explicit environment override still wins; why it is off: tests/cpp/README.md.
     setenv("monoprop_PARTITIONS", "off", 0);
+#endif
     monoprop::mpi::init(&argc, &argv);
     int result = boost::unit_test::unit_test_main(&init, argc, argv);
     monoprop::mpi::finalize();

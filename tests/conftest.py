@@ -18,7 +18,8 @@ MPI selection is handled by ``pytest-mpi`` (``--with-mpi``, ``@pytest.mark.mpi``
 
 ``comm`` is parametrized over COMM_SELF and COMM_WORLD: use it for energies and gradients, which
 allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
-``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``.
+``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``. In an MPI-off build
+``mpi4py`` is never imported here, so both fixtures are ``None``.
 """
 
 from __future__ import annotations
@@ -27,10 +28,16 @@ from typing import Any
 
 import pytest
 
-try:
-    from mpi4py import MPI
-except ImportError:  # pragma: no cover - exercised in wheel-test environments
-    MPI = None
+import monoprop
+
+# An MPI-off build never initializes MPI, even where mpi4py happens to be installed: importing mpi4py.MPI would
+# initialize it as a side effect of collecting the suite.
+MPI: Any = None
+if monoprop.has_mpi:
+    try:
+        from mpi4py import MPI
+    except ImportError:  # pragma: no cover - exercised in wheel-test environments
+        MPI = None
 
 
 def pytest_configure(config: pytest.Config) -> None:

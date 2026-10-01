@@ -47,6 +47,11 @@
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/parallel/Options.h"
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+#include "monoprop/detail/mpi/Routing.h"
+#include "monoprop/detail/sharded/RootObserver.h"
+#include "monoprop/detail/sharded/State.h"
+#endif
 
 namespace monoprop {
 namespace detail {
@@ -77,7 +82,8 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-/// A raw-layout accessor was called on a multi-partition propagator, which owns no operator or graph.
+/// A raw-layout accessor was called on a propagator that holds more than one store on this rank: a legacy
+/// multi-partition facade, or a sharded prototype launched with more than one thread (renamed in the final API).
 class MultiPartitionUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -88,6 +94,10 @@ class MonomialPropagator {
 public:
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
+    /// With monoprop_SHARDED_OPENMP_PROTOTYPE, the rank-level sharded root: T = the budget captured from
+    /// monoprop_NUM_THREADS (or the OpenMP default) once, here; one ordinary one-rank communicator only. The
+    /// coexistence-only `partitions` and `child_factory` must keep their defaults, and a present
+    /// monoprop_PARTITIONS is rejected, so neither can select a different geometry or the legacy runtime.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
@@ -117,6 +127,7 @@ public:
 
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     /// Term count on this rank (allreduce for global).
     auto size() const -> size_t {
         require_valid_();
@@ -174,6 +185,44 @@ public:
         return partition_group_ ? partitioned_graph_layers_() : graph_.layers();
     }
 
+#else
+    /// Term count on this rank, summed over its shards (allreduce for global).
+    auto size() const -> size_t {
+        require_valid_();
+        return detail::sharded::total_size(shards_);
+    }
+
+    /// (cosine-only indices, cycles) on this rank, summed over its shards; cosine-only = cos-scaled but not a
+    /// rotation endpoint.
+    auto graph_size() const -> std::pair<size_t, size_t>;
+
+    /// The sole shard's graph. Launch-time T = 1 only -- see sole_shard_.
+    auto graph() const -> const MPGraph & { return sole_shard_("graph()").graph; }
+
+    /// The sole shard's operator storage. Launch-time T = 1 only -- see sole_shard_.
+    auto mp_op() -> detail::MPOperator<NumModes> & { return sole_shard_("mp_op()").op; }
+    auto mp_op() const -> const detail::MPOperator<NumModes> & { return sole_shard_("mp_op()").op; }
+
+    // Additive over the disjoint shards; each shard's graph holds its own layer cores.
+    auto graph_memory_usage() const -> GraphMemoryBreakdown {
+        require_valid_();
+        return detail::sharded::graph_memory_usage(shards_);
+    }
+
+    // Additive over the disjoint shards, each including its own matched marks.
+    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
+        require_valid_();
+        return detail::sharded::operator_memory_usage(shards_);
+    }
+
+    // Layer metadata is identical on every shard, so it is read once, never summed.
+    auto graph_layers() const -> size_t {
+        require_valid_();
+        return shards_.front()->graph.layers();
+    }
+
+#endif
+
     /// A multi-term gate spans several layers, so n_gates() <= graph_layers().
     auto n_gates() const -> size_t;
 
@@ -187,6 +236,7 @@ public:
     /// graph_layers(), optimizer order) or a per-gate one (length n_gates()); on a tie, per-layer wins.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     /// This rank's monomial → coefficient index. Single-partition only — see require_single_partition_.
     auto indexing() -> detail::OperatorIndex<NumModes> & {
         require_valid_();
@@ -198,6 +248,13 @@ public:
         require_single_partition_("indexing()");
         return *mp_op_.store;
     }
+
+#else
+    /// The sole shard's monomial → coefficient index. Launch-time T = 1 only -- see sole_shard_.
+    auto indexing() -> detail::OperatorIndex<NumModes> & { return *sole_shard_("indexing()").op.store; }
+    auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *sole_shard_("indexing()").op.store; }
+
+#endif
 
     /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
     /// rank/partition. local_cycles is always empty: local cycles are folded into cross_rank[my_rank].
@@ -260,10 +317,18 @@ public:
 
     auto basis() const -> Basis { return basis_; }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     auto core_term() const -> double {
         require_valid_();
         return partition_group_ ? partitioned_core_term_() : core_term_;
     }
+#else
+    // Rank-level metadata: replicated, never seeded into a shard.
+    auto core_term() const -> double {
+        require_valid_();
+        return core_term_;
+    }
+#endif
 
     auto cutoff() const -> unsigned int { return cutoff_; }
 
@@ -346,8 +411,9 @@ protected:
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     bool schrodinger_;
-    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
+    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions (legacy only)
     CutoffFn<NumModes> cutoff_fn_;
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     detail::MPOperator<NumModes> mp_op_;
     MPGraph graph_;
     // Per-gate layer-build scratch, reused across gates; carries no state between them.
@@ -396,6 +462,7 @@ protected:
 
     template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
     auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
+#endif
 
 private:
     unsigned int cutoff_;
@@ -417,20 +484,23 @@ private:
     // Immutable after construction.
     Basis basis_{Basis::Majorana};
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
     // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
     std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
     // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
     friend class detail::partition::PartitionGroup<NumModes>;
+#endif
     friend struct detail::PropagatorTestAccess<NumModes>;
 
     // This object's kernel thread budget, fixed at construction and kept by copies and retained
-    // functionals. Serial, except on the one-store prototype (explicit partitions == 1 on an ordinary
-    // communicator), which captures monoprop_NUM_THREADS once; Task 10 makes that capture unconditional.
+    // functionals. Legacy: serial, except on the one-store prototype (explicit partitions == 1 on an ordinary
+    // communicator), which captures monoprop_NUM_THREADS once. Sharded prototype: always captured, and its thread
+    // count is the shard count T.
     detail::parallel::Options parallel_{};
     // Set when an operation fails after it started changing state; never cleared (see require_valid_).
     bool invalid_{false};
-    // The one-store prototype, the only path that enforces the initializing-thread rule during coexistence.
+    // Enforce the initializing-thread rule: the legacy one-store prototype, and every sharded prototype root.
     bool one_store_{false};
 
     /// Throw InvalidPropagatorError if a failed operation left this object's state unusable.
@@ -453,18 +523,40 @@ private:
     template <typename Body>
     auto run_operation_(bool uses_mpi, Body &&body) -> decltype(auto);
 
+    /// Reject generator indices outside the system before any gate runs.
+    auto validate_generators_(const std::vector<VecZ> &majoranas) const -> void;
+
+    /// `other`, once checked valid; used first in the copy constructor's member initializers.
+    static auto checked_source_(const MonomialPropagator &other) -> const MonomialPropagator &;
+
+    auto regenerate_cutoff_fn_() -> void;
+
+    /// Reject a (cutoff_type, basis_change) pair this algebra or system size cannot honour.
+    auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const
+        -> void;
+
+    // Warns once if this call's generator shifts do not span all log2(R) rank bits.
+    auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
+
+    // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
+    auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
+
+    /// graph_data() of one store: its graph's layers, with cosine sets read from the stored masks or folded over
+    /// the store's inverted index.
+    static auto graph_data_of_(const MPGraph &graph, const detail::MPOperator<NumModes> &op, Basis basis)
+        -> std::vector<LayerData>;
+
+    /// Cosine-only index count of one store's graph; see graph_size().
+    static auto cos_index_count_of_(const MPGraph &graph, const detail::MPOperator<NumModes> &op, Basis basis)
+        -> size_t;
+
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     /// Capture the prototype's budget and check MPI's thread support, applying the distributed failure
     /// policy on failure: a rank that throws here would strand peers entering the routing agreement.
     auto capture_one_store_budget_() -> void;
 
     /// The argument, epoch and graph checks a facade functional runs before its partitions, as a callable.
     auto facade_functional_check_() -> std::function<void(const VecD &)>;
-
-    /// Reject generator indices outside the system before any gate runs.
-    auto validate_generators_(const std::vector<VecZ> &majoranas) const -> void;
-
-    /// `other`, once checked valid; used first in the copy constructor's member initializers.
-    static auto checked_source_(const MonomialPropagator &other) -> const MonomialPropagator &;
 
     // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
     // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
@@ -503,12 +595,6 @@ private:
         }
     }
 
-    auto regenerate_cutoff_fn_() -> void;
-
-    /// Reject a (cutoff_type, basis_change) pair this algebra or system size cannot honour.
-    auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const
-        -> void;
-
     auto initialize_operator_caches_() -> void;
 
     auto current_picture_coeffs_() -> const VecD &;
@@ -542,9 +628,6 @@ private:
                                            const VecD &parameters,
                                            std::optional<size_t> only_rotate_len_k) -> void;
 
-    // Warns once if this call's generator shifts do not span all log2(R) rank bits.
-    auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
-
     template <typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,
                         std::optional<size_t> only_rotate_len_k,
@@ -573,10 +656,90 @@ private:
               typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
     auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
 
-    // Reconstruct the optimizer-order (parameter_mapping, gen_coeffs) arrays from the layers' gate info.
-    auto graph_gate_arrays_() const -> std::pair<VecZ, VecD>;
-
     auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
+#else
+    //! Tag of the private constructor PropagatorTestAccess uses to observe construction.
+    struct ObservedTag {};
+
+    /// The public constructor's body, with a test-only observer (null from the public constructor).
+    MonomialPropagator(ObservedTag tag,
+                       const detail::sharded::RootObserver *observer,
+                       const OperatorDict &initial_operator,
+                       unsigned int cutoff,
+                       const VecZ &initial_state,
+                       std::optional<unsigned int> schrodinger_cutoff,
+                       mpi::Comm comm,
+                       std::optional<double> lower_atol,
+                       std::optional<double> upper_atol,
+                       CutoffType cutoff_type,
+                       std::optional<std::vector<VecZ>> basis_change,
+                       size_t logical_num_modes,
+                       Basis basis,
+                       size_t partitions,
+                       const PartitionChildFactory &child_factory);
+
+    // Flat-owner routing at geometry (P, T) = (1, T), prepared once on the caller at construction and used for
+    // seeding, construction and initial-operator updates. Never derived from comm_, whose geometry is one rank.
+    std::optional<routing::Router> router_;
+    // Test-only: null in production, set only through PropagatorTestAccess. Copies inherit it.
+    const detail::sharded::RootObserver *observer_ = nullptr;
+    // The T shard states of this rank, shard t at flat owner t; one per worker of the captured budget. Declared
+    // last, so a copy validates its source (checked_source_, first initializer) before allocating any shard.
+    detail::sharded::Shards<NumModes> shards_;
+
+    /// The only shard, for the raw-layout accessors.
+    /// \throws InvalidPropagatorError if invalid; MultiPartitionUnsupported unless launched with T = 1: there is no
+    ///         single store to hand out, and shard 0 alone is not this rank's operator.
+    auto sole_shard_(const char *what) const -> const detail::sharded::ShardState<NumModes> &;
+    auto sole_shard_(const char *what) -> detail::sharded::ShardState<NumModes> &;
+
+    // Settings are root-only: the shards hold mathematical state, and every construction reads the root's values.
+    auto update_setting_(const std::function<void(MonomialPropagator &)> &mutate) -> void {
+        require_valid_();
+        try {
+            mutate(*this);
+        }
+        catch (...) {
+            mutation_failed_(std::current_exception());
+        }
+    }
+
+    /// Converted generators, after validate_generators_().
+    auto generators_(const std::vector<VecZ> &majoranas) const -> MonomialList<NumModes>;
+
+    /// The construction seam's read-only rank-level configuration.
+    auto construction_context_() const -> detail::sharded::ConstructionContext<NumModes>;
+
+    /// Transfer a construction outcome to run_operation_: mutation flag first, then the original error.
+    static auto finish_construction_(const detail::sharded::ConstructionOutcome &outcome, bool &mutation_started)
+        -> void;
+
+    /// Run `body(shard)` once on every owner, in one team of the captured budget, after reporting `work`.
+    /// \return The lowest failing owner's original exception, after the join.
+    template <typename Body>
+    auto run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> std::exception_ptr;
+
+    /// Snapshot, optionally pare and build callbacks for every shard (prepare_retained), transferring the outcome.
+    auto prepare_retained_(std::optional<double> pare_threshold, bool &mutation_started)
+        -> detail::sharded::RetainedEvaluation;
+
+    /// One evaluation of `retained` at `params`, already validated: one team, then the ordered fold, the physical
+    /// reduction and the identity once. A failure before the team (request views, the evaluator's argument checks)
+    /// propagates and mutates nothing. A failure from the team on -- a phase error, the fold, the reduction --
+    /// follows the post-mutation policy, because the team touched the owners' lazy caches: inside an operation
+    /// (`mutation_started` non-null) the flag is set and the error rethrown for run_operation_; from a functional
+    /// (null) it goes to mutation_failed_() here.
+    auto evaluate_retained_(const detail::sharded::RetainedEvaluation &retained,
+                            const VecD &params,
+                            bool gradient,
+                            bool *mutation_started) -> std::pair<double, VecD>;
+
+    /// Per-shard evolved coefficients at validated `parameters` (contract_partially's blocks, in shard order).
+    /// Sets `mutation_started` before the first cache or graph change; inplace consumes the graph and stores the
+    /// blocks only once concatenation can no longer fail.
+    auto contract_blocks_(const VecD &parameters, bool inplace, bool &mutation_started, VecD *concatenated)
+        -> std::vector<VecD>;
+#endif
 };
 
 } // namespace monoprop
