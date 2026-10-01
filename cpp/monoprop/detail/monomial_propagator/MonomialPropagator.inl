@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1218,6 +1219,78 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
         return collect(*this);
     }
     return concat_partitions_(collect);
+}
+
+namespace detail {
+
+/// Coefficients of `keys` in `p`'s evolved operator, in query order; a key `p` does not carry yields 0.
+/// `p` must be unpartitioned -- a partition, or a propagator that was never partitioned -- so that
+/// indexing() is available. Non-inplace. Rank-local.
+template <size_t NumModes>
+auto probe_coefficients(MonomialPropagator<NumModes> &p,
+                        const VecD &parameters,
+                        const std::vector<Monomial<NumModes>> &keys) -> std::vector<std::complex<double>> {
+    const VecD evolved = p.contract_partially(parameters, false);
+    std::vector<size_t> rows(keys.size());
+    p.indexing().find_batch(keys.data(), keys.size(), rows.data());
+    std::vector<std::complex<double>> found(keys.size());
+    for (size_t q = 0; q < keys.size(); ++q) {
+        if (rows[q] >= evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+            continue;
+        }
+        found[q] = algebra_decode_coeff<NumModes>(p.basis(), evolved[rows[q]], keys[q]);
+    }
+    return found;
+}
+
+} // namespace detail
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    // Checked: these are user-supplied indices. Past the storage width the unchecked encode's bit
+    // position underflows into an out-of-bounds write; between the logical and storage widths it
+    // encodes a monomial outside this propagator's system, which reads back 0 instead of raising.
+    auto keys = terms | std::views::transform([this](const VecZ &term) {
+                    return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                })
+                | std::ranges::to<std::vector<Monomial<NumModes>>>();
+
+    // map_partitions_ takes a callable over MonomialPropagator &, so the free function is bound to
+    // this query rather than called directly.
+    const auto probe = [&parameters, &keys](MonomialPropagator &p) {
+        return detail::probe_coefficients(p, parameters, keys);
+    };
+
+    std::vector<std::complex<double>> out(terms.size());
+    if (!partition_group_) {
+        out = probe(*this);
+    }
+    else {
+        // The partitions are disjoint, so at most one contributes per key.
+        for (const auto &partition_found : map_partitions_(probe)) {
+            for (size_t q = 0; q < out.size(); ++q) {
+                out[q] += partition_found[q];
+            }
+        }
+    }
+
+    // Round off the anti-hermitian numerical noise.
+    for (auto &coeff : out) {
+        coeff = {std::round(coeff.real() * 1e12) / 1e12, std::round(coeff.imag() * 1e12) / 1e12};
+    }
+
+    // Heisenberg only: the empty monomial is diverted to core_term_ instead of indexed, so the probe
+    // cannot have found it.
+    if (!schrodinger_) {
+        const auto core = core_term();
+        for (size_t q = 0; q < terms.size(); ++q) {
+            if (terms[q].empty()) {
+                out[q] = {core, 0.0};
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace monoprop
