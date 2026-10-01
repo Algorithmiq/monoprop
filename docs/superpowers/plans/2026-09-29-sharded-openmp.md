@@ -28,7 +28,8 @@ Progress: S0 was separately authorized, executed and accepted by the owner on 20
 S1 was separately authorized and implemented on 2026-09-29 (outcome under Task S1); owner acceptance is not recorded
 here. S2 was separately authorized and implemented on 2026-09-30 (outcome under Task S2); owner acceptance is not
 recorded here. S3 was separately authorized and implemented on 2026-09-30 (outcome under Task S3); owner acceptance
-is not recorded here. S4 has not started and needs its own authorization.
+is not recorded here. S4 was separately authorized, implemented on 2026-10-01 and accepted by the owner on 2026-10-01
+(outcome under Task S4); its architecture experiment was proposed but not run. S5 needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -594,7 +595,60 @@ normal builds retain the legacy path until cutover. This is development instrume
 or permanent backend selector. Old constructor controls may remain in the legacy build during coexistence, but cannot
 select a different shard count in the candidate. Explicit nondefault legacy controls must not silently be honored there.
 
-- [ ] Add separate-process T=1/2/4 Python cases through the real public API. One concrete core fixture is:
+**Outcome:** implemented and **accepted by the owner on 2026-10-01**. Start: `f347e6f`. Handoff with the
+integration map, ownership/routing/failure arguments, commands, toolchains, memory accounting, migration ledger and
+full evidence: `/home/ubuntu/s4-artifacts/HANDOFF.md`; experiment proposal (not run):
+`/home/ubuntu/s4-artifacts/EXPERIMENT-PROPOSAL.md` (both outside the checkout).
+
+- `monoprop_SHARDED_OPENMP_PROTOTYPE` (default OFF) is a PUBLIC definition of `monoprop-objs` and an INTERFACE
+  definition of the exported target, so bindings, tests and installed consumers inherit it; `monopropConfig.cmake`
+  reports it. ON builds define the root in `detail/monomial_propagator/ShardedPropagator.inl`; the class then has no
+  `mp_op_`, `graph_`, matched marks or partition group, so leftover root-storage use cannot compile. The root owns
+  configuration, the captured budget (T threads = T shards, copies keep it), a (1, T) router prepared once on the caller
+  (`make_router`, never derived from the communicator), the replicated identity, the epoch, validity and T shards.
+- Every public operation goes through S1-S3: seeding/copying on owners, `build_graph`/`build_graph_informed` (seed
+  angles as `contract_partially` computes them)/`propagate`, `prepare_retained` + `evaluate_shards` for direct and
+  retained evaluation (two operation regions for direct evaluation, constant in depth), `replay_shards` for partial
+  contraction (blocks in shard order), per-shard export in `evolved_operator_terms()`, owner phases for
+  initial-operator updates (routed by the same router), remapping and empty-parameter pictures. Settings stay
+  root-only. Outcome mutation flags are transferred before rethrow under `run_operation_`; failures after a team
+  invalidate the root and go to `mpi::operation_failed`.
+- Rejected, before any mutation or collective: a communicator of more than one rank (no legacy fallback), nondefault
+  `partitions` or `child_factory`, any `monoprop_PARTITIONS`. Raw `mp_op()`/`indexing()`/`graph()`/`graph_data()`
+  return the sole shard at T = 1 and raise `MultiPartitionUnsupported` with a launch-time T = 1 remedy otherwise; this
+  stays the design (S6 renames the exception). `_core.__runtime_identity__` plus an embedded literal identify the
+  runtime a binary contains.
+- RED: with only the option wired, the ON build still ran legacy (explicit partitions and `monoprop_PARTITIONS`
+  accepted, legacy accessor remedy): 16 Python failures and failing `sharded_root_env_*`. GREEN: 20 `sharded_root_*`
+  cases in `sharded_root_env_t{1,2,4}` (private shard inspection, actual-worker observation and fault injection via
+  `PropagatorTestAccess` and the test-only `detail/sharded/RootObserver.h`), and `tests/test_sharded_openmp.py` in
+  fresh fixed-T processes: bitwise equality with a separate legacy build at `monoprop_PARTITIONS=T` for 8 fixtures at
+  T = 1/2/4 (energies, gradients, functionals, full decoded maps, contraction blocks, every aggregate and memory field)
+  and cross-T full maps, energies and gradients within tolerance.
+- 10 S4 mutants (wrong-shard export, omitted owner update, missing invalidation, repeated identity, lost epoch guard,
+  wrong-shard picture, functional without invalidation, remap on shard 0, caller-side seeding, legacy selection) are
+  all detected; a shared-shard race mutant is reported by TSan/Archer.
+- Results (final diff `86ff189b…`):
+  - GCC/libgomp: legacy 478/478, pytest 806 passed; prototype 372/372, pytest 856 passed at T = 1 and the full
+    suite at T = 2 and 4.
+  - GCC + Open MPI 5.0.10: prototype 400/400 plus the two-rank rejection; legacy 508/508 + 16/16 (all
+    `mpi_failure_*`), pytest at one and two ranks.
+  - Clang 18/libomp: 372/372 and 478/478. GCC ASan/UBSan (prototype): 372/372, no reports. Clang/libomp/Archer TSan,
+    qualified with known-safe/racy probes: silent on `sharded_root_*` at T = 1/2/4 and on `openmp_*`.
+  - Installed `find_package_smoke` for five packages at T = 1/2/4; a consumer expecting the other runtime fails to
+    compile.
+- Migration ledger: `cpp/tests/README.md`. Suites needing the legacy root (partition facades, the one-store
+  prototype, S1-S3 live-oracle seam suites, multi-rank legacy and failure scenarios) stay in OFF builds; other
+  propagator suites run as T = 1 raw-layout tests in ON builds.
+- Measurement tooling: the driver, preflight and `benches/conftest.py` bind each arm to the runtime read from the
+  measured `_core` file (candidate: positive sharded identity; baseline: legacy, or none for the frozen records).
+  Driver `2207529f…` -> `0813b7db…`; campaign and workloads unchanged; the modified compare path re-joins all 250
+  frozen baseline cells. The shared builders already used the public constructors; the `partitions=1` was Task 6's
+  external adapter, now obsolete. A both-arm overlay is prepared, not applied to any preserved environment.
+- Pending: the architecture experiment (proposal awaits approval), macOS, Linux aarch64, wheels, Nix,
+  minimum-version compiler routes, the Python sanitizer legs and P>1 candidate runs (S5).
+
+- [x] Add separate-process T=1/2/4 Python cases through the real public API. One concrete core fixture is:
 
 ```python
 from pathlib import Path
@@ -624,18 +678,18 @@ def test_sharded_propagation_matches_graph() -> None:
   This is preservation coverage; sharded ownership/participation needs its own genuine RED. Also compare decoded full
   operators, unrounded energies and every gradient component. Across T, use subprocess output maps rather than changing
   configuration mid-process.
-- [ ] Integrate rank-level state and validity, count/memory aggregation and direct shard iteration in
+- [x] Integrate rank-level state and validity, count/memory aggregation and direct shard iteration in
   `evolved_operator_terms()`. Pair each shard index with its own evolved vector; do not use root `indexing()` at T>1.
   Include retained zeros, identity de-duplication and count/export failure tests before timing any result.
-- [ ] Record a migration ledger for all old facade/one-store tests: kept at T=1, rewritten shard-aware, or retired with
+- [x] Record a migration ledger for all old facade/one-store tests: kept at T=1, rewritten shard-aware, or retired with
   equivalent coverage. Prove actual participation inside construction, publication, replay and derivative phases.
   Audit trial selection from binary/build provenance, not `--runtime-shape openmp` or environment labels alone.
-- [ ] Run integrated R correctness, installed-consumer smoke and M-with-P=1 correctness. Public P>1 candidate support is
+- [x] Run integrated R correctness, installed-consumer smoke and M-with-P=1 correctness. Public P>1 candidate support is
   not claimed before S5. Update the candidate builder to use the new root constructor instead of `partitions=1`;
   retain the legacy partition builder for the baseline. Keep `observe`, `validate`, `compare` and the
   allocation-before-import fix. Record/synchronize any approved tool overlay without rebuilding baseline binaries or
   rewriting formal records. If an adapter/schema change cannot consume the frozen evidence honestly, stop for review.
-- [ ] **Stop for experiment approval.** Propose matched baseline/candidate single-thread controls and actual MPI-off
+- [x] **Stop for experiment approval.** Propose matched baseline/candidate single-thread controls and actual MPI-off
   full-machine reference cells spanning build_graph, propagate, energy and gradients, both bases/pictures. Use frozen
   builders/parameters and operation/construction memory windows. Specify repetitions, task/per-trial/RAM caps and
   first-touch/placement evidence before running; do not reuse Task 6's allowance.
