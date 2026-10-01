@@ -19,7 +19,7 @@ the overflow-row layout (D12). Those move into the shared core with the Stage 1 
 device code that needs them is written.
 
 **Tech Stack:** C++23 (GCC ≥ 14, Clang ≥ 18), Boost.Test, CMake via scikit-build-core, `just`, nvcc 13.3
-(CI container only), GitHub Actions.
+(CI: the T4 runner `gpu-t4-4-core-custom`), GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-10-01-gpu-port-design.md` (on branch `feat-gpu-port`; read it
 from this plan's branch with `git show feat-gpu-port:docs/superpowers/specs/2026-10-01-gpu-port-design.md`),
@@ -94,9 +94,9 @@ Build and test commands used throughout:
 | `cpp/tests/bitset_tests.cpp` | Adds constant-evaluation and layout characterization tests |
 | `cpp/tests/shared/nvcc_compile_check.cu` (new) | Every shared function called from device code |
 | `cpp/tests/shared/nvcc_negative_check.cu` (new) | Device code calling a host-only function; must be rejected |
-| `tools/check-shared-nvcc.sh` (new) | The check itself: compile the shared headers as device code, require the negative check to fail |
-| `justfile` | `check-shared-nvcc` (local nvcc) and `check-shared-nvcc-docker` (CUDA container) recipes |
-| `.github/workflows/shared-nvcc.yml` (new) | Runs `just check-shared-nvcc-docker` on a standard runner |
+| `justfile` | `check-shared-nvcc` recipe |
+| `.github/workflows/shared-nvcc.yml` (new) | Runs the recipe on the T4 GPU runner |
+| `Algorithmiq/runner-images`: `.github/workflows/build-gpu-runner-image.yml` | The CI image moves from CUDA 12.9 to 13.3 |
 | `docs/content/docs/testing.mdx` | Documents the shared headers and the recipe |
 | `AGENTS.md` | One rule for code in `cpp/monoprop/shared/` |
 
@@ -933,31 +933,51 @@ git commit -m "refactor(shared): ♻️ move Bitset into the shared host/device 
 ### Task 4: nvcc compile check of the shared headers
 
 **Files:**
+- Modify (repository `Algorithmiq/runner-images`): `.github/workflows/build-gpu-runner-image.yml`
 - Create: `cpp/tests/shared/nvcc_compile_check.cu`
 - Create: `cpp/tests/shared/nvcc_negative_check.cu`
-- Create: `tools/check-shared-nvcc.sh`
-- Modify: `justfile` (two recipes after `test-find-package`)
+- Modify: `justfile` (new recipe after `test-find-package`)
 - Create: `.github/workflows/shared-nvcc.yml`
 - Modify: `docs/content/docs/testing.mdx` (new subsection after `### Golden baselines`)
 - Modify: `AGENTS.md` (`## Rules` list)
 
 **Interfaces:**
 - Consumes: every function in `monoprop/shared/Bits.h` and `monoprop/shared/Bitset.h` (Tasks 2–3).
-- Produces: `tools/check-shared-nvcc.sh [nvcc]`, wrapped by `just check-shared-nvcc [NVCC]` (a local
-  CUDA toolkit, e.g. on Deucalion) and `just check-shared-nvcc-docker [IMAGE]` (no local CUDA; used by
-  CI). Both exit 0 when the shared headers compile as device code under the shared-core flags and nvcc
-  rejects the negative check.
+- Produces: `just check-shared-nvcc [NVCC]`, which exits 0 when the shared headers compile as device code
+  under the shared-core flags and nvcc rejects the negative check. `NVCC` defaults to `nvcc` on `PATH`.
 
 The `.cu` files sit in `cpp/tests/shared/`, which the C++ test target's non-recursive `*.cpp` glob never
 picks up, so the CPU build ignores them.
 
-Why Docker rather than a `container:` job: `just` evaluates the justfile's backtick assignments eagerly,
-including `version := uvx setuptools-scm`, which needs `uv` and the git history. A bare CUDA image has
-neither, and installing them with `apt-get` in a workflow step is forbidden by
-`tools/check-workflow-commands.py`. So the job runs on a standard runner, where the justfile loads as
-everywhere else, and only nvcc runs inside the CUDA image.
+CI runs the check on the GitHub-hosted T4 runner `gpu-t4-4-core-custom`, whose custom image
+`cuda-openmpi` is built by `Algorithmiq/runner-images`. The check only compiles, for `sm_80` (the
+development target), so the T4 (`sm_75`) does not matter yet; once device tests run in CI they also need
+`-gencode arch=compute_75,code=sm_75`. Locally, run it on a machine with the CUDA 13.3 stack set up.
 
-- [ ] **Step 1: Write the compile check**
+- [ ] **Step 1: Move the CI image to CUDA 13.3 (developer, in `Algorithmiq/runner-images`)**
+
+The image installs CUDA 12.9, whose nvcc accepts at most C++20 and GCC 14; the shared core needs nvcc
+13.3 with `-std=c++23` (spec D4). In `.github/workflows/build-gpu-runner-image.yml`, change the toolkit
+package and the `PATH` entry:
+
+```diff
+-          sudo apt-get install -y --no-install-recommends cuda-toolkit-12.9
++          sudo apt-get install -y --no-install-recommends cuda-toolkit-13-3
+```
+
+```diff
+-          echo "PATH=${PATH}:/usr/local/openmpi/bin:/usr/local/ucx/bin:/usr/local/cuda-12.9/bin" >> $GITHUB_ENV
++          echo "PATH=${PATH}:/usr/local/openmpi/bin:/usr/local/ucx/bin:/usr/local/cuda-13.3/bin" >> $GITHUB_ENV
+```
+
+The UCX and Open MPI steps build against `/usr/local/cuda`, which the toolkit package points at the
+installed version, so they need no change. Merge the change; the workflow runs on pushes to `main` that
+touch this file (or start it with `gh workflow run build-gpu-runner-image.yml -R Algorithmiq/runner-images`).
+
+Expected: the image build succeeds, and a job on `gpu-t4-4-core-custom` prints `release 13.3` for
+`/usr/local/cuda/bin/nvcc --version`.
+
+- [ ] **Step 2: Write the compile check**
 
 Create `cpp/tests/shared/nvcc_compile_check.cu` (license header first):
 
@@ -1018,53 +1038,35 @@ __global__ void host_function_from_device(const uint64_t *in, int *out) {
 }
 ```
 
-- [ ] **Step 2: Add the check script and the recipes**
-
-Create `tools/check-shared-nvcc.sh` and make it executable (`chmod +x tools/check-shared-nvcc.sh`):
-
-```bash
-#!/usr/bin/env bash
-# Compile the shared host/device headers as device code under the shared-core flags (spec Section 7,
-# decision D7), then require nvcc to reject device code calling a host-only function. Run from the
-# repository root. Needs the CUDA toolkit (13.3 or newer), not a GPU.
-#
-#   tools/check-shared-nvcc.sh [nvcc]
-set -euo pipefail
-
-nvcc="${1:-nvcc}"
-flags=(-std=c++23 -arch=sm_80 -Werror cross-execution-space-call -I cpp)
-
-"$nvcc" --version | tail -n 2
-"$nvcc" "${flags[@]}" -c cpp/tests/shared/nvcc_compile_check.cu -o /dev/null
-
-if output="$("$nvcc" "${flags[@]}" -c cpp/tests/shared/nvcc_negative_check.cu -o /dev/null 2>&1)"; then
-    echo "nvcc accepted device code calling a host-only function: the shared-core safety net is off" >&2
-    exit 1
-fi
-if ! grep -q "is not allowed" <<<"$output"; then
-    echo "nvcc rejected the negative check for an unexpected reason:" >&2
-    echo "$output" >&2
-    exit 1
-fi
-echo "shared headers compile as device code; nvcc rejects host-only calls from device code"
-```
+- [ ] **Step 3: Add the recipe**
 
 Append to `justfile`, after the `test-find-package` recipe:
 
 ```just
-# Compile the shared host/device headers as device code with a local nvcc (CUDA 13.3 or newer) and check
-# that nvcc rejects device code calling a host-only function. Needs the CUDA toolkit, not a GPU.
+# Compile the shared host/device headers as device code with nvcc (CUDA 13.3 or newer) under the
+# shared-core flags, and check that nvcc rejects device code calling a host-only function. Needs the
+# CUDA toolkit, not a GPU.
 
 check-shared-nvcc NVCC='nvcc':
-    tools/check-shared-nvcc.sh {{ quote(NVCC) }}
-
-# The same check inside a CUDA container, for machines without the CUDA toolkit (and for CI).
-
-check-shared-nvcc-docker IMAGE='nvidia/cuda:13.3.1-devel-ubuntu24.04':
-    docker run --rm -v "{{ project_source_dir }}:/src" -w /src {{ quote(IMAGE) }} tools/check-shared-nvcc.sh nvcc
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nvcc={{ quote(NVCC) }}
+    flags=(-std=c++23 -arch=sm_80 -Werror cross-execution-space-call -I cpp)
+    "$nvcc" --version | tail -n 2
+    "$nvcc" "${flags[@]}" -c cpp/tests/shared/nvcc_compile_check.cu -o /dev/null
+    if output="$("$nvcc" "${flags[@]}" -c cpp/tests/shared/nvcc_negative_check.cu -o /dev/null 2>&1)"; then
+        echo "nvcc accepted device code calling a host-only function: the shared-core safety net is off" >&2
+        exit 1
+    fi
+    if ! grep -q "is not allowed" <<<"$output"; then
+        echo "nvcc rejected the negative check for an unexpected reason:" >&2
+        echo "$output" >&2
+        exit 1
+    fi
+    echo "shared headers compile as device code; nvcc rejects host-only calls from device code"
 ```
 
-- [ ] **Step 3: Add the workflow**
+- [ ] **Step 4: Add the workflow**
 
 Create `.github/workflows/shared-nvcc.yml`:
 
@@ -1094,7 +1096,8 @@ concurrency:
 jobs:
   shared-nvcc:
     name: Compile the shared headers with nvcc
-    runs-on: ubuntu-26.04
+    # T4 runner on the custom cuda-openmpi image (Algorithmiq/runner-images), CUDA 13.3.
+    runs-on: gpu-t4-4-core-custom
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -1105,15 +1108,16 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v4.0.0
 
+      # just evaluates the justfile's backtick assignments eagerly, including `uvx setuptools-scm`.
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
 
-      # CUDA 13.3, the GPU port's toolkit (spec Section 12); nvcc accepts C++23 from 13.3 on.
+      # The image build's PATH change applies to that build job only, so name the toolkit's nvcc.
       - name: Compile the shared headers as device code
-        run: just check-shared-nvcc-docker
+        run: just check-shared-nvcc /usr/local/cuda/bin/nvcc
 ```
 
-- [ ] **Step 4: Document it**
+- [ ] **Step 5: Document it**
 
 In `docs/content/docs/testing.mdx`, insert before `## Adding tests`:
 
@@ -1126,12 +1130,12 @@ only the `monoprop::shared` helpers, never standard-library functions: nvcc trea
 and calling them from device code can miscompile silently.
 
 ```bash
-just check-shared-nvcc            # with a local CUDA toolkit (13.3 or newer); no GPU needed
-just check-shared-nvcc-docker     # without one: runs nvcc in an nvidia/cuda container
+just check-shared-nvcc            # or: just check-shared-nvcc /path/to/nvcc
 ```
 
-Both compile the shared headers as device code and confirm that nvcc rejects device code calling a
-host-only function. CI runs the Docker variant whenever the shared headers change.
+compiles the shared headers as device code (CUDA 13.3 or newer; no GPU needed) and confirms that nvcc
+rejects device code calling a host-only function. CI runs it on the T4 GPU runner whenever the shared
+headers change.
 ````
 
 In `AGENTS.md`, add to the `## Rules` list:
@@ -1142,26 +1146,21 @@ In `AGENTS.md`, add to the `## Rules` list:
   `just check-shared-nvcc` passing.
 ```
 
-- [ ] **Step 5: Run the checks that work without CUDA**
+- [ ] **Step 6: Run the checks**
 
-Run: `prek run --files justfile tools/check-shared-nvcc.sh .github/workflows/shared-nvcc.yml cpp/tests/shared/nvcc_compile_check.cu cpp/tests/shared/nvcc_negative_check.cu docs/content/docs/testing.mdx AGENTS.md`
+Run: `prek run --files justfile .github/workflows/shared-nvcc.yml cpp/tests/shared/nvcc_compile_check.cu cpp/tests/shared/nvcc_negative_check.cu docs/content/docs/testing.mdx AGENTS.md`
 Expected: all hooks pass. `check workflows call recipes` passes because the workflow's only command is
-`just check-shared-nvcc-docker`.
+`just check-shared-nvcc /usr/local/cuda/bin/nvcc`.
 
-Then run the check itself, with whichever of these the machine supports:
-
-- a local nvcc 13.3 or newer (`command -v nvcc`): `just check-shared-nvcc`
-- Docker (`docker info` succeeds): `just check-shared-nvcc-docker`
-
+On a machine with the CUDA 13.3 stack (`nvcc --version` reports 13.3 or newer), run `just check-shared-nvcc`.
 Expected last line: `shared headers compile as device code; nvcc rejects host-only calls from device code`.
-If neither is available, the workflow run on the PR (Task 5, Step 5) is the first execution.
+On a machine without it, the workflow run on the PR (Task 5, Step 5) is the first execution.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add cpp/tests/shared/nvcc_compile_check.cu cpp/tests/shared/nvcc_negative_check.cu \
-        tools/check-shared-nvcc.sh justfile .github/workflows/shared-nvcc.yml \
-        docs/content/docs/testing.mdx AGENTS.md
+git add cpp/tests/shared/nvcc_compile_check.cu cpp/tests/shared/nvcc_negative_check.cu justfile \
+        .github/workflows/shared-nvcc.yml docs/content/docs/testing.mdx AGENTS.md
 git commit -m "chore(ci): 👷 compile the shared host/device headers with nvcc" \
            -m "Assisted-by: <harness>:<model>"
 ```
@@ -1239,8 +1238,8 @@ random Heisenberg propagate/energy benchmarks are within noise.
 - `cpp/monoprop/shared/`: `HostDevice.h`, `Bits.h` (`popcount`, `parity`, `countr_zero`, `bit_width`),
   `Bitset.h`. `monoprop/Bitset.h` keeps the host-only `operator<<` and `std::hash`.
 - Host half of the bit-helper equivalence tests; constant-evaluation and layout tests for `Bitset`.
-- `just check-shared-nvcc` (local nvcc), `just check-shared-nvcc-docker` and the `Shared core under nvcc`
-  workflow (CUDA 13.3 image); docs and an `AGENTS.md` rule for code in `cpp/monoprop/shared/`.
+- `just check-shared-nvcc` and the `Shared core under nvcc` workflow on the T4 GPU runner (CUDA 13.3
+  image); docs and an `AGENTS.md` rule for code in `cpp/monoprop/shared/`.
 
 ## Checklist
 
@@ -1271,6 +1270,5 @@ each of the three `if consteval {` with `if (__builtin_is_constant_evaluated()) 
 stay), then rerun Task 5 Step 1, commit with
 `fix(shared): 🐛 avoid if consteval in the shared bit helpers for nvcc`, push, and check again.
 
-If it fails because the image tag does not exist, change the default `IMAGE` of the
-`check-shared-nvcc-docker` recipe in `justfile` to `nvidia/cuda:13.3.1-cudnn-devel-ubuntu24.04` (a tag
-confirmed to exist), commit with `chore(ci): 👷 use an existing CUDA 13.3 image`, push, and check again.
+If the job prints `release 12.9`, or nvcc rejects `-std=c++23`, the runner image has not moved to
+CUDA 13.3 yet: finish Task 4, Step 1, then rerun the job.

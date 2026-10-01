@@ -253,9 +253,11 @@ views over the memory layouts both engines use. Everything else stays in its eng
 - Each shared-core refactor is an ordinary CPU PR: it passes the existing tests and shows no regression
   beyond noise on the Bencher-tracked benchmarks. In CPU builds the macro expands to nothing, so the
   machine code should be essentially unchanged.
-- A CI job on `main` compiles the shared headers with nvcc (CUDA toolkit container, no GPU), with
-  `-Werror cross-execution-space-call` and without the relaxed-constexpr flag. Without it, a CPU change
-  could break the device build unnoticed. This is the only CUDA-related change to `main`'s CI.
+- A CI job on `main` compiles the shared headers with nvcc, with `-Werror cross-execution-space-call`
+  and without the relaxed-constexpr flag. It runs on the GitHub-hosted T4 runner `gpu-t4-4-core-custom`,
+  whose custom image `cuda-openmpi` (built by `Algorithmiq/runner-images`) moves from CUDA 12.9 to 13.3
+  to match the development toolchain. Without the job, a CPU change could break the device build
+  unnoticed. This is the only CUDA-related change to `main`'s CI.
 
 **Tests.** Every shared function has a host-vs-device equivalence test on the same input vectors
 (Section 11).
@@ -444,11 +446,12 @@ Stage 3. Shared-core PRs land on `main` as they are ready.
    shapes (one node with S = 4; four processes with S = 1; two nodes; four nodes). Results match a
    single-GPU run within the tolerance; without `lower_atol`, term counts match exactly.
 5. **Memory and races:** `compute-sanitizer` (memcheck, racecheck, initcheck) over the CUDA test target.
-6. **Performance:** the Section 10 rows through the bench harness; no GPU CI, so not tracked by Bencher.
+6. **Performance:** the Section 10 rows through the bench harness. CI's only GPU is a single T4, which says
+   nothing about A100 or H100 performance, so the GPU rows are not tracked by Bencher.
 
 | Where | What runs |
 |---|---|
-| `main` CI | CPU tests (unchanged); host half of the equivalence tests; nvcc compile check of the shared headers |
+| `main` CI | CPU tests (unchanged); host half of the equivalence tests; nvcc compile check of the shared headers, on the T4 runner |
 | GPU branch, on Deucalion | a `just test-cuda` recipe plus a batch script: build with the Section 12 modules, the CUDA test target, the Python suite with `device="cuda"`, the MPI shapes, the sanitizers; `prek run --all-files` before every push |
 
 `docs/content/docs/testing.mdx` gets the GPU recipe in Stage 3.
