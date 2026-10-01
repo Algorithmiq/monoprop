@@ -29,7 +29,9 @@ S1 was separately authorized and implemented on 2026-09-29 (outcome under Task S
 here. S2 was separately authorized and implemented on 2026-09-30 (outcome under Task S2); owner acceptance is not
 recorded here. S3 was separately authorized and implemented on 2026-09-30 (outcome under Task S3); owner acceptance
 is not recorded here. S4 was separately authorized, implemented on 2026-10-01 and accepted by the owner on 2026-10-01
-(outcome under Task S4); its architecture experiment was proposed but not run. S5 needs its own authorization.
+(outcome under Task S4). Its architecture checkpoint ran on 2026-10-01; the owner decided **rework**, and a first
+profiling-driven rework was implemented the same day. The next step re-runs the 32-cell checkpoint on the reworked
+code, followed by further profiling if needed; S5 needs its own authorization after an owner proceed decision.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -645,8 +647,27 @@ full evidence: `/home/ubuntu/s4-artifacts/HANDOFF.md`; experiment proposal (not 
   Driver `2207529f…` -> `0813b7db…`; campaign and workloads unchanged; the modified compare path re-joins all 250
   frozen baseline cells. The shared builders already used the public constructors; the `partitions=1` was Task 6's
   external adapter, now obsolete. A both-arm overlay is prepared, not applied to any preserved environment.
-- Pending: the architecture experiment (proposal awaits approval), macOS, Linux aarch64, wheels, Nix,
-  minimum-version compiler routes, the Python sanitizer legs and P>1 candidate runs (S5).
+- Architecture checkpoint (owner-approved proposal, run 2026-10-01; report `/home/ubuntu/s4-artifacts/experiment/`):
+  - 32 frozen reference cells, 5 alternating fresh-process pairs each, through the tool overlay on both arms;
+    134.7 of 170 measurement minutes; 704 processes, no timeouts or memory kills. Preflight confirmed 96 physical
+    cores, one NUMA domain and no SMT; frozen inputs, baseline binaries and the Task 1 tree were unchanged
+    (snapshots); both negative controls exited 2.
+  - Numerics: all 32 candidate validations equal the formal baseline validations; every memory window exact.
+  - off-1x96 (MPI-off, 96 threads): runtime ratios 0.90–1.44 (6/16 <= 1.00), operation peaks 0.95–1.05,
+    construction peaks 0.96–1.005; 3/16 cells meet all five ratios. mpi-1x1: runtime 0.93–1.03, memory <= 1.004;
+    11/16 meet all five. Task 6's one-store prototype had measured 2.1–61.6 on the same full-machine cells.
+- Owner decision: **rework**. Profiling (`perf` and AMD IBS on 5 cells; `/home/ubuntu/s4-artifacts/profile/`)
+  showed that barrier waiting was not the gap: the extra work came from a per-partner binary search for slot sizes
+  in replay, and from construction's handoff chasing every source's published buffer.
+- First rework (`/home/ubuntu/s4-artifacts/rework/`): a per-layer slot-size table in `Evaluation.cpp`, and
+  row-written, column-read handoff views in `Construction.h`. Outputs are bitwise identical before and after
+  (8 fixtures, T = 1/2/4, both builds); the correctness and sanitizer matrix passes. Profiling-harness ratios
+  (not checkpoint samples): energy Heisenberg 1.36 -> 1.12, gradient Heisenberg 1.46 -> 1.22, propagate Pauli
+  1.23 -> 1.02, propagate Hubbard 1.20 -> 1.13, build_graph control 0.89 -> 0.91.
+- Next step (before S5): re-run the 32-cell checkpoint on the reworked code with the same protocol, under its own
+  approved limits, then profile further if cells still trail.
+- Pending: macOS, Linux aarch64, wheels, Nix, minimum-version compiler routes, the Python sanitizer legs and P>1
+  candidate runs (S5).
 
 - [x] Add separate-process T=1/2/4 Python cases through the real public API. One concrete core fixture is:
 
@@ -693,11 +714,13 @@ def test_sharded_propagation_matches_graph() -> None:
   full-machine reference cells spanning build_graph, propagate, energy and gradients, both bases/pictures. Use frozen
   builders/parameters and operation/construction memory windows. Specify repetitions, task/per-trial/RAM caps and
   first-touch/placement evidence before running; do not reuse Task 6's allowance.
-- [ ] If authorized, run through the existing driver against preserved partitions, not just candidate T=1. Report every
+- [x] If authorized, run through the existing driver against preserved partitions, not just candidate T=1. Report every
   runtime and memory cell plus full numerical validation. Single-kernel speedup is not the checkpoint. Archive results
   outside the checkout; retain natural first-touch effects as architectural evidence.
 - [ ] Obtain the owner's written proceed/rework/stop decision before S5. Failed parity needs a bounded proposed remedy,
   not an automatic move to runtime deletion. The later frozen campaign is still mandatory after an early pass.
+  (2026-10-01: **rework** decided; first rework done. Next: re-run the 32-cell checkpoint, then profile if needed,
+  then a new decision.)
 
 ## Task S5: Physical-MPI exchange and the MPI+OpenMP checkpoint
 
