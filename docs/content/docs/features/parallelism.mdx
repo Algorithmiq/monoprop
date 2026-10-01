@@ -39,6 +39,8 @@ larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
 | `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. Set it to run fewer partitions than cores. |
 | `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
 
+Which MPI rank owns a term is set separately; see [Rank routing](#rank-routing).
+
 ```bash
 # Run 8 partitions instead of one-per-core:
 export monoprop_NUM_THREADS=8
@@ -69,6 +71,41 @@ MPI partitions the operator and graph across ranks, composing with per-rank
 partitioning into one flat world of `R × S` partitions (`R` ranks, `S` partitions each).
 MPI communication is serialised through each rank's first partition, bracketed by
 the intra-rank barriers.
+
+### Rank routing
+
+A gate with generator $G$ maps $M \mapsto M \oplus G$. Ranks are assigned by a GF(2)-linear hash
+$h(M) = \bigoplus_{i \in \mathrm{supp}(M)} v_i$, keeping its low $d = \log_2 R$ bits $h_d$, so
+
+$$
+h(M \oplus G) = h(M) \oplus h(G).
+$$
+
+Every query a rank sends for $G$ therefore goes to the single peer $r \oplus h_d(G)$, whatever $R$ is.
+XOR is an involution, so both ends derive the pairing without communicating, and the exchange runs
+point-to-point. Partitions within a rank keep the `splitmix` hash $q$, because shared-memory fanout
+is free:
+
+$$
+\mathrm{flat}(M) = h_d(M)\,S + (q \bmod S).
+$$
+
+- $R$ must be a power of two with $\log_2 R \le \min(2N, 64)$. Otherwise [MajoranaPropagator][] and
+  [PauliPropagator][] raise at construction; use `monoprop_ROUTING=splitmix` for other rank counts.
+  $R = 1$ is the dense case.
+- The basis is drawn full rank, so ranks are balanced whenever the circuit's shifts $h_d(G)$ span all
+  $d$ bits. If they span fewer, some ranks stay empty, and a `COMMROUTE` line on stderr says so.
+
+A related scheme sums $k$-bit blocks modulo the rank count [@Broers2025-or]. That sum is not linear
+over XOR, so a gate's queries still reach several ranks rather than one.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `monoprop_ROUTING` | `linear` | `linear` routes as above; `splitmix` keeps the dense all-to-all. Any other value raises. |
+| `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` seed for the basis $\{v_i\}$. |
+
+Both variables, and the partition count, must match on every rank. A mismatch would deadlock the
+exchange, so it is checked collectively at startup and raised.
 
 ### Single-node (`MPI.COMM_SELF`)
 

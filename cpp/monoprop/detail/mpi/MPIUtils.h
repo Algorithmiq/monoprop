@@ -16,12 +16,12 @@
 
 #include <cstddef>
 #include <cstring>
-#include <vector>
 
 #include "monoprop/MPGraph.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/Routing.h"
 
 namespace monoprop::mpi_detail {
 
@@ -49,12 +49,22 @@ inline auto read_monomial_from_words(const VecZ &buffer, size_t start) -> Monomi
 namespace monoprop {
 
 // Stateless and identical on every rank, so all ranks agree on a term's owner without communication.
+// Must agree with Scan.h's query emission, so it takes a Router and has no rank-count overload.
 template <size_t NumModes>
-auto find_rank(const Monomial<NumModes> &mono, const size_t n_ranks) -> size_t {
-    if (n_ranks == 0) {
-        return 0;
-    }
-    return monomial_hash<NumModes>(mono) % n_ranks;
+auto find_rank(const Monomial<NumModes> &mono, const routing::Router &router) -> size_t {
+    return router.dest<NumModes>(mono);
+}
+
+// The router for this communicator's geometry and monoprop_ROUTING, bound to this monomial width.
+template <size_t NumModes>
+inline auto router_for(const mpi::Comm &comm) -> routing::Router {
+    const auto geom = mpi::geometry(comm);
+    return routing::make_router<NumModes>(static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
+}
+
+// Agree the transport now, so a misconfigured rank throws at construction instead of hanging its peers.
+inline auto check_routing_agreement(const mpi::Comm &comm) -> void {
+    static_cast<void>(mpi::routes_pairwise(comm));
 }
 
 } // namespace monoprop

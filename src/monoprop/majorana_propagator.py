@@ -16,20 +16,55 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from itertools import chain
 from typing import TYPE_CHECKING
 
-from .majorana import MajoranaOperator
+import numpy as np
+
+from .majorana import Majorana, MajoranaOperator
 from .monomial_propagator import MonomialPropagator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import ParameterValues
+    from .monomial_propagator import OperatorTerm, ParameterValues
     from .quantum_data import IQuantumOperator
+
+
+def _are_canonical(terms: Sequence[Sequence[int]]) -> bool:
+    """Whether every term is sorted ascending, distinct and non-negative.
+
+    One pass over every index in the query rather than one check per term: for a large query the
+    per-term interpreter overhead dwarfs the comparisons themselves. Conservative -- indices NumPy
+    cannot hold as ``int64`` report as non-canonical, leaving the per-term path to reject or accept
+    them as it always has.
+
+    Args:
+        terms: Raw index sequences, already materialized as tuples.
+
+    Returns:
+        ``True`` if every term is canonical.
+    """
+    lengths = np.fromiter(map(len, terms), dtype=np.intp, count=len(terms))
+    total = int(lengths.sum())
+    if total == 0:
+        return True
+    try:
+        flat = np.fromiter(chain.from_iterable(terms), dtype=np.int64, count=total)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if flat.min() < 0:
+        return False
+
+    steps = np.diff(flat)
+    # Steps spanning a term boundary compare unrelated terms, so they are masked out. A term's last
+    # index is one such boundary; an empty term repeats the previous one, which is harmless.
+    boundaries = np.cumsum(lengths) - 1
+    within_term = np.ones(steps.size, dtype=bool)
+    within_term[boundaries[(boundaries >= 0) & (boundaries < steps.size)]] = False
+    return bool(np.all(steps[within_term] > 0))
 
 
 class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
@@ -124,7 +159,46 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
         terms = self._simulator.evolved_operator(self._bind(parameters), atol)
-        return MajoranaOperator(terms, self.num_modes)
+        return MajoranaOperator(terms, self.num_modes, skip_validation=True)
+
+    def _encode_terms(self, terms: Sequence[OperatorTerm]) -> list[tuple[int, ...]]:
+        """Encode Majorana terms into the engine's index tuples.
+
+        Majorana indices are the engine's keys, so this only unwraps each term. For a
+        non-canonical product use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] instead.
+
+        Args:
+            terms: [Majorana][monoprop.majorana.Majorana] terms, or raw index sequences.
+
+        Returns:
+            The terms' Majorana indices, in query order.
+        """
+        encoded: list[tuple[int, ...]] = []
+        all_from_terms = True  # a Majorana is canonical already; a raw sequence is not yet known to be
+        for term in terms:
+            # Exact tuples first: the common raw form, and the one check that costs a pointer
+            # compare rather than an isinstance walk. A tuple subclass falls through to Iterable.
+            if type(term) is tuple:
+                encoded.append(term)
+                all_from_terms = False
+                continue
+            if isinstance(term, Majorana):
+                encoded.append(term.indices)
+                continue
+            if isinstance(term, (str, bytes)) or not isinstance(term, Iterable):
+                raise TypeError(
+                    "Majorana terms are Majorana objects or index sequences; got "
+                    f"{type(term).__name__}."
+                )
+            encoded.append(tuple(term))
+            all_from_terms = False
+
+        if not all_from_terms and not _are_canonical(encoded):
+            # Re-encoding term by term raises naming the offender.
+            for indices in encoded:
+                Majorana(*indices)
+        return encoded
 
     def update_initial_operator(self, new_operator: MajoranaOperator) -> None:
         """Replace the *initial operator* (existing terms only).
@@ -209,20 +283,22 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         Builds (or extends) the reusable evolution graph, recording each layer's gate
         information (the parameter that drives it and its generator coefficient) so that
         later evaluation takes only ``parameters``. The circuit's angle indices are local
-        (``0``-based); when extending a non-empty graph they are shifted up onto the
-        accumulated parameter axis automatically, so each call's circuit is authored
-        independently.
+        (``0``-based), so each call's circuit is authored independently; they join the
+        accumulated axis in the order of the equivalent single circuit, which is ``b + a``
+        for ``build_graph(a); build_graph(b)`` in Heisenberg and ``a + b`` in Schrodinger.
+        Heisenberg therefore lifts the indices already in the graph by
+        ``circuit.n_parameters``, numbering an extension exactly like the one-call build.
 
         Args:
             circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
-            seed_parameters: The full parameter vector covering the whole accumulated graph,
-                used to regenerate the coefficient seed (by contracting the existing graph) so
-                coefficient truncation sees realistic coefficients when extending. Only needed
-                when extending a non-empty graph *with* coefficient-informed truncation; on the
-                first (or a single) call it defaults to the circuit's own parameters. When
-                omitted while extending, the new layers are built structurally (coefficient
-                truncation is skipped for them); the engine validates the length of an explicit
-                seed.
+            seed_parameters: The full parameter vector covering the whole accumulated graph, on
+                the axis the graph has *after* this call, used to regenerate the coefficient seed
+                (by contracting the existing graph) so coefficient truncation sees realistic
+                coefficients when extending. Only needed when extending a non-empty graph *with*
+                coefficient-informed truncation; on the first (or a single) call it defaults to
+                the circuit's own parameters. When omitted while extending, the new layers are
+                built structurally (coefficient truncation is skipped for them); the engine
+                validates the length of an explicit seed.
             only_rotate_len_k: If provided, apply gates to Majorana monomials of length <= k
                 in the evolved operator even if they anticommute. Useful when many
                 free-fermionic gates (generators that are length-2 Majorana monomials) are

@@ -243,6 +243,8 @@ public:
     /// monomials of length <= k even if they anticommute; nullopt applies them without a length cap.
     /// Heisenberg consumes each call's sequence in
     /// reverse, so a forward split across calls is not equivalent; Schrodinger is front-to-back, so it is.
+    /// `parameter_mapping` is taken as given: renumbering an extension onto the equivalent circuit's axis
+    /// (as the Python layer does) is the caller's job.
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
                      const VecD &gen_coeffs,
@@ -280,6 +282,10 @@ public:
     /// Contracts non-inplace. Core term excluded.
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
+
+    /// As evolved_operator_terms(), but only for requested terms. Keys must be canonical.
+    auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+        -> std::vector<std::complex<double>>;
 
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
@@ -362,6 +368,8 @@ private:
     // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
+
+    bool routing_coverage_reported_{false}; // report_routing_coverage_ warns once per propagator
 
     size_t logical_num_modes_{NumModes};
 
@@ -446,6 +454,9 @@ private:
                                            const VecD &gen_coeffs,
                                            const VecD &parameters,
                                            std::optional<size_t> only_rotate_len_k) -> void;
+
+    // Warns once if this call's generator shifts do not span all log2(R) rank bits.
+    auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
 
     template <typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,

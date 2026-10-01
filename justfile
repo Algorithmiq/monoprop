@@ -138,12 +138,13 @@ test-cpp-asan:
 # CPython is uninstrumented, so the leak, pointer-pair and initialization checks are off
 # here; the C++ leg covers those. ASan needs libstdc++ preloaded too, or its __cxa_throw
 # interceptor does not resolve. pytest replaces stderr, so the reports go to log files.
+# Limit this instrumented run to monoprop's suite rather than collecting workspace packages.
 
 test-py-asan:
     LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
     ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
     UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
-      uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0
+      uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
 
 # Print what test-py-asan sent to the log files. Silent when the tests themselves failed.
 
