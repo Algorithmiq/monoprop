@@ -41,11 +41,28 @@ auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step
     }
 }
 
-// The block partners read from a board: `scale` values per endpoint of this owner's slot for them.
+// One worker's per-layer table of partner block sizes: entry r is the layer's sin_send_count for flat slot r, 0 where
+// unoccupied. Thread-local and reused across calls, like the owner frames; it holds one entry per flat slot.
+auto slot_counts() -> std::vector<size_t> & {
+    static thread_local std::vector<size_t> counts;
+    return counts;
+}
+
+/*
+ * The block partners read from a board: `Scale` values per endpoint of this owner's slot for them.
+ *
+ * The expected block sizes come from one sweep of the layer's occupied slots: a binary search over them for every
+ * partner costs more than applying the partner's block when a layer has many small ones. The block checks and the
+ * values read are unchanged.
+ */
 template <size_t Scale>
 auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_t flat_owner) {
-    return [&board, &layer, flat_owner](size_t rank) -> const double * {
-        return board.block(rank, flat_owner, Scale * layer.cross_rank_sin_send_size(rank));
+    std::vector<size_t> &counts = slot_counts();
+    counts.assign(layer.cross_rank_rank_count(), 0);
+    layer.for_each_occupied_slot(
+        [&counts](size_t rank, const CrossRankSlotView &slot) { counts[rank] = slot.sin_send_count; });
+    return [&board, &counts, flat_owner](size_t rank) -> const double * {
+        return board.block(rank, flat_owner, Scale * counts[rank]);
     };
 }
 

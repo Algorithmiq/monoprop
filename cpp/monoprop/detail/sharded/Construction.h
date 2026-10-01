@@ -83,11 +83,11 @@
  * | Buffer                                  | Writer  | Published | Readers                | Last read | Reset       |
  * | --------------------------------------- | ------- | --------- | ---------------------- | --------- | ----------- |
  * | leader payload (engine queries_r or     | owner t | P1        | every destination      | P2        | prepare of  |
- * |   fused scratch), board payloads[t]     |         |           |   (resolve leaders)    |           |   followers |
- * | leader answers, board answers[t]        | owner t | P2        | every source (consume) | P3        | resolve of  |
+ * |   fused scratch), query inbox row t     |         |           |   (resolve leaders)    |           |   followers |
+ * | leader answers, answer inbox row t      | owner t | P2        | every source (consume) | P3        | resolve of  |
  * |                                         |         |           |                        |           |   followers |
- * | follower payload, board payloads[t]     | owner t | P3        | every destination      | P4        | next gate   |
- * | follower answers, board answers[t]      | owner t | P4        | every source (consume) | P5        | next gate   |
+ * | follower payload, query inbox row t     | owner t | P3        | every destination      | P4        | next gate   |
+ * | follower answers, answer inbox row t    | owner t | P4        | every source (consume) | P5        | next gate   |
  * | own sources, plain queries, values      | owner t | (private) | owner t (consume)      | P3 / P5   | next pass   |
  * | same-shard stage, deferred misses,      | owner t | (private) | owner t                | P5        | next gate   |
  * |   decoded incoming positions, scratch   |         |           |                        |           |             |
@@ -98,8 +98,9 @@
  * |   sources, transient cosine set         |         |           |                        |           |             |
  *
  * "Next gate" means the owner's first phase of the following gate, which starts after P5 has passed, or the final
- * cache phase, which releases the gate buffers. The board itself (2T pointers) and the frames' pointer vector are
- * allocated on the caller and outlive the team, so every buffer stays alive through the join on failure.
+ * cache phase, which releases the gate buffers. The two T x T inboxes of views (row t written by owner t, column d read
+ * by owner d), the replay board and the frames' pointer vector are allocated on the caller and outlive the team, so
+ * every buffer stays alive through the join on failure.
  *
  * Opaque callbacks: a cutoff predicate that is not a typed built-in (CutoffEvaluator::parallel_safe()), including a
  * basis-change closure, is never called from two threads at once. The traversal then runs on the primary, shard by
@@ -250,6 +251,48 @@ template <typename T>
 
 namespace construction_detail {
 
+/*
+ * Post one source's published blocks into its row of the `threads` x `threads` inbox of views: entry
+ * source * threads + d views the block for local destination d, or is empty when the buffer's window does not reach
+ * it. Every entry of the row is rewritten, so no view from an earlier pass survives, and a row has one writer, so posts
+ * by different sources share no cache line except at row boundaries. The views alias `buffer`, which must stay
+ * unchanged until its readers are done. Read from the destination's side, this equals gather_published().
+ */
+template <typename T>
+auto post_blocks(const mpi::WindowVec<std::vector<T>> &buffer,
+                 size_t source,
+                 size_t first_local,
+                 size_t threads,
+                 std::span<std::span<const T>> inbox) -> void {
+    const mpi::SlotWindow window = buffer.window();
+    const auto row = inbox.subspan(source * threads, threads);
+    for (size_t d = 0; d < threads; ++d) {
+        const size_t slot = first_local + d;
+        row[d] = window.contains(slot) ? std::span<const T>(buffer.at_slot(slot)) : std::span<const T>{};
+    }
+}
+
+/*
+ * Destination `dest`'s views over `window` from its inbox column: slot s of the window gets the entry local source
+ * s - first_local posted for `dest` when s is a local shard, and an empty view otherwise. The column's entries are
+ * independent loads, one per source row.
+ */
+template <typename T>
+[[nodiscard]] auto collect_blocks(mpi::SlotWindow window,
+                                  size_t first_local,
+                                  size_t dest,
+                                  size_t threads,
+                                  std::span<const std::span<const T>> inbox) -> mpi::WindowVec<std::span<const T>> {
+    mpi::WindowVec<std::span<const T>> views(window);
+    for (const auto wi : window.indices()) {
+        const size_t slot = window.slot(wi);
+        if (slot >= first_local && slot - first_local < threads) {
+            views[wi] = inbox[((slot - first_local) * threads) + dest];
+        }
+    }
+    return views;
+}
+
 //! Within-shard kernels run serially: the team's parallelism is across owners.
 inline constexpr parallel::Options kSerial{};
 
@@ -359,11 +402,14 @@ auto run_gates(parallel::Options options,
     // Opaque predicates keep the exclusive traversal; see the header comment.
     const bool owner_traversal = CutoffEvaluator<NumModes>(ctx.cutoff_fn).parallel_safe();
 
-    // Caller-side metadata: T frame pointers and the 2T-pointer board. Entry t has one writer, owner t; readers
-    // dereference it only after the checkpoint that published it.
+    // Caller-side metadata: T frame pointers. Entry t has one writer, owner t; readers dereference it only after the
+    // checkpoint that published it.
     std::vector<std::unique_ptr<Frame>> frames(threads);
-    std::vector<const mpi::WindowVec<VecZ> *> payloads(threads, nullptr);
-    std::vector<const mpi::WindowVec<std::vector<Response>> *> answers(threads, nullptr);
+    // Handoff tables (T x T): entry s * T + d views source s's block for destination d. Source s writes its row in the
+    // phase that publishes the blocks; destination d reads its column only after that phase's checkpoint, with one
+    // independent load per source instead of chasing every source's buffer.
+    std::vector<std::span<const size_t>> query_inbox(threads * threads);
+    std::vector<std::span<const Response>> answer_inbox(threads * threads);
     // Informed only: the new layers' replay publications (entry t written by owner t in its frame phase) and the
     // seed replay job (entry t filled by owner t in the seed phase, read by partners after its checkpoint).
     std::vector<const PublishedPair *> replay_pairs(threads, nullptr);
@@ -530,31 +576,41 @@ auto run_gates(parallel::Options options,
                 }();
                 if (passes) {
                     auto &streams = work.scan.streams;
-                    payloads[t] = &engine.prepare_exchange(true,
-                                                           std::move(streams.leader_queries),
-                                                           std::move(streams.leader_src),
-                                                           std::move(streams.leader_val),
-                                                           std::move(streams.leader_self));
+                    post_blocks<size_t>(engine.prepare_exchange(true,
+                                                                std::move(streams.leader_queries),
+                                                                std::move(streams.leader_src),
+                                                                std::move(streams.leader_val),
+                                                                std::move(streams.leader_self)),
+                                        t,
+                                        first_local,
+                                        threads,
+                                        std::span<std::span<const size_t>>(query_inbox));
                 }
             };
             const auto resolve = [&](bool leaders) {
                 observer.visit(leaders ? W::resolve_leaders : W::resolve_followers, step, t);
                 auto &work = *frame.work;
-                const auto incoming = gather_published<size_t>(work.engine->window,
-                                                               flat,
-                                                               first_local,
-                                                               std::span<const mpi::WindowVec<VecZ> *const>(payloads));
+                const auto incoming = collect_blocks<size_t>(work.engine->window,
+                                                             first_local,
+                                                             t,
+                                                             threads,
+                                                             std::span<const std::span<const size_t>>(query_inbox));
                 work.answers = work.engine->resolve_published(incoming, leaders);
-                answers[t] = &work.answers;
+                post_blocks<Response>(work.answers,
+                                      t,
+                                      first_local,
+                                      threads,
+                                      std::span<std::span<const Response>>(answer_inbox));
             };
             const auto consume = [&](bool leaders) {
                 observer.visit(leaders ? W::consume_leaders : W::consume_followers, step, t);
                 auto &work = *frame.work;
                 work.engine->consume_published(
-                    gather_published<Response>(work.engine->window,
-                                               flat,
-                                               first_local,
-                                               std::span<const mpi::WindowVec<std::vector<Response>> *const>(answers)));
+                    collect_blocks<Response>(work.engine->window,
+                                             first_local,
+                                             t,
+                                             threads,
+                                             std::span<const std::span<const Response>>(answer_inbox)));
             };
 
             // P1: traversal and leader preparation.
@@ -591,11 +647,15 @@ auto run_gates(parallel::Options options,
                     }
                     observer.visit(W::prepare_followers, step, t);
                     auto &streams = frame.work->scan.streams;
-                    payloads[t] = &frame.work->engine->prepare_exchange(false,
-                                                                        std::move(streams.follower_queries),
-                                                                        std::move(streams.follower_src),
-                                                                        std::move(streams.follower_val),
-                                                                        std::move(streams.follower_self));
+                    post_blocks<size_t>(frame.work->engine->prepare_exchange(false,
+                                                                             std::move(streams.follower_queries),
+                                                                             std::move(streams.follower_src),
+                                                                             std::move(streams.follower_val),
+                                                                             std::move(streams.follower_self)),
+                                        t,
+                                        first_local,
+                                        threads,
+                                        std::span<std::span<const size_t>>(query_inbox));
                 })) {
                 return;
             }
