@@ -1221,6 +1221,30 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
     return concat_partitions_(collect);
 }
 
+namespace detail {
+
+/// Coefficients of `keys` in `p`'s evolved operator, in query order; a key `p` does not carry yields 0.
+/// `p` must be unpartitioned -- a partition, or a propagator that was never partitioned -- so that
+/// indexing() is available. Non-inplace. Rank-local.
+template <size_t NumModes>
+auto probe_coefficients(MonomialPropagator<NumModes> &p,
+                        const VecD &parameters,
+                        const std::vector<Monomial<NumModes>> &keys) -> std::vector<std::complex<double>> {
+    const VecD evolved = p.contract_partially(parameters, false);
+    std::vector<size_t> rows(keys.size());
+    p.indexing().find_batch(keys.data(), keys.size(), rows.data());
+    std::vector<std::complex<double>> found(keys.size());
+    for (size_t q = 0; q < keys.size(); ++q) {
+        if (rows[q] >= evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+            continue;
+        }
+        found[q] = algebra_decode_coeff<NumModes>(p.basis(), evolved[rows[q]], keys[q]);
+    }
+    return found;
+}
+
+} // namespace detail
+
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
     -> std::vector<std::complex<double>> {
@@ -1232,21 +1256,10 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
                 })
                 | std::ranges::to<std::vector<Monomial<NumModes>>>();
 
-    // `p` is always unpartitioned here (a partition, or *this), so indexing() is available. It is
-    // the subject rather than a capture: map_partitions_ invokes this once per partition, and every
-    // partition is built with the facade's own basis.
-    const auto probe = [&parameters, &keys](MonomialPropagator &p) -> std::vector<std::complex<double>> {
-        const VecD evolved = p.contract_partially(parameters, false);
-        std::vector<size_t> rows(keys.size());
-        p.indexing().find_batch(keys.data(), keys.size(), rows.data());
-        std::vector<std::complex<double>> found(keys.size());
-        for (size_t q = 0; q < keys.size(); ++q) {
-            if (rows[q] >= evolved.size()) { // kNotFound is size_t max, so this covers a miss too
-                continue;
-            }
-            found[q] = algebra_decode_coeff<NumModes>(p.basis(), evolved[rows[q]], keys[q]);
-        }
-        return found;
+    // map_partitions_ takes a callable over MonomialPropagator &, so the free function is bound to
+    // this query rather than called directly.
+    const auto probe = [&parameters, &keys](MonomialPropagator &p) {
+        return detail::probe_coefficients(p, parameters, keys);
     };
 
     std::vector<std::complex<double>> out(terms.size());
