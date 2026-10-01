@@ -35,9 +35,16 @@ from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
 from tests.cases import load_problem
 
+try:
+    from mpi4py import MPI
+except ImportError:  # pragma: no cover - exercised in wheel-test environments
+    MPI = None
+
 DATA = Path(__file__).parent / "data"
 
 N_QUBITS = 6
+
+SERIAL_COMM = None if MPI is None else MPI.COMM_SELF
 
 
 @pytest.fixture(scope="module")
@@ -47,7 +54,7 @@ def problem():
 
 
 @pytest.fixture(scope="module")
-def prop_and_params(problem, serial_comm):
+def prop_and_params(problem):
     """A built propagator over ``problem`` and its parameters, shared across the module.
 
     ``evolved_operator`` and ``evolved_operator_coefficients`` leave simulator state alone, so one
@@ -57,7 +64,7 @@ def prop_and_params(problem, serial_comm):
         problem.operator,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=serial_comm,
+        comm=SERIAL_COMM,
     )
     prop.build_graph(problem.monomial_circuit.to_circuit())
     return prop, problem.monomial_circuit.parameters

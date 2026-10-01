@@ -137,19 +137,13 @@ class TestMPISimulator:
     def test_evolved_operator_coefficients_is_rank_local(
         self, lih_fermionic_spin_exact
     ):
-        """Each rank answers for the terms it owns, and the ranks' answers sum to the serial result.
-
-        ``evolved_operator_coefficients`` is rank-local exactly as ``evolved_operator`` is: a term another
-        rank owns reads back as 0. The identity is excluded from the query -- the core term is
-        replicated on every rank, so the sum below would count it once per rank.
-        """
+        """Each rank answers for the terms it owns, and the ranks' answers sum to the serial result."""
         problem = lih_fermionic_spin_exact
         parameters = problem.monomial_circuit.parameters
 
         serial, serial_circuit = _make_mp(problem, MPI.COMM_SELF)
         serial.build_graph(serial_circuit)
-        # Sorted, so every rank queries the same terms in the same order without relying on the
-        # enumeration order being reproducible across processes.
+        # Sorted so every rank queries the same terms in the same order.
         terms = sorted(
             t for t in serial.evolved_operator(parameters, atol=0.0).terms if t
         )
@@ -166,10 +160,8 @@ class TestMPISimulator:
         np.testing.assert_allclose(summed, expected, atol=1e-9)
 
         if MPI.COMM_WORLD.size > 1:
-            # Pin that the split is real, so the sum above is not just every rank answering in
-            # full. Counted against the terms each rank *owns* rather than against its nonzero
-            # coefficients, which would drift if an owned term evolved to exactly 0. Collective,
-            # so the assertion holds or fails identically on every rank.
+            # Counted against the terms each rank *owns* rather than against its nonzero
+            # coefficients.
             local_terms = world.evolved_operator(parameters, atol=0.0).terms
             owned = sum(1 for t in local_terms if t)  # the identity is on every rank
             busiest = MPI.COMM_WORLD.allreduce(owned, op=MPI.MAX)

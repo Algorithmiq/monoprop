@@ -61,7 +61,7 @@ def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
     return request.param
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def serial_comm() -> Any:  # noqa: ANN401
     """Single-rank communicator for tests that inspect rank-local operator state."""
     return None if MPI is None else MPI.COMM_SELF
