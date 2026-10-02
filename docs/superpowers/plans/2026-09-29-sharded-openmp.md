@@ -30,8 +30,11 @@ here. S2 was separately authorized and implemented on 2026-09-30 (outcome under 
 recorded here. S3 was separately authorized and implemented on 2026-09-30 (outcome under Task S3); owner acceptance
 is not recorded here. S4 was separately authorized, implemented on 2026-10-01 and accepted by the owner on 2026-10-01
 (outcome under Task S4). Its architecture checkpoint ran on 2026-10-01; the owner decided **rework**, and a first
-profiling-driven rework was implemented the same day. The next step re-runs the 32-cell checkpoint on the reworked
-code, followed by further profiling if needed; S5 needs its own authorization after an owner proceed decision.
+profiling-driven rework was implemented the same day. The checkpoint re-run on the reworked code (2026-10-01) still
+failed; after profiling the owner decided a second **rework** (C, D, E), implemented on 2026-10-02. Its checkpoint
+re-run (2026-10-02) left small deviations, which the owner accepted on 2026-10-02 as reasonable, to be re-evaluated at
+a later stage (see S4's outcome). That is the owner's **proceed** decision for the S4 checkpoint; S5 still needs its own
+authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -281,7 +284,8 @@ auto TeamFailure::checkpoint() noexcept -> bool {
 }
 ```
 
-  The next decision cannot be written until every worker reaches the next leading barrier. Integrate these boundaries
+  The next decision cannot be written until every worker reaches the next leading barrier. (Superseded by the second
+  S4 rework, fix C: one barrier per checkpoint with a generation-stamped first failure; see `Team.h`.) Integrate these boundaries
   with handoff needs instead of layering an unrelated failure protocol on top. Add Qt-style declarations/member docs.
   Clarify `Options` as a requested budget: the reduced-team guarantee belongs to `for_blocks`, not every consumer.
   The sharded team requires exactly T; this documentation change must not add actual-team checks or weaken the generic
@@ -664,8 +668,63 @@ full evidence: `/home/ubuntu/s4-artifacts/HANDOFF.md`; experiment proposal (not 
   (8 fixtures, T = 1/2/4, both builds); the correctness and sanitizer matrix passes. Profiling-harness ratios
   (not checkpoint samples): energy Heisenberg 1.36 -> 1.12, gradient Heisenberg 1.46 -> 1.22, propagate Pauli
   1.23 -> 1.02, propagate Hubbard 1.20 -> 1.13, build_graph control 0.89 -> 0.91.
-- Next step (before S5): re-run the 32-cell checkpoint on the reworked code with the same protocol, under its own
-  approved limits, then profile further if cells still trail.
+- Checkpoint re-run (owner instruction, 2026-10-01; `/home/ubuntu/s4-artifacts/checkpoint2/report.md`): same
+  protocol, 134.5 of 170 minutes, 704 processes `ok`, all 32 numerics equal, preserved trees unchanged. off-1x96:
+  runtime 0.89–1.16 (8/16 <= 1.00), operation peaks 0.95–1.05 (7/16), construction peaks 0.96–1.005 (11/16);
+  5/16 meet all five. mpi-1x1: 11/16 meet all five. The checkpoint still fails.
+- Profiling (`/home/ubuntu/s4-artifacts/profile2/FINDINGS.md`): partner reads in replay finishes are latency-exposed
+  (the legacy runtime overlaps the same transfers in a bulk copy); every checkpoint costs two 96-thread barriers
+  (6.5 µs); the Pauli gradient's operation peak is allocator retention of geometric record growth, with live bytes
+  equal to the baseline's.
+- Owner decision: **rework** with C (single-barrier checkpoint), D (overlapped partner reads) and E (gradient scratch
+  liveness). Second rework (`/home/ubuntu/s4-artifacts/rework2/REWORK2.md`):
+  - C: `TeamFailure::checkpoint` is one barrier; a recorded failure lowers a shared first-failed generation, and the
+    decision for checkpoint N is `first_failed > N`.
+  - D: finishes copy runs of consecutive partner blocks into owner-owned staging (`PartnerStaging`, reached by plain
+    reference: a thread-local there cost a TLS lookup per use), then apply them in the unchanged order.
+  - E: an exact per-layer cosine-set count (`CosCallbacks::count`) lets the gradient's frame phase reserve its
+    records once (`replay::reserve_records`).
+  - All 48 probe documents are bitwise identical to the first rework's; the correctness matrix, mutants and sanitizer
+    legs pass. Profiling-harness ratios (not checkpoint samples), off-1x96: evaluation 0.61–1.00, propagate and
+    build_graph 0.77–0.93; Pauli gradient whole-process peak 3.15 -> 2.05 GiB against the baseline. Hubbard cells keep
+    an allocator-level +0.3–1% whole-process peak, with live bytes equal.
+- Checkpoint re-run on the second rework (owner-approved, 2026-10-02; `/home/ubuntu/s4-artifacts/checkpoint3/report.md`):
+  134.0 of 170 minutes, 704 processes `ok`, all 32 numerics equal, preserved trees unchanged. off-1x96: runtime
+  0.33–1.06 (15/16 <= 1.00; energy Heisenberg 1.06 on noisy first calls), operation peaks 0.65–1.007 (8/16), construction
+  peaks 0.80–1.007 (12/16); 7/16 meet all five. mpi-1x1: 9/16 meet all five (runtime 0.67–1.026). The checkpoint still
+  fails, narrowly and mostly on memory: evaluation operation peaks are +6–12 MiB over the baseline (D's per-owner staging
+  adds about 4 MiB to S4's pre-existing allocator-level excess).
+- Owner decision (2026-10-02): **proceed**. The remaining deviations "appear entirely reasonable" and are accepted
+  for now; they are re-evaluated at a later stage. Accepted deviations (candidate median / baseline median - 1, from
+  `checkpoint3/comparison-vs-previous-runs.txt`):
+  - off-1x96 runtime: energy Heisenberg +5.8% (single cold calls of about 16 ms; the baseline's own samples span
+    15.3–27.4 ms; the warm harness gave -5%). The other 15 cells are faster (0.33–0.96).
+  - off-1x96 operation peak: energy Hubbard +0.74%, energy Schrödinger +0.72%, build_graph Hubbard +0.55%, energy
+    Heisenberg +0.54%, gradient Hubbard +0.46%, gradient Heisenberg +0.42%, propagate Hubbard +0.35%, gradient
+    Schrödinger +0.31% (+6–12 MiB on 0.8–1.7 GiB peaks).
+  - off-1x96 construction peak: energy Hubbard +0.65%, build_graph Hubbard +0.46%, gradient Hubbard +0.33%,
+    propagate Schrödinger +0.07%.
+  - mpi-1x1 runtime: propagate Hubbard +2.6% (present since the first checkpoint), propagate Pauli +0.9%, gradient
+    Hubbard +0.6%, energy Schrödinger +0.5%, build_graph Heisenberg +0.2%, energy Pauli +0.1%; mpi-1x1 construction
+    peak: energy Hubbard +0.2%.
+- What is known about them, for the later re-evaluation:
+  - The memory excess has two parts. About 4 MiB is the second rework's per-owner partner staging (one run of at
+    least 32 KiB plus positions and blocks, times 96 owners). The rest is a few-MiB excess S4 already had; on Hubbard,
+    an `LD_PRELOAD` allocation trace (`profile2/alloc/`) found live tracked bytes equal to the baseline's (0.670
+    against 0.669 GiB), so it is allocator-level.
+  - Candidate remedies, none started: a smaller staging run or staging into an existing owner buffer (keep only if
+    the harness speed holds); attributing the pre-existing excess with the allocation tracer at a small threshold
+    inside the operation window; profiling energy Heisenberg's cold first call (thread-local scratch warm-up).
+  - These checkpoint results do not change S7's 250-cell campaign or its five per-cell gates; the deviations are
+    re-assessed there or earlier.
+- Lessons recorded for later tasks:
+  - In the shared library, a `thread_local` object on a hot path costs a `__tls_get_addr` call wherever GCC
+    rematerializes its address, including inside loops; owner scratch is reached through the frame pointer instead.
+  - glibc keeps freed memory from geometric vector growth resident, so reserve exact sizes on peak paths; whole-
+    process RSS can differ between Release and RelWithDebInfo builds through allocation timing alone.
+  - Timing-shaped tests did not catch a non-generation (sticky) checkpoint flag; the forced-interleaving test does.
+    Small fixtures never reach multi-run staging; the test-only `EvaluationObserver::staging_run()` forces it.
+- Next step: S5 under its own authorization, starting from this proceed decision.
 - Pending: macOS, Linux aarch64, wheels, Nix, minimum-version compiler routes, the Python sanitizer legs and P>1
   candidate runs (S5).
 
@@ -717,10 +776,11 @@ def test_sharded_propagation_matches_graph() -> None:
 - [x] If authorized, run through the existing driver against preserved partitions, not just candidate T=1. Report every
   runtime and memory cell plus full numerical validation. Single-kernel speedup is not the checkpoint. Archive results
   outside the checkout; retain natural first-touch effects as architectural evidence.
-- [ ] Obtain the owner's written proceed/rework/stop decision before S5. Failed parity needs a bounded proposed remedy,
+- [x] Obtain the owner's written proceed/rework/stop decision before S5. Failed parity needs a bounded proposed remedy,
   not an automatic move to runtime deletion. The later frozen campaign is still mandatory after an early pass.
-  (2026-10-01: **rework** decided; first rework done. Next: re-run the 32-cell checkpoint, then profile if needed,
-  then a new decision.)
+  (2026-10-01: **rework** decided; first rework done. Re-run failed; 2026-10-02: second **rework** (C, D, E) done.
+  Its re-run (2026-10-02) left small deviations; the owner accepted them and decided **proceed**, to be re-evaluated
+  at a later stage.)
 
 ## Task S5: Physical-MPI exchange and the MPI+OpenMP checkpoint
 
