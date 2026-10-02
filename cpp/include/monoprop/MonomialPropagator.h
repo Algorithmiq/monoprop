@@ -116,13 +116,12 @@ public:
     }
 
     /// This rank's operator storage. Single-partition only — see require_single_partition_.
-    auto mp_op() -> detail::MPOperator<NumModes> & {
-        require_single_partition_("mp_op()");
-        return mp_op_;
-    }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & {
-        require_single_partition_("mp_op()");
-        return mp_op_;
+    // Deducing this, so the partition guard is written once instead of once per const-ness. `Self` is left
+    // unconstrained: it deduces to a derived front-end when one calls this on itself, which is intended.
+    template <typename Self>
+    auto mp_op(this Self &&self) -> auto & {
+        self.require_single_partition_("mp_op()");
+        return self.mp_op_;
     }
 
     // The breakdown fields are additive over the disjoint hash partitions, so a facade sums them.
@@ -157,13 +156,12 @@ public:
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
     /// This rank's monomial → coefficient index. Single-partition only — see require_single_partition_.
-    auto indexing() -> detail::OperatorIndex<NumModes> & {
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
-    }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
+    template <typename Self>
+    auto indexing(this Self &&self) -> auto & {
+        self.require_single_partition_("indexing()");
+        // unique_ptr::operator* is const-qualified but yields a mutable referent, so the propagator's
+        // const-ness has to be re-applied by hand; plain `*store` would hand out a mutable index.
+        return std::forward_like<Self>(*self.mp_op_.store);
     }
 
     /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
