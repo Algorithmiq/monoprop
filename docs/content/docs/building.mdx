@@ -425,10 +425,16 @@ What the prototype supports and rejects:
   limiting setting below T (such as `OMP_THREAD_LIMIT`). The library does not check the team it gets and
   never changes OpenMP settings. Placement and pinning belong to the launcher; one worker per physical
   core is recommended.
-- **One rank.** MPI-off builds, and MPI builds on a one-rank ordinary communicator. A communicator with
-  more ranks is rejected on every rank at construction, before any collective (`PropagatorConfigError`),
-  with no fallback to the legacy runtime. Multi-rank support is task S5. Public calls must come from the
-  thread that initialized MPI; the build keeps requiring `MPI_THREAD_SERIALIZED`.
+- **Ranks.** MPI-off builds, and MPI builds on an ordinary communicator of P ranks, each rank with the same
+  T. Shard t of rank r is flat routing owner `r * T + t`. Every rank constructs the propagator and makes
+  every call collectively, with the same arguments. Linear routing (the default) needs a power-of-two P and
+  is rejected otherwise on every rank together; `monoprop_ROUTING=splitmix` routes any P. Exports, contraction
+  blocks, counts and memory breakdowns are rank-local, as in the legacy runtime. Energies and gradients are
+  global: the shards fold in ascending order, then the existing MPI reduction applies, with the identity added
+  once. Inside a team only the primary, the thread that initialized MPI, makes MPI calls. A failure on one
+  rank aborts the communicator, as in the legacy runtime. Public calls must come from the thread that
+  initialized MPI; the build keeps requiring `MPI_THREAD_SERIALIZED`. The library adds no thread-count
+  agreement: unequal T across ranks is an unsupported launch.
 - **Obsolete controls.** A nondefault `partitions` or a `child_factory` argument, and a present
   `monoprop_PARTITIONS` with any value, raise `PropagatorConfigError`. None of them selects a geometry or
   the legacy runtime.

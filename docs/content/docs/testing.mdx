@@ -139,9 +139,26 @@ In that build the unit-test `main()` defaults `monoprop_NUM_THREADS` to 1 instea
 `monoprop_PARTITIONS`, which the prototype rejects. The S1 to S3 seam suites, which compare against live
 legacy partitions, are not compiled there; nor are the other suites that need the legacy root (the list
 is `_monoprop_legacy_root_suites` in `cpp/tests/CMakeLists.txt`, with the migration ledger in
-`cpp/tests/README.md`). The multi-rank suite variants and `mpi_failure_*` scenarios are legacy-only too;
-an MPI prototype build registers `sharded_root_multirank_rejected_mpi_2` instead. The Python
-integration tests launch a fresh interpreter per T:
+`cpp/tests/README.md`). The whole-suite multi-rank variants (`*_mpi_2`, `*_mpi_4`) stay legacy-only.
+
+Multi-process cases of the sharded runtime have their own launches, one per P ranks x T threads, labelled `mpi`.
+Each sets `monoprop_NUM_THREADS`, `OMP_NUM_THREADS` and `monoprop_TEST_EXPECT_TEAM` to T with `OMP_DYNAMIC=FALSE`,
+leaves binding to OpenMP (`OMPI_MCA_hwloc_base_binding_policy=none`), and names the world size in
+`monoprop_TEST_SHARDED_RANKS`; a multi-rank case skips without it, so the whole-suite variants never run one at
+their default budget.
+
+| Entries | Build | What they run |
+| --- | --- | --- |
+| `sharded_exchange_mpi2_t*`, `_mpi3_t*` | every MPI build | the physical round (`detail/sharded/Exchange.h`): closed-form blocks over both transports, with exchanged and known counts, the XOR peer, empty rounds, staging reuse, request moves |
+| `sharded_seams_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix` | legacy MPI build | the sharded seams at (P, T) against the legacy runtime at P ranks x `partitions = T`, bit for bit per shard |
+| `sharded_root_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix`, `_mpi3_t2_linear_rejected` | prototype MPI build | the root over P ranks against one process, MPI on the primary only, and the unroutable-geometry rejection |
+| `sharded_world_equivalence_mpi2_t*`, `_mpi4_t*` | prototype MPI build | the serial-against-world cases of `mpi_distributed_layer_equivalence.cpp` and `mpi_fresh_insert_equivalence.cpp` |
+
+```bash
+ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -R '^sharded_(exchange|root)_mpi'
+```
+
+The Python integration tests launch a fresh interpreter per T:
 
 ```bash
 monoprop_TEST_EXPECT_RUNTIME=sharded monoprop_TEST_LEGACY_PYTHON="$LEGACY_ENV/bin/python" \
@@ -150,7 +167,11 @@ monoprop_TEST_EXPECT_RUNTIME=sharded monoprop_TEST_LEGACY_PYTHON="$LEGACY_ENV/bi
 
 `monoprop_TEST_LEGACY_PYTHON` names a separately built legacy environment. Its processes run at
 `monoprop_PARTITIONS=T` for a bitwise comparison at the same (1, T) geometry; without it those cases skip.
-`monoprop_TEST_EXPECT_RUNTIME` makes a mislabelled build fail instead of skip.
+`monoprop_TEST_EXPECT_RUNTIME` makes a mislabelled build fail instead of skip. In an MPI prototype build with an
+MPI launcher on `PATH`, the `test_multirank_*` cases also run the probe on several processes, each rank writing
+its own document: at two ranks against a legacy MPI environment rank by rank and bit for bit, across the
+geometries (1, 4), (2, 2) and (4, 1), and on three processes under splitmix, with the gathered maps, energies
+and gradients within the map tolerance.
 
 The MPI build also registers `mpi_failure_*` entries, labelled `mpi` and `mpi_failure`, from
 `cpp/tests/mpi_failure_driver.cpp`. That driver has its own `main()`, so the unit-runner glob
@@ -163,6 +184,10 @@ a 30-second timeout. Rank 0 fails in one of these ways while its peer follows th
 - host-initialized MPI provides only `SINGLE` or `FUNNELED`;
 - a guarded call arrives from a `std::thread` under `SERIALIZED` or `MULTIPLE`.
 
+A prototype build registers `mpi_failure_sharded_*` instead, which drive the sharded root at two threads per
+rank. Rank 0's worker 1 throws in a replay finish; the primary throws in a traversal before any physical
+round, in a cosine pass while a replay round is posted, or while packing queries with the count round posted;
+rank 1 sends malformed query blocks; and the thread-level and wrong-thread cases are the same as above.
 An entry passes only on a prompt nonzero exit with the expected diagnostic. A timeout means a rank
 was left blocked, and it fails the entry. The wrong-thread cases rely on the launcher ending the
 peers of a process that aborts, which is Open MPI's default. `ctest -L mpi_failure` runs just

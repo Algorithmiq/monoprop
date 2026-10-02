@@ -39,21 +39,27 @@
  * The sharded OpenMP prototype root: MonomialPropagator over the T shard states of one rank (temporary development
  * build; see docs/content/docs/building.mdx).
  *
- * Ownership. The root owns configuration, the ordinary communicator, the captured budget (T threads = T shards), the
- * prepared (1, T) router, the replicated identity coefficient, the initial-operator epoch, validity, and T shard
- * states. It holds no operator, graph or matched marks of its own and never dispatches to child propagators. Every
- * operation that touches substantial shard state runs it on the shard's owner in one operation-scoped team: seeding
- * and copying (State.h), construction and propagation (Construction.h), retained preparation, evaluation and replay
- * (Evaluation.h), and the root's own owner phases (initial-operator updates, remapping, picture copies). The caller
- * performs only rank-level metadata work and small per-shard view/callback setup before a team.
+ * Ownership. The root owns configuration, the ordinary communicator of P ranks, the captured budget (T threads = T
+ * shards), the prepared (P, T) router, the replicated identity coefficient, the initial-operator epoch, validity, and
+ * this rank's T shard states (flat owners rank * T + t). It holds no operator, graph or matched marks of its own and
+ * never dispatches to child propagators. Every operation that touches substantial shard state runs it on the shard's
+ * owner in one operation-scoped team: seeding and copying (State.h), construction and propagation (Construction.h),
+ * retained preparation, evaluation and replay (Evaluation.h), and the root's own owner phases (initial-operator
+ * updates, remapping, picture copies). The caller performs only rank-level metadata work and small per-shard
+ * view/callback setup before a team.
  *
  * Failure. Arguments are validated before any team. A seam returns its error after its team has joined, with
  * whether mutation began; the root transfers the mutation flag before rethrowing under run_operation_, so a
  * post-mutation failure invalidates this object (mutation_failed_) and reaches mpi::operation_failed() before any
  * result reduction, while a pre-mutation failure leaves it usable. There is no rollback.
  *
- * Launch contract (not checked): exactly T workers per team, OMP_DYNAMIC=FALSE and no limit below T; one ordinary
- * one-rank communicator; public calls from MPI's initializing thread, outside any OpenMP region.
+ * Ranks. Every rank constructs and calls the root collectively, with the same arguments. Rank-local results
+ * (exports, contraction blocks, size() and the memory aggregates) cover this rank's shards, as the legacy runtime's
+ * do; energies and gradients are reduced over the communicator after the ascending-shard fold, with the identity
+ * once. Inside a team only the primary, which is MPI's initializing thread, makes MPI calls.
+ *
+ * Launch contract (not checked): exactly T workers per team, OMP_DYNAMIC=FALSE and no limit below T, the same T on
+ * every rank; an ordinary communicator; public calls from MPI's initializing thread, outside any OpenMP region.
  */
 
 namespace monoprop {
@@ -139,15 +145,14 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
     }
     // Before any MPI query or collective in this constructor.
     mpi::require_initializing_thread();
-    if (const int ranks = mpi::size(comm); ranks != 1) {
-        // Every rank sees the same size and throws here, before any collective, so no peer is left waiting.
-        throw PropagatorConfigError(
-            std::format("The sharded OpenMP prototype supports one MPI rank until its physical exchange exists; this "
-                        "communicator has {} ranks. Build without monoprop_SHARDED_OPENMP_PROTOTYPE for multi-rank "
-                        "runs.",
-                        ranks));
+    try {
+        mpi::require_thread_support();
     }
-    mpi::require_thread_support();
+    catch (...) {
+        // A rank that threw here would strand its peers in the routing agreement below.
+        mpi::operation_failed(comm, std::current_exception());
+    }
+    const auto ranks = static_cast<size_t>(mpi::size(comm));
     try {
         parallel_ = detail::parallel::capture_thread_budget();
     }
@@ -169,8 +174,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
 
     std::optional<detail::sharded::PairedBasisBounds> paired;
     if (schrodinger_) {
-        // P = 1, so the flat owners are the T shards.
-        paired = detail::sharded::paired_basis_bounds(*schrodinger_cutoff, logical_num_modes_, threads);
+        // The basis is shared by the P * T flat owners.
+        paired = detail::sharded::paired_basis_bounds(*schrodinger_cutoff, logical_num_modes_, ranks * threads);
         if (!paired->countable() || paired->share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
             const auto how_many =
                 paired->countable() ? std::format("{}", paired->global_terms) : std::string("more than 2^64");
@@ -178,18 +183,20 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
             throw PropagatorConfigError(
                 std::format("schrodinger_cutoff ({}) admits {} paired basis terms over {} active modes, about {} per "
                             "shard -- more than can be walked or addressed. Lower schrodinger_cutoff, or raise the "
-                            "thread budget T (currently {}).",
+                            "rank x thread count P * T (currently {}).",
                             *schrodinger_cutoff,
                             how_many,
                             logical_num_modes_,
                             per_shard,
-                            threads));
+                            ranks * threads));
         }
     }
 
-    // Routing mode and seed agree across the (one-rank) communicator; the geometry is the root's, never comm_'s.
+    // Routing mode and seed agree across the communicator (collective; every rank got here on replicated input). A
+    // linear router then rejects a non-power-of-two P on every rank together.
     check_routing_agreement(comm_);
-    router_.emplace(routing::make_router<NumModes>(1, threads));
+    world_ = detail::sharded::PhysicalWorld::of(comm_);
+    router_.emplace(routing::make_router<NumModes>(ranks, threads));
 
     const double core_term =
         detail::sharded::validate_initial_operator<NumModes>(initial_operator, basis_, logical_num_modes_);
@@ -203,7 +210,10 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
         .logical_num_modes = logical_num_modes_,
         .paired = paired,
         .inline_width = detail::sharded::packed_inline_width<NumModes>(schrodinger_, cutoff_fn_)};
-    shards_ = detail::sharded::seed_shards<NumModes>(parallel_, seed, 0, detail::sharded::RootShardObserver{observer_});
+    shards_ = detail::sharded::seed_shards<NumModes>(parallel_,
+                                                     seed,
+                                                     world_.rank,
+                                                     detail::sharded::RootShardObserver{observer_});
     core_term_ = core_term;
 }
 
@@ -225,6 +235,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       parallel_(other.parallel_),
       one_store_(other.one_store_),
       router_(other.router_),
+      world_(other.world_),
       observer_(other.observer_),
       // The source's budget, not a new capture: a copy keeps T.
       shards_(detail::sharded::copy_shards<NumModes>(other.parallel_,
@@ -362,7 +373,7 @@ auto MonomialPropagator<NumModes>::construction_context_() const -> detail::shar
                                                           .upper_atol = upper_atol_,
                                                           .basis = basis_,
                                                           .schrodinger = schrodinger_,
-                                                          .rank = 0};
+                                                          .world = world_};
 }
 
 template <size_t NumModes>
@@ -541,9 +552,10 @@ template <size_t NumModes>
 auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &op_dict)
     -> std::pair<MonomialList<NumModes>, VecD> {
     return run_operation_(true, [&](bool &mutation_started) -> std::pair<MonomialList<NumModes>, VecD> {
-        // Read-only pass on the caller: every index is checked and routed with the shards' own (1, T) ownership
-        // before anything, the epoch included, changes.
+        // Read-only pass on the caller: every index is checked and routed with the shards' own (P, T) ownership
+        // before anything, the epoch included, changes. Each rank applies its own shards' share only.
         const routing::Router &router = *router_;
+        const size_t first_local = world_.rank * shards_.size();
         std::vector<OperatorDict> shares(shards_.size());
         std::optional<double> new_core_term;
         for (const auto &[ind, coeff] : op_dict) {
@@ -552,7 +564,10 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
                 new_core_term = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
                 continue;
             }
-            shares[find_rank<NumModes>(mono, router)][bitset_to_indices<NumModes>(mono)] = coeff;
+            const size_t owner = find_rank<NumModes>(mono, router);
+            if (owner >= first_local && owner - first_local < shares.size()) {
+                shares[owner - first_local][bitset_to_indices<NumModes>(mono)] = coeff;
+            }
         }
 
         mutation_started = true;
@@ -587,7 +602,7 @@ auto MonomialPropagator<NumModes>::prepare_retained_(std::optional<double> pare_
                                                           .pare_threshold = pare_threshold,
                                                           .basis = basis_,
                                                           .schrodinger = schrodinger_,
-                                                          .rank = 0};
+                                                          .rank = world_.rank};
     auto outcome = detail::sharded::prepare_retained<NumModes>(parallel_, shards_, context, observer_);
     mutation_started = mutation_started || outcome.mutation_started;
     if (outcome.error) {
@@ -605,7 +620,7 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
     // evaluator's own argument checks happens before its team and mutates nothing.
     const auto requests = retained.requests(params);
     auto outcome =
-        detail::sharded::evaluate_shards(requests, retained.callbacks, retained.options, gradient, observer_);
+        detail::sharded::evaluate_shards(requests, retained.callbacks, retained.options, gradient, observer_, world_);
     // The team has run: owners warmed their lazy caches and per-thread scratch.
     if (mutation_started != nullptr) {
         *mutation_started = true;
@@ -749,7 +764,7 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
         callbacks.push_back(
             detail::make_cos_callbacks<NumModes>(state.op.inverted_index(), view, basis_, detail::parallel::Options{}));
     }
-    auto outcome = detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_);
+    auto outcome = detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_, world_);
     if (outcome.error) {
         std::rethrow_exception(outcome.error);
     }

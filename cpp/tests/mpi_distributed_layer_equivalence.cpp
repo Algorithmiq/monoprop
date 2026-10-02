@@ -27,7 +27,8 @@
 
 // Single-rank (self) vs multi-rank (world) equivalence of energy, gradient, native-Pauli energy and
 // the MPI x partition hybrid. Oracle: the self run; the only expected difference is summation order,
-// covered by near()'s kFpRtol = 1e-7.
+// covered by near()'s kFpRtol = 1e-7. A sharded prototype build runs the same public calls on its root at P ranks x
+// the launch's T (cpp/tests/CMakeLists.txt); only the hybrid case is legacy-only.
 
 namespace {
 
@@ -160,6 +161,9 @@ BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
     BOOST_TEST(near(e_serial, e_world));
 }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The sharded root takes no partitions= (its shard count is the launch's T), so this legacy case stays legacy-only.
+
 // MPI x partition hybrid: partitions=S under R ranks builds the HybridComm flat R*S world, which only changes
 // allreduce association, so the energy must match serial and the global term count must be exactly
 // invariant. Explicit partitions= wins over the suite's monoprop_PARTITIONS=off, so this is the sole case
@@ -199,5 +203,7 @@ BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence) {
     BOOST_TEST(near(e_serial, e_hybrid));
     BOOST_CHECK_EQUAL(n_serial, n_hybrid_global);
 }
+
+#endif // monoprop_SHARDED_OPENMP_PROTOTYPE
 
 } // namespace

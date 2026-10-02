@@ -2335,7 +2335,7 @@ def test_observe_rejects_contradictory_evidence(
 
 
 @_launches
-@_legacy_build  # two ranks: the sharded prototype supports one until S5
+@_legacy_build  # two ranks: the driver's multi-rank shapes set monoprop_PARTITIONS, which the prototype rejects
 @pytest.mark.skipif(
     not monoprop.has_mpi or shutil.which("mpiexec") is None,
     reason="needs an MPI extension and mpiexec",

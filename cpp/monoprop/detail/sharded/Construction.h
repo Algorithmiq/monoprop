@@ -39,19 +39,22 @@
 #include "monoprop/detail/evolution/layer_build/Engine.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/sharded/Evaluation.h"
+#include "monoprop/detail/sharded/Exchange.h"
 #include "monoprop/detail/sharded/State.h"
 #include "monoprop/detail/sharded/Team.h"
 
 /*
- * Graph construction and graph-free propagation over the T shards of one process (P = 1).
+ * Graph construction and graph-free propagation over the T shards of one process, at geometry (P, T).
  *
  * One run_team() spans the whole gate loop. Worker t is the owner of shard t, whose flat routing slot is
- * rank * T + t; every other shard of the process is a cross owner, exactly like a shard of another process, so the
- * owners exchange partner queries through published buffers instead of communicators. Each phase below ends in a
+ * rank * T + t; every other shard is a cross owner, in this process or another. Owners of this process exchange
+ * partner queries through published buffers instead of communicators; blocks for and from other processes go through
+ * one physical round per handoff (Exchange.h), whose MPI calls the primary makes. Each phase below ends in a
  * collective checkpoint (phase()); a phase body mutates only its owner's shard and gate buffers, and reads other
  * owners' buffers only after the checkpoint that published them. Within-shard kernels run serially: the parallelism
  * is across owners.
@@ -73,10 +76,33 @@
  * the replay of the new layer over its transient cosine set (snapshot, publish, cosine pass), and one more checkpoint
  * (P6) finishes it from the partners' published snapshots before the next gate's traversal reads the coefficients.
  *
- * The identity generator skips the exchange phases; with T = 1 there is no cross owner, so only the resolve and
- * consume work is skipped, and same-shard resolution still runs. Row insertion order is therefore cross-owner
+ * The identity generator skips the exchange phases; with one flat owner there is no cross owner, so only the resolve
+ * and consume work is skipped, and same-shard resolution still runs. Row insertion order is therefore cross-owner
  * leaders, cross-owner followers, deferred same-shard leaders, deferred same-shard followers, as in the legacy
- * runtime at the same (1, T) geometry.
+ * runtime at the same (P, T) geometry.
+ *
+ * Other processes. A gate's window reaches another rank exactly when its peer plan does: the single peer
+ * rank ^ shift(generator) under linear routing (none when the shift is zero), every other rank under splitmix. That
+ * depends on the replicated generator and router only, so every rank takes the same branch. Each pass then adds:
+ *
+ *   P1 / P3   the owner also writes its query send row: the size of its block for every remote destination
+ *   Q1        primary: lay out the query round, post its count round
+ *   Q2        owners pack their remote query blocks into the round's send staging
+ *   Q3        primary: complete the counts, lay out the receive side, post and complete the queries
+ *   P2 / P4   destinations resolve local views and received blocks together, in ascending flat-slot order, then
+ *             write their answer rows: one answer per query resolved for each remote source, and one per own query
+ *             to each remote destination (answer counts are query counts, not the streams' word counts)
+ *   R1        primary: lay out the answer round
+ *   R2        owners pack the answers remote sources wait for
+ *   R3        primary: post and complete the answers
+ *   P3 / P5   sources consume local and received answers, in window order
+ *
+ * The query staging is read in P2 (P4) and rewritten only by the next pass's Q3; the answer staging is read in P3
+ * (P5) and rewritten only by the next pass's R3. Construction's peer plan picks the transport: pairwise for the single
+ * linear peer, one collective MPI_Ialltoallv under splitmix. Informed construction's new-layer replay goes through
+ * a replay round as evaluation does (Evaluation.h), with the communicator-agreed transport: P5 publishes and writes
+ * the replay rows, a primary phase lays the round out, owners pack, and a phase posts, runs every owner's cosine
+ * pass while the transfer is in flight and completes it before P6 reads the received blocks.
  *
  * Buffers (owner t writes only its own; no buffer is resized, moved or freed while another owner may read it):
  *
@@ -99,8 +125,8 @@
  *
  * "Next gate" means the owner's first phase of the following gate, which starts after P5 has passed, or the final
  * cache phase, which releases the gate buffers. The two T x T inboxes of views (row t written by owner t, column d read
- * by owner d), the replay board and the frames' pointer vector are allocated on the caller and outlive the team, so
- * every buffer stays alive through the join on failure.
+ * by owner d), the replay board, the frames' pointer vector and the physical rounds are allocated on the caller and
+ * outlive the team, so every buffer and request stays alive through the join on failure.
  *
  * Opaque callbacks: a cutoff predicate that is not a typed built-in (CutoffEvaluator::parallel_safe()), including a
  * basis-change closure, is never called from two threads at once. The traversal then runs on the primary, shard by
@@ -110,7 +136,9 @@
  * Failure: every call that can throw runs inside a phase. A failure suppresses every later phase body on every
  * worker, the team joins, and the original exception of the lowest-numbered failing worker is returned (not
  * rethrown) together with whether mutation had started. Nothing is rolled back: once mutation started, the shards
- * are partly updated and the rank-level owner must be treated as invalid. Independent copies are unaffected.
+ * are partly updated and the rank-level owner must be treated as invalid. Independent copies are unaffected. If a
+ * physical round still has live requests after a failed join, the seam hands the error to mpi::operation_failed()
+ * itself, before any request owner is destroyed: on a multi-rank communicator that aborts it.
  */
 
 namespace monoprop::detail::sharded {
@@ -131,6 +159,8 @@ enum class ConstructionWork : std::uint8_t {
     caches,            //!< After the last gate: release gate buffers and warm the shard's caches.
     seed,              //!< Informed construction: copy the picture, prepare and run the seed replay.
     replay,            //!< Informed construction: begin (P5) or finish (P6) the replay of the new layer.
+    exchange,          //!< Multi-rank: the primary lays out, posts or completes a physical round (shard 0 only).
+    pack,              //!< Multi-rank: copy this owner's remote blocks into a round's send staging.
 };
 
 /*!
@@ -142,7 +172,8 @@ enum class ConstructionWork : std::uint8_t {
  * in its frame phase. Tests substitute observers that record the executing worker, capture streams or throw; an
  * exception from either method is that phase's failure. A test observer may also define
  * `replayed(shard, step, const VecD &coeffs)`, detected at compile time, which informed construction calls after each
- * new layer's replay with the owner's evolving coefficients.
+ * new layer's replay with the owner's evolving coefficients, and `queries_packed(step, shard, PhysicalExchange &)`,
+ * called after the owner packed its remote query blocks, which may rewrite them to inject malformed traffic.
  */
 struct NoConstructionObserver {
     auto visit(ConstructionWork /*work*/, size_t /*step*/, size_t /*shard*/) const noexcept -> void {}
@@ -155,12 +186,13 @@ struct NoConstructionObserver {
 template <size_t NumModes>
 struct ConstructionContext {
     const CutoffFn<NumModes> &cutoff_fn; //!< Structural cutoff on partners; must outlive the call.
-    routing::Router router;              //!< Flat-owner routing at geometry (1, T), as the shards were seeded.
+    routing::Router router;              //!< Flat-owner routing at geometry (P, T), as the shards were seeded.
     std::optional<double> lower_atol;    //!< Lower sine cutoff; applies only where coefficients are supplied.
     std::optional<double> upper_atol;    //!< Upper rescue threshold; applies only where coefficients are supplied.
     Basis basis = Basis::Majorana;       //!< Rotation signs, and Schrödinger fresh-insert scoring.
     bool schrodinger = false;            //!< Picture: forward gate order and state coefficients when true.
-    size_t rank = 0;                     //!< This process's rank; 0 at P = 1.
+    //! This process among the router's ranks; read on the caller (PhysicalWorld::of()) before the call.
+    PhysicalWorld world{};
 };
 
 /*!
@@ -296,6 +328,109 @@ template <typename T>
 //! Within-shard kernels run serially: the team's parallelism is across owners.
 inline constexpr parallel::Options kSerial{};
 
+/*
+ * The peer ranks a gate's handoffs reach: the single linear peer rank ^ shift (none when that is this rank), or every
+ * other rank under a dense plan. A function of the replicated generator and router only, so every rank computes the
+ * same set for the same gate.
+ */
+inline auto gate_peers(mpi::PeerPlan plan, const PhysicalWorld &world) -> std::vector<size_t> {
+    if (plan.sparse) {
+        const size_t peer = world.rank ^ static_cast<size_t>(plan.shift);
+        return peer == world.rank ? std::vector<size_t>{} : std::vector<size_t>{peer};
+    }
+    return other_ranks(world);
+}
+
+// The flat slot of shard `shard` of rank `rank`, checked against the window it must index.
+inline auto window_slot(mpi::SlotWindow window, size_t rank, size_t shard, size_t threads) -> size_t {
+    const size_t slot = (rank * threads) + shard;
+    if (!window.contains(slot)) {
+        throw std::logic_error(
+            std::format("sharded construction: remote slot {} lies outside the gate's window [{}, {})",
+                        slot,
+                        window.base,
+                        window.stop()));
+    }
+    return slot;
+}
+
+// Owner `own`'s send row: the size of its block for every shard of every peer.
+template <typename T>
+auto write_send_rows(PhysicalExchange &round,
+                     const mpi::WindowVec<std::vector<T>> &blocks,
+                     std::span<const size_t> peers,
+                     size_t threads,
+                     size_t own) -> void {
+    round.reset_rows(own);
+    for (size_t k = 0; k < peers.size(); ++k) {
+        for (size_t t = 0; t < threads; ++t) {
+            round.set_send_count(own, k, t, blocks.at_slot(window_slot(blocks.window(), peers[k], t, threads)).size());
+        }
+    }
+}
+
+/*
+ * Owner `own`'s rows of an answer round: it sends one answer per query it resolved for each remote source, and receives
+ * one per query of its own (`sources`, one entry per query) addressed to each remote destination. Answer counts are
+ * query counts, not the query streams' word counts, so they are known only after resolution.
+ */
+template <typename Response>
+auto write_answer_rows(PhysicalExchange &round,
+                       const mpi::WindowVec<std::vector<Response>> &answers,
+                       const mpi::WindowVec<std::vector<size_t>> &sources,
+                       std::span<const size_t> peers,
+                       size_t threads,
+                       size_t own) -> void {
+    round.reset_rows(own);
+    for (size_t k = 0; k < peers.size(); ++k) {
+        for (size_t t = 0; t < threads; ++t) {
+            round.set_send_count(own,
+                                 k,
+                                 t,
+                                 answers.at_slot(window_slot(answers.window(), peers[k], t, threads)).size());
+            round.set_recv_count(own,
+                                 k,
+                                 t,
+                                 sources.at_slot(window_slot(sources.window(), peers[k], t, threads)).size());
+        }
+    }
+}
+
+// Owner `own` copies its block for every remote shard into its slices of the round's send staging.
+template <typename T>
+auto pack_blocks(PhysicalExchange &round,
+                 const mpi::WindowVec<std::vector<T>> &blocks,
+                 std::span<const size_t> peers,
+                 size_t threads,
+                 size_t own) -> void {
+    for (size_t k = 0; k < peers.size(); ++k) {
+        for (size_t t = 0; t < threads; ++t) {
+            const auto &block = blocks.at_slot(window_slot(blocks.window(), peers[k], t, threads));
+            const auto slice = round.send_block<T>(own, k, t);
+            if (slice.size() != block.size()) {
+                throw std::logic_error(std::format("sharded construction: a {}-element block meets a {}-element slice",
+                                                   block.size(),
+                                                   slice.size()));
+            }
+            std::ranges::copy(block, slice.begin());
+        }
+    }
+}
+
+// Views of what owner `own` received from every remote shard, placed at their slots of `views`.
+template <typename T>
+auto add_received(mpi::WindowVec<std::span<const T>> &views,
+                  const PhysicalExchange &round,
+                  std::span<const size_t> peers,
+                  size_t threads,
+                  size_t own) -> void {
+    for (size_t k = 0; k < peers.size(); ++k) {
+        for (size_t su = 0; su < threads; ++su) {
+            views.at_slot(window_slot(views.window(), peers[k], su, threads)) = round.recv_block<T>(own, k, su);
+        }
+    }
+}
+
 // One owner's buffers for the current gate. The fused records precede the engine, which refers to them.
 template <size_t NumModes, typename Sink, class KernelObserver>
 struct GateWork {
@@ -304,6 +439,7 @@ struct GateWork {
     FusedContract fc;
     CosMask cos;
     std::optional<LayerBuildEngine<NumModes, Sink, KernelObserver>> engine;
+    const mpi::WindowVec<VecZ> *payload = nullptr; // the engine's payload for the current pass (multi-rank packing)
     mpi::WindowVec<std::vector<Response>> answers; // this owner's answers for the current pass
     std::shared_ptr<LayerCore> core;               // informed: the new layer, replayed at P5/P6
 };
@@ -351,14 +487,16 @@ auto check_arguments(const char *what,
         throw std::invalid_argument(
             std::format("sharded::{}: expected {} non-null shards, got {}", what, options.threads, shards.size()));
     }
-    // The physical exchange does not exist yet, so every flat owner must be a shard of this process.
-    if (ctx.router.ranks() != 1 || ctx.rank != 0 || ctx.router.partitions() != shards.size()) {
-        throw std::invalid_argument(std::format("sharded::{}: routing geometry ({} ranks, {} shards per rank, rank {}) "
-                                                "is not one process of {} shards",
+    // The router's geometry must be this process's: its ranks, and T shards per rank.
+    if (ctx.router.ranks() != ctx.world.ranks || ctx.world.rank >= ctx.world.ranks
+        || ctx.router.partitions() != shards.size()) {
+        throw std::invalid_argument(std::format("sharded::{}: routing geometry ({} ranks, {} shards per rank) does not "
+                                                "match rank {} of {} with {} shards",
                                                 what,
                                                 ctx.router.ranks(),
                                                 ctx.router.partitions(),
-                                                ctx.rank,
+                                                ctx.world.rank,
+                                                ctx.world.ranks,
                                                 shards.size()));
     }
     for (const size_t length : lengths) {
@@ -397,7 +535,7 @@ auto run_gates(parallel::Options options,
     const size_t threads = shards.size();
     const size_t gates = generators.size();
     const size_t flat_world = ctx.router.flat_world();
-    const size_t first_local = ctx.rank * threads;
+    const size_t first_local = ctx.world.rank * threads;
     const bool schrodinger = ctx.schrodinger;
     // Opaque predicates keep the exclusive traversal; see the header comment.
     const bool owner_traversal = CutoffEvaluator<NumModes>(ctx.cutoff_fn).parallel_safe();
@@ -423,6 +561,29 @@ auto run_gates(parallel::Options options,
     }
     const SeedObserver<Observer> seed_observer(observer);
     bool mutation_started = false; // written by the primary only, read after the join
+
+    // Physical rounds, only when there are other processes; allocated on the caller and alive through the join.
+    const PhysicalWorld &world = ctx.world;
+    const bool multirank = world.ranks > 1;
+    std::optional<PhysicalExchange> queries;
+    std::optional<PhysicalExchange> answers;
+    std::optional<PhysicalExchange> replay;
+    if (multirank) {
+        queries.emplace(world, threads, ExchangeElement::u64, kShardedQueryTag);
+        answers.emplace(world, threads, exchange_element_of<Response>, kShardedAnswerTag);
+        if constexpr (Informed) {
+            replay.emplace(world, threads, ExchangeElement::f64, kShardedReplayTag);
+        }
+    }
+    const routing::Router &router = ctx.router;
+    // Construction's transport follows its peer plan: pairwise for the linear peer, collective under splitmix.
+    const auto transport = router.is_linear() ? ExchangeTransport::pairwise : ExchangeTransport::collective;
+    const ReplayRound replay_round{
+        .round = replay ? &*replay : nullptr,
+        .transport = world.replay_pairwise ? ExchangeTransport::pairwise : ExchangeTransport::collective};
+    if constexpr (Informed) {
+        seed_job.remote = replay_round;
+    }
 
     const auto error = run_team(options, [&](size_t t, TeamFailure &failure) noexcept {
         const size_t flat = first_local + t;
@@ -478,6 +639,14 @@ auto run_gates(parallel::Options options,
             const Monomial<NumModes> &gen = generators[idx];
             const bool passes = gen.any(); // identity: nothing anticommutes, nothing is exchanged
             const bool cross = passes && flat_world > 1;
+            // The other processes this gate's handoffs reach; the same set on every rank (see the header comment).
+            const auto peers =
+                multirank && passes
+                    ? gate_peers(mpi::PeerPlan{.sparse = router.is_linear(),
+                                               .shift = static_cast<int>(router.rank_shift<NumModes>(gen))},
+                                 world)
+                    : std::vector<size_t>{};
+            const bool remote = !peers.empty();
 
             // Scans shard s into a fresh gate buffer; the previous gate's buffers were last read before P5.
             const auto traverse = [&](size_t s) {
@@ -576,41 +745,116 @@ auto run_gates(parallel::Options options,
                 }();
                 if (passes) {
                     auto &streams = work.scan.streams;
-                    post_blocks<size_t>(engine.prepare_exchange(true,
-                                                                std::move(streams.leader_queries),
-                                                                std::move(streams.leader_src),
-                                                                std::move(streams.leader_val),
-                                                                std::move(streams.leader_self)),
+                    work.payload = &engine.prepare_exchange(true,
+                                                            std::move(streams.leader_queries),
+                                                            std::move(streams.leader_src),
+                                                            std::move(streams.leader_val),
+                                                            std::move(streams.leader_self));
+                    post_blocks<size_t>(*work.payload,
                                         t,
                                         first_local,
                                         threads,
                                         std::span<std::span<const size_t>>(query_inbox));
+                    if (remote) {
+                        write_send_rows<size_t>(*queries, *work.payload, peers, threads, t);
+                    }
                 }
             };
             const auto resolve = [&](bool leaders) {
                 observer.visit(leaders ? W::resolve_leaders : W::resolve_followers, step, t);
                 auto &work = *frame.work;
-                const auto incoming = collect_blocks<size_t>(work.engine->window,
-                                                             first_local,
-                                                             t,
-                                                             threads,
-                                                             std::span<const std::span<const size_t>>(query_inbox));
+                auto incoming = collect_blocks<size_t>(work.engine->window,
+                                                       first_local,
+                                                       t,
+                                                       threads,
+                                                       std::span<const std::span<const size_t>>(query_inbox));
+                if (remote) {
+                    add_received<size_t>(incoming, *queries, peers, threads, t);
+                }
                 work.answers = work.engine->resolve_published(incoming, leaders);
                 post_blocks<Response>(work.answers,
                                       t,
                                       first_local,
                                       threads,
                                       std::span<std::span<const Response>>(answer_inbox));
+                if (remote) {
+                    write_answer_rows<Response>(*answers, work.answers, work.engine->src_idx_r, peers, threads, t);
+                }
             };
             const auto consume = [&](bool leaders) {
                 observer.visit(leaders ? W::consume_leaders : W::consume_followers, step, t);
                 auto &work = *frame.work;
-                work.engine->consume_published(
-                    collect_blocks<Response>(work.engine->window,
-                                             first_local,
-                                             t,
-                                             threads,
-                                             std::span<const std::span<const Response>>(answer_inbox)));
+                auto received = collect_blocks<Response>(work.engine->window,
+                                                         first_local,
+                                                         t,
+                                                         threads,
+                                                         std::span<const std::span<const Response>>(answer_inbox));
+                if (remote) {
+                    add_received<Response>(received, *answers, peers, threads, t);
+                }
+                work.engine->consume_published(received);
+            };
+            // Q1-Q3 of a pass whose queries reach other processes; see the header comment.
+            const auto query_round = [&]() -> bool {
+                if (!remote) {
+                    return true;
+                }
+                return phase(failure,
+                             t,
+                             [&] {
+                                 if (t == 0) {
+                                     observer.visit(W::exchange, step, t);
+                                     queries->plan_send(peers, transport);
+                                     queries->post_counts();
+                                 }
+                             })
+                       && phase(failure,
+                                t,
+                                [&] {
+                                    observer.visit(W::pack, step, t);
+                                    pack_blocks<size_t>(*queries, *frame.work->payload, peers, threads, t);
+                                    // Test-only: an observer that asks may rewrite this owner's slices.
+                                    if constexpr (requires { observer.queries_packed(step, t, *queries); }) {
+                                        observer.queries_packed(step, t, *queries);
+                                    }
+                                })
+                       && phase(failure, t, [&] {
+                              if (t == 0) {
+                                  observer.visit(W::exchange, step, t);
+                                  queries->wait_counts();
+                                  queries->plan_recv();
+                                  queries->post();
+                                  queries->wait();
+                              }
+                          });
+            };
+            // R1-R3: the answers remote sources wait for, laid out from the rows the resolvers wrote.
+            const auto answer_round = [&]() -> bool {
+                if (!remote) {
+                    return true;
+                }
+                return phase(failure,
+                             t,
+                             [&] {
+                                 if (t == 0) {
+                                     observer.visit(W::exchange, step, t);
+                                     answers->plan_send(peers, transport);
+                                     answers->plan_recv();
+                                 }
+                             })
+                       && phase(failure,
+                                t,
+                                [&] {
+                                    observer.visit(W::pack, step, t);
+                                    pack_blocks<Response>(*answers, frame.work->answers, peers, threads, t);
+                                })
+                       && phase(failure, t, [&] {
+                              if (t == 0) {
+                                  observer.visit(W::exchange, step, t);
+                                  answers->post();
+                                  answers->wait();
+                              }
+                          });
             };
 
             // P1: traversal and leader preparation.
@@ -633,11 +877,14 @@ auto run_gates(parallel::Options options,
                            })
                      && phase(failure, t, prepare_leaders);
             }
-            if (!ok) {
+            if (!ok || !query_round()) {
                 return;
             }
             // P2: every destination resolves the leader payloads published at P1.
             if (cross && !phase(failure, t, [&] { resolve(true); })) {
+                return;
+            }
+            if (!answer_round()) {
                 return;
             }
             // P3: leader answers consumed; the follower filter below reads this owner's completed leader marks.
@@ -646,21 +893,32 @@ auto run_gates(parallel::Options options,
                         consume(true);
                     }
                     observer.visit(W::prepare_followers, step, t);
-                    auto &streams = frame.work->scan.streams;
-                    post_blocks<size_t>(frame.work->engine->prepare_exchange(false,
-                                                                             std::move(streams.follower_queries),
-                                                                             std::move(streams.follower_src),
-                                                                             std::move(streams.follower_val),
-                                                                             std::move(streams.follower_self)),
+                    auto &work = *frame.work;
+                    auto &streams = work.scan.streams;
+                    work.payload = &work.engine->prepare_exchange(false,
+                                                                  std::move(streams.follower_queries),
+                                                                  std::move(streams.follower_src),
+                                                                  std::move(streams.follower_val),
+                                                                  std::move(streams.follower_self));
+                    post_blocks<size_t>(*work.payload,
                                         t,
                                         first_local,
                                         threads,
                                         std::span<std::span<const size_t>>(query_inbox));
+                    if (remote) {
+                        write_send_rows<size_t>(*queries, *work.payload, peers, threads, t);
+                    }
                 })) {
+                return;
+            }
+            if (!query_round()) {
                 return;
             }
             // P4: every destination resolves the follower payloads published at P3.
             if (cross && !phase(failure, t, [&] { resolve(false); })) {
+                return;
+            }
+            if (!answer_round()) {
                 return;
             }
             // P5: follower answers consumed, then the owner-local finish.
@@ -700,7 +958,13 @@ auto run_gates(parallel::Options options,
                                         flat,
                                         frame.replay_scratch,
                                         frame.replay_published[0]);
-                        forward_scale_mask(*frame.coeffs, work.cos, apply_angle);
+                        if (multirank) {
+                            // The cosine pass waits for the replay round's post, so the transfer overlaps it.
+                            write_replay_rows(*replay, frame.replay_published[0], t);
+                        }
+                        else {
+                            forward_scale_mask(*frame.coeffs, work.cos, apply_angle);
+                        }
                     }
                     else {
                         auto storage = work.engine->finish(std::move(work.scan.cos_all), nullptr);
@@ -710,12 +974,32 @@ auto run_gates(parallel::Options options,
                 })) {
                 return;
             }
-            // P6 (informed): finish the new layer's replay from the partners' snapshots published at P5.
+            // P6 (informed): finish the new layer's replay from the partners' snapshots published at P5. With other
+            // processes, the replay round runs first, and the owners' cosine passes run while it is in flight.
             if constexpr (Informed) {
+                if (multirank
+                    && !replay_round.run(
+                        failure,
+                        t,
+                        [&] {
+                            observer.visit(W::pack, step, t);
+                            pack_replay_blocks(*replay, frame.replay_published[0], t);
+                        },
+                        [&] {
+                            const double build_angle = angle_of(idx);
+                            forward_scale_mask(*frame.coeffs,
+                                               frame.work->cos,
+                                               schrodinger ? -build_angle : build_angle);
+                        })) {
+                    return;
+                }
                 if (!phase(failure, t, [&] {
                         observer.visit(W::replay, step, t);
                         const double build_angle = angle_of(idx);
-                        const EndpointBoard board{.owners = replay_pairs, .buffer = 0, .first_local = first_local};
+                        const EndpointBoard board{.owners = replay_pairs,
+                                                  .buffer = 0,
+                                                  .first_local = first_local,
+                                                  .remote = replay ? &*replay : nullptr};
                         forward_finish(*frame.coeffs,
                                        LayerTraversal(*frame.work->core),
                                        schrodinger ? -build_angle : build_angle,
@@ -739,6 +1023,12 @@ auto run_gates(parallel::Options options,
             own.op.initialize_caches(schrodinger);
         }));
     });
+    // A request still live after a failed join belongs to a round some peer may never complete: hand the failure to
+    // the distributed policy now, before any request owner is destroyed (see the header comment).
+    const auto live = [](const std::optional<PhysicalExchange> &round) { return round && round->live() != 0; };
+    if (error && (live(queries) || live(answers) || live(replay))) {
+        mpi::operation_failed(world.comm, error);
+    }
     return ConstructionOutcome{.error = error, .mutation_started = mutation_started};
 }
 

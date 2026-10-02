@@ -35,6 +35,16 @@
 //                                    posted
 //   insufficient-thread-level single|funneled   host-initialized MPI below the required level
 //   wrong-thread-entry serialized|multiple      a guarded entry called from a non-initializing std::thread
+//
+// A sharded prototype build (monoprop_SHARDED_OPENMP_PROTOTYPE) drives the sharded root instead, at two OpenMP
+// threads per rank, injecting through its test-only RootObserver on rank 0 (rank 1 for the malformed receive):
+//
+//   worker-throw                     worker 1 throws in a replay finish of an evaluation
+//   before-exchange                  the primary throws in the first gate's traversal, before any physical round
+//   active-ticket round              the primary throws in a cosine pass while the replay round is posted
+//   active-ticket counts             the primary throws while packing queries, with the count round posted
+//   malformed-receive                rank 1 rewrites its outgoing query blocks; rank 0's owners must refuse them
+//   insufficient-thread-level, wrong-thread-entry   as above, through the sharded constructor and operations
 
 #include <mpi.h>
 #include <omp.h>
@@ -62,6 +72,10 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/parallel/Workshare.h"
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+#include "monoprop/detail/sharded/Exchange.h"
+#include "monoprop/detail/sharded/RootObserver.h"
+#endif
 
 namespace {
 
@@ -94,6 +108,8 @@ auto hamiltonian() -> OperatorDict {
     }
     return ham;
 }
+
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 
 auto make_prototype() -> Propagator {
     return Propagator(hamiltonian(),
@@ -355,6 +371,121 @@ auto resolve_worker(int rank, std::string_view phase) -> void {
     }
 }
 
+#else // monoprop_SHARDED_OPENMP_PROTOTYPE
+
+const std::vector<VecZ> kGates{{0, 1}, {2, 3}, {1, 4}};
+const VecZ kMapping{0, 1, 2};
+const VecD kGenCoeffs{1.0, 1.0, 1.0};
+const VecD kParams{0.3, 0.2, 0.1};
+
+// Throws once, on `rank` only, at the armed visit of the sharded root's seams; or rewrites outgoing queries.
+class Injector final : public detail::sharded::RootObserver {
+public:
+    struct Arm {
+        bool construction = false;
+        int work = 0;
+        size_t shard = 0;
+        const char *what = "";
+    };
+    Injector(int rank, std::optional<Arm> arm, bool corrupt) : rank_(rank), arm_(arm), corrupt_(corrupt) {}
+
+    auto visit(detail::sharded::EvaluationWork work, size_t /*step*/, size_t shard) const -> void override {
+        fire(false, static_cast<int>(work), shard);
+    }
+    auto construction(detail::sharded::ConstructionWork work, size_t /*step*/, size_t shard) const -> void override {
+        fire(true, static_cast<int>(work), shard);
+    }
+    auto queries_packed(size_t /*step*/, size_t shard, detail::sharded::PhysicalExchange &round) const
+        -> void override {
+        if (!corrupt_) {
+            return;
+        }
+        // Every word all ones: a record whose phase field is not ternary.
+        for (size_t k = 0; k < round.peers().size(); ++k) {
+            for (size_t t = 0; t < round.threads(); ++t) {
+                for (auto &word : round.send_block<size_t>(shard, k, t)) {
+                    word = ~size_t{0};
+                }
+            }
+        }
+    }
+
+private:
+    auto fire(bool construction, int work, size_t shard) const -> void {
+        if (arm_ && arm_->construction == construction && arm_->work == work && arm_->shard == shard) {
+            throw std::runtime_error(
+                std::format("injected {} on OpenMP worker {} of rank {}", arm_->what, omp_get_thread_num(), rank_));
+        }
+    }
+
+    int rank_;
+    std::optional<Arm> arm_;
+    bool corrupt_;
+};
+
+auto make_sharded(const detail::sharded::RootObserver *observer) -> std::unique_ptr<Propagator> {
+    return Access::construct_observed(observer,
+                                      hamiltonian(),
+                                      2 * kModes,
+                                      VecZ{0, 1},
+                                      std::optional<unsigned int>{},
+                                      mpi::Comm(MPI_COMM_WORLD),
+                                      std::optional<double>{},
+                                      std::optional<double>{},
+                                      CutoffType::Length,
+                                      std::optional<std::vector<VecZ>>{},
+                                      kModes,
+                                      Basis::Majorana,
+                                      size_t{0},
+                                      typename Propagator::PartitionChildFactory{});
+}
+
+auto sharded_scenario(int rank, std::string_view scenario, std::string_view option) -> void {
+    using CW = detail::sharded::ConstructionWork;
+    using EW = detail::sharded::EvaluationWork;
+    std::optional<Injector::Arm> arm;
+    bool corrupt = false;
+    if (scenario == "worker-throw") {
+        arm = Injector::Arm{false, static_cast<int>(EW::finish), 1, "replay-finish failure"};
+    }
+    else if (scenario == "before-exchange") {
+        arm = Injector::Arm{true, static_cast<int>(CW::traverse), 0, "traversal failure before any physical round"};
+    }
+    else if (scenario == "active-ticket" && option == "round") {
+        arm = Injector::Arm{false, static_cast<int>(EW::cosine), 0, "cosine failure while the replay round is posted"};
+    }
+    else if (scenario == "active-ticket" && option == "counts") {
+        arm = Injector::Arm{true, static_cast<int>(CW::pack), 0, "pack failure while the count round is posted"};
+    }
+    else if (scenario == "malformed-receive") {
+        corrupt = rank == 1;
+    }
+    const Injector injector(rank, rank == 0 ? arm : std::nullopt, corrupt);
+    auto sim = make_sharded(&injector);
+    say(rank, std::format("{} local terms, team {}", sim->size(), Access::options(*sim).threads));
+    sim->build_graph(kGates, kMapping, kGenCoeffs);
+    (void)sim->expectation_value(kParams);
+}
+
+auto insufficient_level(int rank) -> void {
+    const auto sim = make_sharded(nullptr);
+    say(rank, std::format("constructed with {} terms despite the insufficient level", sim->size()));
+}
+
+auto wrong_thread(int rank) -> void {
+    auto sim = make_sharded(nullptr);
+    sim->build_graph(kGates, kMapping, kGenCoeffs);
+    if (rank == 0) {
+        std::thread host([&sim] { (void)sim->expectation_value(kParams); });
+        host.join();
+    }
+    else {
+        (void)sim->expectation_value(kParams);
+    }
+}
+
+#endif // monoprop_SHARDED_OPENMP_PROTOTYPE
+
 auto parse_level(std::string_view name) -> std::optional<int> {
     if (name == "single") {
         return MPI_THREAD_SINGLE;
@@ -421,6 +552,24 @@ auto main(int argc, char **argv) -> int {
     }
 
     try {
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+        // Two owners per rank: the budget is captured when the root is constructed.
+        ::setenv("monoprop_NUM_THREADS", "2", 1);
+        if (scenario == "insufficient-thread-level") {
+            insufficient_level(rank);
+        }
+        else if (scenario == "wrong-thread-entry") {
+            wrong_thread(rank);
+        }
+        else if (scenario == "worker-throw" || scenario == "before-exchange" || scenario == "active-ticket"
+                 || scenario == "malformed-receive") {
+            sharded_scenario(rank, scenario, option);
+        }
+        else {
+            say(rank, std::format("unknown scenario '{}' '{}'", scenario, option));
+            MPI_Abort(MPI_COMM_WORLD, 2);
+        }
+#else
         if (scenario == "worker-throw") {
             worker_throw(rank);
         }
@@ -454,6 +603,7 @@ auto main(int argc, char **argv) -> int {
             say(rank, std::format("unknown scenario '{}' '{}'", scenario, option));
             MPI_Abort(MPI_COMM_WORLD, 2);
         }
+#endif
     }
     catch (const std::exception &e) {
         say(rank, std::format("UNGUARDED: an exception escaped the library: {}", e.what()));

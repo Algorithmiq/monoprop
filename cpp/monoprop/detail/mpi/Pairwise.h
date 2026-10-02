@@ -124,14 +124,9 @@ struct SparsePairwiseArgs {
 // Allreduce {v, ~v} under MPI_MAX, giving max and min at once: max == min == mine is exact agreement.
 // Ranks that disagree would hang, so every rank throws together instead.
 inline auto agree_routes_pairwise(MPI_Comm comm, int ranks, const routing::Config &mine) -> bool {
-    const std::array<uint64_t, 6> probe{mine.linear,
-                                        ~mine.linear,
-                                        mine.partitions,
-                                        ~mine.partitions,
-                                        mine.seed,
-                                        ~mine.seed};
-    std::array<uint64_t, 6> agreed{};
-    MPI_Allreduce(probe.data(), agreed.data(), 6, MPI_UINT64_T, MPI_MAX, comm);
+    const std::array<uint64_t, 4> probe{mine.linear, ~mine.linear, mine.seed, ~mine.seed};
+    std::array<uint64_t, 4> agreed{};
+    MPI_Allreduce(probe.data(), agreed.data(), static_cast<int>(probe.size()), MPI_UINT64_T, MPI_MAX, comm);
     if (agreed != probe) {
         throw routing::RoutingDisagreement(
             std::format("routing configuration differs across the {} ranks (this one: {}). "

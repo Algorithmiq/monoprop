@@ -38,11 +38,14 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -56,6 +59,8 @@
 #include "AllocationProbe.h"
 #include "PropagatorTestAccess.h"
 #include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/RootObserver.h"
 
@@ -870,19 +875,265 @@ BOOST_AUTO_TEST_CASE(sharded_root_allocation_failures_are_catchable) {
     BOOST_TEST(failures > 0U);
 }
 
-BOOST_AUTO_TEST_CASE(sharded_root_multirank_launch_is_rejected) {
-    const auto data = load_case_data<8>("random_exact.msgpack");
-    const auto construct = [&] {
-        return MonomialPropagator<8>(data.hamiltonian, 16, data.initial_state, std::nullopt, MPI_COMM_WORLD);
-    };
-    if (mpi::size(mpi::Comm(MPI_COMM_WORLD)) == 1) {
-        BOOST_CHECK_NO_THROW(construct());
+// --- Multi-rank roots (P ranks x T threads; cpp/tests/CMakeLists.txt launches these under mpiexec) -------------------
+
+namespace {
+
+auto world_size() -> size_t {
+    return static_cast<size_t>(mpi::size(mpi::Comm(MPI_COMM_WORLD)));
+}
+
+auto world_rank() -> size_t {
+    return static_cast<size_t>(mpi::rank(mpi::Comm(MPI_COMM_WORLD)));
+}
+
+// A linear router needs a power-of-two rank count; splitmix routes any.
+auto routable_world() -> bool {
+    return !routing::linear_requested() || std::has_single_bit(world_size());
+}
+
+// Multi-rank cases run only in their dedicated launches, which name the world size (cpp/tests/CMakeLists.txt).
+auto dedicated_launch() -> bool {
+    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
+    return text != nullptr && std::stoul(text) == world_size();
+}
+
+auto has_routable_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
+    boost::test_tools::assertion_result result(world_size() >= 2 && dedicated_launch() && routable_world());
+    result.message() << "the launch has " << world_size() << " rank(s)"
+                     << (routing::linear_requested() ? " under linear routing" : "")
+                     << "; this case needs at least 2 ranks the router accepts";
+    return result;
+}
+
+auto make_on(mpi::Comm comm, const Config &config = {}, const sharded::RootObserver *observer = nullptr)
+    -> std::unique_ptr<MP> {
+    const auto &data = lih();
+    return Access::construct_observed(observer,
+                                      data.hamiltonian,
+                                      4U,
+                                      data.initial_state,
+                                      config.schrodinger ? std::optional<unsigned int>{6U} : std::nullopt,
+                                      comm,
+                                      config.lower_atol,
+                                      std::optional<double>{},
+                                      CutoffType::Length,
+                                      config.basis_change,
+                                      kN,
+                                      config.basis,
+                                      size_t{0},
+                                      typename MP::PartitionChildFactory{});
+}
+
+// The plan's general tolerance for cross-geometry comparisons.
+auto close(double a, double b) -> bool {
+    return std::abs(a - b) <= 1e-9 + (1e-7 * std::max(std::abs(a), std::abs(b)));
+}
+
+auto key_hash(const VecZ &key) -> uint64_t {
+    uint64_t h = 0x9E37'79B9'7F4A'7C15ULL;
+    for (const size_t i : key) {
+        h = (h ^ i) * 0x100'0000'01B3ULL;
+        h ^= h >> 29;
+    }
+    return h;
+}
+
+/*
+ * The rank-local terms of `world`, gathered implicitly: every local key must be in `reference` (one process's whole
+ * map) with a close value, and over all ranks the key count and the wrapping sum of key hashes must equal the
+ * reference's, so no key is missing or owned twice.
+ */
+auto check_global_terms(const std::vector<std::pair<VecZ, std::complex<double>>> &local,
+                        const std::vector<std::pair<VecZ, std::complex<double>>> &reference,
+                        const char *what) -> void {
+    BOOST_TEST_CONTEXT(what << " on rank " << world_rank() << " of " << world_size()) {
+        std::map<VecZ, std::complex<double>> want(reference.begin(), reference.end());
+        BOOST_TEST(want.size() == reference.size());
+        size_t missing = 0;
+        size_t off = 0;
+        uint64_t hashes = 0;
+        for (const auto &[key, value] : local) {
+            hashes += key_hash(key);
+            const auto it = want.find(key);
+            if (it == want.end()) {
+                ++missing;
+                continue;
+            }
+            if (!close(value.real(), it->second.real()) || !close(value.imag(), it->second.imag())) {
+                ++off;
+            }
+        }
+        BOOST_TEST(missing == 0U);
+        BOOST_TEST(off == 0U);
+        uint64_t want_hashes = 0;
+        for (const auto &[key, value] : reference) {
+            want_hashes += key_hash(key);
+        }
+        const auto comm = mpi::Comm(MPI_COMM_WORLD);
+        BOOST_TEST(mpi::allreduce_sum<size_t>(local.size(), comm) == reference.size());
+        BOOST_TEST(mpi::allreduce_sum<uint64_t>(hashes, comm) == want_hashes);
+    }
+}
+
+auto check_close_vectors(const VecD &got, const VecD &want, const char *what) -> void {
+    BOOST_TEST_CONTEXT(what) {
+        BOOST_TEST_REQUIRE(got.size() == want.size());
+        for (size_t i = 0; i < got.size(); ++i) {
+            BOOST_TEST(close(got[i], want[i]), "component " << i << ": " << got[i] << " vs " << want[i]);
+        }
+    }
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejects_an_unroutable_geometry) {
+    if (world_size() < 2 || !dedicated_launch()) {
+        BOOST_TEST_MESSAGE("not a dedicated multi-rank launch");
         return;
     }
-    // Every rank rejects locally, before any collective, so no rank is left waiting.
-    BOOST_CHECK_EXCEPTION(construct(), PropagatorConfigError, [](const auto &e) {
-        return std::string(e.what()).find("one MPI rank") != std::string::npos;
+    if (routable_world()) {
+        BOOST_CHECK_NO_THROW(make_on(mpi::Comm(MPI_COMM_WORLD)));
+        return;
+    }
+    // Every rank derives the same verdict from the agreed mode and the shared size, so all of them throw together.
+    BOOST_CHECK_THROW(make_on(mpi::Comm(MPI_COMM_WORLD)), routing::UnroutableGeometry);
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners, *boost::unit_test::precondition(has_routable_ranks)) {
+    const size_t team = launch_team();
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
+    auto self = make_on(mpi::Comm(MPI_COMM_SELF));
+    const auto &router = Access::router(*world);
+    BOOST_TEST(router.ranks() == world_size());
+    BOOST_TEST(router.partitions() == team);
+    const auto &shards = Access::shards(*world);
+    BOOST_TEST_REQUIRE(shards.size() == team);
+    size_t misrouted = 0;
+    for (size_t t = 0; t < team; ++t) {
+        shards[t]->op.store->for_each(
+            [&](const auto &mono, size_t) { misrouted += router.dest<kN>(mono) == (world_rank() * team) + t ? 0 : 1; });
+    }
+    BOOST_TEST(misrouted == 0U);
+    // The seeded rows tile the one-process operator, and so do the built rows.
+    BOOST_TEST(mpi::allreduce_sum<size_t>(world->size(), mpi::Comm(MPI_COMM_WORLD)) == self->size());
+    build(*world);
+    build(*self);
+    BOOST_TEST(mpi::allreduce_sum<size_t>(world->size(), mpi::Comm(MPI_COMM_WORLD)) == self->size());
+    BOOST_TEST(world->graph_layers() == self->graph_layers());
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_matches_one_process, *boost::unit_test::precondition(has_routable_ranks)) {
+    const auto &data = lih();
+    for (const Config config : {Config{},
+                                Config{.schrodinger = true},
+                                Config{.lower_atol = 1e-3},
+                                Config{.schrodinger = true, .lower_atol = 1e-4}}) {
+        BOOST_TEST_CONTEXT("schrodinger=" << config.schrodinger << " lower_atol=" << config.lower_atol.has_value()) {
+            auto world = make_on(mpi::Comm(MPI_COMM_WORLD), config);
+            auto self = make_on(mpi::Comm(MPI_COMM_SELF), config);
+            // Structural construction, or coefficient-informed when an atol is set.
+            if (config.lower_atol) {
+                world->build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, data.parameters);
+                self->build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, data.parameters);
+            }
+            else {
+                build(*world);
+                build(*self);
+            }
+            const auto &p = params();
+            BOOST_TEST(close(world->expectation_value(p), self->expectation_value(p)));
+            const auto [wv, wg] = world->expectation_value_and_gradient(p);
+            const auto [sv, sg] = self->expectation_value_and_gradient(p);
+            BOOST_TEST(close(wv, sv));
+            check_close_vectors(wg, sg, "gradient");
+            const auto [pv, pg] = world->expectation_value_and_gradient_functional(1e-3)(p);
+            const auto [qv, qg] = self->expectation_value_and_gradient_functional(1e-3)(p);
+            BOOST_TEST(close(pv, qv));
+            check_close_vectors(pg, qg, "pared gradient");
+            check_global_terms(world->evolved_operator_terms(p, 0.0), self->evolved_operator_terms(p, 0.0), "export");
+            // A copy evaluates alike and mutates independently.
+            auto copy = std::make_unique<MP>(*world);
+            BOOST_TEST(close(copy->expectation_value(p), wv));
+            // Contract in place, then extend the contracted picture.
+            BOOST_TEST(mpi::allreduce_sum<size_t>(world->contract_partially(p, true).size(), mpi::Comm(MPI_COMM_WORLD))
+                       == self->contract_partially(p, true).size());
+            BOOST_TEST(close(world->expectation_value({}), self->expectation_value({})));
+            build(*world);
+            build(*self);
+            BOOST_TEST(close(world->expectation_value(p), self->expectation_value(p)));
+            BOOST_TEST(close(copy->expectation_value(p), wv));
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_propagation_matches_one_process,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    const auto &data = lih();
+    for (const bool schrodinger : {false, true}) {
+        BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
+            auto world = make_on(mpi::Comm(MPI_COMM_WORLD), Config{.schrodinger = schrodinger});
+            auto self = make_on(mpi::Comm(MPI_COMM_SELF), Config{.schrodinger = schrodinger});
+            world->propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
+            self->propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
+            BOOST_TEST(close(world->expectation_value({}), self->expectation_value({})));
+            check_global_terms(world->evolved_operator_terms({}, 0.0), self->evolved_operator_terms({}, 0.0), "map");
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_updates_route_to_their_owners,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    const auto &data = lih();
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
+    auto self = make_on(mpi::Comm(MPI_COMM_SELF));
+    build(*world);
+    build(*self);
+    OperatorDict scaled;
+    for (const auto &[key, value] : data.hamiltonian) {
+        scaled[key] = value * 0.5;
+    }
+    world->update_initial_operator(scaled);
+    self->update_initial_operator(scaled);
+    BOOST_TEST(close(world->expectation_value(params()), self->expectation_value(params())));
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_mpi_runs_on_the_primary_and_owners_on_their_workers,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    const size_t team = launch_team();
+    Recorder recorder;
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD), Config{.lower_atol = 1e-3}, &recorder);
+    const auto &data = lih();
+    world->build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, data.parameters);
+    static_cast<void>(world->expectation_value_and_gradient(params()));
+    const auto visits = recorder.visits();
+    size_t exchanges = 0;
+    for (const auto &v : visits) {
+        if (v.seam == Seam::construction && v.work == static_cast<int>(sharded::ConstructionWork::exchange)) {
+            ++exchanges;
+            // A physical round's MPI calls run on the team's primary, the caller's thread.
+            BOOST_TEST(v.worker == 0);
+            BOOST_TEST(v.thread == std::this_thread::get_id());
+        }
+    }
+    BOOST_TEST(exchanges > 0U);
+    std::vector<Visit> owners;
+    std::ranges::copy_if(visits, std::back_inserter(owners), [](const Visit &v) {
+        return !(v.seam == Seam::construction && v.work == static_cast<int>(sharded::ConstructionWork::exchange));
     });
+    check_owner_visits(owners, team, "multi-rank construction and evaluation");
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejections_before_mutation_leave_it_usable,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    // Replicated arguments fail the same validation on every rank, before any team or collective.
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
+    build(*world);
+    const double before = world->expectation_value(params());
+    BOOST_CHECK_THROW(world->expectation_value(VecD{0.1}), std::exception);
+    BOOST_CHECK_THROW(world->propagate({VecZ{0, 1}}, VecZ{0}, VecD{1.0}, VecD{0.1}), GraphStateConflict);
+    BOOST_TEST(!Access::is_invalid(*world));
+    BOOST_TEST(world->expectation_value(params()) == before);
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {

@@ -31,8 +31,6 @@ list(FILTER _tests_cpps EXCLUDE REGEX "/mpi_failure_driver\\.cpp$")
 set(
   _monoprop_legacy_root_suites
   fused_cos_sweep_tests
-  mpi_distributed_layer_equivalence
-  mpi_fresh_insert_equivalence
   openmp_runtime_tests
   partition_equivalence_tests
   partition_group_clone_tests
@@ -338,7 +336,71 @@ if(monoprop_SHARDED_OPENMP_PROTOTYPE)
   endforeach()
 endif()
 
-# The prototype rejects a multi-rank communicator on every rank, before any collective; a hang is a failure.
+# Multi-process launches of the sharded runtime: P ranks x T threads each, every rank with an exact team. The
+# multi-rank cases run only where monoprop_TEST_SHARDED_RANKS names the world size, so the whole-suite MPI variants
+# (default budget) skip them. Binding is left to the OpenMP settings: Open MPI would otherwise bind each rank to one
+# core and squeeze its T threads onto it (unknown OMPI_MCA_* variables are harmless under other MPIs).
+function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
+  cmake_parse_arguments("" "" "" "ENVIRONMENT" ${ARGN})
+  add_test(
+    NAME ${NAME}
+    COMMAND
+      ${_monoprop_mpiexec} ${_monoprop_mpiexec_numproc_flag} ${RANKS}
+      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:monoprop_unit_tests.x>
+      --run_test=${CASES}
+  )
+  set_tests_properties(
+    ${NAME}
+    PROPERTIES
+      LABELS
+        "mpi;mpi-${RANKS}"
+      TIMEOUT
+        300
+      ENVIRONMENT
+        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
+  )
+endfunction()
+
+# The physical round (detail/sharded/Exchange.h) between processes, in every MPI build: two and three ranks at
+# T = 1, 2 and 4. At world size 1 (the per-case serial runs) the multi-rank cases skip. A timeout is a hang.
+if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
+  foreach(_ranks IN ITEMS 2 3)
+    foreach(_threads IN ITEMS 1 2 4)
+      monoprop_add_sharded_mpi_launch(
+        sharded_exchange_mpi${_ranks}_t${_threads} ${_ranks} ${_threads} "sharded_exchange_*"
+      )
+    endforeach()
+  endforeach()
+endif()
+
+# The sharded seams over P ranks against the legacy hybrid (partitions = T under the same ranks), in legacy builds,
+# where both runtimes exist: two and four ranks (linear routing) at T = 1, 2 and 4, and three ranks under splitmix.
+if(
+  NOT
+    monoprop_SHARDED_OPENMP_PROTOTYPE
+  AND
+    monoprop_ENABLE_MPI
+  AND
+    _monoprop_mpiexec
+)
+  set(
+    _monoprop_seam_multirank_cases
+    "sharded_construction_multirank_*,sharded_evaluation_multirank_*"
+  )
+  foreach(_ranks IN ITEMS 2 4)
+    foreach(_threads IN ITEMS 1 2 4)
+      monoprop_add_sharded_mpi_launch(
+        sharded_seams_mpi${_ranks}_t${_threads} ${_ranks} ${_threads} "${_monoprop_seam_multirank_cases}"
+      )
+    endforeach()
+  endforeach()
+  monoprop_add_sharded_mpi_launch(
+    sharded_seams_mpi3_t2_splitmix 3 2 "${_monoprop_seam_multirank_cases}" ENVIRONMENT "monoprop_ROUTING=splitmix"
+  )
+endif()
+
+# The integrated prototype root over P ranks: two and four ranks (linear routing) at T = 1, 2 and 4; three ranks under
+# splitmix; and three ranks under linear routing, which every rank must reject together. A hang is a failure.
 if(
   monoprop_SHARDED_OPENMP_PROTOTYPE
   AND
@@ -346,35 +408,37 @@ if(
   AND
     _monoprop_mpiexec
 )
-  add_test(
-    NAME sharded_root_multirank_rejected_mpi_2
-    COMMAND
-      ${_monoprop_mpiexec} ${_monoprop_mpiexec_numproc_flag} 2
-      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:monoprop_unit_tests.x>
-      --run_test=sharded_root_multirank_launch_is_rejected
+  foreach(_ranks IN ITEMS 2 4)
+    foreach(_threads IN ITEMS 1 2 4)
+      monoprop_add_sharded_mpi_launch(
+        sharded_root_mpi${_ranks}_t${_threads} ${_ranks} ${_threads} "sharded_root_multirank_*"
+      )
+    endforeach()
+  endforeach()
+  monoprop_add_sharded_mpi_launch(
+    sharded_root_mpi3_t2_splitmix 3 2 "sharded_root_multirank_*" ENVIRONMENT "monoprop_ROUTING=splitmix"
   )
-  set_tests_properties(
-    sharded_root_multirank_rejected_mpi_2
-    PROPERTIES
-      LABELS
-        "mpi;mpi-2"
-      TIMEOUT
-        120
-      ENVIRONMENT
-        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
+  monoprop_add_sharded_mpi_launch(
+    sharded_root_mpi3_t2_linear_rejected 3 2 "sharded_root_multirank_rejects_an_unroutable_geometry"
   )
+  # The serial-against-world equivalence suites, through the public API at P ranks x T.
+  set(
+    _monoprop_world_equivalence_cases
+    "rank_count_energy_within_fp_tolerance,gradient_rank_count_within_fp_tolerance,pauli_rank_count_energy_within_fp_tolerance,mpi_fresh_insert_schrodinger_majorana_serial_world_equiv,mpi_fresh_insert_schrodinger_pauli_serial_world_equiv"
+  )
+  foreach(_ranks IN ITEMS 2 4)
+    foreach(_threads IN ITEMS 1 2 4)
+      monoprop_add_sharded_mpi_launch(
+        sharded_world_equivalence_mpi${_ranks}_t${_threads} ${_ranks} ${_threads} "${_monoprop_world_equivalence_cases}"
+      )
+    endforeach()
+  endforeach()
 endif()
 
 # Distributed failure scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi, so
-# only the MPI test leg runs them. They drive the legacy multi-rank runtime, so prototype builds leave them out.
-if(
-  monoprop_ENABLE_MPI
-  AND
-    _monoprop_mpiexec
-  AND
-    NOT
-      monoprop_SHARDED_OPENMP_PROTOTYPE
-)
+# only the MPI test leg runs them. A legacy build drives the legacy multi-rank runtime; a prototype build drives the
+# sharded root at two threads per rank (mpi_failure_driver.cpp lists both sets).
+if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
   add_executable(monoprop_mpi_failure_driver.x mpi_failure_driver.cpp)
   target_include_directories(
     monoprop_mpi_failure_driver.x
@@ -425,50 +489,82 @@ if(
     )
   endfunction()
 
-  monoprop_add_failure_scenario(worker_throw worker-throw "" "injected worker failure" "UNGUARDED")
-  monoprop_add_failure_scenario(
-    before_exchange before-exchange "" "injected failure in the scan" "UNGUARDED|NOT REACHED"
-  )
-  # Worker 1 of the scan's two-worker team owns word range 1; peers enter the query exchange normally.
-  monoprop_add_failure_scenario(
-    before_exchange_scan_worker before-exchange scan-worker "scan range 1 on OpenMP worker 1" "UNGUARDED|NOT REACHED"
-  )
-  # Resolve workers: the self probe fails before the query exchange; the incoming decode, frozen probe and
-  # scatter fail after the query round while the peers enter the response round. Worker 1 owns the last range.
-  foreach(_phase self-probe decode incoming-probe scatter)
-    string(
-      REPLACE "-"
-      "_"
-      _phase_name
-      "${_phase}"
+  if(monoprop_SHARDED_OPENMP_PROTOTYPE)
+    # Every scenario must end in the library's abort (or local fail-fast) path, never in an escaped exception.
+    monoprop_add_failure_scenario(
+      sharded_worker_throw worker-throw "" "injected replay-finish failure on OpenMP worker 1.*${_monoprop_abort_diagnostic}" "UNGUARDED"
     )
     monoprop_add_failure_scenario(
-      resolve_worker_${_phase_name} resolve-worker ${_phase} "${_phase} range [0-9]+ on OpenMP worker 1" "UNGUARDED|NOT REACHED"
+      sharded_before_exchange before-exchange "" "injected traversal failure.*${_monoprop_abort_diagnostic}" "UNGUARDED"
     )
-  endforeach()
-  monoprop_add_failure_scenario(
-    active_ticket active-ticket ticket "injected failure while the replay Ticket" "UNGUARDED"
-  )
-  # Worker 1 of the kernel's two-worker team owns range 2, so the failure starts off the calling thread.
-  monoprop_add_failure_scenario(
-    active_ticket_cosine_worker active-ticket cosine-worker "cosine range 2 on OpenMP worker 1 while the replay Ticket" "UNGUARDED"
-  )
-  monoprop_add_failure_scenario(
-    active_pending active-ticket pending "injected failure while a PendingAlltoallv" "UNGUARDED"
-  )
-  monoprop_add_failure_scenario(
-    insufficient_thread_level_single insufficient-thread-level single "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
-  )
-  monoprop_add_failure_scenario(
-    insufficient_thread_level_funneled insufficient-thread-level funneled "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
-  )
-  # Local fail-fast: the offending thread must not call MPI_Abort (or anything else in MPI).
-  monoprop_add_failure_scenario(
-    wrong_thread_entry_serialized wrong-thread-entry serialized "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
-  )
-  monoprop_add_failure_scenario(
-    wrong_thread_entry_multiple wrong-thread-entry multiple "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
-  )
+    monoprop_add_failure_scenario(
+      sharded_active_round active-ticket round "injected cosine failure while the replay round is posted.*${_monoprop_abort_diagnostic}" "UNGUARDED"
+    )
+    monoprop_add_failure_scenario(
+      sharded_active_counts active-ticket counts "injected pack failure while the count round is posted.*${_monoprop_abort_diagnostic}" "UNGUARDED"
+    )
+    monoprop_add_failure_scenario(
+      sharded_malformed_receive malformed-receive "" "QueryWire: malformed record.*${_monoprop_abort_diagnostic}" "UNGUARDED"
+    )
+    monoprop_add_failure_scenario(
+      sharded_insufficient_thread_level_single insufficient-thread-level single "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
+    )
+    monoprop_add_failure_scenario(
+      sharded_insufficient_thread_level_funneled insufficient-thread-level funneled "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
+    )
+    monoprop_add_failure_scenario(
+      sharded_wrong_thread_entry_serialized wrong-thread-entry serialized "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
+    )
+    monoprop_add_failure_scenario(
+      sharded_wrong_thread_entry_multiple wrong-thread-entry multiple "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
+    )
+  else()
+
+    monoprop_add_failure_scenario(worker_throw worker-throw "" "injected worker failure" "UNGUARDED")
+    monoprop_add_failure_scenario(
+      before_exchange before-exchange "" "injected failure in the scan" "UNGUARDED|NOT REACHED"
+    )
+    # Worker 1 of the scan's two-worker team owns word range 1; peers enter the query exchange normally.
+    monoprop_add_failure_scenario(
+      before_exchange_scan_worker before-exchange scan-worker "scan range 1 on OpenMP worker 1" "UNGUARDED|NOT REACHED"
+    )
+    # Resolve workers: the self probe fails before the query exchange; the incoming decode, frozen probe and
+    # scatter fail after the query round while the peers enter the response round. Worker 1 owns the last range.
+    foreach(_phase self-probe decode incoming-probe scatter)
+      string(
+        REPLACE "-"
+        "_"
+        _phase_name
+        "${_phase}"
+      )
+      monoprop_add_failure_scenario(
+        resolve_worker_${_phase_name} resolve-worker ${_phase} "${_phase} range [0-9]+ on OpenMP worker 1" "UNGUARDED|NOT REACHED"
+      )
+    endforeach()
+    monoprop_add_failure_scenario(
+      active_ticket active-ticket ticket "injected failure while the replay Ticket" "UNGUARDED"
+    )
+    # Worker 1 of the kernel's two-worker team owns range 2, so the failure starts off the calling thread.
+    monoprop_add_failure_scenario(
+      active_ticket_cosine_worker active-ticket cosine-worker "cosine range 2 on OpenMP worker 1 while the replay Ticket" "UNGUARDED"
+    )
+    monoprop_add_failure_scenario(
+      active_pending active-ticket pending "injected failure while a PendingAlltoallv" "UNGUARDED"
+    )
+    monoprop_add_failure_scenario(
+      insufficient_thread_level_single insufficient-thread-level single "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
+    )
+    monoprop_add_failure_scenario(
+      insufficient_thread_level_funneled insufficient-thread-level funneled "requires MPI_THREAD_SERIALIZED" "UNGUARDED|despite"
+    )
+    # Local fail-fast: the offending thread must not call MPI_Abort (or anything else in MPI).
+    monoprop_add_failure_scenario(
+      wrong_thread_entry_serialized wrong-thread-entry serialized "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
+    )
+    monoprop_add_failure_scenario(
+      wrong_thread_entry_multiple wrong-thread-entry multiple "thread that initialized MPI" "${_monoprop_abort_diagnostic}|completed"
+    )
+  endif()
 endif()
 
 add_subdirectory(link_export_probe)

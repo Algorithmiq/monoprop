@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -214,13 +215,14 @@ struct EvaluationRun {
     bool gradient;
     const EvaluationObserver *observer;
     size_t first_local = 0;
+    ReplayRound remote{};                     // the steps' physical round; inert when P = 1
     std::vector<OwnerFrame *> frames;         // entry t written by owner t in its frame phase
     std::vector<const PublishedPair *> pairs; // entry t written by owner t in its frame phase
     std::vector<double> *contributions;       // entry t written by owner t
     std::vector<VecD> *gradients;             // entry t written by owner t
 
     [[nodiscard]] auto board(size_t step) const -> EndpointBoard {
-        return {.owners = pairs, .buffer = step % 2, .first_local = first_local};
+        return {.owners = pairs, .buffer = step % 2, .first_local = first_local, .remote = remote.round};
     }
 
     // Reverse step j = step - L replays layer L - 1 - j at parameter mapping[j].
@@ -310,7 +312,11 @@ struct EvaluationRun {
                 return out.values.data() + out.layout.displs[rank];
             });
         }
-        if (!plan.opaque) {
+        if (remote.round != nullptr) {
+            // The callback part runs while the step's round is in flight; see run().
+            write_replay_rows(*remote.round, out, t);
+        }
+        else if (!plan.opaque) {
             callback_part(t, step);
         }
     }
@@ -387,17 +393,26 @@ struct EvaluationRun {
                 return;
             }
             // Opaque callbacks: the primary runs every shard's callback part while the other owners wait.
-            if (plan.opaque && p < plan.steps
-                && !phase(
-                    failure,
-                    t,
-                    [&] {
-                        if (t == 0) {
-                            for (size_t s = 0; s < frames.size(); ++s) {
-                                callback_part(s, p);
-                            }
-                        }
-                    })) {
+            const auto callbacks_of_step = [&] {
+                if (!plan.opaque) {
+                    callback_part(t, p);
+                }
+                else if (t == 0) {
+                    for (size_t s = 0; s < frames.size(); ++s) {
+                        callback_part(s, p);
+                    }
+                }
+            };
+            if (remote.round != nullptr && p < plan.steps) {
+                if (!remote.run(
+                        failure,
+                        t,
+                        [&] { pack_replay_blocks(*remote.round, frames[t]->published[p % 2], t); },
+                        callbacks_of_step)) {
+                    return;
+                }
+            }
+            else if (plan.opaque && p < plan.steps && !phase(failure, t, callbacks_of_step)) {
                 return;
             }
         }
@@ -412,6 +427,7 @@ auto forward_steps(TeamFailure &failure,
                    const EvaluationObserver *observer) noexcept -> bool {
     const size_t steps = job.params.size();
     const size_t flat = job.first_local + t;
+    PhysicalExchange *const round = job.remote.round;
     job.owners[t].scratch.partners.run_values = observer != nullptr ? observer->staging_run() : kStagingRunValues;
     const auto cosine = [&](size_t s, size_t step) {
         ForwardReplayOwner &owner = job.owners[s];
@@ -423,7 +439,10 @@ auto forward_steps(TeamFailure &failure,
             ForwardReplayOwner &own = job.owners[t];
             if (p > 0) {
                 notify(observer, EvaluationWork::finish, p - 1, t);
-                const EndpointBoard board{.owners = pairs, .buffer = (p - 1) % 2, .first_local = job.first_local};
+                const EndpointBoard board{.owners = pairs,
+                                          .buffer = (p - 1) % 2,
+                                          .first_local = job.first_local,
+                                          .remote = round};
                 forward_finish(*own.coeffs,
                                own.graph->get_layer_traversal(p - 1),
                                job.params[p - 1],
@@ -438,7 +457,11 @@ auto forward_steps(TeamFailure &failure,
                                 flat,
                                 own.scratch,
                                 own.published[p % 2]);
-                if (job.owner_parallel) {
+                if (round != nullptr) {
+                    // The cosine pass runs while the step's round is in flight, below.
+                    write_replay_rows(*round, own.published[p % 2], t);
+                }
+                else if (job.owner_parallel) {
                     cosine(t, p);
                 }
             }
@@ -446,17 +469,29 @@ auto forward_steps(TeamFailure &failure,
         if (!ok) {
             return false;
         }
-        if (!job.owner_parallel && p < steps
-            && !phase(
-                failure,
-                t,
-                [&] {
-                    if (t == 0) {
-                        for (size_t s = 0; s < job.owners.size(); ++s) {
-                            cosine(s, p);
-                        }
-                    }
-                })) {
+        if (p == steps) {
+            continue;
+        }
+        const auto cosines_of_step = [&] {
+            if (job.owner_parallel) {
+                cosine(t, p);
+            }
+            else if (t == 0) {
+                for (size_t s = 0; s < job.owners.size(); ++s) {
+                    cosine(s, p);
+                }
+            }
+        };
+        if (round != nullptr) {
+            if (!job.remote.run(
+                    failure,
+                    t,
+                    [&] { pack_replay_blocks(*round, job.owners[t].published[p % 2], t); },
+                    cosines_of_step)) {
+                return false;
+            }
+        }
+        else if (!job.owner_parallel && !phase(failure, t, cosines_of_step)) {
             return false;
         }
     }
@@ -479,7 +514,58 @@ auto check_replay_job(const ForwardReplayJob &job) -> void {
     }
 }
 
+// The replay round of an evaluation or a partial contraction in `world`, or none at P = 1.
+auto replay_round_for(const PhysicalWorld &world, size_t threads) -> std::optional<PhysicalExchange> {
+    if (world.ranks <= 1) {
+        return std::nullopt;
+    }
+    return std::optional<PhysicalExchange>(std::in_place, world, threads, ExchangeElement::f64, kShardedReplayTag);
+}
+
+auto transport_for(const PhysicalWorld &world) -> ExchangeTransport {
+    return world.replay_pairwise ? ExchangeTransport::pairwise : ExchangeTransport::collective;
+}
+
+// After a failed join with requests still live, the distributed policy runs before the round is destroyed.
+auto hand_off_live_failure(const std::exception_ptr &error,
+                           const std::optional<PhysicalExchange> &round,
+                           const PhysicalWorld &world) -> void {
+    if (error && round && round->live() != 0) {
+        mpi::operation_failed(world.comm, error);
+    }
+}
+
 } // namespace
+
+auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
+    const size_t threads = round.threads();
+    const auto peers = other_ranks(PhysicalWorld{.rank = round.rank(), .ranks = round.ranks()});
+    round.reset_rows(shard);
+    for (size_t k = 0; k < peers.size(); ++k) {
+        for (size_t t = 0; t < threads; ++t) {
+            const size_t slot = (peers[k] * threads) + t;
+            const size_t count = slot < out.layout.counts.size() ? static_cast<size_t>(out.layout.counts[slot]) : 0;
+            round.set_send_count(shard, k, t, count);
+            round.set_recv_count(shard, k, t, count);
+        }
+    }
+}
+
+auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
+    const size_t threads = round.threads();
+    const auto peers = round.peers();
+    for (size_t k = 0; k < peers.size(); ++k) {
+        for (size_t t = 0; t < threads; ++t) {
+            const auto slice = round.send_block<double>(shard, k, t);
+            if (slice.empty()) {
+                continue;
+            }
+            const size_t slot = (peers[k] * threads) + t;
+            const auto *const first = out.values.data() + out.layout.displs[slot];
+            std::copy_n(first, slice.size(), slice.begin());
+        }
+    }
+}
 
 auto forward_publish(const VecD &coeffs,
                      const LayerTraversal &layer,
@@ -541,25 +627,30 @@ auto evaluate_shards(std::span<const EvalRequest> requests,
                      std::span<const CosCallbacks> callbacks,
                      parallel::Options options,
                      bool gradient,
-                     const EvaluationObserver *observer) -> EvaluationOutcome {
+                     const EvaluationObserver *observer,
+                     const PhysicalWorld &world) -> EvaluationOutcome {
     const EvaluationPlan plan = plan_evaluation(requests, callbacks, options, gradient);
     const size_t threads = requests.size();
     EvaluationOutcome outcome{.error = {}, .contributions = std::vector<double>(threads, 0.0), .gradients = {}};
     if (gradient) {
         outcome.gradients.resize(threads);
     }
+    // Caller-owned, so its requests and staging outlive the team.
+    auto round = replay_round_for(world, threads);
     EvaluationRun run{.requests = requests,
                       .callbacks = callbacks,
                       .plan = plan,
                       .gradient = gradient,
                       .observer = observer,
-                      .first_local = 0,
+                      .first_local = world.rank * threads,
+                      .remote = {.round = round ? &*round : nullptr, .transport = transport_for(world)},
                       .frames = std::vector<OwnerFrame *>(threads, nullptr),
                       .pairs = std::vector<const PublishedPair *>(threads, nullptr),
                       .contributions = &outcome.contributions,
                       .gradients = &outcome.gradients};
     // Empty parameters leave every gradient empty, as the legacy evaluator returns.
     outcome.error = run_team(options, [&run](size_t t, TeamFailure &failure) noexcept { run.run(t, failure); });
+    hand_off_live_failure(outcome.error, round, world);
     return outcome;
 }
 
@@ -592,25 +683,13 @@ auto combine_gradients(std::span<const VecD> gradients) -> VecD {
     return total;
 }
 
-namespace {
-
-auto check_single_rank(const char *what, const mpi::Comm &comm) -> void {
-    if (comm.kind != mpi::Comm::Kind::Mpi || mpi::size(comm) != 1) {
-        throw std::invalid_argument(std::format("sharded::{}: only a one-rank ordinary communicator is supported "
-                                                "until the physical exchange exists",
-                                                what));
-    }
-}
-
-} // namespace
-
 auto ev_sharded(std::span<const EvalRequest> requests,
                 std::span<const CosCallbacks> callbacks,
                 parallel::Options options,
                 mpi::Comm comm,
                 const EvaluationObserver *observer) -> double {
-    check_single_rank("ev_sharded", comm);
-    auto outcome = evaluate_shards(requests, callbacks, options, /*gradient=*/false, observer);
+    const auto world = PhysicalWorld::of(comm);
+    auto outcome = evaluate_shards(requests, callbacks, options, /*gradient=*/false, observer, world);
     if (outcome.error) {
         mpi::operation_failed(comm, outcome.error);
     }
@@ -623,8 +702,8 @@ auto ev_and_grad_sharded(std::span<const EvalRequest> requests,
                          parallel::Options options,
                          mpi::Comm comm,
                          const EvaluationObserver *observer) -> std::pair<double, VecD> {
-    check_single_rank("ev_and_grad_sharded", comm);
-    auto outcome = evaluate_shards(requests, callbacks, options, /*gradient=*/true, observer);
+    const auto world = PhysicalWorld::of(comm);
+    auto outcome = evaluate_shards(requests, callbacks, options, /*gradient=*/true, observer, world);
     if (outcome.error) {
         mpi::operation_failed(comm, outcome.error);
     }
@@ -641,14 +720,17 @@ auto replay_shards(std::span<const ReplayRequest> requests,
                    std::span<const double> mapped_params,
                    std::span<const CosCallbacks> callbacks,
                    parallel::Options options,
-                   const EvaluationObserver *observer) -> ReplayOutcome {
+                   const EvaluationObserver *observer,
+                   const PhysicalWorld &world) -> ReplayOutcome {
     check_team("replay_shards", options, requests.size(), callbacks.size());
     const size_t threads = requests.size();
+    auto round = replay_round_for(world, threads);
     ForwardReplayJob job{
         .params = mapped_params,
-        .first_local = 0,
+        .first_local = world.rank * threads,
         .owner_parallel = std::ranges::all_of(callbacks, [](const CosCallbacks &cos) { return cos.owner_parallel; }),
-        .owners = std::vector<ForwardReplayOwner>(threads)};
+        .owners = std::vector<ForwardReplayOwner>(threads),
+        .remote = {.round = round ? &*round : nullptr, .transport = transport_for(world)}};
     for (size_t t = 0; t < threads; ++t) {
         job.owners[t].graph = &requests[t].graph;
         job.owners[t].callbacks = &callbacks[t];
@@ -668,6 +750,7 @@ auto replay_shards(std::span<const ReplayRequest> requests,
         }
         static_cast<void>(replay_forward_in_team(failure, t, job, observer));
     });
+    hand_off_live_failure(outcome.error, round, world);
     return outcome;
 }
 

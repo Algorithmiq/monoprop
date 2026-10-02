@@ -19,6 +19,11 @@ Run as ``python sharded_openmp_probe.py '<json spec>'`` in a process whose threa
 explicit legacy control) and prints one JSON document on its last stdout line. Floats are emitted as ``float.hex`` so
 the parent can compare bits; the parent decides what has to agree.
 
+Under an MPI launcher every rank runs the same calls on the world communicator (the propagators' default). When the
+spec names an ``out`` directory, each rank writes its own document to ``<out>/rank<r>.json`` instead of stdout, so
+interleaved launcher output cannot split one; exports, contraction blocks and aggregates are rank-local, energies and
+gradients global.
+
 Not collected by pytest: the file name has no ``test_`` prefix.
 """
 
@@ -408,7 +413,17 @@ def main() -> None:
     else:
         msg = f"unknown scenario {scenario!r}"
         raise ValueError(msg)
-    sys.stdout.write(json.dumps(result) + "\n")
+    out = spec.get("out")
+    if out is None:
+        sys.stdout.write(json.dumps(result) + "\n")
+        return
+    rank, ranks = 0, 1
+    if monoprop.has_mpi:
+        from mpi4py import MPI  # noqa: PLC0415 - MPI-off runs never import mpi4py
+
+        rank, ranks = MPI.COMM_WORLD.Get_rank(), MPI.COMM_WORLD.Get_size()
+    result["rank"], result["ranks"] = rank, ranks
+    Path(out, f"rank{rank}.json").write_text(json.dumps(result))
 
 
 if __name__ == "__main__":

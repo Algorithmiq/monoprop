@@ -27,6 +27,11 @@ Comparisons:
   of a separately built legacy environment: bitwise equality of energies, gradients, decoded maps, contraction blocks
   (concatenated in shard / partition order) and aggregate counts. The legacy process is a different build; the two
   class definitions never share a process.
+- Over P MPI processes (an MPI build and a launcher on ``PATH``), each rank writing its own document: at (P, T) against
+  the legacy runtime at P ranks x ``monoprop_PARTITIONS=T`` rank by rank and bit for bit (when the legacy interpreter
+  is an MPI build); across the geometries (1, 4), (2, 2) and (4, 1), and three processes under splitmix against
+  (1, 6), with the gathered global maps, energies and gradients within the tolerance above. Linear routing over three
+  processes is rejected on every rank.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -360,41 +366,235 @@ def test_matches_the_legacy_runtime_at_the_same_geometry(
     assert not differences, differences[:10]
 
 
-@candidate_only
-def test_multirank_launch_is_rejected() -> None:
-    if not _core.has_mpi:
-        pytest.skip("MPI-off build: there is no multi-rank communicator")
-    mpiexec = shutil.which("mpiexec") or shutil.which("mpirun")
-    if mpiexec is None:
-        pytest.skip("no MPI launcher on PATH")
-    script = (
-        "from mpi4py import MPI\n"
-        "from monoprop import _core\n"
-        "try:\n"
-        "    _core.MonomialPropagator032({(0, 1): 1j}, 4, [0], MPI.COMM_WORLD)\n"
-        "    print('CONSTRUCTED')\n"
-        "except RuntimeError as exc:\n"
-        "    print('REJECTED', exc)\n"
-    )
+def _launcher() -> str | None:
+    return shutil.which("mpiexec") or shutil.which("mpirun")
+
+
+needs_mpi_launch = pytest.mark.skipif(
+    not _core.has_mpi or _launcher() is None,
+    reason="needs an MPI build and an MPI launcher on PATH",
+)
+
+
+def _run_ranks(
+    spec: dict[str, Any],
+    ranks: int,
+    threads: int,
+    out_root: Path,
+    *,
+    python: str = sys.executable,
+    extra_env: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Launch the probe on `ranks` processes of `threads` threads; one document per rank, in rank order."""
+    launcher = _launcher()
+    assert launcher is not None
+    out = out_root / f"p{ranks}-t{threads}-{uuid.uuid4().hex[:8]}"
+    out.mkdir()
     env = _child_env(
-        1, {"OMPI_ALLOW_RUN_AS_ROOT": "1", "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"}
+        threads,
+        {
+            "OMPI_ALLOW_RUN_AS_ROOT": "1",
+            "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",
+            # Leave binding to OpenMP: by default each rank would be bound to one core and its T threads squeezed.
+            "OMPI_MCA_hwloc_base_binding_policy": "none",
+            **(extra_env or {}),
+        },
     )
-    result = subprocess.run(  # noqa: S603 - trusted launcher and fixed script
-        [mpiexec, "-n", "2", sys.executable, "-c", script],
+    result = subprocess.run(  # noqa: S603 - trusted: a known launcher, interpreter and probe
+        [
+            launcher,
+            "-n",
+            str(ranks),
+            python,
+            str(_PROBE),
+            json.dumps({**spec, "out": str(out)}),
+        ],
         env=env,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=1800,
         check=False,
     )
-    lines = [
-        line
-        for line in result.stdout.splitlines()
-        if line.startswith(("REJECTED", "CONSTRUCTED"))
-    ]
-    assert len(lines) == 2, (result.stdout, result.stderr)
-    assert all(line.startswith("REJECTED") for line in lines), lines
-    assert all("one MPI rank" in line for line in lines), lines
+    assert result.returncode == 0, result.stderr[-4000:]
+    docs = [json.loads((out / f"rank{r}.json").read_text()) for r in range(ranks)]
+    for r, doc in enumerate(docs):
+        assert (doc["rank"], doc["ranks"]) == (r, ranks)
+    return docs
+
+
+_RANK_LOCAL = ("contract", "aggregates", "python_terms")
+
+
+def _merge_ranks(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """One process's view of a multi-rank run: maps united, global values checked equal on every rank.
+
+    Non-identity keys must be owned by exactly one rank; the replicated identity must agree. Aggregate sizes and layer
+    counts are summed and checked equal, respectively; other rank-local values are dropped.
+    """
+    merged: dict[str, Any] = {}
+    for section, first in docs[0]["full"].items():
+        if not isinstance(first, dict):
+            assert all(d["full"][section] == first for d in docs), section
+            merged[section] = first
+            continue
+        out: dict[str, Any] = {}
+        for key, value in first.items():
+            if key.startswith("map"):
+                union: dict[str, Any] = {}
+                for d in docs:
+                    for term, coeff in d["full"][section][key].items():
+                        if term in union:
+                            assert term == "[]", (section, key, term)
+                            assert union[term] == coeff, (section, key, term)
+                        union[term] = coeff
+                out[key] = union
+            elif key == "aggregates":
+                out[key] = {
+                    "size": sum(d["full"][section][key]["size"] for d in docs),
+                    "graph_layers": value["graph_layers"],
+                }
+                assert all(
+                    d["full"][section][key]["graph_layers"] == value["graph_layers"]
+                    for d in docs
+                )
+            elif key in _RANK_LOCAL:
+                continue
+            else:
+                # Energies, gradients and repeat flags are global: every rank returns the same bits.
+                assert all(d["full"][section][key] == value for d in docs), (
+                    section,
+                    key,
+                )
+                out[key] = value
+        merged[section] = out
+    return merged
+
+
+def _assert_full_close(
+    reference: dict[str, Any], other: dict[str, Any], what: str
+) -> None:
+    for section, values in reference.items():
+        if isinstance(values, dict):
+            for key, value in values.items():
+                if key.startswith("map"):
+                    _assert_map_close(
+                        value, other[section][key], f"{what} {section}.{key}"
+                    )
+        _assert_values_close(values, other[section], f"{what} {section}")
+    for section in ("graph", "informed", "propagate"):
+        assert (
+            other[section]["aggregates"]["size"]
+            == reference[section]["aggregates"]["size"]
+        ), (what, section)
+        assert (
+            other[section]["aggregates"]["graph_layers"]
+            == reference[section]["aggregates"]["graph_layers"]
+        ), (what, section)
+
+
+def _single_process(fixture: str, picture: str, threads: int) -> dict[str, Any]:
+    full = _run(_full_spec(fixture, picture), threads)["full"]
+    return {
+        section: (
+            {
+                **values,
+                "aggregates": {
+                    k: values["aggregates"][k] for k in ("size", "graph_layers")
+                },
+            }
+            if isinstance(values, dict) and "aggregates" in values
+            else values
+        )
+        for section, values in full.items()
+    }
+
+
+@candidate_only
+@needs_mpi_launch
+@pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
+def test_multirank_agrees_across_geometries(
+    fixture: str, picture: str, tmp_path: Path
+) -> None:
+    reference = _single_process(fixture, picture, 4)
+    for ranks, threads in ((2, 2), (4, 1)):
+        docs = _run_ranks(_full_spec(fixture, picture), ranks, threads, tmp_path)
+        for doc in docs:
+            assert doc["runtime"] == _CANDIDATE
+            _check_single_run(doc["full"], picture)
+        _assert_full_close(reference, _merge_ranks(docs), f"P={ranks} T={threads}")
+
+
+@candidate_only
+@needs_mpi_launch
+@pytest.mark.parametrize(
+    ("fixture", "picture"), [_FIXTURES[0], _FIXTURES[3], _FIXTURES[6]]
+)
+def test_multirank_splitmix_three_processes(
+    fixture: str, picture: str, tmp_path: Path
+) -> None:
+    reference = _single_process(fixture, picture, 6)
+    docs = _run_ranks(
+        _full_spec(fixture, picture),
+        3,
+        2,
+        tmp_path,
+        extra_env={"monoprop_ROUTING": "splitmix"},
+    )
+    _assert_full_close(reference, _merge_ranks(docs), "P=3 T=2 splitmix")
+
+
+@candidate_only
+@needs_mpi_launch
+def test_multirank_linear_routing_rejects_three_processes(tmp_path: Path) -> None:
+    docs = _run_ranks(
+        {"scenario": "controls", "partitions": [], "construction_only": True},
+        3,
+        1,
+        tmp_path,
+    )
+    for doc in docs:
+        outcome = doc["controls"]["default"]
+        assert outcome.startswith("RuntimeError"), outcome
+        assert "power-of-two rank count" in outcome, outcome
+
+
+@candidate_only
+@needs_mpi_launch
+@pytest.mark.skipif(
+    _legacy_python() is None,
+    reason="set monoprop_TEST_LEGACY_PYTHON to a separately built legacy environment's interpreter",
+)
+@pytest.mark.parametrize("threads", _TEAMS)
+@pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
+def test_multirank_matches_the_legacy_runtime_at_the_same_geometry(
+    fixture: str, picture: str, threads: int, tmp_path: Path
+) -> None:
+    legacy_python = _legacy_python()
+    assert legacy_python is not None
+    probe = subprocess.run(  # noqa: S603 - trusted interpreter
+        [legacy_python, "-c", "import monoprop; print(monoprop.has_mpi)"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_child_env(1),
+    )
+    if probe.stdout.strip() != "True":
+        pytest.skip("the legacy interpreter is an MPI-off build")
+    candidate = _run_ranks(_full_spec(fixture, picture), 2, threads, tmp_path)
+    # The legacy runtime at P ranks x monoprop_PARTITIONS=T routes over the same (P, T) flat owners.
+    legacy = _run_ranks(
+        _full_spec(fixture, picture),
+        2,
+        threads,
+        tmp_path,
+        python=legacy_python,
+        extra_env={"monoprop_PARTITIONS": str(threads)},
+    )
+    for rank, (ours, theirs) in enumerate(zip(candidate, legacy, strict=True)):
+        assert ours["runtime"] == _CANDIDATE
+        assert theirs["runtime"] in (_LEGACY, None)
+        differences = _differences(ours["full"], theirs["full"])
+        assert not differences, (rank, differences[:10])
 
 
 def test_legacy_identity_is_not_the_candidate() -> None:

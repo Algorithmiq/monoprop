@@ -63,6 +63,9 @@ public:
 
     //! The root's own work; `shard` is the shard concerned. May throw.
     virtual auto root(RootWork /*work*/, size_t /*shard*/) const -> void {}
+
+    //! Multi-rank construction, after `shard` packed its remote query blocks into `round`; may rewrite its slices.
+    virtual auto queries_packed(size_t /*step*/, size_t /*shard*/, PhysicalExchange & /*round*/) const -> void {}
 };
 
 //! The seed_shards() / copy_shards() observer the root passes: forwards to a RootObserver when one is set.
@@ -97,6 +100,13 @@ struct RootConstructionObserver {
 
     //! Within-shard kernels and exchange phases report to the production default.
     [[nodiscard]] auto kernels(size_t /*shard*/) const noexcept -> NoRangeObserver { return {}; }
+
+    //! After `shard` packed its remote query blocks.
+    auto queries_packed(size_t step, size_t shard, PhysicalExchange &round) const -> void {
+        if (observer != nullptr) {
+            observer->queries_packed(step, shard, round);
+        }
+    }
 };
 
 /*!

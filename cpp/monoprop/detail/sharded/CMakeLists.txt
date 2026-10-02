@@ -6,9 +6,15 @@ target_sources(
       FILES
         "Construction.h"
         "Evaluation.h"
+        "Exchange.h"
         "RootObserver.h"
         "State.h"
         "Team.h"
 )
 
-target_sources(monoprop-objs PRIVATE Evaluation.cpp)
+target_sources(
+  monoprop-objs
+  PRIVATE
+    Evaluation.cpp
+    Exchange.cpp
+)

@@ -38,18 +38,29 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/pare/PareGraph.h"
+#include "monoprop/detail/sharded/Exchange.h"
 #include "monoprop/detail/sharded/State.h"
 #include "monoprop/detail/sharded/Team.h"
 #include "monoprop/monopropExport.h"
 
 /*
- * Snapshot-safe replay, energy, gradients and retained functionals over the T shards of one process (P = 1).
+ * Snapshot-safe replay, energy, gradients and retained functionals over the T shards of one process, at geometry
+ * (P, T).
  *
  * One run_team() spans a whole evaluation, forward and reverse loops included. Worker t owns shard t, whose flat
- * routing slot is rank * T + t; every other shard is a cross owner. A replay step of layer l is split at one
- * checkpoint: its begin (snapshot and publish the endpoint values partners read, then the cosine pass) and its finish
- * (read the partners' published snapshots, add the sine terms). Finishes read published snapshots, never a partner's
- * live coefficients, which that partner's cosine pass has already overwritten.
+ * routing slot is rank * T + t; every other shard is a cross owner, in this process or another. A replay step of layer
+ * l is split at one checkpoint: its begin (snapshot and publish the endpoint values partners read, then the cosine
+ * pass) and its finish (read the partners' published snapshots, add the sine terms). Finishes read published
+ * snapshots, never a partner's live coefficients, which that partner's cosine pass has already overwritten.
+ *
+ * Other processes (P > 1). Every step then also moves the blocks of partners on other ranks through one physical
+ * round (Exchange.h, ReplayRound), with the communicator-agreed transport: the begin publishes and writes the owner's
+ * replay rows (send and receive counts are equal: a layer's partner layout is symmetric); a primary phase lays the
+ * round out over every other rank; owners pack their remote blocks from the published snapshots; then the primary
+ * posts, every owner runs its callback part (record, cosine pass or reverse accumulation) while the transfer is in
+ * flight, and the primary completes it. The finish then reads remote partners' blocks from the round's receive
+ * staging, which the next step's round rewrites only after that finish. Each step thus has four checkpoints instead
+ * of one; P = 1 keeps the one-checkpoint sequence.
  *
  * Phase p (one checkpoint) = finish of step p-1, then, at p = L, the owner's local contribution, then the begin of
  * step p. Steps 0 .. L-1 are the forward replay; a gradient continues with the reverse steps L .. 2L-1 (reverse layer
@@ -142,26 +153,27 @@ struct PublishedEndpoints {
 using PublishedPair = std::array<PublishedEndpoints, 2>;
 
 /*!
- * \brief Read-only view of the local owners' publications for one replay step.
+ * \brief Read-only view of the publications for one replay step: the local owners' pairs, and the step's physical
+ *        round for partners on other ranks.
  */
 struct EndpointBoard {
     std::span<const PublishedPair *const> owners; //!< Per local shard, its publication pair.
     size_t buffer = 0;                            //!< The entry of each pair that holds this step.
     size_t first_local = 0;                       //!< Flat slot of local shard 0, `rank * T`.
+    const PhysicalExchange *remote = nullptr;     //!< The step's completed round, or null when P = 1.
 
     /*!
      * \brief The block `source` published for `reader` at this step.
      *
      * \param source The partner's flat slot.
-     * \param reader The reading owner's flat slot.
+     * \param reader The reading owner's flat slot; a shard of this process.
      * \param count  The number of values the reader's layer expects from `source`.
-     * \throws std::logic_error if `source` is not a local shard (a remote partner needs the physical exchange) or its
-     *         block does not hold exactly `count` values.
+     * \throws std::logic_error if `source` is neither a local shard nor a shard of a peer of `remote`, or its block
+     *         does not hold exactly `count` values.
      */
     [[nodiscard]] auto block(size_t source, size_t reader, size_t count) const -> const double * {
         if (source < first_local || source - first_local >= owners.size()) {
-            throw std::logic_error(
-                std::format("sharded replay: partner slot {} is not a shard of this process", source));
+            return remote_block_(source, reader, count);
         }
         const auto &published = (*owners[source - first_local])[buffer];
         if (reader >= published.layout.counts.size() || static_cast<size_t>(published.layout.counts[reader]) != count) {
@@ -169,6 +181,82 @@ struct EndpointBoard {
                 std::format("sharded replay: partner {} did not publish {} values for slot {}", source, count, reader));
         }
         return published.values.data() + published.layout.displs[reader];
+    }
+
+private:
+    [[nodiscard]] auto remote_block_(size_t source, size_t reader, size_t count) const -> const double * {
+        if (remote == nullptr) {
+            throw std::logic_error(
+                std::format("sharded replay: partner slot {} is not a shard of this process", source));
+        }
+        const size_t threads = remote->threads();
+        const auto peers = remote->peers();
+        const auto found = std::ranges::lower_bound(peers, source / threads);
+        if (found == peers.end() || *found != source / threads) {
+            throw std::logic_error(std::format("sharded replay: partner slot {} is on no peer of the round", source));
+        }
+        const auto received = remote->recv_block<double>(reader - first_local,
+                                                         static_cast<size_t>(found - peers.begin()),
+                                                         source % threads);
+        if (received.size() != count) {
+            throw std::logic_error(std::format("sharded replay: partner {} sent {} values for slot {}, expected {}",
+                                               source,
+                                               received.size(),
+                                               reader,
+                                               count));
+        }
+        return received.data();
+    }
+};
+
+/*!
+ * \brief Owner `shard`'s rows of a replay round from its publication: what it sends to and receives from every shard
+ *        of every other rank. A layer's partner layout is symmetric, so both counts are the published block size.
+ */
+monoprop_EXPORT auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
+
+/*!
+ * \brief Owner `shard` copies its published blocks for every shard of every other rank into the round's send slices.
+ */
+monoprop_EXPORT auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
+
+/*!
+ * \brief A replay step's physical round with the communicator-agreed transport; inert (null) when P = 1.
+ */
+struct ReplayRound {
+    PhysicalExchange *round = nullptr;                         //!< Caller-owned; outlives the team.
+    ExchangeTransport transport = ExchangeTransport::pairwise; //!< mpi::routes_pairwise() of the communicator.
+
+    /*!
+     * \brief The round's three phases, after the phase in which every owner wrote its rows.
+     *
+     * A primary phase lays the round out over every other rank; every owner then runs `pack()`; finally the primary
+     * posts, every owner runs `overlap()` while the transfer is in flight, and the primary completes it. Every worker
+     * must call this at the same point of its sequence.
+     *
+     * \return The last checkpoint decision, identical on every worker; on false the caller ends its sequence.
+     */
+    template <class Pack, class Overlap>
+    auto run(TeamFailure &failure, size_t shard, Pack &&pack, Overlap &&overlap) const noexcept -> bool {
+        return phase(failure,
+                     shard,
+                     [&] {
+                         if (shard == 0) {
+                             const auto peers =
+                                 other_ranks(PhysicalWorld{.rank = round->rank(), .ranks = round->ranks()});
+                             round->plan_send(peers, transport);
+                             round->plan_recv();
+                         }
+                     })
+               && phase(failure, shard, pack) && phase(failure, shard, [&] {
+                      if (shard == 0) {
+                          round->post();
+                      }
+                      overlap();
+                      if (shard == 0) {
+                          round->wait();
+                      }
+                  });
     }
 };
 
@@ -263,6 +351,7 @@ struct ForwardReplayJob {
     size_t first_local = 0;                 //!< Flat slot of local shard 0.
     bool owner_parallel = true;             //!< False: every cosine pass runs on the primary.
     std::vector<ForwardReplayOwner> owners; //!< One per shard; entry t is filled by owner t.
+    ReplayRound remote{};                   //!< The physical round for partners on other ranks, or inert at P = 1.
 };
 
 /*!
@@ -307,7 +396,10 @@ struct EvaluationOutcome {
  * \param options   The captured budget; its thread count T is the team size.
  * \param gradient  Whether to run the reverse pass.
  * \param observer  Test-only seam, or null.
- * \return The outcome; a phase failure is returned, never thrown.
+ * \param world     This process among the ranks the shards' graphs were built over (PhysicalWorld::of() on the
+ *                  caller); the default is one process. Every rank of a multi-rank world must call this together.
+ * \return The outcome; a phase failure is returned, never thrown, except that a failure leaving a physical round's
+ *         requests live goes to mpi::operation_failed() before the round is destroyed.
  * \throws std::invalid_argument before the team, with nothing mutated, for mismatched counts or shapes;
  *         MissingLayerCallback for a missing callback the path needs; EvalStateArgumentError for a state longer
  *         than its operator.
@@ -316,7 +408,8 @@ monoprop_EXPORT auto evaluate_shards(std::span<const EvalRequest> requests,
                                      std::span<const CosCallbacks> callbacks,
                                      parallel::Options options,
                                      bool gradient,
-                                     const EvaluationObserver *observer = nullptr) -> EvaluationOutcome;
+                                     const EvaluationObserver *observer = nullptr,
+                                     const PhysicalWorld &world = {}) -> EvaluationOutcome;
 
 /*!
  * \brief The reference fold of per-shard scalars: `0.0 + c[0] + c[1] + ...`, in ascending shard order.
@@ -333,16 +426,17 @@ monoprop_EXPORT auto combine_gradients(std::span<const VecD> gradients) -> VecD;
  * \brief Expectation value over T shards: the replicated identity plus the ascending-shard fold of their terms,
  *        reduced over `comm`.
  *
- * One team spans the whole replay. The communicator is touched only on the caller: its size is checked before the
- * team, and the result reduction runs after the join. A phase failure goes to mpi::operation_failed(comm, error)
- * before the reduction, which at one rank rethrows the original exception.
+ * One team spans the whole replay. Outside the team the communicator is used only on the caller: its rank, size and
+ * agreed replay transport are read before the team (PhysicalWorld::of()), and the result reduction runs after the
+ * join. Inside it, only the primary posts and completes the replay rounds. A phase failure goes to
+ * mpi::operation_failed(comm, error) before the reduction, which at one rank rethrows the original exception.
  *
  * \param requests  One request per shard; see evaluate_shards().
  * \param callbacks One callback set per shard.
  * \param options   The captured budget; its thread count T is the team size.
- * \param comm      The physical communicator; must have one rank (P = 1).
+ * \param comm      The ordinary physical communicator of P ranks the shards' graphs were built over.
  * \param observer  Test-only seam, or null.
- * \throws As evaluate_shards() before the team, and std::invalid_argument if `comm` has more than one rank.
+ * \throws As evaluate_shards() before the team, and std::invalid_argument if `comm` is not an ordinary communicator.
  */
 monoprop_EXPORT auto ev_sharded(std::span<const EvalRequest> requests,
                                 std::span<const CosCallbacks> callbacks,
@@ -385,6 +479,10 @@ struct ReplayOutcome {
  * `map_params(parameters, mapping, gen_coeffs, -1.0)` over the reversed `slice_view(k)`, starting from the dense
  * state. Shard coefficient blocks concatenated in shard order form the rank-local result.
  *
+ * `world` is this process among the ranks the graphs were built over, as for evaluate_shards(); every rank of a
+ * multi-rank world must call this together, and a failure leaving the round's requests live goes to
+ * mpi::operation_failed() before the round is destroyed.
+ *
  * \throws std::invalid_argument before the team for mismatched counts or window lengths, MissingLayerCallback for
  *         a missing `scale` when there is a step to replay.
  */
@@ -392,7 +490,8 @@ monoprop_EXPORT auto replay_shards(std::span<const ReplayRequest> requests,
                                    std::span<const double> mapped_params,
                                    std::span<const CosCallbacks> callbacks,
                                    parallel::Options options,
-                                   const EvaluationObserver *observer = nullptr) -> ReplayOutcome;
+                                   const EvaluationObserver *observer = nullptr,
+                                   const PhysicalWorld &world = {}) -> ReplayOutcome;
 
 // --- Retained functionals ---------------------------------------------------------------------------------------
 

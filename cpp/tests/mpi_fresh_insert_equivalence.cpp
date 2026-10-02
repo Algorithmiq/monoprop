@@ -16,7 +16,8 @@
 // fresh partner is state-scored (majorana_state_phase / pauli_state_phase) rather than left at 0. The
 // Heisenberg R>1 resolve/apply paths are already covered by exact_upper_atol_rescue and
 // mpi_distributed_layer_equivalence. Only runs at world >= 2. Oracle: serial<->world equivalence --
-// the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol.
+// the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol. In a sharded
+// prototype build the same public calls drive the sharded root at P ranks x the launch's T (cpp/tests/CMakeLists.txt).
 
 #include <boost/test/unit_test.hpp>
 
@@ -123,6 +124,9 @@ BOOST_AUTO_TEST_CASE(mpi_fresh_insert_schrodinger_pauli_serial_world_equiv) {
     BOOST_TEST_MESSAGE("schrodinger pauli serial=" << e_serial << " world=" << e_world);
     BOOST_TEST(near(e_serial, e_world));
 }
+
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The one-store prototype's cases below construct with explicit partitions = 1, which the sharded root rejects.
 
 // ── Threaded resolution at fixed geometry (Task 6) ────────────────────────────────────────────────
 //
@@ -271,5 +275,7 @@ BOOST_AUTO_TEST_CASE(openmp_incoming_resolution_workers_participate_at_world_siz
     BOOST_TEST(observed);
     BOOST_TEST(!Access::is_invalid(sim));
 }
+
+#endif // monoprop_SHARDED_OPENMP_PROTOTYPE
 
 } // namespace

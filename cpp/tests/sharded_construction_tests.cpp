@@ -41,6 +41,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <format>
 #include <map>
@@ -67,6 +68,7 @@
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
@@ -310,12 +312,12 @@ auto label(const Case &c) -> std::string {
 // --- Legacy oracle ----------------------------------------------------------------------------------------------
 
 template <size_t N>
-auto legacy(const Fixture &f, size_t partitions) -> MonomialPropagator<N> {
+auto legacy(const Fixture &f, size_t partitions, MPI_Comm comm = MPI_COMM_SELF) -> MonomialPropagator<N> {
     return MonomialPropagator<N>(f.op,
                                  f.cutoff,
                                  f.initial_state,
                                  f.schrodinger_cutoff,
-                                 MPI_COMM_SELF,
+                                 comm,
                                  f.lower_atol,
                                  f.upper_atol,
                                  f.cutoff_type,
@@ -359,6 +361,7 @@ struct Sharded {
     CutoffFn<N> cutoff_fn;
     routing::Router router;
     sharded::Shards<N> shards;
+    sharded::PhysicalWorld world{}; // one process unless a multi-rank case seeds over MPI_COMM_WORLD
 
     [[nodiscard]] auto ctx() const -> sharded::ConstructionContext<N> {
         return {.cutoff_fn = cutoff_fn,
@@ -367,13 +370,13 @@ struct Sharded {
                 .upper_atol = f.upper_atol,
                 .basis = f.basis,
                 .schrodinger = f.schrodinger_cutoff.has_value(),
-                .rank = 0};
+                .world = world};
     }
 };
 
 template <size_t N>
-auto seed(const Fixture &f, parallel::Options options) -> Sharded<N> {
-    const auto router = routing::make_router<N>(1, static_cast<size_t>(options.threads));
+auto seed(const Fixture &f, parallel::Options options, const sharded::PhysicalWorld &world = {}) -> Sharded<N> {
+    const auto router = routing::make_router<N>(world.ranks, static_cast<size_t>(options.threads));
     const auto cutoff_fn = make_cutoff_fn<N>(f);
     std::optional<sharded::PairedBasisBounds> paired;
     if (f.schrodinger_cutoff) {
@@ -389,7 +392,11 @@ auto seed(const Fixture &f, parallel::Options options) -> Sharded<N> {
         .logical_num_modes = f.logical,
         .paired = paired,
         .inline_width = sharded::packed_inline_width<N>(paired.has_value(), f.basis_change ? cutoff_fn : width_fn)};
-    return {.f = f, .cutoff_fn = cutoff_fn, .router = router, .shards = sharded::seed_shards(options, seed_inputs, 0)};
+    return {.f = f,
+            .cutoff_fn = cutoff_fn,
+            .router = router,
+            .shards = sharded::seed_shards(options, seed_inputs, world.rank),
+            .world = world};
 }
 
 template <size_t N>
@@ -2042,7 +2049,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_t
     two_ranks.router = routing::Router::splitmix(2 * threads);
     BOOST_CHECK_THROW((void)graph(two_ranks, cs.c.gen_coeffs, std::nullopt), std::invalid_argument);
     auto wrong_rank = good;
-    wrong_rank.rank = 1;
+    wrong_rank.world.rank = 1;
     BOOST_CHECK_THROW((void)graph(wrong_rank, cs.c.gen_coeffs, std::nullopt), std::invalid_argument);
     sharded::Shards<kN> short_shards;
     BOOST_CHECK_THROW(
@@ -2055,4 +2062,63 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_t
     for (const auto &log : logs) {
         BOOST_TEST(log.visits.empty());
     }
+}
+
+// --- Multi-rank: P ranks x T threads against the legacy hybrid -------------------------------------------------------
+//
+// Launched by cpp/tests/CMakeLists.txt with monoprop_TEST_SHARDED_RANKS = P under mpiexec (never by the whole-suite MPI
+// variants, which run at the default budget). The legacy facade at partitions = T over MPI_COMM_WORLD (the one-store
+// path at T = 1) routes over the same (P, T) flat owners: child t of rank r is flat owner r * T + t. Every shard of
+// every rank must equal its legacy child bit for bit: rows in ID order (so local sender blocks never jump ahead of
+// lower-numbered remote senders, and deferred same-shard misses come last), coefficients, caches and the layers'
+// partner layouts, whose sin_send lists pin the answers to the queries they retrace.
+
+namespace {
+
+auto multirank_launch(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
+    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
+    const int ranks = mpi::size(mpi::Comm(MPI_COMM_WORLD));
+    boost::test_tools::assertion_result result(text != nullptr && ranks >= 2 && std::stoi(text) == ranks);
+    result.message()
+        << "needs a dedicated multi-rank launch (monoprop_TEST_SHARDED_RANKS = the world size, at least 2)";
+    return result;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(sharded_construction_multirank_matches_the_legacy_hybrid,
+                     *boost::unit_test::precondition(multirank_launch)) {
+    const auto options = team_options();
+    const size_t threads = team_size();
+    const auto world = sharded::PhysicalWorld::of(mpi::Comm(MPI_COMM_WORLD));
+    size_t remote_rows = 0;
+    for (const auto &cs : legacy_cases()) {
+        BOOST_TEST_CONTEXT(label(cs) << " rank " << world.rank << " of " << world.ranks << " T=" << threads) {
+            for (const bool propagate : {false, true}) {
+                BOOST_TEST_CONTEXT((propagate ? "propagate" : "build_graph")) {
+                    auto p = legacy<kN>(cs.f, threads, MPI_COMM_WORLD);
+                    auto s = seed<kN>(cs.f, options, world);
+                    if (propagate) {
+                        p.propagate(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, cs.c.params, cs.k);
+                        require_success(run_propagate<kN>(s, cs.c, cs.k));
+                    }
+                    else {
+                        p.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
+                        require_success(run_graph<kN>(s, cs.c, cs.k));
+                    }
+                    for (size_t t = 0; t < threads; ++t) {
+                        const auto got = digest<kN>(*s.shards[t]);
+                        BOOST_TEST((got == legacy_digest<kN>(p, t)), "shard " << t);
+                        for (const auto &layer : got.layers) {
+                            for (const auto &entry : layer.occupied) {
+                                remote_rows += entry[0] / threads != world.rank ? entry[1] : 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // The fixtures really cross ranks: some layer has partners on another process.
+    BOOST_TEST(mpi::allreduce_sum<size_t>(remote_rows, mpi::Comm(MPI_COMM_WORLD)) > 0U);
 }

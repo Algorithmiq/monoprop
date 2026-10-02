@@ -49,6 +49,7 @@
 #include "monoprop/detail/parallel/Options.h"
 #ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 #include "monoprop/detail/mpi/Routing.h"
+#include "monoprop/detail/sharded/Exchange.h"
 #include "monoprop/detail/sharded/RootObserver.h"
 #include "monoprop/detail/sharded/State.h"
 #endif
@@ -95,7 +96,8 @@ public:
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
     /// With monoprop_SHARDED_OPENMP_PROTOTYPE, the rank-level sharded root: T = the budget captured from
-    /// monoprop_NUM_THREADS (or the OpenMP default) once, here; one ordinary one-rank communicator only. The
+    /// monoprop_NUM_THREADS (or the OpenMP default) once, here, identical on every rank; an ordinary communicator of
+    /// P ranks, constructed collectively on every rank (routing agreement), with flat owner rank * T + t. The
     /// coexistence-only `partitions` and `child_factory` must keep their defaults, and a present
     /// monoprop_PARTITIONS is rejected, so neither can select a different geometry or the legacy runtime.
     MonomialPropagator(const OperatorDict &initial_operator,
@@ -678,9 +680,12 @@ private:
                        size_t partitions,
                        const PartitionChildFactory &child_factory);
 
-    // Flat-owner routing at geometry (P, T) = (1, T), prepared once on the caller at construction and used for
-    // seeding, construction and initial-operator updates. Never derived from comm_, whose geometry is one rank.
+    // Flat-owner routing at geometry (P, T): P = comm_'s size, T = the captured budget. Prepared once on the caller at
+    // construction and used for seeding, construction and initial-operator updates.
     std::optional<routing::Router> router_;
+    // This rank among comm_'s P, with the communicator-agreed replay transport; read once, on the caller, at
+    // construction. Copies keep it: they share comm_.
+    detail::sharded::PhysicalWorld world_{};
     // Test-only: null in production, set only through PropagatorTestAccess. Copies inherit it.
     const detail::sharded::RootObserver *observer_ = nullptr;
     // The T shard states of this rank, shard t at flat owner t; one per worker of the captured budget. Declared

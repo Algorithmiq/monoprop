@@ -172,7 +172,7 @@ auto routes_pairwise(const Comm &comm) -> bool {
         if (found != 0) {
             return reinterpret_cast<intptr_t>(cached) != 0;
         }
-        const bool pairwise = agree_routes_pairwise(comm.mpi, ranks, routing::Config::from_env(1));
+        const bool pairwise = agree_routes_pairwise(comm.mpi, ranks, routing::Config::from_env());
         MPI_Comm_set_attr(comm.mpi, routing_keyval(), reinterpret_cast<void *>(static_cast<intptr_t>(pairwise)));
         return pairwise;
     }

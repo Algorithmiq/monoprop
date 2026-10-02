@@ -267,21 +267,18 @@ inline auto linear_requested() -> bool {
     return config::get().routing_mode.value_or(config::RoutingMode::Linear) == config::RoutingMode::Linear;
 }
 
-// What must match across ranks for the transports to pair up; raw values, so agreement is exact.
+// What must match across ranks for the transports to pair up; raw values, so agreement is exact. The thread or
+// partition count is not part of it: the sharded runtime takes a uniform T as a launch precondition, and the legacy
+// facade checks its partition count itself (PartitionCountMismatch).
 struct Config {
     uint64_t linear = 0;
-    uint64_t partitions = 1;
     uint64_t seed = 0;
 
-    static auto from_env(size_t partitions) -> Config {
-        return {.linear = static_cast<uint64_t>(linear_requested()),
-                .partitions = static_cast<uint64_t>(partitions),
-                .seed = seed_from_env()};
+    static auto from_env() -> Config {
+        return {.linear = static_cast<uint64_t>(linear_requested()), .seed = seed_from_env()};
     }
 
-    [[nodiscard]] auto describe() const -> std::string {
-        return std::format("linear={}, partitions={}, seed={}", linear, partitions, seed);
-    }
+    [[nodiscard]] auto describe() const -> std::string { return std::format("linear={}, seed={}", linear, seed); }
 };
 
 // Whether an AGREED config routes point-to-point. Never throws, since the replay path asks from inside a

@@ -70,7 +70,7 @@ public:
                                             "mpi::init / mpi4py requests SERIALIZED or MULTIPLE.");
         }
         // Collective, so it runs after the local checks: a rank that throws first must not strand its peers.
-        pairwise_ = agree_routes_pairwise(parent_, r_, routing::Config::from_env(static_cast<size_t>(s_)));
+        pairwise_ = agree_routes_pairwise(parent_, r_, routing::Config::from_env());
         // Size all (R,S)-fixed scratch once so per-call paths never allocate; staging grows on demand.
         const size_t rss = static_cast<size_t>(r_) * static_cast<size_t>(s_) * static_cast<size_t>(s_);
         const size_t p = static_cast<size_t>(r_) * static_cast<size_t>(s_);

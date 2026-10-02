@@ -43,6 +43,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <format>
 #include <functional>
@@ -70,6 +71,7 @@
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/LayerReplay.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
@@ -357,12 +359,12 @@ auto parameter_sets(const Circuit &c) -> std::vector<std::pair<std::string, VecD
 // --- Legacy oracle ----------------------------------------------------------------------------------------------
 
 template <size_t N>
-auto legacy(const Fixture &f, size_t partitions) -> MonomialPropagator<N> {
+auto legacy(const Fixture &f, size_t partitions, MPI_Comm comm = MPI_COMM_SELF) -> MonomialPropagator<N> {
     return MonomialPropagator<N>(f.op,
                                  f.cutoff,
                                  f.initial_state,
                                  f.schrodinger_cutoff,
-                                 MPI_COMM_SELF,
+                                 comm,
                                  f.lower_atol,
                                  f.upper_atol,
                                  f.cutoff_type,
@@ -427,6 +429,7 @@ struct Sharded {
     CutoffFn<N> cutoff_fn;
     routing::Router router;
     sharded::Shards<N> shards;
+    sharded::PhysicalWorld world{}; // one process unless a multi-rank case seeds over MPI_COMM_WORLD
 
     [[nodiscard]] auto ctx() const -> sharded::ConstructionContext<N> {
         return {.cutoff_fn = cutoff_fn,
@@ -435,7 +438,7 @@ struct Sharded {
                 .upper_atol = f.upper_atol,
                 .basis = f.basis,
                 .schrodinger = f.schrodinger_cutoff.has_value(),
-                .rank = 0};
+                .world = world};
     }
     [[nodiscard]] auto schrodinger() const -> bool { return f.schrodinger_cutoff.has_value(); }
     [[nodiscard]] auto core() const -> double {
@@ -444,8 +447,8 @@ struct Sharded {
 };
 
 template <size_t N>
-auto seed(const Fixture &f, parallel::Options options) -> Sharded<N> {
-    const auto router = routing::make_router<N>(1, static_cast<size_t>(options.threads));
+auto seed(const Fixture &f, parallel::Options options, const sharded::PhysicalWorld &world = {}) -> Sharded<N> {
+    const auto router = routing::make_router<N>(world.ranks, static_cast<size_t>(options.threads));
     const auto cutoff_fn = make_cutoff_fn<N>(f);
     std::optional<sharded::PairedBasisBounds> paired;
     if (f.schrodinger_cutoff) {
@@ -460,7 +463,11 @@ auto seed(const Fixture &f, parallel::Options options) -> Sharded<N> {
         .logical_num_modes = f.logical,
         .paired = paired,
         .inline_width = sharded::packed_inline_width<N>(paired.has_value(), f.basis_change ? cutoff_fn : width_fn)};
-    return {.f = f, .cutoff_fn = cutoff_fn, .router = router, .shards = sharded::seed_shards(options, seed_inputs, 0)};
+    return {.f = f,
+            .cutoff_fn = cutoff_fn,
+            .router = router,
+            .shards = sharded::seed_shards(options, seed_inputs, world.rank),
+            .world = world};
 }
 
 template <size_t N>
@@ -557,7 +564,7 @@ auto retained_context(const Sharded<N> &s, std::optional<double> pare) -> sharde
             .pare_threshold = pare,
             .basis = s.f.basis,
             .schrodinger = s.schrodinger(),
-            .rank = 0};
+            .rank = s.world.rank};
 }
 
 template <size_t N>
@@ -573,19 +580,23 @@ auto retain(Sharded<N> &s,
 auto evaluate(const sharded::RetainedEvaluation &r,
               const VecD &params,
               bool gradient,
-              const sharded::EvaluationObserver *observer = nullptr) -> sharded::EvaluationOutcome {
+              const sharded::EvaluationObserver *observer = nullptr,
+              const sharded::PhysicalWorld &world = {}) -> sharded::EvaluationOutcome {
     const auto requests = r.requests(params);
-    return sharded::evaluate_shards(requests, r.callbacks, team_options(), gradient, observer);
+    return sharded::evaluate_shards(requests, r.callbacks, team_options(), gradient, observer, world);
 }
 
-auto energy(const sharded::RetainedEvaluation &r, const VecD &params) -> double {
+auto energy(const sharded::RetainedEvaluation &r, const VecD &params, const sharded::PhysicalWorld &world = {})
+    -> double {
     const auto requests = r.requests(params);
-    return sharded::ev_sharded(requests, r.callbacks, team_options(), MPI_COMM_SELF);
+    return sharded::ev_sharded(requests, r.callbacks, team_options(), world.comm);
 }
 
-auto energy_and_gradient(const sharded::RetainedEvaluation &r, const VecD &params) -> std::pair<double, VecD> {
+auto energy_and_gradient(const sharded::RetainedEvaluation &r,
+                         const VecD &params,
+                         const sharded::PhysicalWorld &world = {}) -> std::pair<double, VecD> {
     const auto requests = r.requests(params);
-    return sharded::ev_and_grad_sharded(requests, r.callbacks, team_options(), MPI_COMM_SELF);
+    return sharded::ev_and_grad_sharded(requests, r.callbacks, team_options(), world.comm);
 }
 
 // Per shard: the energy evaluation's evolved operator, through replay_shards().
@@ -2256,4 +2267,134 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
     const auto after = energy_and_gradient(r, params);
     BOOST_TEST(bits(after.first) == bits(reference.first));
     BOOST_TEST((bits_of(after.second) == bits_of(reference.second)));
+}
+
+// --- Multi-rank: P ranks x T threads against the legacy hybrid -------------------------------------------------------
+//
+// Launched by cpp/tests/CMakeLists.txt with monoprop_TEST_SHARDED_RANKS = P under mpiexec (never by the whole-suite MPI
+// variants). The legacy facade at partitions = T over MPI_COMM_WORLD routes over the same (P, T) flat owners, so
+// energies, gradients, pared functionals, contraction blocks and informed construction must agree bit for bit: every
+// replay step's remote partner values cross the physical round, and the finishes must read the pre-update snapshots.
+
+namespace {
+
+auto multirank_launch(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
+    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
+    const int ranks = mpi::size(mpi::Comm(MPI_COMM_WORLD));
+    boost::test_tools::assertion_result result(text != nullptr && ranks >= 2 && std::stoi(text) == ranks);
+    result.message()
+        << "needs a dedicated multi-rank launch (monoprop_TEST_SHARDED_RANKS = the world size, at least 2)";
+    return result;
+}
+
+// The rank's contraction blocks through replay_shards(), concatenated in shard order, as the legacy facade returns.
+template <size_t N>
+auto contraction(Sharded<N> &s, const VecD &params) -> VecD {
+    const bool schrodinger = s.schrodinger();
+    std::vector<VecD> start;
+    std::vector<MPGraphView> views;
+    std::vector<monoprop::detail::CosCallbacks> callbacks;
+    for (auto &state : s.shards) {
+        start.push_back(state->op.current_picture(schrodinger));
+        views.push_back(state->graph.slice_view(state->graph.layers()));
+    }
+    std::vector<sharded::ReplayRequest> requests;
+    for (size_t t = 0; t < s.shards.size(); ++t) {
+        callbacks.push_back(
+            monoprop::detail::make_cos_callbacks<N>(s.shards[t]->op.inverted_index(), views[t], s.f.basis));
+        requests.push_back({.coeffs = start[t], .graph = views[t]});
+    }
+    const auto angles = contraction_angles(s.shards.front()->graph, schrodinger, params);
+    const auto outcome = sharded::replay_shards(requests, angles, callbacks, team_options(), nullptr, s.world);
+    require_success(outcome.error, "replay_shards");
+    VecD out;
+    for (const auto &block : outcome.coeffs) {
+        out.insert(out.end(), block.begin(), block.end());
+    }
+    return out;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(sharded_evaluation_multirank_matches_the_legacy_hybrid,
+                     *boost::unit_test::precondition(multirank_launch)) {
+    const auto options = team_options();
+    const size_t threads = team_size();
+    const auto world = sharded::PhysicalWorld::of(mpi::Comm(MPI_COMM_WORLD));
+    for (const auto &cs : legacy_cases()) {
+        BOOST_TEST_CONTEXT(label(cs) << " rank " << world.rank << " of " << world.ranks << " T=" << threads) {
+            auto old = legacy<kN>(cs.f, threads, MPI_COMM_WORLD);
+            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
+            auto s = seed<kN>(cs.f, options, world);
+            run_graph<kN>(s, cs.c, cs.k);
+            const auto r = retain<kN>(s);
+            const auto pared = retain<kN>(s, 1e-3);
+            for (const auto &[name, params] : parameter_sets(cs.c)) {
+                BOOST_TEST_CONTEXT(name) {
+                    BOOST_TEST(bits(energy(r, params, world)) == bits(old.expectation_value(params)));
+                    const auto [ge, grad] = old.expectation_value_and_gradient(params);
+                    const auto [se, sgrad] = energy_and_gradient(r, params, world);
+                    BOOST_TEST(bits(se) == bits(ge));
+                    BOOST_TEST((bits_of(sgrad) == bits_of(grad)));
+                    const auto [pe, pgrad] = old.expectation_value_and_gradient_functional(1e-3)(params);
+                    const auto [qe, qgrad] = energy_and_gradient(pared, params, world);
+                    BOOST_TEST(bits(qe) == bits(pe));
+                    BOOST_TEST((bits_of(qgrad) == bits_of(pgrad)));
+                }
+            }
+            BOOST_TEST(
+                (bits_of(contraction<kN>(s, cs.c.params)) == bits_of(old.contract_partially(cs.c.params, false))));
+        }
+    }
+    // Coefficient-informed construction, first and incremental (the seed replay crosses ranks too).
+    const auto cases = legacy_cases();
+    for (const auto &cs : {cases[2], cases[3], cases[5], cases[7], cases[9], cases[10]}) {
+        BOOST_TEST_CONTEXT("informed " << label(cs) << " rank " << world.rank << " T=" << threads) {
+            const Circuit second = cs.f.basis == Basis::Pauli ? pauli_circuit() : majorana_circuit(cs.f.logical);
+            const size_t first_count = expected_num_params(cs.c.mapping);
+            Circuit second_circuit = second;
+            for (auto &m : second_circuit.mapping) {
+                m += first_count;
+            }
+            VecD second_params = cs.c.params;
+            second_params.insert(second_params.end(), second.params.begin(), second.params.end());
+            auto old = legacy<kN>(cs.f, threads, MPI_COMM_WORLD);
+            auto s = seed<kN>(cs.f, options, world);
+            const auto compare = [&](const char *what) {
+                for (size_t t = 0; t < threads; ++t) {
+                    const auto want = Access<kN>::shard_state(legacy_owner(old, t));
+                    const auto &got = *s.shards[t];
+                    BOOST_TEST_CONTEXT(what << " shard " << t) {
+                        BOOST_TEST_REQUIRE(got.op.size() == want->op.size());
+                        size_t rows_differ = 0;
+                        for (size_t i = 0; i < got.op.size(); ++i) {
+                            rows_differ +=
+                                key_of<kN>(got.op.store->row(i)) == key_of<kN>(want->op.store->row(i)) ? 0 : 1;
+                        }
+                        BOOST_TEST(rows_differ == 0U);
+                        BOOST_TEST((bits_of(got.op.op_coeffs) == bits_of(want->op.op_coeffs)));
+                        BOOST_TEST((bits_of(got.op.state_coeffs) == bits_of(want->op.state_coeffs)));
+                        BOOST_TEST_REQUIRE(got.graph.layers() == want->graph.layers());
+                        for (size_t l = 0; l < got.graph.layers(); ++l) {
+                            BOOST_TEST((got.graph.get_layer(l).core().cross_rank.sin_send_indices
+                                        == want->graph.get_layer(l).core().cross_rank.sin_send_indices));
+                        }
+                    }
+                }
+            };
+            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, cs.c.params, cs.k);
+            require_success(run_informed<kN>(s, cs.c, cs.c.params, cs.k).error, "informed build");
+            compare("first");
+            const size_t offset = old.n_gates();
+            old.build_graph(second_circuit.gates,
+                            second_circuit.mapping,
+                            second_circuit.gen_coeffs,
+                            std::nullopt,
+                            second_params,
+                            std::nullopt);
+            require_success(run_informed<kN>(s, second_circuit, second_params, std::nullopt, offset).error,
+                            "incremental informed build");
+            compare("incremental");
+        }
+    }
 }
