@@ -33,8 +33,10 @@ is not recorded here. S4 was separately authorized, implemented on 2026-10-01 an
 profiling-driven rework was implemented the same day. The checkpoint re-run on the reworked code (2026-10-01) still
 failed; after profiling the owner decided a second **rework** (C, D, E), implemented on 2026-10-02. Its checkpoint
 re-run (2026-10-02) left small deviations, which the owner accepted on 2026-10-02 as reasonable, to be re-evaluated at
-a later stage (see S4's outcome). That is the owner's **proceed** decision for the S4 checkpoint; S5 still needs its own
-authorization.
+a later stage (see S4's outcome). That is the owner's **proceed** decision for the S4 checkpoint. S5 was separately
+authorized and implemented on 2026-10-02 (outcome under Task S5); its MPI+OpenMP checkpoint (tier A) ran the same day,
+and the owner accepted S5 as done on 2026-10-02, with the remaining deviations and the optimization opportunities
+recorded under S5 for later. S6 needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -796,16 +798,104 @@ Expose physical post/wait operations to the primary and disjoint payload views t
 on a shard. Reuse `begin_flat_exchange` / `wait_flat_exchange` and existing pending-request semantics when extracting
 this code. The S2 owner-phase and S3 rank-evaluation signatures remain unchanged.
 
-- [ ] Add two-process tests with T=1/2/4 for mixed local/remote destinations and canonical sender ordering. Check that
+**Outcome:** implemented and **accepted by the owner as done on 2026-10-02**. Start: `dc2e102`. Interface
+plan, handoff, evidence and the measurement proposal (not run): `/home/ubuntu/s5-artifacts/` (`S5-PLAN.md`, `HANDOFF.md`,
+`MEASUREMENT-PROPOSAL.md`), outside the checkout.
+
+- `detail/sharded/Exchange.{h,cpp}`: `PhysicalExchange`, one reusable physical round between this process's T
+  owners and those of a peer set.
+  - It is move-only and heap-stable. The destructor and move assignment drain.
+  - Owners write row-owned count rows and pack disjoint send slices; destinations read received blocks as const
+    views, with no scatter copy.
+  - Only the primary lays a round out and posts or completes it. Its MPI calls throw `std::logic_error` off
+    OpenMP thread 0 or off MPI's initializing thread.
+  - Wire layout as `HybridComm`: per peer, destination-shard major and source-shard minor. Counts, totals and
+    displacements are checked ints, refused before posting.
+  - Transports: pairwise over non-empty legs, or one `MPI_Ialltoallv`. The count round is pairwise.
+  - `PhysicalWorld::of()` reads rank, size and the agreed replay transport on the caller.
+- Construction: a gate's window reaches another rank exactly when its peer plan does (the linear peer, or every
+  rank under splitmix), so every rank branches alike.
+  - Each such pass adds Q1-Q3 (lay out, count round, pack, post and wait) and R1-R3 (answers, laid out from rows
+    the resolvers write).
+  - Answer counts are query counts, not stream words, so they are known only after resolution; the first two-rank
+    run found this.
+  - Destinations resolve local and received blocks together, in ascending flat-slot order.
+- Replay (energy, gradient, contraction, informed P5/P6, seed replay): every step at P > 1 adds a layout phase, a
+  pack phase and a post phase in which the callback part (record, cosine or reverse accumulation) runs while the
+  transfer is in flight. `EndpointBoard` reads remote partners from the round. P = 1 keeps the S4 phase sequence;
+  48/48 probe documents are bitwise identical to S4's final record.
+- Failure: after a failed join with live requests, a seam hands the error to `mpi::operation_failed()` before any
+  round is destroyed.
+- Root: P ranks, router (P, T), flat owner `rank * T + t`, and `world_`.
+  - The multi-rank rejection is removed. Linear routing rejects a non-power-of-two P on every rank.
+  - Updates apply each rank's own share only.
+  - A thread-level failure goes through `operation_failed()`.
+  - `routing::Config` loses its partition field; the legacy facade keeps `PartitionCountMismatch`.
+- Ledger rulings (`.superpowers/sdd/.../progress.md`):
+  - reuse of `begin_flat_exchange`'s semantics, not its code;
+  - trailing defaulted `PhysicalWorld` parameters on `evaluate_shards()` and `replay_shards()`, and
+    `ConstructionContext.world`;
+  - the answer round's legacy-equal count exposure;
+  - the local sanitizer settings for Open MPI 5.0.10.
+- Results (frozen source `final-s5-source.diff` `3a3d17ec…`; the final matrix is in the handoff):
+  - Bitwise against the legacy runtime at P ranks x `partitions = T`:
+    - the seams, per shard, at P = 2/4 x T = 1/2/4 and P = 3 splitmix (`sharded_seams_mpi*`);
+    - the public API, per rank, at P = 2 x T = 1/2/4 for 8 fixtures (`test_multirank_matches_*`, 24/24).
+  - Within tolerance, against one process:
+    - the root at P = 2/4 x T = 1/2/4 and P = 3 splitmix (`sharded_root_mpi*`);
+    - the gathered public-API maps, energies and gradients over (1, 4), (2, 2), (4, 1) and splitmix (3, 2) against
+      (1, 6).
+  - Exchange rounds at P = 2/3 x T = 1/2/4.
+  - Failure scenarios (`mpi_failure_sharded_*`, 9/9) each end in the library's abort or fail-fast within 0.2-1.6 s.
+  - 11 mutants detected (one equivalent mutant replaced).
+  - ASan/UBSan (GCC + Open MPI) and TSan with Archer (Clang 18 + libomp + Open MPI, qualified under `mpiexec`):
+    0 reports over the multi-rank launches.
+  - RED evidence: HEAD binaries plus only the new tests fail at P > 1 with "supports one MPI rank".
+- MPI+OpenMP checkpoint, tier A (owner-approved, 2026-10-02; `/home/ubuntu/s5-artifacts/checkpoint/report.md`):
+  - 44 frozen reference cells, 5 alternating fresh-process pairs each, through the unchanged S4 overlay and runner
+    launch; 161.9 of 210 minutes; 968 processes `ok`.
+  - All 44 numerics equal the formal validations, and the preserved trees are unchanged.
+  - mpi-2x48: 13/16 meet all five. Runtime 0.49–0.96 apart from three evaluation cells: gradient Schrödinger 1.37,
+    energy Pauli 1.21, energy Schrödinger 1.20 (within the baseline's spread). Every memory peak is at or below the
+    baseline.
+  - mpi-3x32-splitmix, mpi-4x24-linear and mpi-4x24-splitmix: 12/12 meet all five (runtime 0.84–0.96).
+  - mpi-1x1: 8/16, with S4-sized deviations up to 1.031 (propagate Hubbard).
+  - Tier B and the MPI-only controls were not run.
+- Owner decision (2026-10-02): **S5 done**. The three mpi-2x48 runtime misses and the mpi-1x1 deviations are recorded
+  here and re-evaluated with the S4 deviations at a later stage; S7's 250-cell campaign and its five per-cell gates are
+  unchanged.
+- Potential optimizations flagged by S5 (none started; each needs its own authorization and must keep fixed-P/T
+  results bitwise):
+  - The replay's remote step costs four checkpoints instead of one (layout, pack, post/overlap, finish). Fold the pack
+    into the publishing phase (owners can pack once the layout exists) and lay out step p + 1 during step p's post
+    phase, bringing a remote step toward two checkpoints. Primary candidates: the three missed cells (gradient
+    Schrödinger 1.37, energy Pauli 1.21, energy Schrödinger 1.20 at 2 x 48).
+  - The primary lays every round out serially, O(P x T^2) per round. A layer's partner layout is static, so the replay
+    layout can be cached per layer for an evaluation (bounded memory: offsets only), or computed owner-parallel (each
+    owner its own destination column, then a prefix over peers).
+  - Construction adds up to six checkpoints per remote pass (Q1-Q3, R1-R3). Each owner could compute its own send
+    offsets from per-peer totals published in P1, merging Q1 into Q2; the answer layout could be planned in the same
+    primary phase as the query post.
+  - Profile gradient Schrödinger at 2 x 48 first to confirm where the extra ~18 ms per call goes (checkpoints,
+    layout, or MPI latency per layer).
+  - Robustness, not speed: the answer round trusts one answer per query (as the legacy runtime does); an optional
+    count round per remote pass would turn such a bug from a hang into an abort.
+  - Minor: each worker rebuilds its gate's peer vector per gate.
+- Pending:
+  - the whole-suite multi-rank variants and the remaining suites at P > 1 in prototype builds (S6);
+  - macOS, Linux aarch64, wheels, Nix and minimum-version compilers;
+  - multi-node.
+
+- [x] Add two-process tests with T=1/2/4 for mixed local/remote destinations and canonical sender ordering. Check that
   local sender blocks do not precede lower-numbered remote senders. Verify response source/query alignment, empty
   messages, nonzero slot windows and exact pre-update endpoint values.
-- [ ] Define one staging layout with checked counts and prefix-sum offsets for `(source shard, destination shard)`
+- [x] Define one staging layout with checked counts and prefix-sum offsets for `(source shard, destination shard)`
   segments per physical peer. Workers write disjoint payload slices; the primary exchanges metadata/posts/waits and
   publishes received extents; destination owners decode and mutate. Never serialize all payload processing on shard 0.
-- [ ] Preserve construction's linear peer window and replay's actual multi-peer summaries. Warm/use communicator-agreed
+- [x] Preserve construction's linear peer window and replay's actual multi-peer summaries. Warm/use communicator-agreed
   `routes_pairwise` on the caller/primary, including MPI attribute accesses. Keep mode/seed agreement and remove the
   partition-count agreement field rather than replacing it with T agreement. No geometry-repair fallback.
-- [ ] Implement request lifetime explicitly. The owner of `pending` and every referenced buffer surrounds the team:
+- [x] Implement request lifetime explicitly. The owner of `pending` and every referenced buffer surrounds the team:
 
 ```text
 allocate operation frame and request owners
@@ -817,13 +907,14 @@ only then permit normal request/buffer destruction
 
   A primary post may fail after some requests became live; those requests still belong to the outer frame. Do not
   return through a draining local destructor before reaching distributed failure handling.
-- [ ] Adapt failure scenarios for worker throw, before-exchange throw, active-ticket throw, malformed receive and
+- [x] Adapt failure scenarios for worker throw, before-exchange throw, active-ticket throw, malformed receive and
   wrong-thread entry. Supervised two-process runs must finish in failure before the 30-second timeout; timeout fails the
   test. Single-process rethrow/invalidation and independent-copy survival must also pass. Test actual MPI support, not
   merely the requested level. Keep SERIALIZED until S8 removes executable legacy workers.
-- [ ] Run linear supported geometries and splitmix with three processes, numerical/full-map comparisons and qualified
+- [x] Run linear supported geometries and splitmix with three processes, numerical/full-map comparisons and qualified
   MPI sanitizer runs. Assert MPI occurs only on the initializing primary; no arbitrary `omp single` winner may post.
-- [ ] **Stop for a separate bounded measurement approval.** Propose matched MPI-only, MPI+OpenMP and single-thread
+- [x] **Stop for a separate bounded measurement approval.** (Proposal `/home/ubuntu/s5-artifacts/MEASUREMENT-PROPOSAL.md`;
+  tier A approved and run 2026-10-02, report `/home/ubuntu/s5-artifacts/checkpoint/report.md`.) Propose matched MPI-only, MPI+OpenMP and single-thread
   controls plus relevant full-machine cells. Use the same partition baseline and all numerical/memory surfaces. Obtain
   an owner proceed/rework/stop decision before API cutover; do not claim multi-node qualification from ordinary EC2
   links.
