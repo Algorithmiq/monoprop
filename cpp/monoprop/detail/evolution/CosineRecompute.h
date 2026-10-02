@@ -208,6 +208,32 @@ auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes
     }
 }
 
+// The number of indices cos_indices_lazy() appends: the same fold, popcounted.
+template <size_t NumModes>
+auto cos_count_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r) -> size_t {
+    const size_t mask_words = r.fold.mask_words;
+    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    std::vector<uint64_t> &blk = column_block_scratch();
+    size_t count = 0;
+    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
+        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
+        for (size_t wi = bb; wi < be; ++wi) {
+            count += static_cast<size_t>(std::popcount(recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity)));
+        }
+    }
+    return count;
+}
+
+// The number of indices cos_indices_mask() appends.
+inline auto cos_count_mask(const CosMask &cos) -> size_t {
+    size_t count = 0;
+    for (const auto &block : cos.blocks) {
+        count += static_cast<size_t>(std::popcount(block.second));
+    }
+    return count;
+}
+
 inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) -> void {
     for (const auto &[base, bits] : cos.blocks) {
         for_each_cos_index(base, bits, [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
@@ -445,9 +471,14 @@ auto make_cos_callbacks(const InvertedIndex<NumModes> &inverted_index,
         }
         cos_indices_lazy<NumModes>(*sc, e.recipe, out);
     };
+    LayerCosCount cos_count = [cache, sc](size_t i) -> size_t {
+        const auto &e = (*cache)[i];
+        return e.recomputes_cos ? cos_count_lazy<NumModes>(*sc, e.recipe) : cos_count_mask(*e.filtered);
+    };
     return {.scale = std::move(cos_scale),
             .accumulate = std::move(cos_acc),
             .indices = std::move(cos_inds),
+            .count = std::move(cos_count),
             .owner_parallel = true};
 }
 

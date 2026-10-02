@@ -41,28 +41,58 @@ auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step
     }
 }
 
-// One worker's per-layer table of partner block sizes: entry r is the layer's sin_send_count for flat slot r, 0 where
-// unoccupied. Thread-local and reused across calls, like the owner frames; it holds one entry per flat slot.
-auto slot_counts() -> std::vector<size_t> & {
-    static thread_local std::vector<size_t> counts;
-    return counts;
-}
-
 /*
- * The block partners read from a board: `Scale` values per endpoint of this owner's slot for them.
+ * The blocks partners published for this owner, `Scale` values per endpoint of its slot for them, read through the
+ * owner's `staging`.
  *
- * The expected block sizes come from one sweep of the layer's occupied slots: a binary search over them for every
- * partner costs more than applying the partner's block when a layer has many small ones. The block checks and the
- * values read are unchanged.
+ * Every partner's block was written by another core and is read once. Copying a run of consecutive blocks back to back
+ * keeps many of those transfers in flight, where reading them inside the apply loop exposes each one, and the apply
+ * then reads the run from cache. The first run is staged before the apply starts; the apply visits the partners in
+ * their canonical order, so each later request either hits the current run or starts the next one. The block checks,
+ * the values and the order the apply reads them in are unchanged. The staging is the owner's, reached through a plain
+ * reference: a thread-local object here costs a TLS lookup at every use in the copy loop.
  */
 template <size_t Scale>
-auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_t flat_owner) {
-    std::vector<size_t> &counts = slot_counts();
-    counts.assign(layer.cross_rank_rank_count(), 0);
-    layer.for_each_occupied_slot(
-        [&counts](size_t rank, const CrossRankSlotView &slot) { counts[rank] = slot.sin_send_count; });
-    return [&board, &counts, flat_owner](size_t rank) -> const double * {
-        return board.block(rank, flat_owner, Scale * counts[rank]);
+auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_t flat_owner, PartnerStaging &staging) {
+    staging.position.assign(layer.cross_rank_rank_count(), 0);
+    staging.blocks.clear();
+    size_t capacity = std::max<size_t>(staging.run_values, 1);
+    layer.for_each_occupied_slot([&](size_t rank, const CrossRankSlotView &slot) {
+        if (rank != flat_owner) {
+            staging.position[rank] = staging.blocks.size();
+            staging.blocks.push_back({.rank = rank, .count = Scale * slot.sin_send_count});
+            capacity = std::max(capacity, Scale * slot.sin_send_count);
+        }
+    });
+    staging.values.resize(capacity);
+    // Stage one run of consecutive blocks starting at `first`; returns the index after the run.
+    const auto stage = [&board, &staging, flat_owner](size_t first) {
+        auto &blocks = staging.blocks;
+        const size_t room = staging.values.size();
+        size_t filled = 0;
+        size_t next = first;
+        // The first block always fits: the capacity covers the step's largest one.
+        while (next < blocks.size() && blocks[next].count <= room - filled) {
+            double *const dst = staging.values.data() + filled;
+            std::copy_n(board.block(blocks[next].rank, flat_owner, blocks[next].count), blocks[next].count, dst);
+            blocks[next].data = dst;
+            filled += blocks[next].count;
+            ++next;
+        }
+        return next;
+    };
+    const size_t staged = stage(0);
+    return [&staging, stage, run = size_t{0}, next = staged](size_t rank) mutable -> const double * {
+        const size_t first = staging.position[rank];
+        if (first < run) {
+            // A later run has overwritten this block's staged values.
+            throw std::logic_error(std::format("sharded replay: partner {} was read out of order", rank));
+        }
+        if (first >= next) {
+            run = first;
+            next = stage(first);
+        }
+        return staging.blocks[first].data;
     };
 }
 
@@ -211,9 +241,15 @@ struct EvaluationRun {
             if (gradient) {
                 request.state.scatter_into(f.state);
                 replay::reset_records(f.records, plan.layers);
+                // An opaque set's callbacks run only on the primary, so its records keep growing on demand.
+                replay::reserve_records(f.records,
+                                        plan.wanted,
+                                        request.graph,
+                                        plan.opaque ? LayerCosCount{} : callbacks[t].count);
                 (*gradients)[t].assign(request.params.size(), 0.0);
             }
         }
+        f.forward.partners.run_values = observer != nullptr ? observer->staging_run() : kStagingRunValues;
         f.accumulated = 0.0;
         f.self_pre = false;
         frames[t] = &f;
@@ -306,13 +342,14 @@ struct EvaluationRun {
                                                            trig,
                                                            f.self_pre ? f.snap.self_recv_op.data() : nullptr);
         }
-        const auto remote = replay::apply_derivative_payload(f.state,
-                                                             f.op,
-                                                             layer,
-                                                             f.snap,
-                                                             trig,
-                                                             flat,
-                                                             board_reader<2>(published, layer, flat));
+        const auto remote =
+            replay::apply_derivative_payload(f.state,
+                                             f.op,
+                                             layer,
+                                             f.snap,
+                                             trig,
+                                             flat,
+                                             board_reader<2>(published, layer, flat, f.forward.partners));
         ep = replay::combine_endpoint_contrib(ep, remote);
         const size_t param_ind = request.parameter_mapping[step - plan.layers];
         (*gradients)[t][param_ind] += replay::layer_derivative_from_raw(trig, f.accumulated, ep);
@@ -375,6 +412,7 @@ auto forward_steps(TeamFailure &failure,
                    const EvaluationObserver *observer) noexcept -> bool {
     const size_t steps = job.params.size();
     const size_t flat = job.first_local + t;
+    job.owners[t].scratch.partners.run_values = observer != nullptr ? observer->staging_run() : kStagingRunValues;
     const auto cosine = [&](size_t s, size_t step) {
         ForwardReplayOwner &owner = job.owners[s];
         notify(observer, EvaluationWork::cosine, step, s);
@@ -470,10 +508,14 @@ auto forward_finish(VecD &coeffs,
                     const LayerTraversal &layer,
                     double param,
                     size_t flat_owner,
-                    const ForwardScratch &scratch,
+                    ForwardScratch &scratch,
                     const EndpointBoard &board) -> void {
     const double sin_val = std::sin(2 * param);
-    replay::apply_evolution_payload(coeffs, layer, sin_val, flat_owner, board_reader<1>(board, layer, flat_owner));
+    replay::apply_evolution_payload(coeffs,
+                                    layer,
+                                    sin_val,
+                                    flat_owner,
+                                    board_reader<1>(board, layer, flat_owner, scratch.partners));
     replay::apply_self_sources(coeffs, layer, sin_val, scratch.self_sources);
 }
 

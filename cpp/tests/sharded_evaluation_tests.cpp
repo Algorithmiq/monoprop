@@ -1350,6 +1350,126 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_legacy) {
     BOOST_TEST_MESSAGE("pared layers storing a mask: " << stored << ", of which empty: " << empty_stored);
 }
 
+// Stages every partner block in a run of its own, so small layers exercise the multi-run staging of the finishes.
+class OneBlockRuns final : public sharded::EvaluationObserver {
+public:
+    auto visit(E /*work*/, size_t /*step*/, size_t /*shard*/) const -> void override {}
+    [[nodiscard]] auto staging_run() const noexcept -> size_t override { return 1; }
+};
+
+/*
+ * Partner blocks staged one per run give bitwise the results of the default runs, which hold a whole small layer: the
+ * staging changes where the finishes read the partners' values, never which values or in which order. Covers forward
+ * and reverse finishes (energy, gradient) and the in-team forward replay (replay_shards()).
+ */
+BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
+    const auto options = team_options();
+    const size_t threads = team_size();
+    const OneBlockRuns one_block_runs;
+    size_t multi_partner_layers = 0;
+    for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[7], legacy_cases()[9]}) {
+        auto s = seed<kN>(cs.f, options);
+        run_graph<kN>(s, cs.c, cs.k);
+        const auto r = retain<kN>(s);
+        for (size_t t = 0; t < threads; ++t) {
+            const MPGraph &graph = *r.shards[t].graph;
+            for (size_t l = 0; l < graph.layers(); ++l) {
+                size_t partners = 0;
+                graph.get_layer_traversal(l).for_each_occupied_slot(
+                    [&](size_t rank, const auto & /*slot*/) { partners += rank != t ? 1 : 0; });
+                multi_partner_layers += partners > 1 ? 1 : 0;
+            }
+        }
+        for (const auto &[name, params] : parameter_sets(cs.c)) {
+            BOOST_TEST_CONTEXT(label(cs) << " " << name << " T=" << threads) {
+                const auto requests = r.requests(params);
+                for (const bool gradient : {false, true}) {
+                    const auto plain = sharded::evaluate_shards(requests, r.callbacks, options, gradient);
+                    const auto runs =
+                        sharded::evaluate_shards(requests, r.callbacks, options, gradient, &one_block_runs);
+                    require_success(plain.error, "evaluate_shards");
+                    require_success(runs.error, "evaluate_shards, one block per run");
+                    BOOST_TEST((bits_of(runs.contributions) == bits_of(plain.contributions)));
+                    BOOST_TEST_REQUIRE(runs.gradients.size() == plain.gradients.size());
+                    for (size_t t = 0; t < plain.gradients.size(); ++t) {
+                        BOOST_TEST((bits_of(runs.gradients[t]) == bits_of(plain.gradients[t])), "shard " << t);
+                    }
+                }
+                std::vector<sharded::ReplayRequest> replays;
+                for (const auto &shard : r.shards) {
+                    replays.push_back({.coeffs = shard.op, .graph = shard.graph->replay_view()});
+                }
+                const auto mapped = map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
+                const auto plain = sharded::replay_shards(replays, mapped, r.callbacks, options);
+                const auto runs = sharded::replay_shards(replays, mapped, r.callbacks, options, &one_block_runs);
+                require_success(plain.error, "replay_shards");
+                require_success(runs.error, "replay_shards, one block per run");
+                BOOST_TEST_REQUIRE(runs.coeffs.size() == plain.coeffs.size());
+                for (size_t t = 0; t < plain.coeffs.size(); ++t) {
+                    BOOST_TEST((bits_of(runs.coeffs[t]) == bits_of(plain.coeffs[t])), "shard " << t);
+                }
+            }
+        }
+    }
+    // With three or more shards some owner has several partners in a layer, so one block per run means several runs.
+    if (threads >= 3) {
+        BOOST_TEST(multi_partner_layers > 0U);
+    }
+}
+
+/*
+ * CosCallbacks::count reports exactly what CosCallbacks::indices appends, for recomputed folds, pared stored masks and
+ * empty stored masks, so replay::reserve_records() reserves the records once: recording every layer with both flags
+ * fills the reservation exactly and never reallocates.
+ */
+BOOST_AUTO_TEST_CASE(sharded_evaluation_cosine_counts_reserve_records_exactly) {
+    const auto options = team_options();
+    size_t nonempty = 0;
+    for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[7], legacy_cases()[9]}) {
+        auto s = seed<kN>(cs.f, options);
+        run_graph<kN>(s, cs.c, cs.k);
+        const auto r = retain<kN>(s, 0.05);
+        for (size_t t = 0; t < s.shards.size(); ++t) {
+            const auto &state = *s.shards[t];
+            const auto &index = state.op.inverted_index();
+            std::vector<Layer> empty_layers;
+            for (size_t l = 0; l < state.graph.layers(); ++l) {
+                empty_layers.emplace_back(state.graph.get_layer(l).shared_core(), CosMask{});
+            }
+            const MPGraph empty_masks(false, std::move(empty_layers));
+            for (const auto &[name, view] : {std::pair{"recomputed", state.graph.replay_view()},
+                                             std::pair{"pared", r.shards[t].graph->replay_view()},
+                                             std::pair{"empty stored", empty_masks.replay_view()}}) {
+                BOOST_TEST_CONTEXT(label(cs) << " shard " << t << " " << name) {
+                    const auto cos = monoprop::detail::make_cos_callbacks<kN>(index, view, cs.f.basis);
+                    BOOST_TEST_REQUIRE(static_cast<bool>(cos.count));
+                    std::vector<uint8_t> wanted(view.layers());
+                    for (size_t l = 0; l < view.layers(); ++l) {
+                        std::vector<TermIndex> indices;
+                        cos.indices(l, indices);
+                        BOOST_TEST(cos.count(l) == indices.size(), "layer " << l);
+                        nonempty += indices.empty() ? 0 : 1;
+                        wanted[l] = replay::kRecordCosineSet | (l > 0 ? replay::kRecordRotationsBelow : 0);
+                    }
+                    replay::CosRecords records;
+                    replay::reset_records(records, view.layers());
+                    replay::reserve_records(records, wanted, view, cos.count);
+                    const size_t reserved = records.values.capacity();
+                    const auto *const storage = records.values.data();
+                    const VecD op(state.op.size(), 1.0);
+                    for (size_t l = 0; l < view.layers(); ++l) {
+                        replay::record_pre_layer(records, wanted, view, cos.indices, l, op);
+                    }
+                    BOOST_TEST(records.values.size() == reserved);
+                    BOOST_TEST(records.indices.size() == records.indices.capacity());
+                    BOOST_TEST(records.values.data() == storage);
+                }
+            }
+        }
+    }
+    BOOST_TEST(nonempty > 0U);
+}
+
 // A stored empty pruned cosine mask replays nothing: it is not a request to recompute the full mask.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_empty_stored_mask_applies_nothing) {
     const auto options = team_options();
@@ -2074,7 +2194,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
     run_graph<kN>(s, cs.c, cs.k);
     const auto r = retain<kN>(s);
     const size_t layers = r.expected_layers;
-    // Vanishing cosines: the record of a cosine-set layer appends that layer's indices, so it allocates.
+    // Vanishing cosines: the records hold a cosine-set layer's indices. The frame phase reserves them exactly
+    // (replay::reserve_records), so the frame allocates and the record of that layer does not.
     const auto params = parameter_sets(cs.c).back().second;
     const auto reference = energy_and_gradient(r, params);
     std::vector<uint8_t> wanted;
@@ -2084,11 +2205,18 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
     // The scratch sites run on shard 0, the fresh host thread, whose thread-local scratch is always cold. libomp may
     // hand a new root thread pooled workers whose scratch is already warm; the frame site's per-call gradient still
     // allocates there, so it keeps a nonprimary owner covered.
-    const std::vector<AllocAt> sites = {{E::frame, sharded::kNoStep, threads - 1, 0},
-                                        {E::publish, 1, 0, 0},
-                                        {E::reverse_publish, layers + 1, 0, 0},
-                                        {E::record, static_cast<size_t>(vanishing - wanted.begin()), 0, 0}};
-    for (const auto &site : sites) {
+    struct Site {
+        AllocAt at;
+        bool allocates;
+    };
+    const std::vector<Site> sites = {{{E::frame, sharded::kNoStep, threads - 1, 0}, true},
+                                     {{E::frame, sharded::kNoStep, 0, 0}, true},
+                                     {{E::publish, 1, 0, 0}, true},
+                                     {{E::reverse_publish, layers + 1, 0, 0}, true},
+                                     {{E::record, static_cast<size_t>(vanishing - wanted.begin()), 0, 0}, false}};
+    for (const Site &entry : sites) {
+        const AllocAt &site = entry.at;
+        const bool allocates = entry.allocates;
         size_t injected = 0;
         for (size_t nth = 1; nth < 200; ++nth) {
             bool failed = false;
@@ -2123,7 +2251,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
         }
         BOOST_TEST_MESSAGE("allocation site work " << static_cast<int>(site.work) << " shard " << site.shard << ": "
                                                    << injected << " injected failures");
-        BOOST_TEST(injected > 0U);
+        BOOST_TEST((injected > 0U) == allocates);
     }
     const auto after = energy_and_gradient(r, params);
     BOOST_TEST(bits(after.first) == bits(reference.first));

@@ -626,6 +626,64 @@ BOOST_AUTO_TEST_CASE(sharded_team_checkpoint_generations_are_stable,
     }
 }
 
+/*
+ * The same property with the interleaving forced: every other worker reads checkpoint 0's decision only after the
+ * fast worker has left it and recorded its failure in phase 1. A decision that is not generation-stamped (any recorded
+ * failure fails every checkpoint still being read) would fail checkpoint 0 for the slow workers.
+ */
+BOOST_AUTO_TEST_CASE(sharded_team_checkpoint_ignores_a_later_generation_failure,
+                     *boost::unit_test::precondition(has_nonprimary_worker)) {
+    const auto options = team_options();
+    const auto threads = team_size(options);
+    for (const size_t fast : {size_t{0}, threads - 1}) {
+        auto decisions = std::vector<std::vector<int>>(threads);
+        auto fast_recorded = std::atomic<bool>(false);
+        const auto error = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
+            const auto hold_until_recorded = [&](size_t generation) noexcept {
+                if (generation == 0 && shard != fast) {
+                    while (!fast_recorded.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                }
+            };
+            auto proceeding = true;
+            for (size_t p = 0; p < 3; ++p) {
+                if (proceeding) {
+                    try {
+                        if (p == 1 && shard == fast) {
+                            failure.record(shard, std::make_exception_ptr(WorkerError{shard}));
+                            fast_recorded.store(true, std::memory_order_release);
+                            throw WorkerError{shard};
+                        }
+                    }
+                    catch (...) {
+                        failure.record(shard, std::current_exception());
+                    }
+                }
+                const auto decision = failure.checkpoint(hold_until_recorded);
+                if (proceeding) {
+                    decisions[shard].push_back(decision ? 1 : 0);
+                }
+                proceeding = proceeding && decision;
+            }
+        });
+        for (size_t shard = 0; shard < threads; ++shard) {
+            BOOST_TEST((decisions[shard] == std::vector<int>{1, 0}),
+                       "fast " + std::to_string(fast) + " shard " + std::to_string(shard));
+        }
+        BOOST_REQUIRE(error);
+        try {
+            std::rethrow_exception(error);
+        }
+        catch (const WorkerError &e) {
+            BOOST_TEST(e.worker == fast);
+        }
+        catch (...) {
+            BOOST_FAIL("the selected exception changed type");
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(sharded_team_fresh_invocation_has_no_stale_failure) {
     const auto options = team_options();
     const auto threads = team_size(options);

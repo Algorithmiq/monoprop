@@ -17,11 +17,13 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <atomic>
 #include <concepts>
 #include <cstddef>
 #include <exception>
 #include <format>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -36,20 +38,20 @@
  * run_team() call; this is an OpenMP team index, not a persistent OS-thread identity across calls. The
  * orchestration body runs a common sequence of phases on every worker, each ending in a collective checkpoint.
  *
- * Failure protocol, for a TeamFailure shared by the team:
+ * Failure protocol, for a TeamFailure shared by the team. A checkpoint is one barrier; its generation is the number
+ * of checkpoints the calling worker has passed before it, identical on every worker because all of them run the same
+ * phase sequence.
  *
  * - Error slots. Slot t is written only by worker t, through record() inside its own phase, before that
- *   worker arrives at the checkpoint's leading barrier. Nobody else writes it during the region.
- * - Inspection. The slots are read only by the primary thread, between the leading and trailing barriers of
- *   a checkpoint, and by the caller after run_team() has joined the team. The leading barrier orders every
- *   owner's write before the primary's read.
- * - Publication. The primary writes the checkpoint's decision to one shared flag between the two barriers;
- *   the trailing barrier orders that write before every worker's read.
- * - Generations. The decision for checkpoint N is read by each worker after the trailing barrier of N and
- *   before it arrives at the leading barrier of N + 1. The primary cannot write the decision for N + 1 until
- *   every worker has passed that leading barrier, so a fast worker that fails in phase N + 1 cannot change
- *   the value a slower worker is still reading for N. A failure recorded in phase N + 1 is seen only by
- *   checkpoint N + 1, which every worker reaches because it proceeds past N.
+ *   worker arrives at the checkpoint's barrier. Nobody else writes it during the region.
+ * - Stamping. record() also lowers the shared first-failed generation to the recording worker's current generation,
+ *   before that worker arrives at the barrier. The value only ever decreases.
+ * - Decision. After the barrier, each worker reads the first-failed generation and proceeds past checkpoint N if and
+ *   only if it is greater than N. The barrier orders every stamp of phase N before every read for N.
+ * - Generations. A fast worker that leaves checkpoint N and fails in phase N + 1 stamps N + 1, which is still greater
+ *   than N, so a slower worker still reading for N sees the same decision. A failure in phase N + 1 is seen by
+ *   checkpoint N + 1, which every worker reaches because it proceeds past N. Once a checkpoint fails, every later
+ *   generation is greater than the stamp, so no later checkpoint can proceed.
  * - Join. Errors are delivered only after the implicit barrier ending the parallel region, when every worker
  *   has returned from the orchestration body. No worker can still be inside a phase, touching buffers or
  *   waiting at a barrier, when the caller inspects or acts on the error.
@@ -62,8 +64,14 @@
 
 namespace monoprop::detail::sharded {
 
+//! The default checkpoint observer: does nothing.
+struct NoCheckpointObserver {
+    //! Ignore the checkpoint generation.
+    auto operator()(std::size_t /*generation*/) const noexcept -> void {}
+};
+
 /*!
- * \brief Operation-local failure state for one team: one error slot per worker and a checkpoint decision.
+ * \brief Operation-local failure state for one team: one error slot per worker and the first failed generation.
  *
  * Constructed by run_team() before its parallel region; not copyable or movable, so the team always shares
  * one instance. The ownership, publication and generation rules are described at the top of this header.
@@ -75,7 +83,7 @@ public:
      * \param threads The team size T.
      * \throws std::bad_alloc if the slots cannot be allocated.
      */
-    explicit TeamFailure(std::size_t threads) : errors_(threads) {}
+    explicit TeamFailure(std::size_t threads) : slots_(threads) {}
 
     TeamFailure(const TeamFailure &) = delete;                     //!< The team shares one instance.
     auto operator=(const TeamFailure &) -> TeamFailure & = delete; //!< The team shares one instance.
@@ -86,16 +94,24 @@ public:
     /*!
      * \brief Record a worker's exception in its own slot; a slot keeps its first nonempty error.
      *
-     * Inside a team, only worker `shard` may call this, and only before it reaches the next checkpoint.
-     * An empty `error` records nothing.
+     * Inside a team, only worker `shard` may call this, and only before it reaches the next checkpoint. Lowers the
+     * first failed generation to that worker's current one, so the next checkpoint fails on every worker. An empty
+     * `error` records nothing.
      *
      * \param shard The calling worker's index; must be less than the team size.
      * \param error The captured exception.
      */
     auto record(std::size_t shard, std::exception_ptr error) noexcept -> void {
-        auto &slot = errors_[shard];
-        if (!slot) {
-            slot = std::move(error);
+        if (!error) {
+            return;
+        }
+        auto &slot = slots_[shard];
+        if (!slot.error) {
+            slot.error = std::move(error);
+        }
+        auto first = first_failed_.load(std::memory_order_relaxed);
+        while (slot.generation < first
+               && !first_failed_.compare_exchange_weak(first, slot.generation, std::memory_order_release)) {
         }
     }
 
@@ -104,21 +120,21 @@ public:
      *
      * Must be called directly from the orchestration body (or code it calls), never inside a worksharing,
      * `single`, `masked` or `critical` construct, and never from a nested region. Outside any parallel
-     * region it binds to a one-thread team and simply inspects the slots.
+     * region it binds to a one-thread team, whose worker is 0.
      *
-     * \return True, identically on every worker, if no slot holds an error at this checkpoint.
+     * \param after_barrier Test-only observer, called as `after_barrier(generation)` on each worker between the
+     *        barrier and its read of the decision, so tests can delay that read deterministically. Must not throw.
+     * \return True, identically on every worker, if no error was recorded at or before this checkpoint's
+     *         generation.
      */
-    auto checkpoint() noexcept -> bool {
-        // Leading barrier: every owner's record() for this phase happens before the primary reads the slots.
+    template <class Observer = NoCheckpointObserver>
+    auto checkpoint(Observer &&after_barrier = {}) noexcept -> bool {
+        // The barrier orders every record() of this phase before any worker's read below.
 #pragma omp barrier
-#pragma omp masked
-        {
-            proceed_ = std::ranges::none_of(errors_, [](const auto &error) { return static_cast<bool>(error); });
-        }
-        // Trailing barrier: the decision is published before any worker reads it. The next write waits for
-        // the next leading barrier, which no worker reaches before it has read this value.
-#pragma omp barrier
-        return proceed_;
+        auto &slot = slots_[static_cast<std::size_t>(omp_get_thread_num())];
+        const auto generation = slot.generation++;
+        std::invoke(after_barrier, generation);
+        return first_failed_.load(std::memory_order_acquire) > generation;
     }
 
     /*!
@@ -127,13 +143,23 @@ public:
      * Call only after the team has joined, or outside any parallel region.
      */
     [[nodiscard]] auto first_error() const noexcept -> std::exception_ptr {
-        const auto found = std::ranges::find_if(errors_, [](const auto &error) { return static_cast<bool>(error); });
-        return found == errors_.end() ? std::exception_ptr{} : *found;
+        const auto found = std::ranges::find_if(slots_, [](const Slot &slot) { return static_cast<bool>(slot.error); });
+        return found == slots_.end() ? std::exception_ptr{} : found->error;
     }
 
 private:
-    std::vector<std::exception_ptr> errors_; //!< Slot t: written by worker t only; see the header comment.
-    bool proceed_ = true;                    //!< Current checkpoint decision; written by the primary only.
+    // One cache line per slot: each worker advances its own generation at every checkpoint.
+    static constexpr std::size_t slot_alignment = 64;
+    static constexpr std::size_t no_failure = std::numeric_limits<std::size_t>::max();
+
+    //! One worker's failure state.
+    struct alignas(slot_alignment) Slot {
+        std::exception_ptr error;   //!< The worker's first recorded error.
+        std::size_t generation = 0; //!< Checkpoints this worker has passed.
+    };
+
+    std::vector<Slot> slots_;                           //!< Slot t: written by worker t only; see the header comment.
+    std::atomic<std::size_t> first_failed_{no_failure}; //!< Lowest generation with a recorded error.
 };
 
 /*!

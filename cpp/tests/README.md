@@ -140,7 +140,9 @@ name and cannot address suite-nested cases, tests use flat
   the calling thread, owners keep their worker across phases, empty owners reach every checkpoint,
   writes are visible in the next phase, failures (including non-`std::exception` values) are returned
   after the join from the lowest failing worker and suppress later phases, a fast worker's failure
-  cannot change an earlier checkpoint's decision, and OpenMP settings are unchanged. Workers only fill
+  cannot change an earlier checkpoint's decision (also with the interleaving forced: the slow workers read
+  checkpoint 0's decision only after the fast worker recorded its phase-1 failure, through the test-only
+  observer of `TeamFailure::checkpoint`), and OpenMP settings are unchanged. Workers only fill
   preallocated observation slots; all assertions run after the join. The multi-phase failure cases keep
   every worker reaching the same number of checkpoints, so a broken checkpoint shows up as divergent
   decisions instead of a deadlock. `cpp/tests/CMakeLists.txt` reruns them as `sharded_team_env_t1`,
@@ -197,6 +199,8 @@ name and cannot address suite-nested cases, tests use flat
   `tests/test_deep_circuit_gradient.py`. Further cases cover whole self pairs, other-local-shard and
   multi-peer layouts, empty owners and no-work layers, the identity counted once, empty parameters and
   missing callbacks, repeated parameters and duplicate records, an empty stored pruned mask (replays nothing),
+  partner staging one block per run (`EvaluationObserver::staging_run`) bitwise equal to the default runs, exact
+  cosine-set counts (`CosCallbacks::count`) with records reserved once and never reallocated,
   interleaved instances, copies and index growth under retained callbacks, participation (every owner's
   work runs on its own worker; opaque callbacks run on the primary in an exclusive phase), and failures in
   every phase, in callbacks, paring and informed construction, plus `AllocationProbe` sweeps run from a fresh

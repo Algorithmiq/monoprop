@@ -60,13 +60,17 @@
  * | published[p % 2] (step p)      | owner t | end of phase p | partners' finish  | phase p + 1 | begin, phase p + 2 |
  * | forward self sources           | owner t | (private)      | owner t (finish)  | phase p + 1 | begin, phase p + 1 |
  * | derivative snapshots, A        | owner t | (private)      | owner t (finish)  | phase p + 1 | begin, phase p + 1 |
+ * | partner staging (finish)       | owner t | (private)      | owner t (finish)  | phase p + 1 | next finish        |
  * | records (gradient)             | owner t | (private)      | owner t (reverse) | last phase  | next call          |
  * | working op / state             | owner t | (private)      | owner t           | last phase  | next call          |
  * | contributions[t], gradients[t] | owner t | join           | caller            | after join  | caller's           |
  *
  * Working storage is thread-local to the executing worker thread, retained across calls and rebound and reset in the
  * owner's first phase of every call: an OpenMP worker index is not a permanent OS-thread identity. Frames, published
- * pairs and results stay alive through the join on failure.
+ * pairs and results stay alive through the join on failure. Hot paths reach the frame through the pointer the frame
+ * phase stores, never through the thread-local itself. A finish copies its partners' published blocks, in runs of
+ * consecutive partners, into the owner's partner staging before applying them (PartnerStaging), and a gradient's frame
+ * phase reserves the records exactly (replay::reserve_records()), so recording never reallocates.
  *
  * Callbacks: a set marked CosCallbacks::owner_parallel (built by detail::make_cos_callbacks) runs on its owner, in
  * parallel with the other owners. If any shard's set is opaque, every callback call (records, cosine pass, reverse
@@ -105,6 +109,9 @@ enum class EvaluationWork : std::uint8_t {
  * owner, or the primary for an opaque callback), before that work. `step` is the replay step or kNoStep. An
  * exception it throws is that phase's failure.
  */
+//! The values one run of staged partner blocks holds at least: small enough to stay cache-resident until applied.
+inline constexpr size_t kStagingRunValues = 4096;
+
 class EvaluationObserver {
 public:
     EvaluationObserver() = default;                                               //!< Stateless base.
@@ -116,6 +123,9 @@ public:
 
     //! Called before `work` of `step` for `shard`; may throw.
     virtual auto visit(EvaluationWork work, size_t step, size_t shard) const -> void = 0;
+
+    //! Test-only: the minimum staging run of every owner's finishes, so small layers can cover multi-run staging.
+    [[nodiscard]] virtual auto staging_run() const noexcept -> size_t { return kStagingRunValues; }
 };
 
 // --- Owner-local replay phases ----------------------------------------------------------------------------------
@@ -162,9 +172,29 @@ struct EndpointBoard {
     }
 };
 
-//! One owner's private forward-step scratch: its self slot's pre-cosine sources.
+/*!
+ * \brief One owner's staging of its partners' blocks while it finishes a step.
+ *
+ * Private to the owner and reused across steps. `values` holds one run of consecutive partner blocks: the larger of
+ * `run_values` and the step's largest block.
+ */
+struct PartnerStaging {
+    //! One partner of the step.
+    struct Block {
+        size_t rank = 0;              //!< The partner's flat slot.
+        size_t count = 0;             //!< The values it published for this owner.
+        const double *data = nullptr; //!< Where the apply reads them, once staged.
+    };
+    std::vector<size_t> position;          //!< Per flat slot: its index in `blocks`.
+    std::vector<Block> blocks;             //!< The step's partners, in the order the apply visits them.
+    VecD values;                           //!< The current run.
+    size_t run_values = kStagingRunValues; //!< The minimum run; EvaluationObserver::staging_run() in tests.
+};
+
+//! One owner's private forward-step scratch: its self slot's pre-cosine sources and its partner staging.
 struct ForwardScratch {
-    VecD self_sources; //!< The self slot's sin_send values before the cosine pass.
+    VecD self_sources;       //!< The self slot's sin_send values before the cosine pass.
+    PartnerStaging partners; //!< Partner blocks staged by the finish; the reverse finish reuses it.
 };
 
 /*!
@@ -204,14 +234,14 @@ monoprop_EXPORT auto forward_scale_mask(VecD &coeffs, const CosMask &cos, double
  * \param layer      The same layer as the begin.
  * \param param      The replay angle.
  * \param flat_owner The owner's flat slot.
- * \param scratch    The owner's scratch from the begin.
+ * \param scratch    The owner's scratch from the begin; its partner staging is overwritten.
  * \param board      The step's publications.
  */
 monoprop_EXPORT auto forward_finish(VecD &coeffs,
                                     const LayerTraversal &layer,
                                     double param,
                                     size_t flat_owner,
-                                    const ForwardScratch &scratch,
+                                    ForwardScratch &scratch,
                                     const EndpointBoard &board) -> void;
 
 /*!

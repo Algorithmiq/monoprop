@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -454,6 +455,49 @@ inline auto reset_records(CosRecords &records, size_t layers) -> void {
     records.offset.assign(layers + 1, 0);
     records.indices.clear();
     records.values.clear();
+}
+
+/*!
+ * \brief Reserve `records` for one replay with exactly what record_pre_layer() appends.
+ *
+ * Per selected layer: the sin_recv entries of the layer below, plus the layer's cosine set as `count` reports it.
+ * Reserving once replaces the geometric growth whose freed blocks the allocator may keep resident. Without `count`,
+ * only the rotations below are reserved and the cosine sets grow as before. Only capacity depends on this; the
+ * contents are unchanged.
+ *
+ * \param records The owner's records, after reset_records().
+ * \param wanted  The per-layer record flags of plan_cos_records().
+ * \param graph   The owner's graph; `wanted` has one entry per layer.
+ * \param count   Optional, CosCallbacks::count: exactly what the indices callback appends per layer. Called on the
+ *                calling thread, so it must be safe to call there.
+ * \throws std::length_error if the total overflows `size_t`.
+ * \throws std::bad_alloc if the reservation fails.
+ */
+inline auto reserve_records(CosRecords &records,
+                            std::span<const uint8_t> wanted,
+                            const MPGraphView &graph,
+                            const detail::LayerCosCount &count) -> void {
+    size_t total = 0;
+    const auto add = [&total](size_t entries) {
+        if (entries > std::numeric_limits<size_t>::max() - total) {
+            throw std::length_error("reserve_records: the record size overflows size_t");
+        }
+        total += entries;
+    };
+    for (size_t layer_idx = 0; layer_idx < wanted.size(); ++layer_idx) {
+        const uint8_t want = wanted[layer_idx];
+        if ((want & kRecordRotationsBelow) != 0U) {
+            const auto below = graph.get_layer_traversal(layer_idx - 1);
+            for (size_t r = 0; r < below.cross_rank_rank_count(); ++r) {
+                add(below.cross_rank_sin_recv_size(r));
+            }
+        }
+        if ((want & kRecordCosineSet) != 0U && count) {
+            add(count(layer_idx));
+        }
+    }
+    records.indices.reserve(total);
+    records.values.reserve(total);
 }
 
 /*!

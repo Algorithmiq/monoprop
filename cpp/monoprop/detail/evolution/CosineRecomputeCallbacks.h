@@ -62,11 +62,15 @@ using LayerCosAccumulate =
     std::function<double(size_t layer, double *state, double *ham, double cos_val, double sec_val)>;
 /// Appends one layer's cosine-set indices to `out`; the gradient calls it only where the cosine vanishes.
 using LayerCosIndices = std::function<void(size_t layer, std::vector<TermIndex> &out)>;
+/// How many indices LayerCosIndices appends for `layer`, without materialising them.
+using LayerCosCount = std::function<size_t(size_t layer)>;
 
 struct CosCallbacks {
     LayerCosScale scale;           ///< forward path; required whenever the parameters are non-empty
     LayerCosAccumulate accumulate; ///< reverse path; required by the gradient only
     LayerCosIndices indices;       ///< reverse path; required by the gradient only
+    /// Optional: exactly what `indices` appends per layer. Lets records reserve once; only memory depends on it.
+    LayerCosCount count;
     /// Provenance, not a property of the closures: set only by detail::make_cos_callbacks() (behind
     /// build_cos_callbacks()), whose closures touch only their own inverted index (including its lazy caches), graph
     /// layers and the calling thread's scratch. Distinct owners' sets marked this way may then run concurrently, each
