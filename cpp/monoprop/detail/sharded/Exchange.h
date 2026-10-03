@@ -48,8 +48,8 @@
  * Every count, per-peer total and displacement is a checked int; a violation throws before anything is posted.
  *
  * Transports: pairwise posts an Irecv and an Isend per non-empty leg of each peer (both ends skip the same legs,
- * since receive counts are exchanged or known to match the sender's); collective posts one MPI_Ialltoallv over the whole
- * communicator, which every rank joins even with nothing to send. The count round is always pairwise over the
+ * since receive counts are exchanged or known to match the sender's); collective posts one MPI_Ialltoallv over the
+ * whole communicator, which every rank joins even with nothing to send. The count round is always pairwise over the
  * peer set, with fixed T x T int blocks.
  *
  * MPI ownership: post_counts(), wait_counts(), post() and wait() throw std::logic_error unless they run on OpenMP
@@ -239,8 +239,10 @@ private:
 
     monoprop_EXPORT auto send_bytes_(size_t shard, size_t peer, size_t dest, ExchangeElement element)
         -> std::span<std::byte>;
-    [[nodiscard]] monoprop_EXPORT auto recv_bytes_(size_t shard, size_t peer, size_t source, ExchangeElement element)
-        const -> std::span<const std::byte>;
+    [[nodiscard]] monoprop_EXPORT auto recv_bytes_(size_t shard,
+                                                   size_t peer,
+                                                   size_t source,
+                                                   ExchangeElement element) const -> std::span<const std::byte>;
 
     std::unique_ptr<State> state_; //!< Heap-stable: MPI holds pointers into it once a round is posted.
 };

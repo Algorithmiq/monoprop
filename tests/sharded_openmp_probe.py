@@ -15,8 +15,8 @@
 """Fresh-process probe for ``tests/test_sharded_openmp.py``.
 
 Run as ``python sharded_openmp_probe.py '<json spec>'`` in a process whose thread configuration was set before
-``monoprop`` is imported. It drives only the public API (plus the raw ``_core`` constructor where a test needs an
-explicit legacy control) and prints one JSON document on its last stdout line. Floats are emitted as ``float.hex`` so
+``monoprop`` is imported. It drives only the public API (plus the low-level ``_core`` constructor for configuration
+controls) and prints one JSON document on its last stdout line. Floats are emitted as ``float.hex`` so
 the parent can compare bits; the parent decides what has to agree.
 
 Under an MPI launcher every rank runs the same calls on the world communicator (the propagators' default). When the
@@ -321,10 +321,6 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
         )
 
     out: dict[str, Any] = {}
-    for partitions in spec.get("partitions", []):
-        out[f"partitions={partitions}"] = _attempt(
-            lambda p=partitions: construct(partitions=p)
-        )
     out["default"] = _attempt(construct)
     if spec.get("construction_only"):
         return out

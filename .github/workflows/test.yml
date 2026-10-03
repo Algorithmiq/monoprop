@@ -19,7 +19,7 @@ env:
 
 jobs:
   package-tests:
-    name: Test [mpi:${{ matrix.mpi }}] ${{ matrix.runner }} py${{ matrix.python-version }} ${{ matrix.compiler }}
+    name: Test [mpi:${{ matrix.mpi }}] [${{ matrix.runtime }}] ${{ matrix.runner }} py${{ matrix.python-version }} ${{ matrix.compiler }}
 
     strategy:
       fail-fast: false
@@ -28,6 +28,9 @@ jobs:
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
         compiler: [default, g++-14, clang++-18]
         mpi: ["off"]
+        # The in-process runtime the build selects. Default builds run the legacy partition runtime; the sharded
+        # OpenMP runtime is built with the temporary monoprop_SHARDED_OPENMP_PROTOTYPE option until the switch.
+        runtime: [legacy]
         exclude:
           - compiler: g++-14
             python-version: "3.14"
@@ -50,11 +53,46 @@ jobs:
             runner: macos-15
             compiler: default
             mpi: "on"
+          # The sharded OpenMP runtime: MPI-off and MPI legs on each platform, and the other Linux compilers.
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: default
+            mpi: "off"
+            runtime: sharded
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: default
+            mpi: "on"
+            runtime: sharded
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: g++-14
+            mpi: "off"
+            runtime: sharded
+          - python-version: "3.11"
+            runner: ubuntu-26.04
+            compiler: clang++-18
+            mpi: "off"
+            runtime: sharded
+          - python-version: "3.11"
+            runner: ubuntu-26.04-arm
+            compiler: default
+            mpi: "on"
+            runtime: sharded
+          - python-version: "3.11"
+            runner: macos-15
+            compiler: default
+            mpi: "off"
+            runtime: sharded
 
     runs-on: ${{ matrix.runner}}
 
     env:
       monoprop_ENABLE_MPI: "${{ matrix.mpi }}"
+      # Both values explicit, so a leg never inherits the other runtime's build.
+      SKBUILD_CMAKE_DEFINE: "monoprop_SHARDED_OPENMP_PROTOTYPE=${{ matrix.runtime == 'sharded' && 'ON' || 'OFF' }}"
+      # A mislabelled build fails the identity tests instead of skipping them.
+      monoprop_TEST_EXPECT_RUNTIME: "${{ matrix.runtime }}"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -74,7 +112,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           python-version: ${{ matrix.python-version }}
-          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
+          # The two runtimes are ABI-incompatible: never restore one's wheel into the other's leg.
+          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}-${{ matrix.runtime }}
           mpi: ${{ matrix.mpi }}
 
       - name: Install package
@@ -87,6 +126,9 @@ jobs:
       - name: Get monoprop information
         run: just info
 
+      - name: Verify the runtime and MPI identity of the build
+        run: just check-runtime "${{ matrix.runtime }}"
+
       - name: Verify that find_package(monoprop) works
         run: just test-find-package
 
@@ -97,7 +139,8 @@ jobs:
           pyver="${{ matrix.python-version }}"
           compiler="${{ matrix.compiler }}"
           mpi="mpi=${{ matrix.mpi }}"
-          echo "label=$runner-$pyver-$compiler-$mpi" >> $GITHUB_OUTPUT
+          runtime="runtime=${{ matrix.runtime }}"
+          echo "label=$runner-$pyver-$compiler-$mpi-$runtime" >> $GITHUB_OUTPUT
 
       - name: Run Python tests
         run: just test-py "${{ steps.test-group-label.outputs.label }}"

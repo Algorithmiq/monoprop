@@ -117,6 +117,12 @@ locate `hwloc`, and OpenMP for C++ in every configuration, including builds with
 MPI. GCC ships its OpenMP runtime; Clang needs the matching `libomp`, and Apple Clang
 needs Homebrew's `libomp` with `OpenMP_ROOT="$(brew --prefix libomp)"` set.
 
+Default builds run the legacy partition runtime. Its replacement, the sharded OpenMP
+runtime (one OpenMP thread per shard, a fixed `monoprop_NUM_THREADS` per MPI rank, and a
+C++ constructor without the partition arguments), is selected for now only by the temporary
+`monoprop_SHARDED_OPENMP_PROTOTYPE=ON` build option; see the
+[parallelism guide](https://docs.monoprop.algorithmiq.tech/features/parallelism).
+
 ## Running the tests
 
 ```bash

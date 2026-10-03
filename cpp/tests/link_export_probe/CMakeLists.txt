@@ -26,11 +26,12 @@ target_link_libraries(
     monoprop
 )
 
-# (j): the consumer must inherit exactly the build's runtime selection through the imported target.
+# (j): the consumer must inherit exactly the build's runtime selection and MPI setting through the imported target.
 target_compile_definitions(
   monoprop_link_export_probe.x
   PRIVATE
     monoprop_EXPECT_SHARDED_PROTOTYPE=$<BOOL:${monoprop_SHARDED_OPENMP_PROTOTYPE}>
+    monoprop_EXPECT_MPI=$<BOOL:${monoprop_ENABLE_MPI}>
 )
 
 if(NOT APPLE)
@@ -44,3 +45,33 @@ set_tests_properties(
     LABELS
       "unit"
 )
+if(monoprop_SHARDED_OPENMP_PROTOTYPE)
+  # A fixed team of two, so the candidate's multi-shard paths (and its raw-access rejection) run here.
+  set_tests_properties(
+    monoprop_link_export_probe
+    PROPERTIES
+      ENVIRONMENT
+        "monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
+  )
+  # Several ranks of the same consumer: the multi-rank root chain (l) runs only here, at T = 1 and T = 2.
+  if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
+    foreach(_threads IN ITEMS 1 2)
+      add_test(
+        NAME monoprop_link_export_probe_mpi2_t${_threads}
+        COMMAND
+          ${_monoprop_mpiexec} ${_monoprop_mpiexec_numproc_flag} 2
+          ${MPIEXEC_PREFLAGS} $<TARGET_FILE:monoprop_link_export_probe.x>
+      )
+      set_tests_properties(
+        monoprop_link_export_probe_mpi2_t${_threads}
+        PROPERTIES
+          LABELS
+            "mpi;mpi-2"
+          TIMEOUT
+            300
+          ENVIRONMENT
+            "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_RANKS=2"
+      )
+    endforeach()
+  endif()
+endif()

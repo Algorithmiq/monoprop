@@ -66,6 +66,15 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Heisenberg evolution consumes each [build_graph][] / [propagate][] call's gates
         back-to-front, so ``build_graph(a); build_graph(b)`` builds ``b + a``; Schrodinger
         (front-to-back) builds ``a + b``. [build_graph][] numbers the axis to match either way.
+
+    Note:
+        In a build of the sharded OpenMP runtime, a propagator reads its thread count once, when
+        it is constructed: ``monoprop_NUM_THREADS``, or the OpenMP default when that is unset.
+        It is also the number of shards per MPI rank, and copies keep it; set it, with
+        ``OMP_NUM_THREADS`` and ``OMP_DYNAMIC=FALSE``, before the process starts. The constructors
+        take no thread, shard or partition argument in either build. Energies and gradients are
+        global, while [size][], [evolved_operator][] and [contract_partially][] describe this
+        rank's terms only. See the parallelism guide for the launch contract.
     """
 
     _comm: MPI.Comm | None
@@ -514,10 +523,12 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The evolved coefficients as a NumPy array, core term excluded -- of the state in the
             Schrodinger picture, of the operator in the Heisenberg picture. The array carries no term
-            labels, and across partitions it is each partition's block concatenated in partition
-            order: the same values as an unpartitioned run, but not in a reproducible order, since the
-            partition count is auto-picked from the host's core count. Use [evolved_operator][] when
-            you need coefficients tied to their terms.
+            labels and covers this rank's terms only: each internal store's block (in the sharded
+            OpenMP runtime, one shard per thread of the budget captured at construction),
+            concatenated in store order. That order is stable
+            for a fixed launch geometry -- the MPI rank count and ``monoprop_NUM_THREADS`` -- but
+            positions are not comparable across geometries. Use [evolved_operator][] when you need
+            coefficients tied to their terms.
         """
         coeffs = np.asarray(
             self._simulator.contract_partially(self._bind(parameters), inplace)

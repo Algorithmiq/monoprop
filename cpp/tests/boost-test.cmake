@@ -23,13 +23,14 @@ if(NOT _monoprop_mpiexec_numproc_flag)
   set(_monoprop_mpiexec_numproc_flag "-n")
 endif()
 
+# ENVIRONMENT: VAR=value entries applied to every variant, the per-case `serial` ones and the whole-suite MPI ones.
 # SERIAL_ENVIRONMENT: VAR=value entries applied to the per-case `serial` variants only.
 function(discover_tests TARGET)
   cmake_parse_arguments(
     ""
     ""
     "WORKING_DIRECTORY"
-    "EXTRA_ARGS;PROPERTIES;SERIAL_ENVIRONMENT"
+    "EXTRA_ARGS;PROPERTIES;ENVIRONMENT;SERIAL_ENVIRONMENT"
     ${ARGN}
   )
 
@@ -53,16 +54,9 @@ function(discover_tests TARGET)
     ctest_tests_file
     "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_tests-${args_hash}.cmake"
   )
-  # The sharded prototype supports one rank until S5, so its build registers no multi-rank suite variants; its
-  # multi-rank rejection has a dedicated launch (cpp/tests/CMakeLists.txt).
-  if(
-    _monoprop_mpiexec
-    AND
-      monoprop_ENABLE_MPI
-    AND
-      NOT
-        monoprop_SHARDED_OPENMP_PROTOTYPE
-  )
+  # Both runtimes register the whole-suite variants at every rank count in monoprop_MPI_TEST_PROCS; the sharded
+  # candidate's run at the launch-time T its caller registers (cpp/tests/CMakeLists.txt).
+  if(_monoprop_mpiexec AND monoprop_ENABLE_MPI)
     set(_enable_mpi_variants "ON")
   else()
     set(_enable_mpi_variants "OFF")
@@ -78,6 +72,7 @@ function(discover_tests TARGET)
       "TEST_EXECUTABLE=$<TARGET_FILE:${TARGET}>" -D
       "TEST_WORKING_DIR=${_WORKING_DIRECTORY}" -D
       "TEST_EXTRA_ARGS=${_EXTRA_ARGS}" -D "TEST_PROPERTIES=${_PROPERTIES}" -D
+      "TEST_ENVIRONMENT=${_ENVIRONMENT}" -D
       "TEST_SERIAL_ENVIRONMENT=${_SERIAL_ENVIRONMENT}" -D
       "TEST_LIST=${_TEST_LIST}" -D "CTEST_FILE=${ctest_tests_file}" -D
       "TEST_ENABLE_MPI_VARIANTS=${_enable_mpi_variants}" -D

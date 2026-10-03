@@ -172,17 +172,20 @@ def test_sharded_root_accepts_valid_budgets() -> None:
 
 
 @sharded_only
-@pytest.mark.parametrize(
-    ("args", "extra_env"),
-    [
-        pytest.param({"partitions": 2}, {}, id="explicit-partitions"),
-        pytest.param({"partitions": 1}, {}, id="one-store-prototype"),
-        pytest.param({}, {"monoprop_PARTITIONS": "off"}, id="obsolete-selector"),
-    ],
-)
-def test_sharded_root_rejects_legacy_controls(
-    args: dict, extra_env: dict[str, str]
-) -> None:
-    outcome = _probe("1", extra_env, **args)
+@pytest.mark.parametrize("partitions", [0, 1, 2])
+def test_sharded_root_has_no_partitions_argument(partitions: int) -> None:
+    # The removed argument is an unsupported keyword, whatever its value -- not a rejected configuration.
+    outcome = _probe("1", partitions=partitions)
     assert not outcome["ok"], outcome
-    assert outcome["type"] == "RuntimeError"
+    assert outcome["type"] == "TypeError"
+
+
+@sharded_only
+@pytest.mark.parametrize("value", ["off", "auto", "1", "2", "0", "", "not-a-count"])
+def test_sharded_root_ignores_the_obsolete_partition_variable(value: str) -> None:
+    # Never read: the same budget gives the same answer, bit for bit, whatever the variable holds.
+    exact_team = {"OMP_NUM_THREADS": "2", "OMP_DYNAMIC": "FALSE"}
+    reference = _probe("2", exact_team)
+    outcome = _probe("2", {**exact_team, "monoprop_PARTITIONS": value})
+    assert reference["ok"], reference
+    assert outcome == reference

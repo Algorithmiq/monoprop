@@ -33,8 +33,8 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <format>
 #include <limits>
@@ -401,8 +401,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_mpi_calls_run_only_on_the_primary,
 
 // --- Multi-rank rounds --------------------------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(sharded_exchange_moves_every_block_to_its_owner,
-                     *boost::unit_test::precondition(has_two_ranks)) {
+BOOST_AUTO_TEST_CASE(sharded_exchange_moves_every_block_to_its_owner, *boost::unit_test::precondition(has_two_ranks)) {
     const auto peers = all_other_ranks(world());
     check_rounds<double>(every_variant(peers));
     check_rounds<uint64_t>(every_variant(peers));
@@ -420,8 +419,11 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_empty_rounds_complete, *boost::unit_test::
     PhysicalExchange ex(w, static_cast<size_t>(team_options().threads), ExchangeElement::f64, kTag);
     for (const auto transport : {ExchangeTransport::pairwise, ExchangeTransport::collective}) {
         for (const bool known : {false, true}) {
-            const RoundSpec spec{
-                .peers = all_other_ranks(w), .transport = transport, .counts_known = known, .round = 0, .scale = 0};
+            const RoundSpec spec{.peers = all_other_ranks(w),
+                                 .transport = transport,
+                                 .counts_known = known,
+                                 .round = 0,
+                                 .scale = 0};
             const auto [error, problems] = run_round<double>(ex, w, spec);
             BOOST_TEST(describe(error) == "none");
             BOOST_TEST(problems.empty());

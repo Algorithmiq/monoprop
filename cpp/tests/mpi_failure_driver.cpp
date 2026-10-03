@@ -435,9 +435,7 @@ auto make_sharded(const detail::sharded::RootObserver *observer) -> std::unique_
                                       CutoffType::Length,
                                       std::optional<std::vector<VecZ>>{},
                                       kModes,
-                                      Basis::Majorana,
-                                      size_t{0},
-                                      typename Propagator::PartitionChildFactory{});
+                                      Basis::Majorana);
 }
 
 auto sharded_scenario(int rank, std::string_view scenario, std::string_view option) -> void {

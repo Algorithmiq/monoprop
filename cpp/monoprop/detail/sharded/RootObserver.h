@@ -66,6 +66,9 @@ public:
 
     //! Multi-rank construction, after `shard` packed its remote query blocks into `round`; may rewrite its slices.
     virtual auto queries_packed(size_t /*step*/, size_t /*shard*/, PhysicalExchange & /*round*/) const -> void {}
+
+    //! Propagation, just before `shard` applies its fused records for gate `step`; may throw.
+    virtual auto fused_records(size_t /*step*/, size_t /*shard*/, const FusedGateView & /*gate*/) const -> void {}
 };
 
 //! The seed_shards() / copy_shards() observer the root passes: forwards to a RootObserver when one is set.
@@ -105,6 +108,13 @@ struct RootConstructionObserver {
     auto queries_packed(size_t step, size_t shard, PhysicalExchange &round) const -> void {
         if (observer != nullptr) {
             observer->queries_packed(step, shard, round);
+        }
+    }
+
+    //! Before `shard` applies its fused records for gate `step`.
+    auto fused_records(size_t step, size_t shard, const FusedGateView &gate) const -> void {
+        if (observer != nullptr) {
+            observer->fused_records(step, shard, gate);
         }
     }
 };

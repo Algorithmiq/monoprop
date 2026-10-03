@@ -60,10 +60,12 @@ struct FusedContract;
 // White-box test access; declared here and defined only by the test suite.
 template <size_t NumModes>
 struct PropagatorTestAccess;
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 namespace partition {
 template <size_t NumModes>
 class PartitionGroup;
 } // namespace partition
+#endif
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
@@ -83,23 +85,47 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-/// A raw-layout accessor was called on a propagator that holds more than one store on this rank: a legacy
-/// multi-partition facade, or a sharded prototype launched with more than one thread (renamed in the final API).
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+/// A raw-layout accessor (mp_op(), indexing(), graph(), graph_data()) was called on a propagator whose rank holds more
+/// than one shard. The shard count is the thread budget T captured at construction, so the remedy is a launch with
+/// monoprop_NUM_THREADS=1; the shard-transparent accessors and evolved_operator_terms() work at every T.
+class MultiShardUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+#else
+/// A raw-layout accessor was called on a legacy multi-partition facade, which owns no store of its own.
 class MultiPartitionUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+#endif
 
 template <size_t NumModes>
 class MonomialPropagator {
 public:
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    /// Collective over `comm`: every one of its P ranks constructs with the same arguments. Captures the thread budget
+    /// T once, here, from monoprop_NUM_THREADS (strictly parsed) or, when the variable is unset, from
+    /// omp_get_max_threads(); T is also this rank's shard count, and every rank must be launched with the same T. The
+    /// router's flat owner of shard t on rank r is r * T + t. There is no partition, thread or shard argument.
+    /// \throws PropagatorConfigError for an invalid budget or setting, before any shard is allocated.
+    MonomialPropagator(const OperatorDict &initial_operator,
+                       unsigned int cutoff,
+                       const VecZ &initial_state,
+                       std::optional<unsigned int> schrodinger_cutoff,
+                       mpi::Comm comm,
+                       std::optional<double> lower_atol = std::nullopt,
+                       std::optional<double> upper_atol = std::nullopt,
+                       CutoffType cutoff_type = CutoffType::Length,
+                       std::optional<std::vector<VecZ>> basis_change = std::nullopt,
+                       size_t logical_num_modes = NumModes,
+                       Basis basis = Basis::Majorana);
+#else
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
-    /// With monoprop_SHARDED_OPENMP_PROTOTYPE, the rank-level sharded root: T = the budget captured from
-    /// monoprop_NUM_THREADS (or the OpenMP default) once, here, identical on every rank; an ordinary communicator of
-    /// P ranks, constructed collectively on every rank (routing agreement), with flat owner rank * T + t. The
-    /// coexistence-only `partitions` and `child_factory` must keep their defaults, and a present
-    /// monoprop_PARTITIONS is rejected, so neither can select a different geometry or the legacy runtime.
+    /// The legacy partition runtime: `partitions` 0 resolves monoprop_PARTITIONS (or the core count), and
+    /// `child_factory` builds each partition's child propagator.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
@@ -113,14 +139,15 @@ public:
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0,
                        PartitionChildFactory child_factory = nullptr);
+#endif
 
-    /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
+    /// Out-of-line, so a legacy partition group can stay an incomplete type here.
     virtual ~MonomialPropagator();
 
-    /// Deep copy: clones the operator store, shares the immutable graph cores, and clones the whole
-    /// partition group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
-    /// The copy keeps the source's thread budget. Throws InvalidPropagatorError, before copying anything,
-    /// if the source is invalid.
+    /// Deep copy: clones the operator store (every shard's, on its owner, in the candidate; the whole partition group
+    /// on a legacy facade) and shares the immutable graph cores. The virtual destructor suppresses implicit moves, so
+    /// a "move" deep-copies. The copy keeps the source's thread budget, and with it T: nothing is re-read. Throws
+    /// InvalidPropagatorError, before copying anything, if the source is invalid.
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
@@ -198,10 +225,10 @@ public:
     /// rotation endpoint.
     auto graph_size() const -> std::pair<size_t, size_t>;
 
-    /// The sole shard's graph. Launch-time T = 1 only -- see sole_shard_.
+    /// The sole shard's graph. Launch-time T = 1 only (any P) -- see sole_shard_.
     auto graph() const -> const MPGraph & { return sole_shard_("graph()").graph; }
 
-    /// The sole shard's operator storage. Launch-time T = 1 only -- see sole_shard_.
+    /// The sole shard's operator storage. Launch-time T = 1 only (any P) -- see sole_shard_.
     auto mp_op() -> detail::MPOperator<NumModes> & { return sole_shard_("mp_op()").op; }
     auto mp_op() const -> const detail::MPOperator<NumModes> & { return sole_shard_("mp_op()").op; }
 
@@ -252,7 +279,7 @@ public:
     }
 
 #else
-    /// The sole shard's monomial → coefficient index. Launch-time T = 1 only -- see sole_shard_.
+    /// The sole shard's monomial → coefficient index. Launch-time T = 1 only (any P) -- see sole_shard_.
     auto indexing() -> detail::OperatorIndex<NumModes> & { return *sole_shard_("indexing()").op.store; }
     auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *sole_shard_("indexing()").op.store; }
 
@@ -342,7 +369,8 @@ public:
 
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
-    /// MPI_COMM_SELF on a partition, which trades over an in-process comm instead.
+    /// The ordinary communicator this propagator was constructed on (MPI_COMM_SELF on a legacy partition child,
+    /// which trades over an in-process comm instead).
     auto comm() const -> MPI_Comm { return comm_.mpi; }
 
     /// Build the propagation graph, one layer per generator, recording each layer's gate info
@@ -381,14 +409,15 @@ public:
 
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
-    /// Coefficients are positioned by the owning partition's indexing(), so on a facade the result is
-    /// the per-partition blocks concatenated in partition order: the same multiset as an unpartitioned
-    /// run, but not positionally stable across partition counts — and the count is auto-picked from the
-    /// host's core count unless pinned. Use evolved_operator_terms() when positions must mean something.
+    /// Rank-local: each store's coefficients are positioned by its own index, and the result concatenates this
+    /// rank's blocks in ascending shard order (legacy: partition order). The order is stable for a fixed launch
+    /// geometry (P, T), but positions are not comparable across geometries -- changing T changes which shard owns a
+    /// term. Use evolved_operator_terms() when positions must mean something.
     auto contract_partially(const VecD &parameters, bool inplace) -> VecD;
 
-    /// Decoded (indices, coefficient) terms with |coeff| >= atol, gathered across all partitions.
-    /// Contracts non-inplace. Core term excluded.
+    /// Decoded (indices, coefficient) terms with |coeff| >= atol (atol = 0 keeps stored zeros), over every store of
+    /// this rank, each decoded by its own index; rank-local, so the global operator is the union over ranks.
+    /// Coefficients are rounded to 1e-12. Contracts non-inplace. Core term excluded.
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
 
@@ -676,9 +705,7 @@ private:
                        CutoffType cutoff_type,
                        std::optional<std::vector<VecZ>> basis_change,
                        size_t logical_num_modes,
-                       Basis basis,
-                       size_t partitions,
-                       const PartitionChildFactory &child_factory);
+                       Basis basis);
 
     // Flat-owner routing at geometry (P, T): P = comm_'s size, T = the captured budget. Prepared once on the caller at
     // construction and used for seeding, construction and initial-operator updates.
@@ -693,7 +720,8 @@ private:
     detail::sharded::Shards<NumModes> shards_;
 
     /// The only shard, for the raw-layout accessors.
-    /// \throws InvalidPropagatorError if invalid; MultiPartitionUnsupported unless launched with T = 1: there is no
+    /// \throws InvalidPropagatorError if invalid (checked first); MultiShardUnsupported unless launched with T = 1:
+    /// there is no
     ///         single store to hand out, and shard 0 alone is not this rank's operator.
     auto sole_shard_(const char *what) const -> const detail::sharded::ShardState<NumModes> &;
     auto sole_shard_(const char *what) -> detail::sharded::ShardState<NumModes> &;

@@ -5,16 +5,18 @@ This benchmark separates kernel, shared-memory, process, network, and scaling ef
 - `N`: nodes
 - `C`: usable cores per node
 - `R`: MPI ranks per node
-- `P`: in-process partitions per rank
-- `P_total = N × R × P`: total partitions
+- `P`: in-process partitions per rank (legacy runtime), or OpenMP threads, and with them shards, per rank
+  (sharded OpenMP runtime)
+- `P_total = N × R × P`: total partitions or shards
 
 Choose `R` for the platform, normally one rank per NUMA domain, then set `P = C / R`. Keep `R`
 and `P` fixed wherever the ladder requires a direct comparison.
 
 > **Example platform.** All flags, term counts, timings, and memory figures below were measured on
 > code based on `main` commit `97f95f762dfc7174243ccd59dd4ecbbb9775b610`, on Deucalion x86
-> nodes with `C=128`, using `R=8` and `P=16` for MPI runs. They are calibration and job-sizing
-> examples, not portable targets but memory should be relatively similar.
+> nodes with `C=128`, using `R=8` and `P=16` for MPI runs, with the legacy partition runtime. They
+> are historical calibration and job-sizing examples, not portable targets and not measurements of
+> the sharded OpenMP runtime, but memory should be relatively similar.
 
 ## Ladder
 
@@ -54,9 +56,22 @@ export monoprop_PARTITIONS=<partitions-per-rank>
 export monoprop_NUM_THREADS=<cores-per-rank>
 ```
 
-For multi-rank runs this is mandatory. The engine otherwise defaults to one partition per rank.
-Pass `--runtime-shape=partitions` (and `--build-mode=mpi` or `--build-mode=mpi-off`) to have the
-suite refuse a run whose environment, rank count or imported build contradicts that declaration.
+For multi-rank runs of the legacy runtime this is mandatory. The engine otherwise defaults to one
+partition per rank. Pass `--runtime-shape=partitions` (and `--build-mode=mpi` or `--build-mode=mpi-off`)
+to have the suite refuse a run whose environment, rank count or imported build contradicts that
+declaration.
+
+A build of the sharded OpenMP runtime (the temporary `monoprop_SHARDED_OPENMP_PROTOTYPE=ON` option, see
+`docs/content/docs/building.mdx`) reads no partition count. Declare its shape before the launch and the
+import, with exactly `P` threads per rank and the placement left to the launcher and OpenMP:
+
+```bash
+export monoprop_NUM_THREADS=<threads-per-rank> OMP_NUM_THREADS=<threads-per-rank> OMP_DYNAMIC=FALSE
+export OMP_PLACES=cores OMP_PROC_BIND=close   # one thread per physical core
+```
+
+and pass `--runtime-shape=openmp` (above one rank the suite otherwise asks for `monoprop_PARTITIONS`). The rung
+commands below are written for the legacy runtime.
 Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`,
 `monoprop_threads`, `declared_shape` and `has_mpi` in the run metadata.
 

@@ -212,7 +212,7 @@ mpiexec -n 8 uv run python your_script.py
 ```
 
 See [Parallelism and distribution](/features/parallelism) for the communicator options and the
-operator-partitioning controls.
+thread and partition controls of the two runtimes.
 
 ## Building the C++ unit tests
 
@@ -244,9 +244,14 @@ usage requirement the package fails to export. It compiles the same source as th
 probe, so the two cannot drift. The probe drives both the Majorana and the Pauli basis and
 instantiates the internal OpenMP worksharing template in its own translation unit, so the
 consumer only builds if the imported `monoprop::monoprop` target carries OpenMP's compile
-and link flags — the consumer project adds none of its own. It also constructs the one-store
-prototype (`partitions=1`), whose constructor template calls the library's out-of-line thread
-budget and MPI thread checks, so an unexported helper fails the consumer's link. It also runs the
+and link flags — the consumer project adds none of its own. Its constructor calls reach the library's out-of-line
+thread-budget and MPI thread checks (in a legacy build through the one-store prototype, `partitions=1`), so an
+unexported helper fails the consumer's link. The consumer also checks that it inherited the build's runtime
+selection and MPI setting: pass `-DSMOKE_EXPECT_SHARDED_PROTOTYPE=ON|OFF` or `-DSMOKE_EXPECT_MPI=ON|OFF` to make a
+mismatched package fail to compile. In a sharded build it also checks the constructor's shape at compile time,
+runs every public operation family, an ordinary derived class through the base interface and the raw-access
+rule, and, when launched on several ranks with `monoprop_TEST_EXPECT_RANKS` set, compares the root on
+`MPI_COMM_WORLD` with one process's. It also runs the
 header-only fixed-team phase primitive (`detail/sharded/Team.h`), whose barriers must compile through
 the same imported OpenMP flags, and the owner-initialized shard state (`detail/sharded/State.h`) and the
 direct-buffer construction engine (`detail/sharded/Construction.h`), each from a separate translation unit that
@@ -343,8 +348,10 @@ uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-ca
 just test-cpp-tsan
 ```
 
-TSan is scoped to the concurrency surface — the partition and `ShmComm` tests —
-which is where its reports are worth the runtime cost.
+`just test-cpp-tsan` is scoped to the build's concurrency surface, which is where its reports are worth the
+runtime cost: the partition and `ShmComm` tests in a legacy build, and the sharded runtime's team, state,
+construction, evaluation, exchange and root tests (`sharded_`) in a sharded build. The OpenMP caveat below applies
+to both.
 
 The OpenMP kernels (`openmp_*` tests) need an OpenMP runtime that TSan understands. GCC's libgomp is
 not instrumented, so TSan reports false races even on correct parallel loops; do not read its
@@ -387,24 +394,24 @@ Python API under TSan would require a TSan-instrumented CPython.
   those files, so there is one list per platform to keep current.
 
 
-## Sharded OpenMP prototype (temporary, development only)
+## Sharded OpenMP runtime (temporary build option)
 
-`monoprop_SHARDED_OPENMP_PROTOTYPE` (CMake option, default `OFF`) builds the rank-level sharded OpenMP
-runtime of the sharded OpenMP plan (`docs/superpowers/plans/2026-09-29-sharded-openmp.md`, task S4)
-behind the unchanged `MonomialPropagator` interface, in place of the legacy partition runtime. It exists
-only to compare and migrate the two implementations and is removed at cutover. It is a build-time
-selection, not a runtime switch or a second propagator class. A default build keeps the legacy runtime,
-including multi-rank and partition support.
+`monoprop_SHARDED_OPENMP_PROTOTYPE` (CMake option, default `OFF`) builds the sharded OpenMP runtime of the sharded
+OpenMP plan (`docs/superpowers/plans/2026-09-29-sharded-openmp.md`) in place of the legacy partition runtime, with
+the final public interface ([Parallelism and distribution](/features/parallelism#sharded-openmp-runtime)). The
+option exists only while the two runtimes are compared and migrated: switching the default, removing the legacy
+runtime and removing the option wait for the plan's acceptance gates. It is a build-time selection, not a runtime
+switch or a second propagator class. A default build keeps the legacy runtime and its partition interface.
 
-The macro changes `MonomialPropagator`'s definition and layout, so it is a `PUBLIC` compile definition of
-`monoprop-objs` and an `INTERFACE` definition of the exported `monoprop::monoprop` target. The bindings,
-the unit tests and every installed consumer inherit it, and `monopropConfig.cmake` reports it as
-`monoprop_SHARDED_OPENMP_PROTOTYPE`. Build the two variants in separate build trees, environments and
-install prefixes. Never link or load both definitions of one specialization into one process; a legacy
-oracle runs in its own process.
+The macro changes `MonomialPropagator`'s definition, layout and constructor, so it is a `PUBLIC` compile definition
+of `monoprop-objs` and an `INTERFACE` definition of the exported `monoprop::monoprop` target. The bindings, the unit
+tests and every installed consumer inherit it, and `monopropConfig.cmake` reports it as
+`monoprop_SHARDED_OPENMP_PROTOTYPE`. Build the two variants (and MPI-off and MPI builds of each) in separate build
+trees, environments and install prefixes, and rebuild consumers against the variant they load. Never link or load
+both definitions of one specialization into one process; a legacy oracle runs in its own process.
 
 ```bash
-# MPI-off prototype tree and environment, apart from the default ones.
+# MPI-off sharded tree and environment, apart from the default ones.
 monoprop_ENABLE_MPI=OFF UV_PROJECT_ENVIRONMENT="$PROTO_ENV" uv sync --all-extras --no-extra mpi \
   --group bench --reinstall-package monoprop \
   --config-settings-package="monoprop:build-dir=$PROTO_BUILD" \
@@ -414,43 +421,26 @@ UV_PROJECT_ENVIRONMENT="$PROTO_ENV" uv run --no-sync python -c \
 # monoprop-runtime=sharded-openmp-prototype
 ```
 
-Add `monoprop_ENABLE_MPI=ON` (and drop `--no-extra mpi`) for the MPI variant. `uv sync` does not prove
-that the C++ test binary was relinked: compare its path, hash and mtime with the sources.
+Add `monoprop_ENABLE_MPI=ON` (and drop `--no-extra mpi`) for the MPI variant. `uv sync` does not prove that the C++
+test binaries were relinked: rebuild them with `cmake --build "$PROTO_BUILD" --target monoprop_unit_tests.x`, then
+compare their path, hash and mtime with the sources.
 
-What the prototype supports and rejects:
-
-- **Launch contract.** The shard count T is the thread budget captured once, at construction, from
-  `monoprop_NUM_THREADS` (strictly parsed) or else `omp_get_max_threads()`. Copies keep it. Every team
-  needs exactly T workers: launch with `monoprop_NUM_THREADS=T OMP_NUM_THREADS=T OMP_DYNAMIC=FALSE` and no
-  limiting setting below T (such as `OMP_THREAD_LIMIT`). The library does not check the team it gets and
-  never changes OpenMP settings. Placement and pinning belong to the launcher; one worker per physical
-  core is recommended.
-- **Ranks.** MPI-off builds, and MPI builds on an ordinary communicator of P ranks, each rank with the same
-  T. Shard t of rank r is flat routing owner `r * T + t`. Every rank constructs the propagator and makes
-  every call collectively, with the same arguments. Linear routing (the default) needs a power-of-two P and
-  is rejected otherwise on every rank together; `monoprop_ROUTING=splitmix` routes any P. Exports, contraction
-  blocks, counts and memory breakdowns are rank-local, as in the legacy runtime. Energies and gradients are
-  global: the shards fold in ascending order, then the existing MPI reduction applies, with the identity added
-  once. Inside a team only the primary, the thread that initialized MPI, makes MPI calls. A failure on one
-  rank aborts the communicator, as in the legacy runtime. Public calls must come from the thread that
-  initialized MPI; the build keeps requiring `MPI_THREAD_SERIALIZED`. The library adds no thread-count
-  agreement: unequal T across ranks is an unsupported launch.
-- **Obsolete controls.** A nondefault `partitions` or a `child_factory` argument, and a present
-  `monoprop_PARTITIONS` with any value, raise `PropagatorConfigError`. None of them selects a geometry or
-  the legacy runtime.
-- **Raw accessors.** `mp_op()`, `indexing()`, `graph()` and `graph_data()` return the sole shard's state
-  when launched with T = 1. For T > 1 they raise `MultiPartitionUnsupported` and name the remedy
-  (launch with `monoprop_NUM_THREADS=1`); there is no merged store. Counts, memory breakdowns,
-  `contract_partially` (shard blocks concatenated in shard order) and `evolved_operator_terms` cover
-  every shard.
+- **Interface.** The constructor has no `partitions` or `child_factory` argument in C++ or Python, and no
+  replacement thread or shard argument; the low-level `_core` constructor raises `TypeError` for them. The raw
+  accessors raise `MultiShardUnsupported` unless T = 1. See [Parallelism and
+  distribution](/features/parallelism#c-interface) for the whole C++ break.
+- **Launch.** `monoprop_NUM_THREADS=T OMP_NUM_THREADS=T OMP_DYNAMIC=FALSE`, set before launch and import, the same
+  T on every rank, and no limiting setting below T. `monoprop_PARTITIONS` is not read.
+- **MPI.** Every rank constructs the propagator and makes every call collectively. Linear routing (the default)
+  needs a power-of-two P and is rejected on every rank together otherwise; `monoprop_ROUTING=splitmix` routes any
+  P. While the legacy runtime remains executable, the build keeps requiring `MPI_THREAD_SERIALIZED`.
 - **Provenance.** `_core.__runtime_identity__` and an identical literal in the extension file identify the
-  runtime a binary contains. The parity driver and the benchmark preflight read both, so a legacy binary
-  cannot be measured as the candidate, nor the reverse ([benchmarks](/benchmarks)).
+  runtime a binary contains. The parity driver and the benchmark preflight read both, so a legacy binary cannot be
+  measured as the candidate, nor the reverse ([benchmarks](/benchmarks)).
 
-The prototype's C++ tests run as `sharded_root_env_t1`, `_t2` and `_t4`, and its Python integration tests
-are `tests/test_sharded_openmp.py`; see [Testing](/testing). Prototype builds have been run on Linux
-x86_64 with GCC/libgomp, Clang/libomp, ASan/UBSan and Clang TSan with Archer. macOS, Linux aarch64,
-wheels, Nix and the minimum compiler versions are untested and pending.
+Its C++ and Python tests are described in [Testing](/testing#sharded-openmp-builds). Sharded builds have been run on
+Linux x86_64 with GCC/libgomp, Clang/libomp, ASan/UBSan and Clang TSan with Archer. macOS, Linux aarch64, wheels,
+Nix and the minimum compiler versions are untested and pending.
 
 
 ## See also

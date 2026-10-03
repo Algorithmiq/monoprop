@@ -67,9 +67,15 @@ test: build test-py test-cpp
 # The test legs below run against whatever is installed (--no-sync, so that a run cannot
 # silently rebuild a differently configured wheel). LABEL, when given, names the JUnit
 # report CI uploads.
+#
+# Test launch policy: the ordinary suites run at exactly one thread per rank (T = 1), set on
+# the test command only, so it never leaks into library use or the benchmark recipes. The
+# sharded tests that need other teams launch their own fresh processes.
+
+test_launch := "monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE"
 
 test-py LABEL='':
-    uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
+    {{ test_launch }} uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
         {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
 
 test-cpp LABEL='':
@@ -94,7 +100,7 @@ test-py-mpi RANKS='' *PYTEST_ARGS:
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"
     for r in ${ranks//;/ }; do
       echo "Running the Python test suite with ${r} MPI rank(s)"
-      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
+      {{ test_launch }} {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
     done
 
 # Build MPI-enabled, then run every leg. The C++
@@ -107,7 +113,8 @@ test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
         --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
 
-# Build and run a consumer project against the installed package.
+# Build and run a consumer project against the installed package. A sharded package's
+# consumer also runs at a fixed team of two and, in an MPI build, on two ranks.
 
 test-find-package BUILD_DIR='build/find-package-smoke':
     #!/usr/bin/env bash
@@ -118,6 +125,46 @@ test-find-package BUILD_DIR='build/find-package-smoke':
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
     "$build_dir/smoke"
+    identity="$(uv run --no-sync python -c 'from monoprop import _core; print(_core.__runtime_identity__)')"
+    has_mpi="$(uv run --no-sync python -c 'import monoprop; print(monoprop.has_mpi)')"
+    if [[ "$identity" == "monoprop-runtime=sharded-openmp-prototype" ]]; then
+      monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE "$build_dir/smoke"
+      if [[ "$has_mpi" == "True" ]]; then
+        for threads in 1 2; do
+          monoprop_NUM_THREADS=$threads OMP_NUM_THREADS=$threads OMP_DYNAMIC=FALSE monoprop_TEST_EXPECT_RANKS=2 \
+            {{ mpiexec }} -n 2 "$build_dir/smoke"
+        done
+      fi
+    fi
+
+# Fail unless the installed extension and the C++ build tree hold the expected runtime
+# (RUNTIME is legacy or sharded) and the MPI setting monoprop_ENABLE_MPI asks for.
+
+check-runtime RUNTIME:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{ quote(RUNTIME) }} in
+      legacy) identity="monoprop-runtime=legacy-partitions"; selector=OFF ;;
+      sharded) identity="monoprop-runtime=sharded-openmp-prototype"; selector=ON ;;
+      *) echo "RUNTIME must be 'legacy' or 'sharded', got: {{ RUNTIME }}" >&2; exit 2 ;;
+    esac
+    want_mpi={{ if mpi_enabled =~ '^(on|true|yes|1)$' { "True" } else { "False" } }}
+    uv run --no-sync python - "$identity" "$want_mpi" <<'PY'
+    import sys
+    from pathlib import Path
+
+    import monoprop
+    from monoprop import _core
+
+    identity, want_mpi = sys.argv[1], sys.argv[2]
+    found = getattr(_core, "__runtime_identity__", None)
+    embedded = identity.encode() in Path(_core.__file__).read_bytes()
+    print(f"runtime={found} embedded={embedded} has_mpi={monoprop.has_mpi} core={_core.__file__}")
+    if found != identity or not embedded or str(monoprop.has_mpi) != want_mpi:
+        raise SystemExit(f"expected {identity} with has_mpi={want_mpi}")
+    PY
+    grep -q "^monoprop_SHARDED_OPENMP_PROTOTYPE:BOOL=${selector}$" "{{ build_dir }}/CMakeCache.txt"
+    echo "C++ tree {{ build_dir }}: monoprop_SHARDED_OPENMP_PROTOTYPE=${selector}"
 
 # The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
 # Tsan) and the matching monoprop_SANITIZER define.
@@ -164,11 +211,21 @@ sanitizer-reports:
     done
 
 # TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
-# restricted to the concurrent partition and shared-memory paths.
+# restricted to the build's concurrency surface: the partition and shared-memory paths of a
+# legacy build, or the sharded runtime's team, state, construction, evaluation, exchange and
+# root suites (their fixed-T launches included) of a sharded build. GCC's libgomp is not
+# TSan-aware; see docs/content/docs/building.mdx for the Clang/libomp/Archer setup.
 
 test-cpp-tsan:
-    TSAN_OPTIONS="halt_on_error=1:history_size=4" \
-      ctest --test-dir {{ build_dir }} --output-on-failure -R "(partition_|shm_comm_)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if grep -q '^monoprop_SHARDED_OPENMP_PROTOTYPE:BOOL=ON$' "{{ build_dir }}/CMakeCache.txt"; then
+      selection='^sharded_(team|state|construction|evaluation|exchange|root)_'
+    else
+      selection='(partition_|shm_comm_)'
+    fi
+    TSAN_OPTIONS="halt_on_error=1:history_size=4${TSAN_OPTIONS:+:$TSAN_OPTIONS}" \
+      ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error -R "$selection"
 
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
@@ -206,6 +263,8 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     find "$build_dir" -type f -name '*.gcda' -delete
     uv run --no-sync coverage erase
 
+    # The test launch policy (test_launch above), for this recipe's test commands only.
+    export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE
     uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
     if [[ "$mpi" == "on" ]]; then
       # The coverage lane runs in a container as root.

@@ -172,12 +172,28 @@ enum class ConstructionWork : std::uint8_t {
  * in its frame phase. Tests substitute observers that record the executing worker, capture streams or throw; an
  * exception from either method is that phase's failure. A test observer may also define
  * `replayed(shard, step, const VecD &coeffs)`, detected at compile time, which informed construction calls after each
- * new layer's replay with the owner's evolving coefficients, and `queries_packed(step, shard, PhysicalExchange &)`,
- * called after the owner packed its remote query blocks, which may rewrite them to inject malformed traffic.
+ * new layer's replay with the owner's evolving coefficients, `queries_packed(step, shard, PhysicalExchange &)`,
+ * called after the owner packed its remote query blocks, which may rewrite them to inject malformed traffic, and
+ * `fused_records(step, shard, const FusedGateView &)`, which propagation calls with the owner's real fused records
+ * just before it applies them.
  */
 struct NoConstructionObserver {
     auto visit(ConstructionWork /*work*/, size_t /*step*/, size_t /*shard*/) const noexcept -> void {}
     [[nodiscard]] auto kernels(size_t /*shard*/) const noexcept -> NoRangeObserver { return {}; }
+};
+
+/*!
+ * \brief Test-only view of one owner's fused records for one propagation gate, just before they are applied.
+ *
+ * Everything apply_fused_contract() receives, read-only: an observer may copy it and replay the apply itself.
+ */
+struct FusedGateView {
+    const FusedContract &records;   //!< The gate's hit, insert and cross-rank-half records for this shard.
+    const CosMask &cos;             //!< The gate's cosine set on this shard.
+    std::span<const double> coeffs; //!< The picture coefficients the records apply to, already extended.
+    double apply_angle;             //!< The angle apply_fused_contract() receives.
+    bool schrodinger;               //!< Picture.
+    bool fused_scale;               //!< Whether the traversal already applied the cosine (fused sweep).
 };
 
 /*!
@@ -934,6 +950,17 @@ auto run_gates(parallel::Options options,
                         // After the inserts, before the insert-target gather of the apply.
                         own.op.extend_from_current_picture(*frame.coeffs, schrodinger);
                         const double build_angle = angle_of(idx);
+                        if constexpr (requires(const FusedGateView &view) { observer.fused_records(step, t, view); }) {
+                            observer.fused_records(
+                                step,
+                                t,
+                                FusedGateView{.records = work.fc,
+                                              .cos = work.cos,
+                                              .coeffs = *frame.coeffs,
+                                              .apply_angle = schrodinger ? -build_angle : build_angle,
+                                              .schrodinger = schrodinger,
+                                              .fused_scale = work.scan.fused_scale});
+                        }
                         apply_fused_contract(work.fc,
                                              *frame.coeffs,
                                              work.cos,

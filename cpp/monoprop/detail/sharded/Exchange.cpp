@@ -31,11 +31,11 @@ namespace {
 
 auto element_bytes(ExchangeElement element) -> size_t {
     switch (element) {
-    case ExchangeElement::u32:
-        return 4;
-    case ExchangeElement::u64:
-    case ExchangeElement::f64:
-        return 8;
+        case ExchangeElement::u32:
+            return 4;
+        case ExchangeElement::u64:
+        case ExchangeElement::f64:
+            return 8;
     }
     return 8;
 }
@@ -43,12 +43,12 @@ auto element_bytes(ExchangeElement element) -> size_t {
 #ifdef monoprop_ENABLE_MPI
 auto element_datatype(ExchangeElement element) -> MPI_Datatype {
     switch (element) {
-    case ExchangeElement::u32:
-        return MPI_UINT32_T;
-    case ExchangeElement::u64:
-        return MPI_UINT64_T;
-    case ExchangeElement::f64:
-        return MPI_DOUBLE;
+        case ExchangeElement::u32:
+            return MPI_UINT32_T;
+        case ExchangeElement::u64:
+            return MPI_UINT64_T;
+        case ExchangeElement::f64:
+            return MPI_DOUBLE;
     }
     return MPI_DOUBLE;
 }
@@ -234,10 +234,8 @@ PhysicalExchange::PhysicalExchange() noexcept = default;
 PhysicalExchange::PhysicalExchange(const PhysicalWorld &world, size_t threads, ExchangeElement element, int tag)
     : state_(std::make_unique<State>()) {
     if (threads == 0 || world.ranks == 0 || world.rank >= world.ranks) {
-        throw std::invalid_argument(std::format("sharded exchange: {} threads at rank {} of {}",
-                                                threads,
-                                                world.rank,
-                                                world.ranks));
+        throw std::invalid_argument(
+            std::format("sharded exchange: {} threads at rank {} of {}", threads, world.rank, world.ranks));
     }
     State &s = *state_;
     s.comm = world.comm;

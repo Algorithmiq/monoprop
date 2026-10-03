@@ -25,12 +25,12 @@ static auto init() -> bool {
 }
 
 auto main(int argc, char* argv[]) -> int {
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-    // The prototype rejects the obsolete partition selector, and an ordinary case runs at launch-time T = 1 unless
-    // its registration sets a team (overwrite=0, so an explicit environment value wins); see cpp/tests/README.md.
-    setenv("monoprop_NUM_THREADS", "1", 0);
-#else
-    // overwrite=0, so an explicit environment override still wins; why it is off: tests/cpp/README.md.
+    // The sharded candidate's thread budget is the launch's: CTest registers ordinary cases at monoprop_NUM_THREADS=1
+    // and fixed-T launches with their own value, and one launch leaves the variable unset on purpose, so the runner
+    // never supplies it (cpp/tests/README.md).
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+    // Legacy runtime only, until it is removed: overwrite=0, so an explicit environment override still wins; why it
+    // is off: cpp/tests/README.md.
     setenv("monoprop_PARTITIONS", "off", 0);
 #endif
     monoprop::mpi::init(&argc, &argv);

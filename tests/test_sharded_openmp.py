@@ -187,30 +187,128 @@ def test_build_identity_matches_the_extension() -> None:
     assert (_LEGACY.encode() in data) == (identity == _LEGACY)
 
 
-@candidate_only
-@pytest.mark.parametrize("partitions", [1, 2, 4])
-def test_explicit_partitions_are_rejected(partitions: int) -> None:
-    controls = _run(
-        {"scenario": "controls", "partitions": [partitions], "construction_only": True},
-        2,
-    )["controls"]
-    outcome = controls[f"partitions={partitions}"]
-    assert outcome.startswith("RuntimeError"), outcome
-    assert "partitions" in outcome
-    assert "monoprop_NUM_THREADS" in outcome
-    assert controls["default"] == "ok"
+_ARGS: dict[str, Any] = {
+    "initial_operator": {(0, 1): 1j, (2, 3): 0.5j, (1, 2): 0.25j},
+    "cutoff": 4,
+    "initial_state": [0, 1],
+}
+# The low-level constructor's whole positional signature, up to and including ``basis``.
+_POSITIONAL = [
+    _ARGS["initial_operator"],
+    4,
+    [0, 1],
+    None,
+    None,
+    None,
+    None,
+    "length",
+    None,
+    32,
+    "majorana",
+]
+# Removed (partitions, child_factory) and never-added (thread or shard counts) constructor arguments.
+_UNSUPPORTED_KEYWORDS = (
+    "partitions",
+    "child_factory",
+    "num_threads",
+    "threads",
+    "shards",
+    "num_shards",
+)
+
+
+def _high_level_constructors() -> dict[str, Any]:
+    from monoprop import (  # noqa: PLC0415
+        MajoranaOperator,
+        MajoranaPropagator,
+        Pauli,
+        PauliOperator,
+        PauliPropagator,
+    )
+    from monoprop._dispatch import dispatch  # noqa: PLC0415
+
+    majorana = MajoranaOperator({(0, 1): 1j, (2, 3): 0.5j}, 4)
+    pauli = PauliOperator({Pauli("ZZ", [0, 1]): 0.5}, num_qubits=3)
+    return {
+        "MajoranaPropagator": lambda **kw: MajoranaPropagator(
+            majorana, [0, 1], cutoff=4, **kw
+        ),
+        "PauliPropagator": lambda **kw: PauliPropagator(pauli, [0], cutoff=3, **kw),
+        "dispatch adapter": lambda **kw: dispatch(32)(**_ARGS, **kw),
+    }
 
 
 @candidate_only
-@pytest.mark.parametrize("value", ["off", "1", "4", "auto", ""])
-def test_obsolete_partition_selector_is_rejected(value: str) -> None:
-    out = _run(
-        {"scenario": "controls", "partitions": [], "construction_only": True},
+@pytest.mark.parametrize("value", [0, 1, 2])
+def test_low_level_constructor_has_no_partitions(value: int) -> None:
+    # Even the old default is not accepted: the parameter is gone, not merely restricted.
+    with pytest.raises(TypeError):
+        _core.MonomialPropagator032(**_ARGS, partitions=value)
+
+
+@candidate_only
+def test_low_level_constructor_rejects_the_old_positional_tail() -> None:
+    assert _core.MonomialPropagator032(*_POSITIONAL).size() >= 0
+    for tail in ([0], [1], [0, None]):
+        with pytest.raises(TypeError):
+            _core.MonomialPropagator032(*_POSITIONAL, *tail)
+
+
+@candidate_only
+def test_low_level_constructor_documents_no_partitions() -> None:
+    doc = _core.MonomialPropagator032.__init__.__doc__ or ""
+    assert "logical_num_modes" in doc
+    assert "basis" in doc
+    assert "partitions" not in doc
+    # The generated typing stubs, where the build installs them (sanitizer trees skip them).
+    stub = Path(_core.__file__).with_name("_core.pyi")
+    if stub.exists():
+        text = stub.read_text()
+        assert "logical_num_modes: int" in text
+        assert "partitions" not in text
+
+
+@pytest.mark.parametrize("keyword", _UNSUPPORTED_KEYWORDS)
+def test_no_thread_or_shard_keyword_is_accepted(keyword: str) -> None:
+    # The high-level constructors and generated adapters never took any of them; the candidate's low-level one
+    # takes none either.
+    for name, construct in _high_level_constructors().items():
+        with pytest.raises(TypeError):
+            construct(**{keyword: 2})
+        assert construct() is not None, name
+    if IS_CANDIDATE:
+        with pytest.raises(TypeError):
+            _core.MonomialPropagator032(**_ARGS, **{keyword: 2})
+
+
+def test_legacy_low_level_constructor_keeps_partitions() -> None:
+    if IS_CANDIDATE:
+        pytest.skip("candidate build")
+    assert "partitions" in (_core.MonomialPropagator032.__init__.__doc__ or "")
+
+
+@pytest.fixture(scope="module")
+def unset_partition_variable_run() -> dict[str, Any]:
+    return _run(_full_spec("random_exact", "heisenberg"), 2)
+
+
+@candidate_only
+@pytest.mark.parametrize(
+    "value", ["off", "auto", "1", "2", "3", "0", "", "not-a-count"]
+)
+def test_obsolete_partition_variable_is_ignored(
+    value: str, unset_partition_variable_run: dict[str, Any]
+) -> None:
+    # Set before the interpreter starts, as a launch would: the candidate never reads it, so every answer, aggregate
+    # and shard-ordered block is bitwise what the same T gives with the variable unset.
+    run = _run(
+        _full_spec("random_exact", "heisenberg"),
         2,
         extra_env={"monoprop_PARTITIONS": value},
-    )["controls"]
-    assert out["default"].startswith("RuntimeError"), out["default"]
-    assert "monoprop_PARTITIONS" in out["default"]
+    )
+    assert run["runtime"] == _CANDIDATE
+    differences = _differences(run["full"], unset_partition_variable_run["full"])
+    assert not differences, differences[:10]
 
 
 @candidate_only
@@ -219,7 +317,7 @@ def test_obsolete_partition_selector_is_rejected(value: str) -> None:
 )
 def test_invalid_budget_is_rejected(budget: str) -> None:
     out = _run(
-        {"scenario": "controls", "partitions": [], "construction_only": True},
+        {"scenario": "controls", "construction_only": True},
         1,
         extra_env={"monoprop_NUM_THREADS": budget},
     )["controls"]
@@ -547,7 +645,7 @@ def test_multirank_splitmix_three_processes(
 @needs_mpi_launch
 def test_multirank_linear_routing_rejects_three_processes(tmp_path: Path) -> None:
     docs = _run_ranks(
-        {"scenario": "controls", "partitions": [], "construction_only": True},
+        {"scenario": "controls", "construction_only": True},
         3,
         1,
         tmp_path,

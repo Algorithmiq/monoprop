@@ -359,6 +359,31 @@ auto parameter_sets(const Circuit &c) -> std::vector<std::pair<std::string, VecD
 // --- Legacy oracle ----------------------------------------------------------------------------------------------
 
 template <size_t N>
+using Access = monoprop::detail::PropagatorTestAccess<N>;
+
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The rank-level reference at geometry (1, T) in a candidate build: the candidate root over MPI_COMM_SELF at the
+// launch's T, through its public operations. It drives the same seams, so comparing against it checks the root's
+// wiring of them, while each case keeps its independent references; the legacy build compares against the legacy
+// partitions instead.
+template <size_t N>
+auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
+    auto p = MonomialPropagator<N>(f.op,
+                                   f.cutoff,
+                                   f.initial_state,
+                                   f.schrodinger_cutoff,
+                                   MPI_COMM_SELF,
+                                   f.lower_atol,
+                                   f.upper_atol,
+                                   f.cutoff_type,
+                                   f.basis_change,
+                                   f.logical,
+                                   f.basis);
+    BOOST_TEST_REQUIRE(Access<N>::shards(p).size() == threads);
+    return p;
+}
+#else
+template <size_t N>
 auto legacy(const Fixture &f, size_t partitions, MPI_Comm comm = MPI_COMM_SELF) -> MonomialPropagator<N> {
     return MonomialPropagator<N>(f.op,
                                  f.cutoff,
@@ -374,8 +399,11 @@ auto legacy(const Fixture &f, size_t partitions, MPI_Comm comm = MPI_COMM_SELF) 
                                  partitions);
 }
 
+// The rank-level reference at geometry (1, T): the legacy partitions.
 template <size_t N>
-using Access = monoprop::detail::PropagatorTestAccess<N>;
+auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
+    return legacy<N>(f, threads);
+}
 
 // Per legacy store: the legacy energy evaluation's evolved operator and its local term at `params`.
 struct LegacyShard {
@@ -408,6 +436,7 @@ template <size_t N>
 auto legacy_owner(MonomialPropagator<N> &p, size_t shard) -> const MonomialPropagator<N> & {
     return Access<N>::partition_count(p) == 0 ? p : Access<N>::partition(p, static_cast<int>(shard));
 }
+#endif
 
 // --- Sharded setup ----------------------------------------------------------------------------------------------
 
@@ -599,6 +628,7 @@ auto energy_and_gradient(const sharded::RetainedEvaluation &r,
     return sharded::ev_and_grad_sharded(requests, r.callbacks, team_options(), world.comm);
 }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 // Per shard: the energy evaluation's evolved operator, through replay_shards().
 auto evaluation_operators(const sharded::RetainedEvaluation &r, const VecD &params) -> std::vector<VecD> {
     std::vector<sharded::ReplayRequest> requests;
@@ -610,6 +640,7 @@ auto evaluation_operators(const sharded::RetainedEvaluation &r, const VecD &para
     require_success(outcome.error, "replay_shards");
     return std::move(outcome.coeffs);
 }
+#endif
 
 // --- Observation ------------------------------------------------------------------------------------------------
 
@@ -825,6 +856,7 @@ auto census(const sharded::Shards<N> &shards) -> Census {
 
 // --- Fixed-geometry equality with the legacy partitions ---------------------------------------------------------
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 // At (1, T), for every basis/picture fixture and parameter set (case angles, deep amplification, vanishing cosines):
 // per-shard evolved operators and local terms, the energy and every gradient component equal the legacy partitions'
 // bitwise, including through ev_sharded()/ev_and_grad_sharded().
@@ -875,6 +907,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_legacy_partitions) {
     BOOST_TEST(records_below > 0U);
     BOOST_TEST(cosine_sets > 0U);
 }
+#endif
 
 // A small cross-shard fixture: every shard both publishes and reads partner endpoints in the same layer, so a finish
 // that read a partner's live (already cos-scaled) coefficients instead of its snapshot would be off by a factor cos.
@@ -931,7 +964,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_covers_every_layout, *boost::unit_test::
             auto s = seed<kN>(cs.f, options);
             run_graph<kN>(s, cs.c, cs.k);
             accumulate(census<kN>(s.shards));
-            auto old = legacy<kN>(cs.f, threads);
+            auto old = reference_root<kN>(cs.f, threads);
             old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
             const auto r = retain<kN>(s);
             const auto [ge, grad] = old.expectation_value_and_gradient(cs.c.params);
@@ -978,7 +1011,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_identity_once_and_empty_parameters) {
             const auto [e, g] = energy_and_gradient(r, none);
             BOOST_TEST(bits(e) == bits(expected));
             BOOST_TEST(g.empty());
-            auto old = legacy<kN>(cs.f, threads);
+            auto old = reference_root<kN>(cs.f, threads);
             BOOST_TEST(bits(old.expectation_value(none)) == bits(expected));
             // The identity is not a shard row in Heisenberg; in Schrödinger its basis row carries no operator weight.
             for (const auto &state : s.shards) {
@@ -1248,7 +1281,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
             for (size_t i = 0; i < grad.size(); ++i) {
                 BOOST_TEST(close(grad[i], fd[i], 1e-6), "component " << i << ": " << grad[i] << " vs " << fd[i]);
             }
-            auto old = legacy<kN>(f, threads);
+            auto old = reference_root<kN>(f, threads);
             old.build_graph(c.gates, c.mapping, c.gen_coeffs, std::nullopt, std::nullopt, std::nullopt);
             const auto [le, lgrad] = old.expectation_value_and_gradient(c.params);
             BOOST_TEST(bits(e) == bits(le));
@@ -1280,7 +1313,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_parameters_and_duplicate_record
                 return w == (replay::kRecordRotationsBelow | replay::kRecordCosineSet);
             });
             BOOST_TEST(both);
-            auto old = legacy<kN>(cs.f, threads);
+            auto old = reference_root<kN>(cs.f, threads);
             old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
             const auto [le, lgrad] = old.expectation_value_and_gradient(params);
             const auto [e, grad] = energy_and_gradient(r, params);
@@ -1310,7 +1343,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_legacy) {
     for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[7], legacy_cases()[9]}) {
         auto s = seed<kN>(cs.f, options);
         run_graph<kN>(s, cs.c, cs.k);
-        auto old = legacy<kN>(cs.f, threads);
+        auto old = reference_root<kN>(cs.f, threads);
         old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
         for (const double threshold : {1e-3, 0.05, 0.0, -1.0}) {
             BOOST_TEST_CONTEXT(label(cs) << " threshold " << threshold << " T=" << threads) {
@@ -1573,6 +1606,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
     BOOST_TEST((bits_of(after.second) == bits_of(before.second)));
 }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 // Partial contraction in both pictures: per-shard replay_shards() with contract_partially()'s angles and windows equals
 // every legacy child's contract_partially(params, false) bitwise.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_partial_contraction_matches_legacy) {
@@ -1610,7 +1644,9 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_partial_contraction_matches_legacy) {
         }
     }
 }
+#endif
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 // Coefficient-informed construction, first and incremental (seed replay), in both pictures with cutoff-sensitive
 // atols and length caps: every shard's rows, coefficients, caches and graph layers equal the legacy child's after the
 // legacy coefficient-informed build_graph; the informed map differs from the structural one; and across T the global
@@ -1703,6 +1739,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_informed_construction_matches_legacy) {
     }
     BOOST_TEST(sensitive > 0U);
 }
+#endif
 
 namespace {
 
@@ -1747,6 +1784,7 @@ auto check_replayed_coefficients(Sharded<N> &s, const std::vector<VecD> &last, c
 
 } // namespace
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 // Cutoff decisions follow the replayed coefficients: sweeping the lower atol over the range where rows are dropped,
 // every informed build equals the legacy children's rows and coefficients and the sweep really changes the retained row
 // count; and the evolving coefficients themselves equal an independent replay of the finished graph.
@@ -1788,6 +1826,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_informed_decisions_follow_the_replayed_c
         BOOST_TEST(sizes.size() > 2U, base.f.name << ": the sweep must change the retained row count");
     }
 }
+#endif
 
 // Actual participation, asserted after the join: every evaluation, replay, retained-preparation and informed seed or
 // replay visit of shard t ran on worker t at nesting level 1 in a team of T, and every step is present.
@@ -2278,6 +2317,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
 
 namespace {
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 auto multirank_launch(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
     const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
     const int ranks = mpi::size(mpi::Comm(MPI_COMM_WORLD));
@@ -2286,6 +2326,7 @@ auto multirank_launch(boost::unit_test::test_unit_id) -> boost::test_tools::asse
         << "needs a dedicated multi-rank launch (monoprop_TEST_SHARDED_RANKS = the world size, at least 2)";
     return result;
 }
+#endif
 
 // The rank's contraction blocks through replay_shards(), concatenated in shard order, as the legacy facade returns.
 template <size_t N>
@@ -2316,6 +2357,7 @@ auto contraction(Sharded<N> &s, const VecD &params) -> VecD {
 
 } // namespace
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 BOOST_AUTO_TEST_CASE(sharded_evaluation_multirank_matches_the_legacy_hybrid,
                      *boost::unit_test::precondition(multirank_launch)) {
     const auto options = team_options();
@@ -2398,3 +2440,4 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_multirank_matches_the_legacy_hybrid,
         }
     }
 }
+#endif

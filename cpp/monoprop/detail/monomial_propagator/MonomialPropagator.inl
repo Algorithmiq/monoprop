@@ -42,21 +42,24 @@
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
-#include "monoprop/detail/partition/PartitionGroup.h"
 #include "monoprop/detail/sharded/State.h"
 #ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 #include "monoprop/detail/sharded/Construction.h"
 #include "monoprop/detail/sharded/Evaluation.h"
+#else
+#include "monoprop/detail/partition/PartitionGroup.h"
 #endif
 
 namespace monoprop {
 
-// The ranks disagree on S. The count comes from partitions= or the environment on
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+// Legacy only: the ranks disagree on S. The count comes from partitions= or the environment on
 // every rank independently, so the fix is to the launch, and it may belong to a different rank.
 class PartitionCountMismatch : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+#endif
 
 // The requested operation does not agree with the graph this propagator currently holds -- either it
 // requires no stored graph, or its parameter_mapping matches neither the stored layer nor gate count.

@@ -16,7 +16,6 @@
 
 // Included only by MonomialPropagator.inl, and only with monoprop_SHARDED_OPENMP_PROTOTYPE.
 
-#include <cstdlib>
 #include <exception>
 #include <format>
 #include <functional>
@@ -75,9 +74,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  CutoffType cutoff_type,
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
-                                                 Basis basis,
-                                                 size_t partitions,
-                                                 PartitionChildFactory child_factory)
+                                                 Basis basis)
     : MonomialPropagator(ObservedTag{},
                          nullptr,
                          initial_operator,
@@ -90,9 +87,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                          cutoff_type,
                          std::move(basis_change),
                          logical_num_modes,
-                         basis,
-                         partitions,
-                         child_factory) {}
+                         basis) {}
 
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
@@ -107,9 +102,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
                                                  CutoffType cutoff_type,
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
-                                                 Basis basis,
-                                                 size_t partitions,
-                                                 const PartitionChildFactory &child_factory)
+                                                 Basis basis)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       cutoff_{cutoff},
@@ -121,25 +114,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
       basis_{basis},
       one_store_{true},
       observer_{observer} {
-    // The coexistence-only legacy controls must not select another geometry or the legacy runtime.
-    if (partitions != 0) {
-        throw PropagatorConfigError(std::format(
-            "partitions={} is not supported by the sharded OpenMP prototype: its shard count is the thread budget T "
-            "captured from monoprop_NUM_THREADS (or the OpenMP default) at construction. Leave partitions at its "
-            "default and launch with monoprop_NUM_THREADS=T OMP_NUM_THREADS=T OMP_DYNAMIC=FALSE.",
-            partitions));
-    }
-    if (child_factory) {
-        throw PropagatorConfigError(
-            "child_factory is not supported by the sharded OpenMP prototype: it owns shard states, not partition "
-            "child propagators.");
-    }
-    if (const char *selector = std::getenv("monoprop_PARTITIONS"); selector != nullptr) {
-        throw PropagatorConfigError(std::format(
-            "monoprop_PARTITIONS is set (to '{}'), but the sharded OpenMP prototype does not read it: its shard count "
-            "is the thread budget captured from monoprop_NUM_THREADS. Unset monoprop_PARTITIONS.",
-            selector));
-    }
+    // The geometry is the launch's: P ranks of comm x the captured budget T. No argument or other environment variable
+    // (monoprop_PARTITIONS included, which only the legacy runtime reads) selects or checks it.
     if (comm.kind != mpi::Comm::Kind::Mpi) {
         throw PropagatorConfigError("The sharded OpenMP prototype needs an ordinary MPI communicator.");
     }
@@ -253,13 +229,13 @@ auto MonomialPropagator<NumModes>::sole_shard_(const char *what) const
     -> const detail::sharded::ShardState<NumModes> & {
     require_valid_();
     if (shards_.size() != 1) {
-        throw MultiPartitionUnsupported(
-            std::format("{} is only available when this rank holds one shard, but it holds {} (one per thread of the "
-                        "budget captured at construction), and no single store represents the rank. Launch with "
-                        "monoprop_NUM_THREADS=1 to inspect the raw layout, or use the shard-transparent accessors "
-                        "(size(), graph_size(), the memory breakdowns, evolved_operator_terms(), ...).",
-                        what,
-                        shards_.size()));
+        throw MultiShardUnsupported(std::format(
+            "{} is only available when this rank holds one shard, but it holds {} (one per thread of the "
+            "budget captured at construction), and no single store represents the rank. Launch with "
+            "monoprop_NUM_THREADS=1 (on every rank) to inspect the raw layout, or use the shard-transparent "
+            "accessors (size(), graph_size(), the memory breakdowns, evolved_operator_terms(), ...).",
+            what,
+            shards_.size()));
     }
     return *shards_.front();
 }

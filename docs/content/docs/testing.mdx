@@ -19,6 +19,9 @@ just test              # build, then the Python and C++ suites
 just test-py           # the Python suite against whatever is installed
 ```
 
+The recipes run the suites at one thread per rank (`monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1
+OMP_DYNAMIC=FALSE`, on the test command only); tests that need other thread counts launch their own processes.
+
 This collects two suites: monoprop's own (`tests/`) and the one belonging to the
 `monoprop-bench-tools` workspace member (`packages/monoprop-bench-tools/tests/`).
 The member has to be installed for the second to import, which is what the
@@ -107,12 +110,22 @@ build has MPI enabled and a launcher is found, it also registers the whole suite
 once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
 one entry per rank count rather than per case, because the ranks have to reach
 the same collectives. Each MPI entry times out after 600 seconds, preventing a
-collective deadlock from occupying the runner indefinitely.
+collective deadlock from occupying the runner indefinitely. Both runtimes register these whole-suite variants.
+
+The launch-time thread policy is part of the registration, not of the test runner: every discovered case, per
+case and in the whole-suite variants, runs with `monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE`, so
+ordinary cases see one store per rank. The runner itself never sets `monoprop_NUM_THREADS` (a legacy build's
+runner still sets `monoprop_PARTITIONS=off`), so running the binary by hand uses your environment: set those
+variables yourself to reproduce a CTest case.
 
 A few cases also run again as separate `openmp_env_*` entries, each a fresh process with its own
 launch environment. They cover `monoprop_NUM_THREADS=1` and `=3`, the OpenMP default with the
-variable unset, `OMP_THREAD_LIMIT=2`, and `OMP_PROC_BIND=false` for the affinity check. They are
-needed because a propagator reads its thread budget once, when it is constructed.
+variable removed from the environment (the case checks that nothing supplied it), and
+`OMP_PROC_BIND=false` for the affinity check; a legacy build adds `OMP_THREAD_LIMIT=2`, and a sharded build
+`openmp_env_root_t4`. They are needed because a propagator reads its thread budget once, when it is constructed.
+Kernel cases rerun under `OMP_THREAD_LIMIT=2` and `OMP_DYNAMIC=TRUE` (`openmp_env_kernels_*`) to test the
+worksharing helper's reduced-team contract; no sharded operation runs under those settings, which its launch
+contract excludes.
 
 The fixed-team phase primitive (`detail/sharded/Team.h`) has its own fresh-process entries,
 `sharded_team_env_t1`, `_t2`, `_t4` and `_t4_passive` (the last with `OMP_WAIT_POLICY=PASSIVE`). Each
@@ -125,21 +138,24 @@ engine (`detail/sharded/Construction.h`) and the snapshot-safe evaluation (`deta
 the same pattern with `sharded_state_env_t1`, `_t2` and `_t4`, `sharded_construction_env_t1`, `_t2` and `_t4`
 and `sharded_evaluation_env_t1`, `_t2` and `_t4`. Select all of them with `-R '^sharded_'`. The unit-test
 executable replaces the global `operator new`/`delete` family (`cpp/tests/AllocationProbe.cpp`) so these
-cases can inject real allocation failures; the library and installed consumers are unaffected.
+cases can inject real allocation failures; the library and installed consumers are unaffected. Their cases that
+compare against live legacy partitions compile in legacy builds only; the others run in both.
 
-A `monoprop_SHARDED_OPENMP_PROTOTYPE=ON` build ([Building](/building)) tests the integrated sharded
-root instead. `sharded_root_tests.cpp` drives its public operations with private shard inspection, actual
-worker observation and failure injection, rerun as `sharded_root_env_t1`, `_t2` and `_t4`:
+#### Sharded OpenMP builds
+
+A `monoprop_SHARDED_OPENMP_PROTOTYPE=ON` build ([Building](/building)) tests the sharded runtime. Every
+suite except the two legacy-facade ones (`partition_equivalence_tests.cpp`, `partition_group_clone_tests.cpp`)
+compiles there, with legacy-oracle cases left out (the ledger is in `cpp/tests/README.md`).
+`sharded_api_tests.cpp` checks the public C++ surface at compile time in both builds, with the expected value of
+each probe per build. `sharded_root_tests.cpp` drives the root's public operations with private shard
+inspection, actual worker observation and failure injection, rerun as `sharded_root_env_t1`, `_t2` and `_t4`
+and `sharded_root_env_openmp_default_t3` (no `monoprop_NUM_THREADS`, `OMP_NUM_THREADS=3`). The fused-sweep cases
+rerun as `fused_env_t2` and `_t4`. Each fixed-T entry is a fresh process; no case changes T inside a process.
 
 ```bash
-ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -R '^sharded_root'
+ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -LE mpi
+ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -R '^(sharded_root|fused)_env'
 ```
-
-In that build the unit-test `main()` defaults `monoprop_NUM_THREADS` to 1 instead of setting
-`monoprop_PARTITIONS`, which the prototype rejects. The S1 to S3 seam suites, which compare against live
-legacy partitions, are not compiled there; nor are the other suites that need the legacy root (the list
-is `_monoprop_legacy_root_suites` in `cpp/tests/CMakeLists.txt`, with the migration ledger in
-`cpp/tests/README.md`). The whole-suite multi-rank variants (`*_mpi_2`, `*_mpi_4`) stay legacy-only.
 
 Multi-process cases of the sharded runtime have their own launches, one per P ranks x T threads, labelled `mpi`.
 Each sets `monoprop_NUM_THREADS`, `OMP_NUM_THREADS` and `monoprop_TEST_EXPECT_TEAM` to T with `OMP_DYNAMIC=FALSE`,
@@ -151,14 +167,17 @@ their default budget.
 | --- | --- | --- |
 | `sharded_exchange_mpi2_t*`, `_mpi3_t*` | every MPI build | the physical round (`detail/sharded/Exchange.h`): closed-form blocks over both transports, with exchanged and known counts, the XOR peer, empty rounds, staging reuse, request moves |
 | `sharded_seams_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix` | legacy MPI build | the sharded seams at (P, T) against the legacy runtime at P ranks x `partitions = T`, bit for bit per shard |
-| `sharded_root_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix`, `_mpi3_t2_linear_rejected` | prototype MPI build | the root over P ranks against one process, MPI on the primary only, and the unroutable-geometry rejection |
-| `sharded_world_equivalence_mpi2_t*`, `_mpi4_t*` | prototype MPI build | the serial-against-world cases of `mpi_distributed_layer_equivalence.cpp` and `mpi_fresh_insert_equivalence.cpp` |
+| `sharded_root_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix`, `_mpi3_t2_linear_rejected` | sharded MPI build | the root over P ranks against one process, raw access and derived hooks per rank, MPI on the primary only, and the unroutable-geometry rejection |
+| `sharded_world_equivalence_mpi2_t*`, `_mpi4_t*` | sharded MPI build | the serial-against-world cases of `mpi_distributed_layer_equivalence.cpp` and `mpi_fresh_insert_equivalence.cpp` |
+| `monoprop_link_export_probe_mpi2_t1`, `_t2` | sharded MPI build | the shared-library consumer on two ranks, comparing the root on the world communicator with one process |
+| `monoprop_unit_tests.x_mpi_2`, `_mpi_4` | every MPI build | the whole suite at T = 1 per rank |
 
 ```bash
-ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -R '^sharded_(exchange|root)_mpi'
+ctest --test-dir "$PROTO_BUILD" --output-on-failure --no-tests=error -L mpi
 ```
 
-The Python integration tests launch a fresh interpreter per T:
+The Python integration tests launch a fresh interpreter per T from a parent that is not itself an MPI job (they
+skip inside one), so run them from an ordinary `pytest` process:
 
 ```bash
 monoprop_TEST_EXPECT_RUNTIME=sharded monoprop_TEST_LEGACY_PYTHON="$LEGACY_ENV/bin/python" \
@@ -166,7 +185,10 @@ monoprop_TEST_EXPECT_RUNTIME=sharded monoprop_TEST_LEGACY_PYTHON="$LEGACY_ENV/bi
 ```
 
 `monoprop_TEST_LEGACY_PYTHON` names a separately built legacy environment. Its processes run at
-`monoprop_PARTITIONS=T` for a bitwise comparison at the same (1, T) geometry; without it those cases skip.
+`monoprop_PARTITIONS=T` for a bitwise comparison at the same (1, T) geometry; without it those cases skip, so a
+verification run sets it. The same file checks that the removed constructor arguments raise `TypeError` at every
+level (the `_core` classes, [MajoranaPropagator][], [PauliPropagator][] and the generated adapters) and that a
+`monoprop_PARTITIONS` set before launch changes nothing, bit for bit.
 `monoprop_TEST_EXPECT_RUNTIME` makes a mislabelled build fail instead of skip. In an MPI prototype build with an
 MPI launcher on `PATH`, the `test_multirank_*` cases also run the probe on several processes, each rank writing
 its own document: at two ranks against a legacy MPI environment rank by rank and bit for bit, across the
@@ -184,7 +206,7 @@ a 30-second timeout. Rank 0 fails in one of these ways while its peer follows th
 - host-initialized MPI provides only `SINGLE` or `FUNNELED`;
 - a guarded call arrives from a `std::thread` under `SERIALIZED` or `MULTIPLE`.
 
-A prototype build registers `mpi_failure_sharded_*` instead, which drive the sharded root at two threads per
+A sharded build registers `mpi_failure_sharded_*` instead, which drive the sharded root at two threads per
 rank. Rank 0's worker 1 throws in a replay finish; the primary throws in a traversal before any physical
 round, in a cosine pass while a replay round is posted, or while packing queries with the count round posted;
 rank 1 sends malformed query blocks; and the thread-level and wrong-thread cases are the same as above.

@@ -53,6 +53,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -189,9 +190,7 @@ auto make(const Config &config = {}, const sharded::RootObserver *observer = nul
                                       CutoffType::Length,
                                       config.basis_change,
                                       kN,
-                                      config.basis,
-                                      size_t{0},
-                                      typename MP::PartitionChildFactory{});
+                                      config.basis);
 }
 
 auto build(MP &sim) -> void {
@@ -254,52 +253,119 @@ BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_follow_the_launch_team) {
         BOOST_TEST(sim.graph_data().size() == sim.graph_layers());
         return;
     }
-    const auto remedy = [](const MultiPartitionUnsupported &e) {
+    const auto remedy = [](const MultiShardUnsupported &e) {
         return std::string(e.what()).find("monoprop_NUM_THREADS=1") != std::string::npos
                && std::string(e.what()).find("partitions=1") == std::string::npos;
     };
-    BOOST_CHECK_EXCEPTION(sim.mp_op(), MultiPartitionUnsupported, remedy);
-    BOOST_CHECK_EXCEPTION(std::as_const(sim).mp_op(), MultiPartitionUnsupported, remedy);
-    BOOST_CHECK_EXCEPTION(sim.graph(), MultiPartitionUnsupported, remedy);
-    BOOST_CHECK_EXCEPTION(sim.indexing(), MultiPartitionUnsupported, remedy);
-    BOOST_CHECK_EXCEPTION(sim.graph_data(), MultiPartitionUnsupported, remedy);
-    // The rejection mutates nothing.
+    BOOST_CHECK_EXCEPTION(sim.mp_op(), MultiShardUnsupported, remedy);
+    BOOST_CHECK_EXCEPTION(std::as_const(sim).mp_op(), MultiShardUnsupported, remedy);
+    BOOST_CHECK_EXCEPTION(sim.graph(), MultiShardUnsupported, remedy);
+    BOOST_CHECK_EXCEPTION(sim.indexing(), MultiShardUnsupported, remedy);
+    BOOST_CHECK_EXCEPTION(sim.graph_data(), MultiShardUnsupported, remedy);
+    // The rejection mutates nothing: the object stays valid and keeps answering.
+    BOOST_TEST(!monoprop::detail::PropagatorTestAccess<8>::is_invalid(sim));
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    BOOST_CHECK_EXCEPTION(sim.graph(), MultiShardUnsupported, remedy);
+    BOOST_TEST(std::isfinite(sim.expectation_value(data.parameters)));
     BOOST_TEST(!monoprop::detail::PropagatorTestAccess<8>::is_invalid(sim));
 }
 
-BOOST_AUTO_TEST_CASE(sharded_root_rejects_explicit_partitions) {
-    const auto data = load_case_data<8>("random_exact.msgpack");
-    const auto construct = [&](size_t partitions, MonomialPropagator<8>::PartitionChildFactory factory) {
-        return MonomialPropagator<8>(data.hamiltonian,
-                                     16,
-                                     data.initial_state,
-                                     std::nullopt,
-                                     MPI_COMM_SELF,
-                                     std::nullopt,
-                                     std::nullopt,
-                                     CutoffType::Length,
-                                     std::nullopt,
-                                     8,
-                                     Basis::Majorana,
-                                     partitions,
-                                     std::move(factory));
-    };
-    for (const size_t partitions : {1, 2, 4}) {
-        BOOST_CHECK_EXCEPTION(construct(partitions, nullptr), PropagatorConfigError, [](const auto &e) {
-            return std::string(e.what()).find("monoprop_NUM_THREADS") != std::string::npos;
-        });
+// An invalid owner fails its validity guard before the shard-count check, at every T.
+BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_check_validity_first) {
+    auto sim = make();
+    build(*sim);
+    Access::set_cutoff_fn(*sim, [](const Monomial<kN> &) -> bool { throw Injected("injected cutoff failure"); });
+    BOOST_CHECK_THROW(build(*sim), Injected);
+    BOOST_TEST_REQUIRE(Access::is_invalid(*sim));
+    BOOST_CHECK_THROW(sim->mp_op(), InvalidPropagatorError);
+    BOOST_CHECK_THROW(std::as_const(*sim).mp_op(), InvalidPropagatorError);
+    BOOST_CHECK_THROW(sim->indexing(), InvalidPropagatorError);
+    BOOST_CHECK_THROW(std::as_const(*sim).indexing(), InvalidPropagatorError);
+    BOOST_CHECK_THROW(sim->graph(), InvalidPropagatorError);
+    BOOST_CHECK_THROW(sim->graph_data(), InvalidPropagatorError);
+}
+
+namespace {
+
+// Sets one environment variable for a scope (or unsets it, for nullopt), then restores the previous state.
+class ScopedEnv {
+public:
+    ScopedEnv(const char *name, std::optional<std::string> value) : name_(name) {
+        if (const char *old = std::getenv(name)) {
+            old_ = std::string(old);
+        }
+        if (value) {
+            ::setenv(name, value->c_str(), 1);
+        }
+        else {
+            ::unsetenv(name);
+        }
     }
-    BOOST_CHECK_THROW(construct(0, [](mpi::Comm) -> std::unique_ptr<MonomialPropagator<8>> { return nullptr; }),
-                      PropagatorConfigError);
-    // The obsolete environment selector is rejected, whatever its value; it never selects a geometry.
-    for (const char *value : {"off", "1", "4", "auto", ""}) {
-        setenv("monoprop_PARTITIONS", value, 1);
-        BOOST_CHECK_EXCEPTION(construct(0, nullptr), PropagatorConfigError, [](const auto &e) {
-            return std::string(e.what()).find("monoprop_PARTITIONS") != std::string::npos;
-        });
-        unsetenv("monoprop_PARTITIONS");
+    ScopedEnv(const ScopedEnv &) = delete;
+    auto operator=(const ScopedEnv &) -> ScopedEnv & = delete;
+    ~ScopedEnv() {
+        if (old_) {
+            ::setenv(name_, old_->c_str(), 1);
+        }
+        else {
+            ::unsetenv(name_);
+        }
     }
-    BOOST_CHECK_NO_THROW(construct(0, nullptr));
+
+private:
+    const char *name_;
+    std::optional<std::string> old_;
+};
+
+} // namespace
+
+// The obsolete partition selector is not read at all: whatever it holds while a root is constructed and used, the
+// root has the launch's T shards and answers bitwise as with the variable unset. Only the captured budget decides.
+BOOST_AUTO_TEST_CASE(sharded_root_ignores_the_obsolete_partition_variable) {
+    double energy = 0.0;
+    std::vector<std::pair<VecZ, std::complex<double>>> terms;
+    {
+        const ScopedEnv unset("monoprop_PARTITIONS", std::nullopt);
+        auto sim = make();
+        build(*sim);
+        energy = energy_of(*sim);
+        terms = sim->evolved_operator_terms(params(), 0.0);
+    }
+    for (const char *value : {"off", "auto", "1", "2", "4", "0", "", "-3", "not-a-count"}) {
+        BOOST_TEST_CONTEXT("monoprop_PARTITIONS=\"" << value << "\"") {
+            const ScopedEnv set("monoprop_PARTITIONS", std::string(value));
+            std::unique_ptr<MP> sim;
+            BOOST_CHECK_NO_THROW(sim = make());
+            BOOST_TEST_REQUIRE(sim != nullptr);
+            BOOST_TEST(Access::shards(*sim).size() == launch_team());
+            BOOST_TEST(Access::options(*sim).threads == static_cast<int>(launch_team()));
+            build(*sim);
+            BOOST_TEST(energy_of(*sim) == energy);
+            BOOST_TEST((sim->evolved_operator_terms(params(), 0.0) == terms));
+            const MP copy(*sim);
+            BOOST_TEST(Access::shards(copy).size() == launch_team());
+        }
+    }
+}
+
+// Registered as sharded_root_env_openmp_default_t3: monoprop_NUM_THREADS unset and OMP_NUM_THREADS=3. Neither the test
+// runner nor the library may supply the variable, so the root takes omp_get_max_threads() and runs that many owners.
+BOOST_AUTO_TEST_CASE(sharded_root_unset_budget_takes_the_openmp_default) {
+    const char *expected = std::getenv("monoprop_TEST_EXPECT_UNSET_BUDGET");
+    if (expected == nullptr) {
+        BOOST_TEST_MESSAGE("not the unset-budget launch");
+        return;
+    }
+    const auto team = static_cast<size_t>(std::stoul(expected));
+    BOOST_TEST(std::getenv("monoprop_NUM_THREADS") == nullptr);
+    BOOST_TEST(static_cast<size_t>(omp_get_max_threads()) == team);
+    Recorder recorder;
+    auto sim = make({}, &recorder);
+    BOOST_TEST(static_cast<size_t>(Access::options(*sim).threads) == team);
+    BOOST_TEST(Access::shards(*sim).size() == team);
+    build(*sim);
+    static_cast<void>(energy_of(*sim));
+    check_owner_visits(recorder.visits(), team, "seeding, construction and evaluation at the OpenMP default");
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_owns_t_routed_shards) {
@@ -619,13 +685,13 @@ public:
     Derived(const Derived &) = default;
 
     auto update_initial_operator(const OperatorDict &op_dict) -> void override {
-        const auto [terms, coeffs] = apply_initial_operator_(op_dict);
-        last_terms = terms.size();
-        last_coeffs = coeffs.size();
+        ++calls;
+        std::tie(last_terms, last_coeffs) = apply_initial_operator_(op_dict);
     }
 
-    size_t last_terms = 0;
-    size_t last_coeffs = 0;
+    size_t calls = 0;
+    MonomialList<kN> last_terms;
+    VecD last_coeffs;
 
 protected:
     auto clone_() const -> std::unique_ptr<MP> override { return std::make_unique<Derived>(*this); }
@@ -638,18 +704,51 @@ BOOST_AUTO_TEST_CASE(sharded_root_virtual_hooks_keep_working) {
     Derived sim(data.hamiltonian, 4U, data.initial_state, std::nullopt, MPI_COMM_SELF);
     build(sim);
     const double energy = sim.expectation_value(params());
+    // clone_() keeps the derived type, with its own shards and the source's T.
     const auto clone = Access::clone(sim);
     BOOST_TEST(dynamic_cast<const Derived *>(clone.get()) != nullptr);
+    BOOST_TEST(Access::options(*clone).threads == Access::options(sim).threads);
+    BOOST_TEST(Access::shards(*clone).size() == launch_team());
+    for (size_t t = 0; t < Access::shards(sim).size(); ++t) {
+        BOOST_TEST(Access::shards(*clone)[t]->op.store.get() != Access::shards(sim)[t]->op.store.get());
+    }
     BOOST_TEST(clone->expectation_value(params()) == energy);
-    // Through the base interface: the override runs and the protected hook returns this rank's routed share,
-    // gathered from every shard (the identity is rank-level metadata and is not among the terms).
+    Derived copy(sim);
+
+    // Through the base interface: the override runs, and the protected hook returns this rank's routed share, every
+    // shard's block in shard order (the identity is rank-level metadata and is not among the terms).
+    OperatorDict scaled;
+    for (const auto &[key, value] : data.hamiltonian) {
+        scaled[key] = value * 0.5;
+    }
     MP &base = sim;
-    base.update_initial_operator(data.hamiltonian);
+    base.update_initial_operator(scaled);
+    BOOST_TEST(sim.calls == 1U);
     const size_t routed = data.hamiltonian.size() - (data.hamiltonian.contains(VecZ{}) ? 1 : 0);
-    BOOST_TEST(sim.last_terms == routed);
-    BOOST_TEST(sim.last_coeffs == routed);
-    BOOST_TEST(sim.expectation_value(params()) == energy);
+    BOOST_TEST(sim.last_terms.size() == routed);
+    BOOST_TEST(sim.last_coeffs.size() == routed);
+    // The returned share is each key once, routed to one of this rank's shards, with its encoded new coefficient.
+    const auto &router = Access::router(sim);
+    std::set<VecZ> returned;
+    for (size_t i = 0; i < sim.last_terms.size(); ++i) {
+        const auto &mono = sim.last_terms[i];
+        const auto key = bitset_to_indices<kN>(mono);
+        BOOST_TEST(returned.insert(key).second);
+        BOOST_TEST(router.dest<kN>(mono) < launch_team());
+        BOOST_TEST_REQUIRE(scaled.contains(key));
+        BOOST_TEST(sim.last_coeffs[i] == algebra_encode_coeff<kN>(Basis::Majorana, scaled.at(key), mono));
+    }
+    // The update reached the source only: the copy and the clone answer as before.
+    const double updated = sim.expectation_value(params());
+    BOOST_TEST(updated != energy);
     BOOST_TEST(clone->expectation_value(params()) == energy);
+    BOOST_TEST(copy.expectation_value(params()) == energy);
+    BOOST_TEST(copy.calls == 0U);
+    // And the other way round: updating the copy leaves the source alone.
+    copy.update_initial_operator(data.hamiltonian);
+    BOOST_TEST(copy.calls == 1U);
+    BOOST_TEST(copy.expectation_value(params()) == energy);
+    BOOST_TEST(sim.expectation_value(params()) == updated);
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_rejections_before_mutation_leave_it_usable) {
@@ -920,9 +1019,7 @@ auto make_on(mpi::Comm comm, const Config &config = {}, const sharded::RootObser
                                       CutoffType::Length,
                                       config.basis_change,
                                       kN,
-                                      config.basis,
-                                      size_t{0},
-                                      typename MP::PartitionChildFactory{});
+                                      config.basis);
 }
 
 // The plan's general tolerance for cross-geometry comparisons.
@@ -1124,6 +1221,53 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_mpi_runs_on_the_primary_and_owners_o
     check_owner_visits(owners, team, "multi-rank construction and evaluation");
 }
 
+// Raw access depends on T alone: at T = 1 every rank hands out its actual sole shard, whatever P; above it every rank
+// rejects. The ordinary extension hooks work over P ranks, each rank applying and returning its own share only.
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_raw_accessors_and_hooks,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    const size_t team = launch_team();
+    const auto &data = lih();
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
+    build(*world);
+    const auto &shards = Access::shards(*world);
+    if (team == 1) {
+        BOOST_TEST(&world->mp_op() == &shards.front()->op);
+        BOOST_TEST(&std::as_const(*world).mp_op() == &shards.front()->op);
+        BOOST_TEST(&world->indexing() == shards.front()->op.store.get());
+        BOOST_TEST(&world->graph() == &shards.front()->graph);
+        BOOST_TEST(world->graph_data().size() == world->graph_layers());
+        BOOST_TEST(world->mp_op().size() == world->size());
+    }
+    else {
+        BOOST_CHECK_THROW(world->mp_op(), MultiShardUnsupported);
+        BOOST_CHECK_THROW(world->indexing(), MultiShardUnsupported);
+        BOOST_CHECK_THROW(world->graph(), MultiShardUnsupported);
+        BOOST_CHECK_THROW(world->graph_data(), MultiShardUnsupported);
+    }
+    BOOST_TEST(!Access::is_invalid(*world));
+    BOOST_TEST(std::isfinite(world->expectation_value(params())));
+
+    Derived derived(data.hamiltonian, 4U, data.initial_state, std::nullopt, MPI_COMM_WORLD);
+    build(derived);
+    const double energy = derived.expectation_value(params());
+    const auto clone = Access::clone(derived);
+    BOOST_TEST(dynamic_cast<const Derived *>(clone.get()) != nullptr);
+    MP &base = derived;
+    base.update_initial_operator(data.hamiltonian);
+    BOOST_TEST(derived.calls == 1U);
+    const auto &router = Access::router(derived);
+    size_t foreign = 0;
+    for (const auto &mono : derived.last_terms) {
+        const size_t owner = router.dest<kN>(mono);
+        foreign += owner / team == world_rank() ? 0 : 1;
+    }
+    BOOST_TEST(foreign == 0U);
+    const size_t routed = data.hamiltonian.size() - (data.hamiltonian.contains(VecZ{}) ? 1 : 0);
+    BOOST_TEST(mpi::allreduce_sum<size_t>(derived.last_terms.size(), mpi::Comm(MPI_COMM_WORLD)) == routed);
+    BOOST_TEST(close(derived.expectation_value(params()), energy));
+    BOOST_TEST(clone->expectation_value(params()) == energy);
+}
+
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejections_before_mutation_leave_it_usable,
                      *boost::unit_test::precondition(has_routable_ranks)) {
     // Replicated arguments fail the same validation on every rank, before any team or collective.
@@ -1148,9 +1292,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
                                             CutoffType::Length,
                                             std::optional<std::vector<VecZ>>{},
                                             kN,
-                                            Basis::Majorana,
-                                            size_t{0},
-                                            typename MP::PartitionChildFactory{});
+                                            Basis::Majorana);
     BOOST_TEST(empty->size() == 0U);
     empty->build_graph({VecZ{0, 1}, VecZ{}}, VecZ{0, 1}, VecD{1.0, 1.0});
     BOOST_TEST(empty->graph_layers() == 2U);
@@ -1174,9 +1316,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
                                                 CutoffType::Length,
                                                 std::optional<std::vector<VecZ>>{},
                                                 kN,
-                                                Basis::Majorana,
-                                                size_t{0},
-                                                typename MP::PartitionChildFactory{});
+                                                Basis::Majorana);
     core_only->build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0});
     BOOST_TEST(core_only->core_term() == 2.5);
     BOOST_TEST(core_only->expectation_value(VecD{0.3}) == 2.5);

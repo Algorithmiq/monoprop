@@ -22,7 +22,10 @@
  *
  * Oracles: the legacy partition facade (partitions = T over an in-process communicator, whose child t is flat owner
  * t at geometry (1, T)) and, at T = 1, the ordinary single-store propagator. They are constructed on the test thread,
- * outside any sharded team, and are references only.
+ * outside any sharded team, and are references only. Those cases compile in the legacy (default) build only, where
+ * both runtimes exist; the sharded candidate build compiles every other case, with the candidate root (the same
+ * seam, driven through the public constructor at the launch's T) wherever a built source or an aggregate reference
+ * is needed, and an independent reference for seeding.
  *
  * Workers never call BOOST_TEST. Initializers and the library's test observer write per-owner slots; assertions run
  * after the team has joined. AllocationProbe.h supplies per-thread allocation counts and real allocation failures at
@@ -248,6 +251,29 @@ auto all_fixtures() -> std::vector<Fixture> {
     return fixtures;
 }
 
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The candidate root at the launch's T over MPI_COMM_SELF: its shards are seeded by the seam under test.
+auto root(const Fixture &f) -> Propagator {
+    return Propagator(f.op,
+                      f.cutoff,
+                      f.initial_state,
+                      f.schrodinger_cutoff,
+                      MPI_COMM_SELF,
+                      std::nullopt,
+                      std::nullopt,
+                      f.cutoff_type,
+                      std::nullopt,
+                      f.logical,
+                      f.basis);
+}
+
+// The rank-level reference for aggregates: the candidate root, which must run at the launch's T.
+auto oracle_of(const Fixture &f, size_t threads) -> Propagator {
+    auto sim = root(f);
+    BOOST_TEST_REQUIRE(Access::shards(sim).size() == threads);
+    return sim;
+}
+#else
 // The legacy propagator at `partitions` partitions: a facade over in-process children for partitions > 1, the
 // single-store propagator for partitions = 1.
 auto legacy(const Fixture &f, size_t partitions) -> Propagator {
@@ -269,6 +295,12 @@ auto legacy(const Fixture &f, size_t partitions) -> Propagator {
 auto legacy_owner(const Propagator &p, size_t shard) -> const Propagator & {
     return Access::partition_count(p) == 0 ? p : Access::partition(p, static_cast<int>(shard));
 }
+
+// The rank-level reference for aggregates: the legacy partitions at geometry (1, T).
+auto oracle_of(const Fixture &f, size_t threads) -> Propagator {
+    return legacy(f, threads);
+}
+#endif
 
 // Caller-side preparation, as the rank-level constructor performs it.
 auto make_seed(const Fixture &f, routing::Router router) -> sharded::OperatorSeed<kN> {
@@ -512,6 +544,13 @@ auto snapshot(const Shards &shards) -> Shards {
     return out;
 }
 
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+// Shards bridged from a built candidate root: a caller-side deep snapshot of its own T shards.
+auto bridged_shards(const Propagator &p, size_t threads) -> Shards {
+    BOOST_TEST_REQUIRE(Access::shards(p).size() == threads);
+    return snapshot(Access::shards(p));
+}
+#else
 // Shards bridged from a built legacy propagator: owner t holds legacy flat owner t's operator, graph and scratch.
 auto bridged_shards(const Propagator &p, size_t threads) -> Shards {
     Shards out;
@@ -520,9 +559,10 @@ auto bridged_shards(const Propagator &p, size_t threads) -> Shards {
     }
     return out;
 }
+#endif
 
-// A partition facade at T with a built graph: nontrivial grown stores, layers, caches and matched scratch. The
-// Hamiltonian's long terms exceed the inline width, so the stores have overflow rows too.
+// A partition facade (legacy) or root (candidate) at T with a built graph: nontrivial grown stores, layers, caches and
+// matched scratch. The Hamiltonian's long terms exceed the inline width, so the stores have overflow rows too.
 struct BuiltSource {
     test_utils::CaseData data;
     Fixture fixture;
@@ -532,7 +572,7 @@ struct BuiltSource {
 auto built_source(size_t threads) -> BuiltSource {
     auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
     auto fixture = Fixture{.name = "built", .op = majorana_operator(kN), .initial_state = data.initial_state};
-    auto propagator = legacy(fixture, threads);
+    auto propagator = oracle_of(fixture, threads);
     propagator.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     return {std::move(data), std::move(fixture), std::move(propagator)};
 }
@@ -618,6 +658,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_make_shards_initializes_each_owner_once) {
     }
 }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_the_partition_oracle) {
     const auto options = team_options();
     const auto threads = team_size();
@@ -646,6 +687,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_the_partition_oracle) {
         }
     }
 }
+#endif
 
 // An oracle independent of the extracted seed (which the legacy constructor now shares): rows, coefficients, pending
 // entries, inline width and reservation derived here from the routing, enumeration and store primitives alone.
@@ -852,7 +894,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_counts_and_accounting_sum_over_shards) {
     const auto threads = team_size();
     for (const auto &fixture : all_fixtures()) {
         BOOST_TEST_CONTEXT(fixture.name) {
-            const auto oracle = legacy(fixture, threads);
+            const auto oracle = oracle_of(fixture, threads);
             const auto shards = sharded::seed_shards(options, make_seed(fixture, local_router(threads)), 0);
             BOOST_TEST(sharded::total_size(shards) == oracle.size());
             const auto ours = sharded::operator_memory_usage(shards);
@@ -1061,7 +1103,11 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
     const auto threads = team_size();
     const auto fixture = nontrivial_fixtures().front();
     const auto source = sharded::seed_shards(options, make_seed(fixture, local_router(threads)), 0);
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    auto legacy_source = oracle_of(fixture, threads);
+#else
     auto legacy_source = legacy(fixture, 1);
+#endif
     const auto legacy_budget = Access::options(legacy_source).threads;
 
     // A reread of the environment would now fail, so neither copy may capture a fresh budget.
@@ -1081,6 +1127,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
 // Preservation evidence for the rank-level owner guard (MonomialPropagator::require_valid_), which S1 reuses rather
 // than duplicating per shard: an invalid owner's state is rejected before anything is copied, while copies made
 // before the failure stay exact and usable.
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 BOOST_AUTO_TEST_CASE(sharded_state_invalid_source_is_rejected_by_the_owner_guard) {
     const auto options = team_options();
     auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
@@ -1111,6 +1158,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_invalid_source_is_rejected_by_the_owner_guard
     BOOST_TEST(shards_difference(later, early_reference).empty());
     BOOST_TEST(early_propagator.size() == early_reference.front()->size());
 }
+#endif
 
 // --- Failure paths --------------------------------------------------------------------------------------------
 
@@ -1320,6 +1368,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_allocation_failures_leave_sources_intact
 
 // Preservation audit of the shared construction path: the legacy single-store constructor now seeds through the
 // extracted helpers, so every allocation failure on its thread must surface as std::bad_alloc without leaking.
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
 BOOST_AUTO_TEST_CASE(sharded_state_legacy_constructor_allocation_failures_are_catchable,
                      *boost::unit_test::precondition(has_allocation_probe)) {
     for (const auto &fixture : {nontrivial_fixtures().at(0), nontrivial_fixtures().at(1)}) {
@@ -1357,3 +1406,4 @@ BOOST_AUTO_TEST_CASE(sharded_state_legacy_constructor_allocation_failures_are_ca
         }
     }
 }
+#endif

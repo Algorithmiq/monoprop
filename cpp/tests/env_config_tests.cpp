@@ -21,9 +21,12 @@
 
 using monoprop::config::EnvConfigError;
 using monoprop::config::RoutingMode;
-using monoprop::config::detail::parse_positive_int;
 using monoprop::config::detail::parse_routing_mode;
 using monoprop::config::detail::parse_uint64;
+
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The legacy partition sizing's permissive parser; the sharded candidate has none (sharded_api_tests.cpp).
+using monoprop::config::detail::parse_positive_int;
 
 BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_null_and_malformed) {
     BOOST_CHECK(parse_positive_int(nullptr) == std::nullopt);
@@ -42,12 +45,17 @@ BOOST_AUTO_TEST_CASE(env_config_parse_positive_int_range) {
     BOOST_CHECK(parse_positive_int("1000000") == std::optional<int>(1'000'000)); // inclusive upper bound
 }
 
+#endif
+
 BOOST_AUTO_TEST_CASE(env_config_settings_cached_singleton) {
     const auto &a = monoprop::config::get();
     const auto &b = monoprop::config::get();
     BOOST_CHECK_EQUAL(&a, &b);
     // Touch a field so the Settings aggregate is actually read.
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
     BOOST_CHECK(a.num_threads == std::nullopt || *a.num_threads >= 1);
+#endif
+    BOOST_CHECK(a.route_seed == b.route_seed);
 }
 
 // Both routing parsers throw where parse_positive_int returns nullopt: a routing knob that

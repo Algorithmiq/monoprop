@@ -235,8 +235,10 @@ Barriers delimit each timed operation, so runtime is the **makespan** across ran
 of per-rank peak RSS: an upper bound, shared pages counted once per rank and rank-local peaks summed
 even when they never coexisted.
 
-`monoprop_PARTITIONS` is mandatory above one rank — the engine's default is `ranks == 1 ? cores : 1`,
-which would silently measure one partition per rank — and the declared shape is recorded in `meta`.
+`monoprop_PARTITIONS` is mandatory above one rank unless a shape is declared — the legacy engine's default is
+`ranks == 1 ? cores : 1`, which would silently measure one partition per rank — and the declared shape is
+recorded in `meta`. A sharded OpenMP build reads no partition count, so declare its multi-rank runs with
+`--runtime-shape=openmp` (below) instead.
 
 `mpi4py` is imported only when the imported extension reports `monoprop.has_mpi`: importing
 `mpi4py.MPI` initializes MPI, which an MPI-off run must never do, even with `mpi4py` installed. An
@@ -251,7 +253,9 @@ contradicts them. `meta` records the declaration, `has_mpi` and the extension's 
   run one rank.
 - `--build-mode=mpi` or `--build-mode=mpi-off` must match the imported extension's `has_mpi`.
 
-Without `--runtime-shape` the multi-rank `monoprop_PARTITIONS` check above still applies.
+Without `--runtime-shape` the multi-rank `monoprop_PARTITIONS` check above still applies, in either build. The
+`openmp` shape's requirement that `monoprop_PARTITIONS` be unset is measurement hygiene in the preflight: the
+sharded library ignores the variable.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
@@ -351,8 +355,9 @@ monoprop_PARTITIONS=96 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 taskset -c 0-9
 # Repeat with --whole-process in a new process; run `validate` without --sample-id.
 ```
 
-The candidate arm uses its own prototype environment and the ordinary public constructors, with no
-partition selector and no constructor overlay; the selector is rejected there:
+The candidate arm uses its own sharded environment and the ordinary public constructors, with no
+partition selector and no constructor overlay (the sharded constructor has no partition argument, and the
+preflight refuses a candidate launch that sets `monoprop_PARTITIONS`):
 
 ```bash
 # Candidate, MPI-off full machine: a monoprop_SHARDED_OPENMP_PROTOTYPE=ON environment, exact team.

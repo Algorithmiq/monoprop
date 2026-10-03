@@ -15,9 +15,12 @@
 // Construction-time thread budgets, their per-object plumbing, and the invalid-owner rule.
 //
 // Budgets are captured from monoprop_NUM_THREADS when an object is constructed. Cases that need a specific
-// launch environment are also registered as separate fresh-process CTest entries (see CMakeLists.txt);
-// the rest set the variable around one construction with ScopedEnv and restore it afterwards. These tests
-// check what reaches each object; kernel-level parallel execution is covered by openmp_kernel_tests.cpp.
+// launch environment are also registered as separate fresh-process CTest entries (see CMakeLists.txt). The
+// pure parser and capture cases set the variable around one call with ScopedEnv. In the legacy build, the
+// one-store prototype (explicit partitions=1) is the object under test, and ScopedEnv selects its budget too;
+// in the sharded candidate build every propagator captures the budget, and its T is its shard count, so no
+// candidate integration case changes the budget inside a process: those cases run at the launch's T. These
+// tests check what reaches each object; kernel-level parallel execution is covered by openmp_kernel_tests.cpp.
 
 #include <boost/test/unit_test.hpp>
 
@@ -100,6 +103,12 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The candidate root at the launch's budget.
+auto make_prototype(const test_utils::CaseData &data) -> Propagator {
+    return Propagator(data.hamiltonian, kCutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
+}
+#else
 auto make_sim(const test_utils::CaseData &data,
               size_t partitions,
               std::optional<unsigned int> schrodinger = std::nullopt) -> Propagator {
@@ -121,6 +130,7 @@ auto make_sim(const test_utils::CaseData &data,
 auto make_prototype(const test_utils::CaseData &data) -> Propagator {
     return make_sim(data, 1);
 }
+#endif
 
 auto load() -> test_utils::CaseData {
     return test_utils::load_case_data<kNumModes>("random_exact.msgpack");
@@ -287,8 +297,37 @@ BOOST_AUTO_TEST_CASE(openmp_prototype_budget_matches_the_launch_environment) {
     const auto data = load();
     const auto sim = make_prototype(data);
     BOOST_TEST(Access::options(sim).threads == expected_launch_budget());
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    // The candidate's shard count is its budget.
+    BOOST_TEST(Access::shards(sim).size() == static_cast<size_t>(expected_launch_budget()));
+    // The unset-variable launch: nothing supplied the variable, so the OpenMP default decided.
+    if (std::getenv("monoprop_TEST_EXPECT_UNSET_BUDGET") != nullptr) {
+        BOOST_TEST(std::getenv(kBudgetVariable) == nullptr);
+        BOOST_TEST(Access::options(sim).threads == omp_get_max_threads());
+    }
+#endif
 }
 
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+// The candidate reads the variable once, at construction: copies and clones never reread it, so even an unparseable
+// value set afterwards reaches neither them nor the source, while a new construction does read it. No second budget
+// is ever created in this process.
+BOOST_AUTO_TEST_CASE(openmp_prototype_captures_once_and_copies_preserve_it) {
+    const auto data = load();
+    auto sim = make_prototype(data);
+    const int team = Access::options(sim).threads;
+    build_all(sim, data);
+    const double energy = sim.expectation_value(data.parameters);
+    const ScopedEnv env(kBudgetVariable, "not-a-budget");
+    const Propagator copy(sim);
+    BOOST_TEST(Access::options(copy).threads == team);
+    BOOST_TEST(Access::shards(copy).size() == static_cast<size_t>(team));
+    BOOST_TEST(Access::options(*Access::clone(sim)).threads == team);
+    BOOST_TEST(sim.expectation_value(data.parameters) == energy);
+    BOOST_TEST(Propagator(copy).expectation_value(data.parameters) == energy);
+    BOOST_CHECK_THROW((void)make_prototype(data), PropagatorConfigError);
+}
+#else
 BOOST_AUTO_TEST_CASE(openmp_prototype_captures_once_and_copies_preserve_it) {
     const auto data = load();
     std::optional<Propagator> sim;
@@ -308,6 +347,8 @@ BOOST_AUTO_TEST_CASE(openmp_prototype_captures_once_and_copies_preserve_it) {
     BOOST_TEST(Access::options(*sim).threads == 3);
 }
 
+// Legacy only: the candidate's retained functionals evaluate in the owner's team (sharded_root_owners_do_the_work_of_
+// every_operation) and have no replaceable evaluation body.
 BOOST_AUTO_TEST_CASE(openmp_retained_functionals_carry_the_owner_budget) {
     const auto data = load();
     std::optional<Propagator> sim;
@@ -341,6 +382,7 @@ BOOST_AUTO_TEST_CASE(openmp_retained_functionals_carry_the_owner_budget) {
     BOOST_TEST(test_utils::near(sim->expectation_value_functional()(data.parameters),
                                 serial.expectation_value_functional()(data.parameters)));
 }
+#endif
 
 BOOST_AUTO_TEST_CASE(openmp_invalid_budget_is_a_config_error_at_construction) {
     const auto data = load();
@@ -356,6 +398,8 @@ BOOST_AUTO_TEST_CASE(openmp_invalid_budget_is_a_config_error_at_construction) {
     }
 }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+// Legacy only: the facade and automatic partition paths; the candidate has neither.
 BOOST_AUTO_TEST_CASE(openmp_legacy_paths_keep_serial_options) {
     const auto data = load();
     const ScopedEnv env(kBudgetVariable, "3");
@@ -374,7 +418,9 @@ BOOST_AUTO_TEST_CASE(openmp_legacy_paths_keep_serial_options) {
     }
 }
 
-// Registered again with OMP_THREAD_LIMIT=2 and monoprop_NUM_THREADS=3.
+// Registered again with OMP_THREAD_LIMIT=2 and monoprop_NUM_THREADS=3. Legacy only: a team limited below T is outside
+// the candidate's supported launch, so no candidate operation runs under it (for_blocks keeps its own reduced-team
+// contract in openmp_workshare_tests.cpp and openmp_env_kernels_*).
 BOOST_AUTO_TEST_CASE(openmp_runtime_limited_team_keeps_the_captured_budget) {
     const auto data = load();
     const auto sim = make_prototype(data);
@@ -390,12 +436,15 @@ BOOST_AUTO_TEST_CASE(openmp_runtime_limited_team_keeps_the_captured_budget) {
     // A smaller actual team is not a budget change.
     BOOST_TEST(Access::options(sim).threads == options.threads);
 }
+#endif
 
 BOOST_AUTO_TEST_CASE(openmp_propagator_work_leaves_openmp_settings_unchanged) {
     const auto data = load();
     const auto before = runtime_settings();
     {
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
         const ScopedEnv env(kBudgetVariable, "3");
+#endif
         auto sim = make_prototype(data);
         build_all(sim, data);
         (void)sim.expectation_value_and_gradient(data.parameters);
@@ -414,7 +463,9 @@ BOOST_AUTO_TEST_CASE(openmp_propagator_work_does_not_change_affinity,
     BOOST_REQUIRE(sched_getaffinity(0, sizeof(before), &before) == 0);
     {
         const auto data = load();
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
         const ScopedEnv env(kBudgetVariable, "3");
+#endif
         auto sim = make_prototype(data);
         build_all(sim, data);
         (void)sim.expectation_value_and_gradient(data.parameters);
@@ -523,6 +574,10 @@ BOOST_AUTO_TEST_CASE(openmp_failed_build_invalidates_the_owner) {
     BOOST_TEST(test_utils::near(early.expectation_value(params), before));
 }
 
+#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
+// Legacy only (a replaceable evaluation body): the candidate's equivalents inject failures into its real evaluation
+// phases (sharded_root_functional_failures_invalidate_their_owner,
+// sharded_root_failures_after_mutation_invalidate_the_root).
 BOOST_AUTO_TEST_CASE(openmp_failed_functional_evaluation_invalidates_the_owner) {
     const auto data = load();
     auto sim = make_prototype(data);
@@ -562,6 +617,7 @@ BOOST_AUTO_TEST_CASE(openmp_single_rank_worker_throw_keeps_the_original_exceptio
     BOOST_TEST(Access::is_invalid(sim));
     BOOST_CHECK_THROW((void)sim.expectation_value(data.parameters), InvalidPropagatorError);
 }
+#endif
 
 BOOST_AUTO_TEST_CASE(openmp_validation_errors_leave_the_owner_usable) {
     const auto data = load();
