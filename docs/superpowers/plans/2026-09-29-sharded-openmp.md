@@ -36,7 +36,10 @@ re-run (2026-10-02) left small deviations, which the owner accepted on 2026-10-0
 a later stage (see S4's outcome). That is the owner's **proceed** decision for the S4 checkpoint. S5 was separately
 authorized and implemented on 2026-10-02 (outcome under Task S5); its MPI+OpenMP checkpoint (tier A) ran the same day,
 and the owner accepted S5 as done on 2026-10-02, with the remaining deviations and the optimization opportunities
-recorded under S5 for later. S6 needs its own authorization.
+recorded under S5 for later. S6 was separately authorized, implemented and accepted by the owner on 2026-10-03
+(outcome under Task S6). The owner then authorized a bounded diagnostic re-check of the previously deviating
+checkpoint cells on the S6 binaries, after which the owner decides whether an optimization task (from S5's flagged
+list) is warranted before S7. S7 needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -935,23 +938,54 @@ candidate.
 No replacement constructor/setter. Single-shard raw accessor rejection uses launch-time T, not a user shard selector.
 Mathematical operations, virtual clone/update hooks, aggregate reporting and decoded exports retain their contracts.
 
-- [ ] Add compile/API tests proving old explicit partition/factory signatures are absent from the candidate, Python
+**Outcome:** implemented and **accepted by the owner on 2026-10-03**. Start: `ef103e9`. Audit and migration ledger
+(written first), handoff with identities, commands and evidence: `/home/ubuntu/s6-artifacts/` (`LEDGER.md`,
+`HANDOFF.md`), outside the checkout.
+
+- Candidate C++ surface: the constructor ends with `basis_change, logical_num_modes, basis` (public and private
+  observer constructors); `partitions`, `child_factory`, `PartitionChildFactory`, the partition forward declaration,
+  `PartitionCountMismatch`, the `PartitionGroup.h` include and the `monoprop_PARTITIONS` check are gone from the
+  candidate, without aliases. Raw accessors throw `MultiShardUnsupported` (validity first). `EnvConfig.h`'s permissive,
+  cached thread parser is legacy-only. The legacy (OFF) surface and binaries are unchanged: its `_core`, `libmonoprop`
+  and failure driver hash as at S5.
+- Python: the candidate `_core` constructor (callable, annotations, docstring and `_core.pyi`) has no `partitions`;
+  removed and never-added keywords and the old positional tail raise `TypeError` at every level.
+- Tests: `sharded_api_tests.cpp` (compile-time probes asserted per build, so each must be true in the legacy build
+  and false in the candidate); the S1-S3 seam suites, `openmp_runtime_tests.cpp` and `fused_cos_sweep_tests.cpp`
+  compile in both builds with legacy-oracle cases OFF-only; a test-only `fused_records` observer hook audits real
+  per-shard fused records; extended virtual-hook, raw-access, ignored-variable and unset-budget cases. The runner no
+  longer supplies `monoprop_NUM_THREADS`; CTest registration sets T = 1; whole-suite MPI variants run in candidate
+  builds; `fused_env_t*`, `openmp_env_root_t4` and `sharded_root_env_openmp_default_t3` are new fixed launches.
+- Consumers and CI: the probe and `find_package_smoke` check the constructor shape, derived hooks, raw access, the
+  inherited selector and MPI setting, and (MPI) a two-rank comparison with one process; CI gains `runtime: sharded`
+  legs with distinct cache and report identities and `just check-runtime`.
+- Evidence (GCC 15.2/libgomp, Open MPI 5.0.10, this host): RED first (compile probes, two runtime cases, 24 Python
+  cases); 13 mutants and a TSan race mutant detected; final matrix r-off 492/492 + pytest 813, m-off 551/551 +
+  pytest 855 + 2 x 742 at two ranks, r-on 487/487 + pytest 874 (T = 1, with the legacy bitwise comparisons) and 813
+  (T = 2, 4), m-on 550/550 + pytest 950/853/853 + 2 x 742; GCC ASan/UBSan and Clang 18/libomp/Archer TSan without
+  reports; Clang/libomp 487/492; installed consumers for all four packages.
+- Pending: macOS, Linux aarch64, wheels, Nix, minimum-version compilers, Python sanitizer legs, multi-node. No
+  performance claim: the candidate MPI binaries changed (S5's checkpoint does not cover them); S7 is unchanged.
+
+- [x] Add compile/API tests proving old explicit partition/factory signatures are absent from the candidate, Python
   construction has no new thread/shard argument, and budget parsing/capture/copy use the existing environment contract.
-- [ ] Implement single-shard access with an explicit T>1 exception and a T=1 remedy. Do not fabricate raw merged
+- [x] Implement single-shard access with an explicit T>1 exception and a T=1 remedy. Do not fabricate raw merged
   storage. Update the old `MultiPartitionUnsupported` diagnostic/type as part of the documented C++ break.
-- [ ] Migrate the audit's real call sites and tests, preserving coverage. Export through shard indices/coefficient
+- [x] Migrate the audit's real call sites and tests, preserving coverage. Export through shard indices/coefficient
   vectors; fixed-geometry graph-layout tests inspect shards privately. Cross-geometry tests compare full retained maps.
   Retain actual-participation, capacity, malformed-input, fresh-insertion, copy/clone/update and failure-lifetime tests.
-- [ ] Remove the test main's `monoprop_PARTITIONS=off` assignment; ordinary C++/Python tests launch at T=1. Register
+- [x] Remove the test main's `monoprop_PARTITIONS=off` assignment; ordinary C++/Python tests launch at T=1. Register
   dedicated fixed-T launches without `ScopedBudget` mutation in integration tests. Do not use `OMP_THREAD_LIMIT<T` to
-  test the unsupported sharded configuration, or make all tests serial to avoid migration.
-- [ ] Update `README.md` when relevant, `docs/content/docs/features/parallelism.mdx`,
+  test the unsupported sharded configuration, or make all tests serial to avoid migration. (The assignment stays in
+  legacy builds only, which still read the variable, until S8.)
+- [x] Update `README.md` when relevant, `docs/content/docs/features/parallelism.mdx`,
   `docs/content/docs/building.mdx`, `cpp/tests/README.md`, `benches/LADDER.md` and `CONTEXT.md` if terminology needs
   clarification. Explain required OpenMP, launch-before-import configuration, fixed geometry, single-shard accessors,
   removed extension surface, NUMA/physical-core allocation and new test commands. Update docstrings/API links.
-- [ ] Regenerate bindings/dispatch through the supported build, never by editing generated files. Run full R/M C++ and
+  (`CONTEXT.md` unchanged: its pinned hash is a frozen input.)
+- [x] Regenerate bindings/dispatch through the supported build, never by editing generated files. Run full R/M C++ and
   Python suites and installed consumers; rebuild all ABI-coupled artifacts together. Close every migration-ledger row.
-- [ ] Hand off the source/API coverage audit and pending platforms. Runtime deletion and formal measurements require
+- [x] Hand off the source/API coverage audit and pending platforms. Runtime deletion and formal measurements require
   their following gates; this task alone does not establish parity or publication readiness.
 
 ## Task S7: Frozen full-library parity before removal
