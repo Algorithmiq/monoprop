@@ -1010,7 +1010,7 @@ auto run_gates(parallel::Options options,
                         t,
                         [&] {
                             observer.visit(W::pack, step, t);
-                            pack_replay_blocks(*replay, frame.replay_published[0], t);
+                            pack_replay_column(*replay, replay_pairs, 0, t);
                         },
                         [&] {
                             const double build_angle = angle_of(idx);

@@ -343,6 +343,102 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_rejects_invalid_layouts_before_posting) {
     BOOST_TEST(ex.live() == 0);
 }
 
+// Owner-parallel planning (close_rows, plan_totals, plan_column, place_column) lays every block out exactly where
+// plan_send + plan_recv do: same slice address and size for every (shard, peer, other shard), same staging sizes.
+// No MPI call is made, so a world of several ranks can be described without launching them; every rank position is
+// covered, sparse and dense count tables, empty rows and columns.
+BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primary_layout) {
+    uint64_t state = 0x9E3779B97F4A7C15ULL;
+    const auto next = [&state](uint64_t bound) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state % bound;
+    };
+    for (const size_t ranks : {size_t{2}, size_t{3}, size_t{4}}) {
+        for (const size_t threads : {size_t{1}, size_t{2}, size_t{5}}) {
+            for (size_t rank = 0; rank < ranks; ++rank) {
+                for (const uint64_t density : {uint64_t{0}, uint64_t{3}, uint64_t{10}}) {
+                    BOOST_TEST_CONTEXT("ranks " << ranks << " threads " << threads << " rank " << rank << " density "
+                                                << density) {
+                        const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = rank, .ranks = ranks};
+                        PhysicalExchange primary(w, threads, ExchangeElement::f64, kTag);
+                        PhysicalExchange owners(w, threads, ExchangeElement::f64, kTag);
+                        std::vector<size_t> peers;
+                        for (size_t b = 0; b < ranks; ++b) {
+                            if (b != rank) {
+                                peers.push_back(b);
+                            }
+                        }
+                        for (size_t t = 0; t < threads; ++t) {
+                            primary.reset_rows(t);
+                            owners.reset_rows(t);
+                            for (size_t k = 0; k < peers.size(); ++k) {
+                                for (size_t o = 0; o < threads; ++o) {
+                                    // density 10: every entry nonzero; 3: about a third; 0: all empty.
+                                    const size_t send = density == 0 || next(10) >= density ? 0 : 1 + next(50);
+                                    const size_t recv = density == 0 || next(10) >= density ? 0 : 1 + next(50);
+                                    primary.set_send_count(t, k, o, send);
+                                    primary.set_recv_count(t, k, o, recv);
+                                    owners.set_send_count(t, k, o, send);
+                                    owners.set_recv_count(t, k, o, recv);
+                                }
+                            }
+                            owners.close_rows(t);
+                        }
+                        primary.plan_send(peers, ExchangeTransport::pairwise);
+                        primary.plan_recv();
+                        owners.plan_totals(peers, ExchangeTransport::pairwise);
+                        for (size_t t = 0; t < threads; ++t) {
+                            owners.plan_column(t);
+                        }
+                        for (size_t t = threads; t-- > 0;) { // any order: each owner writes only its own column
+                            owners.place_column(t);
+                        }
+                        // Offsets relative to each staging's start, since the two exchanges own different buffers.
+                        const auto *send0 = primary.send_block<double>(0, 0, 0).data();
+                        const auto *send1 = owners.send_block<double>(0, 0, 0).data();
+                        const auto *recv0 = primary.recv_block<double>(0, 0, 0).data();
+                        const auto *recv1 = owners.recv_block<double>(0, 0, 0).data();
+                        size_t mismatches = 0;
+                        for (size_t t = 0; t < threads; ++t) {
+                            for (size_t k = 0; k < peers.size(); ++k) {
+                                for (size_t o = 0; o < threads; ++o) {
+                                    const auto a = primary.send_block<double>(t, k, o);
+                                    const auto b = owners.send_block<double>(t, k, o);
+                                    const auto c = primary.recv_block<double>(t, k, o);
+                                    const auto d = owners.recv_block<double>(t, k, o);
+                                    mismatches += static_cast<size_t>(
+                                        a.size() != b.size() || a.data() - send0 != b.data() - send1
+                                        || c.size() != d.size() || c.data() - recv0 != d.data() - recv1);
+                                }
+                            }
+                        }
+                        BOOST_TEST(mismatches == 0U);
+                        BOOST_TEST(owners.live() == 0);
+                    }
+                }
+            }
+        }
+    }
+    // Placing a column before the round is sized is refused.
+    const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = 0, .ranks = 2};
+    PhysicalExchange unplanned(w, 2, ExchangeElement::f64, kTag);
+    BOOST_CHECK_THROW(unplanned.place_column(0), std::logic_error);
+    BOOST_CHECK_THROW(unplanned.plan_column(2), std::out_of_range);
+    BOOST_CHECK_THROW(unplanned.close_rows(2), std::out_of_range);
+    // A per-peer total past INT_MAX is refused before anything is placed or posted, as by plan_send().
+    PhysicalExchange big(w, 2, ExchangeElement::f64, kTag);
+    for (size_t t = 0; t < 2; ++t) {
+        big.reset_rows(t);
+        big.set_send_count(t, 0, 0, static_cast<size_t>(std::numeric_limits<int>::max()));
+        big.close_rows(t);
+    }
+    BOOST_CHECK_THROW(big.plan_totals(std::vector<size_t>{1}, ExchangeTransport::pairwise), std::length_error);
+    BOOST_CHECK_THROW(big.place_column(0), std::logic_error);
+    BOOST_TEST(big.live() == 0);
+}
+
 BOOST_AUTO_TEST_CASE(sharded_exchange_payload_totals_must_fit_mpi_counts) {
     // Per-peer totals are prefix sums of int counts; a sum past INT_MAX is refused by plan_send, before posting.
     const auto w = world();

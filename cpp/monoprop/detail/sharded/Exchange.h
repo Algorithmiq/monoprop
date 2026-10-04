@@ -42,6 +42,16 @@
  * with a team checkpoint between consecutive lines. Planning and MPI calls are serial on the primary; packing and
  * reading are owner-parallel over disjoint memory.
  *
+ * A round whose receive counts its owners know (a replay step) can be planned owner-parallel instead, with the same
+ * number of checkpoints and the same offsets as plan_send() + plan_recv(), but O(P x T) work on the primary instead of
+ * O(P x T^2):
+ *
+ *   O  reset_rows(t), set_send_count / set_recv_count for every index of every other rank, then close_rows(t)
+ *   P  plan_totals(peers, transport)        O  plan_column(t)
+ *   O  place_column(t), then pack send_block<T>(u, peer, t) for every local source u: owner t fills column t
+ *   P  post(), and later wait()
+ *   O  read recv_block<T>(t, peer, source)
+ *
  * Wire layout, as the legacy hybrid transport: the message to peer rank b holds, for each of b's shards t in
  * ascending order, each local source shard's block for (b, t) in ascending source order. Received messages have the
  * same layout, so a local destination's part of a message is contiguous and its blocks ascend by source shard.
@@ -186,6 +196,31 @@ public:
     [[nodiscard]] monoprop_EXPORT auto send_count(size_t shard, size_t peer, size_t dest) const -> size_t;
     //! The receive count for (shard, peer, source): set by its owner or by wait_counts().
     [[nodiscard]] monoprop_EXPORT auto recv_count(size_t shard, size_t peer, size_t source) const -> size_t;
+
+    // --- Owner-parallel planning (rounds whose rows cover every other rank, such as replay steps) ------------------
+
+    //! Owner `shard`, after writing both of its rows: record its per-peer row totals for plan_totals().
+    monoprop_EXPORT auto close_rows(size_t shard) -> void;
+    /*!
+     * \brief Start a round over `peers` from the owners' row totals (close_rows()): per-peer MPI counts and
+     *        displacements and both staging sizes, in O(P x T) on the primary.
+     *
+     * The owners' offsets follow from plan_column() (same phase) and place_column() (next phase); they equal what
+     * plan_send() and plan_recv() lay out. Row index k must be the k-th peer of `peers` for every possible peer index.
+     *
+     * \throws As plan_send(): std::invalid_argument for an invalid peer set, std::length_error if a total does not fit
+     *         an int, std::logic_error while requests are live. Nothing is posted.
+     */
+    monoprop_EXPORT auto plan_totals(std::span<const size_t> peers, ExchangeTransport transport) -> void;
+    //! Owner `shard`, in plan_totals()' phase: the send-side sum of column `shard` (local sources to remote shard
+    //! `shard`) for every possible peer index.
+    monoprop_EXPORT auto plan_column(size_t shard) -> void;
+    /*!
+     * \brief Owner `shard`, one checkpoint after plan_totals() and every plan_column(): the send offsets of column
+     *        `shard` (every local source's block for remote shard `shard`) and the receive offsets of row `shard`.
+     * \throws std::logic_error before plan_totals(); std::out_of_range for a shard outside the table.
+     */
+    monoprop_EXPORT auto place_column(size_t shard) -> void;
 
     // --- Primary side: planning and MPI -----------------------------------------------------------------------------
 

@@ -211,14 +211,34 @@ private:
 
 /*!
  * \brief Owner `shard`'s rows of a replay round from its publication: what it sends to and receives from every shard
- *        of every other rank. A layer's partner layout is symmetric, so both counts are the published block size.
+ *        of every other rank, then its row totals (PhysicalExchange::close_rows()). A layer's partner layout is
+ *        symmetric, so both counts are the published block size.
  */
 monoprop_EXPORT auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
 
 /*!
  * \brief Owner `shard` copies its published blocks for every shard of every other rank into the round's send slices.
+ *
+ * Requires the round's offsets for this owner's row, which plan_send() lays out; ReplayRound plans owner-parallel
+ * and packs by column instead (pack_replay_column()).
  */
 monoprop_EXPORT auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
+
+/*!
+ * \brief Owner `shard` copies every local owner's published block for remote shard `shard` of every other rank into
+ *        the round's send slices: column `shard`, whose offsets it placed itself (PhysicalExchange::place_column()).
+ *
+ * Reads other owners' publications, which are immutable from their publication checkpoint until consumed.
+ *
+ * \param round  The step's round, planned with plan_totals().
+ * \param owners Per local shard, its publication pair; every entry non-null.
+ * \param buffer The entry of each pair that holds this step.
+ * \param shard  This owner, the remote shard index of the column it fills.
+ */
+monoprop_EXPORT auto pack_replay_column(PhysicalExchange &round,
+                                        std::span<const PublishedPair *const> owners,
+                                        size_t buffer,
+                                        size_t shard) -> void;
 
 /*!
  * \brief A replay step's physical round with the communicator-agreed transport; inert (null) when P = 1.
@@ -228,11 +248,12 @@ struct ReplayRound {
     ExchangeTransport transport = ExchangeTransport::pairwise; //!< mpi::routes_pairwise() of the communicator.
 
     /*!
-     * \brief The round's three phases, after the phase in which every owner wrote its rows.
+     * \brief The round's three phases, after the phase in which every owner wrote its rows (write_replay_rows()).
      *
-     * A primary phase lays the round out over every other rank; every owner then runs `pack()`; finally the primary
-     * posts, every owner runs `overlap()` while the transfer is in flight, and the primary completes it. Every worker
-     * must call this at the same point of its sequence.
+     * The round is planned owner-parallel over every other rank: the primary sizes it from the owners' row totals
+     * while every owner sums its column; every owner then places its column's offsets and runs `pack()`, which fills
+     * that column (pack_replay_column()); finally the primary posts, every owner runs `overlap()` while the transfer
+     * is in flight, and the primary completes it. Every worker must call this at the same point of its sequence.
      *
      * \return The last checkpoint decision, identical on every worker; on false the caller ends its sequence.
      */
@@ -244,11 +265,17 @@ struct ReplayRound {
                          if (shard == 0) {
                              const auto peers =
                                  other_ranks(PhysicalWorld{.rank = round->rank(), .ranks = round->ranks()});
-                             round->plan_send(peers, transport);
-                             round->plan_recv();
+                             round->plan_totals(peers, transport);
                          }
+                         round->plan_column(shard);
                      })
-               && phase(failure, shard, pack) && phase(failure, shard, [&] {
+               && phase(failure,
+                        shard,
+                        [&] {
+                            round->place_column(shard);
+                            pack();
+                        })
+               && phase(failure, shard, [&] {
                       if (shard == 0) {
                           round->post();
                       }

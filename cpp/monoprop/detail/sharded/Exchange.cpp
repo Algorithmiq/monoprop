@@ -100,9 +100,14 @@ struct PhysicalExchange::State {
     // peer `peer`. Row `shard` has one writer, its owner, except where the primary fills receive rows.
     std::vector<int> send_rows;
     std::vector<int> recv_rows;
-    // Element offsets into the staging, same shape; derived by the primary's planning.
+    // Element offsets into the staging, same shape; derived by the primary's planning, or owner-parallel.
     std::vector<size_t> send_off;
     std::vector<size_t> recv_off;
+    // Owner-parallel planning: per-owner row totals [shard * max_peers + peer] (one writer each, close_rows()), and
+    // per-column send sums [peer * threads + column] (one writer per column, plan_column()).
+    std::vector<long long> send_totals;
+    std::vector<long long> recv_totals;
+    std::vector<long long> column_sums;
 
     std::vector<size_t> peers;
     ExchangeTransport transport = ExchangeTransport::pairwise;
@@ -252,6 +257,9 @@ PhysicalExchange::PhysicalExchange(const PhysicalWorld &world, size_t threads, E
     s.recv_rows.assign(table, 0);
     s.send_off.assign(table, 0);
     s.recv_off.assign(table, 0);
+    s.send_totals.assign(threads * s.max_peers, 0);
+    s.recv_totals.assign(threads * s.max_peers, 0);
+    s.column_sums.assign(s.max_peers * threads, 0);
     s.mpi_send_counts.assign(world.ranks, 0);
     s.mpi_send_displs.assign(world.ranks, 0);
     s.mpi_recv_counts.assign(world.ranks, 0);
@@ -357,6 +365,110 @@ auto PhysicalExchange::plan_send(std::span<const size_t> peers, ExchangeTranspor
         s.lay_out(s.send_rows, s.send_off, s.mpi_send_counts, s.mpi_send_displs, /*send_side=*/true, "send total");
     s.size_stage(s.send_stage, total);
     s.send_planned = true;
+}
+
+auto PhysicalExchange::close_rows(size_t shard) -> void {
+    require_state(state_.get());
+    State &s = *state_;
+    if (shard >= s.threads) {
+        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
+    }
+    for (size_t k = 0; k < s.max_peers; ++k) {
+        long long sent = 0;
+        long long received = 0;
+        for (size_t t = 0; t < s.threads; ++t) {
+            const size_t i = (shard * s.stride) + (k * s.threads) + t;
+            sent += s.send_rows[i];
+            received += s.recv_rows[i];
+        }
+        s.send_totals[(shard * s.max_peers) + k] = sent;
+        s.recv_totals[(shard * s.max_peers) + k] = received;
+    }
+}
+
+auto PhysicalExchange::plan_totals(std::span<const size_t> peers, ExchangeTransport transport) -> void {
+    require_state(state_.get());
+    State &s = *state_;
+    s.require_idle("plan_totals");
+    s.send_planned = false;
+    s.recv_planned = false;
+    s.set_peers(peers, transport);
+    // As lay_out(): peer k's message occupies [base_k, base_k + total_k), the bases a running sum over the peers.
+    const auto place = [&](const std::vector<long long> &totals,
+                           std::vector<int> &mpi_counts,
+                           std::vector<int> &mpi_displs,
+                           const char *what) -> size_t {
+        std::ranges::fill(mpi_counts, 0);
+        std::ranges::fill(mpi_displs, 0);
+        long long running = 0;
+        for (size_t k = 0; k < s.peers.size(); ++k) {
+            long long total = 0;
+            for (size_t shard = 0; shard < s.threads; ++shard) {
+                total += totals[(shard * s.max_peers) + k];
+            }
+            const size_t r = s.peers[k];
+            mpi_displs[r] = checked_int(running, what);
+            mpi_counts[r] = checked_int(total, what);
+            running += total;
+        }
+        return static_cast<size_t>(checked_int(running, what));
+    };
+    const size_t sent = place(s.send_totals, s.mpi_send_counts, s.mpi_send_displs, "send total");
+    const size_t received = place(s.recv_totals, s.mpi_recv_counts, s.mpi_recv_displs, "receive total");
+    s.size_stage(s.send_stage, sent);
+    s.size_stage(s.recv_stage, received);
+    s.send_planned = true;
+    s.recv_planned = true;
+}
+
+auto PhysicalExchange::plan_column(size_t shard) -> void {
+    require_state(state_.get());
+    State &s = *state_;
+    if (shard >= s.threads) {
+        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
+    }
+    for (size_t k = 0; k < s.max_peers; ++k) {
+        long long sum = 0;
+        for (size_t u = 0; u < s.threads; ++u) {
+            sum += s.send_rows[(u * s.stride) + (k * s.threads) + shard];
+        }
+        s.column_sums[(k * s.threads) + shard] = sum;
+    }
+}
+
+auto PhysicalExchange::place_column(size_t shard) -> void {
+    require_state(state_.get());
+    State &s = *state_;
+    if (!s.send_planned || !s.recv_planned) {
+        throw std::logic_error("sharded exchange: place_column() before plan_totals()");
+    }
+    if (shard >= s.threads) {
+        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
+    }
+    // Every partial sum is bounded by its peer's checked total, so it fits an int.
+    for (size_t k = 0; k < s.peers.size(); ++k) {
+        const size_t r = s.peers[k];
+        // Send: destination-shard major, so column `shard` starts after the earlier columns; sources ascend within it.
+        long long running = s.mpi_send_displs[r];
+        for (size_t t = 0; t < shard; ++t) {
+            running += s.column_sums[(k * s.threads) + t];
+        }
+        for (size_t u = 0; u < s.threads; ++u) {
+            const size_t i = (u * s.stride) + (k * s.threads) + shard;
+            s.send_off[i] = static_cast<size_t>(running);
+            running += s.send_rows[i];
+        }
+        // Receive: local-destination major, so row `shard` starts after the earlier rows; sources ascend within it.
+        running = s.mpi_recv_displs[r];
+        for (size_t t = 0; t < shard; ++t) {
+            running += s.recv_totals[(t * s.max_peers) + k];
+        }
+        for (size_t su = 0; su < s.threads; ++su) {
+            const size_t i = (shard * s.stride) + (k * s.threads) + su;
+            s.recv_off[i] = static_cast<size_t>(running);
+            running += s.recv_rows[i];
+        }
+    }
 }
 
 auto PhysicalExchange::post_counts() -> void {

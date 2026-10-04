@@ -407,7 +407,7 @@ struct EvaluationRun {
                 if (!remote.run(
                         failure,
                         t,
-                        [&] { pack_replay_blocks(*remote.round, frames[t]->published[p % 2], t); },
+                        [&] { pack_replay_column(*remote.round, pairs, p % 2, t); },
                         callbacks_of_step)) {
                     return;
                 }
@@ -483,11 +483,7 @@ auto forward_steps(TeamFailure &failure,
             }
         };
         if (round != nullptr) {
-            if (!job.remote.run(
-                    failure,
-                    t,
-                    [&] { pack_replay_blocks(*round, job.owners[t].published[p % 2], t); },
-                    cosines_of_step)) {
+            if (!job.remote.run(failure, t, [&] { pack_replay_column(*round, pairs, p % 2, t); }, cosines_of_step)) {
                 return false;
             }
         }
@@ -549,6 +545,7 @@ auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, s
             round.set_recv_count(shard, k, t, count);
         }
     }
+    round.close_rows(shard);
 }
 
 auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
@@ -563,6 +560,25 @@ auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, 
             const size_t slot = (peers[k] * threads) + t;
             const auto *const first = out.values.data() + out.layout.displs[slot];
             std::copy_n(first, slice.size(), slice.begin());
+        }
+    }
+}
+
+auto pack_replay_column(PhysicalExchange &round,
+                        std::span<const PublishedPair *const> owners,
+                        size_t buffer,
+                        size_t shard) -> void {
+    const size_t threads = round.threads();
+    const auto peers = round.peers();
+    for (size_t k = 0; k < peers.size(); ++k) {
+        const size_t slot = (peers[k] * threads) + shard;
+        for (size_t u = 0; u < threads; ++u) {
+            const auto slice = round.send_block<double>(u, k, shard);
+            if (slice.empty()) {
+                continue;
+            }
+            const PublishedEndpoints &out = (*owners[u])[buffer];
+            std::copy_n(out.values.data() + out.layout.displs[slot], slice.size(), slice.begin());
         }
     }
 }
