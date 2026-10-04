@@ -37,9 +37,10 @@ a later stage (see S4's outcome). That is the owner's **proceed** decision for t
 authorized and implemented on 2026-10-02 (outcome under Task S5); its MPI+OpenMP checkpoint (tier A) ran the same day,
 and the owner accepted S5 as done on 2026-10-02, with the remaining deviations and the optimization opportunities
 recorded under S5 for later. S6 was separately authorized, implemented and accepted by the owner on 2026-10-03
-(outcome under Task S6). The owner then authorized a bounded diagnostic re-check of the previously deviating
-checkpoint cells on the S6 binaries, after which the owner decides whether an optimization task (from S5's flagged
-list) is warranted before S7. S7 needs its own authorization.
+(outcome under Task S6). Bounded diagnostics and one optimization followed before S7 (recorded after S6's checklist):
+a re-check of the deviating checkpoint cells, B-replay (owner-parallel replay layout, landed) and B-memory (staging
+change rejected). The owner decided to run S7 with the remaining MPI-off memory cells recorded as known deviations.
+S7 needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -987,6 +988,42 @@ Mathematical operations, virtual clone/update hooks, aggregate reporting and dec
   Python suites and installed consumers; rebuild all ABI-coupled artifacts together. Close every migration-ledger row.
 - [x] Hand off the source/API coverage audit and pending platforms. Runtime deletion and formal measurements require
   their following gates; this task alone does not establish parity or publication readiness.
+
+### After S6: deviating-cell re-check, B-replay and B-memory (owner-authorized, 2026-10-03/04)
+
+Diagnostic evidence and one optimization between S6 and S7, each step under a written scope with a stop for the
+owner. Artifacts: `/home/ubuntu/s6-artifacts/checkpoint-c/`, `b-replay/` and `b-memory/` (outside the checkout).
+
+- **Re-check (C).** The 21 checkpoint cells with any ratio above 1.00 at their latest checkpoint, measured on the S6
+  binaries with the S5 runner and protocol (5 pairs, 88 of 120 minutes, numerics equal). Five passed all five ratios.
+  The 2×48 runtime misses persisted (energy Pauli 1.13, gradient Schrödinger 1.16), as did the off-1x96 operation peaks
+  (+0.3–0.7 %).
+- **B-replay, step 0 (profiling).**
+  - The 2×48 gap is a first-call effect: in steady state the candidate is within ±3 % of the baseline.
+  - About half of the measured gap comes from the runner's own process supervision: a memory and per-thread sampler
+    runs unbound on the measured cores, and the candidate's many team barriers per step amplify it.
+  - The rest is mostly the primary laying out every remote replay step serially, about a third of the primary's
+    time in energy Pauli.
+  - MPI itself is under 1 % of samples.
+- **B-replay, change A (`bb71b9a`).** Owner-parallel replay-round layout, with offsets and bytes unchanged; the
+  multi-rank seams are bitwise against the legacy runtime and the four-build matrix and sanitizers are clean.
+  - Energy Pauli: about 7 ms per call faster, 1.03 → 0.97 of the baseline in steady state.
+  - The Schrödinger evaluation cells are unchanged.
+  - A protocol re-check put all three 2×48 cells at or below 1.00. The Schrödinger passes depend on noisy baseline
+    samples, and the owner chose to leave them (option a).
+- **B-memory, step 0 (attribution).** The off-1x96 peak excess, candidate minus baseline at the same cell, has four
+  parts:
+  - the extension's resident code pages, +2.0–2.3 MiB (`_core` 12.8 MB against 9.95 MB);
+  - other anonymous mappings, +1–2 MiB;
+  - allocator retention with equal live bytes, +4.8 MiB on Schrödinger only (shard 0 allocates from the main
+    arena);
+  - the per-owner partner staging, about +3.8 MiB in evaluation (96 × 32 KiB plus its lists).
+- **B-memory, change 1.** A smaller staging run was rejected. Gradient Hubbard slows monotonically, by 1.8 % at 2048
+  values and 4 % at 512, while saving at most 2.6 MiB, which brings no cell to the baseline.
+- **Owner decision (2026-10-04).** No structural change for the remaining few MiB. S7 runs with its five gates
+  unchanged, and the MPI-off memory cells that fail by these constant overheads are recorded as **known deviations**.
+  This records an expected outcome; it relaxes no gate. The runner-supervision interaction was raised with the owner
+  and left unchanged; changing it would alter the frozen measurement protocol.
 
 ## Task S7: Frozen full-library parity before removal
 
