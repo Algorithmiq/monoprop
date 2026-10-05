@@ -217,8 +217,9 @@ struct InvertedIndex {
 
 inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
 
-// Reusable fold blocks (thread_local: each partition master owns its copy). Two independent scratches
-// because the build scan needs the generator fold and a sparse pivot column expanded simultaneously.
+static_assert(kColumnBlockWords % 64 == 0, "the zero-block summary holds one bit per block word");
+
+// Reusable fold block (thread_local: each partition master owns its copy); overwritten on every use.
 inline auto column_block_scratch() -> std::vector<uint64_t> & {
     static thread_local std::vector<uint64_t> blk;
     if (blk.size() < kColumnBlockWords) {
@@ -226,12 +227,25 @@ inline auto column_block_scratch() -> std::vector<uint64_t> & {
     }
     return blk;
 }
-inline auto pivot_column_block_scratch() -> std::vector<uint64_t> & {
-    static thread_local std::vector<uint64_t> blk;
-    if (blk.size() < kColumnBlockWords) {
-        blk.assign(kColumnBlockWords, 0);
-    }
-    return blk;
+
+// A kColumnBlockWords block that is all-zero between uses, plus one summary bit per block word a scatter
+// touched, so a sparse fold costs O(postings) rather than O(block words). Whoever scatters into it must
+// zero exactly the words it touched (and their summary bits) before returning.
+struct ZeroBlockScratch {
+    static constexpr size_t kSummaryWords = kColumnBlockWords / 64;
+    std::vector<uint64_t> words = std::vector<uint64_t>(kColumnBlockWords, 0);
+    std::array<uint64_t, kSummaryWords> summary{};
+};
+
+// Two independent zero blocks (thread_local), because the build scan expands the generator fold and a
+// sparse pivot column simultaneously.
+inline auto fold_zero_scratch() -> ZeroBlockScratch & {
+    static thread_local ZeroBlockScratch scratch;
+    return scratch;
+}
+inline auto pivot_zero_scratch() -> ZeroBlockScratch & {
+    static thread_local ZeroBlockScratch scratch;
+    return scratch;
 }
 
 // XOR a generator's inverted-index columns for fold words [bb, be) into blk[0 .. be-bb): dense columns
@@ -281,6 +295,216 @@ template <size_t NumModes>
                 blk[(*it >> 6) - bb] ^= (uint64_t{1} << (*it & 63U));
             }
         }
+    }
+}
+
+// How for_each_fold_word folds each block. Every choice visits the same words with the same bits; only
+// the cost differs. Auto is the production setting; the forced ones exist for equivalence tests.
+enum class FoldPath : std::uint8_t {
+    Auto,   // posting-driven where eligible and no denser than kSparseFoldPostingsPerWord, else block
+    Block,  // always the word-sweeping block combine
+    Sparse, // posting-driven wherever eligible, whatever the density
+};
+
+// Postings per block word above which an eligible block still takes the word-sweeping path. The
+// posting-driven path pays two scattered read-modify-writes per posting plus one visit per touched word;
+// the block path streams every word of the block. Tunable; no output depends on it.
+inline constexpr double kSparseFoldPostingsPerWord = 0.5;
+
+// Per-block posting ranges of a fold's sparse columns: [begin[ci], end[ci]) indexes column ci's
+// set_rows. Thread-local and not re-entrant: no visitor may start another fold.
+inline auto fold_cursor_scratch() -> std::vector<size_t> & {
+    static thread_local std::vector<size_t> cursor;
+    return cursor;
+}
+
+// The word-sweeping block: combine_columns_block over the carried posting ranges, then mask and visit
+// every word. `dense_seed` is the first dense column's index in `cols`, or cols.size() if none.
+template <size_t NumModes, typename WordOp>
+[[gnu::always_inline]] inline auto fold_block_by_words(const InvertedIndex<NumModes> &sc,
+                                                       std::span<const size_t> cols,
+                                                       size_t dense_seed,
+                                                       const size_t *begin,
+                                                       const size_t *end,
+                                                       uint64_t *blk,
+                                                       size_t bb,
+                                                       size_t be,
+                                                       size_t last_word,
+                                                       uint64_t last_word_mask,
+                                                       const uint64_t *row_parity,
+                                                       WordOp &on_word) -> void {
+    const size_t nb = be - bb;
+    if (dense_seed < cols.size()) {
+        std::memcpy(blk, sc.dense_column_data(cols[dense_seed]) + bb, nb * sizeof(uint64_t));
+    }
+    else {
+        std::memset(blk, 0, nb * sizeof(uint64_t));
+    }
+    for (size_t ci = 0; ci < cols.size(); ++ci) {
+        if (ci == dense_seed) {
+            continue;
+        }
+        const size_t c = cols[ci];
+        if (sc.column_is_dense(c)) {
+            const uint64_t *d = sc.dense_column_data(c);
+            for (size_t wi = bb; wi < be; ++wi) {
+                blk[wi - bb] ^= d[wi];
+            }
+        }
+        else {
+            const TermIndex *rows = sc.sparse_column_rows(c).data();
+            for (size_t p = begin[ci]; p < end[ci]; ++p) {
+                blk[(rows[p] >> 6) - bb] ^= uint64_t{1} << (rows[p] & 63U);
+            }
+        }
+    }
+    for (size_t wi = bb; wi < be; ++wi) {
+        uint64_t bits = blk[wi - bb];
+        if (row_parity != nullptr) {
+            bits ^= row_parity[wi];
+        }
+        if (wi == last_word) {
+            bits &= last_word_mask;
+        }
+        if (bits != 0) {
+            on_word(wi, bits);
+        }
+    }
+}
+
+// The posting-driven block: every column sparse and no parity correction, so the fold is nonzero only at
+// words some posting touched. Visits those in ascending order via the summary and re-zeroes them.
+template <size_t NumModes, typename WordOp>
+[[gnu::always_inline]] inline auto fold_block_by_postings(const InvertedIndex<NumModes> &sc,
+                                                          std::span<const size_t> cols,
+                                                          const size_t *begin,
+                                                          const size_t *end,
+                                                          ZeroBlockScratch &zs,
+                                                          size_t bb,
+                                                          size_t be,
+                                                          size_t last_word,
+                                                          uint64_t last_word_mask,
+                                                          WordOp &on_word) -> void {
+    uint64_t *const words = zs.words.data();
+    uint64_t *const summary = zs.summary.data();
+    for (size_t ci = 0; ci < cols.size(); ++ci) {
+        const TermIndex *rows = sc.sparse_column_rows(cols[ci]).data();
+        for (size_t p = begin[ci]; p < end[ci]; ++p) {
+            const size_t wo = (static_cast<size_t>(rows[p]) >> 6) - bb;
+            words[wo] ^= uint64_t{1} << (rows[p] & 63U);
+            summary[wo >> 6] |= uint64_t{1} << (wo & 63U);
+        }
+    }
+    // A throwing visitor would leave touched words set and break the zero invariant for every later
+    // fold on this thread, so unwinding wipes the whole block.
+    struct Wipe {
+        ZeroBlockScratch *zs;
+        ~Wipe() {
+            if (zs != nullptr) {
+                std::ranges::fill(zs->words, 0);
+                zs->summary.fill(0);
+            }
+        }
+    } wipe{&zs};
+    const size_t summary_words = (be - bb + 63) / 64;
+    for (size_t s = 0; s < summary_words; ++s) {
+        uint64_t touched = summary[s];
+        summary[s] = 0;
+        for (; touched != 0; touched &= touched - 1) {
+            const size_t wo = s * 64 + static_cast<size_t>(std::countr_zero(touched));
+            uint64_t bits = words[wo];
+            words[wo] = 0;
+            const size_t wi = bb + wo;
+            if (wi == last_word) {
+                bits &= last_word_mask;
+            }
+            if (bits != 0) { // XOR-cancelled postings leave a touched word empty, as the block path skips it
+                on_word(wi, bits);
+            }
+        }
+    }
+    wipe.zs = nullptr;
+}
+
+// Visit, ascending, every word wi in [wlo, whi) whose masked fold of `cols` is nonzero, as
+// on_word(wi, bits): bits = XOR of the columns' word wi, ^ row_parity[wi] when row_parity is non-null,
+// & last_word_mask at wi == last_word. on_block(bb, be) runs after each kColumnBlockWords block [bb, be)
+// has been visited. The posting-driven path is eligible only when every column is sparse and row_parity
+// is null (the odd-|G| correction is dense); outputs are identical for every `path`.
+template <size_t NumModes, typename WordOp, typename BlockOp>
+inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
+                               std::span<const size_t> cols,
+                               size_t wlo,
+                               size_t whi,
+                               size_t last_word,
+                               uint64_t last_word_mask,
+                               const uint64_t *row_parity,
+                               WordOp &&on_word,
+                               BlockOp &&on_block,
+                               FoldPath path = FoldPath::Auto) -> void {
+    if (wlo >= whi) {
+        return;
+    }
+    const size_t ncols = cols.size();
+    size_t dense_seed = ncols;
+    for (size_t ci = 0; ci < ncols; ++ci) {
+        if (sc.column_is_dense(cols[ci])) {
+            dense_seed = ci;
+            break;
+        }
+    }
+    const bool postings_eligible = path != FoldPath::Block && dense_seed == ncols && row_parity == nullptr;
+
+    // Block b's posting range ends where block b+1's begins, so each block costs one lower_bound per
+    // sparse column rather than two.
+    std::vector<size_t> &cursor = fold_cursor_scratch();
+    cursor.assign(2 * ncols, 0);
+    size_t *const begin = cursor.data();
+    size_t *const end = cursor.data() + ncols;
+    const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
+    for (size_t ci = 0; ci < ncols; ++ci) {
+        if (!sc.column_is_dense(cols[ci])) {
+            const auto &rows = sc.sparse_column_rows(cols[ci]);
+            begin[ci] = static_cast<size_t>(std::lower_bound(rows.begin(), rows.end(), wlo * 64, below) - rows.begin());
+        }
+    }
+
+    uint64_t *const blk = column_block_scratch().data();
+    ZeroBlockScratch &zs = fold_zero_scratch();
+    for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
+        const size_t be = std::min(bb + kColumnBlockWords, whi);
+        size_t postings = 0;
+        for (size_t ci = 0; ci < ncols; ++ci) {
+            if (!sc.column_is_dense(cols[ci])) {
+                const auto &rows = sc.sparse_column_rows(cols[ci]);
+                const auto first = rows.begin() + static_cast<std::ptrdiff_t>(begin[ci]);
+                end[ci] = static_cast<size_t>(std::lower_bound(first, rows.end(), be * 64, below) - rows.begin());
+                postings += end[ci] - begin[ci];
+            }
+        }
+        const bool by_postings =
+            postings_eligible
+            && (path == FoldPath::Sparse
+                || static_cast<double>(postings) <= kSparseFoldPostingsPerWord * static_cast<double>(be - bb));
+        if (by_postings) {
+            fold_block_by_postings<NumModes>(sc, cols, begin, end, zs, bb, be, last_word, last_word_mask, on_word);
+        }
+        else {
+            fold_block_by_words<NumModes>(sc,
+                                          cols,
+                                          dense_seed,
+                                          begin,
+                                          end,
+                                          blk,
+                                          bb,
+                                          be,
+                                          last_word,
+                                          last_word_mask,
+                                          row_parity,
+                                          on_word);
+        }
+        on_block(bb, be);
+        std::copy(end, end + ncols, begin);
     }
 }
 

@@ -14,14 +14,17 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -83,7 +86,7 @@ struct EvenParityNzWord {
 // Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
-// in before followers are derived.
+// in before followers are derived. `path` only selects the fold kernel (see FoldPath); nz is identical.
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
@@ -96,54 +99,69 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    const uint64_t *row_parity_ptr,
                                    std::vector<EvenParityNzWord> &nz,
                                    size_t &n_anti,
-                                   size_t &n_foll) -> void {
+                                   size_t &n_foll,
+                                   FoldPath path = FoldPath::Auto) -> void {
     nz.clear();
     n_anti = 0;
     n_foll = 0;
     const bool pivot_dense = sc.column_is_dense(pivot_col);
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
-    std::vector<uint64_t> &blk = column_block_scratch();
-    // A dense pivot is read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a
-    // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
-    // to eager expansion.
-    auto fold_range = [&](size_t bb, size_t be) {
-        combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
-        const size_t nz_block_start = nz.size();
-        for (size_t wi = bb; wi < be; ++wi) {
-            uint64_t overlap = blk[wi - bb];
-            if (g_odd) {
-                overlap ^= row_parity_ptr[wi];
-            }
-            if (wi == last_word) {
-                overlap &= last_word_mask;
-            }
-            if (!overlap) {
-                continue;
-            }
-            n_anti += static_cast<size_t>(std::popcount(overlap));
-            uint64_t foll = 0;
-            if (pivot_dense) {
-                foll = overlap & pivot_dense_ptr[wi];
-                n_foll += static_cast<size_t>(std::popcount(foll));
-            }
-            nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+    auto on_word = [&](size_t wi, uint64_t overlap) {
+        n_anti += static_cast<size_t>(std::popcount(overlap));
+        uint64_t foll = 0;
+        if (pivot_dense) {
+            foll = overlap & pivot_dense_ptr[wi];
+            n_foll += static_cast<size_t>(std::popcount(foll));
         }
-        if (pivot_dense || nz.size() == nz_block_start) {
-            return; // dense pivot already folded in, or no anticommuting term — nothing to expand
+        nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+    };
+    /* A dense pivot is read inline above. A sparse pivot is expanded only for blocks with an anticommuter:
+     * its postings in the block are scattered into a zero-invariant scratch, read at the block's nz words,
+     * then re-zeroed, so the cost is O(postings) rather than O(block words). The posting cursor only moves
+     * forward, as blocks arrive in ascending order. */
+    const std::vector<TermIndex> *const pivot_rows = pivot_dense ? nullptr : &sc.sparse_column_rows(pivot_col);
+    size_t pivot_cursor = 0;
+    size_t nz_block_start = 0;
+    auto on_block = [&](size_t bb, size_t be) {
+        const size_t block_start = std::exchange(nz_block_start, nz.size());
+        if (pivot_dense || nz.size() == block_start) {
+            return;
         }
-        std::vector<uint64_t> &pblk = pivot_column_block_scratch();
-        combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
-        const uint64_t *pw = pblk.data();
-        for (size_t k = nz_block_start; k < nz.size(); ++k) {
+        const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
+        const auto first = std::lower_bound(pivot_rows->begin() + static_cast<std::ptrdiff_t>(pivot_cursor),
+                                            pivot_rows->end(),
+                                            bb * 64,
+                                            below);
+        const auto last = std::lower_bound(first, pivot_rows->end(), be * 64, below);
+        pivot_cursor = static_cast<size_t>(last - pivot_rows->begin());
+        uint64_t *const pw = pivot_zero_scratch().words.data();
+        for (auto it = first; it != last; ++it) {
+            pw[(*it >> 6) - bb] |= uint64_t{1} << (*it & 63U);
+        }
+        for (size_t k = block_start; k < nz.size(); ++k) {
             EvenParityNzWord &e = nz[k];
-            const size_t wi = e.base / 64;
-            e.foll = e.overlap & pw[wi - bb];
+            e.foll = e.overlap & pw[e.base / 64 - bb];
             n_foll += static_cast<size_t>(std::popcount(e.foll));
         }
+        if (static_cast<size_t>(last - first) > be - bb) {
+            std::memset(pw, 0, (be - bb) * sizeof(uint64_t));
+        }
+        else {
+            for (auto it = first; it != last; ++it) {
+                pw[(*it >> 6) - bb] = 0;
+            }
+        }
     };
-    for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
-        fold_range(bb, std::min(bb + kColumnBlockWords, whi));
-    }
+    for_each_fold_word<NumModes>(sc,
+                                 gen_cols,
+                                 wlo,
+                                 whi,
+                                 last_word,
+                                 last_word_mask,
+                                 g_odd ? row_parity_ptr : nullptr,
+                                 on_word,
+                                 on_block,
+                                 path);
 }
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a
@@ -358,7 +376,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // its cutoff, sign and (at resolve) hash all read those positions, so nothing here costs O(W)
         // and per-term work stays independent of N. Verdicts and signs equal the dense path's.
         constexpr bool kWideEnough = Monomial<NumModes>::num_words() >= kPositionsEmitMinWords;
-        [[maybe_unused]] const bool emit_positions_only = kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form();
+        [[maybe_unused]] const bool emit_positions_only =
+            kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form();
         const std::span<const uint16_t> gen_pos_span(gen_pos);
         const std::span<RowPosT> pbuf_span(pbuf);
 
@@ -373,14 +392,11 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                     if (const auto src = ham.row_positions(i); src.inlined()) {
                         const auto merged = merge_partner_positions_paired(src.pos, gen_pos_span, pbuf_span);
                         const auto partner = std::span<const RowPosT>(pbuf).first(merged.count);
-                        if (!cutoff_eval.passes_positions(partner, merged.pairs) &&
-                            !cut_st.is_above_upper(abs_c)) {
+                        if (!cutoff_eval.passes_positions(partner, merged.pairs) && !cut_st.is_above_upper(abs_c)) {
                             return;
                         }
-                        const int phase = A::emit_phase(A::rotation_sign_positions(ectx, src.pos),
-                                                        mono_pop,
-                                                        gen_pop,
-                                                        merged.overlap);
+                        const int phase =
+                            A::emit_phase(A::rotation_sign_positions(ectx, src.pos), mono_pop, gen_pop, merged.overlap);
                         // rank_count == 1: the only slot is my_rank's.
                         (is_follower ? res.follower_self : res.leader_self).push(partner, phase);
                         (is_follower ? fs : ls).at_slot(my_rank).push_back(i);
