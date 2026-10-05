@@ -6,7 +6,8 @@ comparison of monoprop's `PauliPropagator` against the reference Julia library
 
 The shipped data spans two library versions and the rows say which: Figs. 1-5 were taken
 against v0.7.3 on its dictionary-backed `PauliSum`, Fig. 6 against **v0.8.2** on the
-vectorised `VectorPauliSum`, at seven layers on exclusive AWS compute nodes. `scripts/` pins v0.8.2 and the driver refuses to run on
+vectorised `VectorPauliSum`, at seven layers on exclusive compute nodes (Deucalion x86 once its
+sweep is merged, AWS before that). `scripts/` pins v0.8.2 and the driver refuses to run on
 anything else, so re-running Figs. 1-5 means checking out the commit that pinned v0.7.3.
 
 ## Result
@@ -219,31 +220,68 @@ python make_single_thread_figure.py \
   --outdir figures
 
 # Fig. 6 -- the octave sweep: cutoff 6, SEVEN layers, N = 32..1024 in powers of two
-# (PauliPropagation.jl to 512 only), 10 rounds for monoprop and 1 for the reference engines.
-# Measured as independent exclusive Slurm jobs, one work item each, every point under a
-# hard timeout; wall clock ~50 min, set by the single ppvm N=1024 point (~46 min). Fill in a
-# copy of scripts/slurm/site.env.example first -- it is passed by path, never via --export.
+# (PauliPropagation.jl to 512 at least; its N=1024 point may time out), 10 rounds for
+# monoprop and 1 for the reference engines, every point under a hard timeout. Fill in a copy
+# of scripts/slurm/site.env.example first -- it is passed by path, never via --export -- one
+# per monoprop build, since each build's venv is PYTHON and each gets its own RUN_DIR.
+#
+# Deucalion (the current data): one job per engine, all six points on one exclusive dev-x86
+# node, so every curve comes from one node. Submit from paper_plots/:
+for E in ppvm julia; do                                      # third-party engines
+  sbatch -A <project>x --partition=dev-x86 --chdir="$PWD" scripts/slurm/octave_point.sbatch \
+    /path/to/site-thirdparty.env 7 "$E" 32 64 128 256 512 1024
+done
+for SITE in /path/to/site-<new-build>.env /path/to/site-ref-508b536e.env; do  # two monoprop builds
+  sbatch -A <project>x --partition=dev-x86 --chdir="$PWD" scripts/slurm/octave_point.sbatch \
+    "$SITE" 7 monoprop 32 64 128 256 512 1024
+done
+# Then check and merge the per-job files into data/*_octave_l7_deucalion.jsonl. The two
+# monoprop builds both write monoprop_N*.jsonl, so they are told apart by the flag their run
+# directory is passed under. The merge refuses unless every slot has one row per N, the
+# same term count, gate count and expectation at every N, num_threads 1, 7 layers, cutoff 6,
+# two different monoprop versions, and PauliPropagation.jl at v0.8.2; PauliPropagation.jl
+# (or any engine) may stop above N=512. --dry-run checks without writing; --allow-partial
+# previews a sweep still in flight and must write outside data/ (--outdir).
+python merge_octave_runs.py \
+  --monoprop      "$RUN_DIR_NEW" \
+  --monoprop-main "$RUN_DIR_508b536e" \
+  --ppvm          "$RUN_DIR_THIRDPARTY" \
+  --julia         "$RUN_DIR_THIRDPARTY"
+#
+# AWS (the earlier data, kept in data/*_octave_l7.jsonl): independent exclusive jobs, one
+# work item each, fanned out by submit_octave.sh; wall clock ~50 min, set by the single ppvm
+# N=1024 point (~46 min). Merged by hand at the time:
 scripts/slurm/submit_octave.sh /path/to/site.env 7
-# When every job has finished, merge the per-job files (the figure orders rows by N):
 cat "$RUN_DIR"/monoprop_N*.jsonl > data/monoprop_pauli_octave_l7.jsonl
 cat "$RUN_DIR"/ppvm_N*.jsonl     > data/ppvm_pauli_octave_l7.jsonl
 cat "$RUN_DIR"/julia_N*.jsonl    > data/julia_pauli_octave_v082_l7.jsonl
-# The single-host cross-check that licenses the split: the same workload, all six points of
+# The single-host cross-check that licenses that split: the same workload, all six points of
 # an engine in one job on one node (point RUN_DIR somewhere fresh first).
 for E in monoprop ppvm; do
   sbatch --partition="$PARTITION" --chdir="$PWD" scripts/slurm/octave_point.sbatch \
     /path/to/site.env 7 "$E" 32 64 128 256 512 1024
 done
 # ...then data/{monoprop,ppvm}_pauli_octave_l7_onehost.jsonl from that RUN_DIR.
-# A rerun records NEW EC2 hostnames (ip-10-0-0-*): add them to FLEETS in
-# make_inverse_scaling_figure.py, or the build refuses them as undeclared machines.
+# A rerun on AWS records NEW EC2 hostnames (ip-10-0-0-*): add them to FLEETS in
+# make_inverse_scaling_figure.py, or the build refuses them as undeclared machines. Deucalion's
+# fleet is a hostname pattern (cnxNNN), so a rerun there needs no edit.
 # The earlier five-layer sweep (data/*_octave.jsonl, data/julia_pauli_octave_v082.jsonl) is
 # the same three drivers with --layers 5, run sequentially on one host.
 
-# Both panel shapes. --spectator and --cutoff-evidence draw no panel: they only supply the
-# caption's Fig. 5a cross-reference and its cutoff-independence table. Add
-# `--layout column` or `--layout page` for just one shape.
-# Add `--layout column` or `--layout page` to emit just one shape.
+# Both panel shapes, from data/ with no further arguments: the build takes the Deucalion
+# files once all three engines' are present (plus the 508b536e "before" arm if merged), and
+# the AWS files otherwise; it prints which. --dataset aws|deucalion forces one, --no-before
+# drops the reference arm, and an explicit --lattice replaces the whole default. The
+# --spectator and --cutoff-evidence companions it adds draw no panel: they only supply the
+# caption's Fig. 5a cross-reference and its cutoff-independence table. Add `--layout column`
+# or `--layout page` to emit just one shape.
+python make_inverse_scaling_figure.py --outdir figures
+# A sweep still in flight: --preview turns the like-for-like refusals into warnings, stamps
+# the panel and heads the caption with what was let through, and refuses to write figures/.
+python make_inverse_scaling_figure.py --preview --outdir /some/scratch/dir \
+  --lattice /scratch/merged/{monoprop,ppvm}_pauli_octave_l7_deucalion.jsonl \
+  --before  /scratch/merged/monoprop_main_pauli_octave_l7_deucalion.jsonl
+# The AWS build, spelled out (what --dataset aws resolves to):
 python make_inverse_scaling_figure.py \
   --lattice         data/{monoprop,ppvm}_pauli_octave_l7.jsonl data/julia_pauli_octave_v082_l7.jsonl \
   --spectator       data/{monoprop,ppvm}_pauli_spectator.jsonl data/julia_pauli_spectator_v082.jsonl \
@@ -269,16 +307,21 @@ rather than re-measured alongside.
 
 ### Fig. 6 — the same data on the axis where the claim is visible
 
-One panel, three curves, nothing else — in two shapes from one code path, so they can
-never disagree:
+One panel, three engines, nothing else — plus, when the "before" arm is merged, the same
+driver on the earlier monoprop build (508b536e) as a lighter sky-blue dash-dot curve with
+open markers, labelled "monoprop (before)", so the improvement reads against the same `1/N`
+guide. That arm passes every like-for-like check the engines do; every lead the caption
+quotes against the reference engines is the current build's, and the caption adds the
+speed-up over the earlier build at each end of the sweep. In two shapes from one code path,
+so they can never disagree:
 
 | `--layout` | file | intended slot |
 |---|---|---|
 | `column` | `fig6_inverse_scaling` | one journal column (`\columnwidth`), legend inside the lower-left corner |
-| `page` | `fig6_inverse_scaling_wide` | full-width banner at the top of a page (`figure*`, `\textwidth`), all three engines on one horizontal line beneath the axes |
+| `page` | `fig6_inverse_scaling_wide` | full-width banner at the top of a page (`figure*`, `\textwidth`), all three engines on one horizontal line beneath the axes (two columns when the "before" arm is drawn: four entries on one line save at 7.67 in, past `\textwidth`) |
 
 The column legend is stacked because three entries each carrying an exponent need roughly
-twice 3.4 in on one line. Both `figsize` values are calibrated rather than chosen, and in
+twice 3.4 in on one line; a fourth entry drops the panel floor by one more legend line. Both `figsize` values are calibrated rather than chosen, and in
 opposite directions: with the legend centred under the axes the tight bbox *trims* the
 unused right margin, so the saved width comes out ~0.9× of `figsize`. Re-measure the saved
 `MediaBox` if the legend text or the tick labels change width. Neither shape is a
@@ -287,6 +330,17 @@ decade-square (1.51 decades in N against ~2.1 in the plotted time), so the rende
 column, shallower in the banner. That is
 what the `1/N` guide is for: the eye reads monoprop against the guide, never against the
 frame, so the claim survives the reshaping.
+
+> **The default build now draws the Deucalion sweep** (`data/*_octave_l7_deucalion.jsonl`,
+> monoprop 0.9.3.dev6+g74cde4aa5 against the "before" build 508b536e). Its numbers: monoprop
+> `N^-0.92` over N ≤ 512 (1.822 → 0.0713 ns from N=32 to N=1024, 25.5×), `N^-0.94` over every
+> point, and successive points at `N^-0.98` and `N^-1.00` from N=256 up; the "before" build
+> `N^-0.83`; ppvm `N^+0.30`, PauliPropagation.jl `N^+0.38`. monoprop leads ppvm by 1.8× at
+> N=32, 53× at N=512 and 155× at N=1024, and PauliPropagation.jl by 2.0× and 72×. At N=1024
+> monoprop sits 1.25× above the `1/N` guide through its N=32 point (the "before" build 1.90×),
+> and the new build is 1.51× faster than 508b536e there (0.99× at N=32 and N=64, 1.08× at
+> N=128). **The paragraphs below are the AWS sweep's** (`data/*_octave_l7.jsonl`, monoprop
+> a86984a9f), kept for the record.
 
 It plots the wall-clock cost of **one gate acting on one term**, in nanoseconds, against
 N = 32…1024 in powers of two, at **seven layers** — 607,054 terms at N=32 rising to
@@ -313,8 +367,8 @@ demands an identical grid inside the fit window, and lets an engine stop early o
 it, where points are drawn but never fitted. Fitted over every point each engine reached
 instead, nothing changes at two decimals (monoprop `N^-0.80` and ppvm `N^+0.39` over
 32…1024). Nothing reaches the 10 ns `Y_TOP_NS` crop at seven layers, so no line runs off
-the panel. The legend carries engine names only; the exponents live in
-`figures/fig6_caption.txt` and in the build's stdout.
+the panel. The legend carries each series' fitted exponent beside its name, from the same
+fits as `figures/fig6_caption.txt` and the build's stdout, so the three cannot disagree.
 
 At N=1024 monoprop leads ppvm by **92×**; at N=512, the widest point all three reached, it
 leads ppvm by 41× and PauliPropagation.jl by 50×. At N=32 the leads are only 1.5× and 1.8×,
@@ -348,6 +402,24 @@ carry. `num_terms` is the final term count while K grows through the seven layer
 absolute ns/term understates per-term cost — identically for all three engines. N=1024 is
 the ceiling, not a choice: `monoprop_MAX_NUM_MODES` defaults to 1024 with no headroom, so a
 wider sweep needs a rebuild.
+
+**The Deucalion re-measurement.** The same drivers, settings and `octave_point.sbatch`, on
+Deucalion's x86 partition (`dev-x86`): AMD EPYC 7742 (Zen 2), 128 cores, SMT off, every
+job holding a whole node exclusively with the timed process pinned to one core. Each engine's
+six points, and each monoprop build's, are submitted as one job on one node (see Reproduce),
+so every curve — and every fitted exponent — comes from a single node and no host crosscheck
+is needed. The caption does not take that on trust: it reads one hostname per series from the
+rows before saying so, and falls back to the split-sweep wording if a series turns out split. All four series are on one node type, which `FLEETS`
+declares as the hostname pattern `cnx\d+` (the rows record `cnxNNN.deucalion.macc.fccn.pt`),
+so a rerun on any compute node is accepted without an edit. The CPU model is not in the rows —
+the drivers record only the hostname — so the fleet's name is stated, not measured: it is
+what `/proc/cpuinfo` reports on Deucalion's login nodes, whose `-march=native` resolves to the
+same `znver2` as the compute nodes'. The ppvm and PauliPropagation.jl environments are
+`caches/fig6/{ppvm-venv,julia-1.10.12,julia-depot}` under the project root; ppvm is
+`0.1.0+git.2570637b1459`. Points per engine: monoprop 6 and 6 (both builds in one job on
+cnx007, alternating build per N; 10 rounds each, N=1024 taking 263 s for the new build and 394 s
+for 508b536e), ppvm 6 (cnx008, N=1024 in 4037 s), PauliPropagation.jl 5 (cnx001, N=512 in 932 s;
+N=1024 hit its 1800 s ceiling and is absent, as on AWS).
 
 The Fig. 5 data, and the earlier five-layer Fig. 6 sweep, were taken on a 10-core
 workstation, not on Leonardo, and the records say so — `host` and `library_version` on every
@@ -409,15 +481,23 @@ compute-node jobs.
 make_paper_figures.py     Figs. 1-4 (PDF + PNG)
 make_single_thread_figure.py  Fig. 5, the supporting per-term view (all three cutoffs)
 make_inverse_scaling_figure.py Fig. 6, the headline single-panel per-gate figure
-                          (--layout column | page, both by default)
+                          (--layout column | page, both by default; --dataset auto picks
+                          Deucalion once merged, else AWS; --before, --preview)
+merge_octave_runs.py      checks a Fig. 6 octave sweep's per-job files and merges them
+                          into data/*_octave_l7_deucalion.jsonl
 ruff.toml                 lint scope for this package (extends the repository config)
 data/*_pauli.jsonl        Figs. 1-4, Leonardo, N=32..1024
 data/*_spectator.jsonl    Fig. 5a, idle-spectator sweep at M=32, three engines
                           (Fig. 6 uses it only for caption cross-reference numbers)
 data/*_lattice.jsonl      Fig. 5b, full-width step-32 sweep, three engines, three
                           cutoffs (Fig. 6 uses it for its cutoff-independence table)
-data/*_octave_l7.jsonl    Fig. 6 (drawn): octave sweep, 7 layers, cutoff 6, N=32..1024
-                          (PauliPropagation.jl to 512), exclusive AWS m7a.8xlarge nodes
+data/*_octave_l7_deucalion.jsonl
+                          Fig. 6 (drawn by default once present): the same octave sweep on
+                          Deucalion x86 nodes -- monoprop, monoprop_main (508b536e, the
+                          "before" arm), ppvm, julia_..._v082 -- written by merge_octave_runs.py
+data/*_octave_l7.jsonl    Fig. 6 (drawn until then; --dataset aws): octave sweep, 7 layers,
+                          cutoff 6, N=32..1024 (PauliPropagation.jl to 512), exclusive AWS
+                          m7a.8xlarge nodes
 data/*_octave_l7_onehost.jsonl
                           Fig. 6 --host-crosscheck: monoprop and ppvm, same workload,
                           every point on one node (caption only)

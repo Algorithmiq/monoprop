@@ -51,12 +51,20 @@ carries the cutoff: here the cutoff is fixed and colour carries the ENGINE, so t
 three curves separate at a glance. The engine's line style and marker are kept
 unchanged from every other figure (monoprop solid/filled circle), so identity is
 never colour-alone and a reader who knows the other figures still recognises it.
+
+THE "BEFORE" REFERENCE (optional, --before). The same driver on an earlier monoprop build,
+measured on the same node type, drawn as a lighter dash-dot curve with open markers so the
+improvement can be read against the same 1/N guide. Its rows carry engine "monoprop" like
+the current build's, so they are told apart by the flag they arrive under, never by their
+contents; they pass every like-for-like check the three engines do, and they enter no
+cross-engine lead -- those are always quoted against the current build.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import re
 import textwrap
 from pathlib import Path
 
@@ -75,9 +83,51 @@ from make_paper_figures import (
     load,
     plt,
 )
+from merge_octave_runs import DEUCALION_FILES
 
 CUTOFF = 6
 MILLION = 1.0e6
+HERE = Path(__file__).resolve().parent
+DATA = HERE / "data"
+
+# What the build reads when --lattice is not given: the first dataset whose lattice files
+# all exist, in this order, so the Deucalion sweep takes over as soon as merge_octave_runs.py
+# has written it and the AWS sweep stays the fallback (its files are kept, never replaced).
+# Missing optional files (the "before" arm, a crosscheck) are simply skipped.
+DATASETS = {
+    "deucalion": {
+        "lattice": [DEUCALION_FILES[s] for s in ("monoprop", "ppvm", "julia")],
+        "before": [DEUCALION_FILES["monoprop-main"]],
+        # None was taken. The caption reads from the rows whether each engine's sweep sat on
+        # one node (then no split exists to check) or was split, and says which.
+        "host_crosscheck": [],
+    },
+    "aws": {
+        "lattice": [
+            "monoprop_pauli_octave_l7.jsonl",
+            "ppvm_pauli_octave_l7.jsonl",
+            "julia_pauli_octave_v082_l7.jsonl",
+        ],
+        "before": [],
+        "host_crosscheck": [
+            "monoprop_pauli_octave_l7_onehost.jsonl",
+            "ppvm_pauli_octave_l7_onehost.jsonl",
+        ],
+    },
+}
+# Caption-only companions, the same for either dataset (and labelled as taken elsewhere).
+COMPANIONS = {
+    "spectator": [
+        "monoprop_pauli_spectator.jsonl",
+        "ppvm_pauli_spectator.jsonl",
+        "julia_pauli_spectator_v082.jsonl",
+    ],
+    "cutoff_evidence": [
+        "monoprop_pauli_lattice.jsonl",
+        "ppvm_pauli_lattice.jsonl",
+        "julia_pauli_lattice_v082.jsonl",
+    ],
+}
 
 # Every engine's exponent is fitted over N <= this and no further, and the same window is
 # used for all three so the three numbers stay like-for-like.
@@ -113,6 +163,22 @@ Y_TOP_NS = 10.0
 # and the three chosen hues stay separable in greyscale as well.
 ENGINE_COLOR = {"monoprop": "#0072B2", "julia": "#D55E00", "ppvm": "#009E73"}
 ORDER = ("monoprop", "ppvm", "julia")
+
+# The earlier monoprop build, when --before supplies it. Okabe-Ito sky blue: the lighter
+# relative of monoprop's blue, so it reads as "monoprop, before", and a dash-dot line no
+# other engine uses with an open marker, so it is never told apart by colour alone (the
+# dashed open circle is PauliPropagation.jl's, in a different hue).
+BEFORE = "monoprop_before"
+ENGINE_COLOR[BEFORE] = "#56B4E9"
+BEFORE_STYLE = ((0, (6, 2, 1.5, 2)), "o")
+LABEL = {**ENGINE_LABEL, BEFORE: "monoprop (before)"}
+
+
+def _families(records):
+    """The series present, monoprop first and its "before" arm (if any) beside it."""
+    present = {r["engine_family"] for r in records}
+    return ("monoprop", *((BEFORE,) if BEFORE in present else ()), *ORDER[1:])
+
 
 # Two shapes of the same panel, because the figure has two homes: a single journal column,
 # and a full-width banner across the top of a page. Only the frame, the type size and where
@@ -197,6 +263,16 @@ HOST_ALIASES = {
 # addresses, so the set describes these rows, not the cluster going forward: a rerun records
 # new hostnames, and the build refuses them -- as it should any undeclared machine -- until
 # they are added here.
+#
+# A fleet is a set of hostnames or a compiled pattern. Deucalion's is a pattern: its x86
+# compute nodes are all one hardware type and are named cnxNNN by the scheduler (the rows
+# record the FQDN, cnxNNN.deucalion.macc.fccn.pt), so any node a rerun lands on is the same
+# machine and needs no edit here. Its login nodes (lnNN) are a different machine and do not
+# match. The CPU model is NOT in the rows -- the drivers record only the hostname -- so the
+# name below is stated rather than measured: AMD EPYC 7742 is what /proc/cpuinfo reports on
+# Deucalion's login nodes, and the compute nodes' -march=native resolves to the same znver2
+# (aaron/DEUCALION-MONOPROP.md, section 1: 128 cores, SMT off, 8 NUMA domains of 16).
+DEUCALION_X86 = "Deucalion x86, AMD EPYC 7742 (Zen 2), 128 cores, SMT off"
 FLEETS = {
     "AWS m7a.8xlarge, AMD EPYC 9R14 (Zen 4), SMT off": frozenset(
         {
@@ -213,7 +289,22 @@ FLEETS = {
             "ip-10-0-0-252",
         }
     ),
+    DEUCALION_X86: re.compile(r"cnx\d+(\.deucalion\.macc\.fccn\.pt)?"),
 }
+# How the caption names each fleet's cluster and its unit of identical hardware.
+FLEET_SITE = {
+    "AWS m7a.8xlarge, AMD EPYC 9R14 (Zen 4), SMT off": (
+        "the AWS PCS cluster, not on an exclusive Leonardo node",
+        "instance type",
+    ),
+    DEUCALION_X86: ("Deucalion's x86 partition, not on Leonardo", "node type"),
+}
+
+
+def _in_fleet(hosts, host):
+    if isinstance(hosts, re.Pattern):
+        return hosts.fullmatch(host) is not None
+    return host in hosts
 
 
 def canonical_host(host):
@@ -222,7 +313,9 @@ def canonical_host(host):
     Unknown names are their own canonical form.
     """
     host = HOST_ALIASES.get(host, host)
-    return next((name for name, hosts in FLEETS.items() if host in hosts), host)
+    return next(
+        (name for name, hosts in FLEETS.items() if _in_fleet(hosts, host)), host
+    )
 
 
 # process_time() has a coarse tick, so cpu/wall says nothing on a sub-millisecond run.
@@ -232,7 +325,7 @@ BUSY_MAX_CORES = 1.05
 
 
 def _style(fam):
-    ls, marker = ENGINE_STYLE[fam]
+    ls, marker = BEFORE_STYLE if fam == BEFORE else ENGINE_STYLE[fam]
     return {
         "ls": ls,
         "marker": marker,
@@ -265,8 +358,10 @@ def _fits(lattice, *, fit_all=False):
     headline exponents are the clean-window ones no matter what --fit was asked for.
     """
     out = {}
-    for fam in ORDER:
+    for fam in _families(lattice):
         rows = _arm(lattice, fam)
+        if not rows:  # only a --preview build gets this far without every engine
+            continue
         fitted = rows if fit_all else _split_at_fit_window(rows)[0]
         out[fam] = (
             [r["num_qubits"] for r in rows],
@@ -293,6 +388,8 @@ def _split_at_fit_window(rows):
 
 def _exponent(xs, ys):
     n = len(xs)
+    if n < 2:  # a --preview of a sweep still in flight can have one point
+        return math.nan
     lx = [math.log(x) for x in xs]
     ly = [math.log(y) for y in ys]
     mx, my = sum(lx) / n, sum(ly) / n
@@ -314,18 +411,19 @@ def check_grid(records):
     come back as notes for main() to print, not as problems.
     """
     limit = math.inf if FIT_ALL_POINTS else FIT_NMAX
+    fams = _families(records)
     grids = {
         fam: {
             (r["cutoff"], r["num_qubits"]) for r in records if r["engine_family"] == fam
         }
-        for fam in ORDER
+        for fam in fams
     }
-    reference = grids[ORDER[0]]
+    reference = grids[fams[0]]
     problems, notes = [], []
-    for fam in ORDER[1:]:
+    for fam in fams[1:]:
         for label, missing in (
-            (f"{ENGINE_LABEL[fam]} is missing", reference - grids[fam]),
-            (f"{ENGINE_LABEL[fam]} has extra", grids[fam] - reference),
+            (f"{LABEL[fam]} is missing", reference - grids[fam]),
+            (f"{LABEL[fam]} has extra", grids[fam] - reference),
         ):
             inside = sorted(p for p in missing if p[1] <= limit)
             outside = sorted(p for p in missing if p[1] > limit)
@@ -369,7 +467,7 @@ def check_same_workload(records, expectation_tol=1e-9):
         for key in ("num_terms", "gates", "layers", "lower_atol"):
             vals = {fam: row[key] for fam, row in rows.items()}
             if len(set(vals.values())) != 1:
-                detail = ", ".join(f"{ENGINE_LABEL[f]}={v}" for f, v in vals.items())
+                detail = ", ".join(f"{LABEL[f]}={v}" for f, v in vals.items())
                 problems.append(f"c{cutoff} N={num_qubits}: {key} differs -- {detail}")
         exps = [row["expectation"] for row in rows.values()]
         spread = max(exps) - min(exps)
@@ -408,15 +506,16 @@ def check_single_thread(records):
     if len(machines) != 1:
         where = f"machines: {machines}"
     elif machines[0] in FLEETS:
-        where = f"one instance type, {len(raw_hosts)} hosts: {machines[0]}{spellings}"
+        unit = FLEET_SITE[machines[0]][1]
+        where = f"one {unit}, {len(raw_hosts)} hosts: {machines[0]}{spellings}"
     else:
         where = f"one host: {machines[0]}{spellings}"
     lines = [where]
-    for fam in ORDER:
+    for fam in _families(records):
         rows = [r for r in records if r["engine_family"] == fam]
         threads = sorted({str(r["num_threads"]) for r in rows})
         if threads != ["1"]:
-            problems.append(f"{ENGINE_LABEL[fam]}: num_threads {threads}, expected 1")
+            problems.append(f"{LABEL[fam]}: num_threads {threads}, expected 1")
         busy = [
             r["busy_cores"]
             for r in rows
@@ -425,13 +524,13 @@ def check_single_thread(records):
         if busy:
             if max(busy) > BUSY_MAX_CORES:
                 problems.append(
-                    f"{ENGINE_LABEL[fam]}: busy_cores up to {max(busy):.2f}, "
+                    f"{LABEL[fam]}: busy_cores up to {max(busy):.2f}, "
                     f"expected <= {BUSY_MAX_CORES}"
                 )
             evidence = f"busy_cores <= {max(busy):.2f} (measured cpu/wall)"
         else:
             evidence = "declared thread count only (no cpu/wall ratio recorded)"
-        lines.append(f"{ENGINE_LABEL[fam]:<20} num_threads=1, {evidence}")
+        lines.append(f"{LABEL[fam]:<20} num_threads=1, {evidence}")
     return problems, lines
 
 
@@ -475,7 +574,7 @@ def _guide(ax, xs, exponent, anchor_xy, label, *, label_frac=0.55):
     )
 
 
-def fig6(lattice, outdir: Path, layout: str = "column"):
+def fig6(lattice, outdir: Path, layout: str = "column", *, preview=False):
     """One panel: ns per gate per term against N, cutoff 6, three engines.
 
     Neither shape is a decade-square -- about 1.5 decades in N against 2.1 in the plotted
@@ -492,7 +591,7 @@ def fig6(lattice, outdir: Path, layout: str = "column"):
         # sets the exponents the legend, the caption and stdout report; the window itself is
         # not drawn.
         fits = _fits(lattice, fit_all=FIT_ALL_POINTS)
-        for fam in ORDER:
+        for fam in fits:
             ax.plot(fits[fam][0], fits[fam][1], **_style(fam))
 
         xs = fits["monoprop"][0]
@@ -522,27 +621,54 @@ def fig6(lattice, outdir: Path, layout: str = "column"):
         # lower-left corner in the column layout, and monoprop's tail descends into that
         # corner, so the floor has to drop far enough to leave the entries clear of it.
         lo = min(min(ys) for _, ys, _ in fits.values())
-        ax.set_ylim(lo / spec["bottom_pad"], Y_TOP_NS)
+        # A fourth stacked legend entry in the column layout takes one more line of the
+        # lower-left corner, so the floor drops by that line's share of the pad.
+        pad = spec["bottom_pad"] ** (
+            len(fits) / len(ORDER) if layout == "column" else 1
+        )
+        ax.set_ylim(lo / pad, Y_TOP_NS)
 
         handles = [
             Line2D(
                 [],
                 [],
                 **{**_style(fam), "ms": MARKER_SIZE, "lw": LINE_WIDTH + 0.2},
-                label=f"{ENGINE_LABEL[fam]}  $\\propto N^{{{fits[fam][2]:+.2f}}}$",
+                label=f"{LABEL[fam]}  $\\propto N^{{{fits[fam][2]:+.2f}}}$",
             )
-            for fam in ORDER
+            for fam in fits
         ]
         # Each engine's headline exponent beside its name, from the same fits the caption
         # and stdout report, so the numbers on the panel cannot drift from them.
+        legend = dict(spec["legend"])
+        if legend["ncol"] > 1 and len(handles) > len(ORDER):
+            # Four entries on one line overrun \textwidth (measured: 7.67in saved, against
+            # 6.90in for three), so the banner takes two columns, filled column-major: the
+            # two monoprop builds above each other, the reference engines beside them.
+            legend["ncol"] = 2
         ax.legend(
             handles=handles,
             frameon=False,
             handlelength=2.2,
             handletextpad=0.5,
             borderaxespad=0.0,
-            **spec["legend"],
+            **legend,
         )
+        if preview:
+            # Kept out of the tight bbox, so a preview saves at the final artifact's size.
+            mark = fig.text(
+                0.5,
+                0.5,
+                "PREVIEW -- not for publication",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                rotation=20,
+                fontsize=14,
+                color="#cc0000",
+                alpha=0.35,
+                zorder=10,
+            )
+            mark.set_in_layout(False)
         outs = _save(fig, outdir, spec["stem"])
     return outs, fits
 
@@ -583,7 +709,7 @@ def _cutoff_table(records):
 def _rounds_note(records):
     """How many timed repetitions each engine's minimum was taken over."""
     parts = []
-    for fam in ORDER:
+    for fam in _families(records):
         vals = sorted(
             {
                 r.get("rounds", "unrecorded")
@@ -591,7 +717,7 @@ def _rounds_note(records):
                 if r["engine_family"] == fam
             }
         )
-        parts.append(f"{ENGINE_LABEL[fam]} {'/'.join(str(v) for v in vals)}")
+        parts.append(f"{LABEL[fam]} {'/'.join(str(v) for v in vals)}")
     return ", ".join(parts)
 
 
@@ -608,7 +734,12 @@ def _largest_step(rows):
 
 
 # The caption's prose names; ENGINE_LABEL carries the vendor prefix the legend wants.
-_SHORT = {"monoprop": "monoprop", "ppvm": "ppvm", "julia": "PauliPropagation.jl"}
+_SHORT = {
+    "monoprop": "monoprop",
+    "ppvm": "ppvm",
+    "julia": "PauliPropagation.jl",
+    BEFORE: "the earlier monoprop build",
+}
 
 
 def _para(text, indent=""):
@@ -734,7 +865,7 @@ def _crop_note(fits):
     """Only when something is actually above the Y_TOP_NS crop."""
     over = [
         f"{_SHORT[f]}'s N={x} point ({y:.0f} ns)"
-        for f in ORDER
+        for f in fits
         for x, y in zip(fits[f][0], fits[f][1], strict=True)
         if y > Y_TOP_NS
     ]
@@ -769,12 +900,18 @@ def _window_section(fits, lattice):
             "the fitted range are the same and there is no window a reader cannot see"
         )
         other_desc = f"Restricted to the clean N <= {FIT_NMAX} window"
-    else:
+    elif n_common < n_hi:
         fitted = (
             f"fitted over N <= {FIT_NMAX}, the one window every engine was measured "
             "across; the points beyond it are drawn but enter no fit"
         )
         other_desc = "Fitted over every point each engine reached instead"
+    else:
+        fitted = (
+            f"fitted over N <= {FIT_NMAX}, which keeps the packed-key width boundaries "
+            "described next out of every fit; the points beyond it are drawn but enter no fit"
+        )
+        other_desc = "Fitted over every point instead"
     stops = [f for f in ORDER if max(fits[f][0]) < n_hi]
     stop_note = ""
     if stops:
@@ -783,10 +920,13 @@ def _window_section(fits, lattice):
             if stops == ["julia"]
             else ""
         )
+        one = len(stops) == 1
         stop_note = (
-            f" {' and '.join(_SHORT[f] for f in stops)} stops at N={n_common}: its "
-            f"N={n_hi} point was not measured, because{why} above N = {FIT_NMAX} it could "
-            "not enter a like-for-like fit in any case."
+            f" {' and '.join(_SHORT[f] for f in stops)} {'stops' if one else 'stop'} at "
+            f"N={n_common}: {'its' if one else 'their'} N={n_hi} "
+            f"{'point was' if one else 'points were'} not measured, because{why} above "
+            f"N = {FIT_NMAX} {'it' if one else 'they'} could not enter a like-for-like fit "
+            "in any case."
         )
     pv_step = _largest_step(_arm(lattice, "ppvm"))
     if f"{m[2]:+.2f}" == f"{other['monoprop']:+.2f}":
@@ -816,6 +956,13 @@ def _window_section(fits, lattice):
     )
 
 
+def _one_node_per_series(lattice):
+    """True when every drawn series' rows record one hostname, i.e. no sweep was split."""
+    return all(
+        len({r["host"] for r in _arm(lattice, f)}) == 1 for f in _families(lattice)
+    )
+
+
 def _where_caveat(lattice, crosscheck, n_hi):
     """Where the rows were measured, and what that does and does not license."""
     host = min(canonical_host(r["host"]) for r in lattice)
@@ -838,17 +985,32 @@ def _where_caveat(lattice, crosscheck, n_hi):
     n_hosts = len({r["host"] for r in lattice})
     m_secs = [r["seconds"] for r in _arm(lattice, "monoprop")]
     ref_secs = max(r["seconds"] for f in ORDER[1:] for r in _arm(lattice, f))
+    site, unit = FLEET_SITE[host]
+    if _one_node_per_series(lattice):
+        # Nothing was split, so there is nothing for a crosscheck to license; one supplied
+        # anyway is still reported.
+        split = (
+            "Every series was measured on a single node, held exclusively through Slurm "
+            "with the timed process pinned to one core, so every curve -- and so every "
+            "fitted exponent -- comes from one node; only the comparison between curves "
+            f"crosses nodes, and those are one {unit}."
+            + (f" {_crosscheck_note(lattice, crosscheck)}" if crosscheck else "")
+        )
+    else:
+        split = (
+            "The sweep ran as independent Slurm jobs, each holding a whole node exclusively "
+            "with the timed process pinned to one core, so that no single point could hold "
+            f"the rest hostage; that is why the rows record {n_hosts} hostnames. "
+            f"{_crosscheck_note(lattice, crosscheck)}"
+        )
     return "\n".join(
         [
             _para(
-                "* WHERE. Measured on the AWS PCS cluster, not on an exclusive Leonardo "
-                f"node: {n_hosts} nodes of one instance type ({host}). The sweep ran as "
-                "independent Slurm jobs, each holding a whole node exclusively with the "
-                "timed process pinned to one core, so that no single point could hold the "
-                f"rest hostage; that is why the rows record {n_hosts} hostnames. "
-                f"{_crosscheck_note(lattice, crosscheck)} The dataset is still cited only "
-                "for a SHAPE (an exponent in N) and never for an absolute time. Figs. 1-4 "
-                "are the absolute-time figures and they come from Leonardo.",
+                f"* WHERE. Measured on {site}: {n_hosts} "
+                f"node{'s' if n_hosts > 1 else ''} of one {unit} ({host}). {split} The "
+                "dataset is still cited only for a SHAPE (an exponent in N) and never for an "
+                "absolute time. Figs. 1-4 are the absolute-time figures and they come from "
+                "Leonardo.",
                 "  ",
             ),
             _para(
@@ -864,6 +1026,89 @@ def _where_caveat(lattice, crosscheck, n_hi):
     )
 
 
+# Why monoprop's curve sits above the 1/N guide. No row records this, so it is written by
+# hand, and it describes a specific engine: OLD is the emit path of every build up to and
+# including 508b536e (the AWS sweep's a86984a9f, and the Deucalion "before" arm). NEW must
+# describe the build drawn as the solid curve whenever --before is in play; until someone
+# who knows that build fills it in, the caption carries a TODO marker and the build says so.
+RESIDUAL_CAUSE_OLD = (
+    "the emit path still materialises the dense partner and folds every word for the hash, "
+    "which is O(N/32) work on the branching fraction"
+)
+RESIDUAL_CAUSE_NEW = (
+    "per-term instruction counts are flat in N, and "
+    "successive points fall as N^-0.98 and N^-1.00 from N=256 up; the gap is accrued below "
+    "N=256 as one-time steps, not a slope: there the operator outgrows a 16 MiB L3 slice "
+    "(simulated last-level misses per anticommuting term rise 0.63 -> 2.33 from N=32 to N=256) "
+    "and, above N=128, stored term positions widen from 8 to 16 bits"
+)
+TODO = "[TODO: "
+
+
+def _gap_above_guide(xs, ys):
+    """How many times the last point sits above the 1/N guide drawn through the first."""
+    return ys[-1] / (ys[0] * xs[0] / xs[-1])
+
+
+def _residual_caveat(fits):
+    """The last caveat: what monoprop's shortfall against 1/N is, measured and explained."""
+    if BEFORE not in fits:
+        return _para(
+            "* monoprop's residual against the ideal N^-1 is real work, not noise: "
+            f"{RESIDUAL_CAUSE_OLD}. The 1/N is approached, not attained.",
+            "  ",
+        )
+    mx, my, me = fits["monoprop"]
+    bx, by, be = fits[BEFORE]
+    gap, gap_b = _gap_above_guide(mx, my), _gap_above_guide(bx, by)
+    new = RESIDUAL_CAUSE_NEW or (
+        f"{TODO}what the current build's remaining N-dependence is, in place of "
+        "RESIDUAL_CAUSE_NEW in make_inverse_scaling_figure.py]"
+    )
+    attained = (
+        "The 1/N is approached, not attained."
+        if gap > 1.05
+        else "Within 5%, the 1/N is attained."
+    )
+    return _para(
+        "* monoprop's residual against the ideal N^-1 is measured, not assumed: at "
+        f"N={mx[-1]} the drawn curve sits {gap:.2f}x above the 1/N guide through its "
+        f"N={mx[0]} point (fitted N^{me:+.2f}), against {gap_b:.2f}x above its own for the "
+        f"earlier build (N^{be:+.2f}), where {RESIDUAL_CAUSE_OLD}. Now: {new}. {attained}",
+        "  ",
+    )
+
+
+def _before_paragraph(fits, lattice):
+    """The earlier monoprop build against the current one, at matched N only."""
+    if BEFORE not in fits:
+        return ""
+    mx, my, _ = fits["monoprop"]
+    bx, by, be = fits[BEFORE]
+    common = [n for n in mx if n in bx]
+    if not common:
+        return ""
+    speed = {n: by[bx.index(n)] / my[mx.index(n)] for n in common}
+    version = {
+        f: "/".join(sorted({str(r.get("library_version")) for r in _arm(lattice, f)}))
+        for f in ("monoprop", BEFORE)
+    }
+    lo, hi = common[0], common[-1]
+    trend = "widening" if speed[hi] > speed[lo] else "narrowing"
+    return (
+        "\n"
+        + _para(
+            "Against its own past. The lighter dash-dot curve is the same driver and "
+            f"settings on the earlier monoprop build ({version[BEFORE]}; the solid curve is "
+            f"{version['monoprop']}): it falls as N^{be:+.2f}. The current build is "
+            f"{speed[lo]:.2f}x faster at N={lo} and {speed[hi]:.2f}x at N={hi}, a gap "
+            f"{trend} with N. Every lead quoted against the reference engines is the "
+            "current build's."
+        )
+        + "\n"
+    )
+
+
 def write_caption(
     outdir: Path,
     fits,
@@ -873,8 +1118,20 @@ def write_caption(
     spectator=None,
     cutoff_evidence=None,
     crosscheck=None,
+    preview=(),
 ):
-    """Emit the caption with every number taken from the data, not retyped."""
+    """Emit the caption with every number taken from the data, not retyped.
+
+    ``preview`` lists the like-for-like checks a --preview build let through; when it is
+    non-empty they head the caption, so the text cannot be mistaken for the final one.
+    """
+    preview_note = ""
+    if preview:
+        preview_note = (
+            "PREVIEW -- NOT FOR PUBLICATION. Built with --preview, past these checks:\n"
+            + "\n".join(f"  - {p}" for p in preview)
+            + "\n\n"
+        )
     m, pv, j = (fits[f] for f in ("monoprop", "ppvm", "julia"))
     lat = _arm(lattice, "monoprop")
     lo, hi = lat[0], lat[-1]
@@ -894,21 +1151,33 @@ def write_caption(
     pl_lo = lo["seconds"] / layers / k_lo * MILLION * 1e3
     pl_hi = hi["seconds"] / layers / k_hi * MILLION * 1e3
     slower, more_gates = pl_hi / pl_lo, g_hi / g_lo
-    counts = {f: len(fits[f][0]) for f in ORDER}
+    counts = {f: len(fits[f][0]) for f in fits}
     if len(set(counts.values())) == 1:
         coverage = f"{counts['monoprop']} points per engine"
     else:
         coverage = ", ".join(f"{_SHORT[f]} {c}" for f, c in counts.items()) + " points"
     host = min(canonical_host(r["host"]) for r in lattice)
     raw_hosts = sorted({r["host"] for r in lattice})
-    fleet = host if host in FLEETS else None
-    where = (
-        f"every work item an exclusive job on one of {len(raw_hosts)} nodes of one instance type"
-        if fleet
-        else "one host"
+    if host not in FLEETS:
+        where = "one host"
+    elif _one_node_per_series(lattice):
+        where = (
+            f"every series on one exclusive node, {len(raw_hosts)} "
+            f"node{'s' if len(raw_hosts) > 1 else ''} of one {FLEET_SITE[host][1]} in all"
+        )
+    else:
+        where = (
+            f"every work item an exclusive job on one of {len(raw_hosts)} nodes of one "
+            f"{FLEET_SITE[host][1]}"
+        )
+    # Which series the shared-divisor check covered.
+    series = "all three engines" + (
+        " and the earlier monoprop build" if BEFORE in fits else ""
     )
+    near = "close to" if abs(m[2] + 1) <= 0.25 else "against"
 
     start = _start_sentence(fits, n_common)
+    before = _before_paragraph(fits, lattice)
 
     window = _window_section(fits, lattice)
 
@@ -964,22 +1233,31 @@ choice of arm is not load-bearing; cutoff {CUTOFF} is drawn for continuity with 
         f"({coverage}), one thread, {where}."
     )
 
-    text = f"""Fig. 6 -- The marginal cost of a gate, single-threaded.
+    plotted = _para(
+        "Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both "
+        f"divisors are checked, not assumed: at every point {series} report the same term "
+        f"count ({k_lo:,} at N={n_lo} rising to {k_hi:,} at N={n_hi}), the same gate count "
+        f"({lo['gates']} to {hi['gates']}) and an expectation value agreeing to {spread:.1e} "
+        "absolute, so the divisors are identical across the curves and the figure script "
+        "refuses to build if any of that moves. A shared divisor cannot manufacture a "
+        "difference between the curves, only reveal one."
+    )
+    result = _para(
+        f"Result. monoprop falls as N^{m[2]:+.2f}, {near} the ideal 1/N drawn beside it: "
+        f"{m_lo:.3f} ns at N={n_lo} down to {m_hi:.4f} ns at N={n_hi}, {fall_article} "
+        f"{fall:.1f}x reduction across a {widen}x wider system. Neither reference engine "
+        f"falls: ppvm N^{pv[2]:+.2f}, PauliPropagation.jl N^{j[2]:+.2f}."
+    )
+
+    text = f"""{preview_note}Fig. 6 -- The marginal cost of a gate, single-threaded.
 
 {model}
 
-Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both divisors
-are checked, not assumed: at every point all three engines report the same term count
-({k_lo:,} at N={n_lo} rising to {k_hi:,} at N={n_hi}), the same gate count ({lo["gates"]} to {hi["gates"]}) and an
-expectation value agreeing to {spread:.1e} absolute, so the divisors are identical across the
-three curves and the figure script refuses to build if any of that moves. A shared divisor
-cannot manufacture a difference between the curves, only reveal one.
+{plotted}
 
-Result. monoprop falls as N^{m[2]:+.2f}, close to the ideal 1/N drawn beside it: {m_lo:.3f} ns at
-N={n_lo} down to {m_hi:.4f} ns at N={n_hi}, {fall_article} {fall:.1f}x reduction across a {widen}x wider system.
-Neither reference engine falls: ppvm N^{pv[2]:+.2f}, PauliPropagation.jl N^{j[2]:+.2f}.
+{result}
 {start}
-{window}
+{before}{window}
 The divisor is not the effect. A falling curve invites the objection that the gate count is
 itself proportional to N, so state the same rows with no gate division at all: a monoprop
 layer of {g_hi} gates costs {slower:.2f}x what a layer of {g_lo} gates costs ({pl_lo:.1f} -> {pl_hi:.1f} ms per
@@ -1006,13 +1284,150 @@ Caveats, stated because the figure would otherwise overclaim:
     three engines, so the comparison between the curves is unaffected.
   * N={n_hi} is the ceiling, not a choice: monoprop_MAX_NUM_MODES defaults to {n_hi} with no
     headroom above it, so a wider sweep needs a rebuild.
-  * monoprop's residual against the ideal N^-1 is real work, not noise: the emit path still
-    materialises the dense partner and folds every word for the hash, which is O(N/32) work
-    on the branching fraction. The 1/N is approached, not attained.
+{_residual_caveat(fits)}
 """
     out = outdir / "fig6_caption.txt"
     out.write_text(text)
     return out
+
+
+def check_unique(records):
+    """One row per (series, cutoff, N): a duplicate would be drawn as a zigzag and fitted."""
+    seen, problems = {}, []
+    for r in records:
+        key = (r["engine_family"], r["cutoff"], r["num_qubits"])
+        seen[key] = seen.get(key, 0) + 1
+    for (fam, cutoff, n), count in sorted(seen.items()):
+        if count > 1:
+            problems.append(f"{LABEL[fam]}: {count} rows at c{cutoff} N={n}")
+    return problems
+
+
+def _resolve_inputs(args):
+    """Fill every input not given on the command line from the chosen dataset.
+
+    An explicit --lattice is taken as the whole specification, so nothing is added to it.
+    Otherwise --dataset auto takes the first entry of DATASETS whose lattice files all exist,
+    and the dataset's optional files and the caption companions fill whatever the command
+    line left unset (an optional file that does not exist is skipped).
+    """
+    if args.lattice is not None:
+        return "as given on the command line"
+    names = list(DATASETS) if args.dataset == "auto" else [args.dataset]
+    for name in names:
+        ds = DATASETS[name]
+        if all((DATA / f).exists() for f in ds["lattice"]):
+            break
+    else:
+        missing = [str(DATA / f) for f in DATASETS[names[-1]]["lattice"]]
+        raise SystemExit(
+            f"--dataset {args.dataset}: no complete lattice set ({missing})"
+        )
+    args.lattice = [DATA / f for f in ds["lattice"]]
+    for key in ("before", "host_crosscheck"):
+        if getattr(args, key) is None:
+            setattr(
+                args, key, [DATA / f for f in ds[key] if (DATA / f).exists()] or None
+            )
+    for key, files in COMPANIONS.items():
+        if getattr(args, key) is None:
+            setattr(args, key, [DATA / f for f in files])
+    return f"dataset '{name}' from {DATA}"
+
+
+def _load_inputs(args, source):
+    """(lattice with the "before" rows folded in, spectator, cutoff evidence, crosscheck)."""
+    lattice = load(args.lattice)
+    if args.before:
+        before = load(args.before)
+        foreign = sorted({r["engine"] for r in before} - {"monoprop"})
+        if foreign:
+            raise SystemExit(f"--before must hold monoprop rows only, not {foreign}")
+        for r in before:
+            r["engine_family"] = BEFORE
+        lattice += before
+    print(f"inputs: {source}")
+    for key in ("lattice", "before", "host_crosscheck", "spectator", "cutoff_evidence"):
+        for p in getattr(args, key) or []:
+            print(f"  {key:<16} {p}")
+    return (
+        lattice,
+        *(
+            load(paths) if paths else None
+            for paths in (args.spectator, args.cutoff_evidence, args.host_crosscheck)
+        ),
+    )
+
+
+def _preconditions(lattice, *, preview):
+    """Run every like-for-like check and print the outcome; refuse unless previewing.
+
+    Returns the problems a preview let through (empty otherwise) and the expectation spread.
+    """
+    grid_problems, points, grid_notes = check_grid(lattice)
+    workload_problems, expectation_spread = check_same_workload(lattice)
+    thread_problems, thread_lines = check_single_thread(lattice)
+    problems = (
+        check_unique(lattice) + grid_problems + workload_problems + thread_problems
+    )
+    if problems and not preview:
+        raise SystemExit(
+            "\n".join(["the three engines were not measured like for like:", *problems])
+        )
+    print("preconditions:")
+    for p in problems:
+        print(f"  PREVIEW, NOT MET: {p}")
+    scope = f" over N <= {FIT_NMAX}" if grid_notes else ""
+    if not grid_problems:
+        print(f"  identical (cutoff, N) grid{scope}, {points} points per engine")
+    for note in grid_notes:
+        print(f"  note: {note}")
+    if not workload_problems:
+        print(
+            "  identical term and gate counts; "
+            f"expectation agrees to {expectation_spread:.1e}"
+        )
+    for line in thread_lines:
+        print(f"  {line}")
+    return problems, expectation_spread
+
+
+def _print_fits(lattice, fits):
+    """Every series' exponent at every cutoff, monoprop's gap to 1/N, and its speed-up."""
+    span = (
+        f"N = {min(r['num_qubits'] for r in lattice)}..{max(r['num_qubits'] for r in lattice)}"
+        if FIT_ALL_POINTS
+        else f"N <= {FIT_NMAX}"
+    )
+    print(
+        f"\nfitted exponents over {span}, ns per gate per term [ideal: -1 (K/N) vs 0 (K)]"
+    )
+    for cutoff in sorted({r["cutoff"] for r in lattice}):
+        for fam in _families(lattice):
+            rows = _arm(lattice, fam, cutoff)
+            if not rows:
+                continue
+            if not FIT_ALL_POINTS:
+                rows = _split_at_fit_window(rows)[0]
+            e = _exponent(
+                [r["num_qubits"] for r in rows], [_per_gate_per_term(r) for r in rows]
+            )
+            mark = " <- drawn" if cutoff == CUTOFF else ""
+            print(f"  c{cutoff} {LABEL[fam]:<22} N^{e:+.2f}{mark}")
+    # How close each monoprop build gets to the 1/N guide, over every drawn point.
+    for fam in ("monoprop", BEFORE):
+        if fam in fits and len(fits[fam][0]) > 1:
+            xs, ys, _ = fits[fam]
+            print(
+                f"  {LABEL[fam]:<26} N={xs[-1]} sits {_gap_above_guide(xs, ys):.2f}x above "
+                f"the 1/N guide through its N={xs[0]} point"
+            )
+    if "monoprop" in fits and BEFORE in fits:
+        (mx, my, _), (bx, by, _) = fits["monoprop"], fits[BEFORE]
+        speed = ", ".join(
+            f"N={n}: {by[bx.index(n)] / my[mx.index(n)]:.2f}x" for n in mx if n in bx
+        )
+        print(f"\nmonoprop speed-up over {LABEL[BEFORE]}: {speed}")
 
 
 def main() -> None:
@@ -1021,8 +1436,29 @@ def main() -> None:
         "--lattice",
         nargs="+",
         type=Path,
-        required=True,
-        help="JSONL from the full-width sweeps (one file per engine)",
+        default=None,
+        help="JSONL from the full-width sweeps (one file per engine). Default: --dataset.",
+    )
+    ap.add_argument(
+        "--dataset",
+        choices=["auto", *DATASETS],
+        default="auto",
+        help="which data/ sweep to build from when --lattice is not given. 'auto' takes the "
+        "Deucalion sweep once merge_octave_runs.py has written it, else the AWS sweep.",
+    )
+    ap.add_argument(
+        "--before",
+        nargs="+",
+        type=Path,
+        default=None,
+        help="optional: the same sweep on an earlier monoprop build, drawn as a lighter "
+        "'monoprop (before)' reference. Its rows carry engine 'monoprop' too, which is why "
+        "they come in through this flag and never through --lattice.",
+    )
+    ap.add_argument(
+        "--no-before",
+        action="store_true",
+        help="draw no 'before' arm even if the dataset has one",
     )
     ap.add_argument(
         "--spectator",
@@ -1058,72 +1494,56 @@ def main() -> None:
         help="panel shapes to emit: 'column' for one journal column, 'page' for a "
         "full-width banner. Both by default; the fits and the caption are identical.",
     )
+    ap.add_argument(
+        "--preview",
+        action="store_true",
+        help="build a sweep still in flight: like-for-like failures become warnings, the "
+        "panel is watermarked, the caption is headed by what was let through (and not "
+        "written at all while an engine has no rows). Refuses to write into figures/.",
+    )
     args = ap.parse_args()
 
-    lattice = load(args.lattice)
-    spectator = load(args.spectator) if args.spectator else None
-    cutoff_evidence = load(args.cutoff_evidence) if args.cutoff_evidence else None
-    crosscheck = load(args.host_crosscheck) if args.host_crosscheck else None
-
-    grid_problems, points, grid_notes = check_grid(lattice)
-    workload_problems, expectation_spread = check_same_workload(lattice)
-    thread_problems, thread_lines = check_single_thread(lattice)
-    problems = grid_problems + workload_problems + thread_problems
-    if problems:
+    source = _resolve_inputs(args)
+    if args.no_before:
+        args.before = None
+    if args.preview and args.outdir.resolve() == (HERE / "figures").resolve():
         raise SystemExit(
-            "\n".join(["the three engines were not measured like for like:", *problems])
+            "--preview never writes into figures/: pass a scratch --outdir"
         )
+    lattice, spectator, cutoff_evidence, crosscheck = _load_inputs(args, source)
 
-    print("preconditions:")
-    scope = f" over N <= {FIT_NMAX}" if grid_notes else ""
-    print(f"  identical (cutoff, N) grid{scope}, {points} points per engine")
-    for note in grid_notes:
-        print(f"  note: {note}")
-    print(
-        "  identical term and gate counts; "
-        f"expectation agrees to {expectation_spread:.1e}"
-    )
-    for line in thread_lines:
-        print(f"  {line}")
+    problems, expectation_spread = _preconditions(lattice, preview=args.preview)
 
     outs = []
     for layout in dict.fromkeys(args.layout):  # de-duplicate, keep the given order
-        layout_outs, _ = fig6(lattice, args.outdir, layout)
+        layout_outs, _ = fig6(lattice, args.outdir, layout, preview=args.preview)
         outs += layout_outs
     # Independent of what got rendered, so the caption cannot drift from the panel.
     fits = _fits(lattice, fit_all=FIT_ALL_POINTS)
-    cap = write_caption(
-        args.outdir,
-        fits,
-        lattice,
-        spread=expectation_spread,
-        spectator=spectator,
-        cutoff_evidence=cutoff_evidence,
-        crosscheck=crosscheck,
-    )
+    absent = [LABEL[f] for f in ORDER if f not in fits]
+    if absent:
+        print(f"\nno caption: no rows at all for {', '.join(absent)} (preview)")
+        cap = None
+    else:
+        cap = write_caption(
+            args.outdir,
+            fits,
+            lattice,
+            spread=expectation_spread,
+            spectator=spectator,
+            cutoff_evidence=cutoff_evidence,
+            crosscheck=crosscheck,
+            preview=problems,
+        )
 
-    span = (
-        f"N = {min(r['num_qubits'] for r in lattice)}..{max(r['num_qubits'] for r in lattice)}"
-        if FIT_ALL_POINTS
-        else f"N <= {FIT_NMAX}"
-    )
-    print(
-        f"\nfitted exponents over {span}, ns per gate per term [ideal: -1 (K/N) vs 0 (K)]"
-    )
-    for cutoff in sorted({r["cutoff"] for r in lattice}):
-        for fam in ORDER:
-            rows = _arm(lattice, fam, cutoff)
-            if not FIT_ALL_POINTS:
-                rows = _split_at_fit_window(rows)[0]
-            e = _exponent(
-                [r["num_qubits"] for r in rows], [_per_gate_per_term(r) for r in rows]
-            )
-            mark = " <- drawn" if cutoff == CUTOFF else ""
-            print(f"  c{cutoff} {ENGINE_LABEL[fam]:<22} N^{e:+.2f}{mark}")
-
+    _print_fits(lattice, fits)
     print("\nwrote:")
-    for o in (*outs, cap):
+    for o in (*outs, *([cap] if cap else [])):
         print(f"  {o}")
+    if cap and TODO in cap.read_text():
+        print(
+            f"\nWARNING: {cap.name} carries a {TODO.strip()}...] marker -- fill it in."
+        )
 
 
 if __name__ == "__main__":
