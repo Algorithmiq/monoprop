@@ -25,6 +25,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 
 #include "monoprop/Bitset.h"
@@ -135,6 +136,46 @@ template <size_t NumModes>
         delta -= std::popcount(v_n & ~u_n);
         const uint64_t x_g = u_g ^ v_g;
         cross += std::popcount(v_m & x_g);
+    }
+    return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
+}
+
+// pauli_rotation_sign of the term whose ascending positions are `src`, with the same arithmetic, in
+// O(|src| + |nz words of G|): one walk alongside G's ascending nonzero words rebuilds just those words
+// of the source, and no dense monomial is formed.
+template <size_t NumModes, typename PosT>
+[[gnu::always_inline]] inline auto pauli_rotation_sign_positions(const PauliGenContext<NumModes> &ctx,
+                                                                 std::span<const PosT> src) -> int {
+    constexpr auto e_mask = pauli_even_mask<NumModes>();
+    long delta = static_cast<long>(ctx.g_y);
+    long cross = 0;
+    auto add_word = [&](size_t w, uint64_t m) {
+        const uint64_t g = ctx.gen.word(w);
+        const uint64_t e = e_mask.word(w);
+        const auto [v_m, u_m] = detail::pauli_uv(m, e);
+        const auto [v_n, u_n] = detail::pauli_uv(m ^ g, e);
+        const auto [v_g, u_g] = detail::pauli_uv(g, e);
+        delta += std::popcount(v_m & ~u_m);
+        delta -= std::popcount(v_n & ~u_n);
+        const uint64_t x_g = u_g ^ v_g;
+        cross += std::popcount(v_m & x_g);
+    };
+    size_t k = 0;
+    uint64_t m = 0;
+    for (const PosT p : src) {
+        const size_t q = static_cast<size_t>(p);
+        while (k < ctx.nz_count && (q >> 6) > ctx.nz_words[k]) {
+            add_word(ctx.nz_words[k++], m);
+            m = 0;
+        }
+        if (k == ctx.nz_count) {
+            break;
+        }
+        m |= static_cast<uint64_t>((q >> 6) == ctx.nz_words[k]) << (q & 63);
+    }
+    for (; k < ctx.nz_count; ++k) {
+        add_word(ctx.nz_words[k], m);
+        m = 0;
     }
     return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
 }

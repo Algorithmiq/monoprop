@@ -216,6 +216,9 @@ struct ContractSink {
     // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
     // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
 
+    // A batch's hit targets are scattered over op_coeffs; touching them before the self_hit loop
+    // overlaps those misses instead of serialising one per hit.
+    [[gnu::always_inline]] auto prefetch_hit(size_t found) const -> void { __builtin_prefetch(&op_coeffs[found]); }
     // Self-resolve hit: both endpoints are local.
     [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
         const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
@@ -551,6 +554,15 @@ private:
                                                  std::span<const uint32_t>(k_of).first(m),
                                                  std::span<size_t>(found).first(m),
                                                  std::span<uint32_t>(hashes).first(m));
+            if constexpr (requires { sink.prefetch_hit(size_t{}); }) {
+                // Below this the coefficients are cache-resident and the loop is pure overhead.
+                constexpr size_t prefetch_hit_min_rows = size_t{1} << 21;
+                for (size_t j = 0; op_size >= prefetch_hit_min_rows && j < m; ++j) {
+                    if (found[j] < op_size) {
+                        sink.prefetch_hit(found[j]);
+                    }
+                }
+            }
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {

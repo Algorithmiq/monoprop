@@ -16,9 +16,12 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -155,6 +158,54 @@ template <size_t NumModes>
     return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
 }
 
+// cutoff_sums of the monomial whose set bits are the ascending `pos`, identical to the dense form, in
+// O(|pos|): a mode is paired iff both its slots 2m and 2m+1 are present, which in ascending order makes
+// them adjacent. The active modes are the top `logical_num_modes`, so slots below the offset are skipped.
+template <size_t NumModes, typename PosT>
+[[gnu::always_inline]] inline auto cutoff_sums_positions(std::span<const PosT> pos, size_t logical_num_modes)
+    -> CutoffSums {
+    const size_t active_bit_offset = 2 * (NumModes - logical_num_modes);
+    const size_t n = pos.size();
+    size_t j = 0;
+    while (j < n && static_cast<size_t>(pos[j]) < active_bit_offset) {
+        ++j;
+    }
+    const size_t popcount = n - j;
+    size_t pairs = 0;
+    for (; j + 1 < n; ++j) {
+        const size_t p = static_cast<size_t>(pos[j]);
+        pairs += static_cast<size_t>((p % 2 == 0) && static_cast<size_t>(pos[j + 1]) == p + 1);
+    }
+    return {popcount - (2 * pairs), popcount, popcount - pairs};
+}
+
+// Rows [first, op.size()) that are fully paired, ascending. A packed row is tested on its positions in
+// O(slots), not materialised in O(words); a spilled row, or a backend without positions, goes dense.
+template <size_t NumModes, typename Rows>
+auto fully_paired_rows_from(size_t first, const Rows &op) -> VecZ {
+    VecZ result;
+    const auto mask = even_bits<2 * NumModes, LSb0>();
+    for (size_t i = first; i < op.size(); ++i) {
+        bool paired = false;
+        // One word is a single masked compare dense, cheaper than walking the positions.
+        if constexpr (Monomial<NumModes>::num_words() > 1 && requires { op.row_positions(i).inlined(); }) {
+            if (const auto row = op.row_positions(i); row.inlined()) {
+                paired = cutoff_sums_positions<NumModes>(row.pos, NumModes).xor_sum == 0;
+            }
+            else {
+                paired = is_paired<NumModes>(materialize_row<NumModes>(op, i), mask);
+            }
+        }
+        else {
+            paired = is_paired<NumModes>(materialize_row<NumModes>(op, i), mask);
+        }
+        if (paired) {
+            result.push_back(i);
+        }
+    }
+    return result;
+}
+
 // Both cutoffs below keep a fully paired monomial (xor_sum == 0) unconditionally: those are the only
 // terms contributing to an expectation value against a product reference state, so bounding them by
 // length or support would discard signal.
@@ -251,6 +302,33 @@ public:
         return cutoff_fn_(mono);
     }
 
+    // Whether passes_positions applies: the built-in length and support cutoffs only. A custom
+    // CutoffFn sees the dense monomial, so it has no positions form.
+    [[nodiscard]] auto has_positions_form() const -> bool {
+        return length_cutoff_ != nullptr || support_cutoff_ != nullptr;
+    }
+
+    // passes_with_popcount over the ascending positions of the monomial, with the same verdict and no
+    // dense read; `pairs` is its count of doubly occupied modes (merge_partner_positions_paired).
+    // Requires has_positions_form().
+    template <typename PosT>
+    [[gnu::always_inline]] auto passes_positions(std::span<const PosT> pos, size_t pairs) const -> bool {
+        assert(has_positions_form());
+        const size_t n = pos.size();
+        if (length_cutoff_ != nullptr) {
+            if (n <= length_cutoff_->cutoff) {
+                return true;
+            }
+            const auto sums = sums_from_pairs_(pos, pairs, length_cutoff_->logical_num_modes);
+            return sums.xor_sum == 0 || sums.popcount_sum <= length_cutoff_->cutoff;
+        }
+        if (n <= support_cutoff_->cutoff) {
+            return true;
+        }
+        const auto sums = sums_from_pairs_(pos, pairs, support_cutoff_->logical_num_modes);
+        return sums.xor_sum == 0 || sums.or_sum <= support_cutoff_->cutoff;
+    }
+
     // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size
     // its packed inline rows. A length cutoff counts set bits directly; a support cutoff counts
     // modes/qubits, each spanning two slots, hence the x2.
@@ -265,6 +343,19 @@ public:
     }
 
 private:
+    // With every mode active the pair count alone gives the sums; otherwise inactive low slots must be
+    // skipped, which the positions walk does.
+    template <typename PosT>
+    [[gnu::always_inline]] static auto sums_from_pairs_(std::span<const PosT> pos,
+                                                        size_t pairs,
+                                                        size_t logical_num_modes) -> CutoffSums {
+        if (logical_num_modes == NumModes) {
+            const size_t n = pos.size();
+            return {n - (2 * pairs), n, n - pairs};
+        }
+        return cutoff_sums_positions<NumModes>(pos, logical_num_modes);
+    }
+
     const CutoffFn<NumModes> &cutoff_fn_;
     const LengthCutoff<NumModes> *length_cutoff_;
     const SupportCutoff<NumModes> *support_cutoff_;

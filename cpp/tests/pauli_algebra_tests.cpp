@@ -19,7 +19,9 @@
 #include <complex>
 #include <cstdint>
 #include <random>
+#include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "PauliTestOracle.h"
@@ -275,4 +277,34 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
         const auto mnd = matrix_from_string(pnd);
         BOOST_TEST(std::abs(mnd[idx * d + idx]) < 1e-9);
     }
+}
+
+// The positions-form Pauli sign rebuilds only G's words from the source positions; it must equal the
+// dense kernel at one word, across a word boundary, and at the widest storage with sparse terms.
+BOOST_AUTO_TEST_CASE(pauli_rotation_sign_positions_matches_dense) {
+    auto check = [](auto tag, size_t max_letters) {
+        constexpr size_t N = decltype(tag)::value;
+        std::mt19937_64 rng(0xB0A7ULL + N);
+        std::uniform_int_distribution<size_t> bit(0, (2 * N) - 1);
+        for (int trial = 0; trial < 3000; ++trial) {
+            Monomial<N> a;
+            Monomial<N> g;
+            for (size_t k = 0; k < 1 + (static_cast<size_t>(trial) % max_letters); ++k) {
+                a.set(bit(rng));
+            }
+            for (int k = 0; k < 1 + (trial % 4); ++k) {
+                g.set(bit(rng));
+            }
+            std::vector<uint16_t> pos;
+            for (size_t b = a.find_first(); b < a.size(); b = a.find_next(b)) {
+                pos.push_back(static_cast<uint16_t>(b));
+            }
+            const auto ctx = make_pauli_gen_context<N>(g);
+            BOOST_TEST(pauli_rotation_sign_positions<N>(ctx, std::span<const uint16_t>(pos))
+                       == pauli_rotation_sign<N>(ctx, a, a ^ g));
+        }
+    };
+    check(std::integral_constant<size_t, 32>{}, 12);
+    check(std::integral_constant<size_t, 40>{}, 40);
+    check(std::integral_constant<size_t, 1024>{}, 12);
 }

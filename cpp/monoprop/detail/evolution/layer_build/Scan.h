@@ -161,8 +161,13 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
-// The dense form is unavoidable: the owner hash folds every word and the basis sign reads the source
-// bitset, so it is built regardless, and the merge below runs beside it.
+// Word count from which the positions-only emit in fused_find_and_collect beats the dense partner. A
+// one-word partner is a handful of instructions dense, cheaper than walking its positions (measured +12%
+// at 32 modes); at two words the positions emit still lost 1.4-1.9% (64 modes); from three they win.
+inline constexpr size_t kPositionsEmitMinWords = 3;
+
+// The dense partner, for the emits that need one: a one-word monomial, a spilled source row (no position
+// array), a custom cutoff predicate, or more than one rank (the owner hash folds the dense words).
 template <size_t NumModes>
 struct PartnerProduct {
     Monomial<NumModes> new_mono;
@@ -349,11 +354,42 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         };
 
+        // Single rank with a built-in cutoff: the partner is the merge of two short position lists and
+        // its cutoff, sign and (at resolve) hash all read those positions, so nothing here costs O(W)
+        // and per-term work stays independent of N. Verdicts and signs equal the dense path's.
+        constexpr bool kWideEnough = Monomial<NumModes>::num_words() >= kPositionsEmitMinWords;
+        [[maybe_unused]] const bool emit_positions_only = kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form();
+        const std::span<const uint16_t> gen_pos_span(gen_pos);
+        const std::span<RowPosT> pbuf_span(pbuf);
+
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
+            }
+            if constexpr (kWideEnough) {
+                if (emit_positions_only) {
+                    if (const auto src = ham.row_positions(i); src.inlined()) {
+                        const auto merged = merge_partner_positions_paired(src.pos, gen_pos_span, pbuf_span);
+                        const auto partner = std::span<const RowPosT>(pbuf).first(merged.count);
+                        if (!cutoff_eval.passes_positions(partner, merged.pairs) &&
+                            !cut_st.is_above_upper(abs_c)) {
+                            return;
+                        }
+                        const int phase = A::emit_phase(A::rotation_sign_positions(ectx, src.pos),
+                                                        mono_pop,
+                                                        gen_pop,
+                                                        merged.overlap);
+                        // rank_count == 1: the only slot is my_rank's.
+                        (is_follower ? res.follower_self : res.leader_self).push(partner, phase);
+                        (is_follower ? fs : ls).at_slot(my_rank).push_back(i);
+                        if (capture_values) {
+                            (is_follower ? fv : lv).at_slot(my_rank).push_back(v_src);
+                        }
+                        return;
+                    }
+                }
             }
             const auto p = emit_term_products<NumModes, A>(ham,
                                                            i,
@@ -408,7 +444,25 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         };
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
-        for (const auto &w : nz) {
+        /* Sparse anticommuting terms in a large operator are DRAM misses the hardware prefetcher cannot
+         * predict (rows ~K/n_anti apart), so the row and coefficient of the terms kPrefetchWords nonzero
+         * words ahead are requested before their turn. Below the gate the rows are cache-resident or
+         * dense enough to stream, and the loop is the plain one. */
+        constexpr size_t kPrefetchWords = 8;
+        constexpr size_t kPrefetchMinRows = size_t{1} << 21;
+        const double *const prefetch_coeffs = fused_scale_coeffs != nullptr ? fused_scale_coeffs : coeffs.data();
+        const bool prefetch_ahead = ham.size() >= kPrefetchMinRows && n_anti * 16 < ham.size()
+                                    && (fused_scale_coeffs != nullptr || coeffs.size() >= ham.size());
+        for (size_t kw = 0; kw < nz.size(); ++kw) {
+            const auto &w = nz[kw];
+            if (prefetch_ahead && kw + kPrefetchWords < nz.size()) {
+                const auto &ahead = nz[kw + kPrefetchWords];
+                for (uint64_t m = ahead.overlap; m; m &= m - 1) {
+                    const size_t i = ahead.base + static_cast<size_t>(std::countr_zero(m));
+                    ham.prefetch_row(i);
+                    __builtin_prefetch(&prefetch_coeffs[i]);
+                }
+            }
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
                 // Fused cos sweep: scaling in place here is what replaces building a cosine set.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {

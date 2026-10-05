@@ -14,10 +14,12 @@
 
 #pragma once
 
+#include <array>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <vector>
 
 #include <boost/unordered/unordered_flat_map.hpp>
@@ -62,6 +64,74 @@ inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
     }
     else {
         return MonomialHash<NumModes>{}(mono);
+    }
+}
+
+namespace detail {
+// mix(0 + i) per word index: the term a zero word i contributes to the W > 1 hash.
+template <size_t NumModes>
+inline constexpr auto kZeroWordMix = [] {
+    std::array<uint64_t, Monomial<NumModes>::num_words()> mixes{};
+    for (size_t i = 0; i < mixes.size(); ++i) {
+        mixes[i] = SplitmixHash<Monomial<NumModes>>::mix(static_cast<uint64_t>(i));
+    }
+    return mixes;
+}();
+
+// XOR of kZeroWordMix: what the all-zero monomial hashes to when W > 1, so a sparse hash starts here
+// and swaps each occupied word's zero term out.
+template <size_t NumModes>
+inline constexpr uint64_t kZeroWordFold = [] {
+    uint64_t h = 0;
+    for (const uint64_t m : kZeroWordMix<NumModes>) {
+        h ^= m;
+    }
+    return h;
+}();
+
+// Word count up to which monomial_hash_positions scatters into dense words instead of walking the
+// occupied ones: the walk's per-word branches cost 1.3% more instructions end to end at two words.
+inline constexpr size_t kDenseHashMaxWords = 4;
+} // namespace detail
+
+// monomial_hash of the monomial whose set bits are `pos`, bit-for-bit, in O(|pos|) rather than
+// O(words): only occupied words are mixed, and each replaces its zero-word term in kZeroWordFold.
+// `pos` must be ascending and below 2 * NumModes.
+template <size_t NumModes, typename PosT>
+[[gnu::always_inline]] inline auto monomial_hash_positions(std::span<const PosT> pos) noexcept -> size_t {
+    using Hash = SplitmixHash<Monomial<NumModes>>;
+    if constexpr (Monomial<NumModes>::num_words() == 1) {
+        uint64_t word = 0;
+        for (const PosT p : pos) {
+            word |= uint64_t{1} << static_cast<size_t>(p);
+        }
+        return static_cast<size_t>(Hash::mix(word));
+    }
+    else if constexpr (Monomial<NumModes>::num_words() <= detail::kDenseHashMaxWords) {
+        // Narrow monomials: a branch-free scatter and a full-width mix beat the per-word walk below.
+        std::array<uint64_t, Monomial<NumModes>::num_words()> words{};
+        for (const PosT p : pos) {
+            words[static_cast<size_t>(p) >> 6] |= uint64_t{1} << (static_cast<size_t>(p) & 63);
+        }
+        uint64_t h = 0;
+        for (size_t i = 0; i < words.size(); ++i) {
+            h ^= Hash::mix(words[i] + static_cast<uint64_t>(i));
+        }
+        return static_cast<size_t>(h);
+    }
+    else {
+        uint64_t h = detail::kZeroWordFold<NumModes>;
+        const size_t n = pos.size();
+        size_t j = 0;
+        while (j < n) {
+            const size_t w = static_cast<size_t>(pos[j]) >> 6;
+            uint64_t word = 0;
+            for (; j < n && (static_cast<size_t>(pos[j]) >> 6) == w; ++j) {
+                word |= uint64_t{1} << (static_cast<size_t>(pos[j]) & 63);
+            }
+            h ^= Hash::mix(word + static_cast<uint64_t>(w)) ^ detail::kZeroWordMix<NumModes>[w];
+        }
+        return static_cast<size_t>(h);
     }
 }
 

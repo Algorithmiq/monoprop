@@ -203,6 +203,11 @@ public:
         }
         return overflow_.at(i).count();
     }
+    /*! @brief Hints that row i will be read soon: its count and positions, which may straddle a line. */
+    auto prefetch_row(size_t i) const noexcept -> void {
+        __builtin_prefetch(&rows_[i * stride_]);
+        __builtin_prefetch(&rows_[(i * stride_) + stride_ - 1]);
+    }
     /*! @brief The row's stored ascending positions, empty for a spilled row. Invalidated by any insert. */
     struct RowPositions {
         std::span<const PosT> pos;
@@ -328,13 +333,9 @@ public:
         }
     }
 
-    // fold_hash of the monomial `pos` describes, through the same fold, so it is equal by construction.
+    // fold_hash of the monomial `pos` describes, equal by construction, in O(|pos|) and not O(words).
     [[nodiscard]] static auto fold_hash_positions(std::span<const PosT> pos) noexcept -> uint32_t {
-        key_type mono;
-        for (size_t j = 0; j < pos.size(); ++j) {
-            mono.set(pos[j]);
-        }
-        return fold_hash(mono);
+        return fold_to_32_(monomial_hash_positions<NumModes>(pos));
     }
 
     // Insert-or-no-op. Row at `value` must already be written (the confirm reads dense rows).
@@ -422,8 +423,8 @@ private:
         }
     }
 
-    static uint32_t fold_hash(const key_type &q) noexcept {
-        const size_t full = MonomialHash<NumModes>{}(q);
+    static uint32_t fold_hash(const key_type &q) noexcept { return fold_to_32_(MonomialHash<NumModes>{}(q)); }
+    static uint32_t fold_to_32_(size_t full) noexcept {
         return static_cast<uint32_t>(full ^ (static_cast<uint64_t>(full) >> 32));
     }
     // Avalanche the cached 32-bit fold into a full-width hash (splitmix64 finalizer): the stored h
