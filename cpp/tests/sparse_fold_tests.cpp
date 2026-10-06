@@ -15,7 +15,6 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
-#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -29,8 +28,9 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 
-// Every FoldPath matches a full-width oracle bit for bit, in pass 1 and in the graph-replay kernels.
-// Column tiers are set by hand to cover mixes the density rule would not produce.
+// The fold matches a full-width oracle bit for bit, in pass 1 and in the graph-replay kernels.
+// Column tiers are set by hand to cover mixes the density rule would not produce, and column densities
+// send blocks down both the posting-driven and the word-sweeping kernel.
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -40,8 +40,6 @@ namespace {
 constexpr size_t N = 32; // 64 columns
 using Sc = InvertedIndex<N>;
 constexpr size_t kBlockRows = kColumnBlockWords * 64;
-constexpr std::array kPaths{FoldPath::Auto, FoldPath::Block, FoldPath::Sparse};
-constexpr std::array kBlockFirstPaths{FoldPath::Block, FoldPath::Auto, FoldPath::Sparse};
 
 // Column roles shared by every fixture.
 enum : size_t {
@@ -52,7 +50,7 @@ enum : size_t {
     kDenseA = 4,       // dense tier, ~1/4
     kDenseB = 5,       // dense tier, ~1/3
     kCopyOfA = 6,      // sparse, identical to kSparseA: folding both cancels every word
-    kSparseC = 7,      // sparse but ~1/100, above kSparseFoldPostingsPerWord: Auto keeps the block path
+    kSparseC = 7,      // sparse but ~1/100, above kSparseFoldPostingsPerWord: sweeps words
 };
 
 struct Fixture {
@@ -170,7 +168,7 @@ auto same_nz(const std::vector<EvenParityNzWord> &a, const std::vector<EvenParit
     });
 }
 
-// Pass 1 over [wlo, whi) on every fold, pivot, parity setting and path, against the oracle.
+// Pass 1 over [wlo, whi) on every fold, pivot and parity setting, against the oracle.
 auto check_pass1(const Fixture &f, size_t wlo, size_t whi, size_t last_word, uint64_t last_mask) -> void {
     std::mt19937_64 rng(7);
     std::vector<uint64_t> parity(f.sc.words());
@@ -196,31 +194,17 @@ auto check_pass1(const Fixture &f, size_t wlo, size_t whi, size_t last_word, uin
                         expected_foll += static_cast<size_t>(std::popcount(foll));
                     }
                 }
-                for (const FoldPath path : kPaths) {
-                    BOOST_TEST_CONTEXT("fold " << fi << " pivot " << pivot << " g_odd " << g_odd << " path "
-                                               << static_cast<int>(path)) {
-                        std::vector<EvenParityNzWord> nz{{1, 1, 1}}; // pre-dirtied: pass 1 must clear it
-                        size_t n_anti = 99;
-                        size_t n_foll = 99;
-                        even_parity_scan_pass1<N>(f.sc,
-                                                  fold,
-                                                  pivot,
-                                                  wlo,
-                                                  whi,
-                                                  last_word,
-                                                  last_mask,
-                                                  g_odd,
-                                                  parity.data(),
-                                                  nz,
-                                                  n_anti,
-                                                  n_foll,
-                                                  path);
-                        BOOST_TEST(same_nz(nz, expected));
-                        BOOST_TEST(n_anti == expected_anti);
-                        BOOST_TEST(n_foll == expected_foll);
-                        BOOST_TEST(zero_scratch_is_clean(fold_zero_scratch()));
-                        BOOST_TEST(zero_scratch_is_clean(pivot_zero_scratch()));
-                    }
+                BOOST_TEST_CONTEXT("fold " << fi << " pivot " << pivot << " g_odd " << g_odd) {
+                    std::vector<EvenParityNzWord> nz{{1, 1, 1}}; // pre-dirtied: pass 1 must clear it
+                    size_t n_anti = 99;
+                    size_t n_foll = 99;
+                    even_parity_scan_pass1<
+                        N>(f.sc, fold, pivot, wlo, whi, last_word, last_mask, g_odd, parity.data(), nz, n_anti, n_foll);
+                    BOOST_TEST(same_nz(nz, expected));
+                    BOOST_TEST(n_anti == expected_anti);
+                    BOOST_TEST(n_foll == expected_foll);
+                    BOOST_TEST(zero_scratch_is_clean(fold_zero_scratch()));
+                    BOOST_TEST(zero_scratch_is_clean(pivot_zero_scratch()));
                 }
             }
         }
@@ -257,10 +241,11 @@ BOOST_AUTO_TEST_CASE(sparse_fold_pass1_matches_oracle_sub_range) {
     check_pass1(f, 1500, 2100, 2099, last_mask_for(37));
 }
 
-// A throwing visitor leaves the scratch zeroed.
+// A throwing visitor leaves the scratch zeroed. kSparseA alone is well under kSparseFoldPostingsPerWord,
+// so the posting-driven kernel runs.
 BOOST_AUTO_TEST_CASE(sparse_fold_throwing_visitor_keeps_scratch_zero) {
     const auto f = make_fixture(2 * kBlockRows, 5);
-    const std::vector<size_t> fold{kSparseA, kSparseB};
+    const std::vector<size_t> fold{kSparseA};
     const size_t words = f.sc.words();
     BOOST_CHECK_THROW(for_each_fold_word<N>(
                           f.sc,
@@ -271,13 +256,12 @@ BOOST_AUTO_TEST_CASE(sparse_fold_throwing_visitor_keeps_scratch_zero) {
                           ~uint64_t{0},
                           nullptr,
                           [](size_t, uint64_t) { throw std::runtime_error("visitor"); },
-                          [](size_t, size_t) {},
-                          FoldPath::Sparse),
+                          [](size_t, size_t) {}),
                       std::runtime_error);
     BOOST_TEST(zero_scratch_is_clean(fold_zero_scratch()));
 }
 
-// Graph-replay kernels truncated at scaled_count are bit-identical on every path and match the oracle.
+// Graph-replay kernels truncated at scaled_count match the oracle.
 BOOST_AUTO_TEST_CASE(sparse_fold_replay_kernels_match_oracle) {
     const size_t rows = 3 * kBlockRows + 777;
     const auto f = make_fixture(rows, 6);
@@ -330,38 +314,29 @@ BOOST_AUTO_TEST_CASE(sparse_fold_replay_kernels_match_oracle) {
                     expected_state[i] *= cos_val;
                 }
 
-                double block_loc = 0.0;
-                for (const FoldPath path : kBlockFirstPaths) {
-                    BOOST_TEST_CONTEXT("fold " << fi << " scaled_count " << scaled_count << " g_odd " << g_odd
-                                               << " path " << static_cast<int>(path)) {
-                        std::vector<TermIndex> idx;
-                        cos_indices_lazy<N>(f.sc, r, idx, path);
-                        BOOST_TEST(idx == expected_idx, boost::test_tools::per_element());
+                BOOST_TEST_CONTEXT("fold " << fi << " scaled_count " << scaled_count << " g_odd " << g_odd) {
+                    std::vector<TermIndex> idx;
+                    cos_indices_lazy<N>(f.sc, r, idx);
+                    BOOST_TEST(idx == expected_idx, boost::test_tools::per_element());
 
-                        std::vector<double> scaled = state0;
-                        scale_cos_lazy<N>(f.sc, r, scaled.data(), cos_val, path);
-                        BOOST_TEST(std::ranges::equal(scaled, expected_scaled, [](double x, double y) {
-                            return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
-                        }));
+                    std::vector<double> scaled = state0;
+                    scale_cos_lazy<N>(f.sc, r, scaled.data(), cos_val);
+                    BOOST_TEST(std::ranges::equal(scaled, expected_scaled, [](double x, double y) {
+                        return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
+                    }));
 
-                        std::vector<double> state = state0;
-                        std::vector<double> ham = ham0;
-                        const double loc =
-                            accumulate_cos_lazy<N>(f.sc, r, state.data(), ham.data(), cos_val, sec_val, path);
-                        // The oracle may fuse differently; bit identity is checked against Block.
-                        BOOST_TEST(std::abs(loc - expected_loc) <= 1e-12 * std::max(1.0, std::abs(expected_loc)));
-                        if (path == FoldPath::Block) {
-                            block_loc = loc;
-                        }
-                        BOOST_TEST(std::bit_cast<uint64_t>(loc) == std::bit_cast<uint64_t>(block_loc));
-                        BOOST_TEST(std::ranges::equal(state, expected_state, [](double x, double y) {
-                            return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
-                        }));
-                        BOOST_TEST(std::ranges::equal(ham, expected_ham, [](double x, double y) {
-                            return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
-                        }));
-                        BOOST_TEST(zero_scratch_is_clean(fold_zero_scratch()));
-                    }
+                    std::vector<double> state = state0;
+                    std::vector<double> ham = ham0;
+                    const double loc = accumulate_cos_lazy<N>(f.sc, r, state.data(), ham.data(), cos_val, sec_val);
+                    // The oracle may fuse differently.
+                    BOOST_TEST(std::abs(loc - expected_loc) <= 1e-12 * std::max(1.0, std::abs(expected_loc)));
+                    BOOST_TEST(std::ranges::equal(state, expected_state, [](double x, double y) {
+                        return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
+                    }));
+                    BOOST_TEST(std::ranges::equal(ham, expected_ham, [](double x, double y) {
+                        return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
+                    }));
+                    BOOST_TEST(zero_scratch_is_clean(fold_zero_scratch()));
                 }
             }
         }

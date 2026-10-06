@@ -173,28 +173,23 @@ auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
 template <size_t NumModes, typename WordOp>
 [[gnu::always_inline]] inline auto for_each_lazy_fold_word(const InvertedIndex<NumModes> &sc,
                                                            const LazyFold<NumModes> &r,
-                                                           FoldPath path,
                                                            WordOp &&on_word) -> void {
-    for_each_fold_word<NumModes>(
-        sc,
-        {r.columns.data(), r.columns.size()},
-        0,
-        r.fold.mask_words,
-        r.fold.last_word,
-        r.fold.last_mask,
-        fold_row_parity<NumModes>(sc, r.fold),
-        on_word,
-        [](size_t, size_t) {},
-        path);
+    for_each_fold_word<NumModes>(sc,
+                                 {r.columns.data(), r.columns.size()},
+                                 0,
+                                 r.fold.mask_words,
+                                 r.fold.last_word,
+                                 r.fold.last_mask,
+                                 fold_row_parity<NumModes>(sc, r.fold),
+                                 on_word,
+                                 [](size_t, size_t) {});
 }
 
 // Append a layer's cosine-set indices to `out`, ascending.
 template <size_t NumModes>
-auto cos_indices_lazy(const InvertedIndex<NumModes> &sc,
-                      const LazyFold<NumModes> &r,
-                      std::vector<TermIndex> &out,
-                      FoldPath path = FoldPath::Auto) -> void {
-    for_each_lazy_fold_word<NumModes>(sc, r, path, [&out](size_t wi, uint64_t bits) {
+auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, std::vector<TermIndex> &out)
+    -> void {
+    for_each_lazy_fold_word<NumModes>(sc, r, [&out](size_t wi, uint64_t bits) {
         for_each_cos_index(wi * 64, bits, [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
     });
 }
@@ -206,27 +201,23 @@ inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) ->
 }
 
 template <size_t NumModes>
-auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
-                    const LazyFold<NumModes> &r,
-                    double *coeff,
-                    double cos_val,
-                    FoldPath path = FoldPath::Auto) -> void {
-    for_each_lazy_fold_word<NumModes>(sc, r, path, [&](size_t wi, uint64_t bits) {
+auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
+    -> void {
+    for_each_lazy_fold_word<NumModes>(sc, r, [&](size_t wi, uint64_t bits) {
         for_each_cos_index(wi * 64, bits, [&](size_t i) { coeff[i] *= cos_val; });
     });
 }
 
-// Sums in ascending index order on every FoldPath.
+// Sums in ascending index order.
 template <size_t NumModes>
 auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          const LazyFold<NumModes> &r,
                          double *state,
                          double *ham,
                          double cos_val,
-                         double sec_val,
-                         FoldPath path = FoldPath::Auto) -> double {
+                         double sec_val) -> double {
     double loc = 0.0;
-    for_each_lazy_fold_word<NumModes>(sc, r, path, [&](size_t wi, uint64_t bits) {
+    for_each_lazy_fold_word<NumModes>(sc, r, [&](size_t wi, uint64_t bits) {
         for_each_cos_index(wi * 64, bits, [&](size_t i) {
             loc += state[i] * ham[i];
             ham[i] *= sec_val;

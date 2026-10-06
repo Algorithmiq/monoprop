@@ -86,7 +86,7 @@ struct EvenParityNzWord {
 // Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
-// in before followers are derived. `path` selects the fold kernel only.
+// in before followers are derived.
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
@@ -99,8 +99,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    const uint64_t *row_parity_ptr,
                                    std::vector<EvenParityNzWord> &nz,
                                    size_t &n_anti,
-                                   size_t &n_foll,
-                                   FoldPath path = FoldPath::Auto) -> void {
+                                   size_t &n_foll) -> void {
     nz.clear();
     n_anti = 0;
     n_foll = 0;
@@ -157,8 +156,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                  last_word_mask,
                                  g_odd ? row_parity_ptr : nullptr,
                                  on_word,
-                                 on_block,
-                                 path);
+                                 on_block);
 }
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a

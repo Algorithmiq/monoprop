@@ -296,14 +296,7 @@ template <size_t NumModes>
     }
 }
 
-// Fold kernel per block; all give identical output. Block and Sparse are for tests.
-enum class FoldPath : std::uint8_t {
-    Auto,   // posting-driven when eligible and sparse enough
-    Block,  // always word-sweeping
-    Sparse, // posting-driven whenever eligible
-};
-
-// Postings per block word above which Auto sweeps words instead. Affects speed only.
+// Postings per block word above which a block sweeps words instead of postings. Affects speed only.
 inline constexpr double kSparseFoldPostingsPerWord = 0.5;
 
 // Per-thread posting cursors. Not re-entrant: a visitor must not start another fold.
@@ -418,8 +411,8 @@ template <size_t NumModes, typename WordOp>
 }
 
 // Calls on_word(wi, bits) for each nonzero word of the masked fold of `cols` over [wlo, whi), ascending,
-// XORing row_parity if non-null, and on_block(bb, be) after each block. Output is the same for every
-// `path`.
+// XORing row_parity if non-null, and on_block(bb, be) after each block. Each block takes the posting-driven
+// kernel when every column is sparse, there is no parity and it is sparse enough; both kernels give the same output.
 template <size_t NumModes, typename WordOp, typename BlockOp>
 inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
                                std::span<const size_t> cols,
@@ -429,8 +422,7 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
                                uint64_t last_word_mask,
                                const uint64_t *row_parity,
                                WordOp &&on_word,
-                               BlockOp &&on_block,
-                               FoldPath path = FoldPath::Auto) -> void {
+                               BlockOp &&on_block) -> void {
     if (wlo >= whi) {
         return;
     }
@@ -442,7 +434,7 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
             break;
         }
     }
-    const bool postings_eligible = path != FoldPath::Block && dense_seed == ncols && row_parity == nullptr;
+    const bool postings_eligible = dense_seed == ncols && row_parity == nullptr;
 
     // Each block's range starts where the previous one ended.
     std::vector<size_t> &cursor = fold_cursor_scratch();
@@ -472,8 +464,7 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
         }
         const bool by_postings =
             postings_eligible
-            && (path == FoldPath::Sparse
-                || static_cast<double>(postings) <= kSparseFoldPostingsPerWord * static_cast<double>(be - bb));
+            && static_cast<double>(postings) <= kSparseFoldPostingsPerWord * static_cast<double>(be - bb);
         if (by_postings) {
             fold_block_by_postings<NumModes>(sc, cols, begin, end, zs, bb, be, last_word, last_word_mask, on_word);
         }
