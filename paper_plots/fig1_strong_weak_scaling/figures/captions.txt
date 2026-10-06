@@ -1,0 +1,31 @@
+Figure caption -- strong and weak scaling of monoprop (paper Fig. 1)
+====================================================================
+
+LaTeX-ready caption, converted from the single caption definition in captions.py -- edit
+that file, not this one, and re-run make_figure.py. Ranges and percentages are computed from the
+plotted rows, never typed.
+
+Encoding: colour and marker = problem size (strong) or load per node (weak), on a light-to-dark
+single-hue ordinal ramp, since the three curves differ in a MAGNITUDE rather than in identity. The
+four panels share one x axis, in cores under the bottom row and in nodes over the top row. The
+figure carries no title, so the caption is the only place the reference lines and the machine
+configuration are stated.
+
+fig1_strong_weak_scaling  --  Strong and weak scaling of monoprop
+-----------------------------------------------------------------
+Strong and weak scaling of monoprop. Distributed propagation of the linear Hubbard
+model, from 128 cores on 1 node to 8192 cores on 64 nodes (the four panels share one x
+axis, labelled in cores under the bottom row and in nodes over the top row). Top row,
+strong scaling at three fixed numbers of tracked monomials (1.6B, 6.1B, 24.4B): (a) wall
+time, with each curve's own ideal $1/N$ dotted beside it, and (b) parallel efficiency
+$t(N_0)N_0 / t(N)N$, each curve normalised to the narrowest run its problem fits in, so
+all three begin at 100\% and the single ideal line applies to every one --- reaching
+48\%, 81\%, 99\% at 8192 cores. Bottom row, weak scaling at three loads per node (96M,
+385M, 1.5B monomials/node): (c) wall time, with each curve's own flat ideal dotted
+beside it, and (d) parallel efficiency $t(128\,\mathrm{cores}) / t(N)$, reaching 61\%,
+81\%, 94\% at 8192 cores. Colour and marker encode problem size (top) or load per node
+(bottom); the legend in each row's efficiency panel serves both panels of that row.
+Together the rows show one thing: the departure from ideal is set by the load a node
+carries, not by a core count, and it moves to higher core counts as the problem grows.
+Deucalion x86, 128 cores per node, 8 MPI ranks per node with 16 partitions per rank, so
+$R = 8N$ ranks at $N$ nodes. Each point is the median of five reps.

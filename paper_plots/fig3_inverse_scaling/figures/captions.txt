@@ -1,0 +1,67 @@
+Fig. 3 -- Inverse time scaling with qubit number.
+
+Model: kicked-Ising chain of N qubits, open boundary; 7 layers, each Rzz(pi/4) on all N-1
+nearest-neighbour bonds then Rx(pi/4) on all N sites, so a layer holds 2N-1 gates; observable
+sum_i Z_i propagated in the Heisenberg picture (the layer order therefore reverses);
+truncation a Pauli-weight cutoff of 6 with lower_atol = 0, so no coefficient pruning at all
+and the surviving term set is fixed by gate supports alone. N = 32..1024 in powers of two
+(monoprop 6, ppvm 6, PauliPropagation.jl 5 points), one thread, every series on one exclusive
+node (cnx001.deucalion.macc.fccn.pt).
+
+Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both divisors are
+checked, not assumed: at every point all engines report the same term count (607,054 at N=32
+rising to 25,254,286 at N=1024), the same gate count (441 to 14329) and an expectation value
+agreeing to 8.8e-14 absolute, so the divisors are identical across the curves and the figure
+script refuses to build if any of that moves.
+
+Result. monoprop falls as N^-0.93, close to the ideal 1/N drawn beside it: 1.819 ns at N=32
+down to 0.0700 ns at N=1024, a 26.0x reduction across a 32x wider system. Neither reference
+engine falls: ppvm N^+0.30, PauliPropagation.jl N^+0.35. At N=32 monoprop leads ppvm by only
+1.8x and PauliPropagation.jl by 2.2x, against 54x and 73x by N=512, so the gap is opened over
+the sweep and not assumed at the origin. At N=1024 monoprop leads ppvm by 158x.
+
+The fit window. Every exponent above, and in the legend, is fitted over N <= 512, the widest
+window all three engines completed; the points beyond it are drawn but enter no fit.
+PauliPropagation.jl stops at N=512: its N=1024 point exceeded the 3600 s time limit and is
+absent. Fitted over every point each engine reached instead, the same rows give monoprop
+N^-0.94, ppvm N^+0.35 and PauliPropagation.jl N^+0.35. ppvm's largest single-N step in these
+rows is 1.45x, at N=512->1024.
+
+The divisor is not the effect. A falling curve invites the objection that the gate count is
+itself proportional to N, so state the same rows with no gate division at all: a monoprop
+layer of 2047 gates costs 1.25x what a layer of 63 gates costs (114.6 -> 143.3 ms per 10^6
+terms). 32.5x the gates for 1.25x the time. The identical divisor applied to the other two
+engines leaves them flat or rising, so it cannot be the source of the fall.
+
+Mechanism: selectivity, not batching. The operator is held transposed -- one column per bit
+position, bit r set iff term r touches that position
+(cpp/monoprop/detail/operator/InvertedIndex.h). Below a density of 1/64 a column is an
+ascending set-row list rather than a full-height bit-vector. A gate on qubit i therefore costs
+work proportional to the terms that touch qubit i, which at a fixed weight cutoff is a ~w/N
+fraction of the operator, rather than a scan over all K terms. The reference engines hold a
+packed key per term and revisit the whole sum for every gate, so nothing in them can fall.
+
+Caveats, stated because the figure would otherwise overclaim:
+
+  * WHERE. Measured on Deucalion's x86 partition (AMD EPYC 7742 (Zen 2), 128 cores, SMT off),
+    not on Leonardo. Every series was measured in one Slurm job on one node, held exclusively,
+    with the timed process pinned to one core, so every curve -- and every fitted exponent --
+    comes from the same node. The dataset is cited for a SHAPE (an exponent in N), never for
+    an absolute time.
+  * Timed repetitions differ by engine, and the rows record it: monoprop 10, ppvm 1,
+    PauliPropagation.jl 1. monoprop's points run 0.49 to 25 s, short enough at the low end
+    that timer granularity and process noise matter, so its minimum is taken over many more
+    rounds; the reference engines' points run for up to 67 minutes each, where one round
+    already resolves them.
+  * num_terms is the FINAL term count, while K grows through the 7 layers, so the absolute ns
+    per term understates the true per-term cost. It understates it identically for all three
+    engines, so the comparison between the curves is unaffected.
+  * N=1024 is the ceiling, not a choice: monoprop_MAX_NUM_MODES defaults to 1024 with no
+    headroom above it, so a wider sweep needs a rebuild.
+  * monoprop's residual against the ideal N^-1 is measured, not assumed: at N=1024 the curve
+    sits 1.23x above the 1/N guide through its N=32 point, while its last two octaves fall as
+    N^-0.98 and N^-1.00; per-term instruction counts are flat in N, so the gap is accrued
+    below N=256 as one-time steps rather than a slope: there the operator outgrows a 16 MiB L3
+    slice (simulated last-level misses per anticommuting term rise 0.63 -> 2.33 from N=32 to
+    N=256) and, above N=128, stored term positions widen from 8 to 16 bits. The 1/N is
+    approached, not attained.

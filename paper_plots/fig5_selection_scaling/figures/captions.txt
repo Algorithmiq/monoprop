@@ -1,0 +1,28 @@
+Figure caption -- generating optimal gates and angles (paper Fig. 5)
+====================================================================
+
+LaTeX-ready caption, computed from the plotted rows by make_figure.py -- edit that script,
+not this file. Every exponent and range below is measured, never typed, except the machine: the
+rows record one thread but not the CPU, so the Apple M5 is the paper's statement.
+
+Encoding: colour and marker = the (d, g) case, on a light-to-dark single-hue ordinal ramp, since
+the three curves differ in the ORDER of the cost bound rather than in identity. Both axes are
+logarithmic; the dotted line beside each curve is that curve's own N^((d+g)/2) bound, anchored on
+its widest measured rung. The figure carries no title, so this caption is the only place the
+reference lines and the measurement configuration are stated.
+
+
+fig5_selection_scaling  --  Generating optimal gates and angles
+---------------------------------------------------------------
+
+\textbf{Generating optimal gates and angles.} Single-core times on an Apple M5 for
+candidate generation, occupation-flip table construction, and scoring the generated
+candidates, with $(d,g)\in\{(4,2),(4,4),(6,4)\}$ for a random propagated chemistry
+Hamiltonian. Legend exponents are fitted over the 4 largest system sizes; dotted guides
+show $N^{(d+g)/2}$. Measured over the 4 widest rungs of each case: $d=4$, $g=2$:
+$N^{3.07}$ against the $N^{3}$ bound, over $N=96$--192; $d=4$, $g=4$: $N^{4.22}$ against
+the $N^{4}$ bound, over $N=64$--160; $d=6$, $g=4$: $N^{5.19}$ against the $N^{5}$ bound,
+over $N=32$--80. The time exponents track the fitted pair-count exponents (3.02),
+(4.06), (5.19) to within 0.16, and the cost of enumerating one pair stays flat at
+9--16~ns across the whole sweep, so selection costs what enumerating the pairs costs and
+carries no hidden work on top of it.
