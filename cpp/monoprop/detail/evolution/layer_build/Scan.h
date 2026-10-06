@@ -184,6 +184,12 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
 // at 32 modes); at two words the positions emit still lost 1.4-1.9% (64 modes); from three they win.
 inline constexpr size_t kPositionsEmitMinWords = 3;
 
+// Slots per word above which the positions emit loses even when wide enough: it walks every position of
+// source and generator where the dense partner touches every word, and a term may carry up to the
+// cutoff's max_slot_bound() positions. Weight-12 Pauli terms at four words (up to 24 slots) ran 9% slower
+// on positions; the Fig. 6 weight-6 chain (12 slots) wins from three words.
+inline constexpr size_t kPositionsEmitMaxSlotsPerWord = 4;
+
 // The dense partner, for the emits that need one: a one-word monomial, a spilled source row (no position
 // array), a custom cutoff predicate, or more than one rank (the owner hash folds the dense words).
 template <size_t NumModes>
@@ -377,7 +383,9 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         // and per-term work stays independent of N. Verdicts and signs equal the dense path's.
         constexpr bool kWideEnough = Monomial<NumModes>::num_words() >= kPositionsEmitMinWords;
         [[maybe_unused]] const bool emit_positions_only =
-            kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form();
+            kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form()
+            && cutoff_eval.max_slot_bound().value_or(~size_t{0})
+                   <= kPositionsEmitMaxSlotsPerWord * Monomial<NumModes>::num_words();
         const std::span<const uint16_t> gen_pos_span(gen_pos);
         const std::span<RowPosT> pbuf_span(pbuf);
 
@@ -469,10 +477,14 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const double *const prefetch_coeffs = fused_scale_coeffs != nullptr ? fused_scale_coeffs : coeffs.data();
         const bool prefetch_ahead = ham.size() >= kPrefetchMinRows && n_anti * 16 < ham.size()
                                     && (fused_scale_coeffs != nullptr || coeffs.size() >= ham.size());
-        for (size_t kw = 0; kw < nz.size(); ++kw) {
-            const auto &w = nz[kw];
-            if (prefetch_ahead && kw + kPrefetchWords < nz.size()) {
-                const auto &ahead = nz[kw + kPrefetchWords];
+        /* Bound once: glibc before 2.34 resolves a dlopen'd module's TLS through _dl_update_slotinfo, and
+         * indexing the thread_local `nz` itself re-resolved its address on every word (7% of the Hubbard
+         * ladder row's instructions). */
+        const std::span<const EvenParityNzWord> nz_words(nz);
+        for (size_t kw = 0; kw < nz_words.size(); ++kw) {
+            const auto &w = nz_words[kw];
+            if (prefetch_ahead && kw + kPrefetchWords < nz_words.size()) {
+                const auto &ahead = nz_words[kw + kPrefetchWords];
                 for (uint64_t m = ahead.overlap; m; m &= m - 1) {
                     const size_t i = ahead.base + static_cast<size_t>(std::countr_zero(m));
                     ham.prefetch_row(i);

@@ -179,6 +179,22 @@ template <size_t NumModes, typename PosT>
     return {popcount - (2 * pairs), popcount, popcount - pairs};
 }
 
+// xor_sum == 0 over ascending positions: every set slot sits in a (2q, 2q + 1) pair. Pairs cannot
+// overlap (an odd slot never opens one), so walking two at a time decides it, and most rows fail at
+// the first pair.
+template <typename PosT>
+[[gnu::always_inline]] inline auto positions_fully_paired(std::span<const PosT> pos) -> bool {
+    if (pos.size() % 2 != 0) {
+        return false;
+    }
+    for (size_t j = 0; j < pos.size(); j += 2) {
+        if (pos[j] % 2 != 0 || static_cast<size_t>(pos[j + 1]) != static_cast<size_t>(pos[j]) + 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Rows [first, op.size()) that are fully paired, ascending. A packed row is tested on its positions in
 // O(slots), not materialised in O(words); a spilled row, or a backend without positions, goes dense.
 template <size_t NumModes, typename Rows>
@@ -190,7 +206,7 @@ auto fully_paired_rows_from(size_t first, const Rows &op) -> VecZ {
         // One word is a single masked compare dense, cheaper than walking the positions.
         if constexpr (Monomial<NumModes>::num_words() > 1 && requires { op.row_positions(i).inlined(); }) {
             if (const auto row = op.row_positions(i); row.inlined()) {
-                paired = cutoff_sums_positions<NumModes>(row.pos, NumModes).xor_sum == 0;
+                paired = positions_fully_paired(row.pos);
             }
             else {
                 paired = is_paired<NumModes>(materialize_row<NumModes>(op, i), mask);
