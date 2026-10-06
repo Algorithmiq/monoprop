@@ -332,13 +332,13 @@ what the `1/N` guide is for: the eye reads monoprop against the guide, never aga
 frame, so the claim survives the reshaping.
 
 > **The default build now draws the Deucalion sweep** (`data/*_octave_l7_deucalion.jsonl`,
-> monoprop 0.9.3.dev6+g74cde4aa5 against the "before" build 508b536e). Its numbers: monoprop
-> `N^-0.92` over N ≤ 512 (1.822 → 0.0713 ns from N=32 to N=1024, 25.5×), `N^-0.94` over every
+> monoprop 0.9.3.dev5+g664f84c00 against the "before" build 508b536e). Its numbers: monoprop
+> `N^-0.93` over N ≤ 512 (1.810 → 0.0699 ns from N=32 to N=1024, 25.9×), `N^-0.94` over every
 > point, and successive points at `N^-0.98` and `N^-1.00` from N=256 up; the "before" build
 > `N^-0.83`; ppvm `N^+0.30`, PauliPropagation.jl `N^+0.38`. monoprop leads ppvm by 1.8× at
-> N=32, 53× at N=512 and 155× at N=1024, and PauliPropagation.jl by 2.0× and 72×. At N=1024
-> monoprop sits 1.25× above the `1/N` guide through its N=32 point (the "before" build 1.90×),
-> and the new build is 1.51× faster than 508b536e there (0.99× at N=32 and N=64, 1.08× at
+> N=32, 54× at N=512 and 158× at N=1024, and PauliPropagation.jl by 2.0× and 74×. At N=1024
+> monoprop sits 1.24× above the `1/N` guide through its N=32 point (the "before" build 1.90×),
+> and the new build is 1.54× faster than 508b536e there (1.00× at N=32, 1.01× at N=64, 1.11× at
 > N=128). **The paragraphs below are the AWS sweep's** (`data/*_octave_l7.jsonl`, monoprop
 > a86984a9f), kept for the record.
 
@@ -417,7 +417,7 @@ what `/proc/cpuinfo` reports on Deucalion's login nodes, whose `-march=native` r
 same `znver2` as the compute nodes'. The ppvm and PauliPropagation.jl environments are
 `caches/fig6/{ppvm-venv,julia-1.10.12,julia-depot}` under the project root; ppvm is
 `0.1.0+git.2570637b1459`. Points per engine: monoprop 6 and 6 (both builds in one job on
-cnx007, alternating build per N; 10 rounds each, N=1024 taking 263 s for the new build and 394 s
+cnx002, alternating build per N; 10 rounds each, N=1024 taking 257 s for the new build and 395 s
 for 508b536e), ppvm 6 (cnx008, N=1024 in 4037 s), PauliPropagation.jl 5 (cnx001, N=512 in 932 s;
 N=1024 hit its 1800 s ceiling and is absent, as on AWS).
 
