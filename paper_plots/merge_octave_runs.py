@@ -12,15 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Merge the per-job JSONL files of a Fig. 6 octave sweep into data/, after checking them.
+"""Check a Fig. 6 octave sweep's per-job JSONL files and merge them into data/.
 
-octave_point.sbatch writes one file per job, ``<engine>_N<n1>-<n2>-....jsonl``, into the
-RUN_DIR of its site.env, so a sweep lands as several files per engine and, for the two
-monoprop builds, in two different run directories (both write ``monoprop_N*.jsonl``, which
-is why the builds are told apart by the slot they are passed to and never by their rows).
-This gathers each slot's rows, checks the sweep is one like-for-like workload, and writes
-each slot's rows -- byte for byte as recorded, ordered by N -- to the file
-make_inverse_scaling_figure.py reads by default:
+Each slot's rows are written, as recorded and ordered by N, to the file the figure reads:
 
     slot           engine field   data/ file
     monoprop       monoprop       monoprop_pauli_octave_l7_deucalion.jsonl
@@ -28,30 +22,24 @@ make_inverse_scaling_figure.py reads by default:
     ppvm           ppvm           ppvm_pauli_octave_l7_deucalion.jsonl
     julia          julia_pauli    julia_pauli_octave_v082_l7_deucalion.jsonl
 
-Checked, and refused on failure: exactly one row per N per slot; every row's engine field
-matches its slot; seven layers and cutoff 6 on every row, and the same lower_atol and
-observable;
-num_threads == "1" on every row; at each N the identical term count and gate count in every
-slot and an expectation value agreeing to 1e-9; the two monoprop slots carry different
-library versions (the same run directory passed twice would otherwise merge silently); the
-PauliPropagation.jl rows are v0.8.2, which the file name states. Coverage: every slot must
-reach every N <= FIT_NMAX; above it a slot may stop early (PauliPropagation.jl's N=1024 point
-can time out), which is reported, not refused -- the figure draws such points without
-fitting them.
+The two monoprop builds share an engine field, so the slot, not the row, tells them apart.
 
-Hostnames are reported per slot but not judged: deciding which hosts are one machine is the
-figure's job (FLEETS in make_inverse_scaling_figure.py), and it refuses undeclared ones.
+Refused on failure: more than one row per N per slot, an engine field not matching its
+slot, any row not at 7 layers, cutoff 6 and one thread, mismatched lower_atol or
+observable, term or gate counts differing between slots, expectations differing by more
+than 1e-9, both monoprop slots at the same version, and PauliPropagation.jl not at v0.8.2.
+Every slot must reach every N <= FIT_NMAX. A slot missing points above that is reported,
+not refused. Hostnames are reported only; FLEETS in the figure script judges them.
 
     python merge_octave_runs.py \\
-        --monoprop      ../../runs/fig6/pauli-1overn \\
-        --monoprop-main ../../runs/fig6/ref-508b536e \\
+        --monoprop      ../../runs/fig6/octave-mono-ref-664f84c0 \\
+        --monoprop-main ../../runs/fig6/octave-mono-ref-508b536e-r2 \\
         --ppvm          ../../runs/fig6/octave-deucalion \\
         --julia         ../../runs/fig6/octave-deucalion
 
-Each slot takes run directories (globbed for its engine's per-job files) or explicit JSONL
-files. ``--dry-run`` checks and reports without writing; ``--allow-partial`` downgrades
-missing points and missing slots to notes, for previews of a sweep still in flight -- its
-output is not for data/, so it must be written elsewhere with ``--outdir``.
+A slot takes run directories or JSONL files. ``--dry-run`` writes nothing.
+``--allow-partial`` turns missing points and slots into notes, for a sweep still in
+flight, and must write outside data/ (``--outdir``).
 """
 
 from __future__ import annotations

@@ -52,12 +52,8 @@ three curves separate at a glance. The engine's line style and marker are kept
 unchanged from every other figure (monoprop solid/filled circle), so identity is
 never colour-alone and a reader who knows the other figures still recognises it.
 
-THE "BEFORE" REFERENCE (optional, --before). The same driver on an earlier monoprop build,
-measured on the same node type, drawn as a lighter dash-dot curve with open markers so the
-improvement can be read against the same 1/N guide. Its rows carry engine "monoprop" like
-the current build's, so they are told apart by the flag they arrive under, never by their
-contents; they pass every like-for-like check the three engines do, and they enter no
-cross-engine lead -- those are always quoted against the current build.
+THE "BEFORE" REFERENCE (optional, --before). An earlier monoprop build on the same driver,
+drawn as a lighter dash-dot curve. It passes the same checks and enters no cross-engine lead.
 """
 
 from __future__ import annotations
@@ -90,18 +86,14 @@ MILLION = 1.0e6
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 
-# What the build reads when --lattice is not given: the first dataset whose lattice files
-# all exist, in this order, so the Deucalion sweep takes over as soon as merge_octave_runs.py
-# has written it and the AWS sweep stays the fallback (its files are kept, never replaced).
-# Missing optional files (the "before" arm, a crosscheck) are simply skipped.
+# Inputs when --lattice is not given: the first dataset whose lattice files all exist.
+# Missing optional files are skipped.
 DATASETS = {
     "deucalion": {
         "lattice": [DEUCALION_FILES[s] for s in ("monoprop", "ppvm", "julia")],
-        # The paper figure draws the current build only. The main-branch rows stay in data/
-        # (merge_octave_runs.py writes them) and are drawn on request with --before.
+        # Not drawn by default; pass the main-branch rows with --before.
         "before": [],
-        # None was taken. The caption reads from the rows whether each engine's sweep sat on
-        # one node (then no split exists to check) or was split, and says which.
+        # None: each engine ran on one node, which the caption checks from the rows.
         "host_crosscheck": [],
     },
     "aws": {
@@ -166,10 +158,7 @@ Y_TOP_NS = 10.0
 ENGINE_COLOR = {"monoprop": "#0072B2", "julia": "#D55E00", "ppvm": "#009E73"}
 ORDER = ("monoprop", "ppvm", "julia")
 
-# The earlier monoprop build, when --before supplies it. Okabe-Ito sky blue: the lighter
-# relative of monoprop's blue, so it reads as "monoprop, before", and a dash-dot line no
-# other engine uses with an open marker, so it is never told apart by colour alone (the
-# dashed open circle is PauliPropagation.jl's, in a different hue).
+# The --before build: lighter blue, dash-dot, open markers (distinct without colour).
 BEFORE = "monoprop_before"
 ENGINE_COLOR[BEFORE] = "#56B4E9"
 BEFORE_STYLE = ((0, (6, 2, 1.5, 2)), "o")
@@ -266,14 +255,8 @@ HOST_ALIASES = {
 # new hostnames, and the build refuses them -- as it should any undeclared machine -- until
 # they are added here.
 #
-# A fleet is a set of hostnames or a compiled pattern. Deucalion's is a pattern: its x86
-# compute nodes are all one hardware type and are named cnxNNN by the scheduler (the rows
-# record the FQDN, cnxNNN.deucalion.macc.fccn.pt), so any node a rerun lands on is the same
-# machine and needs no edit here. Its login nodes (lnNN) are a different machine and do not
-# match. The CPU model is NOT in the rows -- the drivers record only the hostname -- so the
-# name below is stated rather than measured: AMD EPYC 7742 is what /proc/cpuinfo reports on
-# Deucalion's login nodes, and the compute nodes' -march=native resolves to the same znver2
-# (aaron/DEUCALION-MONOPROP.md, section 1: 128 cores, SMT off, 8 NUMA domains of 16).
+# A fleet is a set of hostnames or a pattern. Deucalion's x86 compute nodes (cnxNNN) are one
+# hardware type. The rows record only hostnames, so the CPU model below is stated, not measured.
 DEUCALION_X86 = "Deucalion x86, AMD EPYC 7742 (Zen 2), 128 cores, SMT off"
 FLEETS = {
     "AWS m7a.8xlarge, AMD EPYC 9R14 (Zen 4), SMT off": frozenset(
@@ -623,8 +606,7 @@ def fig6(lattice, outdir: Path, layout: str = "column", *, preview=False):
         # lower-left corner in the column layout, and monoprop's tail descends into that
         # corner, so the floor has to drop far enough to leave the entries clear of it.
         lo = min(min(ys) for _, ys, _ in fits.values())
-        # A fourth stacked legend entry in the column layout takes one more line of the
-        # lower-left corner, so the floor drops by that line's share of the pad.
+        # Each extra legend entry in the column layout lowers the floor.
         pad = spec["bottom_pad"] ** (
             len(fits) / len(ORDER) if layout == "column" else 1
         )
@@ -643,9 +625,7 @@ def fig6(lattice, outdir: Path, layout: str = "column", *, preview=False):
         # and stdout report, so the numbers on the panel cannot drift from them.
         legend = dict(spec["legend"])
         if legend["ncol"] > 1 and len(handles) > len(ORDER):
-            # Four entries on one line overrun \textwidth (measured: 7.67in saved, against
-            # 6.90in for three), so the banner takes two columns, filled column-major: the
-            # two monoprop builds above each other, the reference engines beside them.
+            # Four entries on one line overrun \textwidth, so use two columns.
             legend["ncol"] = 2
         ax.legend(
             handles=handles,
@@ -989,8 +969,7 @@ def _where_caveat(lattice, crosscheck, n_hi):
     ref_secs = max(r["seconds"] for f in ORDER[1:] for r in _arm(lattice, f))
     site, unit = FLEET_SITE[host]
     if _one_node_per_series(lattice):
-        # Nothing was split, so there is nothing for a crosscheck to license; one supplied
-        # anyway is still reported.
+        # No split, so no crosscheck is needed; one supplied is still reported.
         split = (
             "Every series was measured on a single node, held exclusively through Slurm "
             "with the timed process pinned to one core, so every curve -- and so every "
@@ -1028,11 +1007,8 @@ def _where_caveat(lattice, crosscheck, n_hi):
     )
 
 
-# Why monoprop's curve sits above the 1/N guide. No row records this, so it is written by
-# hand, and it describes a specific engine: OLD is the emit path of every build up to and
-# including 508b536e (the AWS sweep's a86984a9f, and the Deucalion "before" arm). NEW must
-# describe the build drawn as the solid curve whenever --before is in play; until someone
-# who knows that build fills it in, the caption carries a TODO marker and the build says so.
+# Why monoprop sits above the 1/N guide, written by hand. OLD: builds up to 508b536e.
+# NEW: the solid-curve build when --before is given; an unfilled NEW leaves a TODO in the caption.
 RESIDUAL_CAUSE_OLD = (
     "the emit path still materialises the dense partner and folds every word for the hash, "
     "which is O(N/32) work on the branching fraction"
@@ -1122,10 +1098,9 @@ def write_caption(
     crosscheck=None,
     preview=(),
 ):
-    """Emit the caption with every number taken from the data, not retyped.
+    """Write the caption, with every number taken from the data.
 
-    ``preview`` lists the like-for-like checks a --preview build let through; when it is
-    non-empty they head the caption, so the text cannot be mistaken for the final one.
+    ``preview`` lists the checks a --preview build let through; they head the caption.
     """
     preview_note = ""
     if preview:
@@ -1306,12 +1281,10 @@ def check_unique(records):
 
 
 def _resolve_inputs(args):
-    """Fill every input not given on the command line from the chosen dataset.
+    """Fill inputs not given on the command line from the chosen dataset.
 
-    An explicit --lattice is taken as the whole specification, so nothing is added to it.
-    Otherwise --dataset auto takes the first entry of DATASETS whose lattice files all exist,
-    and the dataset's optional files and the caption companions fill whatever the command
-    line left unset (an optional file that does not exist is skipped).
+    An explicit --lattice is used as is. Otherwise the first complete DATASETS entry fills
+    the unset inputs, skipping optional files that do not exist.
     """
     if args.lattice is not None:
         return "as given on the command line"
@@ -1362,9 +1335,9 @@ def _load_inputs(args, source):
 
 
 def _preconditions(lattice, *, preview):
-    """Run every like-for-like check and print the outcome; refuse unless previewing.
+    """Run the like-for-like checks; refuse on failure unless previewing.
 
-    Returns the problems a preview let through (empty otherwise) and the expectation spread.
+    Returns the problems a preview let through and the expectation spread.
     """
     grid_problems, points, grid_notes = check_grid(lattice)
     workload_problems, expectation_spread = check_same_workload(lattice)
