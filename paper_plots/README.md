@@ -368,8 +368,8 @@ hours, and seven layers carry more than five times the terms. `check_grid` there
 demands an identical grid inside the fit window, and lets an engine stop early only above
 it, where points are drawn but never fitted. Fitted over every point each engine reached
 instead, nothing changes at two decimals (monoprop `N^-0.80` and ppvm `N^+0.39` over
-32…1024). Nothing reaches the 10 ns `Y_TOP_NS` crop at seven layers, so no line runs off
-the panel. The legend carries each series' fitted exponent beside its name, from the same
+32…1024). The y axis tops out 1.3× above the highest point, capped at the 20 ns `Y_TOP_NS`;
+nothing reaches the cap at seven layers, so no line runs off the panel. The legend carries each series' fitted exponent beside its name, from the same
 fits as `figures/fig6_caption.txt` and the build's stdout, so the three cannot disagree.
 
 At N=1024 monoprop leads ppvm by **92×**; at N=512, the widest point all three reached, it

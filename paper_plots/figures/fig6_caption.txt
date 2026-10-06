@@ -39,10 +39,6 @@ PauliPropagation.jl N^+0.35. monoprop's own exponent moves only -0.93 to -0.94, 
 boundary to cross. At N=1024 monoprop leads ppvm by 158x; at N=512, the widest point all three
 reached, it leads ppvm by 54x and PauliPropagation.jl by 73x.
 
-The y axis is cropped at 10 ns per gate per term, to keep the decade the 1/N lives in legible.
-ppvm's N=1024 point (11 ns) and PauliPropagation.jl's N=512 point (10 ns) are above the crop,
-so the line runs off the top of the panel: in the numbers above, only not in the view.
-
 The divisor is not the effect. A falling curve invites the objection that the gate count is
 itself proportional to N, so state the same rows with no gate division at all: a monoprop
 layer of 2047 gates costs 1.25x what a layer of 63 gates costs (114.6 -> 143.3 ms per

@@ -145,12 +145,12 @@ FIT_NMAX = 512
 # it, so no drawn point goes unaccounted for.
 FIT_ALL_POINTS = False
 
-# Hard ceiling on the y axis, in ns per gate per term. Letting the data set the top means
-# PauliPropagation.jl's post-cliff point at ~112 ns stretches the axis to 3.8 decades and
-# squashes the decade the 1/N actually lives in. Cropping here keeps that decade legible;
-# the reference engine's line simply runs off the top, and the caption carries the value it
-# reaches. Every point is still FITTED -- this crops the view, never the fit.
-Y_TOP_NS = 10.0
+# The y axis tops out Y_HEADROOM above the highest point, but never above Y_TOP_NS (ns per
+# gate per term): a post-cliff point such as PauliPropagation.jl's ~112 ns on AWS would
+# stretch the axis to 3.8 decades and squash the decade the 1/N lives in. A point above the
+# cap runs off the top and the caption carries its value. This crops the view, never the fit.
+Y_TOP_NS = 20.0
+Y_HEADROOM = 1.3
 
 
 # Colour carries the engine here (see the module docstring). Okabe-Ito, CVD-safe,
@@ -600,17 +600,17 @@ def fig6(lattice, outdir: Path, layout: str = "column", *, preview=False):
 
         _log_axis(ax, xs, "qubits $N$", "ns per gate, per term")
         ax.set_xlim(xs[0] / 1.12, xs[-1] * 1.12)
-        # Floor from the data, ceiling fixed at Y_TOP_NS (see the constant), so the
-        # reference engine's post-cliff point sits above the crop and its line runs off the
-        # top. The bottom pad is set by the legend, not by taste: it sits inside the
-        # lower-left corner in the column layout, and monoprop's tail descends into that
-        # corner, so the floor has to drop far enough to leave the entries clear of it.
+        # Ceiling from the data, capped at Y_TOP_NS (see the constant). The bottom pad is
+        # set by the legend, not by taste: it sits inside the lower-left corner in the column
+        # layout, and monoprop's tail descends into that corner, so the floor has to drop far
+        # enough to leave the entries clear of it.
         lo = min(min(ys) for _, ys, _ in fits.values())
         # Each extra legend entry in the column layout lowers the floor.
         pad = spec["bottom_pad"] ** (
             len(fits) / len(ORDER) if layout == "column" else 1
         )
-        ax.set_ylim(lo / pad, Y_TOP_NS)
+        hi = max(max(ys) for _, ys, _ in fits.values())
+        ax.set_ylim(lo / pad, min(hi * Y_HEADROOM, Y_TOP_NS))
 
         handles = [
             Line2D(
