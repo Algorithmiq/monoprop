@@ -269,9 +269,10 @@ done
 # the same three drivers with --layers 5, run sequentially on one host.
 
 # Both panel shapes, from data/ with no further arguments: the build takes the Deucalion
-# files once all three engines' are present (plus the 508b536e "before" arm if merged), and
-# the AWS files otherwise; it prints which. --dataset aws|deucalion forces one, --no-before
-# drops the reference arm, and an explicit --lattice replaces the whole default. The
+# files once all three engines' are present, and the AWS files otherwise; it prints which.
+# --dataset aws|deucalion forces one, --before data/monoprop_main_pauli_octave_l7_deucalion.jsonl
+# adds the 508b536e reference arm (not drawn by default), and an explicit --lattice replaces the
+# whole default. The
 # --spectator and --cutoff-evidence companions it adds draw no panel: they only supply the
 # caption's Fig. 5a cross-reference and its cutoff-independence table. Add `--layout column`
 # or `--layout page` to emit just one shape.
@@ -307,7 +308,7 @@ rather than re-measured alongside.
 
 ### Fig. 6 — the same data on the axis where the claim is visible
 
-One panel, three engines, nothing else — plus, when the "before" arm is merged, the same
+One panel, three engines, nothing else. The paper figure draws only those; with `--before`, the same
 driver on the earlier monoprop build (508b536e) as a lighter sky-blue dash-dot curve with
 open markers, labelled "monoprop (before)", so the improvement reads against the same `1/N`
 guide. That arm passes every like-for-like check the engines do; every lead the caption
@@ -332,7 +333,8 @@ what the `1/N` guide is for: the eye reads monoprop against the guide, never aga
 frame, so the claim survives the reshaping.
 
 > **The default build now draws the Deucalion sweep** (`data/*_octave_l7_deucalion.jsonl`,
-> monoprop 0.9.3.dev5+g664f84c00 against the "before" build 508b536e). Its numbers: monoprop
+> monoprop 0.9.3.dev5+g664f84c00; the "before" build 508b536e is measured alongside but drawn only
+> with `--before`). Its numbers: monoprop
 > `N^-0.93` over N ≤ 512 (1.810 → 0.0699 ns from N=32 to N=1024, 25.9×), `N^-0.94` over every
 > point, and successive points at `N^-0.98` and `N^-1.00` from N=256 up; the "before" build
 > `N^-0.83`; ppvm `N^+0.30`, PauliPropagation.jl `N^+0.38`. monoprop leads ppvm by 1.8× at

@@ -97,7 +97,9 @@ DATA = HERE / "data"
 DATASETS = {
     "deucalion": {
         "lattice": [DEUCALION_FILES[s] for s in ("monoprop", "ppvm", "julia")],
-        "before": [DEUCALION_FILES["monoprop-main"]],
+        # The paper figure draws the current build only. The main-branch rows stay in data/
+        # (merge_octave_runs.py writes them) and are drawn on request with --before.
+        "before": [],
         # None was taken. The caption reads from the rows whether each engine's sweep sat on
         # one node (then no split exists to check) or was split, and says which.
         "host_crosscheck": [],

@@ -5,15 +5,15 @@ nearest-neighbour bonds then Rx(pi/4) on all N sites, so a layer holds 2N-1 gate
 sum_i Z_i propagated in the Heisenberg picture (the layer order therefore reverses);
 truncation a Pauli-weight cutoff of 6 with lower_atol = 0, so no coefficient pruning at all
 and the surviving term set is fixed by gate supports alone. N = 32..1024 in powers of two
-(monoprop 6, the earlier monoprop build 6, ppvm 6, PauliPropagation.jl 5 points), one thread,
-every series on one exclusive node, 3 nodes of one node type in all.
+(monoprop 6, ppvm 6, PauliPropagation.jl 5 points), one thread, every series on one exclusive
+node, 3 nodes of one node type in all.
 
 Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both divisors are
-checked, not assumed: at every point all three engines and the earlier monoprop build report
-the same term count (607,054 at N=32 rising to 25,254,286 at N=1024), the same gate count (441
-to 14329) and an expectation value agreeing to 8.8e-14 absolute, so the divisors are identical
-across the curves and the figure script refuses to build if any of that moves. A shared
-divisor cannot manufacture a difference between the curves, only reveal one.
+checked, not assumed: at every point all three engines report the same term count (607,054 at
+N=32 rising to 25,254,286 at N=1024), the same gate count (441 to 14329) and an expectation
+value agreeing to 8.8e-14 absolute, so the divisors are identical across the curves and the
+figure script refuses to build if any of that moves. A shared divisor cannot manufacture a
+difference between the curves, only reveal one.
 
 Result. monoprop falls as N^-0.93, close to the ideal 1/N drawn beside it: 1.810 ns at N=32
 down to 0.0699 ns at N=1024, a 25.9x reduction across a 32x wider system. Neither reference
@@ -21,11 +21,6 @@ engine falls: ppvm N^+0.30, PauliPropagation.jl N^+0.38.
 Note where they start -- at N=32 monoprop leads ppvm by only 1.8x and PauliPropagation.jl by
 2.0x, against 54x and 74x by N=512, so the gap is opened over the sweep and not assumed at the
 origin.
-
-Against its own past. The lighter dash-dot curve is the same driver and settings on the
-earlier monoprop build (0.9.3.dev2+g508b536ec; the solid curve is 0.9.3.dev5+g664f84c00): it
-falls as N^-0.83. The current build is 1.00x faster at N=32 and 1.54x at N=1024, a gap
-widening with N. Every lead quoted against the reference engines is the current build's.
 
 The fit window. Every exponent above, and in the legend, is fitted over N <= 512, the one
 window every engine was measured across; the points beyond it are drawn but enter no fit.
@@ -93,22 +88,16 @@ Caveats, stated because the figure would otherwise overclaim:
     between curves crosses nodes, and those are one node type. The dataset is still cited only
     for a SHAPE (an exponent in N) and never for an absolute time. Figs. 1-4 are the
     absolute-time figures and they come from Leonardo.
-  * Timed repetitions differ by engine, and the rows record it: monoprop 10, monoprop (before)
-    10, QuEra ppvm 1, PauliPropagation.jl 1. monoprop's points run 0.48 to 25 s, short enough
-    at the low end that timer granularity and process noise matter, so its minimum is taken
-    over many more rounds; the reference engines' points run for up to 67 minutes each, where
-    one round already resolves them.
+  * Timed repetitions differ by engine, and the rows record it: monoprop 10, QuEra ppvm 1,
+    PauliPropagation.jl 1. monoprop's points run 0.48 to 25 s, short enough at the low end
+    that timer granularity and process noise matter, so its minimum is taken over many more
+    rounds; the reference engines' points run for up to 67 minutes each, where one round
+    already resolves them.
   * num_terms is the FINAL term count, while K grows through the 7 layers, so the absolute
     ns per term understates the true per-term cost. It understates it identically for all
     three engines, so the comparison between the curves is unaffected.
   * N=1024 is the ceiling, not a choice: monoprop_MAX_NUM_MODES defaults to 1024 with no
     headroom above it, so a wider sweep needs a rebuild.
-  * monoprop's residual against the ideal N^-1 is measured, not assumed: at N=1024 the drawn
-    curve sits 1.24x above the 1/N guide through its N=32 point (fitted N^-0.93), against
-    1.90x above its own for the earlier build (N^-0.83), where the emit path still
+  * monoprop's residual against the ideal N^-1 is real work, not noise: the emit path still
     materialises the dense partner and folds every word for the hash, which is O(N/32) work on
-    the branching fraction. Now: per-term instruction counts are flat in N, and successive
-    points fall as N^-0.98 and N^-1.00 from N=256 up; the gap is accrued below N=256 as
-    one-time steps, not a slope: there the operator outgrows a 16 MiB L3 slice (simulated
-    last-level misses per anticommuting term rise 0.63 -> 2.33 from N=32 to N=256) and, above
-    N=128, stored term positions widen from 8 to 16 bits. The 1/N is approached, not attained.
+    the branching fraction. The 1/N is approached, not attained.
