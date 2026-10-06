@@ -219,7 +219,7 @@ inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident 
 
 static_assert(kColumnBlockWords % 64 == 0, "the zero-block summary holds one bit per block word");
 
-// Reusable fold block (thread_local: each partition master owns its copy); overwritten on every use.
+// Per-thread fold block, overwritten on every use.
 inline auto column_block_scratch() -> std::vector<uint64_t> & {
     static thread_local std::vector<uint64_t> blk;
     if (blk.size() < kColumnBlockWords) {
@@ -228,17 +228,15 @@ inline auto column_block_scratch() -> std::vector<uint64_t> & {
     return blk;
 }
 
-// A kColumnBlockWords block that is all-zero between uses, plus one summary bit per block word a scatter
-// touched, so a sparse fold costs O(postings) rather than O(block words). Whoever scatters into it must
-// zero exactly the words it touched (and their summary bits) before returning.
+// Block that is all-zero between uses, with one summary bit per touched word. Users must re-zero what
+// they touch.
 struct ZeroBlockScratch {
     static constexpr size_t kSummaryWords = kColumnBlockWords / 64;
     std::vector<uint64_t> words = std::vector<uint64_t>(kColumnBlockWords, 0);
     std::array<uint64_t, kSummaryWords> summary{};
 };
 
-// Two independent zero blocks (thread_local), because the build scan expands the generator fold and a
-// sparse pivot column simultaneously.
+// Per-thread zero blocks for the fold and the sparse pivot, which are expanded together.
 inline auto fold_zero_scratch() -> ZeroBlockScratch & {
     static thread_local ZeroBlockScratch scratch;
     return scratch;
@@ -298,28 +296,23 @@ template <size_t NumModes>
     }
 }
 
-// How for_each_fold_word folds each block. Every choice visits the same words with the same bits; only
-// the cost differs. Auto is the production setting; the forced ones exist for equivalence tests.
+// Fold kernel per block; all give identical output. Block and Sparse are for tests.
 enum class FoldPath : std::uint8_t {
-    Auto,   // posting-driven where eligible and no denser than kSparseFoldPostingsPerWord, else block
-    Block,  // always the word-sweeping block combine
-    Sparse, // posting-driven wherever eligible, whatever the density
+    Auto,   // posting-driven when eligible and sparse enough
+    Block,  // always word-sweeping
+    Sparse, // posting-driven whenever eligible
 };
 
-// Postings per block word above which an eligible block still takes the word-sweeping path. The
-// posting-driven path pays two scattered read-modify-writes per posting plus one visit per touched word;
-// the block path streams every word of the block. Tunable; no output depends on it.
+// Postings per block word above which Auto sweeps words instead. Affects speed only.
 inline constexpr double kSparseFoldPostingsPerWord = 0.5;
 
-// Per-block posting ranges of a fold's sparse columns: [begin[ci], end[ci]) indexes column ci's
-// set_rows. Thread-local and not re-entrant: no visitor may start another fold.
+// Per-thread posting cursors. Not re-entrant: a visitor must not start another fold.
 inline auto fold_cursor_scratch() -> std::vector<size_t> & {
     static thread_local std::vector<size_t> cursor;
     return cursor;
 }
 
-// The word-sweeping block: combine_columns_block over the carried posting ranges, then mask and visit
-// every word. `dense_seed` is the first dense column's index in `cols`, or cols.size() if none.
+// Word-sweeping block fold. `dense_seed` indexes the first dense column, or is cols.size().
 template <size_t NumModes, typename WordOp>
 [[gnu::always_inline]] inline auto fold_block_by_words(const InvertedIndex<NumModes> &sc,
                                                        std::span<const size_t> cols,
@@ -372,8 +365,7 @@ template <size_t NumModes, typename WordOp>
     }
 }
 
-// The posting-driven block: every column sparse and no parity correction, so the fold is nonzero only at
-// words some posting touched. Visits those in ascending order via the summary and re-zeroes them.
+// Posting-driven block fold (all columns sparse, no parity): visits touched words and re-zeroes them.
 template <size_t NumModes, typename WordOp>
 [[gnu::always_inline]] inline auto fold_block_by_postings(const InvertedIndex<NumModes> &sc,
                                                           std::span<const size_t> cols,
@@ -395,8 +387,7 @@ template <size_t NumModes, typename WordOp>
             summary[wo >> 6] |= uint64_t{1} << (wo & 63U);
         }
     }
-    // A throwing visitor would leave touched words set and break the zero invariant for every later
-    // fold on this thread, so unwinding wipes the whole block.
+    // Keep the zero invariant if the visitor throws.
     struct Wipe {
         ZeroBlockScratch *zs;
         ~Wipe() {
@@ -418,7 +409,7 @@ template <size_t NumModes, typename WordOp>
             if (wi == last_word) {
                 bits &= last_word_mask;
             }
-            if (bits != 0) { // XOR-cancelled postings leave a touched word empty, as the block path skips it
+            if (bits != 0) { // postings can cancel
                 on_word(wi, bits);
             }
         }
@@ -426,11 +417,9 @@ template <size_t NumModes, typename WordOp>
     wipe.zs = nullptr;
 }
 
-// Visit, ascending, every word wi in [wlo, whi) whose masked fold of `cols` is nonzero, as
-// on_word(wi, bits): bits = XOR of the columns' word wi, ^ row_parity[wi] when row_parity is non-null,
-// & last_word_mask at wi == last_word. on_block(bb, be) runs after each kColumnBlockWords block [bb, be)
-// has been visited. The posting-driven path is eligible only when every column is sparse and row_parity
-// is null (the odd-|G| correction is dense); outputs are identical for every `path`.
+// Calls on_word(wi, bits) for each nonzero word of the masked fold of `cols` over [wlo, whi), ascending,
+// XORing row_parity if non-null, and on_block(bb, be) after each block. Output is the same for every
+// `path`.
 template <size_t NumModes, typename WordOp, typename BlockOp>
 inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
                                std::span<const size_t> cols,
@@ -455,8 +444,7 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
     }
     const bool postings_eligible = path != FoldPath::Block && dense_seed == ncols && row_parity == nullptr;
 
-    // Block b's posting range ends where block b+1's begins, so each block costs one lower_bound per
-    // sparse column rather than two.
+    // Each block's range starts where the previous one ended.
     std::vector<size_t> &cursor = fold_cursor_scratch();
     cursor.assign(2 * ncols, 0);
     size_t *const begin = cursor.data();

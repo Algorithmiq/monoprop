@@ -279,8 +279,7 @@ BOOST_AUTO_TEST_CASE(pauli_algebra_state_phase) {
     }
 }
 
-// The positions-form Pauli sign rebuilds only G's words from the source positions; it must equal the
-// dense kernel at one word, across a word boundary, and at the widest storage with sparse terms.
+// The positions-form Pauli sign equals the dense one at one word, across a word boundary and at full width.
 BOOST_AUTO_TEST_CASE(pauli_rotation_sign_positions_matches_dense) {
     auto check = [](auto tag, size_t max_letters) {
         constexpr size_t N = decltype(tag)::value;

@@ -158,9 +158,7 @@ template <size_t NumModes>
     return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
 }
 
-// cutoff_sums of the monomial whose set bits are the ascending `pos`, identical to the dense form, in
-// O(|pos|): a mode is paired iff both its slots 2m and 2m+1 are present, which in ascending order makes
-// them adjacent. The active modes are the top `logical_num_modes`, so slots below the offset are skipped.
+// cutoff_sums from ascending positions. Slots below the active-mode offset are skipped.
 template <size_t NumModes, typename PosT>
 [[gnu::always_inline]] inline auto cutoff_sums_positions(std::span<const PosT> pos, size_t logical_num_modes)
     -> CutoffSums {
@@ -179,9 +177,7 @@ template <size_t NumModes, typename PosT>
     return {popcount - (2 * pairs), popcount, popcount - pairs};
 }
 
-// xor_sum == 0 over ascending positions: every set slot sits in a (2q, 2q + 1) pair. Pairs cannot
-// overlap (an odd slot never opens one), so walking two at a time decides it, and most rows fail at
-// the first pair.
+// True iff the ascending positions form (2q, 2q + 1) pairs only.
 template <typename PosT>
 [[gnu::always_inline]] inline auto positions_fully_paired(std::span<const PosT> pos) -> bool {
     if (pos.size() % 2 != 0) {
@@ -195,15 +191,14 @@ template <typename PosT>
     return true;
 }
 
-// Rows [first, op.size()) that are fully paired, ascending. A packed row is tested on its positions in
-// O(slots), not materialised in O(words); a spilled row, or a backend without positions, goes dense.
+// Fully paired rows in [first, op.size()), ascending. Inline rows are tested on their positions.
 template <size_t NumModes, typename Rows>
 auto fully_paired_rows_from(size_t first, const Rows &op) -> VecZ {
     VecZ result;
     const auto mask = even_bits<2 * NumModes, LSb0>();
     for (size_t i = first; i < op.size(); ++i) {
         bool paired = false;
-        // One word is a single masked compare dense, cheaper than walking the positions.
+        // At one word the dense compare is cheaper.
         if constexpr (Monomial<NumModes>::num_words() > 1 && requires { op.row_positions(i).inlined(); }) {
             if (const auto row = op.row_positions(i); row.inlined()) {
                 paired = positions_fully_paired(row.pos);
@@ -318,15 +313,13 @@ public:
         return cutoff_fn_(mono);
     }
 
-    // Whether passes_positions applies: the built-in length and support cutoffs only. A custom
-    // CutoffFn sees the dense monomial, so it has no positions form.
+    // True for the built-in cutoffs; a custom CutoffFn needs the dense monomial.
     [[nodiscard]] auto has_positions_form() const -> bool {
         return length_cutoff_ != nullptr || support_cutoff_ != nullptr;
     }
 
-    // passes_with_popcount over the ascending positions of the monomial, with the same verdict and no
-    // dense read; `pairs` is its count of doubly occupied modes (merge_partner_positions_paired).
-    // Requires has_positions_form().
+    // passes_with_popcount on ascending positions. `pairs` is the paired-mode count. Requires
+    // has_positions_form().
     template <typename PosT>
     [[gnu::always_inline]] auto passes_positions(std::span<const PosT> pos, size_t pairs) const -> bool {
         assert(has_positions_form());
@@ -359,8 +352,7 @@ public:
     }
 
 private:
-    // With every mode active the pair count alone gives the sums; otherwise inactive low slots must be
-    // skipped, which the positions walk does.
+    // With every mode active the pair count gives the sums directly.
     template <typename PosT>
     [[gnu::always_inline]] static auto sums_from_pairs_(std::span<const PosT> pos,
                                                         size_t pairs,

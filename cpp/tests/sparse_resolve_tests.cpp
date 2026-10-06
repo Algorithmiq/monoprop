@@ -410,8 +410,7 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
 
 namespace {
 
-// monomial_hash_positions must reproduce monomial_hash exactly -- table layout and routing both hang off
-// it -- across one word, an odd word count, the default mode limit and the widest storage.
+// monomial_hash_positions equals monomial_hash at every tested width.
 template <size_t NumModes>
 auto check_positions_hash_matches_dense(std::mt19937_64 &rng) -> void {
     using PosT = detail::OperatorIndex<NumModes>::PosT;
@@ -452,8 +451,7 @@ BOOST_AUTO_TEST_CASE(positions_hash_equals_dense_hash) {
     check_positions_hash_matches_dense<1024>(rng);
 }
 
-// State scoring reads paired-ness from row positions; it must pick exactly the rows the dense
-// is_fully_paired does, spilled rows included, and start where it is told.
+// fully_paired_rows_from matches the dense check, spilled rows included, from `first`.
 BOOST_AUTO_TEST_CASE(fully_paired_rows_from_matches_dense_scan) {
     constexpr size_t kN = 250;
     constexpr size_t kInlineWidth = 11;

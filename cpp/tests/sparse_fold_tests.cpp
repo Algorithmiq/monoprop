@@ -29,10 +29,8 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 
-// for_each_fold_word picks, per block, the word-sweeping or the posting-driven fold. Every FoldPath must
-// reproduce a full-width oracle built from the authored column membership, bit for bit, in both the
-// build scan's pass 1 and the graph-replay kernels. Columns are assigned to tiers by hand, so the
-// kernels are exercised on tier mixes the density rule alone would not produce.
+// Every FoldPath matches a full-width oracle bit for bit, in pass 1 and in the graph-replay kernels.
+// Column tiers are set by hand to cover mixes the density rule would not produce.
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -133,8 +131,7 @@ auto make_fixture(size_t row_count, uint64_t seed) -> Fixture {
     return f;
 }
 
-// Fold sets: all-sparse (with an empty column, a full cancel, a block denser than the threshold), mixed
-// tiers, all dense, and no column at all.
+// Fold sets: all sparse, mixed, all dense, and empty.
 const std::vector<std::vector<size_t>> kFolds{
     {kSparseA},
     {kSparseA, kSparseB},
@@ -232,8 +229,7 @@ auto check_pass1(const Fixture &f, size_t wlo, size_t whi, size_t last_word, uin
 
 } // namespace
 
-// Four blocks with a partial last word, so postings land on block and word boundaries of a real
-// multi-block scan.
+// Four blocks and a partial last word.
 BOOST_AUTO_TEST_CASE(sparse_fold_pass1_matches_oracle_partial_last_word) {
     const size_t rows = 3 * kBlockRows + 777;
     const auto f = make_fixture(rows, 1);
@@ -241,7 +237,7 @@ BOOST_AUTO_TEST_CASE(sparse_fold_pass1_matches_oracle_partial_last_word) {
     check_pass1(f, 0, words, words - 1, last_mask_for(rows));
 }
 
-// Row count a multiple of 64 (and of the block): the last word is unmasked and the last block full.
+// Whole words and whole blocks.
 BOOST_AUTO_TEST_CASE(sparse_fold_pass1_matches_oracle_word_aligned) {
     const size_t rows = 4 * kBlockRows;
     const auto f = make_fixture(rows, 2);
@@ -255,14 +251,13 @@ BOOST_AUTO_TEST_CASE(sparse_fold_pass1_matches_oracle_tiny) {
     check_pass1(f, 0, f.sc.words(), 0, last_mask_for(100));
 }
 
-// A word range starting and ending mid-block, with the truncation word inside it, as a sub-range caller
-// would pass: the carried posting cursors must start from wlo, not from row 0.
+// A mid-block sub-range: posting cursors must start at wlo.
 BOOST_AUTO_TEST_CASE(sparse_fold_pass1_matches_oracle_sub_range) {
     const auto f = make_fixture(3 * kBlockRows + 777, 4);
     check_pass1(f, 1500, 2100, 2099, last_mask_for(37));
 }
 
-// A visitor that throws must not leave the zero-invariant scratch dirty for the next fold on the thread.
+// A throwing visitor leaves the scratch zeroed.
 BOOST_AUTO_TEST_CASE(sparse_fold_throwing_visitor_keeps_scratch_zero) {
     const auto f = make_fixture(2 * kBlockRows, 5);
     const std::vector<size_t> fold{kSparseA, kSparseB};
@@ -282,13 +277,11 @@ BOOST_AUTO_TEST_CASE(sparse_fold_throwing_visitor_keeps_scratch_zero) {
     BOOST_TEST(zero_scratch_is_clean(fold_zero_scratch()));
 }
 
-// The graph-replay kernels truncate the fold at a layer's scaled_count. Indices, scaled coefficients and
-// the accumulated reduction must be bit-identical on every path and equal to an ascending oracle.
+// Graph-replay kernels truncated at scaled_count are bit-identical on every path and match the oracle.
 BOOST_AUTO_TEST_CASE(sparse_fold_replay_kernels_match_oracle) {
     const size_t rows = 3 * kBlockRows + 777;
     const auto f = make_fixture(rows, 6);
-    // scaled_count: full, mid-block and mid-word, on a block boundary, on a word boundary, under one word,
-    // and empty.
+    // Full, mid-block, mid-word, on block and word boundaries, under one word, and empty.
     const std::vector<size_t> scaled_counts{rows,
                                             kBlockRows + 1024 * 32 + 37,
                                             2 * kBlockRows,
@@ -355,8 +348,7 @@ BOOST_AUTO_TEST_CASE(sparse_fold_replay_kernels_match_oracle) {
                         std::vector<double> ham = ham0;
                         const double loc =
                             accumulate_cos_lazy<N>(f.sc, r, state.data(), ham.data(), cos_val, sec_val, path);
-                        // The oracle may contract the multiply-add differently from the kernel, so it bounds
-                        // the value; bit identity across paths is checked against the Block path.
+                        // The oracle may fuse differently; bit identity is checked against Block.
                         BOOST_TEST(std::abs(loc - expected_loc) <= 1e-12 * std::max(1.0, std::abs(expected_loc)));
                         if (path == FoldPath::Block) {
                             block_loc = loc;

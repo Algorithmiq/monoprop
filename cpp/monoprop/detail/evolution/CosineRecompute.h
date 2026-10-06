@@ -118,8 +118,7 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     return p;
 }
 
-// The one fold-word mask rule for a materialised FoldCache, matching for_each_fold_word. `row_parity` is
-// passed in so callers hoist it out of the loop and no long-lived mask holds an index pointer (see FoldMask).
+// Fold-word mask for a FoldCache, matching for_each_fold_word. Callers hoist `row_parity`.
 [[gnu::always_inline]] inline auto apply_fold_mask(uint64_t bits,
                                                    size_t wi,
                                                    const FoldMask &f,
@@ -170,8 +169,7 @@ auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
     return r;
 }
 
-// Visit a layer's cosine fold words in ascending order: the scan's fold kernel over [0, mask_words) with
-// the layer's truncation, so the recompute and the build scan agree word for word.
+// A layer's cosine fold words, ascending, via the build scan's fold kernel.
 template <size_t NumModes, typename WordOp>
 [[gnu::always_inline]] inline auto for_each_lazy_fold_word(const InvertedIndex<NumModes> &sc,
                                                            const LazyFold<NumModes> &r,
@@ -218,7 +216,7 @@ auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
     });
 }
 
-// `loc` is summed in ascending index order on every FoldPath, so the reduction is reproducible.
+// Sums in ascending index order on every FoldPath.
 template <size_t NumModes>
 auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          const LazyFold<NumModes> &r,

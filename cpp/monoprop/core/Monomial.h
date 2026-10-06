@@ -68,7 +68,7 @@ inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
 }
 
 namespace detail {
-// mix(0 + i) per word index: the term a zero word i contributes to the W > 1 hash.
+// Hash term of an all-zero word i.
 template <size_t NumModes>
 inline constexpr auto kZeroWordMix = [] {
     std::array<uint64_t, Monomial<NumModes>::num_words()> mixes{};
@@ -78,8 +78,7 @@ inline constexpr auto kZeroWordMix = [] {
     return mixes;
 }();
 
-// XOR of kZeroWordMix: what the all-zero monomial hashes to when W > 1, so a sparse hash starts here
-// and swaps each occupied word's zero term out.
+// Hash of the all-zero monomial (W > 1).
 template <size_t NumModes>
 inline constexpr uint64_t kZeroWordFold = [] {
     uint64_t h = 0;
@@ -89,14 +88,11 @@ inline constexpr uint64_t kZeroWordFold = [] {
     return h;
 }();
 
-// Word count up to which monomial_hash_positions scatters into dense words instead of walking the
-// occupied ones: the walk's per-word branches cost 1.3% more instructions end to end at two words.
+// Up to this many words, monomial_hash_positions scatters densely rather than walking occupied words.
 inline constexpr size_t kDenseHashMaxWords = 4;
 } // namespace detail
 
-// monomial_hash of the monomial whose set bits are `pos`, bit-for-bit, in O(|pos|) rather than
-// O(words): only occupied words are mixed, and each replaces its zero-word term in kZeroWordFold.
-// `pos` must be ascending and below 2 * NumModes.
+// monomial_hash, bit for bit, from ascending positions below 2 * NumModes.
 template <size_t NumModes, typename PosT>
 [[gnu::always_inline]] inline auto monomial_hash_positions(std::span<const PosT> pos) noexcept -> size_t {
     using Hash = SplitmixHash<Monomial<NumModes>>;
@@ -108,7 +104,6 @@ template <size_t NumModes, typename PosT>
         return static_cast<size_t>(Hash::mix(word));
     }
     else if constexpr (Monomial<NumModes>::num_words() <= detail::kDenseHashMaxWords) {
-        // Narrow monomials: a branch-free scatter and a full-width mix beat the per-word walk below.
         std::array<uint64_t, Monomial<NumModes>::num_words()> words{};
         for (const PosT p : pos) {
             words[static_cast<size_t>(p) >> 6] |= uint64_t{1} << (static_cast<size_t>(p) & 63);

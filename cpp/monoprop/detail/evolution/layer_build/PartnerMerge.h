@@ -74,18 +74,14 @@ template <std::ranges::contiguous_range Row, std::ranges::contiguous_range Gen, 
     return {n, overlap};
 }
 
-/*! @brief MergedPartner plus the count of same-qubit slot pairs among the written positions. */
+/*! @brief MergedPartner plus the paired-mode count. */
 struct MergedPairedPartner {
     size_t count;   //!< positions written to out
     size_t overlap; //!< positions present in both inputs, which therefore cancelled
-    size_t pairs;   //!< adjacent outputs {2m, 2m+1}: the doubly occupied modes the cutoff sums need
+    size_t pairs;   //!< output pairs {2m, 2m+1}
 };
 
-/*! @brief merge_partner_positions that also counts the partner's paired modes.
- *
- *  The output is ascending and distinct, so slots 2m and 2m+1 are both present iff they are written
- *  consecutively, which is `(prev ^ p) < 2`; counting them here spares the cutoff a second pass.
- */
+/*! @brief merge_partner_positions that also counts paired modes ({2m, 2m+1} written consecutively). */
 template <std::ranges::contiguous_range Row, std::ranges::contiguous_range Gen, std::ranges::contiguous_range Out>
 [[gnu::always_inline]] inline auto merge_partner_positions_paired(const Row &a, const Gen &b, Out &&out) noexcept
     -> MergedPairedPartner {

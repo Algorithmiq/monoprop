@@ -86,7 +86,7 @@ struct EvenParityNzWord {
 // Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
-// in before followers are derived. `path` only selects the fold kernel (see FoldPath); nz is identical.
+// in before followers are derived. `path` selects the fold kernel only.
 template <size_t NumModes>
 inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
                                    std::span<const size_t> gen_cols,
@@ -115,10 +115,7 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
         }
         nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
     };
-    /* A dense pivot is read inline above. A sparse pivot is expanded only for blocks with an anticommuter:
-     * its postings in the block are scattered into a zero-invariant scratch, read at the block's nz words,
-     * then re-zeroed, so the cost is O(postings) rather than O(block words). The posting cursor only moves
-     * forward, as blocks arrive in ascending order. */
+    // A sparse pivot is scattered into zeroed scratch only for blocks with anticommuters, then re-zeroed.
     const std::vector<TermIndex> *const pivot_rows = pivot_dense ? nullptr : &sc.sparse_column_rows(pivot_col);
     size_t pivot_cursor = 0;
     size_t nz_block_start = 0;
@@ -179,19 +176,13 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
-// Word count from which the positions-only emit in fused_find_and_collect beats the dense partner. A
-// one-word partner is a handful of instructions dense, cheaper than walking its positions (measured +12%
-// at 32 modes); at two words the positions emit still lost 1.4-1.9% (64 modes); from three they win.
+// Minimum word count for the positions emit (measured slower at one and two words).
 inline constexpr size_t kPositionsEmitMinWords = 3;
 
-// Slots per word above which the positions emit loses even when wide enough: it walks every position of
-// source and generator where the dense partner touches every word, and a term may carry up to the
-// cutoff's max_slot_bound() positions. Weight-12 Pauli terms at four words (up to 24 slots) ran 9% slower
-// on positions; the Fig. 6 weight-6 chain (12 slots) wins from three words.
+// Maximum slots per word for the positions emit (24 slots at four words measured 9% slower).
 inline constexpr size_t kPositionsEmitMaxSlotsPerWord = 4;
 
-// The dense partner, for the emits that need one: a one-word monomial, a spilled source row (no position
-// array), a custom cutoff predicate, or more than one rank (the owner hash folds the dense words).
+// Dense partner, for one-word monomials, spilled rows, custom cutoffs and multi-rank runs.
 template <size_t NumModes>
 struct PartnerProduct {
     Monomial<NumModes> new_mono;
@@ -378,9 +369,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         };
 
-        // Single rank with a built-in cutoff: the partner is the merge of two short position lists and
-        // its cutoff, sign and (at resolve) hash all read those positions, so nothing here costs O(W)
-        // and per-term work stays independent of N. Verdicts and signs equal the dense path's.
+        // Single rank, built-in cutoff: build the partner from positions, with no O(W) work per term.
         constexpr bool kWideEnough = Monomial<NumModes>::num_words() >= kPositionsEmitMinWords;
         [[maybe_unused]] const bool emit_positions_only =
             kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form()
@@ -405,7 +394,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                         }
                         const int phase =
                             A::emit_phase(A::rotation_sign_positions(ectx, src.pos), mono_pop, gen_pop, merged.overlap);
-                        // rank_count == 1: the only slot is my_rank's.
                         (is_follower ? res.follower_self : res.leader_self).push(partner, phase);
                         (is_follower ? fs : ls).at_slot(my_rank).push_back(i);
                         if (capture_values) {
@@ -468,18 +456,13 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         };
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
-        /* Sparse anticommuting terms in a large operator are DRAM misses the hardware prefetcher cannot
-         * predict (rows ~K/n_anti apart), so the row and coefficient of the terms kPrefetchWords nonzero
-         * words ahead are requested before their turn. Below the gate the rows are cache-resident or
-         * dense enough to stream, and the loop is the plain one. */
+        // In large sparse scans, prefetch rows and coefficients kPrefetchWords nonzero words ahead.
         constexpr size_t kPrefetchWords = 8;
         constexpr size_t kPrefetchMinRows = size_t{1} << 21;
         const double *const prefetch_coeffs = fused_scale_coeffs != nullptr ? fused_scale_coeffs : coeffs.data();
         const bool prefetch_ahead = ham.size() >= kPrefetchMinRows && n_anti * 16 < ham.size()
                                     && (fused_scale_coeffs != nullptr || coeffs.size() >= ham.size());
-        /* Bound once: glibc before 2.34 resolves a dlopen'd module's TLS through _dl_update_slotinfo, and
-         * indexing the thread_local `nz` itself re-resolved its address on every word (7% of the Hubbard
-         * ladder row's instructions). */
+        // Bind once: glibc < 2.34 resolves thread_local slowly, and indexing `nz` per word cost 7%.
         const std::span<const EvenParityNzWord> nz_words(nz);
         for (size_t kw = 0; kw < nz_words.size(); ++kw) {
             const auto &w = nz_words[kw];

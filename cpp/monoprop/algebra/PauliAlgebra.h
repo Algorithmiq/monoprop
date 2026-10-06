@@ -140,9 +140,7 @@ template <size_t NumModes>
     return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
 }
 
-// pauli_rotation_sign of the term whose ascending positions are `src`, with the same arithmetic, in
-// O(|src| + |nz words of G|): one walk alongside G's ascending nonzero words rebuilds just those words
-// of the source, and no dense monomial is formed.
+// pauli_rotation_sign from ascending positions; rebuilds only the source words where G is nonzero.
 template <size_t NumModes, typename PosT>
 [[gnu::always_inline]] inline auto pauli_rotation_sign_positions(const PauliGenContext<NumModes> &ctx,
                                                                  std::span<const PosT> src) -> int {

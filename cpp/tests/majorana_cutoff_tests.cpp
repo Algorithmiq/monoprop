@@ -358,9 +358,8 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_generate_paired_op_matches_the_enumeration)
 
 namespace {
 
-// passes_positions, fed the pair count of merge_partner_positions_paired, must agree with
-// passes_with_popcount on every partner M⊕G, including ones the inactive prefix makes look wider than they
-// are and paired ones that only the xor_sum rule keeps.
+// passes_positions agrees with passes_with_popcount on every partner, including inactive-prefix and
+// fully paired cases.
 template <typename Mono>
 auto positions_of(const Mono &mono) -> std::vector<uint16_t> {
     std::vector<uint16_t> pos;

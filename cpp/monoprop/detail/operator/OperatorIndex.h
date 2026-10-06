@@ -203,7 +203,7 @@ public:
         }
         return overflow_.at(i).count();
     }
-    /*! @brief Hints that row i will be read soon: its count and positions, which may straddle a line. */
+    /*! @brief Prefetches row i (both ends, as it may straddle a line). */
     auto prefetch_row(size_t i) const noexcept -> void {
         __builtin_prefetch(&rows_[i * stride_]);
         __builtin_prefetch(&rows_[(i * stride_) + stride_ - 1]);
@@ -333,7 +333,7 @@ public:
         }
     }
 
-    // fold_hash of the monomial `pos` describes, equal by construction, in O(|pos|) and not O(words).
+    // fold_hash from positions.
     [[nodiscard]] static auto fold_hash_positions(std::span<const PosT> pos) noexcept -> uint32_t {
         return fold_to_32_(monomial_hash_positions<NumModes>(pos));
     }
