@@ -6,7 +6,7 @@ sum_i Z_i propagated in the Heisenberg picture (the layer order therefore revers
 truncation a Pauli-weight cutoff of 6 with lower_atol = 0, so no coefficient pruning at all
 and the surviving term set is fixed by gate supports alone. N = 32..1024 in powers of two
 (monoprop 6, ppvm 6, PauliPropagation.jl 5 points), one thread, every series on one exclusive
-node, 3 nodes of one node type in all.
+node, 1 node of one node type in all.
 
 Plotted: wall-clock nanoseconds for ONE gate to act on ONE term, against N. Both divisors are
 checked, not assumed: at every point all three engines report the same term count (607,054 at
@@ -15,11 +15,11 @@ value agreeing to 8.8e-14 absolute, so the divisors are identical across the cur
 figure script refuses to build if any of that moves. A shared divisor cannot manufacture a
 difference between the curves, only reveal one.
 
-Result. monoprop falls as N^-0.93, close to the ideal 1/N drawn beside it: 1.810 ns at N=32
-down to 0.0699 ns at N=1024, a 25.9x reduction across a 32x wider system. Neither reference
-engine falls: ppvm N^+0.30, PauliPropagation.jl N^+0.38.
+Result. monoprop falls as N^-0.93, close to the ideal 1/N drawn beside it: 1.819 ns at N=32
+down to 0.0700 ns at N=1024, a 26.0x reduction across a 32x wider system. Neither reference
+engine falls: ppvm N^+0.30, PauliPropagation.jl N^+0.35.
 Note where they start -- at N=32 monoprop leads ppvm by only 1.8x and PauliPropagation.jl by
-2.0x, against 54x and 74x by N=512, so the gap is opened over the sweep and not assumed at the
+2.2x, against 54x and 73x by N=512, so the gap is opened over the sweep and not assumed at the
 origin.
 
 The fit window. Every exponent above, and in the legend, is fitted over N <= 512, the one
@@ -31,13 +31,13 @@ not enter a like-for-like fit in any case.
 Beyond N = 512 PauliPropagation.jl crosses a packed-key width boundary, measured at
 N=576->608: an 8.5x single-N jump in the v0.8.2 full-width probe and 7.7x in its
 idle-spectator sweep (8.7x and 7.1x at v0.7.3, so the vectorised backend does not move it).
-ppvm's largest single-N step in these rows is 1.46x, at N=512->1024. A power law fitted across
+ppvm's largest single-N step in these rows is 1.45x, at N=512->1024. A power law fitted across
 a discontinuity partly measures where the step falls rather than per-term cost in N, and that
 step is a fixed-width-integer artifact which Figs. 2 and 3 already own. Fitted over every
 point each engine reached instead, the same rows give monoprop N^-0.94, ppvm N^+0.35 and
-PauliPropagation.jl N^+0.38. monoprop's own exponent moves only -0.93 to -0.94, having no such
+PauliPropagation.jl N^+0.35. monoprop's own exponent moves only -0.93 to -0.94, having no such
 boundary to cross. At N=1024 monoprop leads ppvm by 158x; at N=512, the widest point all three
-reached, it leads ppvm by 54x and PauliPropagation.jl by 74x.
+reached, it leads ppvm by 54x and PauliPropagation.jl by 73x.
 
 The y axis is cropped at 10 ns per gate per term, to keep the decade the 1/N lives in legible.
 ppvm's N=1024 point (11 ns) and PauliPropagation.jl's N=512 point (10 ns) are above the crop,
@@ -45,7 +45,7 @@ so the line runs off the top of the panel: in the numbers above, only not in the
 
 The divisor is not the effect. A falling curve invites the objection that the gate count is
 itself proportional to N, so state the same rows with no gate division at all: a monoprop
-layer of 2047 gates costs 1.25x what a layer of 63 gates costs (114.0 -> 143.0 ms per
+layer of 2047 gates costs 1.25x what a layer of 63 gates costs (114.6 -> 143.3 ms per
 10^6 terms). 32.5x the gates for 1.25x the time. The identical divisor applied to the
 other two engines leaves them flat or rising, so it cannot be the source of the fall.
 
@@ -81,7 +81,7 @@ same ordering as here.
 
 Caveats, stated because the figure would otherwise overclaim:
 
-  * WHERE. Measured on Deucalion's x86 partition, not on Leonardo: 3 nodes of one node type
+  * WHERE. Measured on Deucalion's x86 partition, not on Leonardo: 1 node of one node type
     (Deucalion x86, AMD EPYC 7742 (Zen 2), 128 cores, SMT off). Every series was measured on a
     single node, held exclusively through Slurm with the timed process pinned to one core, so
     every curve -- and so every fitted exponent -- comes from one node; only the comparison
@@ -89,7 +89,7 @@ Caveats, stated because the figure would otherwise overclaim:
     for a SHAPE (an exponent in N) and never for an absolute time. Figs. 1-4 are the
     absolute-time figures and they come from Leonardo.
   * Timed repetitions differ by engine, and the rows record it: monoprop 10, QuEra ppvm 1,
-    PauliPropagation.jl 1. monoprop's points run 0.48 to 25 s, short enough at the low end
+    PauliPropagation.jl 1. monoprop's points run 0.49 to 25 s, short enough at the low end
     that timer granularity and process noise matter, so its minimum is taken over many more
     rounds; the reference engines' points run for up to 67 minutes each, where one round
     already resolves them.

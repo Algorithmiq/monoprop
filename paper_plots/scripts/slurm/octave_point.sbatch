@@ -89,6 +89,7 @@ ceiling() {
         ppvm:1024) echo 9000 ;;
         ppvm:512) echo 2700 ;;
         ppvm:*) echo 900 ;;
+        julia:1024) echo 3600 ;;
         julia:512) echo 7200 ;;
         julia:*) echo 1800 ;;
         *) echo 600 ;;

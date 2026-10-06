@@ -335,13 +335,13 @@ frame, so the claim survives the reshaping.
 > **The default build now draws the Deucalion sweep** (`data/*_octave_l7_deucalion.jsonl`,
 > monoprop 0.9.3.dev5+g664f84c00; the "before" build 508b536e is measured alongside but drawn only
 > with `--before`). Its numbers: monoprop
-> `N^-0.93` over N ≤ 512 (1.810 → 0.0699 ns from N=32 to N=1024, 25.9×), `N^-0.94` over every
+> `N^-0.93` over N ≤ 512 (1.819 → 0.0700 ns from N=32 to N=1024, 26.0×), `N^-0.94` over every
 > point, and successive points at `N^-0.98` and `N^-1.00` from N=256 up; the "before" build
-> `N^-0.83`; ppvm `N^+0.30`, PauliPropagation.jl `N^+0.38`. monoprop leads ppvm by 1.8× at
-> N=32, 54× at N=512 and 158× at N=1024, and PauliPropagation.jl by 2.0× and 74×. At N=1024
-> monoprop sits 1.24× above the `1/N` guide through its N=32 point (the "before" build 1.90×),
-> and the new build is 1.54× faster than 508b536e there (1.00× at N=32, 1.01× at N=64, 1.11× at
-> N=128). **The paragraphs below are the AWS sweep's** (`data/*_octave_l7.jsonl`, monoprop
+> `N^-0.82`; ppvm `N^+0.30`, PauliPropagation.jl `N^+0.35`. monoprop leads ppvm by 1.8× at
+> N=32, 54× at N=512 and 158× at N=1024, and PauliPropagation.jl by 2.2× and 73×. At N=1024
+> monoprop sits 1.23× above the `1/N` guide through its N=32 point (the "before" build 1.91×),
+> and the new build is 1.54× faster than 508b536e there (0.99× at N=32, within build-to-build
+> noise, 1.01× at N=64, 1.11× at N=128). **The paragraphs below are the AWS sweep's** (`data/*_octave_l7.jsonl`, monoprop
 > a86984a9f), kept for the record.
 
 It plots the wall-clock cost of **one gate acting on one term**, in nanoseconds, against
@@ -407,9 +407,9 @@ wider sweep needs a rebuild.
 
 **The Deucalion re-measurement.** The same drivers, settings and `octave_point.sbatch`, on
 Deucalion's x86 partition (`dev-x86`): AMD EPYC 7742 (Zen 2), 128 cores, SMT off, every
-job holding a whole node exclusively with the timed process pinned to one core. Each engine's
-six points, and each monoprop build's, are submitted as one job on one node (see Reproduce),
-so every curve — and every fitted exponent — comes from a single node and no host crosscheck
+job holding a whole node exclusively with the timed process pinned to one core. The shipped
+rows are all four series run back to back in one job on one node (the Reproduce recipe below
+splits them into one job per engine, which keeps each curve on one node too), so every curve — and every fitted exponent — comes from a single node and no host crosscheck
 is needed. The caption does not take that on trust: it reads one hostname per series from the
 rows before saying so, and falls back to the split-sweep wording if a series turns out split. All four series are on one node type, which `FLEETS`
 declares as the hostname pattern `cnx\d+` (the rows record `cnxNNN.deucalion.macc.fccn.pt`),
@@ -418,10 +418,11 @@ the drivers record only the hostname — so the fleet's name is stated, not meas
 what `/proc/cpuinfo` reports on Deucalion's login nodes, whose `-march=native` resolves to the
 same `znver2` as the compute nodes'. The ppvm and PauliPropagation.jl environments are
 `caches/fig6/{ppvm-venv,julia-1.10.12,julia-depot}` under the project root; ppvm is
-`0.1.0+git.2570637b1459`. Points per engine: monoprop 6 and 6 (both builds in one job on
-cnx002, alternating build per N; 10 rounds each, N=1024 taking 257 s for the new build and 395 s
-for 508b536e), ppvm 6 (cnx008, N=1024 in 4037 s), PauliPropagation.jl 5 (cnx001, N=512 in 932 s;
-N=1024 hit its 1800 s ceiling and is absent, as on AWS).
+`0.1.0+git.2570637b1459`. Every point is from cnx001, in one job: monoprop 6 and 6 (the two
+builds alternating per N; 10 rounds each, N=1024 taking 258 s for the new build and 395 s for
+508b536e), then ppvm 6 (N=1024 in 4027 s), then PauliPropagation.jl 5 on `VectorPauliSum`
+(every row records `result_type`; N=512 in 929 s, N=1024 hit its 3600 s ceiling and is absent,
+as on AWS).
 
 The Fig. 5 data, and the earlier five-layer Fig. 6 sweep, were taken on a 10-core
 workstation, not on Leonardo, and the records say so — `host` and `library_version` on every

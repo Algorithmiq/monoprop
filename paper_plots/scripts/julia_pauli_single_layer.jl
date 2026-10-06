@@ -92,6 +92,7 @@ function main()
         best = min(best, dt)
     end
 
+    result isa VectorPauliSum || error("expected the VectorPauliSum backend, got $(typeof(result))")
     num_terms = length(result)
     memory_bytes = Base.summarysize(result)
     expectation = real(overlapwithzero(result))
@@ -120,10 +121,9 @@ function main()
         "gates" => length(circuit),
         "host" => gethostname(),
         "library_version" => string(pkgversion(PauliPropagation)),
-        # Which of the library's two operator representations was propagated. Nothing in
-        # the figure scripts reads it; it exists so a row can be told apart from the
-        # dictionary-backed PauliSum rows earlier versions of this driver could produce.
+        # The propagated representation (checked above), versus the dictionary-backed PauliSum.
         "backend" => "vector",
+        "result_type" => string(typeof(result)),
         "library_threading" => false,
     )
     println("[julia/pauli] N=$nq cutoff=$cutoff terms=$num_terms " *
