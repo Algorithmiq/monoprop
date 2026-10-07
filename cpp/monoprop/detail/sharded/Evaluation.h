@@ -666,8 +666,8 @@ auto prepare_retained(parallel::Options options,
             std::shared_ptr<const MPGraph> graph;
             const MPGraph &live = shards[t]->graph;
             if (context.pare_threshold.has_value()) {
-                const auto full_cos_of_layer = [&](size_t i) -> CosMask {
-                    return full_cos_mask<NumModes>(inverted_index, live.get_layer_traversal(i), context.basis);
+                const auto full_cos_of_layer = [&](size_t i, CosMask &out) {
+                    full_cos_mask_into<NumModes>(inverted_index, live.get_layer_traversal(i), context.basis, out);
                 };
                 const auto keep = context.schrodinger ? indices_above(coeffs, *context.pare_threshold)
                                                       : state.indices_above(*context.pare_threshold);

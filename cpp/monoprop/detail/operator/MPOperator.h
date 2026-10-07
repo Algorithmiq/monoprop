@@ -211,6 +211,12 @@ struct MPOperator {
     // placed onto their rows, the picture's state, then the inverted index. Heisenberg warms the sparse state only;
     // densifying it here would defeat it. Schrödinger's dense vector IS the live evolved vector.
     auto initialize_caches(bool schrodinger) -> void {
+        warm_caches(schrodinger);
+        release_slack();
+    }
+
+    // The first half of initialize_caches(): every cache materialized, no capacity released.
+    auto warm_caches(bool schrodinger) -> void {
         (void)get_operator();
         if (schrodinger) {
             (void)dense_state();
@@ -219,8 +225,19 @@ struct MPOperator {
             (void)sparse_state();
         }
         (void)inverted_index();
+    }
+
+    // The second half: the coefficient and state vectors copied down to their sizes. Each copy holds the old and the
+    // new block at once, so this is the operator's transient peak after a gate loop.
+    auto release_slack() -> void {
         op_coeffs.shrink_to_fit();
         shrink_state_to_fit();
+    }
+
+    // The bytes release_slack() copies: every vector with spare capacity is copied whole.
+    [[nodiscard]] auto slack_copy_bytes() const noexcept -> size_t {
+        const auto copied = [](const auto &v) { return v.capacity() > v.size() ? v.size() * sizeof(v[0]) : 0uz; };
+        return copied(op_coeffs) + copied(state_rows_) + copied(state_vals_) + copied(state_coeffs);
     }
 
     // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.

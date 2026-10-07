@@ -124,9 +124,11 @@
  * |   sources, transient cosine set         |         |           |                        |           |             |
  *
  * "Next gate" means the owner's first phase of the following gate, which starts after P5 has passed, or the final
- * cache phase, which releases the gate buffers. The two T x T inboxes of views (row t written by owner t, column d read
- * by owner d), the replay board, the frames' pointer vector and the physical rounds are allocated on the caller and
- * outlive the team, so every buffer and request stays alive through the join on failure.
+ * cache phase, which releases the gate buffers. In that phase at most max(4, T / 8) owners at a time copy their
+ * vectors down to size when the copy is 256 KiB or more (SectionLimit), so the copies' transients do not coincide. The
+ * two T x T inboxes of views (row t written by owner t, column d read by owner d), the replay board, the frames'
+ * pointer vector and the physical rounds are allocated on the caller and outlive the team, so every buffer and request
+ * stays alive through the join on failure.
  *
  * Opaque callbacks: a cutoff predicate that is not a typed built-in (CutoffEvaluator::parallel_safe()), including a
  * basis-change closure, is never called from two threads at once. The traversal then runs on the primary, shard by
@@ -156,7 +158,7 @@ enum class ConstructionWork : std::uint8_t {
     consume_followers, //!< Fold the answers to this shard's follower queries.
     finalize,          //!< Insert deferred same-shard misses; finalize the layer and append it to the graph.
     apply,             //!< Propagation only: extend the coefficients and apply the fused records.
-    caches,            //!< After the last gate: release gate buffers and warm the shard's caches.
+    caches,            //!< After the last gate: release gate buffers, warm the shard's caches, shrink its vectors.
     seed,              //!< Informed construction: copy the picture, prepare and run the seed replay.
     replay,            //!< Informed construction: begin (P5) or finish (P6) the replay of the new layer.
     exchange,          //!< Multi-rank: the primary lays out, posts or completes a physical round (shard 0 only).
@@ -608,6 +610,15 @@ auto run_gates(parallel::Options options,
         seed_job.remote = replay_round;
     }
 
+    /*
+     * In the last phase every owner copies its coefficient and state vectors down to size, each copy holding the old
+     * and the new block at once. With every owner copying together, those transients add up to the operation's peak
+     * (about 5 % of the operator at T = 96); T / 8 concurrent copies, never fewer than 4, keep the memory bandwidth
+     * busy without that pile-up. A copy below 256 KiB skips the limit: such copies cannot pile up to much, and the
+     * shared counter would cost a small operation more than the copy.
+     */
+    auto slack_copies = SectionLimit(std::max<size_t>(4, threads / 8));
+    constexpr size_t small_slack_copy_bytes = size_t{256} << 10;
     const auto error = run_team(options, [&](size_t t, TeamFailure &failure) noexcept {
         const size_t flat = first_local + t;
         ShardState<NumModes> &own = *shards[t];
@@ -1054,7 +1065,13 @@ auto run_gates(parallel::Options options,
         static_cast<void>(phase(failure, t, [&] {
             observer.visit(W::caches, kNoStep, t);
             frame.work.reset();
-            own.op.initialize_caches(schrodinger);
+            own.op.warm_caches(schrodinger);
+            if (own.op.slack_copy_bytes() < small_slack_copy_bytes) {
+                own.op.release_slack();
+            }
+            else {
+                slack_copies.run([&] { own.op.release_slack(); });
+            }
         }));
     });
     // A request still live after a failed join belongs to a round some peer may never complete: hand the failure to

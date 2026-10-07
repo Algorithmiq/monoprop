@@ -176,6 +176,62 @@ BOOST_AUTO_TEST_CASE(sharded_team_visits_each_owner) {
     }
 }
 
+// At most `limit` workers are inside the section at once, every worker enters exactly once, and the section's
+// value is returned. The sleep keeps holders inside long enough for the others to queue behind the limit.
+BOOST_AUTO_TEST_CASE(sharded_team_section_limit_bounds_concurrent_holders) {
+    const auto options = team_options();
+    const auto threads = team_size(options);
+    for (const size_t limit : {size_t{1}, size_t{2}, threads}) {
+        auto gate = sharded::SectionLimit(limit);
+        auto inside = std::atomic<size_t>(0);
+        auto most = std::atomic<size_t>(0);
+        auto entered = std::vector<size_t>(threads, 0);
+        const auto error = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
+            static_cast<void>(sharded::phase(failure, shard, [&] {
+                entered[shard] = gate.run([&] {
+                    const size_t now = inside.fetch_add(1) + 1;
+                    for (size_t seen = most.load(); seen < now && !most.compare_exchange_weak(seen, now);) {
+                    }
+                    std::this_thread::sleep_for(2ms);
+                    inside.fetch_sub(1);
+                    return shard + 1;
+                });
+            }));
+        });
+        BOOST_TEST(!error);
+        BOOST_TEST(most.load() <= limit, "limit " << limit);
+        BOOST_TEST(most.load() >= 1U, "limit " << limit);
+        for (size_t shard = 0; shard < threads; ++shard) {
+            BOOST_TEST(entered[shard] == shard + 1, "limit " << limit << " shard " << shard);
+        }
+    }
+}
+
+// A section that throws releases its slot: with one slot, every worker still gets in, and the exception reaches
+// the phase.
+BOOST_AUTO_TEST_CASE(sharded_team_section_limit_releases_on_exception) {
+    const auto options = team_options();
+    const auto threads = team_size(options);
+    auto gate = sharded::SectionLimit(1);
+    auto entered = std::atomic<size_t>(0);
+    const auto error = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
+        static_cast<void>(sharded::phase(failure, shard, [&] {
+            gate.run([&] {
+                entered.fetch_add(1);
+                throw std::runtime_error("section failed");
+            });
+        }));
+    });
+    BOOST_TEST(entered.load() == threads);
+    BOOST_REQUIRE(error);
+    BOOST_CHECK_THROW(std::rethrow_exception(error), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(sharded_team_section_limit_admits_at_least_one) {
+    auto gate = sharded::SectionLimit(0);
+    BOOST_TEST(gate.run([] { return 7; }) == 7);
+}
+
 BOOST_AUTO_TEST_CASE(sharded_team_observes_worker_identity) {
     const auto options = team_options();
     const auto threads = team_size(options);

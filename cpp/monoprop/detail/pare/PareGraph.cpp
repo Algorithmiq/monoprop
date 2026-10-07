@@ -40,10 +40,12 @@ inline auto keep_mask_for_block(const std::vector<char> &keep, size_t base, uint
     return mask;
 }
 
-// Filter the cosine set to the kept nodes; {{}, true} means nothing was pruned (replay folds the full set).
-auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes_to_keep) -> std::pair<CosMask, bool> {
+// Filter the cosine set to the kept nodes into `filtered` (contents replaced, capacity reused); true means nothing was
+// pruned (replay folds the full set) and leaves `filtered` unspecified.
+auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes_to_keep, CosMask &filtered) -> bool {
     const size_t n = cos.blocks.size();
-    CosMask filtered;
+    filtered.blocks.clear();
+    filtered.total_count = 0;
     bool preserves = true;
     for (size_t k = 0; k < n; ++k) {
         const auto [base, bits] = cos.blocks[k];
@@ -56,10 +58,7 @@ auto filter_layer_cosine_data(const CosMask &cos, const std::vector<char> &nodes
             filtered.total_count += static_cast<size_t>(std::popcount(kept));
         }
     }
-    if (preserves) {
-        return {{}, true};
-    }
-    return {std::move(filtered), false};
+    return preserves;
 }
 
 // The cos pass (not the D-apply) scales every D target, since cos holds all anticommuting indices, so no
@@ -96,7 +95,7 @@ auto pare_graph_owner(const MPGraph &graph,
                       size_t local_index_count,
                       bool schrodinger,
                       size_t flat_owner,
-                      const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph {
+                      const std::function<void(size_t, CosMask &)> &full_cos_of_layer) -> MPGraph {
     const size_t num_layers = graph.layers();
     const size_t my_rank = flat_owner;
 
@@ -108,6 +107,13 @@ auto pare_graph_owner(const MPGraph &graph,
     }
 
     std::vector<Layer> layers(num_layers);
+    /*
+     * One buffer for every layer's full set and one for its filtered set: growing a fresh vector per layer, interleaved
+     * with the stored sets, extends the owner's heap one reallocation at a time, and at T owners those heap-growth
+     * calls serialize on the process's memory map. Only the stored sets are allocated, each at its exact size.
+     */
+    CosMask full;
+    CosMask filtered;
 
     // Single backward sweep, entirely rank-local: every cross-rank endpoint is force-kept (see
     // mark_cross_rank_endpoints_kept), so nodes_to_keep stays consistent across ranks with no exchange.
@@ -120,10 +126,15 @@ auto pare_graph_owner(const MPGraph &graph,
         // Order is load-bearing for bit-exact pruning: endpoints kept before the cosine filter.
         mark_cross_rank_endpoints_kept(lt, my_rank, nodes_to_keep);
 
-        const CosMask full = full_cos_of_layer(layer_idx);
-        auto [filtered, preserves] = filter_layer_cosine_data(full, nodes_to_keep);
-
-        layers[layer_idx] = preserves ? Layer(layer.shared_core()) : Layer(layer.shared_core(), std::move(filtered));
+        full_cos_of_layer(layer_idx, full);
+        if (filter_layer_cosine_data(full, nodes_to_keep, filtered)) {
+            layers[layer_idx] = Layer(layer.shared_core());
+        }
+        else {
+            layers[layer_idx] = Layer(layer.shared_core(),
+                                      CosMask{.blocks = {filtered.blocks.begin(), filtered.blocks.end()},
+                                              .total_count = filtered.total_count});
+        }
     }
 
     return MPGraph(graph.is_schrodinger(), std::move(layers));
@@ -144,7 +155,7 @@ auto pare_graph(const MPGraph &graph,
                                     local_index_count,
                                     schrodinger,
                                     static_cast<size_t>(mpi::rank(comm)),
-                                    full_cos_of_layer);
+                                    [&full_cos_of_layer](size_t i, CosMask &out) { out = full_cos_of_layer(i); });
 }
 
 } // namespace monoprop

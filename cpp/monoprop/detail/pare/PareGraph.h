@@ -42,14 +42,16 @@ namespace monoprop::detail {
  * \param local_index_count The owner's row count.
  * \param schrodinger       The picture, which fixes the sweep order.
  * \param flat_owner        This owner's flat routing slot, `rank * T + shard`; never derived from a communicator.
- * \param full_cos_of_layer Layer i's full cosine set.
- * \return The pared graph.
+ * \param full_cos_of_layer Writes layer i's full cosine set into its second argument, replacing the contents. The
+ *                          sweep passes the same buffer for every layer, so a writer that reuses its capacity
+ *                          allocates once per owner instead of once per layer.
+ * \return The pared graph. Each stored set is allocated at its exact size.
  */
 monoprop_EXPORT auto pare_graph_owner(const MPGraph &graph,
                                       const VecZ &nonzero_inds,
                                       size_t local_index_count,
                                       bool schrodinger,
                                       size_t flat_owner,
-                                      const std::function<CosMask(size_t)> &full_cos_of_layer) -> MPGraph;
+                                      const std::function<void(size_t, CosMask &)> &full_cos_of_layer) -> MPGraph;
 
 } // namespace monoprop::detail

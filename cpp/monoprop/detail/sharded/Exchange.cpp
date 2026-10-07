@@ -210,10 +210,11 @@ struct PhysicalExchange::State {
     std::vector<int> send_rows;
     std::vector<int> recv_rows;
     // Element offsets into the staging, same shape; derived by the primary's planning, or owner-parallel.
-    // Ints: every offset lies below its side's staging total, which is checked to fit an MPI int before it is used.
-    // Half the size of a size_t table, which the primary rewrites for every round.
-    std::vector<int> send_off;
-    std::vector<int> recv_off;
+    // Eight bytes each, not four: owner-parallel planning has neighbouring owners write neighbouring entries of a
+    // column (place_column()), and at four bytes twice as many owners share each line, so a replay step's packing
+    // stalls on lines the other owners just wrote (+40 % per call on small evaluations at 2 x 48).
+    std::vector<long long> send_off;
+    std::vector<long long> recv_off;
     // Owner-parallel planning: per-owner row totals [shard * max_peers + peer] (one writer each, close_rows()), and
     // per-column send sums [peer * threads + column] (one writer per column, plan_column()).
     std::vector<long long> send_totals;
@@ -304,7 +305,7 @@ struct PhysicalExchange::State {
     // rows contiguously through local pointers (the planning runs serially on the primary, once per round side); only
     // each peer's end is checked, which bounds every partial sum below it.
     auto lay_out(const std::vector<int> &rows,
-                 std::vector<int> &off,
+                 std::vector<long long> &off,
                  std::vector<int> &mpi_counts,
                  std::vector<int> &mpi_displs,
                  bool send_side,
@@ -314,15 +315,18 @@ struct PhysicalExchange::State {
         const size_t n = threads;
         const size_t row_stride = stride;
         const int *const in = rows.data();
-        int *const out = off.data();
+        long long *const out = off.data();
         long long *const start = column_start.data();
         // The rows were just written by T different owners and the offsets were last read by them: request every line
         // of the round's segments at once, so those transfers overlap instead of arriving one row at a time.
-        constexpr size_t line_ints = 64 / sizeof(int);
+        constexpr size_t line_counts = 64 / sizeof(int);
+        constexpr size_t line_offsets = 64 / sizeof(long long);
         const size_t used = peers.size() * n;
         for (size_t row = 0; row < n; ++row) {
-            for (size_t i = 0; i < used; i += line_ints) {
+            for (size_t i = 0; i < used; i += line_counts) {
                 __builtin_prefetch(in + (row * row_stride) + i, 0, 3);
+            }
+            for (size_t i = 0; i < used; i += line_offsets) {
                 __builtin_prefetch(out + (row * row_stride) + i, 1, 3);
             }
         }
@@ -346,9 +350,9 @@ struct PhysicalExchange::State {
                 }
                 for (size_t u = 0; u < n; ++u) {
                     const int *row = in + (u * row_stride) + segment;
-                    int *dst = out + (u * row_stride) + segment;
+                    long long *dst = out + (u * row_stride) + segment;
                     for (size_t t = 0; t < n; ++t) {
-                        dst[t] = static_cast<int>(start[t]);
+                        dst[t] = start[t];
                         start[t] += row[t];
                     }
                 }
@@ -357,9 +361,9 @@ struct PhysicalExchange::State {
                 // Row t (local destination t) holds remote sources in ascending order: already contiguous.
                 for (size_t t = 0; t < n; ++t) {
                     const int *row = in + (t * row_stride) + segment;
-                    int *dst = out + (t * row_stride) + segment;
+                    long long *dst = out + (t * row_stride) + segment;
                     for (size_t su = 0; su < n; ++su) {
-                        dst[su] = static_cast<int>(running);
+                        dst[su] = running;
                         running += row[su];
                     }
                 }
@@ -606,7 +610,7 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
     if (shard >= s.threads) {
         throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
     }
-    // Every partial sum is bounded by its peer's checked total, so it fits an int.
+    // Every partial sum is bounded by its peer's checked total.
     for (size_t k = 0; k < s.peers.size(); ++k) {
         const size_t r = s.peers[k];
         // Send: destination-shard major, so column `shard` starts after the earlier columns; sources ascend within it.
@@ -616,7 +620,7 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
         }
         for (size_t u = 0; u < s.threads; ++u) {
             const size_t i = (u * s.stride) + (k * s.threads) + shard;
-            s.send_off[i] = static_cast<int>(running);
+            s.send_off[i] = running;
             running += s.send_rows[i];
         }
         // Receive: local-destination major, so row `shard` starts after the earlier rows; sources ascend within it.
@@ -626,7 +630,7 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
         }
         for (size_t su = 0; su < s.threads; ++su) {
             const size_t i = (shard * s.stride) + (k * s.threads) + su;
-            s.recv_off[i] = static_cast<int>(running);
+            s.recv_off[i] = running;
             running += s.recv_rows[i];
         }
     }

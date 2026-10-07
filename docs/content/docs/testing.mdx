@@ -127,7 +127,7 @@ Kernel cases rerun under `OMP_THREAD_LIMIT=2` and `OMP_DYNAMIC=TRUE` (`openmp_en
 worksharing helper's reduced-team contract; no sharded operation runs under those settings, which its launch
 contract excludes.
 
-The fixed-team phase primitive (`detail/sharded/Team.h`) has its own fresh-process entries,
+The fixed-team phase primitive (`detail/sharded/Team.h`), with its section limit, has its own fresh-process entries,
 `sharded_team_env_t1`, `_t2`, `_t4` and `_t4_passive` (the last with `OMP_WAIT_POLICY=PASSIVE`). Each
 sets `monoprop_NUM_THREADS` and `OMP_NUM_THREADS` to T with `OMP_DYNAMIC=FALSE`, because the primitive
 assumes the launch supplies exactly T workers. Run them with

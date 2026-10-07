@@ -358,9 +358,11 @@ inline auto accumulate_cos_mask(double *state,
     return loc;
 }
 
+// Fold into `c`, replacing its contents; reuses its capacity.
 template <size_t NumModes>
-inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
-    CosMask c;
+inline auto fold_to_cos_mask_into(const FoldCache<NumModes> &p, CosMask &c) -> void {
+    c.blocks.clear();
+    c.total_count = 0;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
         const uint64_t b = fold_word<NumModes>(p, wi);
         if (b) {
@@ -368,6 +370,12 @@ inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
             c.total_count += static_cast<size_t>(std::popcount(b));
         }
     }
+}
+
+template <size_t NumModes>
+inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
+    CosMask c;
+    fold_to_cos_mask_into<NumModes>(p, c);
     return c;
 }
 // Cos-index count without materialising the blocks; for diagnostics (graph_size).
@@ -390,6 +398,20 @@ inline auto fold_to_indices(const FoldCache<NumModes> &p) -> VecZ {
 }
 
 /*!
+ * \brief A layer's full cosine set (see full_cos_mask()) folded into `out`, replacing its contents and reusing its
+ * capacity: a caller that folds layer after layer into one buffer allocates it once instead of once per layer.
+ */
+template <size_t NumModes>
+auto full_cos_mask_into(const InvertedIndex<NumModes> &inverted_index,
+                        const LayerTraversal &layer,
+                        Basis basis,
+                        CosMask &out) -> void {
+    const auto gen = generator_from_words<NumModes>(layer.generator_words());
+    const auto combined = make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
+    fold_to_cos_mask_into<NumModes>(combined, out);
+}
+
+/*!
  * \brief A layer's full cosine set, folded from `inverted_index` and materialized as a mask; the paring input.
  * \param inverted_index The index of the store the layer's rows belong to.
  * \param layer          The layer; its generator words and scaled_count select the fold.
@@ -397,9 +419,9 @@ inline auto fold_to_indices(const FoldCache<NumModes> &p) -> VecZ {
  */
 template <size_t NumModes>
 auto full_cos_mask(const InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer, Basis basis) -> CosMask {
-    const auto gen = generator_from_words<NumModes>(layer.generator_words());
-    const auto combined = make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
-    return fold_to_cos_mask<NumModes>(combined);
+    CosMask mask;
+    full_cos_mask_into<NumModes>(inverted_index, layer, basis, mask);
+    return mask;
 }
 
 /*!

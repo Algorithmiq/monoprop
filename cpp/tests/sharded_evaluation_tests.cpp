@@ -1370,8 +1370,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_legacy) {
                     // The owner seam at the flat slot reproduces the retained pared graph exactly.
                     const auto &state = *s.shards[t];
                     const auto &index = state.op.inverted_index();
-                    const auto full = [&](size_t i) {
-                        return monoprop::detail::full_cos_mask<kN>(index, live.get_layer_traversal(i), cs.f.basis);
+                    const auto full = [&](size_t i, CosMask &out) {
+                        out = monoprop::detail::full_cos_mask<kN>(index, live.get_layer_traversal(i), cs.f.basis);
                     };
                     const bool pic = cs.f.schrodinger_cutoff.has_value();
                     const auto keep =

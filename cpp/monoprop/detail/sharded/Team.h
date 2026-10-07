@@ -25,6 +25,7 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -243,5 +244,51 @@ auto phase(TeamFailure &failure, std::size_t shard, Fn &&body) noexcept -> bool 
     }
     return failure.checkpoint();
 }
+
+/*!
+ * \brief Admits at most a fixed number of a team's workers into a section at once.
+ *
+ * For memory, not correctness: a section whose transient footprint grows with the number of workers inside it (each
+ * copying a large block, say) is entered by at most `limit` workers, while the others yield until a slot frees. The
+ * order of entry is unspecified, and every worker that calls run() enters exactly once.
+ *
+ * Shared by the team for one section; not copyable or movable. The section must not synchronize with other workers
+ * (no barrier, no wait on another worker's progress), or the workers queued outside it could never be admitted.
+ */
+class SectionLimit {
+public:
+    //! A limit of zero admits one worker at a time.
+    explicit SectionLimit(std::size_t limit) noexcept
+        : free_(static_cast<std::ptrdiff_t>(std::max<std::size_t>(limit, 1))) {}
+    SectionLimit(const SectionLimit &) = delete;
+    auto operator=(const SectionLimit &) -> SectionLimit & = delete;
+
+    /*!
+     * \brief Wait for a slot, run `section` and release the slot, also when `section` throws.
+     * \return What `section` returns.
+     */
+    template <class Fn>
+        requires std::invocable<Fn &>
+    auto run(Fn &&section) -> decltype(auto) {
+        for (auto free = free_.load(std::memory_order_relaxed);;) {
+            if (free > 0) {
+                if (free_.compare_exchange_weak(free, free - 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+                    break;
+                }
+                continue;
+            }
+            std::this_thread::yield();
+            free = free_.load(std::memory_order_relaxed);
+        }
+        struct Release {
+            std::atomic<std::ptrdiff_t> &free;
+            ~Release() { free.fetch_add(1, std::memory_order_release); }
+        } release{free_};
+        return std::invoke(section);
+    }
+
+private:
+    std::atomic<std::ptrdiff_t> free_; // slots not held
+};
 
 } // namespace monoprop::detail::sharded
