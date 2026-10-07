@@ -42,9 +42,9 @@ set -uo pipefail
 PROJ=/projects/EEHPC-DEV-2026D08-260
 SELF="$PROJ/scratch/pr296bench/scaleladder.sh"
 ACCOUNT=eehpc-dev-2026d08-260x
-TREE="$PROJ/src/296-on-bench"
-SO_MD5=${SO_MD5:-1157a5e2b421fb8bd18fc6d16fa39778}
-TREE_SHA=${TREE_SHA:-d0a9e221}
+TREE="$PROJ/src/w2-bench"
+SO_MD5=${SO_MD5:-ce208a744cd5fa2225a6a458b789803b}
+TREE_SHA=${TREE_SHA:-a204dc13}
 
 # A new enum value has to reach EVERY validator. A previous campaign lost 12 cells to a value
 # that reached the summariser and not the driver, so the list is written once, here, and the
@@ -161,7 +161,7 @@ signature of getting it wrong is a 3-second FAILED.
 
 CALIB rows refuse until calibseq.sh measures the atol and its exact term count is pasted here.
 
-Results land in \$PROJ/runs/scale-hubbard-296-$LADDER-r<reps>-N<nodes>/ -- collate from an
+Results land in \$PROJ/runs/scale-hubbard-296ft-$LADDER-r<reps>-N<nodes>/ -- collate from an
 explicit list, never a glob: runs/ is shared and a glob has already swept another session's
 campaign into a report.
 NOTE
@@ -212,7 +212,7 @@ VENV_PATH="$TREE/.venv"
 NAME="${CELL_SPEC%%|*}"
 SELECT="${CELL_SPEC#*|}"
 
-RESULTS="$MONOPROP_RUNS/scale-hubbard-296-${LADDER}-r${REPS}-N${NODES}"
+RESULTS="$MONOPROP_RUNS/scale-hubbard-296ft-${LADDER}-r${REPS}-N${NODES}"
 if [ -e "$RESULTS" ] && [ -n "$(ls -A "$RESULTS" 2>/dev/null)" ]; then
     echo "refusing: $RESULTS already holds results" >&2; exit "$RC_CONFIG"
 fi

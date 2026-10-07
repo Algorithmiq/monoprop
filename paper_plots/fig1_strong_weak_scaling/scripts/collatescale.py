@@ -36,14 +36,14 @@ from collections import defaultdict
 from pathlib import Path
 
 RUNS = Path(os.environ.get("MONOPROP_RUNS", "/projects/EEHPC-DEV-2026D08-260/runs"))
-PINNED_MD5 = "1157a5e2b421fb8bd18fc6d16fa39778"
+PINNED_MD5 = "ce208a744cd5fa2225a6a458b789803b"
 RANKS_PER_NODE, PARTITIONS = 8, 16
 MIN_REPS_FOR_SPREAD = 3  # fewer reps than this is a shakedown, not a measurement
 
 # The two finished ladders were measured by the two-arm driver; only its `port` side is the
 # shipped configuration. They enter the sequence under the names their size actually is.
 LEGACY = {"weak": "weak_97m", "strong": "strong_s5"}
-DIR_RE = re.compile(r"^(ab|scale)-hubbard-296-(.+?)-r(\d+)-N(\d+)$")
+DIR_RE = re.compile(r"^(ab|scale)-hubbard-296ft-(.+?)-r(\d+)-N(\d+)$")
 
 
 def read_tsv(path):

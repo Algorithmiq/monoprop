@@ -1,9 +1,11 @@
 # Paper Fig. 1 — strong and weak scaling of monoprop on Deucalion x86
 
 Publication-ready, self-contained figure package for the node-scaling study of monoprop's Hubbard
-`propagate` operator, measured in the shipped default configuration on branch
-`perf/linear-routing-on-wire` (tip `c2554554`, `_core.so` md5
-`1157a5e2b421fb8bd18fc6d16fa39778`).
+`propagate` operator, measured in the shipped default configuration (`routing=default`) on the
+`w2-bench` tree at commit `a204dc13`, installed `_core.so` md5
+`ce208a744cd5fa2225a6a458b789803b` — the identity every rep re-checks before its time is kept,
+and the one pinned in `scripts/scaleladder.sh` and `scripts/collatescale.py`. The run directories
+are named `*-hubbard-296ft-*`.
 
 ## Result
 
