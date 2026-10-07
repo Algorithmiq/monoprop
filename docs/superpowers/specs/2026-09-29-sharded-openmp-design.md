@@ -264,7 +264,8 @@ pending. Performance observations need actual shard-worker participation and phy
 binary, collected outside normal timed paths. Preserve the allocation-before-import measurement fix.
 
 After pre-removal parity, remove the old runtime and direct hwloc discovery/link/install paths, then rerun affected
-parity and correctness on the final binary. A transitive MPI/OpenMP runtime dependency on hwloc is allowed. Retain
+parity and correctness on the final binary. (Owner waiver, 2026-10-07: pre-removal parity was not demonstrated, and the
+removal may proceed without it; the parity campaign on the final binary carries the unchanged acceptance gates.) A transitive MPI/OpenMP runtime dependency on hwloc is allowed. Retain
 PUBLIC OpenMP linkage on both object/shared targets and installed `find_dependency(OpenMP REQUIRED COMPONENTS CXX)`.
 Qualify wheels, installed consumers, Nix and supported compiler/runtime routes; a platform not run is not passed.
 

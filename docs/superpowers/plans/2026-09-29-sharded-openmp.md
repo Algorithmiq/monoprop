@@ -45,7 +45,9 @@ demonstrated (102 of 250 cells pass all five gates). Four owner-authorized remed
 (recorded after S7's checklist); their kept source changes landed without a new campaign. The owner decided on
 2026-10-07 to keep glibc malloc: no allocator change. A further owner-authorized round (A, 2026-10-07, recorded after
 the remedy rounds) fixed the two largest remaining failure classes and a regression of the remedy rounds. S7 has not
-been re-run on the remedied source, and S8 is not started; both need their own authorization.
+been re-run on the remedied source. On 2026-10-07 the owner waived the S7-pass prerequisite for S8: S8 may proceed
+without a passing pre-removal campaign, and one parity campaign on S8's final binary replaces an S7 re-run. The final
+acceptance gates are unchanged. S8 is not started and needs its own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1075,6 +1077,7 @@ on both arms), approved by the owner on 2026-10-04. Candidate `2ab9b5e`. Artifac
   Keep payload/source order and numerical policy fixed. No hidden backend, new concurrent-index study, smaller workload,
   restored one-store plan or unapproved tuning campaign.
 - [x] Stop on unresolved regressions. A pass permits an owner decision about S8, not an automatic deletion/commit/push.
+  (S7 did not pass; the owner waived the pass prerequisite for S8 on 2026-10-07, see S8.)
   Record any platform/HPC qualification still pending separately from the target's frozen acceptance scope.
 
 ### After S7: remedy rounds (owner-authorized, 2026-10-06/07)
@@ -1206,11 +1209,18 @@ campaign (see S8's checklist), so that the one campaign measures them. Ideas, no
    - `large--gradient-hubb`'s +9.8 MiB was not re-measured. Its construction ends in the same caches phase, so A1 may
      already cover it.
 
-Whether to re-run S7 now, or to run one parity campaign on S8's final binary, needs an owner decision.
+**Owner decision (2026-10-07):** S7 is not re-run. The S7-pass prerequisite for S8 is waived, and one parity campaign
+on S8's final binary (S8's checklist) serves as the parity evidence.
 
 ## Task S8: Remove legacy machinery, qualify the final binary and close out
 
 **Deliverable:** one sharded OpenMP runtime, correct FUNNELED support and verified final packaging without direct hwloc.
+
+**Prerequisite waiver (owner, 2026-10-07):** S7 did not demonstrate strict parity (102 of 250 cells). The owner waived
+the requirement that S7 pass before S8: the removal may proceed on the remedied source, and S8's final parity campaign
+on the final binary is the parity evidence. The waiver relaxes no gate: final acceptance still requires all five
+per-cell median ratios <= 1.00 under the unchanged protocol, and failures are reported as before. S8 itself still needs
+separate authorization.
 
 **Files:** remove `detail/partition/PartitionGroup.h`, `CpuTopology.h`, `CpuTopology.cpp` and obsolete partition CMake
 registration; remove `detail/mpi/{ShmComm,HybridComm,PartitionBarrier}.h` and runtime-specific tests after their
