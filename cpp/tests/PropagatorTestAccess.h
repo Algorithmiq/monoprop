@@ -266,6 +266,9 @@ struct PropagatorTestAccess {
     // The root's actual shard states, for private inspection; never a production accessor.
     static auto shards(const Propagator &p) -> const sharded::Shards<NumModes> & { return p.shards_; }
 
+    // The root's physical rounds, reused across its multi-rank operations.
+    static auto rounds(const Propagator &p) -> const sharded::PhysicalRounds * { return p.rounds_.get(); }
+
     // The (1, T) router the root prepared at construction.
     static auto router(const Propagator &p) -> const routing::Router & { return *p.router_; }
 

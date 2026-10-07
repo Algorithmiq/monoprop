@@ -129,8 +129,11 @@ public:
      */
     template <class Observer = NoCheckpointObserver>
     auto checkpoint(Observer &&after_barrier = {}) noexcept -> bool {
-        // The barrier orders every record() of this phase before any worker's read below.
+        // The barrier orders every record() of this phase before any worker's read below. A one-worker team has nothing
+        // to order and runs without a region (run_team()), so it skips the barrier's runtime call.
+        if (slots_.size() > 1) {
 #pragma omp barrier
+        }
         auto &slot = slots_[static_cast<std::size_t>(omp_get_thread_num())];
         const auto generation = slot.generation++;
         std::invoke(after_barrier, generation);
@@ -178,6 +181,10 @@ concept TeamBody = std::is_nothrow_invocable_v<Fn &, std::size_t, TeamFailure &>
  * TeamFailure. Worker 0 is the primary: the thread that called run_team(). The body is invoked concurrently
  * on the same object, so it must not mutate its own state without synchronization.
  *
+ * A one-worker team opens no region: the caller runs the body directly as worker 0, at its own OpenMP level, and
+ * checkpoints skip their barrier. The outcome is the same as a one-thread region's; only the runtime's per-region and
+ * per-barrier cost, a fixed cost on every phase of a small operation, is saved.
+ *
  * Preconditions, not checked: the caller is outside any OpenMP region, and the launch supplies exactly
  * `options.threads` workers (`OMP_DYNAMIC=FALSE`, no thread limit below the budget). There is no reduced-team
  * fallback; unlike parallel::for_blocks(), correctness requires the full team.
@@ -198,6 +205,10 @@ auto run_team(parallel::Options options, Fn &&body) -> std::exception_ptr {
             std::format("sharded::run_team: the team size must be positive, got {}", options.threads));
     }
     auto failure = TeamFailure(static_cast<std::size_t>(options.threads));
+    if (options.threads == 1) {
+        std::invoke(body, std::size_t{0}, failure);
+        return failure.first_error();
+    }
 #pragma omp parallel num_threads(options.threads)
     {
         std::invoke(body, static_cast<std::size_t>(omp_get_thread_num()), failure);

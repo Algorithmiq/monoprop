@@ -1847,7 +1847,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_owners_do_their_own_work) {
                 for (const auto &v : rec.logs()[t]) {
                     BOOST_TEST(v.worker == static_cast<int>(t));
                     BOOST_TEST(v.team == static_cast<int>(threads));
-                    BOOST_TEST(v.level == 1);
+                    BOOST_TEST(v.level == (threads > 1 ? 1 : 0)); // a one-worker team runs without a region
                 }
                 owners.insert(rec.logs()[t].front().thread);
             }
@@ -1923,7 +1923,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_owners_do_their_own_work) {
         BOOST_TEST(clogs[t].size() == 1 + (3 * first_layers) + (2 * cs.c.gates.size()));
         for (const auto &v : clogs[t]) {
             BOOST_TEST(v.worker == static_cast<int>(t));
-            BOOST_TEST(v.level == 1);
+            BOOST_TEST(v.level == (threads > 1 ? 1 : 0)); // a one-worker team runs without a region
         }
     }
 }

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -60,7 +61,8 @@
  * Transports: pairwise posts an Irecv and an Isend per non-empty leg of each peer (both ends skip the same legs,
  * since receive counts are exchanged or known to match the sender's); collective posts one MPI_Ialltoallv over the
  * whole communicator, which every rank joins even with nothing to send. The count round is always pairwise over the
- * peer set, with fixed T x T int blocks.
+ * peer set: T x T counts per peer, each peer's block in the narrowest of 1, 2 or 4 bytes per count that holds its
+ * largest, so light rounds stay below the transport's eager limit; the receiver reads the width from the received size.
  *
  * MPI ownership: post_counts(), wait_counts(), post() and wait() throw std::logic_error unless they run on OpenMP
  * thread 0 and, in MPI builds, on the thread that initialized MPI. Only the primary of a team, which is the thread
@@ -148,6 +150,7 @@ struct PhysicalWorld {
  */
 class PhysicalExchange {
 public:
+    monoprop_EXPORT
     PhysicalExchange() noexcept; //!< An inert exchange: every operation except destruction and assignment throws.
 
     /*!
@@ -280,6 +283,42 @@ private:
                                                    ExchangeElement element) const -> std::span<const std::byte>;
 
     std::unique_ptr<State> state_; //!< Heap-stable: MPI holds pointers into it once a round is posted.
+};
+
+/*!
+ * \brief The physical rounds of one rank-level owner, kept across its operations.
+ *
+ * Every construction, evaluation and replay call of an owner reuses these rounds instead of allocating its own, so
+ * their staging grows to a high-water mark once, as the legacy communicator's staging does. Rounds allocated per call
+ * free their staging at every call's end: each such free of a large mmapped block raised glibc's dynamic mmap threshold
+ * a step further, and the later per-gate transient allocations then stayed resident in fragmented thread arenas.
+ *
+ * One owner uses its rounds from one operation at a time, on its calling thread; copies of an owner get their own empty
+ * set, never a shared one. A round is created on first use, and recreated if the geometry it was created for changed.
+ */
+class PhysicalRounds {
+public:
+    //! The round kinds; rounds of different kinds may be in flight in the same operation.
+    enum class Kind : std::uint8_t {
+        queries,       //!< Construction queries (u64 words).
+        graph_answers, //!< Graph construction answers (u32 term indices).
+        fused_answers, //!< Propagation answers (double coefficients).
+        replay,        //!< Replay endpoints of evaluation, partial contraction and informed construction (double).
+    };
+
+    /*!
+     * \brief The round of `kind` for `threads` owners per process over the ranks of `world`.
+     * \throws As PhysicalExchange's constructor, when the round has to be created.
+     */
+    monoprop_EXPORT auto get(Kind kind, const PhysicalWorld &world, size_t threads) -> PhysicalExchange &;
+
+    //! The round of `kind` as it is, inert (threads() == 0) if never used; for inspection, never creates one.
+    [[nodiscard]] auto peek(Kind kind) const -> const PhysicalExchange & {
+        return rounds_.at(static_cast<size_t>(kind));
+    }
+
+private:
+    std::array<PhysicalExchange, 4> rounds_; //!< Indexed by Kind; inert until first use.
 };
 
 } // namespace monoprop::detail::sharded

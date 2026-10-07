@@ -209,7 +209,8 @@ auto caller_work(const Visit &v) -> bool {
                || v.work == static_cast<int>(sharded::RootWork::export_block));
 }
 
-// Every owner visit of shard t ran on worker t of a level-1 team of T workers; caller work ran outside any team.
+// Every owner visit of shard t ran on worker t of a level-1 team of T workers (a one-worker team runs on the caller,
+// at level 0, without a region); caller work ran outside any team.
 auto check_owner_visits(const std::vector<Visit> &visits, size_t team, const char *what) -> void {
     BOOST_TEST_CONTEXT(what) {
         BOOST_TEST(!visits.empty());
@@ -221,7 +222,7 @@ auto check_owner_visits(const std::vector<Visit> &visits, size_t team, const cha
             }
             BOOST_TEST(static_cast<size_t>(v.worker) == v.shard);
             BOOST_TEST(static_cast<size_t>(v.team) == team);
-            BOOST_TEST(v.level == 1);
+            BOOST_TEST(v.level == (team > 1 ? 1 : 0));
             threads.insert(v.thread);
         }
         BOOST_TEST(threads.size() == team);
@@ -1118,6 +1119,31 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners, *boost::unit_t
     build(*self);
     BOOST_TEST(mpi::allreduce_sum<size_t>(world->size(), mpi::Comm(MPI_COMM_WORLD)) == self->size());
     BOOST_TEST(world->graph_layers() == self->graph_layers());
+}
+
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_operations_reuse_the_owners_rounds,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    using Kind = sharded::PhysicalRounds::Kind;
+    const auto &data = lih();
+    const size_t team = launch_team();
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
+    const sharded::PhysicalRounds *rounds = Access::rounds(*world);
+    BOOST_TEST_REQUIRE(rounds != nullptr);
+    BOOST_TEST(rounds->peek(Kind::queries).threads() == 0U);
+    // Graph construction creates the owner's query and answer rounds; evaluation, its replay round; later calls reuse
+    // them: the same objects, not rounds of their own.
+    build(*world);
+    BOOST_TEST(rounds->peek(Kind::queries).threads() == team);
+    BOOST_TEST(rounds->peek(Kind::graph_answers).threads() == team);
+    const sharded::PhysicalExchange *queries = &rounds->peek(Kind::queries);
+    static_cast<void>(world->expectation_value(data.parameters));
+    BOOST_TEST(rounds->peek(Kind::replay).threads() == team);
+    BOOST_TEST(rounds->peek(Kind::queries).live() == 0);
+    BOOST_TEST(&rounds->peek(Kind::queries) == queries);
+    // A copy never shares them.
+    auto copy = std::make_unique<MP>(*world);
+    BOOST_TEST(Access::rounds(*copy) != rounds);
+    BOOST_TEST(Access::rounds(*copy)->peek(Kind::queries).threads() == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_matches_one_process, *boost::unit_test::precondition(has_routable_ranks)) {

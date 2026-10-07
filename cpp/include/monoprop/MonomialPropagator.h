@@ -23,6 +23,7 @@
 #include <format>
 #include <functional>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -713,6 +714,9 @@ private:
     // This rank among comm_'s P, with the communicator-agreed replay transport; read once, on the caller, at
     // construction. Copies keep it: they share comm_.
     detail::sharded::PhysicalWorld world_{};
+    // This owner's physical rounds, reused by every multi-rank operation (construction, evaluation, replay) and by its
+    // functionals, so their staging persists across calls. Never shared: a copy starts with its own empty set.
+    std::unique_ptr<detail::sharded::PhysicalRounds> rounds_ = std::make_unique<detail::sharded::PhysicalRounds>();
     // Test-only: null in production, set only through PropagatorTestAccess. Copies inherit it.
     const detail::sharded::RootObserver *observer_ = nullptr;
     // The T shard states of this rank, shard t at flat owner t; one per worker of the captured budget. Declared

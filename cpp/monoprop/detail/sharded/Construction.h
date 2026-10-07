@@ -209,6 +209,8 @@ struct ConstructionContext {
     bool schrodinger = false;            //!< Picture: forward gate order and state coefficients when true.
     //! This process among the router's ranks; read on the caller (PhysicalWorld::of()) before the call.
     PhysicalWorld world{};
+    //! The owner's physical rounds, reused across its calls; null allocates rounds for this call only.
+    PhysicalRounds *rounds = nullptr;
 };
 
 /*!
@@ -581,21 +583,26 @@ auto run_gates(parallel::Options options,
     // Physical rounds, only when there are other processes; allocated on the caller and alive through the join.
     const PhysicalWorld &world = ctx.world;
     const bool multirank = world.ranks > 1;
-    std::optional<PhysicalExchange> queries;
-    std::optional<PhysicalExchange> answers;
-    std::optional<PhysicalExchange> replay;
+    // The owner's rounds when it supplies them (ctx.rounds), so their staging persists across calls; otherwise this
+    // call's own.
+    PhysicalRounds own_rounds;
+    PhysicalExchange *queries = nullptr;
+    PhysicalExchange *answers = nullptr;
+    PhysicalExchange *replay = nullptr;
     if (multirank) {
-        queries.emplace(world, threads, ExchangeElement::u64, kShardedQueryTag);
-        answers.emplace(world, threads, exchange_element_of<Response>, kShardedAnswerTag);
+        PhysicalRounds &rounds = ctx.rounds != nullptr ? *ctx.rounds : own_rounds;
+        using Kind = PhysicalRounds::Kind;
+        queries = &rounds.get(Kind::queries, world, threads);
+        answers = &rounds.get(Fused ? Kind::fused_answers : Kind::graph_answers, world, threads);
         if constexpr (Informed) {
-            replay.emplace(world, threads, ExchangeElement::f64, kShardedReplayTag);
+            replay = &rounds.get(Kind::replay, world, threads);
         }
     }
     const routing::Router &router = ctx.router;
     // Construction's transport follows its peer plan: pairwise for the linear peer, collective under splitmix.
     const auto transport = router.is_linear() ? ExchangeTransport::pairwise : ExchangeTransport::collective;
     const ReplayRound replay_round{
-        .round = replay ? &*replay : nullptr,
+        .round = replay,
         .transport = world.replay_pairwise ? ExchangeTransport::pairwise : ExchangeTransport::collective};
     if constexpr (Informed) {
         seed_job.remote = replay_round;
@@ -1026,7 +1033,7 @@ auto run_gates(parallel::Options options,
                         const EndpointBoard board{.owners = replay_pairs,
                                                   .buffer = 0,
                                                   .first_local = first_local,
-                                                  .remote = replay ? &*replay : nullptr};
+                                                  .remote = replay};
                         forward_finish(*frame.coeffs,
                                        LayerTraversal(*frame.work->core),
                                        schrodinger ? -build_angle : build_angle,
@@ -1052,7 +1059,7 @@ auto run_gates(parallel::Options options,
     });
     // A request still live after a failed join belongs to a round some peer may never complete: hand the failure to
     // the distributed policy now, before any request owner is destroyed (see the header comment).
-    const auto live = [](const std::optional<PhysicalExchange> &round) { return round && round->live() != 0; };
+    const auto live = [](const PhysicalExchange *round) { return round != nullptr && round->live() != 0; };
     if (error && (live(queries) || live(answers) || live(replay))) {
         mpi::operation_failed(world.comm, error);
     }

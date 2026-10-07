@@ -194,8 +194,8 @@ BOOST_AUTO_TEST_CASE(sharded_team_observes_worker_identity) {
             BOOST_TEST(slot->calls.load() == 1, "shard " << shard);
             BOOST_TEST(slot->worker == static_cast<int>(shard), "shard " << shard);
             BOOST_TEST(slot->team == options.threads, "shard " << shard);
-            // One structured region even at T = 1, where the inactive region leaves omp_in_parallel() false.
-            BOOST_TEST(slot->level == caller_level + 1, "shard " << shard);
+            // One structured region for a team; a one-worker team runs on the caller, without a region.
+            BOOST_TEST(slot->level == caller_level + (threads > 1 ? 1 : 0), "shard " << shard);
             BOOST_TEST(slot->active_level == (threads > 1 ? 1 : 0), "shard " << shard);
             BOOST_TEST((slot->thread == in_body[shard].thread), "shard " << shard);
         }
@@ -377,7 +377,7 @@ BOOST_AUTO_TEST_CASE(sharded_team_single_worker_failure_is_returned_after_join) 
     BOOST_TEST(observation.calls.load() == 1);
     BOOST_TEST(observation.worker == 0);
     BOOST_TEST(observation.team == 1);
-    BOOST_TEST(observation.level == caller_level + 1);
+    BOOST_TEST(observation.level == caller_level); // no region for a one-worker team
     BOOST_TEST((observation.thread == caller));
     BOOST_TEST(decision == 0);
     BOOST_TEST(later_phase == 0);

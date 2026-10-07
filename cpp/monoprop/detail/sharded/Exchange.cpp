@@ -15,11 +15,16 @@
 #include "monoprop/detail/sharded/Exchange.h"
 
 #include <omp.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
 #include <format>
 #include <limits>
+#include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -54,6 +59,69 @@ auto element_datatype(ExchangeElement element) -> MPI_Datatype {
 }
 #endif
 
+/*
+ * Staging memory straight from the kernel. A round's staging is large and grows with the operator; returned to
+ * malloc, every outgrown block would raise glibc's dynamic mmap threshold, after which the owners' per-gate transients
+ * stay resident in fragmented thread arenas instead of being unmapped on free. Mapping it directly leaves malloc's
+ * heuristics alone. Whole pages, zero-filled by the kernel.
+ */
+template <class T>
+struct MappedAllocator {
+    using value_type = T;
+
+    MappedAllocator() noexcept = default;
+    template <class U>
+    MappedAllocator(const MappedAllocator<U> & /*other*/) noexcept {}
+
+    [[nodiscard]] static auto bytes_for(size_t n) -> size_t {
+        static const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+        if (n > (std::numeric_limits<size_t>::max() - page) / sizeof(T)) {
+            throw std::bad_alloc();
+        }
+        return ((n * sizeof(T)) + page - 1) / page * page;
+    }
+
+    [[nodiscard]] auto allocate(size_t n) -> T * {
+        if (n == 0) {
+            return nullptr;
+        }
+        void *p = ::mmap(nullptr, bytes_for(n), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            throw std::bad_alloc();
+        }
+        return static_cast<T *>(p);
+    }
+
+    auto deallocate(T *p, size_t n) noexcept -> void {
+        if (p != nullptr) {
+            ::munmap(p, bytes_for(n));
+        }
+    }
+
+    template <class U>
+    auto operator==(const MappedAllocator<U> & /*other*/) const noexcept -> bool {
+        return true;
+    }
+};
+
+// AddressSanitizer neither poisons nor tracks memory mapped outside its allocator (no redzones, and its pointer-pair
+// checks reject end - begin of such a block), so a sanitized build stages through malloc, where ASan checks every
+// access; the mapped staging is a release-build memory-behaviour choice, not a correctness one.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr bool sanitized_addresses = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr bool sanitized_addresses = true;
+#else
+constexpr bool sanitized_addresses = false;
+#endif
+#else
+constexpr bool sanitized_addresses = false;
+#endif
+using Staging =
+    std::vector<std::byte,
+                std::conditional_t<sanitized_addresses, std::allocator<std::byte>, MappedAllocator<std::byte>>>;
+
 // A wide running total narrowed to an MPI int, or a length_error naming what overflowed.
 auto checked_int(long long value, const char *what) -> int {
     if (value < 0 || value > std::numeric_limits<int>::max()) {
@@ -61,6 +129,47 @@ auto checked_int(long long value, const char *what) -> int {
     }
     return static_cast<int>(value);
 }
+
+#ifdef monoprop_ENABLE_MPI
+// Write `counts` (non-negative) to `wire` in the narrowest of 1, 2 or 4 unsigned bytes per count that holds the
+// largest, little-endian as the host stores it; return that width.
+auto encode_counts(std::span<const int> counts, std::byte *wire) -> size_t {
+    int largest = 0;
+    for (const int count : counts) {
+        largest = std::max(largest, count);
+    }
+    const auto store = [&]<class U>(U /*tag*/) {
+        for (size_t i = 0; i < counts.size(); ++i) {
+            const auto value = static_cast<U>(counts[i]);
+            std::memcpy(wire + (i * sizeof(U)), &value, sizeof(U));
+        }
+        return sizeof(U);
+    };
+    if (largest <= std::numeric_limits<std::uint8_t>::max()) {
+        return store(std::uint8_t{});
+    }
+    if (largest <= std::numeric_limits<std::uint16_t>::max()) {
+        return store(std::uint16_t{});
+    }
+    return store(std::uint32_t{});
+}
+
+// Count `i` of a block written by encode_counts() with `width` bytes per count.
+auto decode_count(const std::byte *wire, size_t i, size_t width) -> int {
+    if (width == 1) {
+        return static_cast<int>(std::to_integer<std::uint8_t>(wire[i]));
+    }
+    if (width == 2) {
+        std::uint16_t value = 0;
+        std::memcpy(&value, wire + (i * 2), 2);
+        return static_cast<int>(value);
+    }
+    std::uint32_t value = 0;
+    std::memcpy(&value, wire + (i * 4), 4);
+    return static_cast<int>(value);
+}
+
+#endif
 
 // MPI ownership: the primary of the team, which is the thread that entered it and initialized MPI.
 auto require_primary(const char *what) -> void {
@@ -101,13 +210,16 @@ struct PhysicalExchange::State {
     std::vector<int> send_rows;
     std::vector<int> recv_rows;
     // Element offsets into the staging, same shape; derived by the primary's planning, or owner-parallel.
-    std::vector<size_t> send_off;
-    std::vector<size_t> recv_off;
+    // Ints: every offset lies below its side's staging total, which is checked to fit an MPI int before it is used.
+    // Half the size of a size_t table, which the primary rewrites for every round.
+    std::vector<int> send_off;
+    std::vector<int> recv_off;
     // Owner-parallel planning: per-owner row totals [shard * max_peers + peer] (one writer each, close_rows()), and
     // per-column send sums [peer * threads + column] (one writer per column, plan_column()).
     std::vector<long long> send_totals;
     std::vector<long long> recv_totals;
     std::vector<long long> column_sums;
+    std::vector<long long> column_start; // lay_out() scratch: one entry per remote shard
 
     std::vector<size_t> peers;
     ExchangeTransport transport = ExchangeTransport::pairwise;
@@ -119,14 +231,19 @@ struct PhysicalExchange::State {
     std::vector<int> mpi_recv_counts;
     std::vector<int> mpi_recv_displs;
     // High-water-mark staging, never resized while a request may point into it.
-    std::vector<std::byte> send_stage;
-    std::vector<std::byte> recv_stage;
-    // Count round: [peer][dest shard][source shard] ints in both directions.
+    Staging send_stage;
+    Staging recv_stage;
+    // Count round: [peer][dest shard][source shard] counts. count_send holds them as ints; on the wire each peer's
+    // block travels in the narrowest unsigned width (1, 2 or 4 bytes) that holds its largest count, so the small
+    // blocks of a light round stay below the transport's eager limit instead of paying a rendezvous; the receiver
+    // reads the width from the received size.
     std::vector<int> count_send;
-    std::vector<int> count_recv;
+    std::vector<std::byte> count_wire_send;
+    std::vector<std::byte> count_wire_recv;
 #ifdef monoprop_ENABLE_MPI
     std::vector<MPI_Request> requests;
     std::vector<MPI_Request> count_requests;
+    std::vector<MPI_Status> count_statuses;
 #endif
     int posted = 0;
     int count_posted = 0;
@@ -183,27 +300,68 @@ struct PhysicalExchange::State {
     }
 
     // Offsets of one side from its rows: the message of peer k is destination-shard major, source-shard minor. On
-    // the send side the row owner is the source; on the receive side it is the destination.
+    // the send side the row owner is the source (minor), on the receive side the destination (major). Both passes walk
+    // rows contiguously through local pointers (the planning runs serially on the primary, once per round side); only
+    // each peer's end is checked, which bounds every partial sum below it.
     auto lay_out(const std::vector<int> &rows,
-                 std::vector<size_t> &off,
+                 std::vector<int> &off,
                  std::vector<int> &mpi_counts,
                  std::vector<int> &mpi_displs,
                  bool send_side,
                  const char *what) -> size_t {
         std::ranges::fill(mpi_counts, 0);
         std::ranges::fill(mpi_displs, 0);
+        const size_t n = threads;
+        const size_t row_stride = stride;
+        const int *const in = rows.data();
+        int *const out = off.data();
+        long long *const start = column_start.data();
+        // The rows were just written by T different owners and the offsets were last read by them: request every line
+        // of the round's segments at once, so those transfers overlap instead of arriving one row at a time.
+        constexpr size_t line_ints = 64 / sizeof(int);
+        const size_t used = peers.size() * n;
+        for (size_t row = 0; row < n; ++row) {
+            for (size_t i = 0; i < used; i += line_ints) {
+                __builtin_prefetch(in + (row * row_stride) + i, 0, 3);
+                __builtin_prefetch(out + (row * row_stride) + i, 1, 3);
+            }
+        }
         long long running = 0;
         for (size_t k = 0; k < peers.size(); ++k) {
             const long long base = running;
-            for (size_t major = 0; major < threads; ++major) {
-                for (size_t minor = 0; minor < threads; ++minor) {
-                    // Send: major = remote destination t, minor = local source u, row u. Receive: major = local
-                    // destination t, minor = remote source su, row t.
-                    const size_t row = send_side ? minor : major;
-                    const size_t other = send_side ? major : minor;
-                    const size_t i = (row * stride) + (k * threads) + other;
-                    off[i] = static_cast<size_t>(checked_int(running, what));
-                    running += rows[i];
+            const size_t segment = k * n;
+            if (send_side) {
+                // Column t (remote destination t) starts after the earlier columns; local sources ascend within it.
+                std::fill_n(start, n, 0LL);
+                for (size_t u = 0; u < n; ++u) {
+                    const int *row = in + (u * row_stride) + segment;
+                    for (size_t t = 0; t < n; ++t) {
+                        start[t] += row[t];
+                    }
+                }
+                for (size_t t = 0; t < n; ++t) {
+                    const long long width = start[t];
+                    start[t] = running;
+                    running += width;
+                }
+                for (size_t u = 0; u < n; ++u) {
+                    const int *row = in + (u * row_stride) + segment;
+                    int *dst = out + (u * row_stride) + segment;
+                    for (size_t t = 0; t < n; ++t) {
+                        dst[t] = static_cast<int>(start[t]);
+                        start[t] += row[t];
+                    }
+                }
+            }
+            else {
+                // Row t (local destination t) holds remote sources in ascending order: already contiguous.
+                for (size_t t = 0; t < n; ++t) {
+                    const int *row = in + (t * row_stride) + segment;
+                    int *dst = out + (t * row_stride) + segment;
+                    for (size_t su = 0; su < n; ++su) {
+                        dst[su] = static_cast<int>(running);
+                        running += row[su];
+                    }
                 }
             }
             const size_t r = peers[k];
@@ -213,7 +371,7 @@ struct PhysicalExchange::State {
         return static_cast<size_t>(checked_int(running, what));
     }
 
-    auto size_stage(std::vector<std::byte> &stage, size_t elements) const -> void {
+    auto size_stage(Staging &stage, size_t elements) const -> void {
         // At least one element, so MPI never sees a null buffer.
         const size_t need = std::max<size_t>(elements, 1) * elem;
         if (stage.size() < need) {
@@ -260,16 +418,19 @@ PhysicalExchange::PhysicalExchange(const PhysicalWorld &world, size_t threads, E
     s.send_totals.assign(threads * s.max_peers, 0);
     s.recv_totals.assign(threads * s.max_peers, 0);
     s.column_sums.assign(s.max_peers * threads, 0);
+    s.column_start.assign(threads, 0);
     s.mpi_send_counts.assign(world.ranks, 0);
     s.mpi_send_displs.assign(world.ranks, 0);
     s.mpi_recv_counts.assign(world.ranks, 0);
     s.mpi_recv_displs.assign(world.ranks, 0);
     s.count_send.assign(s.max_peers * threads * threads, 0);
-    s.count_recv.assign(s.max_peers * threads * threads, 0);
+    s.count_wire_send.assign(s.max_peers * threads * threads * sizeof(std::uint32_t), std::byte{0});
+    s.count_wire_recv.assign(s.max_peers * threads * threads * sizeof(std::uint32_t), std::byte{0});
 #ifdef monoprop_ENABLE_MPI
     // Sized once: MPI holds pointers into these while requests are live.
     s.requests.assign(2 * std::max<size_t>(s.max_peers, 1), MPI_REQUEST_NULL);
     s.count_requests.assign(2 * std::max<size_t>(s.max_peers, 1), MPI_REQUEST_NULL);
+    s.count_statuses.resize(s.count_requests.size());
 #endif
 }
 
@@ -455,7 +616,7 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
         }
         for (size_t u = 0; u < s.threads; ++u) {
             const size_t i = (u * s.stride) + (k * s.threads) + shard;
-            s.send_off[i] = static_cast<size_t>(running);
+            s.send_off[i] = static_cast<int>(running);
             running += s.send_rows[i];
         }
         // Receive: local-destination major, so row `shard` starts after the earlier rows; sources ascend within it.
@@ -465,7 +626,7 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
         }
         for (size_t su = 0; su < s.threads; ++su) {
             const size_t i = (shard * s.stride) + (k * s.threads) + su;
-            s.recv_off[i] = static_cast<size_t>(running);
+            s.recv_off[i] = static_cast<int>(running);
             running += s.recv_rows[i];
         }
     }
@@ -479,11 +640,14 @@ auto PhysicalExchange::post_counts() -> void {
         throw std::logic_error("sharded exchange: post_counts() before plan_send()");
     }
     s.require_idle("post_counts");
-    const size_t t2 = s.threads * s.threads;
+    const size_t shards = s.threads;
+    const size_t t2 = shards * shards;
     for (size_t k = 0; k < s.peers.size(); ++k) {
-        for (size_t t = 0; t < s.threads; ++t) {
-            for (size_t u = 0; u < s.threads; ++u) {
-                s.count_send[(k * t2) + (t * s.threads) + u] = s.send_rows[(u * s.stride) + (k * s.threads) + t];
+        int *const block = s.count_send.data() + (k * t2);
+        for (size_t u = 0; u < shards; ++u) {
+            const int *row = s.send_rows.data() + (u * s.stride) + (k * shards);
+            for (size_t t = 0; t < shards; ++t) {
+                block[(t * shards) + u] = row[t];
             }
         }
     }
@@ -491,20 +655,24 @@ auto PhysicalExchange::post_counts() -> void {
         return;
     }
 #ifdef monoprop_ENABLE_MPI
-    const int block = checked_int(static_cast<long long>(t2), "count block");
+    const size_t capacity = t2 * sizeof(std::uint32_t);
+    const int receivable = checked_int(static_cast<long long>(capacity), "count block");
     int n = 0;
     for (size_t k = 0; k < s.peers.size(); ++k) {
         const int peer = static_cast<int>(s.peers[k]);
-        MPI_Irecv(s.count_recv.data() + (k * t2),
-                  block,
-                  MPI_INT,
+        const int *const counts = s.count_send.data() + (k * t2);
+        std::byte *const wire = s.count_wire_send.data() + (k * capacity);
+        const size_t width = encode_counts(std::span<const int>(counts, t2), wire);
+        MPI_Irecv(s.count_wire_recv.data() + (k * capacity),
+                  receivable,
+                  MPI_BYTE,
                   peer,
                   kShardedCountTag,
                   s.comm.mpi,
                   &s.count_requests[static_cast<size_t>(n++)]);
-        MPI_Isend(s.count_send.data() + (k * t2),
-                  block,
-                  MPI_INT,
+        MPI_Isend(wire,
+                  checked_int(static_cast<long long>(t2 * width), "count block"),
+                  MPI_BYTE,
                   peer,
                   kShardedCountTag,
                   s.comm.mpi,
@@ -520,26 +688,44 @@ auto PhysicalExchange::wait_counts() -> void {
     require_primary("wait_counts");
     require_state(state_.get());
     State &s = *state_;
+    const size_t n = s.threads;
+    const size_t t2 = n * n;
 #ifdef monoprop_ENABLE_MPI
-    if (s.count_posted != 0) {
-        MPI_Waitall(s.count_posted, s.count_requests.data(), MPI_STATUSES_IGNORE);
+    const bool waited = s.count_posted != 0;
+    if (waited) {
+        MPI_Waitall(s.count_posted, s.count_requests.data(), s.count_statuses.data());
         s.count_posted = 0;
     }
-#endif
-    // Peer k's block holds [my destination t][its source su].
-    const size_t t2 = s.threads * s.threads;
-    for (size_t k = 0; k < s.peers.size(); ++k) {
-        for (size_t t = 0; t < s.threads; ++t) {
-            for (size_t su = 0; su < s.threads; ++su) {
-                const int count = s.count_recv[(k * t2) + (t * s.threads) + su];
-                if (count < 0) {
-                    throw std::length_error(
-                        std::format("sharded exchange: rank {} announced a negative count {}", s.peers[k], count));
-                }
-                s.recv_rows[(t * s.stride) + (k * s.threads) + su] = count;
+    // Peer k's block holds [my destination t][its source su]: row t of the receive table. Its receive request is
+    // number 2k (post_counts() posts the receive before the send, peer by peer).
+    for (size_t k = 0; waited && k < s.peers.size(); ++k) {
+        int bytes = 0;
+        MPI_Get_count(&s.count_statuses[2 * k], MPI_BYTE, &bytes);
+        const std::byte *const wire = s.count_wire_recv.data() + (k * t2 * sizeof(std::uint32_t));
+        const size_t width = static_cast<size_t>(bytes) / t2;
+        if (bytes < 0 || width * t2 != static_cast<size_t>(bytes) || (width != 1 && width != 2 && width != 4)) {
+            throw std::length_error(std::format("sharded exchange: rank {} sent a {}-byte count block for {} counts",
+                                                s.peers[k],
+                                                bytes,
+                                                t2));
+        }
+        int smallest = 0;
+        for (size_t t = 0; t < n; ++t) {
+            int *row = s.recv_rows.data() + (t * s.stride) + (k * n);
+            for (size_t su = 0; su < n; ++su) {
+                const int count = decode_count(wire, (t * n) + su, width);
+                smallest = std::min(smallest, count);
+                row[su] = count;
             }
         }
+        if (smallest < 0) {
+            throw std::length_error(
+                std::format("sharded exchange: rank {} announced a negative count {}", s.peers[k], smallest));
+        }
     }
+#else
+    static_cast<void>(t2);
+#endif
 }
 
 auto PhysicalExchange::plan_recv() -> void {
@@ -628,6 +814,27 @@ auto PhysicalExchange::wait() -> void {
 #endif
 }
 
+auto PhysicalRounds::get(Kind kind, const PhysicalWorld &world, size_t threads) -> PhysicalExchange & {
+    PhysicalExchange &round = rounds_.at(static_cast<size_t>(kind));
+    if (round.threads() != threads || round.ranks() != world.ranks || round.rank() != world.rank) {
+        switch (kind) {
+            case Kind::queries:
+                round = PhysicalExchange(world, threads, ExchangeElement::u64, kShardedQueryTag);
+                break;
+            case Kind::graph_answers:
+                round = PhysicalExchange(world, threads, ExchangeElement::u32, kShardedAnswerTag);
+                break;
+            case Kind::fused_answers:
+                round = PhysicalExchange(world, threads, ExchangeElement::f64, kShardedAnswerTag);
+                break;
+            case Kind::replay:
+                round = PhysicalExchange(world, threads, ExchangeElement::f64, kShardedReplayTag);
+                break;
+        }
+    }
+    return round;
+}
+
 auto PhysicalExchange::send_bytes_(size_t shard, size_t peer, size_t dest, ExchangeElement element)
     -> std::span<std::byte> {
     require_state(state_.get());
@@ -639,7 +846,8 @@ auto PhysicalExchange::send_bytes_(size_t shard, size_t peer, size_t dest, Excha
     if (peer >= s.peers.size()) {
         throw std::out_of_range(std::format("sharded exchange: peer {} of a {}-peer round", peer, s.peers.size()));
     }
-    return {s.send_stage.data() + (s.send_off[i] * s.elem), static_cast<size_t>(s.send_rows[i]) * s.elem};
+    return {s.send_stage.data() + (static_cast<size_t>(s.send_off[i]) * s.elem),
+            static_cast<size_t>(s.send_rows[i]) * s.elem};
 }
 
 auto PhysicalExchange::recv_bytes_(size_t shard, size_t peer, size_t source, ExchangeElement element) const
@@ -653,7 +861,8 @@ auto PhysicalExchange::recv_bytes_(size_t shard, size_t peer, size_t source, Exc
     if (peer >= s.peers.size()) {
         throw std::out_of_range(std::format("sharded exchange: peer {} of a {}-peer round", peer, s.peers.size()));
     }
-    return {s.recv_stage.data() + (s.recv_off[i] * s.elem), static_cast<size_t>(s.recv_rows[i]) * s.elem};
+    return {s.recv_stage.data() + (static_cast<size_t>(s.recv_off[i]) * s.elem),
+            static_cast<size_t>(s.recv_rows[i]) * s.elem};
 }
 
 } // namespace monoprop::detail::sharded

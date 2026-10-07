@@ -436,7 +436,8 @@ monoprop_EXPORT auto evaluate_shards(std::span<const EvalRequest> requests,
                                      parallel::Options options,
                                      bool gradient,
                                      const EvaluationObserver *observer = nullptr,
-                                     const PhysicalWorld &world = {}) -> EvaluationOutcome;
+                                     const PhysicalWorld &world = {},
+                                     PhysicalRounds *rounds = nullptr) -> EvaluationOutcome;
 
 /*!
  * \brief The reference fold of per-shard scalars: `0.0 + c[0] + c[1] + ...`, in ascending shard order.
@@ -518,7 +519,8 @@ monoprop_EXPORT auto replay_shards(std::span<const ReplayRequest> requests,
                                    std::span<const CosCallbacks> callbacks,
                                    parallel::Options options,
                                    const EvaluationObserver *observer = nullptr,
-                                   const PhysicalWorld &world = {}) -> ReplayOutcome;
+                                   const PhysicalWorld &world = {},
+                                   PhysicalRounds *rounds = nullptr) -> ReplayOutcome;
 
 // --- Retained functionals ---------------------------------------------------------------------------------------
 

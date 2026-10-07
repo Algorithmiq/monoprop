@@ -349,7 +349,8 @@ auto MonomialPropagator<NumModes>::construction_context_() const -> detail::shar
                                                           .upper_atol = upper_atol_,
                                                           .basis = basis_,
                                                           .schrodinger = schrodinger_,
-                                                          .world = world_};
+                                                          .world = world_,
+                                                          .rounds = rounds_.get()};
 }
 
 template <size_t NumModes>
@@ -595,8 +596,13 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
     // Views of the retained snapshots and `params`, built for this call only. A failure up to and including the
     // evaluator's own argument checks happens before its team and mutates nothing.
     const auto requests = retained.requests(params);
-    auto outcome =
-        detail::sharded::evaluate_shards(requests, retained.callbacks, retained.options, gradient, observer_, world_);
+    auto outcome = detail::sharded::evaluate_shards(requests,
+                                                    retained.callbacks,
+                                                    retained.options,
+                                                    gradient,
+                                                    observer_,
+                                                    world_,
+                                                    rounds_.get());
     // The team has run: owners warmed their lazy caches and per-thread scratch.
     if (mutation_started != nullptr) {
         *mutation_started = true;
@@ -740,7 +746,8 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
         callbacks.push_back(
             detail::make_cos_callbacks<NumModes>(state.op.inverted_index(), view, basis_, detail::parallel::Options{}));
     }
-    auto outcome = detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_, world_);
+    auto outcome =
+        detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_, world_, rounds_.get());
     if (outcome.error) {
         std::rethrow_exception(outcome.error);
     }

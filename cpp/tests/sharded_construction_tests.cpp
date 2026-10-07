@@ -1305,7 +1305,8 @@ auto check_owner_participation(const std::vector<ShardLog> &logs, size_t gates, 
             bool owner_work = true;
             bool one_team = true;
             for (const auto &v : visits) {
-                one_team = one_team && v.team == static_cast<int>(threads) && v.level == 1;
+                // One region for a team; a one-worker team runs on the caller, without one.
+                one_team = one_team && v.team == static_cast<int>(threads) && v.level == (threads > 1 ? 1 : 0);
                 if (v.step != sharded::kNoStep) {
                     steps.insert(v.step);
                 }
@@ -1326,7 +1327,7 @@ auto check_owner_participation(const std::vector<ShardLog> &logs, size_t gates, 
                 const int expected = (opaque && call.kind == KernelRange::scan) ? 0 : static_cast<int>(t);
                 for (size_t r = 0; r < call.worker.size(); ++r) {
                     BOOST_TEST(call.worker[r] == expected, "shard " << t << " kind " << static_cast<int>(call.kind));
-                    BOOST_TEST(call.level[r] == 1);
+                    BOOST_TEST(call.level[r] == (threads > 1 ? 1 : 0)); // a one-worker team runs without a region
                 }
             }
         }

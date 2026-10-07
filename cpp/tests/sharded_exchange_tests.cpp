@@ -439,6 +439,46 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
     BOOST_TEST(big.live() == 0);
 }
 
+BOOST_AUTO_TEST_CASE(sharded_exchange_owner_rounds_persist_by_kind) {
+    using Kind = sharded::PhysicalRounds::Kind;
+    const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = 0, .ranks = 2};
+    sharded::PhysicalRounds rounds;
+    // Nothing exists before first use.
+    for (const auto kind : {Kind::queries, Kind::graph_answers, Kind::fused_answers, Kind::replay}) {
+        BOOST_TEST(rounds.peek(kind).threads() == 0U);
+    }
+    PhysicalExchange &queries = rounds.get(Kind::queries, w, 2);
+    // The same round on every later call with the same geometry: its staging persists.
+    BOOST_TEST(&rounds.get(Kind::queries, w, 2) == &queries);
+    BOOST_TEST(&rounds.peek(Kind::queries) == &queries);
+    BOOST_TEST(queries.threads() == 2U);
+    BOOST_TEST(rounds.peek(Kind::graph_answers).threads() == 0U); // kinds are separate rounds
+    // Each kind carries its payload type.
+    const std::vector<size_t> peer{1};
+    for (const auto kind : {Kind::queries, Kind::graph_answers, Kind::fused_answers, Kind::replay}) {
+        PhysicalExchange &round = rounds.get(kind, w, 2);
+        round.reset_rows(0);
+        round.reset_rows(1);
+        round.set_send_count(0, 0, 0, 1);
+        round.plan_send(peer, ExchangeTransport::pairwise);
+        const bool u64 = kind == Kind::queries;
+        const bool u32 = kind == Kind::graph_answers;
+        const auto accepts = [&](auto element) {
+            try {
+                return round.send_block<decltype(element)>(0, 0, 0).size() == 1U;
+            }
+            catch (const std::logic_error &) {
+                return false;
+            }
+        };
+        BOOST_TEST(accepts(uint64_t{}) == u64);
+        BOOST_TEST(accepts(uint32_t{}) == u32);
+        BOOST_TEST(accepts(double{}) == (!u64 && !u32));
+    }
+    // A different geometry gets a fresh round.
+    BOOST_TEST(rounds.get(Kind::queries, w, 3).threads() == 3U);
+}
+
 BOOST_AUTO_TEST_CASE(sharded_exchange_payload_totals_must_fit_mpi_counts) {
     // Per-peer totals are prefix sums of int counts; a sum past INT_MAX is refused by plan_send, before posting.
     const auto w = world();
@@ -502,6 +542,22 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_moves_every_block_to_its_owner, *boost::un
     check_rounds<double>(every_variant(peers));
     check_rounds<uint64_t>(every_variant(peers));
     check_rounds<uint32_t>(every_variant(peers));
+}
+
+BOOST_AUTO_TEST_CASE(sharded_exchange_count_blocks_of_every_width_arrive,
+                     *boost::unit_test::precondition(has_two_ranks)) {
+    // Counts of at most 5, 300 and 100000 travel as 1-, 2- and 4-byte counts; a later light round after a heavy one
+    // shrinks the block again. The receiver must read each block's width from its size.
+    const auto peers = all_other_ranks(world());
+    std::vector<RoundSpec> specs;
+    size_t round = 0;
+    for (const size_t scale : {size_t{1}, size_t{60}, size_t{20000}, size_t{1}, size_t{60}}) {
+        for (const auto transport : {ExchangeTransport::pairwise, ExchangeTransport::collective}) {
+            specs.push_back(
+                {.peers = peers, .transport = transport, .counts_known = false, .round = round++, .scale = scale});
+        }
+    }
+    check_rounds<uint32_t>(specs);
 }
 
 BOOST_AUTO_TEST_CASE(sharded_exchange_sparse_peer_round, *boost::unit_test::precondition(has_even_ranks)) {

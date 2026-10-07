@@ -33,6 +33,25 @@ namespace monoprop::detail::sharded {
 
 namespace {
 
+// derive_exchange_layout() for one owner's layer, skipping its slot walk when the layer pairs no row of this owner with
+// another owner (always so with one owner): every count and displacement is then zero, as derive_exchange_layout()
+// computes them. Each replay step publishes one, so at small sizes the walk is a visible fixed cost per step.
+auto publication_layout(const PackedCrossRankStorage &cross_rank,
+                        size_t flat_owner,
+                        int scale,
+                        LayerExchangeLayout &out,
+                        const char *what) -> void {
+    const auto &occupied = cross_rank.occupied;
+    if (occupied.empty() || (occupied.size() == 1 && static_cast<size_t>(occupied.front().slot) == flat_owner)) {
+        const size_t ranks = cross_rank.rank_count();
+        out.counts.assign(ranks, 0);
+        out.displs.assign(ranks, 0);
+        out.total_count = 0;
+        return;
+    }
+    derive_exchange_layout(cross_rank, flat_owner, scale, out, what);
+}
+
 // Within-shard kernels run serially: the team's parallelism is across owners.
 constexpr parallel::Options kSerial{};
 
@@ -306,7 +325,7 @@ struct EvaluationRun {
                 replay::snapshot_self_recv_op(f.op, layer, f.snap);
             }
             // Scale 2: each rotation endpoint carries both the state and the op value.
-            derive_exchange_layout(layer.cross_rank(), flat, 2, out.layout, "Layer derivative exchange");
+            publication_layout(layer.cross_rank(), flat, 2, out.layout, "Layer derivative exchange");
             out.values.resize(out.layout.total_count);
             replay::pack_derivative_payload(f.snap, layer, flat, [&out](size_t rank) {
                 return out.values.data() + out.layout.displs[rank];
@@ -510,12 +529,14 @@ auto check_replay_job(const ForwardReplayJob &job) -> void {
     }
 }
 
-// The replay round of an evaluation or a partial contraction in `world`, or none at P = 1.
-auto replay_round_for(const PhysicalWorld &world, size_t threads) -> std::optional<PhysicalExchange> {
+// The replay round of an evaluation or a partial contraction in `world`, or none at P = 1: the owner's own (`rounds`),
+// which persists across its calls, or else one for this call in `local`.
+auto replay_round_for(const PhysicalWorld &world, size_t threads, PhysicalRounds *rounds, PhysicalRounds &local)
+    -> PhysicalExchange * {
     if (world.ranks <= 1) {
-        return std::nullopt;
+        return nullptr;
     }
-    return std::optional<PhysicalExchange>(std::in_place, world, threads, ExchangeElement::f64, kShardedReplayTag);
+    return &(rounds != nullptr ? *rounds : local).get(PhysicalRounds::Kind::replay, world, threads);
 }
 
 auto transport_for(const PhysicalWorld &world) -> ExchangeTransport {
@@ -523,10 +544,9 @@ auto transport_for(const PhysicalWorld &world) -> ExchangeTransport {
 }
 
 // After a failed join with requests still live, the distributed policy runs before the round is destroyed.
-auto hand_off_live_failure(const std::exception_ptr &error,
-                           const std::optional<PhysicalExchange> &round,
-                           const PhysicalWorld &world) -> void {
-    if (error && round && round->live() != 0) {
+auto hand_off_live_failure(const std::exception_ptr &error, const PhysicalExchange *round, const PhysicalWorld &world)
+    -> void {
+    if (error && round != nullptr && round->live() != 0) {
         mpi::operation_failed(world.comm, error);
     }
 }
@@ -589,7 +609,7 @@ auto forward_publish(const VecD &coeffs,
                      ForwardScratch &scratch,
                      PublishedEndpoints &out) -> void {
     replay::snapshot_self_sources(coeffs, layer, scratch.self_sources);
-    derive_exchange_layout(layer.cross_rank(), flat_owner, 1, out.layout, "Layer exchange");
+    publication_layout(layer.cross_rank(), flat_owner, 1, out.layout, "Layer exchange");
     out.values.resize(out.layout.total_count);
     replay::pack_evolution_payload(coeffs, layer, flat_owner, [&out](size_t rank) {
         return out.values.data() + out.layout.displs[rank];
@@ -644,7 +664,8 @@ auto evaluate_shards(std::span<const EvalRequest> requests,
                      parallel::Options options,
                      bool gradient,
                      const EvaluationObserver *observer,
-                     const PhysicalWorld &world) -> EvaluationOutcome {
+                     const PhysicalWorld &world,
+                     PhysicalRounds *rounds) -> EvaluationOutcome {
     const EvaluationPlan plan = plan_evaluation(requests, callbacks, options, gradient);
     const size_t threads = requests.size();
     EvaluationOutcome outcome{.error = {}, .contributions = std::vector<double>(threads, 0.0), .gradients = {}};
@@ -652,14 +673,15 @@ auto evaluate_shards(std::span<const EvalRequest> requests,
         outcome.gradients.resize(threads);
     }
     // Caller-owned, so its requests and staging outlive the team.
-    auto round = replay_round_for(world, threads);
+    PhysicalRounds local;
+    PhysicalExchange *const round = replay_round_for(world, threads, rounds, local);
     EvaluationRun run{.requests = requests,
                       .callbacks = callbacks,
                       .plan = plan,
                       .gradient = gradient,
                       .observer = observer,
                       .first_local = world.rank * threads,
-                      .remote = {.round = round ? &*round : nullptr, .transport = transport_for(world)},
+                      .remote = {.round = round, .transport = transport_for(world)},
                       .frames = std::vector<OwnerFrame *>(threads, nullptr),
                       .pairs = std::vector<const PublishedPair *>(threads, nullptr),
                       .contributions = &outcome.contributions,
@@ -737,16 +759,18 @@ auto replay_shards(std::span<const ReplayRequest> requests,
                    std::span<const CosCallbacks> callbacks,
                    parallel::Options options,
                    const EvaluationObserver *observer,
-                   const PhysicalWorld &world) -> ReplayOutcome {
+                   const PhysicalWorld &world,
+                   PhysicalRounds *rounds) -> ReplayOutcome {
     check_team("replay_shards", options, requests.size(), callbacks.size());
     const size_t threads = requests.size();
-    auto round = replay_round_for(world, threads);
+    PhysicalRounds local;
+    PhysicalExchange *const round = replay_round_for(world, threads, rounds, local);
     ForwardReplayJob job{
         .params = mapped_params,
         .first_local = world.rank * threads,
         .owner_parallel = std::ranges::all_of(callbacks, [](const CosCallbacks &cos) { return cos.owner_parallel; }),
         .owners = std::vector<ForwardReplayOwner>(threads),
-        .remote = {.round = round ? &*round : nullptr, .transport = transport_for(world)}};
+        .remote = {.round = round, .transport = transport_for(world)}};
     for (size_t t = 0; t < threads; ++t) {
         job.owners[t].graph = &requests[t].graph;
         job.owners[t].callbacks = &callbacks[t];
