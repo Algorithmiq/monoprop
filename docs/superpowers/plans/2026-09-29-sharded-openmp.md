@@ -40,7 +40,11 @@ recorded under S5 for later. S6 was separately authorized, implemented and accep
 (outcome under Task S6). Bounded diagnostics and one optimization followed before S7 (recorded after S6's checklist):
 a re-check of the deviating checkpoint cells, B-replay (owner-parallel replay layout, landed) and B-memory (staging
 change rejected). The owner decided to run S7 with the remaining MPI-off memory cells recorded as known deviations.
-S7 needs its own authorization.
+S7 was separately authorized and ran on 2026-10-05/06 (outcome under Task S7): evidence complete, strict parity not
+demonstrated (102 of 250 cells pass all five gates). Four owner-authorized remedy rounds followed on 2026-10-06/07
+(recorded after S7's checklist); their kept source changes landed without a new campaign. The owner decided on
+2026-10-07 to keep glibc malloc: no allocator change. S7 has not been re-run on the remedied source, and S8 is not
+started; both need their own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1032,26 +1036,98 @@ owner. Artifacts: `/home/ubuntu/s6-artifacts/checkpoint-c/`, `b-replay/` and `b-
 **Files:** ordinarily no production changes. Use `tools/benchmark-rank-local-openmp.py`, the two frozen JSON inputs,
 `tests/test_rank_local_openmp_benchmark.py` and existing bench-tools. Put campaign artifacts outside the checkout.
 
-- [ ] Obtain campaign approval with a fresh budget. Reverify frozen file/index identities, baseline binary/environment
+**Outcome:** campaign run under option B (Task 1's archived `s01..s05` as the authoritative baseline, fresh repeats
+on both arms), approved by the owner on 2026-10-04. Candidate `2ab9b5e`. Artifacts, runner, ledger and report:
+`/home/ubuntu/s7-artifacts/` (`campaign/reports/REPORT.md`, `cells.json`, `known-deviations.json`; `LEDGER.md`,
+`HANDOFF.md`), outside the checkout. **S7 campaign complete; strict parity not demonstrated.**
+
+- Conduct: 6920 launches, all `ok`, in 12.33 h of the 17 h budget; comparison 2.15 h of 3 h; preserved trees
+  byte-identical before and after.
+- Evidence complete: all 250 cells compared; numerics equal in all 250; every required window exact; the 196 cells
+  whose first five pairs failed a ratio received the prescribed five repeats.
+- Verdict (unchanged comparator, exit 1): **102 pass, 148 fail**; 90 memory only, 45 runtime only, 13 both.
+  - MPI-off 1x96: 48 fail; 144 (cell, gate) pairs are the known deviation KD-MPIOFF-MEM (+0.7–13.9 MiB within the
+    pre-registered bound); 38 cells fail on nothing else.
+  - `large--propagate-hubb` has a size-dependent memory regression at every geometry, up to +609 MiB (1.14) on the
+    2x48 construction peak sum.
+  - MPI 1x96, never measured before: 126 small memory failures (median +1.1 MiB).
+  - Runtime: mostly tiny cold calls at MPI 1x1 (up to 2.08, +0.02–0.06 ms) and 2x48 (1.20–1.34), and
+    `reference-pared--pare-construct-schr` (1.38–1.50).
+  - Multi-rank routing cells (3x32, 4x24 splitmix and linear): all 12 pass.
+
+- [x] Obtain campaign approval with a fresh budget. Reverify frozen file/index identities, baseline binary/environment
   preservation and the actual current target allocation. c8a.metal-24xl previously had one NUMA domain and 96 physical
   cores; verify rather than infer. No SMT-worker campaign or automatic provisioning.
-- [ ] Before timings, complete the candidate's compiler/build correctness matrix, full retained-map export checks and
+- [x] Before timings, complete the candidate's compiler/build correctness matrix, full retained-map export checks and
   actual-worker/placement evidence. Assert actual R/M build identity. Both arms use the fixed global workloads and
   original timing boundaries; candidate selection needs more than its requested thread count.
-- [ ] Follow historical Task 1's existing `observe`, `validate`, `compare` schema and distinct timed/construction
+- [x] Follow historical Task 1's existing `observe`, `validate`, `compare` schema and distinct timed/construction
   processes. Collect five fresh pairs per required cell, then the specified five more for failing cells. Keep all
   samples and numerical validation. Frozen baseline data cannot be overwritten/recollected to improve a comparison;
   any additional prescribed observations are separately identified records under the approved protocol.
-- [ ] Check all five per-cell median ratios <=1.00. Reject missing cells in both arms, duplicated/reused runs, extra or
+- [x] Check all five per-cell median ratios <=1.00. Reject missing cells in both arms, duplicated/reused runs, extra or
   mismatched sample identities, mismatched provenance, absent validation and inexact required memory windows. Report
   operation, construction and diagnostic outer peaks separately; historical residual peak growth grants no allowance.
-- [ ] If a gate fails, profile only with separately authorized time/RAM. The permitted refactor-preserving remedies are
+- [x] If a gate fails, profile only with separately authorized time/RAM. The permitted refactor-preserving remedies are
   ownership/buffer reuse, redundant copies, packing/layout overhead, barrier placement, cache locality and phase
   balance.
   Keep payload/source order and numerical policy fixed. No hidden backend, new concurrent-index study, smaller workload,
   restored one-store plan or unapproved tuning campaign.
-- [ ] Stop on unresolved regressions. A pass permits an owner decision about S8, not an automatic deletion/commit/push.
+- [x] Stop on unresolved regressions. A pass permits an owner decision about S8, not an automatic deletion/commit/push.
   Record any platform/HPC qualification still pending separately from the target's frozen acceptance scope.
+
+### After S7: remedy rounds (owner-authorized, 2026-10-06/07)
+
+Four bounded rounds under a written scope (`/home/ubuntu/s7-artifacts/remedy/SCOPE.md`; findings `FINDINGS-A.md` to
+`FINDINGS-E.md`): profile first, keep a change only if measured better, full verification, stop for the owner. The
+measurements use the figure-1 workloads (60-site Majorana and Pauli circuits), a profiling harness and S7 cells. They
+are diagnostics, not S7 evidence. All measurements ran with glibc malloc.
+
+- **Per-gate overhead on splitmix routing.** At 4x24 splitmix every gate runs construction's query and answer rounds,
+  and the primary's serial round layout cost +35–40 µs per gate over the baseline. Kept:
+  - a contiguous layout with local pointers and one total check per peer;
+  - `int` offsets;
+  - count blocks in the narrowest of 1, 2 or 4 bytes per count, since a 4 KiB block at T = 32 crossed Open MPI's
+    shared-memory eager limit;
+  - prefetch of the round tables before the layout passes.
+
+  Result: 4x24 +3.7 µs per gate, 3x32 −20 µs.
+- **Majorana MPI 2x48 memory.** The candidate peaked at 1.155 of the baseline (10.0 GiB vs 8.7 GiB). Cause: frees of
+  exchange staging raised glibc's dynamic mmap threshold, and the owners' per-gate transients then stayed in thread
+  arenas. Kept:
+  - `PhysicalRounds` held by the propagator and reused across operations;
+  - `mmap`-backed staging (`std::allocator` under ASan).
+
+  Result: final peak 0.984, every layer at or below the baseline.
+- **T = 1 fast path.** A one-worker team runs its body on the caller, with no OpenMP region and no barriers; a
+  publication only to self skips the exchange layout. Result: the MPI 1x1 per-call excess shrank by 60–75 % (energy
+  Pauli 35 → 17.7 µs against 13.4). It is not closed: still 1.17–1.32×.
+- **Rejected, patches kept outside the checkout:**
+  - Announced-count answer round, which drops two construction checkpoints. Tried three times; it is no better at any
+    geometry and up to +70 µs per gate worse at 4x24. The cost is cache-line traffic on the per-gate count tables,
+    not the number of checkpoints.
+  - Owner-parallel query placement.
+  - Partner staging into an owner-held buffer: not implemented. A no-staging probe bounds any saving at 1.1–2.0 MiB,
+    while the MPI-off excess is mostly code pages (+3.4–4.8 MiB file-backed) and graph-building memory.
+- **Figure-1 harness on the round-3 source:** whole-run time 0.80–1.00 of the baseline, every peak 0.970–0.998,
+  numerics identical.
+- **Allocators** (`LD_PRELOAD`, 108 runs, numerics equal).
+  - mimalloc 3.2.8: peaks 1.35–1.81× the glibc baseline in every arm.
+  - jemalloc 5.3.0: removes the S7 candidate's 2x48 excess (0.997 of its same-allocator baseline, confirming the
+    diagnosis); peaks 1.03–1.12× and time 0.79–0.99× the glibc baseline.
+  - Remedied source with glibc: lowest peaks of any configuration (0.984–0.996), time 0.82–0.97.
+  - **Owner decision (2026-10-07):** keep glibc; no allocator change, in the library or in the recommended deployment.
+- **Verification of the landed source:**
+  - four-build matrix: r-off 495, r-on 491, m-off 525 + 29 MPI, m-on 521 + 33 MPI;
+  - pytest T = 1/2/4 (T = 1 with the legacy bitwise comparisons) and 2-rank T = 1/2;
+  - GCC ASan/UBSan 521 + 33 and Clang/libomp/Archer TSan 138 + 16, without reports.
+- **Not re-measured and still open:** none of the 250 S7 cells was re-run on this source. Open items:
+  - the `large--propagate-hubb` memory regression and `reference-pared--pare-construct-schr` runtime, which no round
+    targeted;
+  - the MPI 1x1 residual;
+  - the MPI-off code-page overhead.
+
+  Whether to re-run S7 needs an owner decision.
 
 ## Task S8: Remove legacy machinery, qualify the final binary and close out
 
