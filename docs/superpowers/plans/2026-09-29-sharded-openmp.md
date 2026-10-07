@@ -1175,10 +1175,11 @@ only if measured better, full verification, stop for the owner. Budget: 90 min o
   | MPI-off reference gradient-hubb (1.10) | first call 1.11, repeat calls 0.99 |
   | MPI 1x1 reference construction (1.005–1.032) | `propagate-hubb` 1.037, `build-graph-schr` 1.013 |
 
-### Still open, for a later round
+### Still open: optimization points for the end of S8
 
-None of these blocks correctness; each is a parity-gate miss that S7's protocol would still report. Ideas, not
-measured yet:
+None of these blocks correctness; each is a parity-gate miss that S7's protocol would still report. Owner decision
+(2026-10-07): take them up at the end of S8, after the legacy machinery is removed and before S8's final parity
+campaign (see S8's checklist), so that the one campaign measures them. Ideas, not measured yet:
 
 1. **First-call costs of small evaluations** (MPI 1x1 and 2x48, and MPI-off reference gradient-hubb's first call).
    Repeat calls are close to the baseline, so this is one-off cost on a process's first functional.
@@ -1239,6 +1240,11 @@ rg -n 'hwloc|pkg.?config|SHARDED_OPENMP_PROTOTYPE' \
   pending.
 - [ ] Rebuild the final candidate, rerun full R/M C++/Python tests, installed consumers, failure drivers, stress and
   qualified sanitizers. Check ordinary aggregate/export semantics and raw-accessor rejection again on the final binary.
+- [ ] Take up the open optimization points recorded after S7 ("Still open: optimization points for the end of S8"):
+  first-call costs of small evaluations, MPI 1x1 single-thread construction, and the constant memory overheads
+  (re-measured on the post-removal binary first). Same rules as the post-S7 rounds: a separately approved
+  measurement budget, profile before changing, keep a change only if measured better, full verification of what is
+  kept. Points that stay open are reported with the final acceptance evidence.
 - [ ] Obtain any required final-measurement budget and rerun affected parity on the final binary. If removal changes
   measured code/configuration, all affected frozen cells need new candidate evidence; do not relabel pre-removal hashes
   as final. Retain the baseline and original formal evidence.
