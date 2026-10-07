@@ -43,8 +43,9 @@ change rejected). The owner decided to run S7 with the remaining MPI-off memory 
 S7 was separately authorized and ran on 2026-10-05/06 (outcome under Task S7): evidence complete, strict parity not
 demonstrated (102 of 250 cells pass all five gates). Four owner-authorized remedy rounds followed on 2026-10-06/07
 (recorded after S7's checklist); their kept source changes landed without a new campaign. The owner decided on
-2026-10-07 to keep glibc malloc: no allocator change. S7 has not been re-run on the remedied source, and S8 is not
-started; both need their own authorization.
+2026-10-07 to keep glibc malloc: no allocator change. A further owner-authorized round (A, 2026-10-07, recorded after
+the remedy rounds) fixed the two largest remaining failure classes and a regression of the remedy rounds. S7 has not
+been re-run on the remedied source, and S8 is not started; both need their own authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1087,7 +1088,7 @@ are diagnostics, not S7 evidence. All measurements ran with glibc malloc.
 - **Per-gate overhead on splitmix routing.** At 4x24 splitmix every gate runs construction's query and answer rounds,
   and the primary's serial round layout cost +35–40 µs per gate over the baseline. Kept:
   - a contiguous layout with local pointers and one total check per peer;
-  - `int` offsets;
+  - `int` offsets (reverted in round A: they caused a regression in owner-parallel replay planning);
   - count blocks in the narrowest of 1, 2 or 4 bytes per count, since a 4 KiB block at T = 32 crossed Open MPI's
     shared-memory eager limit;
   - prefetch of the round tables before the layout passes.
@@ -1122,13 +1123,89 @@ are diagnostics, not S7 evidence. All measurements ran with glibc malloc.
   - four-build matrix: r-off 495, r-on 491, m-off 525 + 29 MPI, m-on 521 + 33 MPI;
   - pytest T = 1/2/4 (T = 1 with the legacy bitwise comparisons) and 2-rank T = 1/2;
   - GCC ASan/UBSan 521 + 33 and Clang/libomp/Archer TSan 138 + 16, without reports.
-- **Not re-measured and still open:** none of the 250 S7 cells was re-run on this source. Open items:
-  - the `large--propagate-hubb` memory regression and `reference-pared--pare-construct-schr` runtime, which no round
-    targeted;
-  - the MPI 1x1 residual;
-  - the MPI-off code-page overhead.
+- **Left open after these rounds:** the `large--propagate-hubb` memory regression and the
+  `reference-pared--pare-construct-schr` runtime (both addressed in round A, below), the MPI 1x1 residual and the
+  MPI-off code-page overhead.
 
-  Whether to re-run S7 needs an owner decision.
+### After S7: round A (owner-authorized, 2026-10-07)
+
+A bounded round on the two largest remaining failure classes, under a written scope: profile first, keep a change
+only if measured better, full verification, stop for the owner. Budget: 90 min of measurement launches (65 used),
+24 GiB per process group under a watchdog. glibc malloc on every arm. Diagnostic harnesses outside the checkout
+(`/home/ubuntu/s7-artifacts/round-a/`). The numbers are diagnostics on S7's workloads and launches, not S7 evidence.
+
+- **A1, `large--propagate-hubb` memory, kept.**
+  - The remaining excess (about +2.5 % at every geometry) was a transient at the end of every `propagate` call: all T
+    owners copied their coefficient and state vectors down to size (`shrink_to_fit` in `initialize_caches`) at the
+    same moment, each copy holding old and new blocks. The legacy partitions reach that point staggered.
+  - Now at most max(4, T/8) owners copy at once (`SectionLimit` in `detail/sharded/Team.h`); copies under 256 KiB
+    skip the limit. `MPOperator::initialize_caches` is split into `warm_caches` and `release_slack`, and the legacy
+    path still calls both.
+  - Result: peaks 0.946 (MPI-off 1x96), 0.948 (MPI 1x96), 0.962–0.965 (MPI 2x48) of the baseline, against S7's
+    1.03–1.15. Step time unchanged.
+- **B1, `reference-pared--pare-construct-schr` runtime, kept.**
+  - The excess was all in the first call of the process. It made 6,389 thread-arena heap growths (`mprotect`, each
+    taking the process's memory-map lock) against the baseline's 273, almost all from paring building every layer's
+    full cosine mask by reallocation.
+  - `pare_graph_owner` now takes a provider that writes into a buffer, reuses one full-mask and one filtered buffer
+    per owner, and stores each kept mask at its exact size (`full_cos_mask_into`, `fold_to_cos_mask_into`). Masks are
+    bit-identical.
+  - Result: first call 0.997–1.07 of the baseline (S7 1.09–1.50), warm calls 0.87–0.95.
+- **C1, regression from the remedy rounds, fixed.**
+  - The remedy rounds' 4-byte exchange offsets doubled false sharing in owner-parallel replay planning: neighbouring
+    owners write neighbouring entries of a column in `place_column`, and every replay step's packing reads them. Tiny
+    evaluation at MPI 2x48 went from 1.31 (S7 candidate) to 1.78 of the baseline.
+  - Offsets are 8 bytes again, with separate prefetch strides for counts and offsets.
+  - Result: 1.06–1.15; splitmix construction unaffected (0.968 and 1.002 of the 4-byte build).
+- **Verification:**
+  - four-build matrix: r-off 499, r-on 495, m-off 529 + 29 MPI, m-on 525 + 33 MPI;
+  - pytest T = 1/2/4 (T = 1 with the legacy bitwise comparisons) and 2-rank T = 1/2;
+  - GCC ASan/UBSan 525 + 33 and Clang/libomp/Archer TSan 141 + 16 (including the new section-limit cases at
+    T = 1/2/4/4-passive), without reports.
+  - New tests: the section limit (bound, release on exception, minimum one) and paring into one reused buffer; a
+    mutant of each is detected.
+- **Diagnostic re-measure of S7 failure classes on this source** (representative cells, vs the baseline):
+
+  | Class (S7) | Now |
+  | --- | --- |
+  | `large--propagate-hubb` memory (1.03–1.14) | 0.946–0.965 |
+  | `pare-construct-schr` runtime (1.09–1.50) | first call 0.997–1.07, warm 0.87–0.95 |
+  | MPI 1x1 tiny evaluation (1.39–2.08) | repeat calls 1.04–1.36, first calls up to 1.39 |
+  | MPI 2x48 tiny evaluation (1.16–1.34) | repeat calls 1.06–1.15, first calls up to 1.52 |
+  | MPI-off reference gradient-hubb (1.10) | first call 1.11, repeat calls 0.99 |
+  | MPI 1x1 reference construction (1.005–1.032) | `propagate-hubb` 1.037, `build-graph-schr` 1.013 |
+
+### Still open, for a later round
+
+None of these blocks correctness; each is a parity-gate miss that S7's protocol would still report. Ideas, not
+measured yet:
+
+1. **First-call costs of small evaluations** (MPI 1x1 and 2x48, and MPI-off reference gradient-hubb's first call).
+   Repeat calls are close to the baseline, so this is one-off cost on a process's first functional.
+   - Profile it as B1 was profiled: minor faults, `mprotect`/`brk` counts and RSS per call, and attribution of the
+     heap growths. B1 found exactly this mechanism, fresh thread arenas growing a page range at a time, in another
+     first-call path.
+   - Likely sources are per-owner evaluation state allocated on first use: the thread-local owner frames, the
+     records reserved per functional, the partner staging. Candidate fixes: hold that scratch in the propagator, as
+     the physical rounds already are, sized once per graph instead of per functional; allocate each owner's scratch
+     as one block; or warm it in the graph build's last phase, where the heap is already grown.
+   - At MPI 1x1 the remaining repeat-call excess (+1–5 µs) is the per-step phase machinery
+     (publication, scaling, checkpoints). A T = 1 evaluation loop shaped like the legacy serial loop would remove it.
+2. **MPI 1x1 single-thread construction, 1–4 % slower** on calls of seconds (`propagate-hubb` 1.037).
+   - Compute-bound, so a per-gate cost difference. Compare perf profiles of legacy and sharded at T = 1 on symbol
+     builds of both; the frozen baseline binary is stripped, so build the baseline commit with symbols.
+   - Suspects: the sharded gate's phase sequence still runs at T = 1 for cross-owner work that is always empty there
+     (inbox and query/answer setup, frame handling), and differences in the fused apply path. Folding the per-gate
+     phases into one when T = 1, and skipping empty cross-owner work, would be the first things to try.
+3. **Constant memory overheads** (MPI-off +2–8 MiB on tiny and reference cells, MPI 1x96 median +1.1 MiB).
+   - Mostly file-backed code pages: the extension carries both runtimes until S8. Re-measure after S8's removal of
+     the legacy machinery before anything else.
+   - The rest is anonymous memory from graph building at T = 96 (per-owner frames and inbox tables). It could be
+     released at the end of the build or allocated on first need.
+   - `large--gradient-hubb`'s +9.8 MiB was not re-measured. Its construction ends in the same caches phase, so A1 may
+     already cover it.
+
+Whether to re-run S7 now, or to run one parity campaign on S8's final binary, needs an owner decision.
 
 ## Task S8: Remove legacy machinery, qualify the final binary and close out
 
