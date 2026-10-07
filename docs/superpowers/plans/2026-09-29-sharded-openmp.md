@@ -1078,8 +1078,9 @@ on both arms), approved by the owner on 2026-10-04. Candidate `2ab9b5e`. Artifac
 
 ### After S7: remedy rounds (owner-authorized, 2026-10-06/07)
 
-Four bounded rounds under a written scope (`/home/ubuntu/s7-artifacts/remedy/SCOPE.md`; findings `FINDINGS-A.md` to
-`FINDINGS-E.md`): profile first, keep a change only if measured better, full verification, stop for the owner. The
+Four bounded rounds under a written scope: profile first, keep a change only if measured better, full verification,
+stop for the owner. The owner had the round artifacts (scope, findings, patches, harnesses and results) deleted on
+2026-10-07 to free disk space. This section and `/home/ubuntu/s7-artifacts/LEDGER.md` are the remaining record. The
 measurements use the figure-1 workloads (60-site Majorana and Pauli circuits), a profiling harness and S7 cells. They
 are diagnostics, not S7 evidence. All measurements ran with glibc malloc.
 
@@ -1102,7 +1103,7 @@ are diagnostics, not S7 evidence. All measurements ran with glibc malloc.
 - **T = 1 fast path.** A one-worker team runs its body on the caller, with no OpenMP region and no barriers; a
   publication only to self skips the exchange layout. Result: the MPI 1x1 per-call excess shrank by 60–75 % (energy
   Pauli 35 → 17.7 µs against 13.4). It is not closed: still 1.17–1.32×.
-- **Rejected, patches kept outside the checkout:**
+- **Rejected (patches deleted with the round artifacts):**
   - Announced-count answer round, which drops two construction checkpoints. Tried three times; it is no better at any
     geometry and up to +70 µs per gate worse at 4x24. The cost is cache-line traffic on the per-gate count tables,
     not the number of checkpoints.
