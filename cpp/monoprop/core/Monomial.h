@@ -72,8 +72,8 @@ namespace detail {
 template <size_t NumModes>
 inline constexpr auto kZeroWordMix = [] {
     std::array<uint64_t, Monomial<NumModes>::num_words()> mixes{};
-    for (size_t i = 0; i < mixes.size(); ++i) {
-        mixes[i] = SplitmixHash<Monomial<NumModes>>::mix(static_cast<uint64_t>(i));
+    for (uint64_t i = 0; auto &mix : mixes) {
+        mix = SplitmixHash<Monomial<NumModes>>::mix(i++);
     }
     return mixes;
 }();

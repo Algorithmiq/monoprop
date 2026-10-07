@@ -50,7 +50,7 @@ template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     Monomial<NumModes> bs;
     for (const auto &bit_loc : arr) {
-        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
+        bs.set((2 * NumModes) - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
     }
     return bs;
 }
@@ -146,16 +146,18 @@ template <size_t NumModes>
         const uint64_t pair_mask = even_mask & active_mask;
         const uint64_t first_pair = active_word & pair_mask;
         const uint64_t second_pair = (active_word >> 1) & pair_mask;
-        return {static_cast<size_t>(std::popcount(first_pair ^ second_pair)),
-                static_cast<size_t>(std::popcount(active_word)),
-                static_cast<size_t>(std::popcount(first_pair | second_pair))};
+        return {.xor_sum = static_cast<size_t>(std::popcount(first_pair ^ second_pair)),
+                .popcount_sum = static_cast<size_t>(std::popcount(active_word)),
+                .or_sum = static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
     const auto active_mono = logical_num_modes == NumModes ? mono : (mono >> active_bit_offset);
     const auto mask = even_bits<2 * NumModes, LSb0>();
     const auto first_pair = active_mono & mask;
     const auto second_pair = (active_mono >> 1) & mask;
-    return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
+    return {.xor_sum = (first_pair ^ second_pair).count(),
+            .popcount_sum = active_mono.count(),
+            .or_sum = (first_pair | second_pair).count()};
 }
 
 // cutoff_sums from ascending positions. Slots below the active-mode offset are skipped.
@@ -171,10 +173,10 @@ template <size_t NumModes, typename PosT>
     const size_t popcount = n - j;
     size_t pairs = 0;
     for (; j + 1 < n; ++j) {
-        const size_t p = static_cast<size_t>(pos[j]);
+        const auto p = static_cast<size_t>(pos[j]);
         pairs += static_cast<size_t>((p % 2 == 0) && static_cast<size_t>(pos[j + 1]) == p + 1);
     }
-    return {popcount - (2 * pairs), popcount, popcount - pairs};
+    return {.xor_sum = popcount - (2 * pairs), .popcount_sum = popcount, .or_sum = popcount - pairs};
 }
 
 // True iff the ascending positions form (2q, 2q + 1) pairs only.
@@ -359,7 +361,7 @@ private:
                                                         size_t logical_num_modes) -> CutoffSums {
         if (logical_num_modes == NumModes) {
             const size_t n = pos.size();
-            return {n - (2 * pairs), n, n - pairs};
+            return {.xor_sum = n - (2 * pairs), .popcount_sum = n, .or_sum = n - pairs};
         }
         return cutoff_sums_positions<NumModes>(pos, logical_num_modes);
     }
