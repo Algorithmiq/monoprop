@@ -161,10 +161,9 @@ def test_identity_reads_one(parameters, serial_comm) -> None:
 def test_heisenberg_absent_term_raises(parameters, serial_comm) -> None:
     """Heisenberg has no value for a term outside its operator."""
     prop = _heisenberg(2, serial_comm)
+    terms = [Pauli("XXXXX", (0, 1, 2, 3, 4))]
     with pytest.raises(RuntimeError, match="not found"):
-        prop.term_expectation_values(
-            parameters, terms=[Pauli("XXXXX", (0, 1, 2, 3, 4))]
-        )
+        prop.term_expectation_values(parameters, terms=terms)
 
 
 def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
