@@ -23,16 +23,19 @@
 #include "monoprop/detail/mpi/MPICompat.h"
 
 // term_expectation_values() reads every initial term's value off one adjoint replay. Oracles: the
-// expectation value itself, which the values must reassemble, and a re-weight to a single term.
+// expectation value itself, which the values must reassemble, and a re-weight to a single term. LiH,
+// since random_exact's values are all 0 and so cannot tell a wrong replay from a right one.
 
 namespace {
 
 using namespace monoprop;
 using namespace test_utils;
 
-constexpr size_t kNumModes = 8;
-constexpr unsigned int kFullCutoff = 8;
-// Truncating, so the replay crosses cosine-only rows, whose transpose is not their inverse.
+constexpr size_t kNumModes = LihFixture::n_modes;
+constexpr auto kCase = "lih_fermionic_spin_exact.msgpack";
+constexpr unsigned int kFullCutoff = 2 * kNumModes;
+// Truncating but keeping rotations, so a layer mixes rotation pairs with cosine-only rows whose partner
+// was cut.
 constexpr unsigned int kTruncatedCutoff = 4;
 
 auto built_sim(const CaseData &data,
@@ -78,7 +81,7 @@ auto reassembled(const OperatorDict &op, const std::vector<std::complex<double>>
 // The values decompose the expectation value over the initial operator, including the core term,
 // which reads 1. Linearity makes this exact for the truncated graph too.
 BOOST_AUTO_TEST_CASE(values_reassemble_the_expectation_value) {
-    auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    auto data = load_case_data<kNumModes>(kCase);
     data.hamiltonian[VecZ{}] = std::complex{0.75, 0.0};
     for (const auto cutoff : {kFullCutoff, kTruncatedCutoff}) {
         auto sim = built_sim(data, cutoff);
@@ -93,7 +96,7 @@ BOOST_AUTO_TEST_CASE(values_reassemble_the_expectation_value) {
 
 // Each value is what expectation_value() reports once the initial operator is that term alone.
 BOOST_AUTO_TEST_CASE(each_value_matches_a_single_term_reweight) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data<kNumModes>(kCase);
     auto sim = built_sim(data, kTruncatedCutoff);
     const auto keys = keys_of(data.hamiltonian);
     const auto values = sim.term_expectation_values(data.parameters, keys);
@@ -113,10 +116,33 @@ BOOST_AUTO_TEST_CASE(each_value_matches_a_single_term_reweight) {
     }
 }
 
+// A row the graph created mid-circuit reads the same value expectation_value() gives once the initial
+// operator is that row alone: the two share one contract, which is not that row's ⟨P⟩.
+BOOST_AUTO_TEST_CASE(mid_circuit_row_matches_a_single_term_reweight) {
+    const auto data = load_case_data<kNumModes>(kCase);
+    auto sim = built_sim(data, kTruncatedCutoff);
+    // A Hermitian coefficient for the row: its decoded evolved coefficient.
+    std::optional<std::pair<VecZ, std::complex<double>>> created;
+    for (const auto &term : sim.evolved_operator_terms(data.parameters, 1e-8)) {
+        if (!term.first.empty() && !data.hamiltonian.contains(term.first)) {
+            created = term;
+            break;
+        }
+    }
+    BOOST_REQUIRE(created.has_value());
+    const auto &[indices, coeff] = *created;
+
+    const auto expected = coeff * sim.term_expectation_values(data.parameters, {indices})[0];
+    sim.update_initial_operator({{indices, coeff}});
+    const auto single = sim.expectation_value(data.parameters) - sim.core_term();
+    BOOST_TEST(near(single, expected.real()));
+    BOOST_TEST(near(expected.imag(), 0.0));
+}
+
 // Partitions hash-split the rows, so each key resolves in one partition and the gather must not
 // double-count it.
 BOOST_AUTO_TEST_CASE(partitioned_values_match_single_partition) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data<kNumModes>(kCase);
     const auto keys = keys_of(data.hamiltonian);
     const auto expected = built_sim(data, kTruncatedCutoff).term_expectation_values(data.parameters, keys);
 
@@ -137,7 +163,7 @@ BOOST_AUTO_TEST_CASE(partitioned_values_match_single_partition) {
 // conjugated state coefficients: the value is per unit of a monomial, the coefficient per unit of its
 // adjoint. Untruncated, both pictures agree.
 BOOST_AUTO_TEST_CASE(schrodinger_values_are_the_evolved_state_and_match_heisenberg) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data<kNumModes>(kCase);
     const auto keys = keys_of(data.hamiltonian);
     auto schrodinger = built_sim(data, kFullCutoff, 1, kFullCutoff);
     const auto values = schrodinger.term_expectation_values(data.parameters, keys);
@@ -155,17 +181,22 @@ BOOST_AUTO_TEST_CASE(schrodinger_values_are_the_evolved_state_and_match_heisenbe
 }
 
 // Heisenberg has no row, and so no value, for a monomial outside the operator. Past the cutoff and
-// unpaired, so the fully-paired exception cannot have kept it.
+// unpaired, so the fully-paired exception cannot have kept it. Partitioned, every partition throws.
 BOOST_AUTO_TEST_CASE(term_values_heisenberg_absent_term_throws) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    auto sim = built_sim(data, kTruncatedCutoff);
-    const VecZ absent{0, 2, 4, 6, 8, 10};
-    BOOST_CHECK_THROW(sim.term_expectation_values(data.parameters, {absent}), monoprop::detail::OperatorTermNotFound);
+    const auto data = load_case_data<kNumModes>(kCase);
+    const VecZ absent{0, 2, 4, 6, 8, 10, 12, 14};
+    for (const size_t partitions : {size_t{1}, size_t{2}}) {
+        auto sim = built_sim(data, kTruncatedCutoff, partitions);
+        BOOST_TEST_CONTEXT("partitions=" << partitions) {
+            BOOST_CHECK_THROW(sim.term_expectation_values(data.parameters, {absent}),
+                              monoprop::detail::OperatorTermNotFound);
+        }
+    }
 }
 
 // The keys are user input: an out-of-range slot must throw rather than write past the monomial.
 BOOST_AUTO_TEST_CASE(term_values_out_of_range_slot_index_throws) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    const auto data = load_case_data<kNumModes>(kCase);
     auto sim = built_sim(data, kTruncatedCutoff);
     BOOST_CHECK_THROW(sim.term_expectation_values(data.parameters, {VecZ{2 * kNumModes}}), AlgebraIndexOutOfRange);
 }

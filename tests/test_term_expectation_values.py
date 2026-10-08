@@ -150,7 +150,7 @@ def test_identity_reads_one(parameters, serial_comm) -> None:
     )
     prop.build_graph(_circuit())
     values = prop.term_expectation_values(parameters)
-    assert 1.0 in values.tolist()
+    assert values[0] == 1.0
     assert np.array([0.5, 1.0]) @ values == pytest.approx(
         prop.expectation_value(parameters), abs=1e-12
     )
