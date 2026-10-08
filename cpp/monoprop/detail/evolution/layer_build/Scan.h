@@ -14,14 +14,17 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -80,6 +83,42 @@ struct EvenParityNzWord {
     uint64_t foll;
 };
 
+/*! @brief Sets the followers (`foll = overlap & pivot`) of one fold block's words, for a sparse pivot column.
+ *
+ *  `block_nz` holds the block's nonzero words, all inside fold words [bb, be). The pivot's postings in the
+ *  block are scattered into the all-zero pivot scratch, read, then re-zeroed. `cursor` indexes the first
+ *  pivot posting not yet passed and moves past the block. Returns the number of followers set.
+ */
+inline auto set_sparse_pivot_followers(const std::vector<TermIndex> &pivot_rows,
+                                       size_t &cursor,
+                                       size_t bb,
+                                       size_t be,
+                                       std::span<EvenParityNzWord> block_nz) -> size_t {
+    const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
+    const auto first =
+        std::lower_bound(pivot_rows.begin() + static_cast<std::ptrdiff_t>(cursor), pivot_rows.end(), bb * 64, below);
+    const auto last = std::lower_bound(first, pivot_rows.end(), be * 64, below);
+    cursor = static_cast<size_t>(last - pivot_rows.begin());
+    uint64_t *const pw = pivot_zero_scratch().words.data();
+    for (auto it = first; it != last; ++it) {
+        pw[(*it >> 6) - bb] |= uint64_t{1} << (*it & 63U);
+    }
+    size_t n_foll = 0;
+    for (EvenParityNzWord &e : block_nz) {
+        e.foll = e.overlap & pw[e.base / 64 - bb];
+        n_foll += static_cast<size_t>(std::popcount(e.foll));
+    }
+    if (static_cast<size_t>(last - first) > be - bb) {
+        std::memset(pw, 0, (be - bb) * sizeof(uint64_t));
+    }
+    else {
+        for (auto it = first; it != last; ++it) {
+            pw[(*it >> 6) - bb] = 0;
+        }
+    }
+    return n_foll;
+}
+
 // Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
@@ -102,48 +141,38 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
     n_foll = 0;
     const bool pivot_dense = sc.column_is_dense(pivot_col);
     const uint64_t *const pivot_dense_ptr = pivot_dense ? sc.dense_column_data(pivot_col) : nullptr;
-    std::vector<uint64_t> &blk = column_block_scratch();
-    // A dense pivot is read inline; a sparse pivot is scatter-expanded lazily (only for blocks with a
-    // nonzero overlap, so no-anticommuter blocks skip it) via a deferred follower fix-up — bit-identical
-    // to eager expansion.
-    auto fold_range = [&](size_t bb, size_t be) {
-        combine_columns_block<NumModes>(sc, gen_cols, blk.data(), bb, be);
-        const size_t nz_block_start = nz.size();
-        for (size_t wi = bb; wi < be; ++wi) {
-            uint64_t overlap = blk[wi - bb];
-            if (g_odd) {
-                overlap ^= row_parity_ptr[wi];
-            }
-            if (wi == last_word) {
-                overlap &= last_word_mask;
-            }
-            if (!overlap) {
-                continue;
-            }
-            n_anti += static_cast<size_t>(std::popcount(overlap));
-            uint64_t foll = 0;
-            if (pivot_dense) {
-                foll = overlap & pivot_dense_ptr[wi];
-                n_foll += static_cast<size_t>(std::popcount(foll));
-            }
-            nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+    auto on_word = [&](size_t wi, uint64_t overlap) {
+        n_anti += static_cast<size_t>(std::popcount(overlap));
+        uint64_t foll = 0;
+        if (pivot_dense) {
+            foll = overlap & pivot_dense_ptr[wi];
+            n_foll += static_cast<size_t>(std::popcount(foll));
         }
-        if (pivot_dense || nz.size() == nz_block_start) {
-            return; // dense pivot already folded in, or no anticommuting term — nothing to expand
-        }
-        std::vector<uint64_t> &pblk = pivot_column_block_scratch();
-        combine_columns_block<NumModes>(sc, std::span<const size_t>(&pivot_col, 1), pblk.data(), bb, be);
-        const uint64_t *pw = pblk.data();
-        for (size_t k = nz_block_start; k < nz.size(); ++k) {
-            EvenParityNzWord &e = nz[k];
-            const size_t wi = e.base / 64;
-            e.foll = e.overlap & pw[wi - bb];
-            n_foll += static_cast<size_t>(std::popcount(e.foll));
+        nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
+    };
+    // A sparse pivot is expanded only for blocks with anticommuters.
+    const std::vector<TermIndex> *const pivot_rows = pivot_dense ? nullptr : &sc.sparse_column_rows(pivot_col);
+    size_t pivot_cursor = 0;
+    size_t nz_block_start = 0;
+    auto on_block = [&](size_t bb, size_t be) {
+        const size_t block_start = std::exchange(nz_block_start, nz.size());
+        if (!pivot_dense && nz.size() > block_start) {
+            n_foll += set_sparse_pivot_followers(*pivot_rows,
+                                                 pivot_cursor,
+                                                 bb,
+                                                 be,
+                                                 std::span<EvenParityNzWord>(nz).subspan(block_start));
         }
     };
-    for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
-        fold_range(bb, std::min(bb + kColumnBlockWords, whi));
-    }
+    for_each_fold_word<NumModes>(sc,
+                                 gen_cols,
+                                 wlo,
+                                 whi,
+                                 last_word,
+                                 last_word_mask,
+                                 g_odd ? row_parity_ptr : nullptr,
+                                 on_word,
+                                 on_block);
 }
 
 // The per-term rotation gate splits into a dynamic part (orbital pop cap, lower-atol sine cutoff) and a
@@ -161,8 +190,13 @@ inline auto rotation_dynamic_gate(std::optional<size_t> only_rotate_len_k,
     return true;
 }
 
-// The dense form is unavoidable: the owner hash folds every word and the basis sign reads the source
-// bitset, so it is built regardless, and the merge below runs beside it.
+// Minimum word count for the positions emit (measured slower at one and two words).
+inline constexpr size_t kPositionsEmitMinWords = 3;
+
+// Maximum slots per word for the positions emit (24 slots at four words measured 9% slower).
+inline constexpr size_t kPositionsEmitMaxSlotsPerWord = 4;
+
+// Dense partner, for one-word monomials, spilled rows, custom cutoffs and multi-rank runs.
 template <size_t NumModes>
 struct PartnerProduct {
     Monomial<NumModes> new_mono;
@@ -349,11 +383,39 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
         };
 
+        // Single rank, built-in cutoff: build the partner from positions, with no O(W) work per term.
+        constexpr bool kWideEnough = Monomial<NumModes>::num_words() >= kPositionsEmitMinWords;
+        [[maybe_unused]] const bool emit_positions_only =
+            kWideEnough && rank_count == 1 && cutoff_eval.has_positions_form()
+            && cutoff_eval.max_slot_bound().value_or(~size_t{0})
+                   <= kPositionsEmitMaxSlotsPerWord * Monomial<NumModes>::num_words();
+        const std::span<const uint16_t> gen_pos_span(gen_pos);
+        const std::span<RowPosT> pbuf_span(pbuf);
+
         // The dynamic gate runs before emit_term_products, so a gate-rejected term computes no products.
         // abs_c/v_src come from the caller's coeff read, not re-read.
         auto emit = [&](size_t mono_pop, size_t i, double abs_c, double v_src, bool is_follower) {
             if (!rotation_dynamic_gate(only_rotate_len_k, mono_pop, cut_st, abs_c)) {
                 return;
+            }
+            if constexpr (kWideEnough) {
+                if (emit_positions_only) {
+                    if (const auto src = ham.row_positions(i); src.inlined()) {
+                        const auto merged = merge_partner_positions_paired(src.pos, gen_pos_span, pbuf_span);
+                        const auto partner = std::span<const RowPosT>(pbuf).first(merged.count);
+                        if (!cutoff_eval.passes_positions(partner, merged.pairs) && !cut_st.is_above_upper(abs_c)) {
+                            return;
+                        }
+                        const int phase =
+                            A::emit_phase(A::rotation_sign_positions(ectx, src.pos), mono_pop, gen_pop, merged.overlap);
+                        (is_follower ? res.follower_self : res.leader_self).push(partner, phase);
+                        (is_follower ? fs : ls).at_slot(my_rank).push_back(i);
+                        if (capture_values) {
+                            (is_follower ? fv : lv).at_slot(my_rank).push_back(v_src);
+                        }
+                        return;
+                    }
+                }
             }
             const auto p = emit_term_products<NumModes, A>(ham,
                                                            i,
@@ -408,7 +470,23 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         };
         const bool word_aligned_cos = !only_rotate_len_k.has_value();
         CosineWordBuilder cos_b;
-        for (const auto &w : nz) {
+        // In large sparse scans, prefetch rows and coefficients kPrefetchWords nonzero words ahead.
+        constexpr size_t kPrefetchWords = 8;
+        constexpr size_t kPrefetchMinRows = size_t{1} << 21;
+        const double *const prefetch_coeffs = fused_scale_coeffs != nullptr ? fused_scale_coeffs : coeffs.data();
+        const bool prefetch_ahead = ham.size() >= kPrefetchMinRows && n_anti * 16 < ham.size()
+                                    && (fused_scale_coeffs != nullptr || coeffs.size() >= ham.size());
+        const std::span<const EvenParityNzWord> nz_words(nz);
+        for (size_t kw = 0; kw < nz_words.size(); ++kw) {
+            const auto &w = nz_words[kw];
+            if (prefetch_ahead && kw + kPrefetchWords < nz_words.size()) {
+                const auto &ahead = nz_words[kw + kPrefetchWords];
+                for (uint64_t m = ahead.overlap; m; m &= m - 1) {
+                    const size_t i = ahead.base + static_cast<size_t>(std::countr_zero(m));
+                    ham.prefetch_row(i);
+                    __builtin_prefetch(&prefetch_coeffs[i]);
+                }
+            }
             if (word_aligned_cos && fused_scale_coeffs != nullptr) {
                 // Fused cos sweep: scaling in place here is what replaces building a cosine set.
                 for (uint64_t m = w.overlap; m; m &= m - 1) {
