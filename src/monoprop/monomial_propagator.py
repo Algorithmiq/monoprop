@@ -656,29 +656,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
             dtype=complex,
         )
 
-    def update_initial_coefficients(
-        self, coefficients: Sequence[complex] | np.ndarray
-    ) -> None:
-        """Re-weight the initial operator from coefficients in its construction order.
-
-        The array form of [update_initial_operator][]: like it, it keeps the graph and
-        invalidates functionals created earlier.
-
-        Args:
-            coefficients: One coefficient per initial-operator term, in the order of the initial
-                operator given at construction (the order [term_expectation_values][] reads).
-
-        Raises:
-            ValueError: If ``coefficients`` does not have one entry per initial-operator term.
-        """
-        values = np.asarray(coefficients).tolist()
-        if len(values) != len(self._initial_terms):
-            raise ValueError(
-                f"Expected {len(self._initial_terms)} coefficients, one per initial-operator "
-                f"term; got {len(values)}."
-            )
-        self._simulator.update_initial_operator(dict(zip(self._initial_terms, values)))
-
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
         """Replace the *initial operator* (existing terms only).

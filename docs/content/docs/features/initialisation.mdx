@@ -52,18 +52,6 @@ Schrödinger picture the state is evolved independently, so you can change the
 observable arbitrarily and read it off against the same evolved state; in the Heisenberg
 picture the observable can be re-weighted.
 
-[update_initial_coefficients][monoprop.monomial_propagator.MonomialPropagator.update_initial_coefficients]
-re-weights from an array of coefficients, in the order the initial operator was given at
-construction:
-
-```python
-from monoprop import MajoranaPropagator, MajoranaOperator
-
-observable = MajoranaOperator({(0, 1, 2, 3): 1.0}, 4)
-sim = MajoranaPropagator(observable, initial_state=[0, 1], cutoff=4)
-sim.update_initial_coefficients([0.25])  # one coefficient per initial term, in construction order
-```
-
 <Callout type="info">
     Only terms that already exist in the initial operator can be updated; supplying a
   monomial that is not present (or a non-Hermitian coefficient) raises

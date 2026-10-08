@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Coverage for ``term_expectation_values`` and ``update_initial_coefficients``.
+"""Coverage for ``term_expectation_values``.
 
 Oracles: the expectation value the values must reassemble, a re-weight to a single term, and
 the Schrodinger evolved state, which is the adjoint the Heisenberg replay computes.
@@ -103,7 +103,7 @@ def test_each_value_matches_a_single_term_reweight(
     values = prop.term_expectation_values(parameters)
 
     for i in range(len(OBSERVABLES)):
-        prop.update_initial_coefficients(np.eye(len(OBSERVABLES))[i])
+        prop.update_initial_operator(PauliOperator({OBSERVABLES[i]: 1.0}, N_QUBITS))
         assert prop.expectation_value(parameters) == pytest.approx(values[i], abs=1e-12)
 
 
@@ -199,29 +199,3 @@ def test_majorana_values_reassemble_the_expectation_value(serial_comm) -> None:
     total = coefficients @ values
     assert total.real == pytest.approx(prop.expectation_value(parameters), abs=1e-10)
     assert total.imag == pytest.approx(0.0, abs=1e-10)
-
-
-def test_update_initial_coefficients_matches_update_initial_operator(
-    parameters, serial_comm
-) -> None:
-    """The array re-weight is the operator re-weight, bit for bit."""
-    weights = np.random.default_rng(3).normal(size=len(OBSERVABLES))
-    by_operator = _heisenberg(3, serial_comm)
-    by_operator.update_initial_operator(
-        PauliOperator(dict(zip(OBSERVABLES, weights)), N_QUBITS)
-    )
-    by_array = _heisenberg(3, serial_comm)
-    by_array.update_initial_coefficients(weights)
-
-    value_operator, grad_operator = by_operator.expectation_value_and_gradient(
-        parameters
-    )
-    value_array, grad_array = by_array.expectation_value_and_gradient(parameters)
-    assert value_array == value_operator
-    np.testing.assert_array_equal(grad_array, grad_operator)
-
-
-def test_update_initial_coefficients_rejects_a_wrong_length(serial_comm) -> None:
-    prop = _heisenberg(3, serial_comm)
-    with pytest.raises(ValueError, match="one per initial-operator term"):
-        prop.update_initial_coefficients(np.ones(len(OBSERVABLES) + 1))
