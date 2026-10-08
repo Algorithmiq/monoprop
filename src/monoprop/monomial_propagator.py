@@ -77,7 +77,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
     _n_params: int
     _system_size: int
     _initial_state: list[int]
-    _initial_terms: list[tuple[int, ...]]
     _simulator: object
 
     def _init_simulator(
@@ -121,7 +120,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._n_params = 0
         self._system_size = num_modes
         self._initial_state = list(initial_state)
-        self._initial_terms = list(majorana_operator.terms)
         # dispatch() returns the concrete adapter class for this mode count;
         # call it with keyword args matching the public constructor.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
@@ -616,9 +614,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     def term_expectation_values(
         self,
+        terms: Iterable[OperatorTerm],
         parameters: ParameterValues = None,
-        *,
-        terms: Iterable[OperatorTerm] | None = None,
     ) -> np.ndarray:
         """Return the expectation value of each term under the truncated evolution.
 
@@ -633,10 +630,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
         propagate it from the start.
 
         Args:
-            parameters: Variational parameter values (see [expectation_value][]).
             terms: The operator terms to read, canonical as for [evolved_operator_coefficients][].
-                ``None`` (default) reads every term of the initial operator given at
-                construction, in its order.
+            parameters: Variational parameter values (see [expectation_value][]).
 
         Returns:
             A complex NumPy array, one value per term, in order, such that a term's coefficient
@@ -649,9 +644,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 operator, or once [propagate][] or an in-place [contract_partially][] has absorbed
                 gates into the operator. The Schrodinger picture reads an absent term as 0.
         """
-        slots = (
-            self._initial_terms if terms is None else self._encode_terms(list(terms))
-        )
+        slots = self._encode_terms(list(terms))
         return np.asarray(
             self._simulator.term_expectation_values(self._bind(parameters), slots),
             dtype=complex,

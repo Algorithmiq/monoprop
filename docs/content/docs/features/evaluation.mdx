@@ -168,7 +168,7 @@ For an initial operator $O = \sum_i c_i P_i$, the expectation value is linear in
 coefficients: $E = \sum_i c_i v_i$, where $v_i$ is the value of $P_i$ under the truncated
 evolution. The sum includes the identity, whose value is 1.
 [term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values]
-returns every $v_i$ from one adjoint replay of the graph, at about the cost of one
+returns the $v_i$ of the terms you pass, in their order, from one adjoint replay of the graph, at about the cost of one
 [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]:
 
 ```python
@@ -182,12 +182,12 @@ gates = [ExpGate(PauliOperator({Pauli(p, q): 1.0}, 4))
 sim.build_graph(Circuit(gates, 4))
 parameters = [0.1, 0.2, 0.3, 0.4]
 
-values = sim.term_expectation_values(parameters)  # one per observable, in construction order
+values = sim.term_expectation_values(observables, parameters)  # one per observable
 assert np.isclose(values.sum(), sim.expectation_value(parameters))
 ```
 
 The values do not depend on the coefficients, so re-weighting the operator does not change them.
-Pass `terms=` to read a subset, or a Schrödinger propagator's observable terms; there an absent
+Pass a subset of the initial terms to read only those, or a Schrödinger propagator's observable terms; there an absent
 term reads 0, while Heisenberg raises for a term absent from the evolved operator. In Heisenberg,
 a value is $\langle P \rangle$ only for a term of the initial operator: a term the graph created
 mid-circuit reads the derivative with respect to its coefficient, under a graph that did not

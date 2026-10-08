@@ -239,9 +239,8 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
 
     def term_expectation_values(
         self,
+        terms: Iterable[OperatorTerm],
         parameters: ParameterValues = None,
-        *,
-        terms: Iterable[OperatorTerm] | None = None,
     ) -> np.ndarray:
         """Return the expectation value of each Pauli string under the truncated evolution.
 
@@ -249,10 +248,9 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         with real values, since Pauli strings are Hermitian.
 
         Args:
+            terms: [Pauli][monoprop.pauli.Pauli] terms to read.
             parameters: Variational parameter values (see
                 [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
-            terms: [Pauli][monoprop.pauli.Pauli] terms to read. ``None`` (default) reads every term
-                of the initial operator given at construction, in its order.
 
         Returns:
             A ``float64`` NumPy array, one value per term, in order. The identity reads 1.
@@ -267,7 +265,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 has absorbed gates into the operator. The Schrodinger picture reads an absent term
                 as 0.
         """
-        values = super().term_expectation_values(parameters, terms=terms)
+        values = super().term_expectation_values(terms, parameters)
         return np.ascontiguousarray(values.real)
 
     def update_initial_operator(self, new_operator: PauliOperator) -> None:

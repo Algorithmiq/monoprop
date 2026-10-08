@@ -86,7 +86,7 @@ def test_pauli_values_reassemble_the_expectation_value(
 ) -> None:
     """Initial coefficients times values sum to the expectation value, truncated or not."""
     prop = _heisenberg(cutoff, serial_comm)
-    values = prop.term_expectation_values(parameters)
+    values = prop.term_expectation_values(OBSERVABLES, parameters)
 
     assert values.dtype == np.float64
     assert values.shape == (len(OBSERVABLES),)
@@ -102,7 +102,7 @@ def test_each_value_matches_a_single_term_reweight(
 ) -> None:
     """A value is the expectation value once the initial operator is that term alone."""
     prop = _heisenberg(cutoff, serial_comm)
-    values = prop.term_expectation_values(parameters)
+    values = prop.term_expectation_values(OBSERVABLES, parameters)
 
     for i in range(len(OBSERVABLES)):
         prop.update_initial_operator(PauliOperator({OBSERVABLES[i]: 1.0}, N_QUBITS))
@@ -111,7 +111,9 @@ def test_each_value_matches_a_single_term_reweight(
 
 def test_values_match_a_schrodinger_read(parameters, serial_comm) -> None:
     """Untruncated, Heisenberg values equal the Schrodinger evolved-state coefficients."""
-    heisenberg = _heisenberg(N_QUBITS, serial_comm).term_expectation_values(parameters)
+    heisenberg = _heisenberg(N_QUBITS, serial_comm).term_expectation_values(
+        OBSERVABLES, parameters
+    )
 
     schrodinger = PauliPropagator(
         PauliOperator({OBSERVABLES[0]: 1.0}, N_QUBITS),
@@ -125,21 +127,19 @@ def test_values_match_a_schrodinger_read(parameters, serial_comm) -> None:
     np.testing.assert_allclose(heisenberg, state.real, atol=1e-11)
     # The Schrodinger picture reads its own state's adjoint, which is the same vector.
     np.testing.assert_allclose(
-        schrodinger.term_expectation_values(parameters, terms=OBSERVABLES),
+        schrodinger.term_expectation_values(OBSERVABLES, parameters),
         state.real,
         atol=1e-11,
     )
 
 
-def test_explicit_terms_follow_query_order(parameters, serial_comm) -> None:
-    """``terms`` reorders and repeats exactly as given; the default is construction order."""
+def test_terms_follow_query_order(parameters, serial_comm) -> None:
+    """``terms`` reorders and repeats exactly as given."""
     prop = _heisenberg(3, serial_comm)
-    default = prop.term_expectation_values(parameters)
+    values = prop.term_expectation_values(OBSERVABLES, parameters)
     order = [3, 0, 3, 4]
-    queried = prop.term_expectation_values(
-        parameters, terms=[OBSERVABLES[i] for i in order]
-    )
-    np.testing.assert_array_equal(queried, default[order])
+    queried = prop.term_expectation_values([OBSERVABLES[i] for i in order], parameters)
+    np.testing.assert_array_equal(queried, values[order])
 
 
 def test_identity_reads_one(parameters, serial_comm) -> None:
@@ -151,7 +151,7 @@ def test_identity_reads_one(parameters, serial_comm) -> None:
         comm=serial_comm,
     )
     prop.build_graph(_circuit())
-    values = prop.term_expectation_values(parameters)
+    values = prop.term_expectation_values([Pauli("", ()), OBSERVABLES[0]], parameters)
     assert values[0] == 1.0
     assert np.array([0.5, 1.0]) @ values == pytest.approx(
         prop.expectation_value(parameters), abs=1e-12
@@ -163,7 +163,7 @@ def test_heisenberg_absent_term_raises(parameters, serial_comm) -> None:
     prop = _heisenberg(2, serial_comm)
     terms = [Pauli("XXXXX", (0, 1, 2, 3, 4))]
     with pytest.raises(RuntimeError, match="not found"):
-        prop.term_expectation_values(parameters, terms=terms)
+        prop.term_expectation_values(terms, parameters)
 
 
 def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
@@ -171,7 +171,7 @@ def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
     contracted = _heisenberg(2, serial_comm)
     contracted.contract_partially(parameters, inplace=True)
     with pytest.raises(RuntimeError, match="absorbed gates"):
-        contracted.term_expectation_values()
+        contracted.term_expectation_values(OBSERVABLES)
 
     propagated = PauliPropagator(
         PauliOperator(dict.fromkeys(OBSERVABLES, 1.0), N_QUBITS),
@@ -182,7 +182,7 @@ def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
     circuit = _circuit()
     propagated.propagate(Circuit(circuit.gates, N_QUBITS, parameters=tuple(parameters)))
     with pytest.raises(RuntimeError, match="absorbed gates"):
-        propagated.term_expectation_values()
+        propagated.term_expectation_values(OBSERVABLES)
 
 
 def test_schrodinger_absent_term_reads_zero(parameters, serial_comm) -> None:
@@ -195,9 +195,7 @@ def test_schrodinger_absent_term_reads_zero(parameters, serial_comm) -> None:
         comm=serial_comm,
     )
     prop.build_graph(_circuit())
-    values = prop.term_expectation_values(
-        parameters, terms=[Pauli("XXXXX", (0, 1, 2, 3, 4))]
-    )
+    values = prop.term_expectation_values([Pauli("XXXXX", (0, 1, 2, 3, 4))], parameters)
     np.testing.assert_array_equal(values, [0.0])
 
 
@@ -213,7 +211,7 @@ def test_majorana_values_reassemble_the_expectation_value(serial_comm) -> None:
     prop.build_graph(problem.monomial_circuit.to_circuit())
     parameters = problem.monomial_circuit.parameters
 
-    values = prop.term_expectation_values(parameters)
+    values = prop.term_expectation_values(list(problem.operator.terms), parameters)
     assert values.dtype == complex
     coefficients = np.array(list(problem.operator.terms.values()))
     total = coefficients @ values
