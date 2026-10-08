@@ -260,7 +260,12 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Raises:
             TypeError: If a term is not a [Pauli][monoprop.pauli.Pauli].
             RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
-                operator. The Schrodinger picture reads an absent term as 0.
+                operator, or once
+                [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an
+                in-place
+                [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+                has absorbed gates into the operator. The Schrodinger picture reads an absent term
+                as 0.
         """
         values = super().term_expectation_values(parameters, terms=terms)
         return np.ascontiguousarray(values.real)

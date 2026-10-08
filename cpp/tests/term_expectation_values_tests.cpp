@@ -38,6 +38,7 @@ constexpr unsigned int kFullCutoff = 2 * kNumModes;
 // was cut.
 constexpr unsigned int kTruncatedCutoff = 4;
 
+// The case's circuit as a stored graph, ready to query.
 auto built_sim(const CaseData &data,
                unsigned int cutoff,
                size_t partitions = 1,
@@ -58,6 +59,7 @@ auto built_sim(const CaseData &data,
     return sim;
 }
 
+// `op`'s terms in its iteration order, which reassembled() pairs the values with.
 auto keys_of(const OperatorDict &op) -> std::vector<VecZ> {
     std::vector<VecZ> keys;
     for (const auto &[indices, coeff] : op) {
@@ -190,6 +192,19 @@ BOOST_AUTO_TEST_CASE(term_values_heisenberg_absent_term_throws) {
         BOOST_TEST_CONTEXT("partitions=" << partitions) {
             BOOST_CHECK_THROW(sim.term_expectation_values(data.parameters, {absent}),
                               monoprop::detail::OperatorTermNotFound);
+        }
+    }
+}
+
+// An in-place contraction drops the gates' adjoint, which the values need, so the query must refuse
+// rather than replay what is left. Partitioned, the facade refuses before fanning out.
+BOOST_AUTO_TEST_CASE(term_values_heisenberg_after_inplace_contraction_throws) {
+    const auto data = load_case_data<kNumModes>(kCase);
+    for (const size_t partitions : {size_t{1}, size_t{2}}) {
+        auto sim = built_sim(data, kTruncatedCutoff, partitions);
+        (void)sim.contract_partially(data.parameters, true);
+        BOOST_TEST_CONTEXT("partitions=" << partitions) {
+            BOOST_CHECK_THROW(sim.term_expectation_values({}, keys_of(data.hamiltonian)), GraphStateConflict);
         }
     }
 }

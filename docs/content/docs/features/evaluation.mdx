@@ -191,7 +191,10 @@ Pass `terms=` to read a subset, or a Schrödinger propagator's observable terms;
 term reads 0, while Heisenberg raises for a term absent from the evolved operator. In Heisenberg,
 a value is $\langle P \rangle$ only for a term of the initial operator: a term the graph created
 mid-circuit reads the derivative with respect to its coefficient, under a graph that did not
-propagate it from the start. Re-weighting with
+propagate it from the start. Heisenberg also raises once
+[propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an in-place
+[contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] has absorbed
+gates into the operator, since the values would miss those gates; query before contracting. Re-weighting with
 [update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]
 by $w_i = \partial L / \partial v_i$ makes the
 [gradient][monoprop.monomial_propagator.MonomialPropagator.gradient] that of a loss $L$ of the values.

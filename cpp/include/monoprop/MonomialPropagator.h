@@ -293,7 +293,8 @@ public:
     /// query order; the empty term reads 1. In Heisenberg this is the term's expectation value only for a
     /// term of the initial operator, since a row created mid-circuit was not propagated from the start.
     /// Keys must be canonical. A term absent from the evolved operator throws OperatorTermNotFound in
-    /// Heisenberg and reads 0 in Schrodinger.
+    /// Heisenberg and reads 0 in Schrodinger. Throws GraphStateConflict in Heisenberg once propagate() or an
+    /// in-place contract_partially() has absorbed gates into the operator.
     auto term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
@@ -378,6 +379,11 @@ private:
     // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
+
+    // Set once a Heisenberg operator has absorbed gates in place (propagate(), or an in-place
+    // contract_partially()). Sticky: the adjoint of the absorbed gates is gone, so no re-weight brings
+    // back initial-term values, and term_expectation_values() rejects the call.
+    bool heisenberg_gates_absorbed_{false};
 
     bool routing_coverage_reported_{false}; // report_routing_coverage_ warns once per propagator
 

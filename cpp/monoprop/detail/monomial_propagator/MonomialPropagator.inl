@@ -250,6 +250,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
+      heisenberg_gates_absorbed_(other.heisenberg_gates_absorbed_),
       routing_coverage_reported_(other.routing_coverage_reported_),
       logical_num_modes_(other.logical_num_modes_),
       cutoff_type_(other.cutoff_type_),
@@ -762,6 +763,9 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              graph_layers()));
     }
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    if (!schrodinger_) {
+        heisenberg_gates_absorbed_ = true;
+    }
 }
 
 template <size_t NumModes>
@@ -1184,6 +1188,7 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
         const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
         evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
         mp_op_.op_coeffs = evolved_op;
+        heisenberg_gates_absorbed_ = true;
     }
     else {
         evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);
@@ -1296,6 +1301,14 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
     -> std::vector<std::complex<double>> {
+    // The replay starts from the current operator, so absorbed gates would be silently missing from every
+    // value. Checked before the fan-out: the facade's own flag is never set, and the partitions agree.
+    if (partition_group_ ? first_partition_().heisenberg_gates_absorbed_ : heisenberg_gates_absorbed_) {
+        throw GraphStateConflict("term_expectation_values() is unavailable once propagate() or an in-place "
+                                 "contract_partially() has absorbed gates into a Heisenberg operator: the "
+                                 "values need the absorbed gates' adjoint, which is not kept. Build the graph "
+                                 "with build_graph() and query before contracting in place.");
+    }
     if (partition_group_) {
         // Each partition allreduces internally, so every partition returns the global values.
         return map_partitions_([&](MonomialPropagator &s) { return s.term_expectation_values(parameters, terms); })[0];

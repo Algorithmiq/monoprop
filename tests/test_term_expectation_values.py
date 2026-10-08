@@ -58,6 +58,7 @@ def _circuit() -> Circuit:
 
 
 def _heisenberg(cutoff: int, serial_comm, coefficients=None) -> PauliPropagator:
+    """A Heisenberg propagator over ``OBSERVABLES`` with the circuit stored as a graph."""
     coefficients = (
         np.linspace(0.3, 1.2, len(OBSERVABLES))
         if coefficients is None
@@ -75,6 +76,7 @@ def _heisenberg(cutoff: int, serial_comm, coefficients=None) -> PauliPropagator:
 
 @pytest.fixture(scope="module")
 def parameters() -> np.ndarray:
+    """Generic angles, so no gate is trivially the identity."""
     return np.random.default_rng(7).uniform(0, 2 * np.pi, _circuit().n_parameters)
 
 
@@ -163,6 +165,25 @@ def test_heisenberg_absent_term_raises(parameters, serial_comm) -> None:
         prop.term_expectation_values(
             parameters, terms=[Pauli("XXXXX", (0, 1, 2, 3, 4))]
         )
+
+
+def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
+    """Values replay only the stored graph, so gates absorbed into the operator would be lost."""
+    contracted = _heisenberg(2, serial_comm)
+    contracted.contract_partially(parameters, inplace=True)
+    with pytest.raises(RuntimeError, match="absorbed gates"):
+        contracted.term_expectation_values()
+
+    propagated = PauliPropagator(
+        PauliOperator(dict.fromkeys(OBSERVABLES, 1.0), N_QUBITS),
+        initial_state=[0, 3],
+        cutoff=2,
+        comm=serial_comm,
+    )
+    circuit = _circuit()
+    propagated.propagate(Circuit(circuit.gates, N_QUBITS, parameters=tuple(parameters)))
+    with pytest.raises(RuntimeError, match="absorbed gates"):
+        propagated.term_expectation_values()
 
 
 def test_schrodinger_absent_term_reads_zero(parameters, serial_comm) -> None:

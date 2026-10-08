@@ -646,7 +646,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
             TypeError: If an operator term is of the wrong form for the front-end.
             ValueError: If a term is not a canonical monomial.
             RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
-                operator. The Schrodinger picture reads an absent term as 0.
+                operator, or once [propagate][] or an in-place [contract_partially][] has absorbed
+                gates into the operator. The Schrodinger picture reads an absent term as 0.
         """
         slots = (
             self._initial_terms if terms is None else self._encode_terms(list(terms))
