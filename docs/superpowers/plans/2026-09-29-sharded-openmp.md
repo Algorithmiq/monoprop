@@ -48,7 +48,9 @@ the remedy rounds) fixed the two largest remaining failure classes and a regress
 been re-run on the remedied source. On 2026-10-07 the owner waived the S7-pass prerequisite for S8: S8 may proceed
 without a passing pre-removal campaign, and one parity campaign on S8's final binary replaces an S7 re-run. The final
 acceptance gates are unchanged. S8 was separately authorized on 2026-10-07; its cutover is implemented and locally
-verified, uncommitted (outcome under Task S8); its optimization points and final campaign await separate approval.
+verified (outcome under Task S8). Its optimization points were taken up in owner-approved rounds on 2026-10-07/08 and
+the kept changes verified; the owner had the work committed and pushed on 2026-10-08. S8's final parity campaign
+awaits separate authorization.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1213,6 +1215,8 @@ campaign (see S8's checklist), so that the one campaign measures them. Ideas, no
 **Owner decision (2026-10-07):** S7 is not re-run. The S7-pass prerequisite for S8 is waived, and one parity campaign
 on S8's final binary (S8's checklist) serves as the parity evidence.
 
+**Taken up in S8 (2026-10-07/08):** see the optimization points in S8's outcome. What stays open is listed there.
+
 ## Task S8: Remove legacy machinery, qualify the final binary and close out
 
 **Deliverable:** one sharded OpenMP runtime, correct FUNNELED support and verified final packaging without direct hwloc.
@@ -1230,10 +1234,11 @@ coverage has migrated. Update `detail/mpi/{Comm,MPICompat,MPIUtils,Exchange}.h`,
 `pyproject.toml`, installed smoke tests and docs as applicable. Audit other tracked dependency references before
 editing; do not touch unrelated caches.
 
-**Outcome (2026-10-07, in progress):** cutover implemented and locally verified, uncommitted; optimization points
-proposed, not run; final campaign not run. Start: `d023e67`. Ledger, removal/coverage ledger, proposal and handoff:
-`/home/ubuntu/s8-artifacts/` (`LEDGER.md`, `REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `HANDOFF.md`), outside
-the checkout. **S8 cutover implemented and locally verified; optimization/final-campaign authorization pending.**
+**Outcome (2026-10-07/08, in progress):** cutover implemented and locally verified; optimization rounds run and their
+kept changes verified; committed and pushed at the owner's request on 2026-10-08; final campaign not run. Start:
+`d023e67`. Ledger, removal/coverage ledger, proposal, findings and handoff: `/home/ubuntu/s8-artifacts/` (`LEDGER.md`,
+`REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `opt/FINDINGS-*.md`, `HANDOFF.md`), outside the checkout. **S8
+cutover and optimization rounds implemented and locally verified; final-campaign authorization pending.**
 
 - One runtime: the selector, the legacy root, `PartitionGroup`, `CpuTopology`, `ShmComm`, `HybridComm`,
   `PartitionBarrier`, `CpuRelax`, the partition-count agreement, the permissive cached thread parser and every direct
@@ -1252,6 +1257,62 @@ the checkout. **S8 cutover implemented and locally verified; optimization/final-
   gap. Bitwise differential pre/post at fixed (P, T): GCC MPI-off 27/27, GCC MPI 136/136 rank documents, Clang 27/27.
 - Pending: Nix, macOS, Linux aarch64, CI wheels (manylinux images), minimum-version compilers, multi-node; TSan of
   Open MPI's own MULTIPLE-level locking (one report inside libopen-pal, no monoprop frame) is inconclusive.
+- Optimization points (owner-approved 2026-10-07/08; diagnostics in `s8-artifacts/opt/FINDINGS-STEP{0,1,2}.md` and
+  `FINDINGS-ROUND{3,4}.md`):
+  - Step 0: removing the legacy machinery changed nothing measurable.
+  - Step 1 attributed the remaining misses by profile against symbol builds of both revisions.
+  - Step 2 kept three bitwise-neutral changes:
+    - **A:** a replay step writes its symmetric rows in one call, plans over every other rank without allocating,
+      and packs through its own contiguous column (`write_symmetric_rows`, `plan_totals(transport)`,
+      `send_column`). The send offsets are stored by column, so no owner shares a line of another's. Tiny 2x48
+      evaluation went from 1.23–1.51 to 0.91–0.99 of the baseline.
+    - **B:** no-op scratch growth is tested inline, and reverse factors are built once per call. Gradient-paul 1x1
+      went from 1.23 to 1.19; energy at 1x1 is unchanged and stays a miss (1.41, the per-step phase structure).
+    - **F:** self hits are reserved from the self-query count. MPI 1x1 propagate-hubb went from 1.040 to 1.014–1.018.
+  - D (laying the binding registration out apart from the kernels) lowered import-time code pages only; the kernels'
+    own execution brings them back, so it was not kept.
+  - Round 3 (owner-approved 2026-10-08):
+    - **Page-cache state, not code.** How a shared object's pages entered the page cache moves a process's RSS by up
+      to ±10 MiB on this kernel. A freshly written binary maps more than an aged one. That was the whole MPI-off
+      code-page excess, and the fresh-against-archived MPI drift is the same effect. RSS gates need equal page-cache
+      hygiene on both arms; that is an owner decision for the campaign.
+    - **Kept, bitwise-neutral:**
+      - C1: partner staging sized by need, at most one run.
+      - 3a: a sole shard on one rank, with no observer, is evaluated by the low-level serial evaluator, after the
+        sharded per-request checks (`check_shard_request`).
+    - **Re-measured with hygiene:** MPI-off tiny memory 0.98–0.99 (was 1.05–1.06). 1x1 tiny evaluation 1.02–1.22
+      (energy-paul 1.13, was 1.41). Larger pared 1x1 evaluations 1.05–1.11 (see round 4).
+  - Round 4 (owner-approved 2026-10-08):
+    - **E-b, kept:** `MPOperator::release_slack()` no longer copies a vector of 256 KiB or more down to its size. It
+      keeps the block and discards the pages of its spare capacity (`release_spare_capacity`, `MADV_DONTNEED`,
+      Linux only). The memory breakdown counts such a vector's entries (`accounted_bytes`), which at rest is what the
+      copy reported. Large propagate-hubb operation peak 0.89 (was 1.034); construction peaks 0.80–0.94.
+    - **1x1:** the tiny cells' gap is a cold first call (warm calls equal). The larger cells run the same serial
+      evaluator with fewer instructions and equal cache misses, yet need +6 % cycles; a closure-copy fix of the
+      cosine-mask kernel removed a reload per element but measured nothing and was reverted. Not attributed.
+    - **Bimodal first calls at T = 96:** slow launches wait on the run queue (5–9 ms of summed runnable-not-running
+      time against 0.02–1.6 ms). No transparent huge pages (`madvise` mode) or compaction. Host noise on a fully
+      bound node, on both arms.
+    - **LTO:** a build without nanobind's LTO is within ±3 % on every cell measured. LTO is neither a cause nor a
+      measurable benefit.
+    - **Campaign protocol (owner decision):** before each batch, evict both arms' shared objects from the page cache
+      (after hashing them) and run one warm-up launch per arm; interleave the arms; judge memory against fresh
+      baseline samples only, since the archived samples' page-cache state is unknown.
+    - **Re-measured under that protocol** (ratios against the fresh baseline):
+
+      | Gate | Result |
+      | --- | --- |
+      | Memory, every measured cell | ≤ 1.009 (at most +7 MiB) |
+      | Runtime, 2x48 tiny / 1x96 tiny | 0.89–0.95 / 0.49–0.72 |
+      | Runtime, 1x1 tiny | 1.00–1.21 |
+      | Runtime, 1x1 larger | 1.00–1.09 |
+      | Runtime, pare-construct 2x48 / MPI-off | 1.11 / 0.93 |
+
+  - Still open, reported with the final evidence: the 1x1 runtime tail (tiny cells' cold first call; the larger cells'
+    unattributed +6 % cycles) and the bimodal first calls at T = 96, which hit both arms.
+  - Evidence retention: S7's raw candidate term files (about 20 GB) were moved off the host by the owner on
+    2026-10-08, verified against a sha256 manifest kept beside S7's reports. The baseline and Task 1's formal evidence
+    are untouched.
 
 - [x] Add/activate host-FUNNELED acceptance and insufficient-actual-support tests before lowering initialization/support
   requirements. Test initializing-thread ownership inside the library team and wrong-host-thread rejection. Ensure no
@@ -1274,7 +1335,7 @@ rg -n 'hwloc|pkg.?config|SHARDED_OPENMP_PROTOTYPE' \
   pending.
 - [x] Rebuild the final candidate, rerun full R/M C++/Python tests, installed consumers, failure drivers, stress and
   qualified sanitizers. Check ordinary aggregate/export semantics and raw-accessor rejection again on the final binary.
-- [ ] Take up the open optimization points recorded after S7 ("Still open: optimization points for the end of S8"):
+- [x] Take up the open optimization points recorded after S7 ("Still open: optimization points for the end of S8"):
   first-call costs of small evaluations, MPI 1x1 single-thread construction, and the constant memory overheads
   (re-measured on the post-removal binary first). Same rules as the post-S7 rounds: a separately approved
   measurement budget, profile before changing, keep a change only if measured better, full verification of what is
