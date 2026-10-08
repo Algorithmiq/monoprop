@@ -242,6 +242,7 @@ def test_update_initial_coefficients_matches_update_initial_operator(
 
 
 def test_update_initial_coefficients_rejects_a_wrong_length(serial_comm) -> None:
+    """The array has no labels, so a length mismatch cannot be matched to terms."""
     prop = _heisenberg(3, serial_comm)
     with pytest.raises(ValueError, match="one per initial-operator term"):
         prop.update_initial_coefficients(np.ones(len(OBSERVABLES) + 1))
