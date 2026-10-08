@@ -161,3 +161,48 @@ The terms are given as [Majorana][] terms (or raw index tuples) for [MajoranaPro
 This does **not** make the evolution faster. The graph contraction is identical
 and still the dominant cost; what disappears is the decode and dictionary build
 over every surviving term.
+
+## Expectation value of every initial term
+
+A Heisenberg graph built for an initial operator $O = \sum_i c_i P_i$ already determines every
+$\langle P_i \rangle$ under the truncated evolution, so many observables need neither a
+Schrödinger graph nor one evaluation per term.
+[term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values]
+returns them all from one adjoint replay of the graph, at the cost of about one
+[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] however many
+terms there are:
+
+```python
+import numpy as np
+from monoprop import Circuit, ExpGate, Pauli, PauliOperator, PauliPropagator
+
+observables = [Pauli("ZZ", (0, 1)), Pauli("XY", (1, 2)), Pauli("Z", (3,))]
+sim = PauliPropagator(PauliOperator(dict.fromkeys(observables, 1.0), 4), [], cutoff=2)
+gates = [ExpGate(PauliOperator({Pauli(p, q): 1.0}, 4))
+         for p, q in [("X", (0,)), ("YY", (0, 1)), ("ZX", (1, 2)), ("XZ", (2, 3))]]
+sim.build_graph(Circuit(gates, 4))
+parameters = [0.1, 0.2, 0.3, 0.4]
+
+values = sim.term_expectation_values(parameters)  # one per observable, in construction order
+assert np.isclose(values.sum(), sim.expectation_value(parameters))
+```
+
+Each value is the derivative of the expectation value with respect to that term's initial
+coefficient: it is what [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]
+returns once the initial operator is re-weighted to that term alone, and it does not depend on the
+current coefficients. A Heisenberg read at `cutoff` agrees with a Schrödinger read at
+`schrodinger_cutoff = cutoff + 1` without that graph's memory. Pass `terms=` to read a subset, or a
+Schrödinger propagator's observable terms; there an absent term reads 0, while Heisenberg raises
+for a term outside its operator.
+
+For a loss over many observables, read the values, form the weights $w_i = \partial L / \partial
+\langle P_i \rangle$, re-weight with
+[update_initial_coefficients][monoprop.monomial_propagator.MonomialPropagator.update_initial_coefficients]
+and take the [gradient][monoprop.monomial_propagator.MonomialPropagator.gradient]: the gradient of
+$\sum_i w_i \langle P_i \rangle$ is $dL/d\theta$.
+
+```python notest
+values = sim.term_expectation_values(parameters)
+sim.update_initial_coefficients(loss_weights(values))
+grad = sim.gradient(parameters)
+```

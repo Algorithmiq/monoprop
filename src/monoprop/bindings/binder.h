@@ -225,6 +225,12 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "terms"_a,
             "Coefficients of the given index terms, in query order; terms the operator does not carry are 0");
 
+    cls.def("term_expectation_values",
+            &MonomialPropagator<NumModes>::term_expectation_values,
+            "parameters"_a,
+            "terms"_a,
+            "Expectation value of each given index term under the truncated evolution, in query order");
+
     cls.def_prop_ro("num_modes",
                     &MonomialPropagator<NumModes>::logical_num_modes,
                     "Number of modes the operator actually uses");

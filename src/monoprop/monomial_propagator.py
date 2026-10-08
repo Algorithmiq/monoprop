@@ -77,6 +77,8 @@ class MonomialPropagator(ABC, Generic[T_op]):
     _n_params: int
     _system_size: int
     _initial_state: list[int]
+    _initial_terms: list[tuple[int, ...]]
+    _real_term_values: bool = False
     _simulator: object
 
     def _init_simulator(
@@ -120,6 +122,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._n_params = 0
         self._system_size = num_modes
         self._initial_state = list(initial_state)
+        # Engine keys in the order the caller gave the initial operator: the order of
+        # term_expectation_values() and update_initial_coefficients(), encoded once here.
+        self._initial_terms = list(majorana_operator.terms)
         # dispatch() returns the concrete adapter class for this mode count;
         # call it with keyword args matching the public constructor.
         self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
@@ -611,6 +616,75 @@ class MonomialPropagator(ABC, Generic[T_op]):
             ),
             dtype=complex,
         )
+
+    def term_expectation_values(
+        self,
+        parameters: ParameterValues = None,
+        *,
+        terms: Iterable[OperatorTerm] | None = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each term under the truncated evolution.
+
+        Each value is the derivative of [expectation_value][] with respect to that term's
+        initial-operator coefficient. It equals [expectation_value][] after re-weighting the initial
+        operator to that term alone, so ``expectation_value(parameters)`` is the sum of each initial
+        coefficient times its value. The values do not depend on the current coefficients.
+
+        All of them come from one adjoint replay of the graph, which costs about one
+        [expectation_value][] whatever the number of terms. A Heisenberg graph built for many
+        observables therefore reads all of them at once, matching a Schrodinger read at
+        ``schrodinger_cutoff = cutoff + 1`` without building the Schrodinger graph.
+
+        Args:
+            parameters: Variational parameter values (see [expectation_value][]).
+            terms: The operator terms to read, canonical as for [evolved_operator_coefficients][].
+                ``None`` (default) reads every term of the initial operator given at
+                construction, in its order, without re-encoding them.
+
+        Returns:
+            One value per term, in order: ``float64`` for Pauli strings, which are Hermitian, and
+            ``complex`` for Majorana monomials, read so that a monomial's coefficient times its
+            value is its contribution. The empty term reads 1.
+
+        Raises:
+            TypeError: If an operator term is of the wrong form for the front-end.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: In the Heisenberg picture, if a term is absent from the operator. The
+                Schrodinger picture reads an absent term as 0.
+        """
+        slots = (
+            self._initial_terms if terms is None else self._encode_terms(list(terms))
+        )
+        values = np.asarray(
+            self._simulator.term_expectation_values(self._bind(parameters), slots),
+            dtype=complex,
+        )
+        return values.real.copy() if self._real_term_values else values
+
+    def update_initial_coefficients(
+        self, coefficients: Sequence[complex] | np.ndarray
+    ) -> None:
+        """Re-weight the initial operator from coefficients in its construction order.
+
+        The array form of [update_initial_operator][] for repeated re-weighting: the terms are
+        the initial operator given at construction, in its order, already encoded, so no
+        operator is built or encoded per call. Like [update_initial_operator][], it keeps the
+        graph and invalidates functionals created earlier.
+
+        Args:
+            coefficients: One coefficient per initial-operator term, in the order of the initial
+                operator given at construction (the order [term_expectation_values][] reads).
+
+        Raises:
+            ValueError: If ``coefficients`` does not have one entry per initial-operator term.
+        """
+        values = np.asarray(coefficients).tolist()
+        if len(values) != len(self._initial_terms):
+            raise ValueError(
+                f"Expected {len(self._initial_terms)} coefficients, one per initial-operator "
+                f"term; got {len(values)}."
+            )
+        self._simulator.update_initial_operator(dict(zip(self._initial_terms, values)))
 
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:

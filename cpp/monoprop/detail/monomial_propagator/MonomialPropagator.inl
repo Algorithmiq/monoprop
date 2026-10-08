@@ -1293,4 +1293,55 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
     return out;
 }
 
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    if (partition_group_) {
+        // Each partition allreduces internally, so every partition returns the global values.
+        return map_partitions_([&](MonomialPropagator &s) { return s.term_expectation_values(parameters, terms); })[0];
+    }
+    // Checked for the same reason as evolved_operator_coefficients().
+    const auto keys = terms | std::views::transform([this](const VecZ &term) {
+                          return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                      })
+                      | std::ranges::to<std::vector<Monomial<NumModes>>>();
+    std::vector<size_t> rows(keys.size());
+    mp_op_.store->find_batch(keys.data(), keys.size(), rows.data());
+
+    const auto term_values_fn = [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+        return term_values(request, comm, cos);
+    };
+    const VecD values = make_functional_(term_values_fn, std::nullopt)(parameters);
+
+    // Values, then found flags: only the owning rank finds a key, so one allreduce gathers both.
+    const size_t count = keys.size();
+    VecD gathered(2 * count, 0.0);
+    for (size_t q = 0; q < count; ++q) {
+        if (rows[q] < values.size()) { // kNotFound is size_t max, so this covers a miss too
+            gathered[q] = values[rows[q]];
+            gathered[count + q] = 1.0;
+        }
+    }
+    mpi::allreduce_sum_inplace(gathered, comm_);
+
+    std::vector<std::complex<double>> out(count);
+    for (size_t q = 0; q < count; ++q) {
+        if (terms[q].empty()) { // the core term is a fixed identity, which every state reads as 1
+            out[q] = 1.0;
+            continue;
+        }
+        if (gathered[count + q] == 0.0) {
+            if (!schrodinger_) {
+                throw detail::OperatorTermNotFound(
+                    std::format("Operator term [{}] not found in the operator.", join_with_separator(terms[q], ", ")));
+            }
+            continue;
+        }
+        // The value is ∂E/∂(encoded coefficient); E = Σ coeff·value needs it per unit of the decoded one,
+        // which divides by the hermitian phase -- a unit, so the conjugate of the decode.
+        out[q] = std::conj(algebra_decode_coeff<NumModes>(basis_, gathered[q], keys[q]));
+    }
+    return out;
+}
+
 } // namespace monoprop

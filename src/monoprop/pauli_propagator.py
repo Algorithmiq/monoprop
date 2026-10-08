@@ -41,6 +41,9 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
     so ``cutoff_type`` is fixed and read-only here.
     """
 
+    # Pauli strings are Hermitian, so their expectation values are real.
+    _real_term_values = True
+
     def __init__(
         self,
         initial_operator: PauliOperator,
