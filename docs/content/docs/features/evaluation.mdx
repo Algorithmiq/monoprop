@@ -187,11 +187,11 @@ values = sim.term_expectation_values(parameters)  # one per observable, in const
 assert np.isclose(values.sum(), sim.expectation_value(parameters))
 ```
 
-Each value is the derivative of the expectation value with respect to that term's initial
-coefficient: it is what [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]
-returns once the initial operator is re-weighted to that term alone, and it does not depend on the
-current coefficients. A Heisenberg read at `cutoff` agrees with a Schrödinger read at
-`schrodinger_cutoff = cutoff + 1` without that graph's memory. Pass `terms=` to read a subset, or a
+The built graph fixes the evolution, truncation included, so the expectation value is linear in
+the initial coefficients: $E = \sum_i c_i v_i$, plus the identity's coefficient. The values are the
+$v_i$: $v_i$ is what
+[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] would
+return for $P_i$ alone with coefficient 1, so re-weighting the operator does not change them. Pass `terms=` to read a subset, or a
 Schrödinger propagator's observable terms; there an absent term reads 0, while Heisenberg raises
 for a term outside its operator.
 

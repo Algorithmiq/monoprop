@@ -625,15 +625,19 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> np.ndarray:
         """Return the expectation value of each term under the truncated evolution.
 
-        Each value is the derivative of [expectation_value][] with respect to that term's
-        initial-operator coefficient. It equals [expectation_value][] after re-weighting the initial
-        operator to that term alone, so ``expectation_value(parameters)`` is the sum of each initial
-        coefficient times its value. The values do not depend on the current coefficients.
+        For an initial operator ``O = sum_i c_i * P_i``, the propagator's expectation value is
+        linear in the coefficients: ``expectation_value(parameters) = sum_i c_i * v_i(parameters)``,
+        plus the identity's coefficient. The built graph fixes the evolution, truncation included,
+        so the coefficients only weight the sum. This method returns the ``v_i(parameters)``:
+        ``v_i(parameters)`` is the value [expectation_value][] would give at ``parameters`` for
+        ``P_i`` alone with coefficient 1. The values depend on ``parameters`` but not on the
+        coefficients, so re-weighting with [update_initial_operator][] or
+        [update_initial_coefficients][] does not change them.
 
-        All of them come from one adjoint replay of the graph, which costs about one
-        [expectation_value][] whatever the number of terms. A Heisenberg graph built for many
-        observables therefore reads all of them at once, matching a Schrodinger read at
-        ``schrodinger_cutoff = cutoff + 1`` without building the Schrodinger graph.
+        All values come from one backward pass over the graph, which costs about as much as one
+        [expectation_value][] call, however many terms are read. For example, a Heisenberg
+        propagator whose initial operator holds many observables reads all of their expectation
+        values in one call, instead of one [expectation_value][] call per observable.
 
         Args:
             parameters: Variational parameter values (see [expectation_value][]).
