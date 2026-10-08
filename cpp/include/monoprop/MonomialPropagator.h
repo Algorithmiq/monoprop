@@ -289,12 +289,12 @@ public:
     auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
-    /// The derivative of expectation_value() with respect to each of `terms`' initial coefficients, in
-    /// query order; the empty term reads 1. In Heisenberg this is the term's expectation value only for a
-    /// term of the initial operator, since a row created mid-circuit was not propagated from the start.
-    /// Keys must be canonical. A term absent from the evolved operator throws OperatorTermNotFound in
-    /// Heisenberg and reads 0 in Schrodinger. Throws GraphStateConflict in Heisenberg once propagate() or an
-    /// in-place contract_partially() has absorbed gates into the operator.
+    /// The expectation value of each of `terms` under the truncated evolution, in query order; the empty
+    /// term reads 1. In Heisenberg this holds only for initial-operator terms: a row created mid-circuit
+    /// reads the derivative of expectation_value() with respect to its coefficient. Keys must be
+    /// canonical. A term absent from the evolved operator throws OperatorTermNotFound in Heisenberg and
+    /// reads 0 in Schrodinger. Throws GraphStateConflict in Heisenberg once propagate() or an in-place
+    /// contract_partially() has absorbed gates into the operator.
     auto term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 

@@ -104,8 +104,9 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
-/// The adjoint sweep Mᵀ·state, one entry per local operator row: entry j is ∂E/∂op_j.
-/// `request.op` is not read. `cos.scale` is required if `request.params` is non-empty.
+/// Per local operator row j, the derivative of ev() with respect to `request.op[j]`, from one adjoint
+/// sweep. ev() is linear in `request.op`, so it is not read. `cos.scale` is required if
+/// `request.params` is non-empty.
 monoprop_EXPORT auto term_values(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::CosCallbacks &cos = {}) -> VecD;
