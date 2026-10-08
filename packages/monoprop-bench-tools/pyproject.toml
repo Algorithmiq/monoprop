@@ -12,7 +12,7 @@ description = "Benchmark harness for monoprop: memory accounting, model builders
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.12,<3.15"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
