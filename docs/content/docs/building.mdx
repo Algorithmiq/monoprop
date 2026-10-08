@@ -35,12 +35,19 @@ the quickest route to a working environment.
 
 The repository is also a [Nix flake](https://wiki.nixos.org/wiki/Flakes):
 
+Flake outputs support x86_64 Linux, aarch64 Linux, and aarch64 macOS. The
+`nixos-unstable` input no longer supports x86_64 macOS.
+
 | Command | What it gives you |
 | --- | --- |
 | `nix develop` | a shell with every prerequisite above, plus `uv`, `just` and Node.js |
 | `nix build .#monoprop` | the Python package, built without MPI |
 | `nix build .#monoprop-mpi` | the same package with `monoprop_ENABLE_MPI=ON` |
+| `nix build .#monoprop-py313` | the package for a specific interpreter: `py312`, `py313` or `py314`, with a `-mpi` suffix for the MPI build |
 | `nix run` | a Python interpreter with `monoprop` importable |
+
+The unsuffixed packages, `nix run` and `nix develop` use Python 3.14, the
+interpreter nixpkgs builds and caches; older interpreters are compiled locally.
 
 Inside `nix develop` the `uv sync` and `just` workflows below apply unchanged. The
 shell sets two variables that only matter on NixOS: `UV_PYTHON_PREFERENCE=only-system`,
@@ -82,8 +89,8 @@ introducing a second Python, Boost, hwloc, or MPI closure:
         inherit system;
         overlays = [ monoprop.overlays.default ];
       };
-      python = pkgs.python312.withPackages (ps: [
-        pkgs.monoprop
+      python = pkgs.python313.withPackages (ps: [
+        ps.monoprop
         ps.numpy
       ]);
     in {
@@ -94,10 +101,15 @@ introducing a second Python, Boost, hwloc, or MPI closure:
 }
 ```
 
-The overlay provides `pkgs.monoprop` and `pkgs.monoprop-mpi`. For consumers that
+The overlay adds `monoprop`, `monoprop-mpi` and `nanobind-backend` to every Python
+package set through `pythonPackagesExtensions`, so `ps.monoprop` works for any
+interpreter in `withPackages`. Python 3.12, 3.13 and 3.14 are built in CI. The
+top-level `pkgs.monoprop` and `pkgs.monoprop-mpi` are the Python 3.14 builds.
+For consumers that follow their own `nixpkgs` input, its `nanobind_3` version must
+match the nanobind pin in `pyproject.toml` (currently 3.1.0). For consumers that
 do not need to compose package sets, the pre-built flake outputs remain available
-as `monoprop.packages.${system}.monoprop` and
-`monoprop.packages.${system}.monoprop-mpi`. Consume these entrypoints from the Git
+as `monoprop.packages.${system}.monoprop`, `monoprop.packages.${system}.monoprop-mpi`
+and the per-interpreter `monoprop-py3XX[-mpi]` variants. Consume these entrypoints from the Git
 repository flake; `flake.nix`, `flake.lock`, and `nix/` are deliberately excluded
 from the Python source distribution.
 

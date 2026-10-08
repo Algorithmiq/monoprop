@@ -181,12 +181,13 @@ NixOS none of the prerequisites have to be installed by hand:
 ```bash
 nix develop            # dev shell: C++ toolchain, hwloc, MPI, uv, just, node
 nix build .#monoprop   # build the package (`.#monoprop-mpi` for the MPI build)
+nix build .#monoprop-py313  # pick the interpreter: py312, py313, py314 (default)
 nix run                # Python interpreter with monoprop importable
 ```
 
 Inside `nix develop` the usual `uv sync` and `just` workflows apply unchanged.
 Downstream flakes can follow their own `nixpkgs`, import `monoprop.overlays.default`,
-and consume `pkgs.monoprop` or `pkgs.monoprop-mpi`; see the
+and consume `ps.monoprop` or `ps.monoprop-mpi` from any Python package set; see the
 [building guide](https://docs.monoprop.algorithmiq.tech/building#using-monoprop-downstream-with-nix).
 The Nix entrypoints are distributed from the repository flake, not in the PyPI
 source distribution. Nix sandbox builds read the latest stable release from the
