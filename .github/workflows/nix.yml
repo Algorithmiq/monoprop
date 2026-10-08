@@ -41,13 +41,16 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31.11.1
 
-      # Builds `checks.monoprop`, which is the non-MPI package, so the build below
-      # reuses this store path rather than compiling twice.
+      # Builds the non-MPI package for every supported interpreter, so the build
+      # below reuses those store paths rather than compiling twice.
       - name: Check flake
         run: nix flake check --print-build-logs
 
       - name: Build packages
-        run: nix build --print-build-logs .#monoprop .#monoprop-mpi
+        run: >-
+          nix build --print-build-logs
+          .#monoprop .#monoprop-mpi
+          .#monoprop-py312-mpi .#monoprop-py313-mpi
 
       # `pythonImportsCheck` already imports the package inside the sandbox; this
       # exercises the `nix run` app, i.e. the interpreter with monoprop propagated
