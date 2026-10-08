@@ -591,6 +591,31 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
     // Views of the retained snapshots and `params`, built for this call only. A failure up to and including the
     // evaluator's own argument checks happens before its team and mutates nothing.
     const auto requests = retained.requests(params);
+    if (requests.size() == 1 && world_.ranks == 1 && observer_ == nullptr) {
+        /*
+         * One shard on one rank: nothing to exchange and no team to coordinate, so the sole shard goes to the
+         * low-level serial evaluator (MPFunctions.cpp), the loop the sharded phases reduce to at T = 1, without
+         * their per-step publication, staging and checkpoints. Bitwise the sharded result (sharded_root_tests:
+         * sharded_root_sole_shard_serial_evaluation_matches_the_phases). A test observer keeps the phases, which it
+         * observes.
+         */
+        detail::sharded::check_shard_request(requests.front());
+        if (mutation_started != nullptr) {
+            *mutation_started = true; // the evaluator warms the shard's lazy caches and the thread's scratch
+        }
+        try {
+            if (gradient) {
+                return ev_and_grad(requests.front(), comm_, retained.callbacks.front());
+            }
+            return {ev(requests.front(), comm_, retained.callbacks.front()), VecD{}};
+        }
+        catch (...) {
+            if (mutation_started != nullptr) {
+                throw; // the enclosing run_operation_ applies the failure policy once
+            }
+            mutation_failed_(std::current_exception());
+        }
+    }
     auto outcome = detail::sharded::evaluate_shards(requests,
                                                     retained.callbacks,
                                                     retained.options,

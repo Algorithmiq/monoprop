@@ -217,6 +217,17 @@ private:
 monoprop_EXPORT auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
 
 /*!
+ * \brief evaluate_shards()' argument checks of one shard's request, in its order: the state against the operator, then,
+ *        with parameters, the graph's layer count, the generator coefficients' length and every parameter index.
+ *
+ * Mutates nothing. A root that evaluates its sole shard with the low-level serial evaluator runs these first, so a
+ * bad call fails as evaluate_shards() would, before anything is mutated.
+ *
+ * \throws EvalStateArgumentError; std::invalid_argument, with evaluate_shards()' messages.
+ */
+monoprop_EXPORT auto check_shard_request(const EvalRequest &request) -> void;
+
+/*!
  * \brief Owner `shard` copies its published blocks for every shard of every other rank into the round's send slices.
  *
  * Requires the round's offsets for this owner's row, which plan_send() lays out; ReplayRound plans owner-parallel
@@ -263,9 +274,7 @@ struct ReplayRound {
                      shard,
                      [&] {
                          if (shard == 0) {
-                             const auto peers =
-                                 other_ranks(PhysicalWorld{.rank = round->rank(), .ranks = round->ranks()});
-                             round->plan_totals(peers, transport);
+                             round->plan_totals(transport);
                          }
                          round->plan_column(shard);
                      })
@@ -290,8 +299,8 @@ struct ReplayRound {
 /*!
  * \brief One owner's staging of its partners' blocks while it finishes a step.
  *
- * Private to the owner and reused across steps. `values` holds one run of consecutive partner blocks: the larger of
- * `run_values` and the step's largest block.
+ * Private to the owner and reused across steps. `values` holds one run of consecutive partner blocks, sized by
+ * staging_capacity().
  */
 struct PartnerStaging {
     //! One partner of the step.
@@ -305,6 +314,18 @@ struct PartnerStaging {
     VecD values;                           //!< The current run.
     size_t run_values = kStagingRunValues; //!< The minimum run; EvaluationObserver::staging_run() in tests.
 };
+
+/*!
+ * \brief The size of a step's staging run: the step's values when they fit one run of `run_values`, else one run, and
+ *        never less than the step's largest block (nor one value).
+ *
+ * A step whose values fit one run stages all of them in one run either way, so sizing by need changes no copy and no
+ * read, only how much an owner reserves: a whole default run per owner was most of a small evaluation's first-call
+ * page faults and, at T = 96, 3 MiB of resident memory.
+ */
+[[nodiscard]] constexpr auto staging_capacity(size_t run_values, size_t step_values, size_t largest_block) -> size_t {
+    return std::max({std::min(run_values, step_values), largest_block, size_t{1}});
+}
 
 //! One owner's private forward-step scratch: its self slot's pre-cosine sources and its partner staging.
 struct ForwardScratch {

@@ -103,7 +103,8 @@ name and cannot address suite-nested cases, tests use flat
 - **Operator store**: `operator_index_tests.cpp`, `inverted_index_tests.cpp`,
   `mp_operator_tests.cpp` (MPOperator get_state Pauli/Majorana scoring,
   get_operator init-map drain, update_initial_operator picture branches,
-  insert_absent_terms, inverted-index sync, memory estimate, deep copy),
+  insert_absent_terms, inverted-index sync, memory estimate, deep copy, spare capacity
+  released in place),
   `bulk_insert_tests.cpp` (the grouped-prefetch insert vs a one-key-at-a-time
   reference: table state and enumeration order).
 - **Layer build / evolution**: `build_graph_tests.cpp`,
@@ -295,8 +296,9 @@ There is one runtime, and every suite compiles against it.
 - `openmp_runtime_tests.cpp` keeps its parser and capture cases, the launch-budget entries (`openmp_env_root_*`,
   including the unset variable), the thread-level decisions and the invalid-owner cases at the launch's T
   (`openmp_env_root_t4` too).
-- `sharded_exchange_tests.cpp`: the physical round's single-process contract and, in `sharded_exchange_mpi*`,
-  closed-form blocks between processes.
+- `sharded_exchange_tests.cpp`: the physical round's single-process contract (including owner-parallel planning and
+  the replay step's bulk path, symmetric rows and column views, against the entry-wise path) and, in
+  `sharded_exchange_mpi*`, closed-form blocks between processes.
 
 Bitwise parity with an independently implemented runtime at the same geometry, and parity across geometries, is
 checked from separate processes by `tests/test_sharded_openmp.py` (with `monoprop_TEST_LEGACY_PYTHON` naming a

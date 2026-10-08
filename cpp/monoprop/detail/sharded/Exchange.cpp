@@ -209,11 +209,14 @@ struct PhysicalExchange::State {
     // peer `peer`. Row `shard` has one writer, its owner, except where the primary fills receive rows.
     std::vector<int> send_rows;
     std::vector<int> recv_rows;
-    // Element offsets into the staging, same shape; derived by the primary's planning, or owner-parallel.
-    // Eight bytes each, not four: owner-parallel planning has neighbouring owners write neighbouring entries of a
-    // column (place_column()), and at four bytes twice as many owners share each line, so a replay step's packing
-    // stalls on lines the other owners just wrote (+40 % per call on small evaluations at 2 x 48).
+    // Element offsets into the staging; derived by the primary's planning, or owner-parallel. recv_off has the rows'
+    // shape. The send side is stored by column, entry [dest * stride + peer * threads + source], with a copy of the
+    // column's counts in send_col_rows: owner-parallel planning has owner t place and pack column t, so its entries are
+    // contiguous and private to it. Stored by row, every line of a column was shared by eight owners, each writing
+    // its own entry (place_column()), and each packing read missed on lines the others had just written (about a
+    // quarter of a small 2 x 48 evaluation's call time).
     std::vector<long long> send_off;
+    std::vector<int> send_col_rows;
     std::vector<long long> recv_off;
     // Owner-parallel planning: per-owner row totals [shard * max_peers + peer] (one writer each, close_rows()), and
     // per-column send sums [peer * threads + column] (one writer per column, plan_column()).
@@ -301,9 +304,10 @@ struct PhysicalExchange::State {
     }
 
     // Offsets of one side from its rows: the message of peer k is destination-shard major, source-shard minor. On
-    // the send side the row owner is the source (minor), on the receive side the destination (major). Both passes walk
-    // rows contiguously through local pointers (the planning runs serially on the primary, once per round side); only
-    // each peer's end is checked, which bounds every partial sum below it.
+    // the send side the row owner is the source (minor), on the receive side the destination (major). Both passes read
+    // rows contiguously through local pointers (the planning runs serially on the primary, once per round side); the
+    // send side writes its offsets and counts by column (see send_off). Only each peer's end is checked, which bounds
+    // every partial sum below it.
     auto lay_out(const std::vector<int> &rows,
                  std::vector<long long> &off,
                  std::vector<int> &mpi_counts,
@@ -348,11 +352,12 @@ struct PhysicalExchange::State {
                     start[t] = running;
                     running += width;
                 }
+                int *const col_counts = send_col_rows.data();
                 for (size_t u = 0; u < n; ++u) {
                     const int *row = in + (u * row_stride) + segment;
-                    long long *dst = out + (u * row_stride) + segment;
                     for (size_t t = 0; t < n; ++t) {
-                        dst[t] = start[t];
+                        out[(t * row_stride) + segment + u] = start[t];
+                        col_counts[(t * row_stride) + segment + u] = row[t];
                         start[t] += row[t];
                     }
                 }
@@ -374,6 +379,10 @@ struct PhysicalExchange::State {
         }
         return static_cast<size_t>(checked_int(running, what));
     }
+
+    // Owner-parallel planning's primary part, once the peers are set: per-peer MPI counts and displacements from the
+    // owners' row totals, and both staging sizes.
+    auto plan_from_totals() -> void;
 
     auto size_stage(Staging &stage, size_t elements) const -> void {
         // At least one element, so MPI never sees a null buffer.
@@ -415,6 +424,7 @@ PhysicalExchange::PhysicalExchange(const PhysicalWorld &world, size_t threads, E
     s.send_rows.assign(table, 0);
     s.recv_rows.assign(table, 0);
     s.send_off.assign(table, 0);
+    s.send_col_rows.assign(table, 0);
     s.recv_off.assign(table, 0);
     s.send_totals.assign(threads * s.max_peers, 0);
     s.recv_totals.assign(threads * s.max_peers, 0);
@@ -548,6 +558,36 @@ auto PhysicalExchange::close_rows(size_t shard) -> void {
     }
 }
 
+auto PhysicalExchange::write_symmetric_rows(size_t shard, std::span<const int> slot_counts) -> void {
+    require_state(state_.get());
+    State &s = *state_;
+    if (shard >= s.threads) {
+        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
+    }
+    int *const send = s.send_rows.data() + (shard * s.stride);
+    int *const recv = s.recv_rows.data() + (shard * s.stride);
+    size_t k = 0;
+    for (size_t b = 0; b < s.ranks; ++b) {
+        if (b == s.rank) {
+            continue;
+        }
+        long long total = 0;
+        for (size_t u = 0; u < s.threads; ++u) {
+            const size_t slot = (b * s.threads) + u;
+            const int count = slot < slot_counts.size() ? slot_counts[slot] : 0;
+            if (count < 0) {
+                throw std::length_error(std::format("sharded exchange: negative count {} for slot {}", count, slot));
+            }
+            send[(k * s.threads) + u] = count;
+            recv[(k * s.threads) + u] = count;
+            total += count;
+        }
+        s.send_totals[(shard * s.max_peers) + k] = total;
+        s.recv_totals[(shard * s.max_peers) + k] = total;
+        ++k;
+    }
+}
+
 auto PhysicalExchange::plan_totals(std::span<const size_t> peers, ExchangeTransport transport) -> void {
     require_state(state_.get());
     State &s = *state_;
@@ -555,6 +595,27 @@ auto PhysicalExchange::plan_totals(std::span<const size_t> peers, ExchangeTransp
     s.send_planned = false;
     s.recv_planned = false;
     s.set_peers(peers, transport);
+    s.plan_from_totals();
+}
+
+auto PhysicalExchange::plan_totals(ExchangeTransport transport) -> void {
+    require_state(state_.get());
+    State &s = *state_;
+    s.require_idle("plan_totals");
+    s.send_planned = false;
+    s.recv_planned = false;
+    s.peers.clear(); // keeps its capacity: no allocation after the first round
+    for (size_t b = 0; b < s.ranks; ++b) {
+        if (b != s.rank) {
+            s.peers.push_back(b);
+        }
+    }
+    s.transport = transport;
+    s.plan_from_totals();
+}
+
+auto PhysicalExchange::State::plan_from_totals() -> void {
+    State &s = *this;
     // As lay_out(): peer k's message occupies [base_k, base_k + total_k), the bases a running sum over the peers.
     const auto place = [&](const std::vector<long long> &totals,
                            std::vector<int> &mpi_counts,
@@ -615,10 +676,13 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
         for (size_t t = 0; t < shard; ++t) {
             running += s.column_sums[(k * s.threads) + t];
         }
+        // Column `shard` of the row tables, read once; written to the owner's own contiguous column entries.
+        const size_t column = (shard * s.stride) + (k * s.threads);
         for (size_t u = 0; u < s.threads; ++u) {
-            const size_t i = (u * s.stride) + (k * s.threads) + shard;
-            s.send_off[i] = running;
-            running += s.send_rows[i];
+            const int count = s.send_rows[(u * s.stride) + (k * s.threads) + shard];
+            s.send_off[column + u] = running;
+            s.send_col_rows[column + u] = count;
+            running += count;
         }
         // Receive: local-destination major, so row `shard` starts after the earlier rows; sources ascend within it.
         running = s.mpi_recv_displs[r];
@@ -847,8 +911,29 @@ auto PhysicalExchange::send_bytes_(size_t shard, size_t peer, size_t dest, Excha
     if (peer >= s.peers.size()) {
         throw std::out_of_range(std::format("sharded exchange: peer {} of a {}-peer round", peer, s.peers.size()));
     }
-    return {s.send_stage.data() + (static_cast<size_t>(s.send_off[i]) * s.elem),
+    const size_t column_entry = (dest * s.stride) + (peer * s.threads) + shard;
+    return {s.send_stage.data() + (static_cast<size_t>(s.send_off[column_entry]) * s.elem),
             static_cast<size_t>(s.send_rows[i]) * s.elem};
+}
+
+auto PhysicalExchange::send_column_bytes_(size_t shard, size_t peer, ExchangeElement element) -> ColumnBytes {
+    require_state(state_.get());
+    State &s = *state_;
+    if (element != s.element || !s.send_planned) {
+        throw std::logic_error("sharded exchange: send_column() with the wrong element type or before planning");
+    }
+    if (shard >= s.threads || peer >= s.peers.size()) {
+        throw std::out_of_range(
+            std::format("sharded exchange: column {} of peer {} in a round of {} shards and {} peers",
+                        shard,
+                        peer,
+                        s.threads,
+                        s.peers.size()));
+    }
+    const size_t column = (shard * s.stride) + (peer * s.threads);
+    return {.stage = s.send_stage.data(),
+            .offsets = std::span<const long long>(s.send_off.data() + column, s.threads),
+            .counts = std::span<const int>(s.send_col_rows.data() + column, s.threads)};
 }
 
 auto PhysicalExchange::recv_bytes_(size_t shard, size_t peer, size_t source, ExchangeElement element) const

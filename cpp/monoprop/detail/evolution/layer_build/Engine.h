@@ -230,6 +230,8 @@ struct ContractSink {
     // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
     // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
 
+    // At most `queries` self hits follow: reserved once, instead of a reallocation chain as the hits arrive.
+    auto reserve_self_hits(size_t queries) -> void { fc.hits.reserve(fc.hits.size() + queries); }
     // Self-resolve hit: both endpoints are local.
     [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
         const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
@@ -695,6 +697,9 @@ private:
         const size_t op_size = local_op.store->size();
         const size_t hi = self_stage_.size();
         const size_t cap = std::min(hi, kSelfProbeWindow);
+        if constexpr (requires { sink.reserve_self_hits(hi); }) {
+            sink.reserve_self_hits(hi);
+        }
         if (self_pos_off_.size() < cap) {
             self_pos_off_.resize(cap);
             self_k_of_.resize(cap);

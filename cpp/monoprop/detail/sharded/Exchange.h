@@ -47,11 +47,16 @@
  * number of checkpoints and the same offsets as plan_send() + plan_recv(), but O(P x T) work on the primary instead of
  * O(P x T^2):
  *
- *   O  reset_rows(t), set_send_count / set_recv_count for every index of every other rank, then close_rows(t)
+ *   O  reset_rows(t), set_send_count / set_recv_count for every index of every other rank, then close_rows(t); or, for
+ *      a symmetric round over every other rank, write_symmetric_rows(t, counts) alone
  *   P  plan_totals(peers, transport)        O  plan_column(t)
- *   O  place_column(t), then pack send_block<T>(u, peer, t) for every local source u: owner t fills column t
+ *   O  place_column(t), then pack column t, the block of every local source u for remote shard t: send_column<T>(t,
+ *      peer) gives the whole column at once, send_block<T>(u, peer, t) one block
  *   P  post(), and later wait()
  *   O  read recv_block<T>(t, peer, source)
+ *
+ * Column t's offsets and counts are owner t's own contiguous entries, written by place_column(t) and read by its
+ * packing: no line of them is shared with another owner's column.
  *
  * Wire layout: the message to peer rank b holds, for each of b's shards t in
  * ascending order, each local source shard's block for (b, t) in ascending source order. Received messages have the
@@ -146,6 +151,22 @@ struct PhysicalWorld {
 }
 
 /*!
+ * \brief One owner's column of a round planned owner-parallel: its slice for every local source shard, for one remote
+ *        shard of one peer (PhysicalExchange::send_column()).
+ */
+template <class T>
+struct SendColumn {
+    std::byte *stage = nullptr;           //!< The round's send staging.
+    std::span<const long long> offsets{}; //!< Per local source: its block's element offset into the staging.
+    std::span<const int> counts{};        //!< Per local source: its block's element count.
+
+    //! The slice of local source `source`; unchecked, `source` must be below the team size.
+    [[nodiscard]] auto block(size_t source) const -> std::span<T> {
+        return {reinterpret_cast<T *>(stage) + offsets[source], static_cast<size_t>(counts[source])};
+    }
+};
+
+/*!
  * \brief A reusable physical round between this process's T owners and those of a set of peer ranks.
  */
 class PhysicalExchange {
@@ -205,6 +226,17 @@ public:
     //! Owner `shard`, after writing both of its rows: record its per-peer row totals for plan_totals().
     monoprop_EXPORT auto close_rows(size_t shard) -> void;
     /*!
+     * \brief Owner `shard` writes both of its rows for a symmetric round over every other rank, and closes them.
+     *
+     * Equivalent to reset_rows(), set_send_count() and set_recv_count() with the same count for every shard of every
+     * other rank, then close_rows(). `slot_counts[b * T + u]` is the count with shard u of rank b; slots past the end
+     * count zero, and this rank's own slots are not read.
+     *
+     * \throws std::out_of_range for a shard outside the table; std::length_error for a negative count (the row is then
+     *         left partly written and must be rewritten before planning).
+     */
+    monoprop_EXPORT auto write_symmetric_rows(size_t shard, std::span<const int> slot_counts) -> void;
+    /*!
      * \brief Start a round over `peers` from the owners' row totals (close_rows()): per-peer MPI counts and
      *        displacements and both staging sizes, in O(P x T) on the primary.
      *
@@ -215,6 +247,8 @@ public:
      *         an int, std::logic_error while requests are live. Nothing is posted.
      */
     monoprop_EXPORT auto plan_totals(std::span<const size_t> peers, ExchangeTransport transport) -> void;
+    //! plan_totals() over every other rank, ascending, without allocating once the round has been planned before.
+    monoprop_EXPORT auto plan_totals(ExchangeTransport transport) -> void;
     //! Owner `shard`, in plan_totals()' phase: the send-side sum of column `shard` (local sources to remote shard
     //! `shard`) for every possible peer index.
     monoprop_EXPORT auto plan_column(size_t shard) -> void;
@@ -263,6 +297,17 @@ public:
     }
 
     /*!
+     * \brief Column `shard` of peer number `peer`: the slice of every local source for remote shard `shard`, placed by
+     *        place_column(shard) and valid until the next plan.
+     * \throws std::logic_error if `T` is not the round's element type or no round is planned; std::out_of_range.
+     */
+    template <class T>
+    [[nodiscard]] auto send_column(size_t shard, size_t peer) -> SendColumn<T> {
+        const ColumnBytes column = send_column_bytes_(shard, peer, exchange_element_of<T>);
+        return {.stage = column.stage, .offsets = column.offsets, .counts = column.counts};
+    }
+
+    /*!
      * \brief What local `shard` received from shard `source` of peer number `peer`, valid until the next plan_recv().
      * \throws As send_block(); the round's receive side must have been planned with plan_recv().
      */
@@ -274,9 +319,16 @@ public:
 
 private:
     struct State;
+    //! A column's staging and its offsets and counts in elements, before the element type is applied.
+    struct ColumnBytes {
+        std::byte *stage = nullptr;
+        std::span<const long long> offsets;
+        std::span<const int> counts;
+    };
 
     monoprop_EXPORT auto send_bytes_(size_t shard, size_t peer, size_t dest, ExchangeElement element)
         -> std::span<std::byte>;
+    monoprop_EXPORT auto send_column_bytes_(size_t shard, size_t peer, ExchangeElement element) -> ColumnBytes;
     [[nodiscard]] monoprop_EXPORT auto recv_bytes_(size_t shard,
                                                    size_t peer,
                                                    size_t source,

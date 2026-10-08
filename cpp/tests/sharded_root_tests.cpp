@@ -268,6 +268,68 @@ BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_follow_the_launch_team) {
     BOOST_TEST(!monoprop::detail::PropagatorTestAccess<8>::is_invalid(sim));
 }
 
+// At T = 1 on one rank the root evaluates its sole shard with the low-level serial evaluator; with an observer attached
+// it runs the sharded phases. Both give bitwise the same energies and gradients through every entry point, both
+// pictures, pared and unpared, and a bad parameter vector fails the same way on both, leaving the object valid.
+BOOST_AUTO_TEST_CASE(sharded_root_sole_shard_serial_evaluation_matches_the_phases) {
+    if (launch_team() != 1) {
+        return; // the serial path is only for a sole shard
+    }
+    using Access = monoprop::detail::PropagatorTestAccess<8>;
+    const auto data = load_case_data<8>("random_exact.msgpack");
+    const sharded::RootObserver phases; // observes nothing; its presence keeps the sharded phases
+    const auto bits = [](double v) { return std::bit_cast<uint64_t>(v); };
+    const auto same = [&](const std::pair<double, VecD> &a, const std::pair<double, VecD> &b) {
+        return bits(a.first) == bits(b.first) && a.second.size() == b.second.size()
+               && std::ranges::equal(a.second, b.second, [&](double x, double y) { return bits(x) == bits(y); });
+    };
+    for (const std::optional<unsigned int> schrodinger :
+         {std::optional<unsigned int>{}, std::optional<unsigned int>{16}}) {
+        for (const std::optional<double> pare : {std::optional<double>{}, std::optional<double>{1e-3}}) {
+            BOOST_TEST_CONTEXT("schrodinger " << schrodinger.has_value() << " pare " << pare.has_value()) {
+                MonomialPropagator<8> sim(data.hamiltonian, 16, data.initial_state, schrodinger, MPI_COMM_SELF);
+                sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+                const auto energy = sim.expectation_value_functional(pare);
+                const auto gradient = sim.expectation_value_and_gradient_functional(pare);
+                const std::pair<double, VecD> serial_e{energy(data.parameters), {}};
+                const auto serial_g = gradient(data.parameters);
+                const auto serial_direct = sim.expectation_value_and_gradient(data.parameters);
+                Access::observe(sim, &phases);
+                const std::pair<double, VecD> phased_e{energy(data.parameters), {}};
+                const auto phased_g = gradient(data.parameters);
+                const auto phased_direct = sim.expectation_value_and_gradient(data.parameters);
+                Access::observe(sim, nullptr);
+                BOOST_TEST(same(serial_e, phased_e));
+                BOOST_TEST(same(serial_g, phased_g));
+                BOOST_TEST(same(serial_direct, phased_direct));
+                BOOST_TEST(!serial_g.second.empty());
+                // Too few parameters for the mapping: the same diagnostic on both paths, nothing mutated.
+                const VecD short_params(1, 0.1);
+                std::string serial_message;
+                std::string phased_message;
+                try {
+                    static_cast<void>(gradient(short_params));
+                }
+                catch (const std::exception &e) {
+                    serial_message = e.what();
+                }
+                Access::observe(sim, &phases);
+                try {
+                    static_cast<void>(gradient(short_params));
+                }
+                catch (const std::exception &e) {
+                    phased_message = e.what();
+                }
+                Access::observe(sim, nullptr);
+                BOOST_TEST(!serial_message.empty());
+                BOOST_TEST(serial_message == phased_message);
+                BOOST_TEST(!Access::is_invalid(sim));
+                BOOST_TEST(same(gradient(data.parameters), serial_g));
+            }
+        }
+    }
+}
+
 // An invalid owner fails its validity guard before the shard-count check, at every T.
 BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_check_validity_first) {
     auto sim = make();

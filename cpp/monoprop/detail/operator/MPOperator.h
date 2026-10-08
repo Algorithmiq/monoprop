@@ -16,16 +16,23 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <format>
 #include <print>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
@@ -59,6 +66,54 @@ class OperatorTermNotFound : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+
+//! Vectors at least this large give their spare capacity back in place; smaller ones are copied down to their size.
+inline constexpr size_t kSpareReleaseBytes = size_t{256} << 10;
+
+//! Whether release_spare_capacity() keeps a block of `capacity_bytes` in place (Linux only) rather than copying it.
+[[nodiscard]] constexpr auto releases_in_place(size_t capacity_bytes) noexcept -> bool {
+#ifdef __linux__
+    return capacity_bytes >= kSpareReleaseBytes;
+#else
+    static_cast<void>(capacity_bytes);
+    return false;
+#endif
+}
+
+/*!
+ * \brief Give `v`'s spare capacity back to the system.
+ *
+ * A block for which releases_in_place() holds stays where it is, with its capacity, and the pages wholly inside its
+ * spare capacity are discarded (`MADV_DONTNEED`): no copy, so no transient second block, and no freed block left in
+ * the calling thread's malloc arena. Spare capacity holds no objects, and a later growth into it reads fresh zero
+ * pages. Any other vector is copied down to its size (`shrink_to_fit`).
+ */
+template <typename T>
+auto release_spare_capacity(std::vector<T> &v) -> void {
+    static_assert(std::is_trivially_copyable_v<T>, "discarded spare pages must hold no objects");
+#ifdef __linux__
+    if (releases_in_place(v.capacity() * sizeof(T))) {
+        const auto page = static_cast<std::uintptr_t>(sysconf(_SC_PAGESIZE));
+        const auto first = (reinterpret_cast<std::uintptr_t>(v.data() + v.size()) + page - 1) & ~(page - 1);
+        const auto last = reinterpret_cast<std::uintptr_t>(v.data() + v.capacity()) & ~(page - 1);
+        if (first < last) {
+            // Advisory: a refusal leaves the pages resident, which is the unreleased state, not an error.
+            (void)madvise(reinterpret_cast<void *>(first), last - first, MADV_DONTNEED);
+        }
+        return;
+    }
+#endif
+    v.shrink_to_fit();
+}
+
+/*!
+ * \brief The bytes `v` is accounted for: its entries when its block is released in place (its spare capacity is then
+ * not resident at rest; growth writes only the entries it adds), its capacity otherwise, which at rest is its size.
+ */
+template <typename T>
+[[nodiscard]] auto accounted_bytes(const std::vector<T> &v) noexcept -> size_t {
+    return (releases_in_place(v.capacity() * sizeof(T)) ? v.size() : v.capacity()) * sizeof(T);
+}
 
 template <size_t NumModes>
 struct MPOperator {
@@ -202,9 +257,9 @@ struct MPOperator {
     }
 
     auto shrink_state_to_fit() -> void {
-        state_rows_.shrink_to_fit();
-        state_vals_.shrink_to_fit();
-        state_coeffs.shrink_to_fit();
+        release_spare_capacity(state_rows_);
+        release_spare_capacity(state_vals_);
+        release_spare_capacity(state_coeffs);
     }
 
     // Materialize the caches every operation expects after construction or a gate loop: pending initial entries
@@ -227,16 +282,19 @@ struct MPOperator {
         (void)inverted_index();
     }
 
-    // The second half: the coefficient and state vectors copied down to their sizes. Each copy holds the old and the
-    // new block at once, so this is the operator's transient peak after a gate loop.
+    // The second half: the coefficient and state vectors' spare capacity given back (release_spare_capacity()). Large
+    // vectors keep their blocks; a small one is copied down, holding its old and new block at once.
     auto release_slack() -> void {
-        op_coeffs.shrink_to_fit();
+        release_spare_capacity(op_coeffs);
         shrink_state_to_fit();
     }
 
-    // The bytes release_slack() copies: every vector with spare capacity is copied whole.
+    // The bytes release_slack() copies: every vector with spare capacity not released in place is copied whole.
     [[nodiscard]] auto slack_copy_bytes() const noexcept -> size_t {
-        const auto copied = [](const auto &v) { return v.capacity() > v.size() ? v.size() * sizeof(v[0]) : 0uz; };
+        const auto copied = [](const auto &v) {
+            const bool copies = v.capacity() > v.size() && !releases_in_place(v.capacity() * sizeof(v[0]));
+            return copies ? v.size() * sizeof(v[0]) : 0uz;
+        };
         return copied(op_coeffs) + copied(state_rows_) + copied(state_vals_) + copied(state_coeffs);
     }
 
@@ -386,11 +444,10 @@ template <size_t NumModes>
 inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
-    breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
+    breakdown.op_coeffs_bytes = accounted_bytes(op.op_coeffs);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
-    breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
-                                   + op.state_rows_.capacity() * sizeof(TermIndex)
-                                   + op.state_vals_.capacity() * sizeof(double);
+    breakdown.state_coeffs_bytes =
+        accounted_bytes(op.state_coeffs) + accounted_bytes(op.state_rows_) + accounted_bytes(op.state_vals_);
     breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.init_operator_entries = op.init_op_map.size();

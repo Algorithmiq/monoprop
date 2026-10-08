@@ -237,12 +237,16 @@ inline auto snapshot_remote_endpoints(const VecD &state,
                                       const LayerTraversal &layer,
                                       size_t my_rank,
                                       DerivativeSnapshotScratch &snap) -> void {
-    // Grow-only: shrinking would free the allocations this scratch exists to reuse.
+    // Grow-only: shrinking would free the allocations this scratch exists to reuse. Each size is tested here, not by
+    // resize(): once grown, the call is out of line and costs a full frame at every reverse step. Per vector, because
+    // a failed growth may leave them at different sizes in a scratch that outlives the failure.
     const size_t occupied = layer.occupied_slot_count();
-    snap.sin_send_state.resize(std::max(snap.sin_send_state.size(), occupied));
-    snap.sin_send_op.resize(std::max(snap.sin_send_op.size(), occupied));
-    snap.sin_recv_state.resize(std::max(snap.sin_recv_state.size(), occupied));
-    snap.sin_recv_op.resize(std::max(snap.sin_recv_op.size(), occupied));
+    for (std::vector<VecD> *scratch :
+         {&snap.sin_send_state, &snap.sin_send_op, &snap.sin_recv_state, &snap.sin_recv_op}) {
+        if (scratch->size() < occupied) {
+            scratch->resize(occupied);
+        }
+    }
     layer.for_each_occupied_slot(
         [&snap, my_rank, &state, &op](size_t pos, size_t r, const detail::CrossRankSlotView &slot) {
             if (r == my_rank) {

@@ -76,15 +76,17 @@ template <size_t Scale>
 auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_t flat_owner, PartnerStaging &staging) {
     staging.position.assign(layer.cross_rank_rank_count(), 0);
     staging.blocks.clear();
-    size_t capacity = std::max<size_t>(staging.run_values, 1);
+    size_t largest = 0;
+    size_t total = 0;
     layer.for_each_occupied_slot([&](size_t rank, const CrossRankSlotView &slot) {
         if (rank != flat_owner) {
             staging.position[rank] = staging.blocks.size();
             staging.blocks.push_back({.rank = rank, .count = Scale * slot.sin_send_count});
-            capacity = std::max(capacity, Scale * slot.sin_send_count);
+            largest = std::max(largest, Scale * slot.sin_send_count);
+            total += Scale * slot.sin_send_count;
         }
     });
-    staging.values.resize(capacity);
+    staging.values.resize(staging_capacity(staging.run_values, total, largest));
     // Stage one run of consecutive blocks starting at `first`; returns the index after the run.
     const auto stage = [&board, &staging, flat_owner](size_t first) {
         auto &blocks = staging.blocks;
@@ -159,6 +161,8 @@ struct EvaluationPlan {
     bool opaque = false;         // some callback set is opaque: callback work runs on the primary
     VecD mapped;                 // replay angle per forward step (layer order)
     std::vector<uint8_t> wanted; // gradient: per layer record flags
+    // Gradient: reverse step j's factors, built once per call instead of twice per step on every owner.
+    std::vector<replay::TrigValues> reverse;
 };
 
 auto plan_evaluation(std::span<const EvalRequest> requests,
@@ -179,28 +183,10 @@ auto plan_evaluation(std::span<const EvalRequest> requests,
                 "sharded::evaluate: the replicated identity, parameters, mapping and generator coefficients must "
                 "agree on every shard");
         }
-        if (request.state.length() > request.op.size()) {
-            throw EvalStateArgumentError("EvalState::dot: the operator is shorter than the state.");
-        }
-        if (!plan.empty && request.graph.layers() != first.parameter_mapping.size()) {
-            throw std::invalid_argument(std::format("sharded::evaluate: a graph has {} layers for {} mapped parameters",
-                                                    request.graph.layers(),
-                                                    first.parameter_mapping.size()));
-        }
+        check_shard_request(request);
     }
     if (plan.empty) {
         return plan;
-    }
-    if (first.gen_coeffs.size() != first.parameter_mapping.size()) {
-        throw std::invalid_argument("sharded::evaluate: parameter_mapping and gen_coeffs differ in length");
-    }
-    for (const size_t index : first.parameter_mapping) {
-        if (index >= first.params.size()) {
-            throw std::invalid_argument(
-                std::format("sharded::evaluate: parameter index {} is out of range for {} parameters",
-                            index,
-                            first.params.size()));
-        }
     }
     // The low-level evaluator's checks (MPFunctions.cpp), in its order: accumulate (gradient), then scale, then
     // indices.
@@ -217,6 +203,12 @@ auto plan_evaluation(std::span<const EvalRequest> requests,
     plan.layers = first.parameter_mapping.size();
     plan.steps = gradient ? 2 * plan.layers : plan.layers;
     plan.mapped = map_params(first.params, first.parameter_mapping, first.gen_coeffs, 1.0, true);
+    if (gradient) {
+        plan.reverse.reserve(plan.layers);
+        for (size_t j = 0; j < plan.layers; ++j) {
+            plan.reverse.emplace_back(first.params[first.parameter_mapping[j]], first.gen_coeffs[j]);
+        }
+    }
     if (gradient && replay::plan_cos_records(plan.mapped, plan.wanted)) {
         for (const CosCallbacks &cos : callbacks) {
             if (!cos.indices) {
@@ -248,11 +240,8 @@ struct EvaluationRun {
 
     // Reverse step j = step - L replays layer L - 1 - j at parameter mapping[j].
     [[nodiscard]] auto reverse_layer(size_t step) const -> size_t { return (2 * plan.layers) - 1 - step; }
-    [[nodiscard]] auto reverse_trig(size_t step) const -> replay::TrigValues {
-        const EvalRequest &request = requests.front();
-        const size_t j = step - plan.layers;
-        const size_t param_ind = request.parameter_mapping[j];
-        return replay::TrigValues(request.params[param_ind], request.gen_coeffs[j]);
+    [[nodiscard]] auto reverse_trig(size_t step) const -> const replay::TrigValues & {
+        return plan.reverse[step - plan.layers];
     }
 
     auto frame(size_t t) -> void {
@@ -360,7 +349,7 @@ struct EvaluationRun {
         notify(observer, EvaluationWork::reverse_finish, step, t);
         const size_t idx = reverse_layer(step);
         const auto layer = request.graph.get_layer_traversal(idx);
-        const auto trig = reverse_trig(step);
+        const replay::TrigValues &trig = reverse_trig(step);
         replay::EndpointContrib ep;
         if (flat < layer.cross_rank_rank_count()) {
             ep = replay::apply_self_slot_derivative_paired(f.state,
@@ -555,19 +544,33 @@ auto hand_off_live_failure(const std::exception_ptr &error, const PhysicalExchan
 
 } // namespace
 
-auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
-    const size_t threads = round.threads();
-    const auto peers = other_ranks(PhysicalWorld{.rank = round.rank(), .ranks = round.ranks()});
-    round.reset_rows(shard);
-    for (size_t k = 0; k < peers.size(); ++k) {
-        for (size_t t = 0; t < threads; ++t) {
-            const size_t slot = (peers[k] * threads) + t;
-            const size_t count = slot < out.layout.counts.size() ? static_cast<size_t>(out.layout.counts[slot]) : 0;
-            round.set_send_count(shard, k, t, count);
-            round.set_recv_count(shard, k, t, count);
+auto check_shard_request(const EvalRequest &request) -> void {
+    if (request.state.length() > request.op.size()) {
+        throw EvalStateArgumentError("EvalState::dot: the operator is shorter than the state.");
+    }
+    if (request.params.empty()) {
+        return;
+    }
+    if (request.graph.layers() != request.parameter_mapping.size()) {
+        throw std::invalid_argument(std::format("sharded::evaluate: a graph has {} layers for {} mapped parameters",
+                                                request.graph.layers(),
+                                                request.parameter_mapping.size()));
+    }
+    if (request.gen_coeffs.size() != request.parameter_mapping.size()) {
+        throw std::invalid_argument("sharded::evaluate: parameter_mapping and gen_coeffs differ in length");
+    }
+    for (const size_t index : request.parameter_mapping) {
+        if (index >= request.params.size()) {
+            throw std::invalid_argument(
+                std::format("sharded::evaluate: parameter index {} is out of range for {} parameters",
+                            index,
+                            request.params.size()));
         }
     }
-    round.close_rows(shard);
+}
+
+auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
+    round.write_symmetric_rows(shard, out.layout.counts);
 }
 
 auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
@@ -594,8 +597,9 @@ auto pack_replay_column(PhysicalExchange &round,
     const auto peers = round.peers();
     for (size_t k = 0; k < peers.size(); ++k) {
         const size_t slot = (peers[k] * threads) + shard;
+        const auto column = round.send_column<double>(shard, k);
         for (size_t u = 0; u < threads; ++u) {
-            const auto slice = round.send_block<double>(u, k, shard);
+            const auto slice = column.block(u);
             if (slice.empty()) {
                 continue;
             }

@@ -1269,6 +1269,16 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_the_root) {
     BOOST_TEST_MESSAGE("pared layers storing a mask: " << stored << ", of which empty: " << empty_stored);
 }
 
+// A step's staging holds what the step reads when that fits one run, else one run, and always its largest block: a
+// small layer stages exactly as before (all of it in one run) without reserving a whole default run per owner.
+BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_capacity_is_sized_by_need) {
+    BOOST_TEST(sharded::staging_capacity(4096, 300, 40) == 300U);     // a small step: exactly its values
+    BOOST_TEST(sharded::staging_capacity(4096, 10000, 40) == 4096U);  // a large step: one default run
+    BOOST_TEST(sharded::staging_capacity(4096, 9000, 5000) == 5000U); // never below the largest block
+    BOOST_TEST(sharded::staging_capacity(1, 300, 40) == 40U);         // test seam: one block per run
+    BOOST_TEST(sharded::staging_capacity(4096, 0, 0) == 1U);          // never empty
+}
+
 // Stages every partner block in a run of its own, so small layers exercise the multi-run staging of the finishes.
 class OneBlockRuns final : public sharded::EvaluationObserver {
 public:

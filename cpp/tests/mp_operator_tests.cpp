@@ -21,9 +21,15 @@
 
 #include <algorithm>
 #include <complex>
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/Algebra.h"
@@ -398,6 +404,59 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_keeps_init_operator_entries_out_of_to
     acc += other;
     BOOST_CHECK_EQUAL(acc.init_operator_entries, 7U);
     BOOST_CHECK_EQUAL(acc.total_bytes(), 120U);
+}
+
+// Resident pages of [first, last) by mincore(); only pages wholly inside the range are counted.
+#ifdef __linux__
+auto resident_pages(const double *first, const double *last) -> size_t {
+    const auto page = static_cast<std::uintptr_t>(sysconf(_SC_PAGESIZE));
+    const auto begin = (reinterpret_cast<std::uintptr_t>(first) + page - 1) & ~(page - 1);
+    const auto end = reinterpret_cast<std::uintptr_t>(last) & ~(page - 1);
+    if (begin >= end) {
+        return 0;
+    }
+    std::vector<unsigned char> marks((end - begin) / page);
+    BOOST_REQUIRE_EQUAL(mincore(reinterpret_cast<void *>(begin), end - begin, marks.data()), 0);
+    return static_cast<size_t>(std::ranges::count_if(marks, [](unsigned char m) { return (m & 1U) != 0; }));
+}
+#endif
+
+// A large vector's spare capacity is returned to the system in place: no copy (the block stays where it is), the
+// values stay, and the accounting reports the entries alone, as after a shrinking copy. A small vector is still copied
+// down to its size.
+BOOST_AUTO_TEST_CASE(mp_operator_release_slack_returns_large_spare_capacity_in_place) {
+    detail::MPOperator<8> op;
+    constexpr size_t capacity = size_t{1} << 20; // 8 MiB of doubles
+    constexpr size_t live = capacity / 2 + 3;
+    op.op_coeffs.resize(capacity, 1.5); // every page of the block resident
+    op.op_coeffs.resize(live);
+    for (size_t i = 0; i < live; ++i) {
+        op.op_coeffs[i] = static_cast<double>(i);
+    }
+    op.state_vals_.reserve(64);
+    op.state_vals_.assign(5, -1.0);
+    const double *block = op.op_coeffs.data();
+#ifdef __linux__
+    BOOST_TEST_REQUIRE(resident_pages(block + live, block + op.op_coeffs.capacity()) > 0U);
+#endif
+
+    op.release_slack();
+
+    BOOST_TEST(op.op_coeffs.size() == live);
+    bool kept = true;
+    for (size_t i = 0; i < live; ++i) {
+        kept = kept && op.op_coeffs[i] == static_cast<double>(i);
+    }
+    BOOST_TEST(kept);
+    BOOST_TEST(op.state_vals_.capacity() == 5U);
+    BOOST_TEST(op.slack_copy_bytes() == 0U);
+    const auto breakdown = detail::estimate_memory_usage<8>(op);
+    BOOST_TEST(breakdown.op_coeffs_bytes == live * sizeof(double));
+    BOOST_TEST(breakdown.state_coeffs_bytes == 5 * sizeof(double));
+#ifdef __linux__
+    BOOST_TEST(op.op_coeffs.data() == block);
+    BOOST_TEST(resident_pages(block + live, block + op.op_coeffs.capacity()) == 0U);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {

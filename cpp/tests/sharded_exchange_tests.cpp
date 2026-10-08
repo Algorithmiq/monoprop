@@ -439,6 +439,118 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
     BOOST_TEST(big.live() == 0);
 }
 
+// A replay step's bulk path (write_symmetric_rows, the all-other-ranks plan_totals, send_column) produces the same
+// tables, staging layout and slices as the entry-wise path, and send_column's view of column t is exactly the
+// send_block slices (u, peer, t) of every local source u. Layouts shorter than the world fill the missing slots with
+// zero counts; the owner's own rank is never a peer.
+BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_entrywise_path) {
+    uint64_t state = 0xD1B54A32D192ED03ULL;
+    const auto next = [&state](uint64_t bound) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state % bound;
+    };
+    for (const size_t ranks : {size_t{2}, size_t{3}, size_t{4}}) {
+        for (const size_t threads : {size_t{1}, size_t{2}, size_t{5}}) {
+            for (size_t rank = 0; rank < ranks; ++rank) {
+                for (const bool short_layouts : {false, true}) {
+                    BOOST_TEST_CONTEXT("ranks " << ranks << " threads " << threads << " rank " << rank << " short "
+                                                << short_layouts) {
+                        const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = rank, .ranks = ranks};
+                        PhysicalExchange entrywise(w, threads, ExchangeElement::f64, kTag);
+                        PhysicalExchange bulk(w, threads, ExchangeElement::f64, kTag);
+                        std::vector<size_t> peers;
+                        for (size_t b = 0; b < ranks; ++b) {
+                            if (b != rank) {
+                                peers.push_back(b);
+                            }
+                        }
+                        for (size_t t = 0; t < threads; ++t) {
+                            // One publication layout per owner, indexed by flat slot; about a third of the slots
+                            // empty, the own rank's slots arbitrary (never read), and sometimes cut short.
+                            const size_t slots = short_layouts ? next(ranks * threads + 1) : ranks * threads;
+                            std::vector<int> counts(slots);
+                            for (int &count : counts) {
+                                count = next(3) == 0 ? 0 : static_cast<int>(1 + next(40));
+                            }
+                            entrywise.reset_rows(t);
+                            for (size_t k = 0; k < peers.size(); ++k) {
+                                for (size_t o = 0; o < threads; ++o) {
+                                    const size_t slot = (peers[k] * threads) + o;
+                                    const size_t count = slot < counts.size() ? static_cast<size_t>(counts[slot]) : 0;
+                                    entrywise.set_send_count(t, k, o, count);
+                                    entrywise.set_recv_count(t, k, o, count);
+                                }
+                            }
+                            entrywise.close_rows(t);
+                            bulk.write_symmetric_rows(t, counts);
+                        }
+                        entrywise.plan_totals(peers, ExchangeTransport::collective);
+                        bulk.plan_totals(ExchangeTransport::collective);
+                        BOOST_TEST(std::ranges::equal(bulk.peers(), peers));
+                        for (size_t t = 0; t < threads; ++t) {
+                            entrywise.plan_column(t);
+                            bulk.plan_column(t);
+                        }
+                        for (size_t t = threads; t-- > 0;) {
+                            entrywise.place_column(t);
+                            bulk.place_column(t);
+                        }
+                        const auto *send0 = entrywise.send_block<double>(0, 0, 0).data();
+                        const auto *send1 = bulk.send_block<double>(0, 0, 0).data();
+                        const auto *recv0 = entrywise.recv_block<double>(0, 0, 0).data();
+                        const auto *recv1 = bulk.recv_block<double>(0, 0, 0).data();
+                        size_t mismatches = 0;
+                        for (size_t t = 0; t < threads; ++t) {
+                            for (size_t k = 0; k < peers.size(); ++k) {
+                                const auto column = bulk.send_column<double>(t, k);
+                                mismatches += static_cast<size_t>(column.offsets.size() != threads
+                                                                  || column.counts.size() != threads);
+                                for (size_t o = 0; o < threads; ++o) {
+                                    mismatches += static_cast<size_t>(
+                                        entrywise.send_count(t, k, o) != bulk.send_count(t, k, o)
+                                        || entrywise.recv_count(t, k, o) != bulk.recv_count(t, k, o));
+                                    const auto a = entrywise.send_block<double>(t, k, o);
+                                    const auto b = bulk.send_block<double>(t, k, o);
+                                    const auto c = entrywise.recv_block<double>(t, k, o);
+                                    const auto d = bulk.recv_block<double>(t, k, o);
+                                    mismatches += static_cast<size_t>(
+                                        a.size() != b.size() || a.data() - send0 != b.data() - send1
+                                        || c.size() != d.size() || c.data() - recv0 != d.data() - recv1);
+                                    // Column t's entry for source o is send_block(o, k, t).
+                                    const auto slice = bulk.send_block<double>(o, k, t);
+                                    const auto block = column.block(o);
+                                    mismatches += static_cast<size_t>(block.data() != slice.data()
+                                                                      || block.size() != slice.size());
+                                }
+                            }
+                        }
+                        BOOST_TEST(mismatches == 0U);
+                    }
+                }
+            }
+        }
+    }
+    const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = 1, .ranks = 3};
+    PhysicalExchange round(w, 2, ExchangeElement::f64, kTag);
+    BOOST_CHECK_THROW(round.write_symmetric_rows(2, std::vector<int>{}), std::out_of_range);
+    BOOST_CHECK_THROW(round.write_symmetric_rows(0, std::vector<int>{0, 0, 0, 0, -1, 0}), std::length_error);
+    // Columns are readable only once the round is planned, with the round's element type, inside the table.
+    BOOST_CHECK_THROW(static_cast<void>(round.send_column<double>(0, 0)), std::logic_error);
+    round.write_symmetric_rows(0, std::vector<int>{1, 1, 1, 1, 1, 1});
+    round.write_symmetric_rows(1, std::vector<int>{1, 1, 1, 1, 1, 1});
+    round.plan_totals(ExchangeTransport::pairwise);
+    round.plan_column(0);
+    round.plan_column(1);
+    round.place_column(0);
+    BOOST_CHECK_THROW(static_cast<void>(round.send_column<uint64_t>(0, 0)), std::logic_error);
+    BOOST_CHECK_THROW(static_cast<void>(round.send_column<double>(2, 0)), std::out_of_range);
+    BOOST_CHECK_THROW(static_cast<void>(round.send_column<double>(0, 2)), std::out_of_range);
+    BOOST_TEST(round.send_column<double>(0, 1).block(1).size() == 1U);
+    BOOST_TEST(round.live() == 0);
+}
+
 BOOST_AUTO_TEST_CASE(sharded_exchange_owner_rounds_persist_by_kind) {
     using Kind = sharded::PhysicalRounds::Kind;
     const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = 0, .ranks = 2};
