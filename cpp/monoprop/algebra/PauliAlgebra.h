@@ -42,11 +42,11 @@ template <size_t NumModes>
 
 namespace detail {
 struct PauliUv {
-    uint64_t v; // z-plane (even physical bits)
     uint64_t u; // odd-bit plane, aligned onto the even lane
+    uint64_t v; // z-plane (even physical bits)
 };
 [[nodiscard]] inline auto pauli_uv(uint64_t word, uint64_t e) -> PauliUv {
-    return {word & e, (word >> 1) & e};
+    return {.u = (word >> 1) & e, .v = word & e};
 }
 } // namespace detail
 
@@ -70,7 +70,7 @@ template <size_t NumModes>
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     size_t y = 0;
     for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
-        const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
+        const auto [u, v] = detail::pauli_uv(p.word(w), e_mask.word(w));
         y += static_cast<size_t>(std::popcount(v & ~u));
     }
     return y;
@@ -87,6 +87,19 @@ namespace detail {
 // Reduce a (possibly negative) i-power exponent to [0, 4).
 [[nodiscard]] inline constexpr auto mod4(long e) -> int {
     return static_cast<int>(((e % 4) + 4) % 4);
+}
+
+/*! @brief One word's share of the rotation-sign exponent: y(mono) - y(new_mono) + 2·|v_mono & x_gen|.
+ *
+ *  `mono`, `new_mono` and `gen` are the same word of each operand, and `e` is that word's even mask.
+ */
+[[nodiscard]] inline auto pauli_sign_exponent_word(uint64_t mono, uint64_t new_mono, uint64_t gen, uint64_t e) -> long {
+    const auto [u_m, v_m] = pauli_uv(mono, e);
+    const auto [u_n, v_n] = pauli_uv(new_mono, e);
+    const auto [u_g, v_g] = pauli_uv(gen, e);
+    const uint64_t x_g = u_g ^ v_g;
+    return static_cast<long>(std::popcount(v_m & ~u_m)) - static_cast<long>(std::popcount(v_n & ~u_n))
+           + (2 * static_cast<long>(std::popcount(v_m & x_g)));
 }
 } // namespace detail
 
@@ -124,46 +137,30 @@ template <size_t NumModes>
                                                        const Monomial<NumModes> &mono,
                                                        const Monomial<NumModes> &new_mono) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
-    long delta = static_cast<long>(ctx.g_y);
-    long cross = 0;
+    auto exponent = static_cast<long>(ctx.g_y);
     for (size_t k = 0; k < ctx.nz_count; ++k) {
         const size_t w = ctx.nz_words[k];
-        const uint64_t e = e_mask.word(w);
-        const auto [v_m, u_m] = detail::pauli_uv(mono.word(w), e);
-        const auto [v_n, u_n] = detail::pauli_uv(new_mono.word(w), e);
-        const auto [v_g, u_g] = detail::pauli_uv(ctx.gen.word(w), e);
-        delta += std::popcount(v_m & ~u_m);
-        delta -= std::popcount(v_n & ~u_n);
-        const uint64_t x_g = u_g ^ v_g;
-        cross += std::popcount(v_m & x_g);
+        exponent += detail::pauli_sign_exponent_word(mono.word(w), new_mono.word(w), ctx.gen.word(w), e_mask.word(w));
     }
-    return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
+    return detail::mod4(exponent) == 1 ? -1 : 1;
 }
 
-// pauli_rotation_sign from ascending positions; rebuilds only the source words where G is nonzero.
+/*! @brief pauli_rotation_sign from the source's ascending positions.
+ *
+ *  Rebuilds only the source words where the generator is nonzero; the partner word is source ^ generator.
+ */
 template <size_t NumModes, typename PosT>
 [[gnu::always_inline]] inline auto pauli_rotation_sign_positions(const PauliGenContext<NumModes> &ctx,
                                                                  std::span<const PosT> src) -> int {
     constexpr auto e_mask = pauli_even_mask<NumModes>();
-    long delta = static_cast<long>(ctx.g_y);
-    long cross = 0;
-    auto add_word = [&](size_t w, uint64_t m) {
-        const uint64_t g = ctx.gen.word(w);
-        const uint64_t e = e_mask.word(w);
-        const auto [v_m, u_m] = detail::pauli_uv(m, e);
-        const auto [v_n, u_n] = detail::pauli_uv(m ^ g, e);
-        const auto [v_g, u_g] = detail::pauli_uv(g, e);
-        delta += std::popcount(v_m & ~u_m);
-        delta -= std::popcount(v_n & ~u_n);
-        const uint64_t x_g = u_g ^ v_g;
-        cross += std::popcount(v_m & x_g);
-    };
+    auto exponent = static_cast<long>(ctx.g_y);
     size_t k = 0;
     uint64_t m = 0;
     for (const PosT p : src) {
-        const size_t q = static_cast<size_t>(p);
+        const auto q = static_cast<size_t>(p);
         while (k < ctx.nz_count && (q >> 6) > ctx.nz_words[k]) {
-            add_word(ctx.nz_words[k++], m);
+            const size_t w = ctx.nz_words[k++];
+            exponent += detail::pauli_sign_exponent_word(m, m ^ ctx.gen.word(w), ctx.gen.word(w), e_mask.word(w));
             m = 0;
         }
         if (k == ctx.nz_count) {
@@ -172,10 +169,11 @@ template <size_t NumModes, typename PosT>
         m |= static_cast<uint64_t>((q >> 6) == ctx.nz_words[k]) << (q & 63);
     }
     for (; k < ctx.nz_count; ++k) {
-        add_word(ctx.nz_words[k], m);
+        const size_t w = ctx.nz_words[k];
+        exponent += detail::pauli_sign_exponent_word(m, m ^ ctx.gen.word(w), ctx.gen.word(w), e_mask.word(w));
         m = 0;
     }
-    return detail::mod4(delta + 2 * cross) == 1 ? -1 : 1;
+    return detail::mod4(exponent) == 1 ? -1 : 1;
 }
 
 // Diagonal element <b|P|b> = (-1)^{|Z ∩ occupied|} of a Z-only Pauli against the initial product

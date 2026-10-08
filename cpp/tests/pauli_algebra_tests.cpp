@@ -42,7 +42,7 @@ template <size_t NumModes>
     constexpr auto e_mask = pauli_even_mask<NumModes>();
     size_t weight = 0;
     for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
-        const auto [v, u] = detail::pauli_uv(p.word(w), e_mask.word(w));
+        const auto [u, v] = detail::pauli_uv(p.word(w), e_mask.word(w));
         weight += static_cast<size_t>(std::popcount(v | u));
     }
     return weight;
@@ -62,7 +62,7 @@ template <size_t NumModes>
     for (size_t w = 0; w < Monomial<NumModes>::num_words(); ++w) {
         const uint64_t e = e_mask.word(w);
         const uint64_t z_a = a.word(w) & e; // v-plane of A
-        const auto [v_b, u_b] = detail::pauli_uv(b.word(w), e);
+        const auto [u_b, v_b] = detail::pauli_uv(b.word(w), e);
         const uint64_t x_b = u_b ^ v_b; // x-plane of B
         cross += std::popcount(z_a & x_b);
     }

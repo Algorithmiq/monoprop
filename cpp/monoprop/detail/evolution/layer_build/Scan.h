@@ -83,6 +83,42 @@ struct EvenParityNzWord {
     uint64_t foll;
 };
 
+/*! @brief Sets the followers (`foll = overlap & pivot`) of one fold block's words, for a sparse pivot column.
+ *
+ *  `block_nz` holds the block's nonzero words, all inside fold words [bb, be). The pivot's postings in the
+ *  block are scattered into the all-zero pivot scratch, read, then re-zeroed. `cursor` indexes the first
+ *  pivot posting not yet passed and moves past the block. Returns the number of followers set.
+ */
+inline auto set_sparse_pivot_followers(const std::vector<TermIndex> &pivot_rows,
+                                       size_t &cursor,
+                                       size_t bb,
+                                       size_t be,
+                                       std::span<EvenParityNzWord> block_nz) -> size_t {
+    const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
+    const auto first =
+        std::lower_bound(pivot_rows.begin() + static_cast<std::ptrdiff_t>(cursor), pivot_rows.end(), bb * 64, below);
+    const auto last = std::lower_bound(first, pivot_rows.end(), be * 64, below);
+    cursor = static_cast<size_t>(last - pivot_rows.begin());
+    uint64_t *const pw = pivot_zero_scratch().words.data();
+    for (auto it = first; it != last; ++it) {
+        pw[(*it >> 6) - bb] |= uint64_t{1} << (*it & 63U);
+    }
+    size_t n_foll = 0;
+    for (EvenParityNzWord &e : block_nz) {
+        e.foll = e.overlap & pw[e.base / 64 - bb];
+        n_foll += static_cast<size_t>(std::popcount(e.foll));
+    }
+    if (static_cast<size_t>(last - first) > be - bb) {
+        std::memset(pw, 0, (be - bb) * sizeof(uint64_t));
+    }
+    else {
+        for (auto it = first; it != last; ++it) {
+            pw[(*it >> 6) - bb] = 0;
+        }
+    }
+    return n_foll;
+}
+
 // Even-parity scan pass 1 over words [wlo,whi). n_anti/n_foll are tallied here so pass 2 reserves once.
 // `pivot_col` is read separately from `gen_cols` so a caller can fold a transformed generator while
 // splitting on the untransformed one. `g_odd` XORs the per-row parity(|M|) correction (row_parity_ptr)
@@ -114,38 +150,18 @@ inline auto even_parity_scan_pass1(const InvertedIndex<NumModes> &sc,
         }
         nz.push_back(EvenParityNzWord{wi * 64, overlap, foll});
     };
-    // A sparse pivot is scattered into zeroed scratch only for blocks with anticommuters, then re-zeroed.
+    // A sparse pivot is expanded only for blocks with anticommuters.
     const std::vector<TermIndex> *const pivot_rows = pivot_dense ? nullptr : &sc.sparse_column_rows(pivot_col);
     size_t pivot_cursor = 0;
     size_t nz_block_start = 0;
     auto on_block = [&](size_t bb, size_t be) {
         const size_t block_start = std::exchange(nz_block_start, nz.size());
-        if (pivot_dense || nz.size() == block_start) {
-            return;
-        }
-        const auto below = [](TermIndex row, size_t bound) { return static_cast<size_t>(row) < bound; };
-        const auto first = std::lower_bound(pivot_rows->begin() + static_cast<std::ptrdiff_t>(pivot_cursor),
-                                            pivot_rows->end(),
-                                            bb * 64,
-                                            below);
-        const auto last = std::lower_bound(first, pivot_rows->end(), be * 64, below);
-        pivot_cursor = static_cast<size_t>(last - pivot_rows->begin());
-        uint64_t *const pw = pivot_zero_scratch().words.data();
-        for (auto it = first; it != last; ++it) {
-            pw[(*it >> 6) - bb] |= uint64_t{1} << (*it & 63U);
-        }
-        for (size_t k = block_start; k < nz.size(); ++k) {
-            EvenParityNzWord &e = nz[k];
-            e.foll = e.overlap & pw[e.base / 64 - bb];
-            n_foll += static_cast<size_t>(std::popcount(e.foll));
-        }
-        if (static_cast<size_t>(last - first) > be - bb) {
-            std::memset(pw, 0, (be - bb) * sizeof(uint64_t));
-        }
-        else {
-            for (auto it = first; it != last; ++it) {
-                pw[(*it >> 6) - bb] = 0;
-            }
+        if (!pivot_dense && nz.size() > block_start) {
+            n_foll += set_sparse_pivot_followers(*pivot_rows,
+                                                 pivot_cursor,
+                                                 bb,
+                                                 be,
+                                                 std::span<EvenParityNzWord>(nz).subspan(block_start));
         }
     };
     for_each_fold_word<NumModes>(sc,
@@ -460,7 +476,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
         const double *const prefetch_coeffs = fused_scale_coeffs != nullptr ? fused_scale_coeffs : coeffs.data();
         const bool prefetch_ahead = ham.size() >= kPrefetchMinRows && n_anti * 16 < ham.size()
                                     && (fused_scale_coeffs != nullptr || coeffs.size() >= ham.size());
-        // Bind once: glibc < 2.34 resolves thread_local slowly, and indexing `nz` per word cost 7%.
         const std::span<const EvenParityNzWord> nz_words(nz);
         for (size_t kw = 0; kw < nz_words.size(); ++kw) {
             const auto &w = nz_words[kw];

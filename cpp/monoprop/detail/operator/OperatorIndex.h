@@ -333,7 +333,7 @@ public:
         }
     }
 
-    // fold_hash from positions.
+    /*! @brief fold_hash of the monomial whose set bits are the ascending `pos`, without building it. */
     [[nodiscard]] static auto fold_hash_positions(std::span<const PosT> pos) noexcept -> uint32_t {
         return fold_to_32_(monomial_hash_positions<NumModes>(pos));
     }

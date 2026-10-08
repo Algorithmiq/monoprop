@@ -160,7 +160,7 @@ template <size_t NumModes>
             .or_sum = (first_pair | second_pair).count()};
 }
 
-// cutoff_sums from ascending positions. Slots below the active-mode offset are skipped.
+/*! @brief cutoff_sums from ascending positions. Slots below the active-mode offset are skipped. */
 template <size_t NumModes, typename PosT>
 [[gnu::always_inline]] inline auto cutoff_sums_positions(std::span<const PosT> pos, size_t logical_num_modes)
     -> CutoffSums {
@@ -179,7 +179,7 @@ template <size_t NumModes, typename PosT>
     return {.xor_sum = popcount - (2 * pairs), .popcount_sum = popcount, .or_sum = popcount - pairs};
 }
 
-// True iff the ascending positions form (2q, 2q + 1) pairs only.
+/*! @brief True iff the ascending positions form (2q, 2q + 1) pairs only. */
 template <typename PosT>
 [[gnu::always_inline]] inline auto positions_fully_paired(std::span<const PosT> pos) -> bool {
     if (pos.size() % 2 != 0) {
@@ -193,7 +193,7 @@ template <typename PosT>
     return true;
 }
 
-// Fully paired rows in [first, op.size()), ascending. Inline rows are tested on their positions.
+/*! @brief Fully paired rows in [first, op.size()), ascending. Inline rows are tested on their positions. */
 template <size_t NumModes, typename Rows>
 auto fully_paired_rows_from(size_t first, const Rows &op) -> VecZ {
     VecZ result;
@@ -315,13 +315,15 @@ public:
         return cutoff_fn_(mono);
     }
 
-    // True for the built-in cutoffs; a custom CutoffFn needs the dense monomial.
+    /*! @brief True for the built-in cutoffs; a custom CutoffFn needs the dense monomial. */
     [[nodiscard]] auto has_positions_form() const -> bool {
         return length_cutoff_ != nullptr || support_cutoff_ != nullptr;
     }
 
-    // passes_with_popcount on ascending positions. `pairs` is the paired-mode count. Requires
-    // has_positions_form().
+    /*! @brief passes_with_popcount on ascending positions.
+     *
+     *  `pairs` is the number of paired modes {2m, 2m+1} in `pos`. Requires has_positions_form().
+     */
     template <typename PosT>
     [[gnu::always_inline]] auto passes_positions(std::span<const PosT> pos, size_t pairs) const -> bool {
         assert(has_positions_form());
@@ -354,7 +356,7 @@ public:
     }
 
 private:
-    // With every mode active the pair count gives the sums directly.
+    /*! @brief cutoff_sums from positions; with every mode active the pair count gives the sums directly. */
     template <typename PosT>
     [[gnu::always_inline]] static auto sums_from_pairs_(std::span<const PosT> pos,
                                                         size_t pairs,

@@ -68,7 +68,7 @@ inline auto monomial_hash(const Monomial<NumModes> &mono) noexcept -> size_t {
 }
 
 namespace detail {
-// Hash term of an all-zero word i.
+/*! @brief kZeroWordMix<NumModes>[i] is word i's term in monomial_hash when that word is zero. */
 template <size_t NumModes>
 inline constexpr auto kZeroWordMix = [] {
     std::array<uint64_t, Monomial<NumModes>::num_words()> mixes{};
@@ -78,7 +78,7 @@ inline constexpr auto kZeroWordMix = [] {
     return mixes;
 }();
 
-// Hash of the all-zero monomial (W > 1).
+/*! @brief monomial_hash of the all-zero monomial (W > 1): the XOR of every kZeroWordMix entry. */
 template <size_t NumModes>
 inline constexpr uint64_t kZeroWordFold = [] {
     uint64_t h = 0;
@@ -88,11 +88,23 @@ inline constexpr uint64_t kZeroWordFold = [] {
     return h;
 }();
 
-// Up to this many words, monomial_hash_positions scatters densely rather than walking occupied words.
+/*! @brief Up to this many words, monomial_hash_positions scatters into a dense array instead of
+ *  walking only the occupied words. Affects speed only.
+ */
 inline constexpr size_t kDenseHashMaxWords = 4;
 } // namespace detail
 
-// monomial_hash, bit for bit, from ascending positions below 2 * NumModes.
+/*! @brief Computes monomial_hash of the monomial whose set bits are `pos`, without building it.
+ *
+ *  Returns exactly what monomial_hash returns for that monomial, so the two can be mixed in one table.
+ *  For W > 1 words that hash is the XOR over every word i of mix(word_i + i). Most words of a sparse
+ *  monomial are zero, and a zero word contributes the constant kZeroWordMix[i]. So the hash starts from
+ *  kZeroWordFold, the hash of the all-zero monomial, and each occupied word w swaps its zero term
+ *  kZeroWordMix[w] for mix(word_w + w). The cost is O(pos.size()) rather than O(W). At most
+ *  kDenseHashMaxWords words, scattering into a dense array is cheaper and gives the same value.
+ *
+ *  @param pos Set-bit positions, ascending, each below 2 * NumModes.
+ */
 template <size_t NumModes, typename PosT>
 [[gnu::always_inline]] inline auto monomial_hash_positions(std::span<const PosT> pos) noexcept -> size_t {
     using Hash = SplitmixHash<Monomial<NumModes>>;

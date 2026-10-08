@@ -216,8 +216,6 @@ struct ContractSink {
     // No constructor on purpose: as an aggregate the call site names each field, so the two adjacent
     // bools cannot be swapped silently. GraphSink keeps its ctor because it sizes `acc` from R.
 
-    // Overlap the batch's scattered hit-coefficient misses.
-    [[gnu::always_inline]] auto prefetch_hit(size_t found) const -> void { __builtin_prefetch(&op_coeffs[found]); }
     // Self-resolve hit: both endpoints are local.
     [[gnu::always_inline]] auto self_hit(size_t src, size_t found, int phase, double v_src) -> void {
         const double v_tgt = fused_scale ? op_coeffs[found] * inv_cos : op_coeffs[found];
@@ -553,12 +551,12 @@ private:
                                                  std::span<const uint32_t>(k_of).first(m),
                                                  std::span<size_t>(found).first(m),
                                                  std::span<uint32_t>(hashes).first(m));
-            if constexpr (requires { sink.prefetch_hit(size_t{}); }) {
-                // Smaller operators are cache-resident.
-                constexpr size_t prefetch_hit_min_rows = size_t{1} << 21;
-                for (size_t j = 0; op_size >= prefetch_hit_min_rows && j < m; ++j) {
+            // Overlap the batch's scattered hit-coefficient misses; smaller operators are cache-resident.
+            if constexpr (requires { sink.op_coeffs[size_t{}]; }) {
+                constexpr auto prefetch_hit_min_rows = size_t{1} << 21;
+                for (auto j = size_t{0}; op_size >= prefetch_hit_min_rows && j < m; ++j) {
                     if (found[j] < op_size) {
-                        sink.prefetch_hit(found[j]);
+                        __builtin_prefetch(&sink.op_coeffs[found[j]]);
                     }
                 }
             }

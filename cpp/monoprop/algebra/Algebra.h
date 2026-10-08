@@ -56,7 +56,7 @@ struct MajoranaAlgebra {
                               const Monomial<NumModes> & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
     }
-    // rotation_sign from ascending positions.
+    /*! @brief rotation_sign from the source's ascending positions. */
     template <typename PosT>
     static auto rotation_sign_positions(const GenContext &ctx, std::span<const PosT> src) -> int {
         size_t parity = 0;
