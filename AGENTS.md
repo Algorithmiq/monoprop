@@ -6,7 +6,7 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
 
 ## Rules
 
-- C++23 idioms, trailing return types, follow almost-always-`auto` style, `clang-format` with the
+- C++23 idioms, deducing this, trailing return types, follow almost-always-`auto` style, `clang-format` with the
   repository configuration.
 - Use snake case for naming variables and functions, camel case for classes. E.g., `kBits` is wrong for a integer variable, use `num_bits` instead.
 - Only private member variables are suffixed with an underscore.
