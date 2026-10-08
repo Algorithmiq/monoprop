@@ -74,6 +74,54 @@ template <std::ranges::contiguous_range Row, std::ranges::contiguous_range Gen, 
     return {n, overlap};
 }
 
+/*! @brief MergedPartner plus the paired-mode count. */
+struct MergedPairedPartner {
+    size_t count;   //!< positions written to out
+    size_t overlap; //!< positions present in both inputs, which therefore cancelled
+    size_t pairs;   //!< output pairs {2m, 2m+1}
+};
+
+/*! @brief merge_partner_positions that also counts paired modes ({2m, 2m+1} written consecutively). */
+template <std::ranges::contiguous_range Row, std::ranges::contiguous_range Gen, std::ranges::contiguous_range Out>
+[[gnu::always_inline]] inline auto merge_partner_positions_paired(const Row &a, const Gen &b, Out &&out) noexcept
+    -> MergedPairedPartner {
+    using PosT = std::ranges::range_value_t<Out>;
+    const size_t ka = std::ranges::size(a);
+    const size_t kb = std::ranges::size(b);
+    size_t i = 0;
+    size_t j = 0;
+    size_t n = 0;
+    size_t overlap = 0;
+    size_t pairs = 0;
+    size_t prev = ~size_t{0};
+    auto put = [&](size_t p) {
+        pairs += static_cast<size_t>((prev ^ p) < 2);
+        prev = p;
+        out[n++] = static_cast<PosT>(p);
+    };
+    while (i < ka && j < kb) {
+        const size_t pa = static_cast<size_t>(a[i]);
+        const size_t pb = static_cast<size_t>(b[j]);
+        if (pa == pb) {
+            ++overlap;
+            ++i;
+            ++j;
+            continue;
+        }
+        const size_t p = pa < pb ? pa : pb;
+        i += static_cast<size_t>(pa < pb);
+        j += static_cast<size_t>(pb < pa);
+        put(p);
+    }
+    for (; i < ka; ++i) {
+        put(static_cast<size_t>(a[i]));
+    }
+    for (; j < kb; ++j) {
+        put(static_cast<size_t>(b[j]));
+    }
+    return {n, overlap, pairs};
+}
+
 /*! @brief Stages self-owned query positions for direct use by OperatorIndex's
  *  find_batch_positions and set_positions, with no encoding step.
  */

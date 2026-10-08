@@ -23,12 +23,16 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <span>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/evolution/layer_build/PartnerMerge.h"
 
 using namespace monoprop;
 using cd = std::complex<double>;
@@ -68,6 +72,14 @@ auto check_cutoff_sums_width(std::mt19937_64 &rng, size_t logical) -> void {
             BOOST_REQUIRE_EQUAL(got.xor_sum, want.xor_sum);
             BOOST_REQUIRE_EQUAL(got.popcount_sum, want.popcount_sum);
             BOOST_REQUIRE_EQUAL(got.or_sum, want.or_sum);
+            std::vector<uint16_t> pos;
+            for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
+                pos.push_back(static_cast<uint16_t>(b));
+            }
+            const auto from_pos = cutoff_sums_positions<N>(std::span<const uint16_t>(pos), logical);
+            BOOST_REQUIRE_EQUAL(from_pos.xor_sum, want.xor_sum);
+            BOOST_REQUIRE_EQUAL(from_pos.popcount_sum, want.popcount_sum);
+            BOOST_REQUIRE_EQUAL(from_pos.or_sum, want.or_sum);
         }
     }
 }
@@ -85,6 +97,7 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_sums_matches_bitwise_reference_across_width
     check_cutoff_sums_width<64>(rng, 64); // W = 128, exactly two words
     check_cutoff_sums_width<128>(rng, 120);
     check_cutoff_sums_width<256>(rng, 250); // the production shape
+    check_cutoff_sums_width<1024>(rng, 1000);
 }
 
 // Raw bits {0,1} and {4,5} are two complete pairs.
@@ -341,4 +354,103 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_generate_paired_op_matches_the_enumeration)
     for (size_t i = 0; i < seen.size(); ++i) {
         BOOST_TEST(listed[i] == seen[i]);
     }
+}
+
+namespace {
+
+// passes_positions agrees with passes_with_popcount on every partner, including inactive-prefix and
+// fully paired cases.
+template <typename Mono>
+auto positions_of(const Mono &mono) -> std::vector<uint16_t> {
+    std::vector<uint16_t> pos;
+    for (size_t b = mono.find_first(); b < mono.size(); b = mono.find_next(b)) {
+        pos.push_back(static_cast<uint16_t>(b));
+    }
+    return pos;
+}
+
+template <size_t N>
+auto check_passes_positions(std::mt19937_64 &rng, size_t logical) -> void {
+    std::uniform_int_distribution<size_t> bit(0, (2 * N) - 1);
+    std::uniform_int_distribution<size_t> mode(2 * (N - logical) / 2, N - 1);
+    for (const unsigned int cutoff : {2U, 4U, 6U, 10U}) {
+        CutoffFn<N> length_fn = detail::LengthCutoff<N>{.cutoff = cutoff, .logical_num_modes = logical};
+        CutoffFn<N> support_fn = detail::SupportCutoff<N>{.cutoff = cutoff, .logical_num_modes = logical};
+        const detail::CutoffEvaluator<N> length_ev(length_fn);
+        const detail::CutoffEvaluator<N> support_ev(support_fn);
+        BOOST_REQUIRE(length_ev.has_positions_form());
+        BOOST_REQUIRE(support_ev.has_positions_form());
+        for (int rep = 0; rep < 400; ++rep) {
+            Monomial<N> src;
+            const size_t singles = static_cast<size_t>(rep % 14);
+            for (size_t k = 0; k < singles; ++k) {
+                src.set(bit(rng));
+            }
+            for (size_t k = 0; k < static_cast<size_t>(rep % 5); ++k) {
+                const size_t m = mode(rng);
+                src.set(2 * m);
+                src.set((2 * m) + 1);
+            }
+            Monomial<N> gen;
+            for (size_t k = 0; k < static_cast<size_t>(rep % 4); ++k) {
+                gen.set(bit(rng));
+            }
+            const auto mono = src ^ gen;
+            const auto src_pos = positions_of(src);
+            const auto gen_pos = positions_of(gen);
+            std::vector<uint16_t> pos(src_pos.size() + gen_pos.size());
+            const auto merged = detail::merge_partner_positions_paired(src_pos, gen_pos, pos);
+            pos.resize(merged.count);
+            BOOST_REQUIRE(pos == positions_of(mono));
+            BOOST_REQUIRE_EQUAL(merged.overlap, src.count_and(gen));
+            const std::span<const uint16_t> ps(pos);
+            BOOST_REQUIRE_EQUAL(length_ev.passes_positions(ps, merged.pairs),
+                                length_ev.passes_with_popcount(mono, pos.size()));
+            BOOST_REQUIRE_EQUAL(support_ev.passes_positions(ps, merged.pairs),
+                                support_ev.passes_with_popcount(mono, pos.size()));
+        }
+    }
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(majorana_cutoff_passes_positions_matches_dense) {
+    std::mt19937_64 rng(0x1F0E6U);
+    check_passes_positions<32>(rng, 32);
+    check_passes_positions<32>(rng, 30);
+    check_passes_positions<96>(rng, 90);
+    check_passes_positions<1024>(rng, 1024);
+    check_passes_positions<1024>(rng, 1000);
+
+    CutoffFn<32> opaque_fn = [](const Monomial<32> &) { return true; };
+    BOOST_TEST(!detail::CutoffEvaluator<32>(opaque_fn).has_positions_form());
+}
+
+// MajoranaAlgebra's positions-form rotation sign equals the dense masked parity.
+BOOST_AUTO_TEST_CASE(majorana_rotation_sign_positions_matches_dense) {
+    auto check = [](auto tag) {
+        constexpr size_t N = decltype(tag)::value;
+        std::mt19937_64 rng(0x5E7A11ULL + N);
+        std::uniform_int_distribution<size_t> bit(0, (2 * N) - 1);
+        for (int trial = 0; trial < 500; ++trial) {
+            Monomial<N> m;
+            Monomial<N> g;
+            for (int k = 0; k < 6; ++k) {
+                m.set(bit(rng));
+            }
+            for (int k = 0; k < 1 + (trial % 4); ++k) {
+                g.set(bit(rng));
+            }
+            std::vector<uint16_t> pos;
+            for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+                pos.push_back(static_cast<uint16_t>(b));
+            }
+            const auto ctx = MajoranaAlgebra<N>::make_gen_context(g);
+            BOOST_TEST(MajoranaAlgebra<N>::rotation_sign_positions(ctx, std::span<const uint16_t>(pos))
+                       == MajoranaAlgebra<N>::rotation_sign(ctx, m, m ^ g));
+        }
+    };
+    check(std::integral_constant<size_t, 32>{});
+    check(std::integral_constant<size_t, 96>{});
+    check(std::integral_constant<size_t, 1024>{});
 }
