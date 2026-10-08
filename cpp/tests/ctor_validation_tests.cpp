@@ -35,9 +35,9 @@ namespace {
 constexpr size_t N = 8;
 using MP = MonomialPropagator<N>;
 
-// Construct an invalid partitioned Schrodinger propagator. Its cardinality check must run before
-// partition workers start, or a worker's exception is masked by the poisoned shared-memory transport.
-auto make_oversized_partitioned_schrodinger() -> MonomialPropagator<64> {
+// Construct a Schrodinger propagator whose paired basis cannot be walked or addressed. Its cardinality check runs on
+// the caller, before any shard is seeded, so the configuration error is reported as itself.
+auto make_oversized_schrodinger() -> MonomialPropagator<64> {
     return MonomialPropagator<64>(OperatorDict{{VecZ{0, 1}, std::complex<double>(0.0, 1.0)}},
                                   /*cutoff=*/4,
                                   VecZ{},
@@ -48,13 +48,7 @@ auto make_oversized_partitioned_schrodinger() -> MonomialPropagator<64> {
                                   CutoffType::Length,
                                   std::nullopt,
                                   /*logical_num_modes=*/64,
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-                                  // The candidate's T shards are the flat owners; it takes no partition count.
                                   Basis::Majorana);
-#else
-                                  Basis::Majorana,
-                                  /*partitions=*/2);
-#endif
 }
 
 // Construct with the full argument list; individual cases vary just the field(s) under test.
@@ -130,12 +124,10 @@ BOOST_AUTO_TEST_CASE(ctor_operator_index_out_of_range_throws) {
     BOOST_CHECK_THROW(make(op), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(ctor_partitioned_schrodinger_cardinality_error_is_not_masked) {
-    BOOST_CHECK_EXCEPTION(make_oversized_partitioned_schrodinger(),
-                          PropagatorConfigError,
-                          [](const PropagatorConfigError &error) {
-                              return std::string_view{error.what()}.contains("schrodinger_cutoff");
-                          });
+BOOST_AUTO_TEST_CASE(ctor_oversized_schrodinger_basis_is_rejected_before_seeding) {
+    BOOST_CHECK_EXCEPTION(make_oversized_schrodinger(), PropagatorConfigError, [](const PropagatorConfigError &error) {
+        return std::string_view{error.what()}.contains("schrodinger_cutoff");
+    });
 }
 
 // A gate generator index outside the system must throw, not underflow 2*NumModes-1-index into an

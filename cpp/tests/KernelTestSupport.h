@@ -223,33 +223,6 @@ inline auto runtime_offers_two_workers(boost::unit_test::test_unit_id) -> boost:
     return result;
 }
 
-// Sets monoprop_NUM_THREADS for one scope, so an object constructed inside captures that budget, then
-// restores the previous value. Only the one-store prototype (explicit partitions=1 on an ordinary
-// communicator) captures it; tests confirm selection through PropagatorTestAccess::options.
-class ScopedBudget {
-public:
-    explicit ScopedBudget(int threads) {
-        if (const char *old = std::getenv(kVariable)) {
-            old_ = std::string(old);
-        }
-        ::setenv(kVariable, std::to_string(threads).c_str(), 1);
-    }
-    ScopedBudget(const ScopedBudget &) = delete;
-    auto operator=(const ScopedBudget &) -> ScopedBudget & = delete;
-    ~ScopedBudget() {
-        if (old_) {
-            ::setenv(kVariable, old_->c_str(), 1);
-        }
-        else {
-            ::unsetenv(kVariable);
-        }
-    }
-
-private:
-    static constexpr const char *kVariable = "monoprop_NUM_THREADS";
-    std::optional<std::string> old_;
-};
-
 // Deterministic, library-independent pseudo-random words (splitmix64).
 struct SplitMix {
     uint64_t state;

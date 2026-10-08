@@ -19,7 +19,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
-#include <print>
 #include <stdexcept>
 
 #ifdef monoprop_ENABLE_MPI
@@ -35,8 +34,7 @@ auto init(int *argc, char ***argv) -> void {
     MPI_Initialized(&initialized);
     int provided = MPI_THREAD_SINGLE;
     if (!initialized) {
-        // serialized (not funneled): under the hybrid the one-at-a-time MPI calls come from each rank's
-        // partition-0 master, not the main thread. mpi4py already requests >= serialized.
+        // Funneled: only this thread, as the primary of the library's team, ever calls MPI.
         MPI_Init_thread(argc, argv, kRequiredThreadLevel, &provided);
     }
     else {
@@ -44,10 +42,13 @@ auto init(int *argc, char ***argv) -> void {
         MPI_Query_thread(&provided);
     }
     if (!thread_level_satisfies(provided, kRequiredThreadLevel)) {
-        std::print("Sorry, the MPI library provides {} but monoprop requires {}, which the partition/MPI hybrid "
-                   "transport needs.\n",
-                   thread_level_name(provided),
-                   thread_level_name(kRequiredThreadLevel));
+        // Fixed strings only: nothing here may allocate (or throw) before the abort.
+        std::fputs("monoprop: the MPI library provides ", stderr);
+        std::fputs(thread_level_name(provided), stderr);
+        std::fputs(" but monoprop requires ", stderr);
+        std::fputs(thread_level_name(kRequiredThreadLevel), stderr);
+        std::fputs("; aborting.\n", stderr);
+        std::fflush(stderr);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 }
@@ -73,8 +74,8 @@ auto require_thread_support() -> void {
     if (!thread_level_satisfies(provided, kRequiredThreadLevel)) {
         throw MpiThreadLevelUnsupported(
             std::format("monoprop requires {} support from MPI, but the initialized MPI library provides {}. "
-                        "Initialize MPI with MPI_Init_thread requesting {} or MPI_THREAD_MULTIPLE (mpi4py requests "
-                        "MPI_THREAD_MULTIPLE by default).",
+                        "Initialize MPI with MPI_Init_thread requesting {} or higher (mpi4py requests "
+                        "MPI_THREAD_MULTIPLE unless mpi4py.rc.thread_level says otherwise).",
                         thread_level_name(kRequiredThreadLevel),
                         thread_level_name(provided),
                         thread_level_name(kRequiredThreadLevel)));
@@ -107,37 +108,27 @@ auto require_initializing_thread() -> void {
 }
 
 auto rank(const Comm &comm) -> int {
-    if (comm.kind == Comm::Kind::Shm) {
-        return comm.shm_rank;
-    }
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return comm.hyb->global_rank(comm.shm_rank);
-    }
     int r = 0;
     if (MPI_Comm_rank(comm.mpi, &r) != MPI_SUCCESS) {
         throw CollectiveArgumentError("MPI_Comm_rank failed");
     }
     return r;
 #else
+    (void)comm;
     return 0;
 #endif
 }
 
 auto size(const Comm &comm) -> int {
-    if (comm.kind == Comm::Kind::Shm) {
-        return comm.shm->size();
-    }
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return comm.hyb->size();
-    }
     int s = 0;
     if (MPI_Comm_size(comm.mpi, &s) != MPI_SUCCESS) {
         throw CollectiveArgumentError("MPI_Comm_size failed");
     }
     return s;
 #else
+    (void)comm;
     return 1;
 #endif
 }
@@ -158,71 +149,39 @@ auto routing_keyval() -> int {
 
 auto routes_pairwise(const Comm &comm) -> bool {
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return comm.hyb->routes_pairwise();
+    const int ranks = size(comm);
+    if (ranks <= 1) {
+        return false; // no peer to pair with, and no collective to agree through
     }
-    if (comm.kind == Comm::Kind::Mpi) {
-        const int ranks = size(comm);
-        if (ranks <= 1) {
-            return false; // no peer to pair with, and no collective to agree through
-        }
-        void *cached = nullptr;
-        int found = 0;
-        MPI_Comm_get_attr(comm.mpi, routing_keyval(), &cached, &found);
-        if (found != 0) {
-            return reinterpret_cast<intptr_t>(cached) != 0;
-        }
-        const bool pairwise = agree_routes_pairwise(comm.mpi, ranks, routing::Config::from_env());
-        MPI_Comm_set_attr(comm.mpi, routing_keyval(), reinterpret_cast<void *>(static_cast<intptr_t>(pairwise)));
-        return pairwise;
+    void *cached = nullptr;
+    int found = 0;
+    MPI_Comm_get_attr(comm.mpi, routing_keyval(), &cached, &found);
+    if (found != 0) {
+        return reinterpret_cast<intptr_t>(cached) != 0;
     }
-#endif
-    return false; // Shm is one rank; there is no inter-rank transport to choose
-}
-
-auto geometry(const Comm &comm) -> Geometry {
-    if (comm.kind == Comm::Kind::Shm) {
-        return {.ranks = 1, .partitions = comm.shm->size()};
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return {.ranks = comm.hyb->ranks(), .partitions = comm.hyb->partitions()};
-    }
-    return {.ranks = size(comm), .partitions = 1};
+    const bool pairwise = agree_routes_pairwise(comm.mpi, ranks, routing::Config::from_env());
+    MPI_Comm_set_attr(comm.mpi, routing_keyval(), reinterpret_cast<void *>(static_cast<intptr_t>(pairwise)));
+    return pairwise;
 #else
-    return {.ranks = 1, .partitions = 1};
+    (void)comm;
+    return false; // one process: there is no inter-rank transport to choose
 #endif
 }
 
 auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
-    if (comm.kind == Comm::Kind::Shm) {
-        comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
-        return;
-    }
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
-        return;
-    }
     MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()), MPI_DOUBLE, MPI_SUM, comm.mpi);
 #else
     (void)values; // single participant: identity
+    (void)comm;
 #endif
 }
 
 auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
-    require_routable(plan, geometry(comm).ranks);
-    if (comm.kind == Comm::Kind::Shm) {
-        comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
-        return;
-    }
+    require_routable(plan, size(comm));
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts, plan);
-        return;
-    }
     if (!plan.dense()) {
-        // S == 1 world: one int with the peer. Non-peers are zero by definition, so clear them.
+        // One int with the peer. Non-peers are zero by definition, so clear them.
         int me = 0;
         MPI_Comm_rank(comm.mpi, &me);
         std::fill(recv_counts, recv_counts + n, 0);
@@ -250,6 +209,7 @@ auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm,
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
     (void)plan; // single participant: nothing to narrow
+    (void)comm;
     for (int i = 0; i < n; ++i) {
         recv_counts[i] = send_counts[i];
     }

@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The integrated sharded OpenMP prototype, through the public API, in fresh fixed-T processes.
+"""The sharded OpenMP runtime, through the public API, in fresh fixed-T processes.
 
-Only a build configured with ``monoprop_SHARDED_OPENMP_PROTOTYPE=ON`` runs the candidate cases; a legacy build runs
-the identity case alone. Every case launches ``tests/sharded_openmp_probe.py`` in its own interpreter with
+Every case launches ``tests/sharded_openmp_probe.py`` in its own interpreter with
 ``monoprop_NUM_THREADS=T OMP_NUM_THREADS=T OMP_DYNAMIC=FALSE`` set before import, because T is captured when a
 propagator is constructed and is never changed inside a process.
 
@@ -23,10 +22,10 @@ Comparisons:
 
 - Across T = 1, 2, 4: identical global retained keys, coefficients within ``1e-9 + 1e-7 * max(|a|, |b|)``, and the
   same tolerance for unrounded energies and every gradient component.
-- Against the legacy runtime at the same (1, T) geometry, when ``monoprop_TEST_LEGACY_PYTHON`` names the interpreter
-  of a separately built legacy environment: bitwise equality of energies, gradients, decoded maps, contraction blocks
-  (concatenated in shard / partition order) and aggregate counts. The legacy process is a different build; the two
-  class definitions never share a process.
+- Against the removed partition runtime at the same (1, T) geometry, when ``monoprop_TEST_LEGACY_PYTHON`` names the
+  interpreter of a separately built legacy environment (a pre-removal checkout): bitwise equality of energies,
+  gradients, decoded maps, contraction blocks (concatenated in shard / partition order) and aggregate counts. The
+  legacy process is a different build; the two class definitions never share a process.
 - Over P MPI processes (an MPI build and a launcher on ``PATH``), each rank writing its own document: at (P, T) against
   the legacy runtime at P ranks x ``monoprop_PARTITIONS=T`` rank by rank and bit for bit (when the legacy interpreter
   is an MPI build); across the geometries (1, 4), (2, 2) and (4, 1), and three processes under splitmix against
@@ -50,7 +49,11 @@ import pytest
 from monoprop import _core
 
 _PROBE = Path(__file__).resolve().parent / "sharded_openmp_probe.py"
-_CANDIDATE = "monoprop-runtime=sharded-openmp-prototype"
+# The runtime identity this build's extension embeds, and the identities of the two pre-removal runtimes, which only a
+# separately built external interpreter can carry. The embedded literals are NUL-terminated, so the final marker is
+# matched exactly and never as a prefix of the prototype's.
+_RUNTIME = "monoprop-runtime=sharded-openmp"
+_PROTOTYPE = "monoprop-runtime=sharded-openmp-prototype"
 _LEGACY = "monoprop-runtime=legacy-partitions"
 # Environment a launcher gives its ranks: a child that inherits it would try to join the parent's job.
 _LAUNCHER_PREFIXES = ("OMPI_", "PMIX_", "PRTE_", "PMI_", "HYDRA_", "MPIR_")
@@ -72,14 +75,9 @@ def _inside_multirank_job() -> bool:
     return int(size) > 1
 
 
-IS_CANDIDATE = getattr(_core, "__runtime_identity__", None) == _CANDIDATE
-
 pytestmark = pytest.mark.skipif(
     _inside_multirank_job(),
     reason="launches fresh interpreters, which cannot run inside a multi-rank job",
-)
-candidate_only = pytest.mark.skipif(
-    not IS_CANDIDATE, reason="needs a monoprop_SHARDED_OPENMP_PROTOTYPE=ON build"
 )
 
 
@@ -175,16 +173,13 @@ def _differences(left: Any, right: Any, path: str = "") -> list[str]:
 
 
 def test_build_identity_matches_the_extension() -> None:
-    # Provenance, not a selector: the attribute and the literal in the extension file agree. A verification run sets
-    # monoprop_TEST_EXPECT_RUNTIME to the build it means to test, so a mislabelled build fails instead of skipping.
-    identity = getattr(_core, "__runtime_identity__", None)
-    assert identity in (_CANDIDATE, _LEGACY)
-    expected = os.environ.get("monoprop_TEST_EXPECT_RUNTIME")  # noqa: SIM112 - the suite's names
-    if expected is not None:
-        assert identity == {"sharded": _CANDIDATE, "legacy": _LEGACY}[expected]
+    # Provenance, not a selector: the attribute and the NUL-terminated literal in the extension file agree, and neither
+    # pre-removal marker is present. A mismatch fails here instead of letting other cases skip or run the wrong code.
+    assert getattr(_core, "__runtime_identity__", None) == _RUNTIME
     data = Path(_core.__file__).read_bytes()
-    assert (_CANDIDATE.encode() in data) == (identity == _CANDIDATE)
-    assert (_LEGACY.encode() in data) == (identity == _LEGACY)
+    assert _RUNTIME.encode() + b"\0" in data
+    assert _PROTOTYPE.encode() not in data
+    assert _LEGACY.encode() not in data
 
 
 _ARGS: dict[str, Any] = {
@@ -238,7 +233,6 @@ def _high_level_constructors() -> dict[str, Any]:
     }
 
 
-@candidate_only
 @pytest.mark.parametrize("value", [0, 1, 2])
 def test_low_level_constructor_has_no_partitions(value: int) -> None:
     # Even the old default is not accepted: the parameter is gone, not merely restricted.
@@ -246,7 +240,6 @@ def test_low_level_constructor_has_no_partitions(value: int) -> None:
         _core.MonomialPropagator032(**_ARGS, partitions=value)
 
 
-@candidate_only
 def test_low_level_constructor_rejects_the_old_positional_tail() -> None:
     assert _core.MonomialPropagator032(*_POSITIONAL).size() >= 0
     for tail in ([0], [1], [0, None]):
@@ -254,7 +247,6 @@ def test_low_level_constructor_rejects_the_old_positional_tail() -> None:
             _core.MonomialPropagator032(*_POSITIONAL, *tail)
 
 
-@candidate_only
 def test_low_level_constructor_documents_no_partitions() -> None:
     doc = _core.MonomialPropagator032.__init__.__doc__ or ""
     assert "logical_num_modes" in doc
@@ -270,21 +262,13 @@ def test_low_level_constructor_documents_no_partitions() -> None:
 
 @pytest.mark.parametrize("keyword", _UNSUPPORTED_KEYWORDS)
 def test_no_thread_or_shard_keyword_is_accepted(keyword: str) -> None:
-    # The high-level constructors and generated adapters never took any of them; the candidate's low-level one
-    # takes none either.
+    # The high-level constructors and generated adapters never took any of them; the low-level one takes none either.
     for name, construct in _high_level_constructors().items():
         with pytest.raises(TypeError):
             construct(**{keyword: 2})
         assert construct() is not None, name
-    if IS_CANDIDATE:
-        with pytest.raises(TypeError):
-            _core.MonomialPropagator032(**_ARGS, **{keyword: 2})
-
-
-def test_legacy_low_level_constructor_keeps_partitions() -> None:
-    if IS_CANDIDATE:
-        pytest.skip("candidate build")
-    assert "partitions" in (_core.MonomialPropagator032.__init__.__doc__ or "")
+    with pytest.raises(TypeError):
+        _core.MonomialPropagator032(**_ARGS, **{keyword: 2})
 
 
 @pytest.fixture(scope="module")
@@ -292,26 +276,24 @@ def unset_partition_variable_run() -> dict[str, Any]:
     return _run(_full_spec("random_exact", "heisenberg"), 2)
 
 
-@candidate_only
 @pytest.mark.parametrize(
     "value", ["off", "auto", "1", "2", "3", "0", "", "not-a-count"]
 )
 def test_obsolete_partition_variable_is_ignored(
     value: str, unset_partition_variable_run: dict[str, Any]
 ) -> None:
-    # Set before the interpreter starts, as a launch would: the candidate never reads it, so every answer, aggregate
+    # Set before the interpreter starts, as a launch would: the library never reads it, so every answer, aggregate
     # and shard-ordered block is bitwise what the same T gives with the variable unset.
     run = _run(
         _full_spec("random_exact", "heisenberg"),
         2,
         extra_env={"monoprop_PARTITIONS": value},
     )
-    assert run["runtime"] == _CANDIDATE
+    assert run["runtime"] == _RUNTIME
     differences = _differences(run["full"], unset_partition_variable_run["full"])
     assert not differences, differences[:10]
 
 
-@candidate_only
 @pytest.mark.parametrize(
     "budget", ["", "0", "-1", "abc", "2,3", " 3", "+3", "2147483648"]
 )
@@ -325,11 +307,10 @@ def test_invalid_budget_is_rejected(budget: str) -> None:
     assert "monoprop_NUM_THREADS" in out["default"]
 
 
-@candidate_only
 def test_controls_and_lifecycle() -> None:
     results = {t: _run({"scenario": "controls"}, t) for t in _TEAMS}
     for t, result in results.items():
-        assert result["runtime"] == _CANDIDATE
+        assert result["runtime"] == _RUNTIME
         out = result["controls"]
         assert out["default"] == "ok"
         for key in (
@@ -403,12 +384,11 @@ def _check_single_run(full: dict[str, Any], picture: str) -> None:
     assert full["updated"]["energy"] == full["updated"]["functional"]
 
 
-@candidate_only
 @pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
 def test_full_api_agrees_across_team_sizes(fixture: str, picture: str) -> None:
     runs = {t: _run(_full_spec(fixture, picture), t) for t in _TEAMS}
     for t, run in runs.items():
-        assert run["runtime"] == _CANDIDATE, t
+        assert run["runtime"] == _RUNTIME, t
         _check_single_run(run["full"], picture)
     reference = runs[1]["full"]
     for t in _TEAMS[1:]:
@@ -437,7 +417,6 @@ def _legacy_python() -> str | None:
     return os.environ.get("monoprop_TEST_LEGACY_PYTHON")  # noqa: SIM112 - the suite's names
 
 
-@candidate_only
 @pytest.mark.skipif(
     _legacy_python() is None,
     reason="set monoprop_TEST_LEGACY_PYTHON to a separately built legacy environment's interpreter",
@@ -457,7 +436,7 @@ def test_matches_the_legacy_runtime_at_the_same_geometry(
         python=legacy_python,
         extra_env={"monoprop_PARTITIONS": str(threads)},
     )
-    assert candidate["runtime"] == _CANDIDATE
+    assert candidate["runtime"] == _RUNTIME
     assert legacy["runtime"] in (_LEGACY, None)
     assert candidate["core_file"] != legacy["core_file"]
     differences = _differences(candidate["full"], legacy["full"])
@@ -607,7 +586,6 @@ def _single_process(fixture: str, picture: str, threads: int) -> dict[str, Any]:
     }
 
 
-@candidate_only
 @needs_mpi_launch
 @pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
 def test_multirank_agrees_across_geometries(
@@ -617,12 +595,11 @@ def test_multirank_agrees_across_geometries(
     for ranks, threads in ((2, 2), (4, 1)):
         docs = _run_ranks(_full_spec(fixture, picture), ranks, threads, tmp_path)
         for doc in docs:
-            assert doc["runtime"] == _CANDIDATE
+            assert doc["runtime"] == _RUNTIME
             _check_single_run(doc["full"], picture)
         _assert_full_close(reference, _merge_ranks(docs), f"P={ranks} T={threads}")
 
 
-@candidate_only
 @needs_mpi_launch
 @pytest.mark.parametrize(
     ("fixture", "picture"), [_FIXTURES[0], _FIXTURES[3], _FIXTURES[6]]
@@ -641,7 +618,6 @@ def test_multirank_splitmix_three_processes(
     _assert_full_close(reference, _merge_ranks(docs), "P=3 T=2 splitmix")
 
 
-@candidate_only
 @needs_mpi_launch
 def test_multirank_linear_routing_rejects_three_processes(tmp_path: Path) -> None:
     docs = _run_ranks(
@@ -656,7 +632,6 @@ def test_multirank_linear_routing_rejects_three_processes(tmp_path: Path) -> Non
         assert "power-of-two rank count" in outcome, outcome
 
 
-@candidate_only
 @needs_mpi_launch
 @pytest.mark.skipif(
     _legacy_python() is None,
@@ -689,13 +664,7 @@ def test_multirank_matches_the_legacy_runtime_at_the_same_geometry(
         extra_env={"monoprop_PARTITIONS": str(threads)},
     )
     for rank, (ours, theirs) in enumerate(zip(candidate, legacy, strict=True)):
-        assert ours["runtime"] == _CANDIDATE
+        assert ours["runtime"] == _RUNTIME
         assert theirs["runtime"] in (_LEGACY, None)
         differences = _differences(ours["full"], theirs["full"])
         assert not differences, (rank, differences[:10])
-
-
-def test_legacy_identity_is_not_the_candidate() -> None:
-    if IS_CANDIDATE:
-        pytest.skip("candidate build")
-    assert getattr(_core, "__runtime_identity__", None) == _LEGACY

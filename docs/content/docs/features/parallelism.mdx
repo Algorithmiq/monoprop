@@ -1,6 +1,6 @@
 ---
 title: Parallelism and distribution
-description: Shared-memory threads and MPI ranks, during the move to the sharded OpenMP runtime.
+description: Shared-memory threads and MPI ranks in the sharded OpenMP runtime.
 ---
 
 monoprop splits the operator into disjoint pieces and applies each gate to every piece at once, exchanging only
@@ -8,17 +8,9 @@ the terms whose partner lives in another piece. Two axes compose: pieces within 
 processes (and nodes). Distributing the operator and its graph across ranks lets you simulate and variationally
 optimise systems larger than one node's memory.
 
-monoprop is part-way through replacing its in-process runtime, and two builds coexist until the switch:
-
-- **The sharded OpenMP runtime** is the intended runtime and the final interface. Each MPI rank owns T *shards*,
-  one per OpenMP thread, and one OpenMP team works on all of them for the whole of an operation. It is selected
-  only by the temporary, development-only build option `monoprop_SHARDED_OPENMP_PROTOTYPE=ON`
-  ([Building from source](/building#sharded-openmp-runtime-temporary-build-option)).
-- **The legacy partition runtime** is what every default build (including the PyPI wheels) still runs. It is kept
-  unchanged as the comparison reference and is described [below](#legacy-partition-runtime-default-builds).
-
-Switching the default and removing the legacy runtime and the build option wait for their acceptance gates; until
-then, check which runtime a binary contains with `monoprop._core.__runtime_identity__`.
+Within a process, each MPI rank owns T *shards*, one per OpenMP thread, and one OpenMP team works on all of them for
+the whole of an operation. OpenMP is required in every build, with or without MPI; MPI is optional and off by default.
+There is no other in-process runtime and no build or runtime option that selects one.
 
 ## Sharded OpenMP runtime
 
@@ -43,12 +35,20 @@ mpiexec -n 4 python your_script.py   # or, without MPI: python your_script.py
   give each process enough cores, and set no limit below T (such as `OMP_THREAD_LIMIT`). The library does not
   check the team it receives, does not repair a smaller one and never changes OpenMP settings: other settings,
   or different T on different ranks, are unsupported launches whose failure is not controlled.
-- **Placement.** monoprop does not query the topology, count physical cores, clamp T or pin threads. Placement
-  belongs to the launcher and to the OpenMP settings (`OMP_PLACES`, `OMP_PROC_BIND`); one thread per physical
-  core is the recommended layout. Importing `monoprop` loads the OpenMP runtime, so with `OMP_PLACES` set and
+- **Placement.** monoprop does not query the topology, count physical cores, clamp T or pin threads, and has no
+  topology library of its own. Placement belongs to the launcher and to the OpenMP settings (`OMP_PLACES`,
+  `OMP_PROC_BIND`); one thread per physical core is the recommended layout. Importing `monoprop` loads the OpenMP runtime, so with `OMP_PLACES` set and
   binding enabled, the importing thread is bound to the first place.
 - **Shard ownership.** Shard t of rank r is routing owner `r * T + t` (see [Rank routing](#rank-routing)).
   Changing T between launches changes which shard owns a term.
+- **Removed controls.** There is no partition count, child factory, shard or thread argument. The variable
+  `monoprop_PARTITIONS` of the removed partition runtime is not read at all.
+
+A store (a shard) addresses its own terms with a 32-bit index, so one shard holds at most 2^32 (about 4.3 billion)
+terms. That ceiling is reached by running too few shards rather than by problem size, and it is not a build option.
+An append that would cross it is refused before it happens — a `RuntimeError` naming the ceiling and the term
+counts, with the operator left as it was. The fix is more threads or more MPI ranks, or a larger `lower_atol` (see
+[Truncation and cutoffs](/features/cutoff)).
 
 ### What is per rank and what is global
 
@@ -72,17 +72,26 @@ this rank's share of the update.
 The raw-layout accessors `mp_op()`, `indexing()`, `graph()` and `graph_data()` return the rank's sole shard when
 the launch has T = 1, whatever P is. With T > 1 there is no single store to return, so they throw
 `MultiShardUnsupported`, whose message names the remedy: launch with `monoprop_NUM_THREADS=1`. The rejection
-changes nothing, and an invalidated propagator reports that first. The class layout and the constructor changed,
-so rebuild C++ consumers, `libmonoprop` and the Python bindings together, from the same build.
+changes nothing, and an invalidated propagator reports that first.
+
+Removing the partition runtime is a C++ source and ABI break: the constructor lost its partition and factory
+arguments, `MultiPartitionUnsupported` and `PartitionCountMismatch` are gone (the raw accessors throw
+`MultiShardUnsupported`), the installed package no longer ships the partition, topology and in-process
+communicator headers (`detail/partition/`, `detail/mpi/ShmComm.h`, `HybridComm.h`, `PartitionBarrier.h`,
+`CpuRelax.h`), `mpi::Comm` holds only an ordinary communicator, and `mpi::geometry()` is gone. Rebuild C++
+consumers, `libmonoprop` and the Python bindings together, from the same build.
 
 ### MPI and threads
 
 The thread that initialized MPI must make every call that can use MPI (construction, operations, retained
 callables), from outside any OpenMP region. Inside an operation that thread is the team's primary and is the
-only one that calls MPI; the other threads prepare and consume the exchanged data. Construction checks that MPI
-provides at least `MPI_THREAD_SERIALIZED`, whether monoprop or your program (mpi4py, for example) initialized it;
-mpi4py's default, `MPI_THREAD_MULTIPLE`, is fine. A call from another thread prints a diagnostic and aborts that
-process without communicating.
+only one that calls MPI; the other threads prepare and consume the exchanged data. So `MPI_THREAD_FUNNELED` is
+enough: when monoprop initializes MPI (`mpi::init` in C++), it requests FUNNELED and aborts if MPI provides less;
+when your program (mpi4py, for example) initialized MPI first, monoprop never reinitializes it, and construction
+checks the level actually provided, refusing `MPI_THREAD_SINGLE` before any communication. mpi4py's default,
+`MPI_THREAD_MULTIPLE`, is fine, and so is `mpi4py.rc.thread_level = "funneled"` (or `"serialized"`) set before
+`from mpi4py import MPI`. A higher level changes nothing: worker threads still never call MPI, and a call from
+another thread still prints a diagnostic and aborts that process without communicating.
 
 ## Failed operations
 
@@ -96,55 +105,19 @@ raised before anything changes, so the propagator stays usable.
 With MPI and more than one rank, a failure on one rank cannot be handed back to your program
 without leaving the other ranks blocked in communication. monoprop therefore prints the rank and the
 error to stderr and calls `MPI_Abort`. On a single rank, and without MPI, you get the original
-exception. Legacy multi-partition runs keep their existing handling.
+exception.
 
 A callable returned by `expectation_value_functional` or `expectation_value_and_gradient_functional` borrows its
 propagator: keep the propagator alive while you use it. It refuses to run once the propagator is invalid, once
 the graph it was made from has changed, or once `update_initial_operator` has changed the operator; make a new
-one then. Calls on one propagator are not safe to make concurrently, from threads or from the callables.
-
-## Legacy partition runtime (default builds)
-
-The default build applies each gate to one single-threaded partition per physical core, each with a pinned
-worker thread, synchronised by a lightweight barrier; anticommuting terms whose partner lives in another
-partition are resolved through a per-gate exchange. This runtime is kept unchanged for comparison until the
-sharded runtime replaces it.
-
-A store (a shard, or a legacy partition) addresses its own terms with a 32-bit index, so one store holds at most
-2^32 (about 4.3 billion) terms. That ceiling is reached by running too few stores rather than by problem size,
-and it is not a build option. An append that would cross it is refused before it happens — a `RuntimeError`
-naming the ceiling and the term counts, with the operator left as it was. The fix is more threads (or
-partitions) or more MPI ranks, or a larger `lower_atol` (see [Truncation and cutoffs](/features/cutoff)).
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `monoprop_NUM_THREADS` | one partition per physical core | Caps the number of partitions. |
-| `monoprop_PARTITIONS` | `auto` | `auto` = one partition per core (capped by `monoprop_NUM_THREADS`); an integer `N` = exactly `N` partitions; `off` = one partition holding the whole operator. |
-
-The sharded runtime reads neither variable this way: there `monoprop_NUM_THREADS` is its exact budget, and
-`monoprop_PARTITIONS` is ignored.
-
-The legacy build also still contains the abandoned *one-store prototype*, selected by the low-level
-`partitions=1` argument on an ordinary communicator, which captured the thread budget for a few threaded
-kernels of a single store. It is a historical experiment kept with the legacy runtime, not the way forward.
-
-Building a legacy propagator writes one `COMMPLACE` line per rank to stderr, naming the CPUs the launcher gave
-that rank and whether co-located ranks got disjoint masks. It is report-only, and there is no knob:
-
-```text
-COMMPLACE rank=0 node_rank=0 node_size=2 masks=private cpus=64 node_cpus=128 cpu_list=0-63
-```
-
-`masks` is `private` when the co-located ranks' affinity masks are pairwise disjoint, `shared` when two ranks can
-land on the same CPU, `alone` when this rank is the only one on its host (which is *not* evidence a multi-rank
-launcher bound correctly), and `unknown` when a mask did not fit the exchanged window. The legacy runtime pins
-each partition to a core; leaving placement to the launcher measured `propagate[hubbard]` 2.90x slower there.
+one then. Calls on one propagator are not safe to make concurrently, from threads or from the callables, and the
+runtime makes no new reentrancy promise: an operation's team is the whole budget, so do not call into monoprop from
+inside an OpenMP region or from a callback of another monoprop call.
 
 ## MPI distribution (multi-node)
 
-MPI distributes the operator and graph across ranks, composing with the in-process pieces into one flat world of
-`R × S` routing owners: `R` ranks with `S` stores each — the T shards of the sharded runtime, or the legacy
-runtime's partitions.
+MPI distributes the operator and graph across ranks, composing with the in-process shards into one flat world of
+`R × S` routing owners: `R` ranks with `S = T` shards each.
 
 ### Rank routing
 
@@ -179,8 +152,7 @@ over XOR, so a gate's queries still reach several ranks rather than one.
 | `monoprop_ROUTE_SEED` | `6768574230969066775` | Decimal `uint64` seed for the basis $\{v_i\}$. |
 
 Both variables must match on every rank. A mismatch would deadlock the exchange, so it is checked collectively at
-startup and raised. The legacy runtime also checks its partition count there; the sharded runtime adds no such
-check for T, which the launch must keep uniform.
+startup and raised. There is no such check for T, which the launch must keep uniform.
 
 ### Single-node (`MPI.COMM_SELF`)
 
@@ -202,9 +174,9 @@ sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
 mpiexec -n 8 uv run python your_script.py
 ```
 
-In the sharded runtime each rank runs T shards, so set `monoprop_NUM_THREADS` (and `OMP_NUM_THREADS`) to the
-threads you give each rank, for example `T=1` for a pure-MPI run. A legacy pure-MPI rank keeps its whole share in
-one partition unless `monoprop_NUM_THREADS` is set.
+Each rank runs T shards, so set `monoprop_NUM_THREADS` (and `OMP_NUM_THREADS`) to the threads you give each rank,
+for example `T=1` for a pure-MPI run. Without either, each rank takes the OpenMP default, which is usually every
+core it can see: give each rank its own cores (`--map-by slot:PE=T --bind-to core` with Open MPI, for example).
 
 ### Enabling MPI
 

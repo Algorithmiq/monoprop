@@ -49,14 +49,6 @@ set(
   "Maximum number of simulable Fermionic modes with Python bindings"
 )
 option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
-# Temporary development selector for the sharded OpenMP refactor (removed at cutover). ON replaces the legacy
-# partition runtime behind MonomialPropagator with the rank-level sharded engine. It changes the class layout, so the
-# library, the bindings, the tests and every installed consumer must be built with the same value.
-option(
-  monoprop_SHARDED_OPENMP_PROTOTYPE
-  "Development only: build the sharded OpenMP prototype instead of the legacy partition runtime"
-  OFF
-)
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
@@ -107,10 +99,6 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
-message(
-  STATUS
-  "   Sharded OpenMP proto   : ${monoprop_SHARDED_OPENMP_PROTOTYPE}"
-)
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 

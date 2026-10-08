@@ -29,15 +29,13 @@ using namespace nanobind::literals;
 
 namespace {
 /*
- * Development provenance for the sharded OpenMP refactor, removed with its temporary selector. Chosen by the same
- * macro that selects MonomialPropagator's layout, so the string describes the code this extension contains. Measurement
- * tools read it and also search the extension file for the literal, binding the identity to that file's hash.
+ * Read-only provenance, never a selector: the runtime this extension contains. Measurement tools read the attribute and
+ * also search the extension file for this NUL-terminated literal, binding the identity to that file's hash. The array
+ * is kept (`used`), so the literal sits in the file contiguously, whatever the compiler does with the string built
+ * from it. The pre-removal builds carried "monoprop-runtime=sharded-openmp-prototype" or
+ * "monoprop-runtime=legacy-partitions"; an older binary carries none.
  */
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-constexpr const char *kRuntimeIdentity = "monoprop-runtime=sharded-openmp-prototype";
-#else
-constexpr const char *kRuntimeIdentity = "monoprop-runtime=legacy-partitions";
-#endif
+[[gnu::used]] constexpr char kRuntimeIdentity[] = "monoprop-runtime=sharded-openmp";
 } // namespace
 
 namespace monoprop::bindings::detail {

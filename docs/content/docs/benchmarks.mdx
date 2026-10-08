@@ -210,7 +210,7 @@ just bench serial                              # serial run, column "serial"
 just bench-smoke                               # quick sanity check (tiny sizes)
 just bench serial --num-modes 64 --bench-rounds 10
 
-monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
+monoprop_NUM_THREADS=10 OMP_NUM_THREADS=10 OMP_DYNAMIC=FALSE just bench serial-t10 --runtime-shape=openmp  # T=10 shards
 
 uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
@@ -235,10 +235,10 @@ Barriers delimit each timed operation, so runtime is the **makespan** across ran
 of per-rank peak RSS: an upper bound, shared pages counted once per rank and rank-local peaks summed
 even when they never coexisted.
 
-`monoprop_PARTITIONS` is mandatory above one rank unless a shape is declared — the legacy engine's default is
-`ranks == 1 ? cores : 1`, which would silently measure one partition per rank — and the declared shape is
-recorded in `meta`. A sharded OpenMP build reads no partition count, so declare its multi-rank runs with
-`--runtime-shape=openmp` (below) instead.
+Declare a multi-rank run's shape with `--runtime-shape=openmp` (below); the declared shape is recorded in `meta`.
+Without a declaration the suite keeps the removed partition runtime's guard and asks for `monoprop_PARTITIONS`
+above one rank, which the library itself ignores. The guard stays because this suite is a frozen measurement
+overlay that also serves the preserved partition baseline.
 
 `mpi4py` is imported only when the imported extension reports `monoprop.has_mpi`: importing
 `mpi4py.MPI` initializes MPI, which an MPI-off run must never do, even with `mpi4py` installed. An
@@ -247,19 +247,18 @@ MPI-off build runs one process, launched directly.
 Two options declare what a run measures and fail before anything is measured when the process
 contradicts them. `meta` records the declaration, `has_mpi` and the extension's SHA-256:
 
-- `--runtime-shape=partitions` requires `monoprop_PARTITIONS` and `monoprop_NUM_THREADS`, equal and
-  positive. `--runtime-shape=openmp` requires `monoprop_PARTITIONS` unset, and a positive
-  `monoprop_NUM_THREADS`, or with it unset a single positive `OMP_NUM_THREADS`. MPI-off builds must
-  run one rank.
+- `--runtime-shape=openmp` (every current build) requires `monoprop_PARTITIONS` unset, and a positive
+  `monoprop_NUM_THREADS`, or with it unset a single positive `OMP_NUM_THREADS`. `--runtime-shape=partitions`
+  serves only a binary of the removed partition runtime (the preserved baseline) and requires
+  `monoprop_PARTITIONS` and `monoprop_NUM_THREADS`, equal and positive. MPI-off builds must run one rank.
 - `--build-mode=mpi` or `--build-mode=mpi-off` must match the imported extension's `has_mpi`.
 
-Without `--runtime-shape` the multi-rank `monoprop_PARTITIONS` check above still applies, in either build. The
-`openmp` shape's requirement that `monoprop_PARTITIONS` be unset is measurement hygiene in the preflight: the
-sharded library ignores the variable.
+The `openmp` shape's requirement that `monoprop_PARTITIONS` be unset is measurement hygiene in the preflight:
+the library ignores the variable.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
-monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
 
 ### Memory exactness
@@ -325,15 +324,20 @@ It rejects evidence that cannot be joined:
 - an arm whose binary was built with the wrong runtime.
 
 Each arm is bound to the runtime its extension was compiled with, read from the measured file
-itself. A build sets `_core.__runtime_identity__` and embeds the same literal
-(`monoprop-runtime=sharded-openmp-prototype` or `monoprop-runtime=legacy-partitions`). `observe` and
-`validate` require the attribute to agree with the bytes of the file whose SHA-256 they record. Only
-a sharded OpenMP prototype build can serve `--runtime-shape openmp` (the candidate arm); a legacy
-build, including the preserved partition baseline, which predates the marker, serves only
-`partitions`. `compare` refuses candidate evidence without a marker-backed sharded identity for its
-own binary, and baseline evidence that records a sharded one. The baseline's frozen records carry no
-identity field and remain consumable. This is development provenance for the temporary prototype
-selector, not a runtime switch: relabelling `--arm`, `--runtime-shape` or the environment cannot
+itself. A build sets `_core.__runtime_identity__` and embeds the same NUL-terminated literal: every
+current build `monoprop-runtime=sharded-openmp`; builds from before the partition runtime was removed
+`monoprop-runtime=sharded-openmp-prototype` (the development selector) or
+`monoprop-runtime=legacy-partitions`. The preflight matches each literal with its terminator, so the
+final marker is never mistaken for a prefix of the prototype's, and a binary carrying two markers, or
+an attribute its bytes do not carry, is refused. `observe` and `validate` require the attribute to agree
+with the bytes of the file whose SHA-256 they record, and record both. Only a sharded build (final or
+prototype) can serve `--runtime-shape openmp` (the candidate arm); a legacy build, including the
+preserved partition baseline, which predates the markers, serves only `partitions`. `compare` refuses
+candidate evidence without a marker-backed sharded identity for its own binary, and baseline evidence
+that records a sharded one. The baseline's frozen records carry no identity field and remain
+consumable; archived candidate records carry the prototype attribute, so evidence of the final binary
+is told apart from them by its attribute and binary hash, never by an arm label. This is read-only
+provenance, not a runtime switch: relabelling `--arm`, `--runtime-shape` or the environment cannot
 change which runtime a binary contains. The benchmark suite's `--runtime-shape` preflight applies
 the same check.
 
@@ -347,7 +351,7 @@ keeps the returned callable alive until both memory windows close. `validate` th
 callable at the recorded parameters.
 
 ```bash
-# Baseline, MPI-off full machine: direct launch, no mpiexec.
+# Baseline (the preserved partition baseline's own environment), MPI-off full machine: direct launch, no mpiexec.
 monoprop_PARTITIONS=96 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 taskset -c 0-95 \
   .venv/bin/python tools/benchmark-rank-local-openmp.py observe --arm baseline \
   --runtime-shape partitions --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
@@ -355,12 +359,12 @@ monoprop_PARTITIONS=96 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 taskset -c 0-9
 # Repeat with --whole-process in a new process; run `validate` without --sample-id.
 ```
 
-The candidate arm uses its own sharded environment and the ordinary public constructors, with no
-partition selector and no constructor overlay (the sharded constructor has no partition argument, and the
-preflight refuses a candidate launch that sets `monoprop_PARTITIONS`):
+The candidate arm uses its own environment and the ordinary public constructors, with no partition selector
+and no constructor overlay (the constructor has no partition argument, and the preflight refuses a candidate
+launch that sets `monoprop_PARTITIONS`):
 
 ```bash
-# Candidate, MPI-off full machine: a monoprop_SHARDED_OPENMP_PROTOTYPE=ON environment, exact team.
+# Candidate, MPI-off full machine: an ordinary MPI-off build, exact team.
 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 OMP_DYNAMIC=FALSE taskset -c 0-95 \
   "$CANDIDATE_ENV"/bin/python tools/benchmark-rank-local-openmp.py observe --arm candidate \
   --runtime-shape openmp --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
@@ -386,10 +390,10 @@ reports threshold violations. The ladder itself lives in `bench.yml`. To reprodu
 declare its shape and take its selector and flags from the tables below — the label is your own:
 
 ```bash
-export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1     # the shape, declared
-just bench l1-hubbard --bench-rounds 3 -k "test_model_propagate and hubbard"
+export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE   # the shape, declared
+just bench l1-hubbard --runtime-shape=openmp --bench-rounds 3 -k "test_model_propagate and hubbard"
 
-export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # P sizes the pinning
+export monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE OMP_PROC_BIND=close OMP_PLACES=cores
 just bench-mpi l2b 4 --map-by slot:PE=2 --bind-to core
 monoprop-bench-bmf benches/results l2b    # results as Bencher Metric Format JSON
 ```
@@ -416,16 +420,20 @@ one shape. It is the rung name up to the first `.`: `<cpu>-<cores>c-<prefix>`, f
 cores**, 32 GiB nominal (~30 usable), no swap — three testbeds:
 `intel-xeon-platinum-8488c-8c-L1`, `-L2a` and `-L2b`.
 
-| rungs | testbed | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
+| rungs | testbed | `R` × `P` | launch | `monoprop_NUM_THREADS` | rounds |
 |---|---|---|---|---:|---:|
 | `L1.ops`, `L1.propagate` | L1 | 1 × 1 | `pytest benches` | 1 | 3 |
 | `L2a.ops`, `L2a.propagate` | L2a | 1 × 8 | `pytest benches` | 8 | 1 |
 | `L2b.ops`, `L2b.propagate` | L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
 
+Every rung declares `--runtime-shape=openmp` with an exact team (`OMP_DYNAMIC=FALSE`) and binds one thread per
+core through `OMP_PROC_BIND=close OMP_PLACES=cores`; the series recorded before the partition runtime was
+removed ran `P` pinned partitions per rank instead, so a step at that commit is the runtime change.
+
 - One node, one MPI-enabled build, so an edge moves the shape and nothing else.
 - `R × P` = 8 at both L2 shapes. 4 × 2 pays the per-rank cost four times on one node, so it is the
   memory-worst shape and the one the size ceiling is set against; `P` = 2 keeps more than one
-  partition inside a rank, which 8 × 1 would not.
+  shard inside a rank, which 8 × 1 would not.
 - Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before releasing *k*'s — a
   memory setting, not a statistics one.
 
@@ -490,10 +498,11 @@ resident; on a floor of its own it is 2.10, so `peak-memory` now means at L1 wha
 
 #### Inputs
 
-`rungs` is one rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`: `partitions` an
-integer or `per-rank` for one per physical core of the rank's share, and a `.suffix` picking the
-process within a shape. A shape that does not fit is refused rather than oversubscribed, and every
-rung reads its `ranks`, `partitions_env` and thread placement back out of its result JSON. Once a
+`rungs` is one rung per line, `<name> <ranks> <threads> <rounds> | <pytest args>`: `threads` (OpenMP threads,
+and so shards, per rank) an integer or `per-rank` for one per physical core of the rank's share, and a `.suffix`
+picking the process within a shape. A shape that does not fit is refused rather than oversubscribed, and every
+rung reads its `ranks` and threads back out of its result JSON, requires `monoprop_PARTITIONS` unset, and logs the
+thread placement. Once a
 testbed has history these should stay fixed — a new shape is a new prefix, so a new testbed.
 
 **No benchmark workflow gates a pull request.** It tracks `main`, and a threshold is a report, not a

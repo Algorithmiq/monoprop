@@ -78,8 +78,8 @@
  *
  * The identity generator skips the exchange phases; with one flat owner there is no cross owner, so only the resolve
  * and consume work is skipped, and same-shard resolution still runs. Row insertion order is therefore cross-owner
- * leaders, cross-owner followers, deferred same-shard leaders, deferred same-shard followers, as in the legacy
- * runtime at the same (P, T) geometry.
+ * leaders, cross-owner followers, deferred same-shard leaders, deferred same-shard followers, as the removed partition
+ * runtime inserted them at the same (P, T) geometry.
  *
  * Other processes. A gate's window reaches another rank exactly when its peer plan does: the single peer
  * rank ^ shift(generator) under linear routing (none when the shift is zero), every other rank under splitmix. That
@@ -707,7 +707,7 @@ auto run_gates(parallel::Options options,
                                                                     f.kernels);
                 }
                 else if constexpr (Informed) {
-                    // As the legacy coefficient-informed build: coefficients and build angle, no fused sweep.
+                    // A coefficient-informed build: coefficients and build angle, no fused sweep.
                     work.scan = scan_gate<NumModes, KernelObserver>(state.op,
                                                                     gen,
                                                                     ctx.cutoff_fn,
@@ -1142,7 +1142,7 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
  * \brief Coefficient-informed graph construction: build_graph() with the lower/upper atol cutoffs applied to the
  *        evolving coefficients.
  *
- * The legacy evolve_mode_graph_with_coeffs_() at geometry (1, T), in one team for the seed and the whole circuit.
+ * Coefficient-informed graph construction at geometry (1, T), in one team for the seed and the whole circuit.
  * Each owner's seed is a copy of its current picture; when the shards already hold layers, every shard replays its
  * existing graph from that copy at `seed_params` (replay_forward_in_team(), no nested team), as contract_partially()
  * would. Each gate then traverses with the coefficients and its build angle `mapped_params[i]`, appends the layer

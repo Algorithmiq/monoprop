@@ -217,7 +217,7 @@ struct InvertedIndex {
 
 inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident (bench knee)
 
-// Reusable fold blocks (thread_local: each partition master owns its copy). Two independent scratches
+// Reusable fold blocks (thread_local: each worker thread owns its copy). Two independent scratches
 // because the build scan needs the generator fold and a sparse pivot column expanded simultaneously.
 inline auto column_block_scratch() -> std::vector<uint64_t> & {
     static thread_local std::vector<uint64_t> blk;

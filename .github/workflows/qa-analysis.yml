@@ -57,7 +57,7 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: coverage-mpi-${{ matrix.mpi }}
+          cache-suffix: coverage-mpi-${{ matrix.mpi }}-sharded
           mpi: ${{ matrix.mpi }}
 
       - name: Collect coverage
@@ -142,7 +142,7 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: gcc-asan-ubsan
+          cache-suffix: gcc-asan-ubsan-sharded
 
       - name: Install package
         run: just build --group workspace-test
@@ -157,16 +157,23 @@ jobs:
         if: failure()
         run: just sanitizer-reports
 
-  gcc-tsan:
+  clang-tsan:
     # TSan cannot load instrumented _core into stock CPython; Python coverage needs an
-    # instrumented interpreter. C++ tests cover the relevant partition and ShmComm paths.
-    name: GCC ThreadSanitizer (C++)
+    # instrumented interpreter. The C++ tests cover the sharded runtime's concurrency surface,
+    # whose OpenMP teams need LLVM's libomp with its Archer tool: GCC's libgomp is not
+    # TSan-aware, so its reports are not evidence either way (docs/content/docs/building.mdx).
+    name: Clang ThreadSanitizer with Archer (C++)
     runs-on: ubuntu-26.04
     permissions:
       contents: read
     env:
+      CXX: clang++-18
+      CC: clang-18
       SKBUILD_CMAKE_BUILD_TYPE: "Tsan"
       SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=tsan"
+      OMP_TOOL_LIBRARIES: /usr/lib/llvm-18/lib/libarcher.so
+      # libomp's own internal locking is not instrumented.
+      TSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/tsan-libomp.supp"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -176,12 +183,12 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: gcc-tsan
+          cache-suffix: clang-tsan-sharded
 
       - name: Install package
         run: just build --group workspace-test
 
-      - name: Run C++ partition and ShmComm tests
+      - name: Run the sharded runtime's concurrency tests
         run: just test-cpp-tsan
 
   sonarqube-analysis:
@@ -197,7 +204,7 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
-          cache-suffix: sonarqube-mpi
+          cache-suffix: sonarqube-mpi-sharded
           mpi: "on"
 
       - name: Install package
@@ -243,7 +250,7 @@ jobs:
         env:
           CXX: clang++
         with:
-          cache-suffix: clang-tidy-mpi
+          cache-suffix: clang-tidy-mpi-sharded
           mpi: "on"
 
       - name: Build (generates compile_commands.json)

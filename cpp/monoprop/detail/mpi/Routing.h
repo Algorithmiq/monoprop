@@ -267,9 +267,8 @@ inline auto linear_requested() -> bool {
     return config::get().routing_mode.value_or(config::RoutingMode::Linear) == config::RoutingMode::Linear;
 }
 
-// What must match across ranks for the transports to pair up; raw values, so agreement is exact. The thread or
-// partition count is not part of it: the sharded runtime takes a uniform T as a launch precondition, and the legacy
-// facade checks its partition count itself (PartitionCountMismatch).
+// What must match across ranks for the transports to pair up; raw values, so agreement is exact. The thread count is
+// not part of it: the sharded runtime takes a uniform T as a launch precondition, which nothing checks.
 struct Config {
     uint64_t linear = 0;
     uint64_t seed = 0;

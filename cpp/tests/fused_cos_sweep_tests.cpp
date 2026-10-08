@@ -24,14 +24,12 @@
 #include <optional>
 #include <vector>
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 #include <omp.h>
 
 #include <set>
 
 #include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/RootObserver.h"
-#endif
 
 #include "KernelTestSupport.h"
 #include "PropagatorTestAccess.h"
@@ -43,14 +41,10 @@
 // The fused cos sweep's one deliberate FP deviation from the two-pass path (≤1 ulp per hit endpoint,
 // from resolve's stored·(1/cos) recovery), against the build_graph()+replay evaluation as oracle.
 //
-// In the legacy build the threaded cases below run the one-store prototype (explicit partitions=1, budget captured
-// from monoprop_NUM_THREADS at construction, budgets cycled in one process). Serial and threaded runs of the same
-// algorithm must agree bitwise; fused-versus-replay comparisons keep the tolerances above.
-//
-// In the sharded candidate build a budget is a shard count, which no case changes inside a process: the same
-// fused-versus-replay cases run at the launch's T (1 per case, 2 and 4 in fused_env_t*), the real fused records are
-// read per shard from the propagation seam itself, and fixed-geometry runs must agree bitwise shard by shard.
-// Across geometries only complete retained maps are comparable (tests/test_sharded_openmp.py).
+// A budget is a shard count, which no case changes inside a process: the fused-versus-replay cases run at the launch's
+// T (1 per case, 2 and 4 in fused_env_t*), the real fused records are read per shard from the propagation seam itself,
+// and fixed-geometry runs must agree bitwise shard by shard. Across geometries only complete retained maps are
+// comparable (tests/test_sharded_openmp.py).
 
 namespace {
 
@@ -78,14 +72,13 @@ auto graph_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
     return fn(data.parameters);
 }
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 // The budgets a case may use in this process: only the launch's, captured by every root.
 auto budgets() -> std::vector<int> {
     return {monoprop::detail::parallel::capture_thread_budget().threads};
 }
 
 template <size_t NumModes>
-auto build_prototype(const CaseData &data, const SimulatorConfig &cfg, int budget) -> MonomialPropagator<NumModes> {
+auto build_root(const CaseData &data, const SimulatorConfig &cfg, int budget) -> MonomialPropagator<NumModes> {
     MonomialPropagator<NumModes> sim(data.hamiltonian,
                                      static_cast<unsigned int>(2 * NumModes),
                                      data.initial_state,
@@ -100,31 +93,6 @@ auto build_prototype(const CaseData &data, const SimulatorConfig &cfg, int budge
     BOOST_TEST_REQUIRE(monoprop::detail::PropagatorTestAccess<NumModes>::options(sim).threads == budget);
     return sim;
 }
-#else
-auto budgets() -> std::vector<int> {
-    return {1, 4};
-}
-
-template <size_t NumModes>
-auto build_prototype(const CaseData &data, const SimulatorConfig &cfg, int budget) -> MonomialPropagator<NumModes> {
-    const kernel_test::ScopedBudget scoped(budget);
-    MonomialPropagator<NumModes> sim(data.hamiltonian,
-                                     static_cast<unsigned int>(2 * NumModes),
-                                     data.initial_state,
-                                     cfg.schrodinger_cutoff,
-                                     cfg.comm,
-                                     cfg.atol,
-                                     cfg.upper_atol,
-                                     cfg.cutoff_type,
-                                     cfg.basis_change,
-                                     NumModes,
-                                     Basis::Majorana,
-                                     /*partitions=*/1);
-    // Selection is checked, not assumed: only the prototype captures the environment budget.
-    BOOST_TEST_REQUIRE(monoprop::detail::PropagatorTestAccess<NumModes>::options(sim).threads == budget);
-    return sim;
-}
-#endif
 
 void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const char *label) {
     const double inplace = inplace_energy<ExampleDataFix::n_modes>(data, cfg);
@@ -135,13 +103,13 @@ void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const cha
     }
 }
 
-// check_agreement on threaded prototypes, with the same tolerances.
-void check_prototype_agreement(const CaseData &data, const SimulatorConfig &cfg, int budget, const char *label) {
+// check_agreement on roots at the launch's T, with the same tolerances.
+void check_root_agreement(const CaseData &data, const SimulatorConfig &cfg, int budget, const char *label) {
     constexpr size_t N = ExampleDataFix::n_modes;
-    auto inplace_sim = build_prototype<N>(data, cfg, budget);
+    auto inplace_sim = build_root<N>(data, cfg, budget);
     inplace_sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
     const double inplace = inplace_sim.expectation_value_functional(std::nullopt)(VecD{});
-    auto graph_sim = build_prototype<N>(data, cfg, budget);
+    auto graph_sim = build_root<N>(data, cfg, budget);
     graph_sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     const double graph = graph_sim.expectation_value_functional(std::nullopt)(data.parameters);
     BOOST_TEST_CONTEXT(label << " budget=" << budget << " inplace=" << inplace << " graph=" << graph) {
@@ -193,8 +161,8 @@ auto big_case() -> CaseData {
     return data;
 }
 
-auto big_prototype(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm) -> MonomialPropagator<kBig> {
-    return build_prototype<kBig>(
+auto big_root(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm) -> MonomialPropagator<kBig> {
+    return build_root<kBig>(
         data,
         SimulatorConfig{.schrodinger_cutoff = schrodinger ? std::optional<unsigned int>(2 * kBig) : std::nullopt,
                         .comm = comm},
@@ -239,10 +207,10 @@ BOOST_FIXTURE_TEST_CASE(two_pass_apply_matches_graph_replay, ExampleDataFix) {
         for (const int budget : budgets()) {
             const SimulatorConfig cfg{.schrodinger_cutoff =
                                           schrodinger ? std::optional<unsigned int>(2 * n_modes) : std::nullopt};
-            auto inplace_sim = build_prototype<n_modes>(data, cfg, budget);
+            auto inplace_sim = build_root<n_modes>(data, cfg, budget);
             inplace_sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
             const double inplace = inplace_sim.expectation_value_functional(std::nullopt)(VecD{});
-            auto graph_sim = build_prototype<n_modes>(data, cfg, budget);
+            auto graph_sim = build_root<n_modes>(data, cfg, budget);
             graph_sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, std::nullopt, cap);
             const double graph = graph_sim.expectation_value_functional(std::nullopt)(data.parameters);
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " budget=" << budget << " inplace=" << inplace
@@ -254,170 +222,16 @@ BOOST_FIXTURE_TEST_CASE(two_pass_apply_matches_graph_replay, ExampleDataFix) {
     }
 }
 
-// The same fused-versus-replay agreement on threaded one-store prototypes (legacy) or at the launch's T shards
-// (candidate). This fixture is small, so legacy kernels take their serial paths here; the big-workload cases below
-// cover the threaded ones.
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_threaded_prototype, ExampleDataFix) {
+// The same fused-versus-replay agreement at the launch's T shards. This fixture is small; the big-workload cases below
+// cover many-gate records.
+BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_at_the_launch_team, ExampleDataFix) {
     for (const int budget : budgets()) {
-        check_prototype_agreement(data, SimulatorConfig{}, budget, "heisenberg");
-        check_prototype_agreement(data, SimulatorConfig{.atol = 1e-10}, budget, "heisenberg atol=1e-10");
-        check_prototype_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, budget, "schrodinger");
+        check_root_agreement(data, SimulatorConfig{}, budget, "heisenberg");
+        check_root_agreement(data, SimulatorConfig{.atol = 1e-10}, budget, "heisenberg atol=1e-10");
+        check_root_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, budget, "schrodinger");
     }
 }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Records from the real ContractImmediately build path, gate by gate, in both pictures and in the fused-scale
-// and two-pass (length cap) modes: every destination slot has exactly one add-owner across hits, inserts and
-// cross-rank halves, and the apply at budgets 2-4 matches budget 1 bitwise. Under an MPI launch
-// (MPI_COMM_WORLD with several ranks) the halves are real cross-rank records.
-BOOST_AUTO_TEST_CASE(fused_real_records_have_one_add_owner_and_apply_exactly) {
-    const auto data = big_case();
-    const int ranks = comm_size(MPI_COMM_WORLD);
-    const auto mapped = map_params(data.parameters, data.param_inds, data.gen_coeffs, 1.0);
-    for (const bool schrodinger : {false, true}) {
-        for (const bool length_cap : {false, true}) {
-            BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap << " ranks=" << ranks) {
-                auto sim = big_prototype(data, schrodinger, 1, MPI_COMM_WORLD);
-                // A cap at the full width truncates nothing but forces the two-pass apply.
-                const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * kBig) : std::nullopt;
-                size_t duplicate_owners = 0;
-                size_t hits = 0;
-                size_t inserts = 0;
-                size_t halves = 0;
-                size_t max_apply_ranges = 0;
-                size_t max_gather_ranges = 0;
-                size_t max_gate_records = 0;
-                size_t max_gate_inserts = 0;
-                size_t nonzero_insert_snapshots = 0;
-                bool fused_seen = false;
-                bool two_pass_seen = false;
-                bool mismatch = false;
-                const size_t n = data.majoranas.size();
-                for (size_t i = 0; i < n; ++i) {
-                    // Production gate order and angles (evolve_mode_contract_immediately_ / gate_angle_).
-                    const size_t idx = schrodinger ? i : n - 1 - i;
-                    auto gate = BigAccess::contract_gate(sim, data.majoranas[idx], cap, mapped[idx]);
-                    for (const auto &[slot, count] : kernel_test::add_owner_counts(gate.fc)) {
-                        duplicate_owners += static_cast<size_t>(count != 1);
-                    }
-                    max_gate_records =
-                        std::max(max_gate_records,
-                                 gate.fc.hits.size() + gate.fc.inserts.size() + gate.fc.cross_half.size());
-                    max_gate_inserts = std::max(max_gate_inserts, gate.fc.inserts.size());
-                    hits += gate.fc.hits.size();
-                    inserts += gate.fc.inserts.size();
-                    halves += gate.fc.cross_half.size();
-                    (gate.fused_scale ? fused_seen : two_pass_seen) = true;
-
-                    const VecD before = *gate.coeffs;
-                    for (const auto &r : gate.fc.inserts) {
-                        nonzero_insert_snapshots += static_cast<size_t>(before[r.tgt] != 0.0);
-                    }
-                    const auto apply = [&](int threads, kernel_test::RangeLog *log) {
-                        auto fc = gate.fc;
-                        VecD out = before;
-                        if (log != nullptr) {
-                            monoprop::detail::apply_fused_contract(fc,
-                                                                   out,
-                                                                   gate.cos,
-                                                                   gate.apply_angle,
-                                                                   schrodinger,
-                                                                   gate.fused_scale,
-                                                                   {threads},
-                                                                   kernel_test::RecordingObserver{log});
-                        }
-                        else {
-                            monoprop::detail::apply_fused_contract(fc,
-                                                                   out,
-                                                                   gate.cos,
-                                                                   gate.apply_angle,
-                                                                   schrodinger,
-                                                                   gate.fused_scale,
-                                                                   {threads});
-                        }
-                        return out;
-                    };
-                    const VecD serial = apply(1, nullptr);
-                    for (const int threads : {2, 3, 4}) {
-                        kernel_test::RangeLog log;
-                        const bool same = bitwise_equal(apply(threads, &log), serial);
-                        mismatch = mismatch || !same;
-                        max_apply_ranges =
-                            std::max(max_apply_ranges, log[monoprop::detail::KernelRange::fused_apply].worker.size());
-                        max_gather_ranges =
-                            std::max(max_gather_ranges, log[monoprop::detail::KernelRange::fused_gather].worker.size());
-                    }
-                    *gate.coeffs = serial;
-                }
-                BOOST_TEST_MESSAGE("records: hits=" << hits << " inserts=" << inserts << " halves=" << halves
-                                                    << " max apply ranges=" << max_apply_ranges
-                                                    << " max gather ranges=" << max_gather_ranges
-                                                    << " nonzero insert snapshots=" << nonzero_insert_snapshots);
-                BOOST_TEST(duplicate_owners == 0u);
-                BOOST_TEST(!mismatch);
-                // One rank sees hits and inserts only; with several ranks the routing decides how many
-                // rotations stay rank-local (linear routing can send all of them across), but halves appear.
-                if (ranks == 1) {
-                    BOOST_TEST(hits > 0u);
-                    BOOST_TEST(inserts > 0u);
-                    BOOST_TEST(halves == 0u);
-                }
-                else {
-                    BOOST_TEST(halves > 0u);
-                }
-                // The kernel split the largest gate into the expected record ranges; on one rank this workload
-                // is large enough for the threaded record path, not only its serial fallback. More ranks
-                // divide the records and may leave a rank below two ranges.
-                BOOST_TEST(max_apply_ranges == monoprop::detail::logical_ranges(max_gate_records, 1024));
-                BOOST_TEST(max_gather_ranges
-                           == (schrodinger ? monoprop::detail::logical_ranges(max_gate_inserts, 1024) : 0u));
-                if (ranks == 1) {
-                    BOOST_TEST(max_apply_ranges >= 2u);
-                    BOOST_TEST(max_gather_ranges >= (schrodinger ? 2u : 0u));
-                }
-                BOOST_TEST(fused_seen == !length_cap);
-                BOOST_TEST(two_pass_seen == length_cap);
-
-                // The helper reproduced production: a serial prototype's own propagate gives the same vector.
-                auto reference = big_prototype(data, schrodinger, 1, MPI_COMM_WORLD);
-                reference.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
-                BOOST_TEST(bitwise_equal(BigAccess::picture_coeffs(reference), BigAccess::picture_coeffs(sim)));
-            }
-        }
-    }
-}
-
-// End to end through the public API: prototypes at budgets 1 and 4 propagate (fused apply, stored-mask and
-// fused-scale paths) and replay a built graph (lazy folds) to bitwise-identical coefficients and energies.
-BOOST_AUTO_TEST_CASE(fused_threaded_prototype_matches_serial_prototype_exactly) {
-    const auto data = big_case();
-    for (const bool schrodinger : {false, true}) {
-        for (const bool length_cap : {false, true}) {
-            BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap) {
-                const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * kBig) : std::nullopt;
-                auto serial = big_prototype(data, schrodinger, 1, MPI_COMM_WORLD);
-                auto threaded = big_prototype(data, schrodinger, 4, MPI_COMM_WORLD);
-                serial.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
-                threaded.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
-                BOOST_TEST(bitwise_equal(BigAccess::picture_coeffs(serial), BigAccess::picture_coeffs(threaded)));
-                BOOST_TEST(serial.expectation_value(VecD{}) == threaded.expectation_value(VecD{}));
-            }
-        }
-        BOOST_TEST_CONTEXT("graph replay, schrodinger=" << schrodinger) {
-            auto serial = big_prototype(data, schrodinger, 1, MPI_COMM_WORLD);
-            auto threaded = big_prototype(data, schrodinger, 4, MPI_COMM_WORLD);
-            serial.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-            threaded.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-            BOOST_TEST_MESSAGE("graph-built operator terms on this rank: " << serial.mp_op().size());
-            BOOST_TEST(bitwise_equal(serial.contract_partially(data.parameters, false),
-                                     threaded.contract_partially(data.parameters, false)));
-            BOOST_TEST(serial.expectation_value(data.parameters) == threaded.expectation_value(data.parameters));
-        }
-    }
-}
-#endif
-
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 namespace {
 
 namespace sharded = monoprop::detail::sharded;
@@ -486,7 +300,7 @@ auto apply_captured(const CapturedGate &gate, int threads, kernel_test::RangeLog
 
 } // namespace
 
-// Records from the candidate's real propagation, read per shard from the seam itself, in both pictures and in the
+// Records from the root's real propagation, read per shard from the seam itself, in both pictures and in the
 // fused-scale and two-pass (length cap) modes: every destination slot of a shard has exactly one add-owner across
 // hits, inserts and cross-owner halves; each owner applies its records on its own worker; replaying a gate's records
 // gives the next gate's starting coefficients and, after the last gate, the shard's picture, bitwise; and the apply
@@ -499,7 +313,7 @@ BOOST_AUTO_TEST_CASE(fused_shard_records_have_one_add_owner_and_apply_exactly) {
     for (const bool schrodinger : {false, true}) {
         for (const bool length_cap : {false, true}) {
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap << " T=" << launch) {
-                auto sim = big_prototype(data, schrodinger, launch, MPI_COMM_WORLD);
+                auto sim = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
                 const auto &shards = BigAccess::shards(sim);
                 const RecordCapture capture(shards.size());
                 BigAccess::observe(sim, &capture);
@@ -570,7 +384,7 @@ BOOST_AUTO_TEST_CASE(fused_shard_records_have_one_add_owner_and_apply_exactly) {
     }
 }
 
-// At a fixed geometry the candidate is deterministic shard by shard: two roots propagate (fused and two-pass) and
+// At a fixed geometry the root is deterministic shard by shard: two roots propagate (fused and two-pass) and
 // build and replay a graph to the same rows in the same row-ID order, bitwise coefficients and contraction blocks,
 // and the same energies. Every row sits on the shard its flat owner names, and no key is on two shards.
 BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
@@ -581,8 +395,8 @@ BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
         for (const bool length_cap : {false, true}) {
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap << " T=" << launch) {
                 const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * kBig) : std::nullopt;
-                auto first = big_prototype(data, schrodinger, launch, MPI_COMM_WORLD);
-                auto second = big_prototype(data, schrodinger, launch, MPI_COMM_WORLD);
+                auto first = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
+                auto second = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
                 first.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
                 second.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
                 const auto &a = BigAccess::shards(first);
@@ -608,8 +422,8 @@ BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
             }
         }
         BOOST_TEST_CONTEXT("graph replay, schrodinger=" << schrodinger << " T=" << launch) {
-            auto first = big_prototype(data, schrodinger, launch, MPI_COMM_WORLD);
-            auto second = big_prototype(data, schrodinger, launch, MPI_COMM_WORLD);
+            auto first = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
+            auto second = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
             first.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
             second.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
             BOOST_TEST(bitwise_equal(first.contract_partially(data.parameters, false),
@@ -622,7 +436,6 @@ BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
         }
     }
 }
-#endif
 
 // --- threaded bitmap scan: fused sweep and full construction -------------------------------------------------
 
@@ -703,8 +516,7 @@ auto wide_case() -> CaseData {
     return data;
 }
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-// The candidate root at the launch's T.
+// The root at the launch's T.
 auto wide_root(const CaseData &data, bool schrodinger, MPI_Comm comm) -> MonomialPropagator<kWide> {
     return MonomialPropagator<kWide>(data.hamiltonian,
                                      /*cutoff=*/10,
@@ -732,44 +544,6 @@ auto same_store_rows(const monoprop::detail::OperatorIndex<kWide> &sa, const mon
     }
     return true;
 }
-#else
-auto wide_prototype(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm) -> MonomialPropagator<kWide> {
-    // The Schrodinger state starts from the whole paired basis, 2^16 rows (one fold block), and grows past it.
-    const SimulatorConfig cfg{.schrodinger_cutoff = schrodinger ? std::optional<unsigned int>(2 * kWide) : std::nullopt,
-                              .comm = comm,
-                              .atol = 1e-12};
-    const kernel_test::ScopedBudget scoped(budget);
-    MonomialPropagator<kWide> sim(data.hamiltonian,
-                                  /*cutoff=*/10,
-                                  data.initial_state,
-                                  cfg.schrodinger_cutoff,
-                                  cfg.comm,
-                                  cfg.atol,
-                                  cfg.upper_atol,
-                                  cfg.cutoff_type,
-                                  cfg.basis_change,
-                                  kWide,
-                                  Basis::Majorana,
-                                  /*partitions=*/1);
-    BOOST_TEST_REQUIRE(WideAccess::options(sim).threads == budget);
-    return sim;
-}
-
-// Rows in row-ID order: the store's IDs are its insertion order, so equal rows mean equal IDs.
-auto same_rows(const MonomialPropagator<kWide> &a, const MonomialPropagator<kWide> &b) -> bool {
-    const auto &sa = *a.mp_op().store;
-    const auto &sb = *b.mp_op().store;
-    if (sa.size() != sb.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < sa.size(); ++i) {
-        if (materialize_row<kWide>(sa, i) != materialize_row<kWide>(sb, i)) {
-            return false;
-        }
-    }
-    return true;
-}
-#endif
 
 auto same_core(const LayerCore &a, const LayerCore &b) -> bool {
     const auto &x = a.cross_rank;
@@ -810,7 +584,6 @@ auto same_graph(const MPGraph &a, const MPGraph &b) -> bool {
 
 } // namespace
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 // Full construction at the launch's fixed geometry, shard by shard: two roots build the same graph on every shard
 // (every layer's endpoints, phases, slots, generator and scaled_count), the same rows in the same row-ID order and the
 // same coefficients and contraction blocks, and propagate (fused sweep and the two-pass length-cap path) to the same
@@ -860,121 +633,3 @@ BOOST_AUTO_TEST_CASE(fused_wide_shards_match_at_fixed_geometry) {
         }
     }
 }
-#else
-// Full construction at fixed geometry: prototypes at budgets 2-4 build the same graph (every layer's
-// endpoints, phases, slots, generator and scaled_count), the same rows in the same row-ID order and the same
-// coefficients as budget 1, and propagate (fused sweep and the two-pass length-cap path) to the same rows
-// and coefficients, in both pictures. Under an MPI launch each rank compares its own store and graph.
-BOOST_AUTO_TEST_CASE(openmp_scan_threaded_construction_matches_serial_exactly) {
-    const auto data = wide_case();
-    for (const bool schrodinger : {false, true}) {
-        auto serial_graph = wide_prototype(data, schrodinger, 1, MPI_COMM_WORLD);
-        serial_graph.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-        BOOST_TEST_MESSAGE("schrodinger=" << schrodinger << " graph-built rows on this rank: " << serial_graph.size()
-                                          << ", layers: " << serial_graph.graph().layers());
-        std::vector<MonomialPropagator<kWide>> serial_prop;
-        for (const bool cap : {false, true}) {
-            serial_prop.push_back(wide_prototype(data, schrodinger, 1, MPI_COMM_WORLD));
-            serial_prop.back().propagate(data.majoranas,
-                                         data.param_inds,
-                                         data.gen_coeffs,
-                                         data.parameters,
-                                         cap ? std::optional<size_t>(2 * kWide) : std::nullopt);
-        }
-        for (const int threads : {2, 3, 4}) {
-            BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " budget=" << threads) {
-                auto threaded = wide_prototype(data, schrodinger, threads, MPI_COMM_WORLD);
-                threaded.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-                BOOST_TEST(same_rows(serial_graph, threaded));
-                BOOST_TEST(same_graph(serial_graph.graph(), threaded.graph()));
-                BOOST_TEST(
-                    bitwise_equal(WideAccess::picture_coeffs(serial_graph), WideAccess::picture_coeffs(threaded)));
-                BOOST_TEST(bitwise_equal(serial_graph.contract_partially(data.parameters, false),
-                                         threaded.contract_partially(data.parameters, false)));
-                for (const bool cap : {false, true}) {
-                    auto prop = wide_prototype(data, schrodinger, threads, MPI_COMM_WORLD);
-                    prop.propagate(data.majoranas,
-                                   data.param_inds,
-                                   data.gen_coeffs,
-                                   data.parameters,
-                                   cap ? std::optional<size_t>(2 * kWide) : std::nullopt);
-                    const auto &ref = serial_prop[cap ? 1 : 0];
-                    BOOST_TEST(same_rows(ref, prop));
-                    BOOST_TEST(bitwise_equal(WideAccess::picture_coeffs(ref), WideAccess::picture_coeffs(prop)));
-                }
-            }
-        }
-    }
-}
-
-// The real build_layer on a prototype's operator splits the scan into ranges that run inside its own region.
-BOOST_AUTO_TEST_CASE(openmp_scan_construction_workers_participate,
-                     *boost::unit_test::precondition(kernel_test::runtime_offers_two_workers)) {
-    const auto data = wide_case();
-    auto sim = wide_prototype(data, false, 4, MPI_COMM_SELF);
-    const size_t words = sim.mp_op().inverted_index().words();
-    const size_t expected =
-        std::min<size_t>(4, monoprop::detail::logical_ranges(words, monoprop::detail::kColumnBlockWords));
-    BOOST_TEST_REQUIRE(expected >= 2U);
-    kernel_test::RangeLog log;
-    (void)WideAccess::build_layer_observed(sim, data.majoranas[0], kernel_test::RecordingObserver{&log});
-    kernel_test::check_participation(log[monoprop::detail::KernelRange::scan], expected, "build_layer scan");
-    BOOST_TEST(!WideAccess::is_invalid(sim));
-}
-
-// A scan worker's failure inside the real build path is joined and rethrown on the caller; the propagator's
-// operation guard then invalidates the object, and later operations and copies reject it.
-BOOST_AUTO_TEST_CASE(openmp_scan_worker_failure_invalidates_the_propagator) {
-    const auto data = wide_case();
-    auto sim = wide_prototype(data, false, 3, MPI_COMM_SELF);
-    kernel_test::RangeLog log;
-    BOOST_CHECK_THROW((void)WideAccess::build_layer_observed(
-                          sim,
-                          data.majoranas[0],
-                          kernel_test::RecordingObserver{&log, monoprop::detail::KernelRange::scan, 1}),
-                      std::runtime_error);
-    BOOST_TEST(log[monoprop::detail::KernelRange::scan].visits.at(1) == 1);
-    BOOST_TEST(WideAccess::is_invalid(sim));
-    BOOST_CHECK_THROW(sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs), InvalidPropagatorError);
-    BOOST_CHECK_THROW((void)WideAccess::clone(sim), InvalidPropagatorError);
-}
-
-// The real build_layer on one rank resolves every partner itself: its self probe runs in bounded windows whose
-// 256-query blocks run inside the probe's own region.
-BOOST_AUTO_TEST_CASE(openmp_self_probe_construction_workers_participate,
-                     *boost::unit_test::precondition(kernel_test::runtime_offers_two_workers)) {
-    const auto data = wide_case();
-    auto sim = wide_prototype(data, false, 4, MPI_COMM_SELF);
-    kernel_test::PhaseLog log;
-    (void)WideAccess::build_layer_observed(sim, data.majoranas[0], kernel_test::AccumulatingObserver{&log});
-    const auto calls = log.of(monoprop::detail::KernelRange::self_probe);
-    BOOST_TEST_REQUIRE(!calls.empty());
-    const auto *widest = *std::ranges::max_element(calls, {}, [](const auto *c) { return c->worker.size(); });
-    BOOST_TEST_REQUIRE(widest->worker.size() >= 4U);
-    kernel_test::check_participation(kernel_test::slots_of(*widest), widest->worker.size(), "build_layer self probe");
-    for (const auto *c : calls) {
-        BOOST_TEST(c->worker.size() <= 16U);
-    }
-    BOOST_TEST(log.of(monoprop::detail::KernelRange::decode).empty()); // one rank: nothing crosses the wire
-    BOOST_TEST(!WideAccess::is_invalid(sim));
-}
-
-// A self-probe worker's failure inside the real build path is joined and rethrown before any self miss is
-// published; the propagator's operation guard then invalidates the object.
-BOOST_AUTO_TEST_CASE(openmp_self_probe_worker_failure_invalidates_the_propagator) {
-    const auto data = wide_case();
-    auto sim = wide_prototype(data, false, 3, MPI_COMM_SELF);
-    kernel_test::PhaseLog log;
-    BOOST_CHECK_THROW((void)WideAccess::build_layer_observed(
-                          sim,
-                          data.majoranas[0],
-                          kernel_test::AccumulatingObserver{&log, monoprop::detail::KernelRange::self_probe, 0, 1}),
-                      std::runtime_error);
-    const auto calls = log.of(monoprop::detail::KernelRange::self_probe);
-    BOOST_TEST_REQUIRE(calls.size() == 1U);
-    BOOST_TEST(calls[0]->visits.at(1) == 1);
-    BOOST_TEST(WideAccess::is_invalid(sim));
-    BOOST_CHECK_THROW(sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs), InvalidPropagatorError);
-    BOOST_CHECK_THROW((void)WideAccess::clone(sim), InvalidPropagatorError);
-}
-#endif

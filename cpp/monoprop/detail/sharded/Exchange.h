@@ -53,7 +53,7 @@
  *   P  post(), and later wait()
  *   O  read recv_block<T>(t, peer, source)
  *
- * Wire layout, as the legacy hybrid transport: the message to peer rank b holds, for each of b's shards t in
+ * Wire layout: the message to peer rank b holds, for each of b's shards t in
  * ascending order, each local source shard's block for (b, t) in ascending source order. Received messages have the
  * same layout, so a local destination's part of a message is contiguous and its blocks ascend by source shard.
  * Every count, per-peer total and displacement is a checked int; a violation throws before anything is posted.
@@ -90,7 +90,7 @@ enum class ExchangeTransport : std::uint8_t {
     collective, //!< One MPI_Ialltoallv over every rank of the communicator.
 };
 
-//! Tags of the sharded rounds, distinct from each other and from the legacy transports' (Pairwise.h).
+//! Tags of the sharded rounds, distinct from each other and from the low-level engine's (Pairwise.h).
 inline constexpr int kShardedQueryTag = 0x6D75;
 inline constexpr int kShardedAnswerTag = 0x6D76;
 inline constexpr int kShardedReplayTag = 0x6D77;
@@ -127,8 +127,8 @@ struct PhysicalWorld {
      * Call on MPI's initializing thread, outside any team: the first call on a multi-rank communicator agrees the
      * routing configuration collectively and caches the answer on the communicator.
      *
-     * \throws std::invalid_argument if `comm` is not an ordinary communicator; routing::RoutingDisagreement on every
-     *         rank together if the ranks resolved different routing configurations.
+     * \throws routing::RoutingDisagreement on every rank together if the ranks resolved different routing
+     *         configurations.
      */
     monoprop_EXPORT static auto of(const mpi::Comm &comm) -> PhysicalWorld;
 };
@@ -289,7 +289,7 @@ private:
  * \brief The physical rounds of one rank-level owner, kept across its operations.
  *
  * Every construction, evaluation and replay call of an owner reuses these rounds instead of allocating its own, so
- * their staging grows to a high-water mark once, as the legacy communicator's staging does. Rounds allocated per call
+ * their staging grows to a high-water mark once. Rounds allocated per call
  * free their staging at every call's end: each such free of a large mmapped block raised glibc's dynamic mmap threshold
  * a step further, and the later per-gate transient allocations then stayed resident in fragmented thread arenas.
  *

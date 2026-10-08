@@ -13,16 +13,15 @@
 // limitations under the License.
 
 /*
- * The integrated sharded OpenMP prototype root (monoprop_SHARDED_OPENMP_PROTOTYPE): MonomialPropagator over the T
- * shard states of one rank, through its public operations. Compiled only in a prototype build. The team size T is the
- * captured launch budget; cpp/tests/CMakeLists.txt reruns every case in fresh processes at T = 1, 2 and 4
- * (sharded_root_env_t*), and the serial per-case registrations run at T = 1. Cases that need a nonprimary worker
+ * The sharded OpenMP root: MonomialPropagator over the T shard states of one rank, through its public operations. The
+ * team size T is the captured launch budget; cpp/tests/CMakeLists.txt reruns every case in fresh processes at T = 1, 2
+ * and 4 (sharded_root_env_t*), and the serial per-case registrations run at T = 1. Cases that need a nonprimary worker
  * return early at T = 1.
  *
  * Private inspection, phase observation and failure injection go through PropagatorTestAccess (shards(), the (1, T)
  * router, and the test-only RootObserver every seam reports to). Observers record the executing worker inside the
- * protected phase; assertions run after the team has joined. Numerical parity against the legacy runtime at the same
- * (1, T) geometry, and across T, is checked from separate processes by tests/test_sharded_openmp.py.
+ * protected phase; assertions run after the team has joined. Numerical parity against an independently built runtime at
+ * the same (1, T) geometry, and across T, is checked from separate processes by tests/test_sharded_openmp.py.
  */
 
 #include <boost/test/unit_test.hpp>
@@ -32,8 +31,6 @@
 
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
-
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 
 #include <omp.h>
 
@@ -1350,5 +1347,3 @@ BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
     BOOST_TEST(core_only->expectation_value_functional(1e-3)(VecD{0.3}) == 2.5);
     BOOST_TEST(core_only->evolved_operator_terms(VecD{0.3}, 0.0).empty());
 }
-
-#endif // monoprop_SHARDED_OPENMP_PROTOTYPE

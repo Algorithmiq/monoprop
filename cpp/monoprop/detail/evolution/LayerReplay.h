@@ -15,13 +15,13 @@
 #pragma once
 
 /*
- * Owner-local layer replay and reverse-derivative kernels, shared by the legacy single-store evaluator
+ * Owner-local layer replay and reverse-derivative kernels, shared by the low-level single-store evaluator
  * (Evolution.cpp, MPFunctions.cpp) and the sharded evaluator (detail/sharded/Evaluation.cpp).
  *
  * Library-internal: included only by compiled library sources, never by an installed header, so every
  * instantiation is compiled with the library's own floating-point flags. The kernels perform no MPI and no
  * synchronization. Where a kernel reads a partner owner's endpoint values it takes a `block_of(rank)` callable
- * returning that partner's block for this owner: the legacy path points into a received MPI buffer, the sharded
+ * returning that partner's block for this owner: the low-level path points into a received MPI buffer, the sharded
  * path into the partner's published snapshot. Slots are visited in ascending order, the self slot is skipped,
  * and each block is read at the same positions, so both paths perform the same operations in the same order.
  */
@@ -104,10 +104,10 @@ inline auto layer_derivative(const TrigValues &trig, double A, const EndpointCon
 /*!
  * \brief layer_derivative() from the raw cosine accumulation (the kernel's return value, before its ×sec).
  *
- * For an evaluator that finishes a layer in a later phase than it accumulates it. The legacy evaluator computes
+ * For an evaluator that finishes a layer in a later phase than it accumulates it. The low-level evaluator computes
  * `A = raw * sec` and the derivative inline in one function, where the compiler may contract the product into the
  * subtraction `A - ep.cos_terms`; keeping `A` as its own statement here, from the unrounded `raw`, gives the compiler
- * the same dataflow. Out of line on purpose: the legacy evaluator adds the derivative to the gradient across a
+ * the same dataflow. Out of line on purpose: the low-level evaluator adds the derivative to the gradient across a
  * translation-unit boundary, so it never contracts with that addition either.
  */
 [[gnu::noinline]] inline auto layer_derivative_from_raw(const TrigValues &trig, double raw, const EndpointContrib &ep)

@@ -14,18 +14,13 @@ add_executable(
 )
 target_link_libraries(smoke PRIVATE monoprop::monoprop)
 
-# The runtime selection the caller expects of this package; defaults to what the package reports. Pass
-# -DSMOKE_EXPECT_SHARDED_PROTOTYPE=ON/OFF to check an installed package independently.
-if(NOT DEFINED SMOKE_EXPECT_SHARDED_PROTOTYPE)
-  set(SMOKE_EXPECT_SHARDED_PROTOTYPE "${monoprop_SHARDED_OPENMP_PROTOTYPE}")
-endif()
-# Likewise the MPI setting: -DSMOKE_EXPECT_MPI=ON/OFF checks it independently of what the package reports.
+# The MPI setting the caller expects of this package; defaults to what the package reports. Pass
+# -DSMOKE_EXPECT_MPI=ON/OFF to check an installed package independently.
 if(NOT DEFINED SMOKE_EXPECT_MPI)
   set(SMOKE_EXPECT_MPI "${monoprop_ENABLE_MPI}")
 endif()
 target_compile_definitions(
   smoke
   PRIVATE
-    monoprop_EXPECT_SHARDED_PROTOTYPE=$<BOOL:${SMOKE_EXPECT_SHARDED_PROTOTYPE}>
     monoprop_EXPECT_MPI=$<BOOL:${SMOKE_EXPECT_MPI}>
 )

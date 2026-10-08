@@ -113,8 +113,8 @@ test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
         --reinstall-package monoprop --no-cache \
         --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
 
-# Build and run a consumer project against the installed package. A sharded package's
-# consumer also runs at a fixed team of two and, in an MPI build, on two ranks.
+# Build and run a consumer project against the installed package, at one thread, at a fixed
+# team of two and, in an MPI build, on two ranks.
 
 test-find-package BUILD_DIR='build/find-package-smoke':
     #!/usr/bin/env bash
@@ -124,47 +124,46 @@ test-find-package BUILD_DIR='build/find-package-smoke':
     cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
-    "$build_dir/smoke"
-    identity="$(uv run --no-sync python -c 'from monoprop import _core; print(_core.__runtime_identity__)')"
+    monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE "$build_dir/smoke"
+    monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE "$build_dir/smoke"
     has_mpi="$(uv run --no-sync python -c 'import monoprop; print(monoprop.has_mpi)')"
-    if [[ "$identity" == "monoprop-runtime=sharded-openmp-prototype" ]]; then
-      monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE "$build_dir/smoke"
-      if [[ "$has_mpi" == "True" ]]; then
-        for threads in 1 2; do
-          monoprop_NUM_THREADS=$threads OMP_NUM_THREADS=$threads OMP_DYNAMIC=FALSE monoprop_TEST_EXPECT_RANKS=2 \
-            {{ mpiexec }} -n 2 "$build_dir/smoke"
-        done
-      fi
+    if [[ "$has_mpi" == "True" ]]; then
+      for threads in 1 2; do
+        monoprop_NUM_THREADS=$threads OMP_NUM_THREADS=$threads OMP_DYNAMIC=FALSE monoprop_TEST_EXPECT_RANKS=2 \
+          {{ mpiexec }} -n 2 "$build_dir/smoke"
+      done
     fi
 
-# Fail unless the installed extension and the C++ build tree hold the expected runtime
-# (RUNTIME is legacy or sharded) and the MPI setting monoprop_ENABLE_MPI asks for.
+# Fail unless the installed extension carries the sharded runtime's identity (attribute and NUL-terminated
+# literal, and neither pre-removal marker), its MPI setting is the one monoprop_ENABLE_MPI asks for, and the
+# C++ build tree holds no stale runtime selector.
 
-check-runtime RUNTIME:
+check-runtime:
     #!/usr/bin/env bash
     set -euo pipefail
-    case {{ quote(RUNTIME) }} in
-      legacy) identity="monoprop-runtime=legacy-partitions"; selector=OFF ;;
-      sharded) identity="monoprop-runtime=sharded-openmp-prototype"; selector=ON ;;
-      *) echo "RUNTIME must be 'legacy' or 'sharded', got: {{ RUNTIME }}" >&2; exit 2 ;;
-    esac
     want_mpi={{ if mpi_enabled =~ '^(on|true|yes|1)$' { "True" } else { "False" } }}
-    uv run --no-sync python - "$identity" "$want_mpi" <<'PY'
+    uv run --no-sync python - "$want_mpi" <<'PY'
     import sys
     from pathlib import Path
 
     import monoprop
     from monoprop import _core
 
-    identity, want_mpi = sys.argv[1], sys.argv[2]
+    identity = "monoprop-runtime=sharded-openmp"
+    want_mpi = sys.argv[1]
     found = getattr(_core, "__runtime_identity__", None)
-    embedded = identity.encode() in Path(_core.__file__).read_bytes()
-    print(f"runtime={found} embedded={embedded} has_mpi={monoprop.has_mpi} core={_core.__file__}")
-    if found != identity or not embedded or str(monoprop.has_mpi) != want_mpi:
+    data = Path(_core.__file__).read_bytes()
+    embedded = identity.encode() + b"\0" in data
+    stale = [m for m in (b"monoprop-runtime=sharded-openmp-prototype", b"monoprop-runtime=legacy-partitions") if m in data]
+    print(f"runtime={found} embedded={embedded} stale={stale} has_mpi={monoprop.has_mpi} core={_core.__file__}")
+    if found != identity or not embedded or stale or str(monoprop.has_mpi) != want_mpi:
         raise SystemExit(f"expected {identity} with has_mpi={want_mpi}")
     PY
-    grep -q "^monoprop_SHARDED_OPENMP_PROTOTYPE:BOOL=${selector}$" "{{ build_dir }}/CMakeCache.txt"
-    echo "C++ tree {{ build_dir }}: monoprop_SHARDED_OPENMP_PROTOTYPE=${selector}"
+    if grep -q '^monoprop_SHARDED_OPENMP_PROTOTYPE:' "{{ build_dir }}/CMakeCache.txt"; then
+      echo "{{ build_dir }} holds a stale monoprop_SHARDED_OPENMP_PROTOTYPE cache entry; rebuild it from scratch" >&2
+      exit 1
+    fi
+    echo "C++ tree {{ build_dir }}: no runtime selector"
 
 # The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
 # Tsan) and the matching monoprop_SANITIZER define.
@@ -211,19 +210,15 @@ sanitizer-reports:
     done
 
 # TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
-# restricted to the build's concurrency surface: the partition and shared-memory paths of a
-# legacy build, or the sharded runtime's team, state, construction, evaluation, exchange and
-# root suites (their fixed-T launches included) of a sharded build. GCC's libgomp is not
-# TSan-aware; see docs/content/docs/building.mdx for the Clang/libomp/Archer setup.
+# restricted to the concurrency surface: the sharded runtime's team, state, construction,
+# evaluation, exchange and root suites and the fused-record launches (their fixed-T launches
+# included), and the OpenMP kernels' own budgets. Only Clang with LLVM's libomp and its Archer
+# tool gives evidence; GCC's libgomp is not TSan-aware (docs/content/docs/building.mdx).
 
 test-cpp-tsan:
     #!/usr/bin/env bash
     set -euo pipefail
-    if grep -q '^monoprop_SHARDED_OPENMP_PROTOTYPE:BOOL=ON$' "{{ build_dir }}/CMakeCache.txt"; then
-      selection='^sharded_(team|state|construction|evaluation|exchange|root)_'
-    else
-      selection='(partition_|shm_comm_)'
-    fi
+    selection='^(sharded_(team|state|construction|evaluation|exchange|root)_|fused_env_t|openmp_env_)'
     TSAN_OPTIONS="halt_on_error=1:history_size=4${TSAN_OPTIONS:+:$TSAN_OPTIONS}" \
       ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error -R "$selection"
 
@@ -429,10 +424,10 @@ bench LABEL *ARGS:
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
-# preflight. `monoprop_PARTITIONS` is mandatory above one rank (benches/conftest.py refuses
-# the run without it). Extra args are passed to mpiexec for pinning (and, as root, add
-# `--allow-run-as-root`), e.g.
-#   monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+# preflight. The run declares the sharded runtime's shape (`--runtime-shape=openmp`): set
+# monoprop_NUM_THREADS=T (and OMP_NUM_THREADS=T OMP_DYNAMIC=FALSE) for T threads per rank.
+# Extra args are passed to mpiexec for placement (and, as root, add `--allow-run-as-root`), e.g.
+#   monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
@@ -442,9 +437,9 @@ bench-mpi LABEL RANKS *MPIARGS:
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync mpiexec -n "$ranks" \
         -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS \
-        ${monoprop_PARTITIONS+-x monoprop_PARTITIONS} \
-        ${monoprop_NUM_THREADS+-x monoprop_NUM_THREADS} "$@" \
-        python -m pytest benches -o filterwarnings=default \
+        ${monoprop_NUM_THREADS+-x monoprop_NUM_THREADS} \
+        ${OMP_NUM_THREADS+-x OMP_NUM_THREADS} ${OMP_DYNAMIC+-x OMP_DYNAMIC} "$@" \
+        python -m pytest benches -o filterwarnings=default --runtime-shape=openmp \
         --benchmark-json="{{ bench_results }}/time-$label.json"
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 

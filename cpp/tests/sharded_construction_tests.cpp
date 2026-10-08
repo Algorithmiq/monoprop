@@ -21,11 +21,12 @@
  * T = 1, 2 and 4. Cases that need a nonprimary worker are left out of T = 1.
  *
  * Oracles:
- * - The legacy partition facade (partitions = T over an in-process communicator; child t is flat owner t at geometry
- *   (1, T)), or at T = 1 the single-store propagator. Shared phases mean the two paths can agree on a shared bug, so:
+ * - The rank-level root at the same launch (MPI_COMM_SELF, the launch's T), built through its public operations. Its
+ *   shards come from the same seam, so it checks the root's wiring of the seam, never the seam's own arithmetic; so:
  * - an independent insertion-order reference (plain sets and vectors, no engine code) for rows and IDs;
- * - an independent coefficient-map propagator, and the frozen exact energy of tests/data/random_exact.msgpack;
- * - across T, the global retained map of the in-process T = 1 store, compared with the plan's map tolerance.
+ * - an independent coefficient-map propagator, and the frozen exact energy of tests/data/random_exact.msgpack.
+ * Bitwise equality with an independently implemented runtime at the same geometry, and the global retained maps
+ * across T, are checked from separate processes (tests/test_sharded_openmp.py); two runtimes never share a process.
  *
  * Workers never call BOOST_TEST. Observers write per-shard slots (visits, streams, kernel ranges) and assertions run
  * after the team has joined. AllocationProbe.h injects real allocation failures on a chosen owner.
@@ -252,9 +253,9 @@ auto swap_basis(size_t logical) -> std::vector<VecZ> {
     return rows;
 }
 
-// Legacy comparisons: every basis and picture, cutoffs that trim, coefficient cutoffs, a length cap (two-pass
+// Fixed-geometry comparisons: every basis and picture, cutoffs that trim, coefficient cutoffs, a length cap (two-pass
 // fallback) and the basis-change closure.
-auto legacy_cases() -> std::vector<Case> {
+auto fixture_cases() -> std::vector<Case> {
     const auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
     const Fixture maj{.name = "majorana-heisenberg-logical-6",
                       .op = majorana_operator(6),
@@ -309,32 +310,6 @@ auto label(const Case &c) -> std::string {
     return c.k ? std::format("{} k={}", c.f.name, *c.k) : c.f.name;
 }
 
-// --- Legacy oracle ----------------------------------------------------------------------------------------------
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-template <size_t N>
-auto legacy(const Fixture &f, size_t partitions, MPI_Comm comm = MPI_COMM_SELF) -> MonomialPropagator<N> {
-    return MonomialPropagator<N>(f.op,
-                                 f.cutoff,
-                                 f.initial_state,
-                                 f.schrodinger_cutoff,
-                                 comm,
-                                 f.lower_atol,
-                                 f.upper_atol,
-                                 f.cutoff_type,
-                                 f.basis_change,
-                                 f.logical,
-                                 f.basis,
-                                 partitions);
-}
-
-template <size_t N>
-auto legacy_owner(MonomialPropagator<N> &p, size_t shard) -> const MonomialPropagator<N> & {
-    using Access = monoprop::detail::PropagatorTestAccess<N>;
-    return Access::partition_count(p) == 0 ? p : Access::partition(p, static_cast<int>(shard));
-}
-#endif
-
 // --- Sharded setup ----------------------------------------------------------------------------------------------
 
 template <size_t N>
@@ -384,7 +359,7 @@ auto seed(const Fixture &f, parallel::Options options, const sharded::PhysicalWo
     if (f.schrodinger_cutoff) {
         paired = sharded::paired_basis_bounds(*f.schrodinger_cutoff, f.logical, router.flat_world());
     }
-    // The legacy constructor sizes rows from the plain cutoff (the basis change never affects the width).
+    // The inline width only selects the row packing (overflow spills losslessly), so the plain cutoff serves here.
     const auto width_fn = monoprop::detail::cutoff_function<N>(f.cutoff_type, f.cutoff, f.logical);
     const auto seed_inputs = sharded::OperatorSeed<N>{
         .initial_operator = f.op,
@@ -532,11 +507,9 @@ auto digest(const sharded::ShardState<N> &s) -> ShardDigest {
     return d;
 }
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-// The rank-level reference at geometry (1, T) in a candidate build: the candidate root over MPI_COMM_SELF, built
-// through its public operations at the launch's T. Its shards come from the same seam, so a case that compares against
-// it checks the root's wiring of the seam, and keeps its independent checks; the legacy build compares against the
-// legacy partitions instead.
+// The rank-level reference at geometry (1, T): the root over MPI_COMM_SELF, built through its public operations at the
+// launch's T. Its shards come from the same seam, so a case that compares against it checks the root's wiring of the
+// seam, and keeps its independent checks.
 template <size_t N>
 auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
     auto p = MonomialPropagator<N>(f.op,
@@ -558,23 +531,6 @@ template <size_t N>
 auto reference_digest(MonomialPropagator<N> &p, size_t shard) -> ShardDigest {
     return digest<N>(*monoprop::detail::PropagatorTestAccess<N>::shards(p).at(shard));
 }
-#else
-template <size_t N>
-auto legacy_digest(MonomialPropagator<N> &p, size_t shard) -> ShardDigest {
-    return digest<N>(*monoprop::detail::PropagatorTestAccess<N>::shard_state(legacy_owner(p, shard)));
-}
-
-// The rank-level reference at geometry (1, T): the legacy partitions.
-template <size_t N>
-auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
-    return legacy<N>(f, threads);
-}
-
-template <size_t N>
-auto reference_digest(MonomialPropagator<N> &p, size_t shard) -> ShardDigest {
-    return legacy_digest<N>(p, shard);
-}
-#endif
 
 // --- Global retained maps ---------------------------------------------------------------------------------------
 
@@ -790,125 +746,7 @@ auto disarm_team() -> void {
     }));
 }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Legacy streams, captured gate by gate on every legacy store with the same per-shard probe.
-template <size_t N>
-auto legacy_streams(const Case &cs, size_t threads, bool fused) -> std::vector<ShardLog> {
-    using Access = monoprop::detail::PropagatorTestAccess<N>;
-    auto p = legacy<N>(cs.f, threads);
-    auto logs = make_logs(threads);
-    const auto mapped = map_params(cs.c.params, cs.c.mapping, cs.c.gen_coeffs, 1.0);
-    const bool schrodinger = cs.f.schrodinger_cutoff.has_value();
-    const size_t n = cs.c.gates.size();
-    for (size_t step = 0; step < n; ++step) {
-        const size_t idx = schrodinger ? step : n - 1 - step;
-        Access::for_each_store(p, [&](size_t r, MonomialPropagator<N> &store) {
-            const KernelProbe probe{.log = &logs[r]};
-            if (fused) {
-                Access::contract_gate_observed(store, cs.c.gates[idx], cs.k, mapped[idx], probe);
-            }
-            else {
-                (void)Access::graph_gate_observed(store, cs.c.gates[idx], cs.k, probe);
-            }
-        });
-    }
-    return logs;
-}
-#endif
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Whether any pass of any shard published a nonempty payload block, so a stream comparison is not vacuous.
-auto any_payload(const std::vector<ShardLog> &logs) -> bool {
-    for (const auto &log : logs) {
-        for (const auto &pass : log.passes) {
-            if (std::ranges::any_of(pass.payload, [](const auto &block) { return !block.empty(); })) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-#endif
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-auto passes_equal(const std::vector<ShardLog> &got, const std::vector<ShardLog> &want) -> bool {
-    if (got.size() != want.size()) {
-        return false;
-    }
-    for (size_t t = 0; t < got.size(); ++t) {
-        if (got[t].passes != want[t].passes) {
-            return false;
-        }
-    }
-    return true;
-}
-#endif
-
 } // namespace
-
-// --- Fixed-geometry equality with the legacy partitions ---------------------------------------------------------
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Graph construction at (1, T): every shard's rows and IDs, coefficients, caches and graph layers (endpoints, signs,
-// generator words, scaled_count, gate metadata) equal the legacy child's, and so do the query, source and answer
-// streams of every pass of every gate.
-BOOST_AUTO_TEST_CASE(sharded_construction_graph_matches_legacy_partitions) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    for (const auto &cs : legacy_cases()) {
-        BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto p = legacy<kN>(cs.f, threads);
-            p.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-            auto s = seed<kN>(cs.f, options);
-            const size_t seeded = sharded::total_size(s.shards);
-            auto logs = make_logs(threads);
-            require_success(run_graph<kN>(s, cs.c, cs.k, Probe{.logs = &logs}));
-            BOOST_TEST(sharded::total_size(s.shards) > seeded);
-            BOOST_TEST((threads == 1 || any_payload(logs)));
-            size_t layers = 0;
-            for (size_t t = 0; t < threads; ++t) {
-                const auto got = digest<kN>(*s.shards[t]);
-                BOOST_TEST((got == legacy_digest<kN>(p, t)), "shard " << t);
-                layers += got.layers.size();
-            }
-            BOOST_TEST(layers == threads * cs.c.gates.size());
-            BOOST_TEST(passes_equal(logs, legacy_streams<kN>(cs, threads, false)));
-        }
-    }
-}
-#endif
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Graph-free propagation at (1, T): every shard's coefficients equal the legacy child's bit for bit (zeros and
-// near-cutoff rows included), as do rows, caches and the fused query/value, source and answer streams.
-BOOST_AUTO_TEST_CASE(sharded_construction_propagation_matches_legacy_partitions) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    for (const auto &cs : legacy_cases()) {
-        BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto p = legacy<kN>(cs.f, threads);
-            p.propagate(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, cs.c.params, cs.k);
-            auto s = seed<kN>(cs.f, options);
-            const bool schrodinger = cs.f.schrodinger_cutoff.has_value();
-            auto before = sharded::copy_shards(options, s.shards);
-            for (auto &state : before) {
-                (void)state->op.current_picture(schrodinger);
-            }
-            const auto initial = global_map<kN>(before, schrodinger);
-            auto logs = make_logs(threads);
-            require_success(run_propagate<kN>(s, cs.c, cs.k, Probe{.logs = &logs}));
-            BOOST_TEST((threads == 1 || any_payload(logs)));
-            // The coefficients evolved and the store grew: equality below is not between untouched states.
-            BOOST_TEST(global_map<kN>(s.shards, schrodinger).size() > initial.size());
-            for (size_t t = 0; t < threads; ++t) {
-                BOOST_TEST((digest<kN>(*s.shards[t]) == legacy_digest<kN>(p, t)), "shard " << t);
-                BOOST_TEST(s.shards[t]->graph.layers() == 0U);
-            }
-            BOOST_TEST(passes_equal(logs, legacy_streams<kN>(cs, threads, true)));
-        }
-    }
-}
-#endif
 
 // --- Independent references -------------------------------------------------------------------------------------
 
@@ -1048,9 +886,9 @@ struct OrderReference {
 BOOST_AUTO_TEST_CASE(sharded_construction_rows_follow_the_ordering_contract) {
     const auto options = team_options();
     const size_t threads = team_size();
-    auto cases = legacy_cases();
-    cases.resize(2);                    // Majorana, both pictures
-    cases.push_back(legacy_cases()[9]); // Pauli Heisenberg
+    auto cases = fixture_cases();
+    cases.resize(2);                     // Majorana, both pictures
+    cases.push_back(fixture_cases()[9]); // Pauli Heisenberg
     size_t cross_matches = 0;
     for (const auto &cs : cases) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
@@ -1240,52 +1078,6 @@ BOOST_AUTO_TEST_CASE(sharded_construction_propagation_matches_an_independent_ref
     }
 }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Across launches the geometry changes, so raw row IDs may differ; the global retained maps (keys, coefficients,
-// stored zeros) must agree with the in-process single store, and every graph layer must record the same number of
-// rotations.
-BOOST_AUTO_TEST_CASE(sharded_construction_maps_agree_across_team_sizes) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    for (const auto &cs : legacy_cases()) {
-        const bool schrodinger = cs.f.schrodinger_cutoff.has_value();
-        BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto single = legacy<kN>(cs.f, 1);
-            single.propagate(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, cs.c.params, cs.k);
-            RetainedMap want;
-            picture_map<kN>(*monoprop::detail::PropagatorTestAccess<kN>::shard_state(single), schrodinger, want);
-            auto s = seed<kN>(cs.f, options);
-            require_success(run_propagate<kN>(s, cs.c, cs.k));
-            check_maps_agree(global_map<kN>(s.shards, schrodinger), want, "propagated map");
-
-            auto single_graph = legacy<kN>(cs.f, 1);
-            single_graph.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-            const auto one = monoprop::detail::PropagatorTestAccess<kN>::shard_state(single_graph);
-            auto g = seed<kN>(cs.f, options);
-            require_success(run_graph<kN>(g, cs.c, cs.k));
-            std::set<Key> got_keys;
-            std::set<Key> want_keys;
-            for (const auto &state : g.shards) {
-                for (size_t i = 0; i < state->op.store->size(); ++i) {
-                    got_keys.insert(key_of<kN>(state->op.store->row(i)));
-                }
-            }
-            for (size_t i = 0; i < one->op.store->size(); ++i) {
-                want_keys.insert(key_of<kN>(one->op.store->row(i)));
-            }
-            BOOST_TEST((got_keys == want_keys));
-            for (size_t l = 0; l < one->graph.layers(); ++l) {
-                size_t entries = 0;
-                for (const auto &state : g.shards) {
-                    entries += state->graph.get_layer(l).core().cross_rank.sin_send_indices.size();
-                }
-                BOOST_TEST(entries == one->graph.get_layer(l).core().cross_rank.sin_send_indices.size(), "layer " << l);
-            }
-        }
-    }
-}
-#endif
-
 // --- Participation and the opaque path --------------------------------------------------------------------------
 
 namespace {
@@ -1360,7 +1152,7 @@ auto count_ranges(const std::vector<ShardLog> &logs, KernelRange kind) -> size_t
 BOOST_AUTO_TEST_CASE(sharded_construction_owners_do_their_own_work) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     for (const bool fused : {false, true}) {
         auto s = seed<kN>(cs.f, options);
         auto logs = make_logs(threads);
@@ -1388,11 +1180,11 @@ BOOST_AUTO_TEST_CASE(sharded_construction_owners_do_their_own_work) {
 }
 
 // Opaque cutoffs (a closure over a typed one, and the basis-change closure) traverse every shard on the primary while
-// the owners keep every other phase; the results equal the typed-cutoff run and the legacy partitions.
+// the owners keep every other phase; the results equal the typed-cutoff run and the root.
 BOOST_AUTO_TEST_CASE(sharded_construction_opaque_cutoff_traverses_on_the_primary) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cases = legacy_cases();
+    const auto cases = fixture_cases();
     for (const auto &base : {cases[0], cases[1], cases[6]}) {
         auto opaque = base;
         opaque.f.opaque = true;
@@ -1429,11 +1221,11 @@ BOOST_AUTO_TEST_CASE(sharded_construction_opaque_cutoff_traverses_on_the_primary
 // --- Degenerate inputs ------------------------------------------------------------------------------------------
 
 // An empty circuit opens no team and changes nothing; an empty operator and identity-only circuits leave every shard
-// (including empty owners) consistent with the legacy partitions; empty owners still reach every checkpoint.
+// (including empty owners) consistent with the root; empty owners still reach every checkpoint.
 BOOST_AUTO_TEST_CASE(sharded_construction_empty_operators_circuits_and_identity) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     {
         auto s = seed<kN>(cs.f, options);
         std::vector<ShardDigest> before;
@@ -1724,8 +1516,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_published_resolution_matches_owning_bl
 // --- Large streams and wide terms through the orchestration -----------------------------------------------------
 
 // Same-shard streams beyond one 4096-query self window, fresh growth and reindexing, through the whole team: the
-// result equals the legacy partitions exactly, and at T = 1 the self stream exceeds 4096 queries.
-BOOST_AUTO_TEST_CASE(sharded_construction_large_self_streams_match_legacy) {
+// result equals the root's exactly, and at T = 1 the self stream exceeds 4096 queries.
+BOOST_AUTO_TEST_CASE(sharded_construction_large_self_streams_match_the_root) {
     constexpr size_t N = 16;
     const auto options = team_options();
     const size_t threads = team_size();
@@ -1771,8 +1563,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_large_self_streams_match_legacy) {
 }
 
 // Wide positions (250 modes: positions above 255, more than 31 positions per record, multiword keys) through graph
-// construction and propagation, against the legacy partitions.
-BOOST_AUTO_TEST_CASE(sharded_construction_wide_terms_match_legacy) {
+// construction and propagation, against the root.
+BOOST_AUTO_TEST_CASE(sharded_construction_wide_terms_match_the_root) {
     constexpr size_t N = 250;
     const auto options = team_options();
     const size_t threads = team_size();
@@ -1876,7 +1668,7 @@ auto message_of(const std::exception_ptr &error) -> std::string {
 BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later_work) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     const auto cross_works = {W::resolve_leaders, W::consume_leaders, W::resolve_followers, W::consume_followers};
     for (const bool fused : {false, true}) {
         std::vector<W> works =
@@ -1933,7 +1725,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_kernel_decode_and_publication_failures
                      *boost::unit_test::precondition(has_nonprimary_worker)) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     struct Scenario {
         const char *name;
         bool fused;
@@ -1983,7 +1775,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_concurrent_failures_select_the_lowest_
                      *boost::unit_test::precondition(has_nonprimary_worker)) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     auto s = seed<kN>(cs.f, options);
     auto logs = make_logs(threads);
     const Probe probe{.logs = &logs,
@@ -2002,7 +1794,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
                      *boost::unit_test::precondition(has_allocation_probe)) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[1]; // Schrödinger: fresh-insert scoring in the apply
+    const auto cs = fixture_cases()[1]; // Schrödinger: fresh-insert scoring in the apply
     struct Site {
         W work;
         size_t step;
@@ -2077,7 +1869,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
 BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_team) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     auto s = seed<kN>(cs.f, options);
     const auto before = digest<kN>(*s.shards[0]);
     auto logs = make_logs(threads);
@@ -2117,66 +1909,3 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_t
         BOOST_TEST(log.visits.empty());
     }
 }
-
-// --- Multi-rank: P ranks x T threads against the legacy hybrid -------------------------------------------------------
-//
-// Launched by cpp/tests/CMakeLists.txt with monoprop_TEST_SHARDED_RANKS = P under mpiexec (never by the whole-suite MPI
-// variants, which run at the default budget). The legacy facade at partitions = T over MPI_COMM_WORLD (the one-store
-// path at T = 1) routes over the same (P, T) flat owners: child t of rank r is flat owner r * T + t. Every shard of
-// every rank must equal its legacy child bit for bit: rows in ID order (so local sender blocks never jump ahead of
-// lower-numbered remote senders, and deferred same-shard misses come last), coefficients, caches and the layers'
-// partner layouts, whose sin_send lists pin the answers to the queries they retrace.
-
-namespace {
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-auto multirank_launch(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
-    const int ranks = mpi::size(mpi::Comm(MPI_COMM_WORLD));
-    boost::test_tools::assertion_result result(text != nullptr && ranks >= 2 && std::stoi(text) == ranks);
-    result.message()
-        << "needs a dedicated multi-rank launch (monoprop_TEST_SHARDED_RANKS = the world size, at least 2)";
-    return result;
-}
-#endif
-
-} // namespace
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-BOOST_AUTO_TEST_CASE(sharded_construction_multirank_matches_the_legacy_hybrid,
-                     *boost::unit_test::precondition(multirank_launch)) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    const auto world = sharded::PhysicalWorld::of(mpi::Comm(MPI_COMM_WORLD));
-    size_t remote_rows = 0;
-    for (const auto &cs : legacy_cases()) {
-        BOOST_TEST_CONTEXT(label(cs) << " rank " << world.rank << " of " << world.ranks << " T=" << threads) {
-            for (const bool propagate : {false, true}) {
-                BOOST_TEST_CONTEXT((propagate ? "propagate" : "build_graph")) {
-                    auto p = legacy<kN>(cs.f, threads, MPI_COMM_WORLD);
-                    auto s = seed<kN>(cs.f, options, world);
-                    if (propagate) {
-                        p.propagate(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, cs.c.params, cs.k);
-                        require_success(run_propagate<kN>(s, cs.c, cs.k));
-                    }
-                    else {
-                        p.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-                        require_success(run_graph<kN>(s, cs.c, cs.k));
-                    }
-                    for (size_t t = 0; t < threads; ++t) {
-                        const auto got = digest<kN>(*s.shards[t]);
-                        BOOST_TEST((got == legacy_digest<kN>(p, t)), "shard " << t);
-                        for (const auto &layer : got.layers) {
-                            for (const auto &entry : layer.occupied) {
-                                remote_rows += entry[0] / threads != world.rank ? entry[1] : 0;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // The fixtures really cross ranks: some layer has partners on another process.
-    BOOST_TEST(mpi::allreduce_sum<size_t>(remote_rows, mpi::Comm(MPI_COMM_WORLD)) > 0U);
-}
-#endif

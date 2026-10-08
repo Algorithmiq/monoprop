@@ -10,7 +10,7 @@ Usage: $0 [INSTALL_PREFIX] [OPTIONS]
 
 Install C++ dependencies for monoprop project.
 
-This script can install Boost Unordered, Boost Test, msgpack-cxx, and hwloc.
+This script can install Boost Unordered, Boost Test and msgpack-cxx.
 Each component can be skipped with the corresponding option.
 The default installation prefix is /usr/local.
 
@@ -25,7 +25,6 @@ Options:
     --skip-boost-unordered  Skip installing Boost unordered
     --skip-boost-test   Skip installing Boost Test library (only install unordered)
     --skip-msgpack      Skip installing msgpack-cxx library
-    --skip-hwloc        Skip installing hwloc library
     --help, -h          Show this help message
 
 Examples:
@@ -33,7 +32,7 @@ Examples:
     $0 \$HOME/Software                   # Install all deps to \$HOME/Software
     $0 --skip-boost-test                 # Skip Boost Test, install rest to default location
     $0 /opt --skip-msgpack               # Install to /opt, skip msgpack
-    $0 --skip-boost-test --skip-msgpack  # Minimal install (Boost unordered + hwloc)
+    $0 --skip-boost-test --skip-msgpack  # Minimal install (Boost unordered only)
 EOF
 }
 
@@ -43,7 +42,6 @@ INSTALL_PREFIX="$DEFAULT_PREFIX"
 INSTALL_BOOST_UNORDERED=true
 INSTALL_BOOST_TEST=true
 INSTALL_MSGPACK=true
-INSTALL_HWLOC=true
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -58,10 +56,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-msgpack)
             INSTALL_MSGPACK=false
-            shift
-            ;;
-        --skip-hwloc)
-            INSTALL_HWLOC=false
             shift
             ;;
         --help|-h)
@@ -91,7 +85,6 @@ echo "Installing C++ dependencies to: $INSTALL_PREFIX"
 echo "Boost unordered: $([ "$INSTALL_BOOST_UNORDERED" = true ] && echo "YES" || echo "SKIP")"
 echo "Boost Test: $([ "$INSTALL_BOOST_TEST" = true ] && echo "YES" || echo "SKIP")"
 echo "msgpack-cxx: $([ "$INSTALL_MSGPACK" = true ] && echo "YES" || echo "SKIP")"
-echo "hwloc: $([ "$INSTALL_HWLOC" = true ] && echo "YES" || echo "SKIP")"
 echo
 
 # Create install directory if it doesn't exist
@@ -163,42 +156,6 @@ install_msgpack() {
     fi
 }
 
-install_hwloc() {
-    if [ "$INSTALL_HWLOC" != true ]; then
-        echo "Skipping hwloc installation"
-        return 0
-    fi
-
-    local hwloc_version="2.13.0"
-    local major_minor
-    major_minor="$(echo "$hwloc_version" | cut -d. -f1-2)"
-    local tarball="hwloc-${hwloc_version}.tar.gz"
-    local src_dir="hwloc-${hwloc_version}"
-
-    echo "Installing hwloc $hwloc_version..."
-    curl -fsSL "https://download.open-mpi.org/release/hwloc/v${major_minor}/${tarball}" -o "$tarball"
-    tar xzf "$tarball"
-    cd "$src_dir"
-
-    local nproc_count
-    nproc_count="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
-
-    ./configure \
-        --prefix="$INSTALL_PREFIX" \
-        --enable-shared \
-        --disable-static \
-        --disable-doxygen \
-        --disable-man-pages \
-        --without-x
-
-    make -j"$nproc_count"
-    make install
-
-    echo "Cleaning up $src_dir..."
-    cd -
-    rm -rf "$src_dir" "$tarball"
-}
-
 # Detect the OS (non-fatal: macOS does not have /etc/os-release).
 if [ -f /etc/os-release ]; then
     . /etc/os-release
@@ -213,8 +170,6 @@ install_boost
 
 install_msgpack
 
-install_hwloc
-
 echo
 echo "Dependencies installation completed successfully!"
 echo "Install location: $INSTALL_PREFIX"
@@ -227,4 +182,3 @@ echo "Installed components:"
 [ "$INSTALL_BOOST_UNORDERED" = true ] && echo "  ✓ Boost unordered" || echo "  ✗ Boost unordered (skipped)"
 [ "$INSTALL_BOOST_TEST" = true ] && echo "  ✓ Boost Test" || echo "  ✗ Boost Test (skipped)"
 [ "$INSTALL_MSGPACK" = true ] && echo "  ✓ msgpack-cxx" || echo "  ✗ msgpack-cxx (skipped)"
-[ "$INSTALL_HWLOC" = true ] && echo "  ✓ hwloc" || echo "  ✗ hwloc (skipped)"

@@ -24,23 +24,17 @@
 #include <string_view>
 
 /*
- * Process-cached runtime configuration: the routing knobs, read once per process, in every build.
+ * Process-cached runtime configuration: the routing knobs, read once per process.
  *
  *   monoprop_ROUTING            "splitmix" | "linear" → routing_mode
  *   monoprop_ROUTE_SEED         decimal uint64 basis seed → route_seed
  *
  * Both routing knobs throw on a malformed value: a silent default would change the transport unseen.
  *
- * The thread budget is not read here. Every propagator of the sharded candidate (monoprop_SHARDED_OPENMP_PROTOTYPE)
- * and the legacy one-store prototype capture monoprop_NUM_THREADS when they are constructed, through the strict
- * parallel::capture_thread_budget() (ThreadBudget.h), which rejects a malformed value and falls back to
- * omp_get_max_threads() only when the variable is unset. The candidate reads no partition count at all.
- *
- * Legacy partition runtime only (default OFF builds; removed with that runtime):
- *
- *   monoprop_NUM_THREADS        positive int (1..1e6), else silently ignored → num_threads, which only sizes the
- *                               automatic partition count; this permissive parse is not the budget capture above
- *   monoprop_PARTITIONS         int N | "auto" | "off"; parsed where it is used (resolve_partition_count_)
+ * The thread budget is not read here. Every propagator captures monoprop_NUM_THREADS when it is constructed, through
+ * the strict parallel::capture_thread_budget() (ThreadBudget.h), which rejects a malformed value and falls back to
+ * omp_get_max_threads() only when the variable is unset. No partition count is read at all: the removed partition
+ * runtime's monoprop_PARTITIONS is ignored.
  */
 
 namespace monoprop::config {
@@ -53,23 +47,6 @@ public:
 enum class RoutingMode : std::uint8_t { Splitmix, Linear };
 
 namespace detail {
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-inline auto parse_positive_int(const char *text) -> std::optional<int> {
-    if (text == nullptr) {
-        return std::nullopt;
-    }
-    char *end = nullptr;
-    const long value = std::strtol(text, &end, 10);
-    if (end == text || *end != '\0') {
-        return std::nullopt;
-    }
-    if (value <= 0 || value > 1'000'000) {
-        return std::nullopt;
-    }
-    return static_cast<int>(value);
-}
-#endif
 
 [[noreturn]] inline auto reject_env(std::string_view name, const char *text, std::string_view expected) -> void {
     throw EnvConfigError(std::string{name} + "=\"" + text + "\" is not " + std::string{expected}
@@ -108,9 +85,6 @@ inline auto parse_routing_mode(std::string_view name, const char *text) -> std::
 } // namespace detail
 
 struct Settings {
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    std::optional<int> num_threads; //!< Legacy partition sizing only; see the header comment.
-#endif
     std::optional<RoutingMode> routing_mode;
     std::optional<std::uint64_t> route_seed;
 };
@@ -119,9 +93,6 @@ struct Settings {
 inline auto get() -> const Settings & {
     static const Settings settings = [] {
         Settings s;
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-        s.num_threads = detail::parse_positive_int(std::getenv("monoprop_NUM_THREADS"));
-#endif
         s.routing_mode = detail::parse_routing_mode("monoprop_ROUTING", std::getenv("monoprop_ROUTING"));
         s.route_seed = detail::parse_uint64("monoprop_ROUTE_SEED", std::getenv("monoprop_ROUTE_SEED"));
         return s;

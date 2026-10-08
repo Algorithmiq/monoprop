@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Preconditions on a layer's exchange layout. Driven through ShmComm, so it needs no ranks.
+// Preconditions on a layer's exchange layout, on an ordinary communicator (or the MPI-off stub).
 
 #include <boost/test/unit_test.hpp>
 
@@ -21,32 +21,44 @@
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/ShmComm.h"
 
 using monoprop::mpi::CollectiveArgumentError;
 using monoprop::mpi::Comm;
-using monoprop::mpi::ShmComm;
 
-BOOST_AUTO_TEST_CASE(exchange_layout_width_is_checked) {
-    // Sized 4 but driven by one thread: the throw must precede any collective, or this hangs.
-    ShmComm world(4);
-    const Comm comm = Comm::make_shm(&world, /*rank=*/0);
-    BOOST_REQUIRE_EQUAL(monoprop::mpi::size(comm), 4);
+namespace {
 
-    const std::vector<int> too_short(3, 0);
-    BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(too_short, comm), CollectiveArgumentError);
-
-    const std::vector<int> too_long(5, 0);
-    BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(too_long, comm), CollectiveArgumentError);
-
-    const std::vector<int> empty;
-    BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(empty, comm), CollectiveArgumentError);
+auto require_width_checks(const Comm &comm) -> void {
+    const int ranks = monoprop::mpi::size(comm);
+    BOOST_REQUIRE_GE(ranks, 1);
+    for (const int width : {0, ranks - 1, ranks + 1, ranks + 3}) {
+        if (width < 0 || width == ranks) {
+            continue;
+        }
+        BOOST_TEST_CONTEXT("width " << width << " on " << ranks << " rank(s)") {
+            const std::vector<int> layout(static_cast<size_t>(width), 0);
+            BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(layout, comm), CollectiveArgumentError);
+        }
+    }
+    const std::vector<int> exact(static_cast<size_t>(ranks), 0);
+    BOOST_CHECK_NO_THROW(monoprop::mpi::check_exchange_layout_width(exact, comm));
 }
 
-BOOST_AUTO_TEST_CASE(exchange_layout_of_the_right_width_is_accepted) {
-    ShmComm world(1);
-    const Comm comm = Comm::make_shm(&world, /*rank=*/0);
+} // namespace
 
-    const std::vector<int> exact(1, 0);
-    BOOST_CHECK_NO_THROW(monoprop::mpi::check_exchange_layout_width(exact, comm));
+BOOST_AUTO_TEST_CASE(exchange_layout_width_is_checked) {
+    require_width_checks(Comm(MPI_COMM_SELF));
+}
+
+// The width check runs before any communication: only rank 0 calls it here, so a collective inside would leave rank 0
+// waiting for peers that never join (a hang, which the MPI variants' timeout reports as a failure). In the MPI-off
+// build and in the per-case serial runs the world has one rank.
+BOOST_AUTO_TEST_CASE(exchange_layout_width_is_rejected_before_communication) {
+    const Comm world(MPI_COMM_WORLD);
+    if (monoprop::mpi::rank(world) == 0) {
+        const std::vector<int> too_wide(static_cast<size_t>(monoprop::mpi::size(world)) + 2, 0);
+        BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(too_wide, world), CollectiveArgumentError);
+        const std::vector<int> too_short(static_cast<size_t>(monoprop::mpi::size(world)) - 1, 0);
+        BOOST_CHECK_THROW(monoprop::mpi::check_exchange_layout_width(too_short, world), CollectiveArgumentError);
+    }
+    require_width_checks(world);
 }

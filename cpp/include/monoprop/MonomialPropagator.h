@@ -46,14 +46,12 @@
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/parallel/Options.h"
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/sharded/Exchange.h"
 #include "monoprop/detail/sharded/RootObserver.h"
 #include "monoprop/detail/sharded/State.h"
-#endif
 
 namespace monoprop {
 namespace detail {
@@ -61,12 +59,6 @@ struct FusedContract;
 // White-box test access; declared here and defined only by the test suite.
 template <size_t NumModes>
 struct PropagatorTestAccess;
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-namespace partition {
-template <size_t NumModes>
-class PartitionGroup;
-} // namespace partition
-#endif
 } // namespace detail
 
 /// A propagator setting is out of range, or inconsistent with another setting.
@@ -86,7 +78,6 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 /// A raw-layout accessor (mp_op(), indexing(), graph(), graph_data()) was called on a propagator whose rank holds more
 /// than one shard. The shard count is the thread budget T captured at construction, so the remedy is a launch with
 /// monoprop_NUM_THREADS=1; the shard-transparent accessors and evolved_operator_terms() work at every T.
@@ -94,18 +85,10 @@ class MultiShardUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
-#else
-/// A raw-layout accessor was called on a legacy multi-partition facade, which owns no store of its own.
-class MultiPartitionUnsupported : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-#endif
 
 template <size_t NumModes>
 class MonomialPropagator {
 public:
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
     /// Collective over `comm`: every one of its P ranks constructs with the same arguments. Captures the thread budget
     /// T once, here, from monoprop_NUM_THREADS (strictly parsed) or, when the variable is unset, from
     /// omp_get_max_threads(); T is also this rank's shard count, and every rank must be launched with the same T. The
@@ -122,31 +105,11 @@ public:
                        std::optional<std::vector<VecZ>> basis_change = std::nullopt,
                        size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana);
-#else
-    using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
-    /// The legacy partition runtime: `partitions` 0 resolves monoprop_PARTITIONS (or the core count), and
-    /// `child_factory` builds each partition's child propagator.
-    MonomialPropagator(const OperatorDict &initial_operator,
-                       unsigned int cutoff,
-                       const VecZ &initial_state,
-                       std::optional<unsigned int> schrodinger_cutoff,
-                       mpi::Comm comm,
-                       std::optional<double> lower_atol = std::nullopt,
-                       std::optional<double> upper_atol = std::nullopt,
-                       CutoffType cutoff_type = CutoffType::Length,
-                       std::optional<std::vector<VecZ>> basis_change = std::nullopt,
-                       size_t logical_num_modes = NumModes,
-                       Basis basis = Basis::Majorana,
-                       size_t partitions = 0,
-                       PartitionChildFactory child_factory = nullptr);
-#endif
-
-    /// Out-of-line, so a legacy partition group can stay an incomplete type here.
     virtual ~MonomialPropagator();
 
-    /// Deep copy: clones the operator store (every shard's, on its owner, in the candidate; the whole partition group
-    /// on a legacy facade) and shares the immutable graph cores. The virtual destructor suppresses implicit moves, so
+    /// Deep copy: clones every shard's operator store on its owner and shares the immutable graph cores; the copy
+    /// starts with its own empty physical rounds. The virtual destructor suppresses implicit moves, so
     /// a "move" deep-copies. The copy keeps the source's thread budget, and with it T: nothing is re-read. Throws
     /// InvalidPropagatorError, before copying anything, if the source is invalid.
     MonomialPropagator(const MonomialPropagator &other);
@@ -157,65 +120,6 @@ public:
 
     auto logical_num_modes() const -> size_t { return logical_num_modes_; }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    /// Term count on this rank (allreduce for global).
-    auto size() const -> size_t {
-        require_valid_();
-        return partition_group_ ? partitioned_size_() : mp_op_.size();
-    }
-
-    /// (cosine-only indices, cycles) on this rank; cosine-only = cos-scaled but not a rotation endpoint.
-    auto graph_size() const -> std::pair<size_t, size_t> {
-        require_valid_();
-        return partition_group_ ? partitioned_graph_size_() : std::pair{cos_index_count_(), graph_.total_cycles()};
-    }
-
-    /// Local to this rank. Single-partition only — see require_single_partition_.
-    auto graph() const -> const MPGraph & {
-        require_valid_();
-        require_single_partition_("graph()");
-        return graph_;
-    }
-
-    /// This rank's operator storage. Single-partition only — see require_single_partition_.
-    auto mp_op() -> detail::MPOperator<NumModes> & {
-        require_valid_();
-        require_single_partition_("mp_op()");
-        return mp_op_;
-    }
-    auto mp_op() const -> const detail::MPOperator<NumModes> & {
-        require_valid_();
-        require_single_partition_("mp_op()");
-        return mp_op_;
-    }
-
-    // The breakdown fields are additive over the disjoint hash partitions, so a facade sums them.
-    auto graph_memory_usage() const -> GraphMemoryBreakdown {
-        require_valid_();
-        if (partition_group_) {
-            return partitioned_graph_memory_usage_();
-        }
-        return graph_.storage_memory_usage();
-    }
-
-    auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
-        require_valid_();
-        if (partition_group_) {
-            return partitioned_operator_memory_usage_();
-        }
-        // The stamp array is a member of THIS class, not of the operator, so the operator-side estimate
-        // leaves matched_scratch_bytes at 0 and only this level can fill it in.
-        auto breakdown = detail::estimate_memory_usage(mp_op_);
-        breakdown.matched_scratch_bytes = matched_scratch_.memory_bytes();
-        return breakdown;
-    }
-
-    auto graph_layers() const -> size_t {
-        require_valid_();
-        return partition_group_ ? partitioned_graph_layers_() : graph_.layers();
-    }
-
-#else
     /// Term count on this rank, summed over its shards (allreduce for global).
     auto size() const -> size_t {
         require_valid_();
@@ -251,8 +155,6 @@ public:
         return shards_.front()->graph.layers();
     }
 
-#endif
-
     /// A multi-term gate spans several layers, so n_gates() <= graph_layers().
     auto n_gates() const -> size_t;
 
@@ -266,28 +168,13 @@ public:
     /// graph_layers(), optimizer order) or a per-gate one (length n_gates()); on a tie, per-layer wins.
     auto set_parameter_mapping(const VecZ &parameter_mapping) -> void;
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    /// This rank's monomial → coefficient index. Single-partition only — see require_single_partition_.
-    auto indexing() -> detail::OperatorIndex<NumModes> & {
-        require_valid_();
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
-    }
-    auto indexing() const -> const detail::OperatorIndex<NumModes> & {
-        require_valid_();
-        require_single_partition_("indexing()");
-        return *mp_op_.store;
-    }
-
-#else
     /// The sole shard's monomial → coefficient index. Launch-time T = 1 only (any P) -- see sole_shard_.
     auto indexing() -> detail::OperatorIndex<NumModes> & { return *sole_shard_("indexing()").op.store; }
     auto indexing() const -> const detail::OperatorIndex<NumModes> & { return *sole_shard_("indexing()").op.store; }
 
-#endif
-
-    /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) for this
-    /// rank/partition. local_cycles is always empty: local cycles are folded into cross_rank[my_rank].
+    /// Per-layer (cos_inds, local_cycles, cross_rank_sin_send, cross_rank_sin_recv) of the sole shard (launch-time
+    /// T = 1 only, any P -- see sole_shard_). local_cycles is always empty: local cycles are folded into
+    /// cross_rank[my_rank].
     using LocalCycleData = std::tuple<size_t, size_t, int>;
     using CrossRankData = std::tuple<VecZ, VecI>; // (indices, phases)
     using LayerData =
@@ -347,18 +234,11 @@ public:
 
     auto basis() const -> Basis { return basis_; }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    auto core_term() const -> double {
-        require_valid_();
-        return partition_group_ ? partitioned_core_term_() : core_term_;
-    }
-#else
     // Rank-level metadata: replicated, never seeded into a shard.
     auto core_term() const -> double {
         require_valid_();
         return core_term_;
     }
-#endif
 
     auto cutoff() const -> unsigned int { return cutoff_; }
 
@@ -370,8 +250,7 @@ public:
 
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
-    /// The ordinary communicator this propagator was constructed on (MPI_COMM_SELF on a legacy partition child,
-    /// which trades over an in-process comm instead).
+    /// The ordinary communicator this propagator was constructed on.
     auto comm() const -> MPI_Comm { return comm_.mpi; }
 
     /// Build the propagation graph, one layer per generator, recording each layer's gate info
@@ -411,7 +290,7 @@ public:
     /// Contract the graph into the operator (Heisenberg) or state (Schrodinger). `inplace` consumes the
     /// graph and updates internal state; otherwise nothing is mutated. Core term excluded either way.
     /// Rank-local: each store's coefficients are positioned by its own index, and the result concatenates this
-    /// rank's blocks in ascending shard order (legacy: partition order). The order is stable for a fixed launch
+    /// rank's blocks in ascending shard order. The order is stable for a fixed launch
     /// geometry (P, T), but positions are not comparable across geometries -- changing T changes which shard owns a
     /// term. Use evolved_operator_terms() when positions must mean something.
     auto contract_partially(const VecD &parameters, bool inplace) -> VecD;
@@ -443,58 +322,8 @@ protected:
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     bool schrodinger_;
-    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions (legacy only)
+    mpi::Comm comm_; // the ordinary communicator of the P ranks
     CutoffFn<NumModes> cutoff_fn_;
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    detail::MPOperator<NumModes> mp_op_;
-    MPGraph graph_;
-    // Per-gate layer-build scratch, reused across gates; carries no state between them.
-    detail::MatchedEpochSet matched_scratch_;
-
-    // A perf hint, never a correctness constraint: overflow spills losslessly. Sized to the cutoff's
-    // structural position bound when it has one.
-    auto packed_inline_width_() const -> size_t;
-
-    // `requested` 0 ⇒ env/auto. Returns 1 for the ordinary single-partition path.
-    static auto resolve_partition_count_(size_t requested, mpi::Comm comm) -> size_t;
-
-    // Partition fan-out vocabulary. Every one of these is facade-only: partition_group_ != nullptr is a precondition.
-    //
-    // `for_each_partition_` / `map_partitions_` / `concat_partitions_` dispatch to the partitions' own pinned master
-    // threads, which is mandatory for anything that touches partition state: the partitions trade over an
-    // in-process comm and their collectives are barrier-synced, so all S must run together.
-    // `fold_partitions_` / `sum_partitions_` / `first_partition_` instead read quiescent partitions straight from the
-    // facade thread, which is safe precisely because they mutate nothing.
-
-    auto for_each_partition_(const std::function<void(MonomialPropagator &)> &fn) -> void;
-
-    // One result per partition, in partition order.
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto map_partitions_(Fn fn) -> std::vector<R>;
-
-    // Concatenated in partition order. The partitions are disjoint, so the result enumerates the whole
-    // operator (deterministic for a fixed partition count).
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, MonomialPropagator &>>
-    auto concat_partitions_(Fn fn) -> R;
-
-    // Sequential fold of `proj(partition)`; `accumulate(total, value)` combines.
-    template <typename Proj, typename Accumulate, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
-    auto fold_partitions_(Proj proj, Accumulate accumulate) const -> R;
-
-    // fold_partitions_ for the additive breakdowns: the fields sum over the disjoint hash partitions.
-    template <typename Proj, typename R = std::invoke_result_t<Proj &, const MonomialPropagator &>>
-    auto sum_partitions_(Proj proj) const -> R;
-
-    // Partition 0 for values that are not partitioned: the graph structure and gate info are identical on
-    // every partition, the core (identity) term is replicated on all of them, and an allreduced scalar is
-    // already global on each. Anything hash-partitioned must go through sum_/concat_partitions_ instead.
-    auto first_partition_() const -> const MonomialPropagator &;
-
-    auto is_partition_facade() const -> bool { return static_cast<bool>(partition_group_); }
-
-    template <typename Fn, typename R = std::invoke_result_t<Fn &, int, MonomialPropagator &>>
-    auto map_partitions_indexed_(Fn fn) -> std::vector<R>;
-#endif
 
 private:
     unsigned int cutoff_;
@@ -516,24 +345,13 @@ private:
     // Immutable after construction.
     Basis basis_{Basis::Majorana};
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    // Intra-process partition runtime. Null ⇒ ordinary single-partition propagator; non-null ⇒ a partition facade
-    // whose own mp_op_/graph_ are unused and every method fans out to the S partition propagators.
-    std::unique_ptr<detail::partition::PartitionGroup<NumModes>> partition_group_;
-    // PartitionGroup rebinds a cloned partition's comm_ to its own transport during a deep copy.
-    friend class detail::partition::PartitionGroup<NumModes>;
-#endif
     friend struct detail::PropagatorTestAccess<NumModes>;
 
-    // This object's kernel thread budget, fixed at construction and kept by copies and retained
-    // functionals. Legacy: serial, except on the one-store prototype (explicit partitions == 1 on an ordinary
-    // communicator), which captures monoprop_NUM_THREADS once. Sharded prototype: always captured, and its thread
-    // count is the shard count T.
+    // This object's thread budget, captured once at construction and kept by copies and retained functionals; its
+    // thread count is the shard count T.
     detail::parallel::Options parallel_{};
     // Set when an operation fails after it started changing state; never cleared (see require_valid_).
     bool invalid_{false};
-    // Enforce the initializing-thread rule: the legacy one-store prototype, and every sharded prototype root.
-    bool one_store_{false};
 
     /// Throw InvalidPropagatorError if a failed operation left this object's state unusable.
     auto require_valid_() const -> void;
@@ -541,12 +359,12 @@ private:
     /// Mark this object unusable. Called from a failure path, before the failure is reported or rethrown.
     auto invalidate_() noexcept -> void { invalid_ = true; }
 
-    /// Entry check for a state operation: the initializing-thread rule (one-store prototype, MPI-using
-    /// operations only), then validity.
+    /// Entry check for a state operation: the initializing-thread rule (MPI-using operations; a wrong thread fails
+    /// fast, locally, before any MPI call), then validity.
     auto enter_operation_(bool uses_mpi) const -> void;
 
-    /// A failure after mutation started: invalidate, then apply the distributed failure policy
-    /// (mpi::operation_failed) on an ordinary propagator, or rethrow on a legacy partition facade.
+    /// A failure after mutation started: invalidate, then apply the distributed failure policy (mpi::operation_failed:
+    /// abort a multi-rank communicator, rethrow the original otherwise).
     [[noreturn]] auto mutation_failed_(std::exception_ptr error) -> void;
 
     /// Run one state operation. `body(mutation_started)` validates first and sets `mutation_started`
@@ -582,114 +400,6 @@ private:
     static auto cos_index_count_of_(const MPGraph &graph, const detail::MPOperator<NumModes> &op, Basis basis)
         -> size_t;
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    /// Capture the prototype's budget and check MPI's thread support, applying the distributed failure
-    /// policy on failure: a rank that throws here would strand peers entering the routing agreement.
-    auto capture_one_store_budget_() -> void;
-
-    /// The argument, epoch and graph checks a facade functional runs before its partitions, as a callable.
-    auto facade_functional_check_() -> std::function<void(const VecD &)>;
-
-    // A facade's own graph_/mp_op_ are never populated, so handing them out would return plausible-looking
-    // empty state; there is no meaningful merge either, since the callers want one partition's raw layout.
-    auto require_single_partition_(const char *what) const -> void {
-        if (partition_group_) {
-            throw MultiPartitionUnsupported(
-                std::format("{} is not available on a multi-partition propagator: the facade owns "
-                            "no operator or graph of its own. Use the partition-transparent "
-                            "accessors (size(), graph_size(), evolved_operator_terms(), ...) or "
-                            "construct with partitions=1.",
-                            what));
-        }
-    }
-
-    auto partitioned_size_() const -> size_t;
-    auto partitioned_graph_size_() const -> std::pair<size_t, size_t>;
-    auto partitioned_graph_layers_() const -> size_t;
-    auto partitioned_core_term_() const -> double;
-    auto partitioned_operator_memory_usage_() const -> detail::MPOperatorMemoryBreakdown<NumModes>;
-    auto partitioned_graph_memory_usage_() const -> GraphMemoryBreakdown;
-
-    auto cos_index_count_() const -> size_t;
-
-    // Validation stays at the call site, so a rejected value throws before anything is mutated, and
-    // the partitions do not re-validate what the facade already checked against identical field values.
-    auto update_setting_(const std::function<void(MonomialPropagator &)> &mutate) -> void {
-        require_valid_();
-        try {
-            mutate(*this);
-            if (partition_group_) {
-                for_each_partition_(mutate);
-            }
-        }
-        catch (...) {
-            mutation_failed_(std::current_exception());
-        }
-    }
-
-    auto initialize_operator_caches_() -> void;
-
-    auto current_picture_coeffs_() -> const VecD &;
-
-    auto extend_coeffs_from_current_picture_if_needed_(VecD &coeffs) -> void;
-
-    auto evolve_mode_build_graph_(const std::vector<VecZ> &majoranas,
-                                  const VecZ &parameter_mapping,
-                                  const VecD &gen_coeffs,
-                                  const VecZ &gate_indices,
-                                  std::optional<size_t> only_rotate_len_k) -> void;
-
-    // Returns {build_angle, apply_angle}; apply is the build angle, negated in Schrödinger.
-    auto gate_angle_(const VecD &mapped_params, size_t i, size_t majoranas_size) const -> std::pair<double, double> {
-        const size_t idx = schrodinger_ ? i : majoranas_size - 1 - i;
-        const double build_angle = mapped_params[idx];
-        return {build_angle, schrodinger_ ? -build_angle : build_angle};
-    }
-
-    auto evolve_mode_graph_with_coeffs_(const std::vector<VecZ> &majoranas,
-                                        const VecZ &parameter_mapping,
-                                        const VecD &gen_coeffs,
-                                        const VecZ &gate_indices,
-                                        const VecD &parameters,
-                                        const VecD &operator_coeffs,
-                                        std::optional<size_t> only_rotate_len_k) -> void;
-
-    auto evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
-                                           const VecZ &parameter_mapping,
-                                           const VecD &gen_coeffs,
-                                           const VecD &parameters,
-                                           std::optional<size_t> only_rotate_len_k) -> void;
-
-    template <typename EvolutionFunc>
-    auto run_gate_loop_(const std::vector<VecZ> &majoranas,
-                        std::optional<size_t> only_rotate_len_k,
-                        EvolutionFunc evolution_func) -> void;
-
-    auto propagate_one_(const VecZ &gen_vec,
-                        std::optional<size_t> only_rotate_len_k,
-                        std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
-                        std::optional<double> param = std::nullopt,
-                        size_t param_index = 0,
-                        double gen_coeff = 0.0,
-                        size_t gate_index = 0) -> void;
-
-    // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the uncapped
-    // fused cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
-    auto build_evolve_result_(const VecZ &gen_vec,
-                              std::optional<size_t> only_rotate_len_k,
-                              std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
-                              std::optional<double> param = std::nullopt,
-                              CosMask *out_cos = nullptr,
-                              detail::FusedContract *fused_contract = nullptr,
-                              VecD *fused_scale_coeffs = nullptr,
-                              bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
-
-    template <typename Fn,
-              typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>
-    auto make_functional_(Fn &&func, std::optional<double> pare_threshold) -> std::function<R(const VecD &)>;
-
-    auto evolve_operator_with_recompute_(VecD &&coeffs, const MPGraphView &graph, const VecD &params) -> VecD;
-#else
     //! Tag of the private constructor PropagatorTestAccess uses to observe construction.
     struct ObservedTag {};
 
@@ -776,7 +486,6 @@ private:
     /// blocks only once concatenation can no longer fail.
     auto contract_blocks_(const VecD &parameters, bool inplace, bool &mutation_started, VecD *concatenated)
         -> std::vector<VecD>;
-#endif
 };
 
 } // namespace monoprop

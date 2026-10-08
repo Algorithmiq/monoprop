@@ -60,8 +60,7 @@
  * - On failure, shards other owners already published are destroyed by the caller after the team has joined.
  *
  * Seeding is split into caller-side preparation, which may validate, throw configuration errors and query MPI, and
- * an owner-local seed that only reads the prepared inputs. The legacy single-store constructor seeds through the
- * same owner-local function, with itself as the only owner.
+ * an owner-local seed that only reads the prepared inputs.
  */
 
 namespace monoprop::detail::sharded {

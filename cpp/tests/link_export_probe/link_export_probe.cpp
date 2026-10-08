@@ -24,18 +24,15 @@
 // but it does not run any of it. main() below actually drives both chains implicated by the bug report:
 //  (a) the graph-building / Schrodinger path (detail/graph_encoding/MPGraphEncodingStorage.h), via
 //      build_graph(), graph_memory_usage(), and expectation_value_and_gradient().
-//  (b) legacy builds: the partition path (detail/partition/CpuTopology.h), via a partitions > 1 construction, which is
-//      the only way to make PartitionGroup actually place and pin partition-worker threads. Sharded candidate builds:
-//      the constructor's shape -- the eleven mathematical arguments construct, no partition, factory, thread or shard
+//  (b) the constructor's shape -- the eleven mathematical arguments construct, no partition, factory, thread or shard
 //      argument does, and PartitionChildFactory is gone -- checked at compile time, then a construction that works.
 // It also checks the installed usage requirements a consumer inherits:
 //  (c) the OpenMP worksharing template (detail/parallel/Workshare.h), instantiated in this translation
 //      unit, so OpenMP compile and link flags must reach the consumer through the imported target alone;
 //  (d) the Pauli basis, alongside the Majorana graph chain in (a);
-//  (e) legacy builds: the one-store prototype (partitions = 1), whose constructor template calls the out-of-line
-//      capture_thread_budget(), require_thread_support() and require_initializing_thread(), and whose
-//      operations reach the exported evolve/derivative entry points with their trailing Options. Candidate builds:
-//      the same calls through the ordinary constructor, plus the raw-access rule (the sole shard at T = 1,
+//  (e) the ordinary constructor, whose template calls the out-of-line capture_thread_budget(),
+//      require_thread_support() and require_initializing_thread(), and operations reaching the exported evolve and
+//      derivative entry points with their trailing Options; plus the raw-access rule (the sole shard at T = 1,
 //      MultiShardUnsupported at T > 1, after which the object still answers).
 //  (f) the fixed-team phase primitive (detail/sharded/Team.h), instantiated here like (c): its region,
 //      barriers and masked construct must compile and link through the imported target's OpenMP flags.
@@ -47,14 +44,13 @@
 //  (i) sharded evaluation (detail/sharded/Evaluation.h) in sharded_evaluation_chain.cpp, whose first monoprop include
 //      is that header: a coefficient-informed extension replaying its seed in-team, a retained functional, and runtime
 //      calls to the exported ev_sharded() and ev_and_grad_sharded() through the imported target.
-//  (j) the inherited runtime selection: the consumer sees monoprop_SHARDED_OPENMP_PROTOTYPE exactly when the build
-//      expected it (monoprop_EXPECT_SHARDED_PROTOTYPE, set by the consumer's CMake), and monoprop_ENABLE_MPI exactly
-//      when it expected an MPI package (monoprop_EXPECT_MPI, when set). In a candidate build the integrated root runs
-//      every public operation family and its exports and aggregates.
-//  (k) candidate builds: an ordinary derived class -- virtual clone_() and update_initial_operator() overrides, the
-//      protected apply_initial_operator_() -- used through the base interface.
-//  (l) candidate MPI builds launched on several ranks: the root on MPI_COMM_WORLD against the same root on
-//      MPI_COMM_SELF -- energies, gradients, global term counts and every exported key -- with T-dependent raw access.
+//  (j) the inherited configuration: no runtime selector reaches the consumer, and it sees monoprop_ENABLE_MPI exactly
+//      when it expected an MPI package (monoprop_EXPECT_MPI, when set). The root runs every public operation family
+//      and its exports and aggregates.
+//  (k) an ordinary derived class -- virtual clone_() and update_initial_operator() overrides, the protected
+//      apply_initial_operator_() -- used through the base interface.
+//  (l) MPI builds launched on several ranks: the root on MPI_COMM_WORLD against the same root on MPI_COMM_SELF --
+//      energies, gradients, global term counts and every exported key -- with T-dependent raw access.
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -73,12 +69,8 @@
 #include <stdexcept>
 #include <vector>
 
-#if defined(monoprop_EXPECT_SHARDED_PROTOTYPE)
-#if monoprop_EXPECT_SHARDED_PROTOTYPE && !defined(monoprop_SHARDED_OPENMP_PROTOTYPE)
-#error "expected a sharded prototype package, but monoprop::monoprop did not carry monoprop_SHARDED_OPENMP_PROTOTYPE"
-#elif !monoprop_EXPECT_SHARDED_PROTOTYPE && defined(monoprop_SHARDED_OPENMP_PROTOTYPE)
-#error "expected a legacy package, but monoprop::monoprop carries monoprop_SHARDED_OPENMP_PROTOTYPE"
-#endif
+#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+#error "monoprop::monoprop carries monoprop_SHARDED_OPENMP_PROTOTYPE: the removed runtime selector came back"
 #endif
 
 #if defined(monoprop_EXPECT_MPI)
@@ -89,7 +81,6 @@
 #endif
 #endif
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 #include <functional>
 #include <map>
 #include <memory>
@@ -97,7 +88,6 @@
 #include <utility>
 
 #include "monoprop/detail/mpi/MPIUtils.h"
-#endif
 
 // Forces every member function of MonomialPropagator<NumModes> to be compiled for these two
 // representative widths, regardless of which ones main() below happens to call.
@@ -115,10 +105,8 @@ namespace {
 
 using namespace monoprop;
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 template <class P>
 concept HasPartitionFactory = requires { typename P::PartitionChildFactory; };
-#endif
 
 // Drives Engine::finish() -> LayerBuildSink::finalize() -> build_layer_storage_unified(), plus the
 // graph-memory and gradient accessors that read the resulting PackedCrossRankStorage / exchange layout.
@@ -229,16 +217,12 @@ auto run_pauli_chain() -> void {
     std::println(stderr, "[link_export_probe] pauli chain: size={}", sim.size());
 }
 
-// Drives PartitionGroup's constructor: partitions > 1 is required for the facade to actually exist, so
-// enumerate_physical_cores / affinity_mask_words / summarize_masks / format_place_line / partition_cpusets /
-// pin_this_thread all run for real (not merely compiled) on the master threads it spawns.
-auto run_partition_chain() -> void {
+// The constructor has no partition, factory, thread or shard argument at all.
+auto run_constructor_shape_chain() -> void {
     constexpr size_t kModes = 6;
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-    // The candidate's constructor has no partition, factory, thread or shard argument at all.
     using MP = MonomialPropagator<kModes>;
     using Factory = std::function<std::unique_ptr<MP>(mpi::Comm)>;
     constexpr auto constructible_with = []<class... Tail>() {
@@ -273,31 +257,14 @@ auto run_partition_chain() -> void {
            /*logical_num_modes=*/kModes,
            Basis::Majorana);
     std::println(stderr,
-                 "[link_export_probe] partition chain: no partition surface; eleven-argument size={}",
+                 "[link_export_probe] constructor chain: no partition surface; eleven-argument size={}",
                  sim.size());
-#else
-    MonomialPropagator<kModes> sim(ham,
-                                   2 * kModes,
-                                   VecZ{0, 1},
-                                   /*schrodinger_cutoff=*/std::nullopt,
-                                   MPI_COMM_SELF,
-                                   /*lower_atol=*/std::nullopt,
-                                   /*upper_atol=*/std::nullopt,
-                                   CutoffType::Length,
-                                   /*basis_change=*/std::nullopt,
-                                   /*logical_num_modes=*/kModes,
-                                   Basis::Majorana,
-                                   /*partitions=*/2);
-
-    std::println(stderr, "[link_export_probe] partition chain: size={}", sim.size());
-#endif
 }
 
-auto run_one_store_prototype_chain() -> void {
+auto run_raw_access_chain() -> void {
     constexpr size_t kModes = 2;
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
     MonomialPropagator<kModes> sim(ham, 2 * kModes, VecZ{0, 1}, std::nullopt, MPI_COMM_SELF);
     sim.build_graph(std::vector<VecZ>{{0, 2}, {1, 3}}, VecZ{0, 1}, VecD{1.0, 1.0});
     const auto [value, grad] = sim.expectation_value_and_gradient(VecD{0.1, 0.2});
@@ -313,40 +280,17 @@ auto run_one_store_prototype_chain() -> void {
         raw_ok = budget.threads > 1 && sim.expectation_value(VecD{0.1, 0.2}) == value;
     }
     std::println(stderr,
-                 "[link_export_probe] one-store prototype chain: budget={} value={} grad_size={} raw_access_rule={}",
+                 "[link_export_probe] raw access chain: budget={} value={} grad_size={} raw_access_rule={}",
                  budget.threads,
                  value,
                  grad.size(),
                  raw_ok);
     if (!raw_ok || grad.size() != 2) {
-        std::println(stderr, "[link_export_probe] one-store prototype chain: FAILED");
+        std::println(stderr, "[link_export_probe] raw access chain: FAILED");
         std::exit(1);
     }
-#else
-    MonomialPropagator<kModes> sim(ham,
-                                   2 * kModes,
-                                   VecZ{0, 1},
-                                   /*schrodinger_cutoff=*/std::nullopt,
-                                   MPI_COMM_SELF,
-                                   /*lower_atol=*/std::nullopt,
-                                   /*upper_atol=*/std::nullopt,
-                                   CutoffType::Length,
-                                   /*basis_change=*/std::nullopt,
-                                   /*logical_num_modes=*/kModes,
-                                   Basis::Majorana,
-                                   /*partitions=*/1);
-    sim.build_graph(std::vector<VecZ>{{0, 2}, {1, 3}}, VecZ{0, 1}, VecD{1.0, 1.0});
-    const auto [value, grad] = sim.expectation_value_and_gradient(VecD{0.1, 0.2});
-    const auto budget = monoprop::detail::parallel::capture_thread_budget();
-    std::println(stderr,
-                 "[link_export_probe] one-store prototype chain: budget={} value={} grad_size={}",
-                 budget.threads,
-                 value,
-                 grad.size());
-#endif
 }
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
 // The integrated root through the imported target only: every public operation family, checked against itself
 // (graph against graph-free propagation, direct against retained evaluation, unique exported keys).
 auto run_sharded_root_chain() -> bool {
@@ -534,14 +478,13 @@ auto run_multirank_root_chain() -> bool {
     std::println(stderr, "[link_export_probe] multirank root chain: correct={}", correct);
     return correct;
 }
-#endif
 
 } // namespace
 
 auto main() -> int {
     monoprop::mpi::init();
     run_graph_build_chain();
-    run_partition_chain();
+    run_constructor_shape_chain();
     run_openmp_workshare_chain();
     run_sharded_team_chain();
     if (!run_sharded_state_chain()) {
@@ -557,8 +500,7 @@ auto main() -> int {
         return 1;
     }
     run_pauli_chain();
-    run_one_store_prototype_chain();
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
+    run_raw_access_chain();
     if (!run_sharded_root_chain()) {
         std::println(stderr, "[link_export_probe] sharded root chain: FAILED");
         return 1;
@@ -571,7 +513,6 @@ auto main() -> int {
         std::println(stderr, "[link_export_probe] multirank root chain: FAILED");
         return 1;
     }
-#endif
     monoprop::mpi::finalize();
     std::println(stderr, "[link_export_probe] OK");
     return 0;

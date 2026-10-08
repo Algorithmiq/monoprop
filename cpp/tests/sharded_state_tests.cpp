@@ -20,12 +20,9 @@
  * cpp/tests/CMakeLists.txt reruns these cases in fresh processes at T = 1, 2 and 4. Cases that need a nonprimary
  * worker skip below T = 2.
  *
- * Oracles: the legacy partition facade (partitions = T over an in-process communicator, whose child t is flat owner
- * t at geometry (1, T)) and, at T = 1, the ordinary single-store propagator. They are constructed on the test thread,
- * outside any sharded team, and are references only. Those cases compile in the legacy (default) build only, where
- * both runtimes exist; the sharded candidate build compiles every other case, with the candidate root (the same
- * seam, driven through the public constructor at the launch's T) wherever a built source or an aggregate reference
- * is needed, and an independent reference for seeding.
+ * Oracles: an independent reference for seeding, derived in the test from the routing, enumeration and store
+ * primitives, and the rank-level root (the same seam, driven through the public constructor at the launch's T,
+ * constructed on the test thread outside any sharded team) wherever a built source or an aggregate reference is needed.
  *
  * Workers never call BOOST_TEST. Initializers and the library's test observer write per-owner slots; assertions run
  * after the team has joined. AllocationProbe.h supplies per-thread allocation counts and real allocation failures at
@@ -251,8 +248,7 @@ auto all_fixtures() -> std::vector<Fixture> {
     return fixtures;
 }
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-// The candidate root at the launch's T over MPI_COMM_SELF: its shards are seeded by the seam under test.
+// The root at the launch's T over MPI_COMM_SELF: its shards are seeded by the seam under test.
 auto root(const Fixture &f) -> Propagator {
     return Propagator(f.op,
                       f.cutoff,
@@ -267,40 +263,12 @@ auto root(const Fixture &f) -> Propagator {
                       f.basis);
 }
 
-// The rank-level reference for aggregates: the candidate root, which must run at the launch's T.
+// The rank-level reference for aggregates: the root, which must run at the launch's T.
 auto oracle_of(const Fixture &f, size_t threads) -> Propagator {
     auto sim = root(f);
     BOOST_TEST_REQUIRE(Access::shards(sim).size() == threads);
     return sim;
 }
-#else
-// The legacy propagator at `partitions` partitions: a facade over in-process children for partitions > 1, the
-// single-store propagator for partitions = 1.
-auto legacy(const Fixture &f, size_t partitions) -> Propagator {
-    return Propagator(f.op,
-                      f.cutoff,
-                      f.initial_state,
-                      f.schrodinger_cutoff,
-                      MPI_COMM_SELF,
-                      std::nullopt,
-                      std::nullopt,
-                      f.cutoff_type,
-                      std::nullopt,
-                      f.logical,
-                      f.basis,
-                      partitions);
-}
-
-// The legacy store that flat owner `shard` holds at geometry (1, T).
-auto legacy_owner(const Propagator &p, size_t shard) -> const Propagator & {
-    return Access::partition_count(p) == 0 ? p : Access::partition(p, static_cast<int>(shard));
-}
-
-// The rank-level reference for aggregates: the legacy partitions at geometry (1, T).
-auto oracle_of(const Fixture &f, size_t threads) -> Propagator {
-    return legacy(f, threads);
-}
-#endif
 
 // Caller-side preparation, as the rank-level constructor performs it.
 auto make_seed(const Fixture &f, routing::Router router) -> sharded::OperatorSeed<kN> {
@@ -544,24 +512,13 @@ auto snapshot(const Shards &shards) -> Shards {
     return out;
 }
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Shards bridged from a built candidate root: a caller-side deep snapshot of its own T shards.
+// Shards bridged from a built root: a caller-side deep snapshot of its own T shards.
 auto bridged_shards(const Propagator &p, size_t threads) -> Shards {
     BOOST_TEST_REQUIRE(Access::shards(p).size() == threads);
     return snapshot(Access::shards(p));
 }
-#else
-// Shards bridged from a built legacy propagator: owner t holds legacy flat owner t's operator, graph and scratch.
-auto bridged_shards(const Propagator &p, size_t threads) -> Shards {
-    Shards out;
-    for (size_t shard = 0; shard < threads; ++shard) {
-        out.push_back(Access::shard_state(legacy_owner(p, shard)));
-    }
-    return out;
-}
-#endif
 
-// A partition facade (legacy) or root (candidate) at T with a built graph: nontrivial grown stores, layers, caches and
+// A root at T with a built graph: nontrivial grown stores, layers, caches and
 // matched scratch. The Hamiltonian's long terms exceed the inline width, so the stores have overflow rows too.
 struct BuiltSource {
     test_utils::CaseData data;
@@ -658,38 +615,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_make_shards_initializes_each_owner_once) {
     }
 }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_the_partition_oracle) {
-    const auto options = team_options();
-    const auto threads = team_size();
-    for (const auto &fixture : all_fixtures()) {
-        BOOST_TEST_CONTEXT(fixture.name) {
-            const auto oracle = legacy(fixture, threads);
-            const auto seed = make_seed(fixture, local_router(threads));
-            auto slots = std::vector<OwnerSlot>(threads);
-            const auto shards = sharded::seed_shards(options, seed, 0, OwnerProbe{.slots = &slots});
-            check_owner_bodies(slots, sharded::ShardWork::seed, fixture.name);
-            BOOST_REQUIRE(shards.size() == threads);
-            for (size_t shard = 0; shard < threads; ++shard) {
-                const auto &reference = legacy_owner(oracle, shard);
-                const auto &state = *shards[shard];
-                BOOST_TEST_CONTEXT("shard " << shard) {
-                    const auto difference = operator_difference(state.op, reference.mp_op());
-                    BOOST_TEST(difference.empty(), difference);
-                    BOOST_TEST(state.graph.layers() == 0U);
-                    BOOST_TEST(state.graph.is_schrodinger() == fixture.schrodinger_cutoff.has_value());
-                    BOOST_TEST(state.matched.epoch_.empty());
-                }
-            }
-            // The identity coefficient is rank-level metadata, identical to the legacy core term.
-            BOOST_TEST(sharded::validate_initial_operator<kN>(fixture.op, fixture.basis, fixture.logical)
-                       == oracle.core_term());
-        }
-    }
-}
-#endif
-
-// An oracle independent of the extracted seed (which the legacy constructor now shares): rows, coefficients, pending
+// An oracle independent of the extracted seed: rows, coefficients, pending
 // entries, inline width and reservation derived here from the routing, enumeration and store primitives alone.
 BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_an_independent_reference) {
     const auto options = team_options();
@@ -1103,12 +1029,8 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
     const auto threads = team_size();
     const auto fixture = nontrivial_fixtures().front();
     const auto source = sharded::seed_shards(options, make_seed(fixture, local_router(threads)), 0);
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-    auto legacy_source = oracle_of(fixture, threads);
-#else
-    auto legacy_source = legacy(fixture, 1);
-#endif
-    const auto legacy_budget = Access::options(legacy_source).threads;
+    auto root_source = oracle_of(fixture, threads);
+    const auto root_budget = Access::options(root_source).threads;
 
     // A reread of the environment would now fail, so neither copy may capture a fresh budget.
     const ScopedEnv poisoned("monoprop_NUM_THREADS", "0");
@@ -1120,45 +1042,13 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
     const auto difference = shards_difference(copy, source);
     BOOST_TEST(difference.empty(), difference);
     // Preservation: the rank-level copy keeps the source's captured budget.
-    const Propagator legacy_copy(legacy_source);
-    BOOST_TEST(Access::options(legacy_copy).threads == legacy_budget);
+    const Propagator root_copy(root_source);
+    BOOST_TEST(Access::options(root_copy).threads == root_budget);
 }
 
 // Preservation evidence for the rank-level owner guard (MonomialPropagator::require_valid_), which S1 reuses rather
 // than duplicating per shard: an invalid owner's state is rejected before anything is copied, while copies made
 // before the failure stay exact and usable.
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-BOOST_AUTO_TEST_CASE(sharded_state_invalid_source_is_rejected_by_the_owner_guard) {
-    const auto options = team_options();
-    auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
-    auto sim = legacy(Fixture{.name = "guard", .op = data.hamiltonian, .initial_state = data.initial_state}, 1);
-    const auto half = data.majoranas.size() / 2;
-    const std::vector<VecZ> first(data.majoranas.begin(), data.majoranas.begin() + static_cast<std::ptrdiff_t>(half));
-    const VecZ first_map(data.param_inds.begin(), data.param_inds.begin() + static_cast<std::ptrdiff_t>(half));
-    const VecD first_gen(data.gen_coeffs.begin(), data.gen_coeffs.begin() + static_cast<std::ptrdiff_t>(half));
-    sim.build_graph(first, first_map, first_gen);
-
-    auto early = sharded::make_shards<kN>(options, [&](size_t) { return Access::shard_state(sim); });
-    const auto early_reference = snapshot(early);
-    const Propagator early_propagator(sim);
-
-    Access::set_cutoff_fn(sim, [](const Mono &) -> bool { throw InjectedFailure("injected cutoff failure"); });
-    BOOST_CHECK_THROW(sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs), InjectedFailure);
-    BOOST_REQUIRE(Access::is_invalid(sim));
-
-    BOOST_CHECK_THROW((void)Access::shard_state(sim), InvalidPropagatorError);
-    BOOST_CHECK_THROW((void)sharded::make_shards<kN>(options, [&](size_t) { return Access::shard_state(sim); }),
-                      InvalidPropagatorError);
-    BOOST_CHECK_THROW(const Propagator copy(sim), InvalidPropagatorError);
-    BOOST_CHECK_THROW((void)Access::clone(sim), InvalidPropagatorError);
-
-    const auto difference = shards_difference(early, early_reference);
-    BOOST_TEST(difference.empty(), difference);
-    auto later = sharded::copy_shards(options, early);
-    BOOST_TEST(shards_difference(later, early_reference).empty());
-    BOOST_TEST(early_propagator.size() == early_reference.front()->size());
-}
-#endif
 
 // --- Failure paths --------------------------------------------------------------------------------------------
 
@@ -1365,45 +1255,3 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_allocation_failures_leave_sources_intact
         }
     }
 }
-
-// Preservation audit of the shared construction path: the legacy single-store constructor now seeds through the
-// extracted helpers, so every allocation failure on its thread must surface as std::bad_alloc without leaking.
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-BOOST_AUTO_TEST_CASE(sharded_state_legacy_constructor_allocation_failures_are_catchable,
-                     *boost::unit_test::precondition(has_allocation_probe)) {
-    for (const auto &fixture : {nontrivial_fixtures().at(0), nontrivial_fixtures().at(1)}) {
-        BOOST_TEST_CONTEXT(fixture.name) {
-            const auto reference = legacy(fixture, 0);
-            size_t failures = 0;
-            size_t leaks = 0;
-            size_t other_errors = 0;
-            bool completed = false;
-            for (size_t nth = 1; nth <= 100000 && !completed; ++nth) {
-                const allocation::LiveBytes live;
-                try {
-                    allocation::arm_failure(nth);
-                    const auto sim = legacy(fixture, 0);
-                    completed = allocation::disarm_failure();
-                    if (completed) {
-                        const auto difference = operator_difference(sim.mp_op(), reference.mp_op());
-                        BOOST_TEST(difference.empty(), difference);
-                    }
-                }
-                catch (const std::bad_alloc &) {
-                    ++failures;
-                }
-                catch (...) {
-                    ++other_errors;
-                }
-                allocation::disarm_failure();
-                leaks += live.net() != 0 ? 1 : 0;
-            }
-            BOOST_TEST_MESSAGE("allocation failures injected and caught: " << failures);
-            BOOST_TEST(completed);
-            BOOST_TEST(failures > 0U);
-            BOOST_TEST(other_errors == 0U);
-            BOOST_TEST(leaks == 0U);
-        }
-    }
-}
-#endif

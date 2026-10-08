@@ -56,17 +56,21 @@ _TINY = [
 ]
 _FAMILIES = ("build_graph", "propagate", "energy", "gradient")
 
-# The runtime the imported extension was compiled with: a sharded prototype build serves only the
-# ``openmp`` shape, a legacy build only ``partitions`` (preflight.require_shape_runtime).
-_SHARDED_MARKER = "monoprop-runtime=sharded-openmp-prototype"
+# The runtime the imported extension was compiled with: a sharded build serves only the ``openmp``
+# shape, a legacy build only ``partitions`` (preflight.require_shape_runtime).
+# The final runtime's marker, and the pre-removal builds' (the sharded prototype and the legacy partitions), whose
+# binaries the tooling must still read: this suite also runs on the baseline arm, against a legacy extension.
+_SHARDED_MARKER = "monoprop-runtime=sharded-openmp"
+_PROTOTYPE_MARKER = "monoprop-runtime=sharded-openmp-prototype"
 _LEGACY_MARKER = "monoprop-runtime=legacy-partitions"
-SHARDED_BUILD = getattr(monoprop._core, "__runtime_identity__", None) == _SHARDED_MARKER
+SHARDED_BUILD = getattr(monoprop._core, "__runtime_identity__", None) in (
+    _SHARDED_MARKER,
+    _PROTOTYPE_MARKER,
+)
 _legacy_build = pytest.mark.skipif(
     SHARDED_BUILD, reason="needs a legacy (partition) build"
 )
-_sharded_build = pytest.mark.skipif(
-    not SHARDED_BUILD, reason="needs a sharded prototype build"
-)
+_sharded_build = pytest.mark.skipif(not SHARDED_BUILD, reason="needs a sharded build")
 
 # These tests launch their own processes (pytest, the driver, mpiexec). Inside a multi-rank MPI test
 # job every rank would repeat those launches nested in the parent job, so they run outside one.
@@ -116,7 +120,7 @@ def test_suite_records_independent_exactness_for_all_four_families(
     _needs_bench_tools()
     results = tmp_path / "results"
     results.mkdir()
-    # The sharded prototype rejects the partition selector; its single shard comes from the budget.
+    # The sharded runtime has no partition selector; its single shard comes from the budget.
     shape = {} if SHARDED_BUILD else {"monoprop_PARTITIONS": "1"}
     env = _bench_env(
         monoprop_BENCH_LABEL="tiny",
@@ -2155,7 +2159,7 @@ def _serial_comm():
 
 
 # The end-to-end runs measure the imported build as the arm its runtime serves: a legacy build as the
-# baseline (with the partition selector), a sharded prototype build as the candidate (without it).
+# baseline (with the partition selector), a sharded build as the candidate (without it).
 _E2E_ARM = "candidate" if SHARDED_BUILD else "baseline"
 _E2E_OTHER_ARM = "baseline" if SHARDED_BUILD else "candidate"
 _E2E_SHAPE = "openmp" if SHARDED_BUILD else "partitions"
@@ -2335,7 +2339,6 @@ def test_observe_rejects_contradictory_evidence(
 
 
 @_launches
-@_legacy_build  # two ranks: the driver's multi-rank shapes set monoprop_PARTITIONS, which the prototype rejects
 @pytest.mark.skipif(
     not monoprop.has_mpi or shutil.which("mpiexec") is None,
     reason="needs an MPI extension and mpiexec",
@@ -2383,10 +2386,11 @@ def test_two_rank_observe_and_validate_merge_the_replicated_identity(
         )
         assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
 
+    # Either arm, the one this build serves: the baseline's two ranks set monoprop_PARTITIONS, the candidate's do not.
     timed = json.loads(
-        (out / "baseline" / "e2e-energy" / "s00" / "timed.json").read_text()
+        (out / _E2E_ARM / "e2e-energy" / "s00" / "timed.json").read_text()
     )
-    (validation_path,) = (out / "baseline" / "e2e-energy").glob("validation-*.json")
+    (validation_path,) = (out / _E2E_ARM / "e2e-energy").glob("validation-*.json")
     validation = json.loads(validation_path.read_text())
     assert timed["has_mpi"] is True
     assert timed["observed"]["ranks"] == 2
@@ -2499,8 +2503,20 @@ def _preflight():
 @pytest.mark.parametrize(
     ("content", "attribute", "runtime", "marked"),
     [
-        (b"..." + _SHARDED_MARKER.encode() + b"...", _SHARDED_MARKER, "sharded", True),
-        (b"..." + _LEGACY_MARKER.encode() + b"...", _LEGACY_MARKER, "legacy", True),
+        (
+            b"..." + _SHARDED_MARKER.encode() + b"\0...",
+            _SHARDED_MARKER,
+            "sharded",
+            True,
+        ),
+        # Archived pre-removal evidence stays readable: the prototype is sharded, the partitions legacy.
+        (
+            b"..." + _PROTOTYPE_MARKER.encode() + b"\0...",
+            _PROTOTYPE_MARKER,
+            "sharded",
+            True,
+        ),
+        (b"..." + _LEGACY_MARKER.encode() + b"\0...", _LEGACY_MARKER, "legacy", True),
         # The preserved partition baseline predates the marker: legacy, by its absence.
         (b"a historical extension", None, "legacy", False),
     ],
@@ -2528,12 +2544,26 @@ def test_runtime_identity_is_read_from_the_binary(
     ("content", "attribute"),
     [
         # A module claiming the candidate while its file is legacy, and the reverse.
-        (_LEGACY_MARKER.encode(), _SHARDED_MARKER),
-        (_SHARDED_MARKER.encode(), _LEGACY_MARKER),
+        (_LEGACY_MARKER.encode() + b"\0", _SHARDED_MARKER),
+        (_SHARDED_MARKER.encode() + b"\0", _LEGACY_MARKER),
         # A historical binary cannot acquire an identity by attribute alone.
         (b"historical", _SHARDED_MARKER),
-        (_SHARDED_MARKER.encode(), None),
-        (_SHARDED_MARKER.encode() + _LEGACY_MARKER.encode(), _SHARDED_MARKER),
+        (_SHARDED_MARKER.encode() + b"\0", None),
+        # Conflicting markers.
+        (
+            _SHARDED_MARKER.encode() + b"\0" + _LEGACY_MARKER.encode() + b"\0",
+            _SHARDED_MARKER,
+        ),
+        (
+            _SHARDED_MARKER.encode() + b"\0" + _PROTOTYPE_MARKER.encode() + b"\0",
+            _SHARDED_MARKER,
+        ),
+        # The final marker is a prefix of the prototype's: a prototype binary is never the final runtime, and the
+        # final marker without its terminator is no marker at all.
+        (_PROTOTYPE_MARKER.encode() + b"\0", _SHARDED_MARKER),
+        (_SHARDED_MARKER.encode() + b"-extended\0", _SHARDED_MARKER),
+        # A final binary is not the prototype either.
+        (_SHARDED_MARKER.encode() + b"\0", _PROTOTYPE_MARKER),
     ],
 )
 def test_runtime_identity_rejects_disagreement(
@@ -2549,11 +2579,11 @@ def test_runtime_identity_rejects_disagreement(
 def test_runtime_marker_split_across_scan_chunks_is_found(tmp_path: Path) -> None:
     preflight = _preflight()
     binary = tmp_path / "_core.so"
-    content = b"x" * 5 + _SHARDED_MARKER.encode() + b"y" * 3
+    content = b"x" * 5 + _SHARDED_MARKER.encode() + b"\0" + b"y" * 3
     binary.write_bytes(content)
     for chunk in (1, 7, 16, 64):
         sha, found = preflight._scan(binary, chunk)
-        assert found == {"sharded"}, chunk
+        assert found == {"sharded-openmp"}, chunk
         assert sha == hashlib.sha256(content).hexdigest()
 
 

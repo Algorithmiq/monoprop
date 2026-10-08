@@ -7,7 +7,6 @@
   # build tooling
   cmake,
   ninja,
-  pkg-config,
   nanobind,
   nanobind-backend,
   scikit-build-core,
@@ -15,7 +14,6 @@
 
   # C++ dependencies
   boost,
-  hwloc,
   llvmPackages,
 
   # runtime dependencies
@@ -65,7 +63,6 @@ buildPythonPackage {
   nativeBuildInputs = [
     cmake
     ninja
-    pkg-config
   ];
 
   build-system = [
@@ -87,7 +84,6 @@ buildPythonPackage {
   # stdenv) needs the matching LLVM runtime.
   buildInputs = [
     boost
-    hwloc
   ]
   ++ lib.optionals stdenv.cc.isClang [ llvmPackages.openmp ]
   ++ lib.optionals withMPI [ mpi ];

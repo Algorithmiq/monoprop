@@ -403,6 +403,6 @@ before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
 environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost hwloc libomp"
+before-all = "brew install boost libomp"
 # Homebrew's libomp is keg-only; delocate then bundles it into the wheel.
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", OpenMP_ROOT = "$(brew --prefix libomp)", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }

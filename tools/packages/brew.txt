@@ -2,5 +2,4 @@
 
 boost                   # Boost.Unordered and Boost.Test
 msgpack-cxx             # reads the tests/data/*.msgpack fixtures
-hwloc                   # CpuTopology.cpp: core discovery and partition pinning
 libomp                  # OpenMP runtime for Apple Clang; keg-only, so set OpenMP_ROOT

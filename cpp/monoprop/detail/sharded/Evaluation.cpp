@@ -116,8 +116,9 @@ auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_
     };
 }
 
-// One owner's working frame. Thread-local to the executing worker thread and retained across calls, as the legacy
-// per-thread eval scratch is; every call rebinds it in the owner's first phase and resets what it reads.
+// One owner's working frame. Thread-local to the executing worker thread and retained across calls, as the low-level
+// evaluator's per-thread eval scratch is (MPFunctions.cpp); every call rebinds it in the owner's first phase and resets
+// what it reads.
 struct OwnerFrame {
     VecD op;                                // the working operator, evolved in place
     VecD state;                             // gradient only: the dense working state
@@ -201,7 +202,8 @@ auto plan_evaluation(std::span<const EvalRequest> requests,
                             first.params.size()));
         }
     }
-    // The legacy evaluator's checks, in its order: accumulate (gradient), then scale, then indices.
+    // The low-level evaluator's checks (MPFunctions.cpp), in its order: accumulate (gradient), then scale, then
+    // indices.
     for (const CosCallbacks &cos : callbacks) {
         if (gradient && !cos.accumulate) {
             throw MissingLayerCallback("ev_and_grad requires a cos_acc (reverse) callback.");
@@ -686,7 +688,7 @@ auto evaluate_shards(std::span<const EvalRequest> requests,
                       .pairs = std::vector<const PublishedPair *>(threads, nullptr),
                       .contributions = &outcome.contributions,
                       .gradients = &outcome.gradients};
-    // Empty parameters leave every gradient empty, as the legacy evaluator returns.
+    // Empty parameters leave every gradient empty, as the low-level evaluator returns.
     outcome.error = run_team(options, [&run](size_t t, TeamFailure &failure) noexcept { run.run(t, failure); });
     hand_off_live_failure(outcome.error, round, world);
     return outcome;

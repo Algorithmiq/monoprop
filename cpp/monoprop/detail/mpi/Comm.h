@@ -34,40 +34,15 @@ constexpr MPI_Comm MPI_COMM_SELF = 0;
 
 namespace monoprop::mpi {
 
-class ShmComm;
-class HybridComm;
-
-// Runtime-tagged communicator handle: the same SPMD code drives real MPI (`Kind::Mpi`) or an in-process
-// ShmComm (`Kind::Shm`). Trivially copyable, passed by value. The implicit MPI_Comm constructor is
-// deliberate; there is no implicit conversion back (that would silently drop a Shm handle), so read
-// `.mpi` explicitly where a raw communicator is required.
+// The ordinary communicator handle: a real MPI communicator, or the MPI-off stub (one process). Trivially copyable,
+// passed by value. The implicit MPI_Comm constructor is deliberate; read `.mpi` explicitly where a raw communicator is
+// required. It carries no shard geometry: a sharded root derives its (P, T) owners from this communicator's size and
+// its own captured budget.
 struct Comm {
-    // Hybrid = R MPI ranks x S in-process partitions presented as one flat P=R*S SPMD world (size()==P).
-    enum class Kind : std::uint8_t { Mpi, Shm, Hybrid };
-    Kind kind = Kind::Mpi;
-    MPI_Comm mpi = MPI_COMM_SELF; // valid iff kind == Mpi
-    ShmComm *shm = nullptr;       // non-owning (PartitionGroup owns); valid iff kind == Shm
-    HybridComm *hyb = nullptr;    // non-owning (PartitionGroup owns); valid iff kind == Hybrid
-    int shm_rank = 0;             // this participant's local partition index; valid iff kind == Shm | Hybrid
+    MPI_Comm mpi = MPI_COMM_SELF;
 
     constexpr Comm() = default;
     constexpr Comm(MPI_Comm c) : mpi(c) {} // NOLINT(google-explicit-constructor): implicit on purpose (see above)
-
-    static auto make_shm(ShmComm *group, int rank) -> Comm {
-        Comm c;
-        c.kind = Kind::Shm;
-        c.shm = group;
-        c.shm_rank = rank;
-        return c;
-    }
-
-    static auto make_hybrid(HybridComm *group, int local_partition) -> Comm {
-        Comm c;
-        c.kind = Kind::Hybrid;
-        c.hyb = group;
-        c.shm_rank = local_partition;
-        return c;
-    }
 };
 
 // A window-relative index, typed apart from a flat slot: mixing the two stays in bounds but addresses
@@ -80,7 +55,7 @@ struct WindowIndex {
 };
 
 // The contiguous run of flat slots a round can reach. Slots are rank-major, so a sparse plan's one peer
-// is S contiguous slots and dense is the count == P case of the same run. See PeerPlan::window.
+// is that rank's T contiguous slots and dense is the count == P * T case of the same run. See PeerPlan::window.
 struct SlotWindow {
     size_t base = 0;  // first reachable flat slot
     size_t count = 0; // slots in the run
@@ -161,7 +136,7 @@ template <typename T>
 // rank derives the same pairing without communicating.
 //
 // A wrong `shift` fails two ways: ranks that disagree deadlock, and ranks that agree on the same wrong
-// value silently drop blocks outside the peer set. HybridComm::require_plan_covers_traffic_ checks the latter.
+// value silently drop blocks outside the peer set.
 struct PeerPlan {
     bool sparse = false;
     int shift = 0;
@@ -171,7 +146,8 @@ struct PeerPlan {
     // `k` indexes the peer set, which is a singleton when sparse.
     [[nodiscard]] constexpr auto peer(int me, int k) const -> int { return sparse ? (me ^ shift) : k; }
     [[nodiscard]] constexpr auto contains(int me, int b) const -> bool { return !sparse || b == (me ^ shift); }
-    // The flat slots reachable from `me_flat` in a `ranks` x `parts` world: the peer rank's, or all.
+    // The flat slots reachable from `me_flat` in a `ranks` x `parts` world (`parts` owners per rank): the peer rank's,
+    // or all.
     [[nodiscard]] constexpr auto window(size_t me_flat, size_t ranks, size_t parts) const -> SlotWindow {
         const size_t peer_rank = sparse ? ((me_flat / parts) ^ static_cast<size_t>(shift)) : 0;
         return SlotWindow{.base = peer_rank * parts,
@@ -194,31 +170,10 @@ inline auto require_routable(PeerPlan plan, int ranks) -> void {
     }
 }
 
-// Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:
-// ShmComm.h takes the resolve bundle and compiles in non-MPI builds, so neither bundle may name an
-// MPI-only type. MPI_Datatype therefore stays a separate parameter on the HybridComm verbs that need
-// one (MPI-only header, MPI-only argument) instead of becoming a #ifdef-guarded member, which would
-// make this installed header's layout depend on monoprop_ENABLE_MPI.
-//
-// `send`, `send_counts` and `send_displs` are non-owning views into caller memory. The send buffer must
-// stay alive and unmodified until the verb's second barrier: peer partitions read it in place rather
-// than through a copy, so freeing or mutating it earlier corrupts what they scatter.
-//
-// Counts and displacements are in ELEMENTS while `send` / `recv` are raw bytes, so every offset is
-// scaled by `elem`; the pointers carry no element type to scale by.
-struct AlltoallvArgs {
-    const std::byte *send = nullptr;  // read in place by peers until the second barrier
-    const int *send_counts = nullptr; // [P] elements sent to each destination
-    const int *send_displs = nullptr; // [P] element offsets into `send`
-    std::byte *recv = nullptr;        // caller-owned, already sized for recv_counts
-    const int *recv_counts = nullptr; // [P] input: the senders' transpose, same contract as MPI_Alltoallv
-    const int *recv_displs = nullptr; // [P] element offsets into `recv`
-    size_t elem = 0;                  // bytes per element; scales every count/displ above
-};
-
-// Typed view of the same six spans, for callers that hold `T` buffers: `bytes()` type-erases it for the
-// in-process transports, which address payloads as raw bytes, while the MPI path keeps the typed
-// pointers it passes alongside a datatype. Same lifetime and element-offset contract as AlltoallvArgs.
+// The typed buffers and layout of one variable all-to-all over a communicator (post_flat_alltoallv). `send`,
+// `send_counts` and `send_displs` are non-owning views into caller memory; MPI reads the send buffer, and writes the
+// receive buffer, until the posted transfer completes, so neither may move, be freed or be modified before then.
+// Counts and displacements are in elements of `T`, one per rank.
 template <typename T>
 struct FlatAlltoallvArgs {
     const T *send = nullptr;
@@ -227,31 +182,6 @@ struct FlatAlltoallvArgs {
     T *recv = nullptr;                // caller-owned, already sized for recv_counts
     const int *recv_counts = nullptr; // [P] input: the senders' transpose, same contract as MPI_Alltoallv
     const int *recv_displs = nullptr; // [P] element offsets into `recv`
-
-    auto bytes() const -> AlltoallvArgs {
-        return AlltoallvArgs{.send = reinterpret_cast<const std::byte *>(send),
-                             .send_counts = send_counts,
-                             .send_displs = send_displs,
-                             .recv = reinterpret_cast<std::byte *>(recv),
-                             .recv_counts = recv_counts,
-                             .recv_displs = recv_displs,
-                             .elem = sizeof(T)};
-    }
-};
-
-// The fused resolve verb keeps its own shape because its recv side is an output, not a caller-supplied
-// layout: `recv` is a reference the callee resizes, and the two recv arrays are written, not read. Being
-// typed, it derives element bytes as sizeof(T) instead of carrying `elem`. Send side: same lifetime and
-// element-offset contract as AlltoallvArgs.
-template <typename T>
-struct AlltoallvResolveArgs {
-    const T *send = nullptr;
-    const int *send_counts = nullptr; // [P] elements sent to each destination
-    const int *send_displs = nullptr; // [P] element offsets into `send`
-    std::vector<T> &recv;             // output, resized to the resolved total; a reference, so copying the
-                                      // bundle still resizes the caller's vector
-    int *recv_counts = nullptr;       // [P] output: resolved per-source counts
-    int *recv_displs = nullptr;       // [P] output: resolved element offsets into `recv`
 };
 
 } // namespace monoprop::mpi

@@ -385,9 +385,6 @@ struct PhysicalExchange::State {
 };
 
 auto PhysicalWorld::of(const mpi::Comm &comm) -> PhysicalWorld {
-    if (comm.kind != mpi::Comm::Kind::Mpi) {
-        throw std::invalid_argument("sharded exchange: the physical world needs an ordinary MPI communicator");
-    }
     PhysicalWorld world;
     world.comm = comm;
     world.rank = static_cast<size_t>(mpi::rank(comm));

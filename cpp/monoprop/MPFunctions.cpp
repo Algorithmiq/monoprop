@@ -224,8 +224,8 @@ auto map_params(const VecD &parameters,
 }
 
 auto ev(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> double {
-    // The allreduce is unconditional -- ShmComm's is barrier-synced, so short-circuiting an empty local
-    // sum past it would deadlock every peer.
+    // The allreduce is unconditional: it is collective, so short-circuiting an empty local sum past it would
+    // deadlock every peer.
     if (request.params.empty()) {
         const double local = mpi::guard_distributed(comm, [&] { return request.state.dot(request.op); });
         return request.e_core + mpi::allreduce_sum(local, comm);

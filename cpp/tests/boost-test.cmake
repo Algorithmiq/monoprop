@@ -54,8 +54,8 @@ function(discover_tests TARGET)
     ctest_tests_file
     "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_tests-${args_hash}.cmake"
   )
-  # Both runtimes register the whole-suite variants at every rank count in monoprop_MPI_TEST_PROCS; the sharded
-  # candidate's run at the launch-time T its caller registers (cpp/tests/CMakeLists.txt).
+  # The whole-suite variants run at every rank count in monoprop_MPI_TEST_PROCS, at the launch-time T its caller
+  # registers (cpp/tests/CMakeLists.txt).
   if(_monoprop_mpiexec AND monoprop_ENABLE_MPI)
     set(_enable_mpi_variants "ON")
   else()

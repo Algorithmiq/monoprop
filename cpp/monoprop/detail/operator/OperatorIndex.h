@@ -555,8 +555,8 @@ private:
     static auto check_append_fits(size_t base, size_t n) -> void {
         if (n > kIndexCeiling - base) {
             throw TermIndexCeilingReached(
-                std::format("OperatorIndex: appending {} terms to a partition holding {} would pass the "
-                            "2^32 TermIndex ceiling; raise the partition or rank count to split it further.",
+                std::format("OperatorIndex: appending {} terms to a store holding {} would pass the "
+                            "2^32 TermIndex ceiling; raise the rank or thread (shard) count to split it further.",
                             n,
                             base));
         }
@@ -564,8 +564,8 @@ private:
 
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
-            throw TermIndexCeilingReached("OperatorIndex: this partition's term count reached the 2^32 TermIndex "
-                                          "ceiling; raise the partition or rank count to split it further.");
+            throw TermIndexCeilingReached("OperatorIndex: this store's term count reached the 2^32 TermIndex "
+                                          "ceiling; raise the rank or thread (shard) count to split it further.");
         }
     }
 

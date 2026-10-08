@@ -27,12 +27,10 @@
 #include <utility>
 #include <vector>
 
-// Comm.h owns the MPI_Comm typedef (real or non-MPI fallback) and the runtime-tagged mpi::Comm handle.
+// Comm.h owns the MPI_Comm typedef (real or non-MPI fallback) and the ordinary mpi::Comm handle.
 #include "monoprop/detail/mpi/CheckedCount.h"
 #include "monoprop/detail/mpi/Comm.h"
-#include "monoprop/detail/mpi/ShmComm.h"
 #ifdef monoprop_ENABLE_MPI
-#include "monoprop/detail/mpi/HybridComm.h"
 #include "monoprop/detail/mpi/Pairwise.h"
 #endif
 
@@ -42,10 +40,17 @@
 
 namespace monoprop::mpi {
 
+/// Initialized MPI provides less thread support than monoprop requires (kRequiredThreadLevel).
+class MpiThreadLevelUnsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 #ifdef monoprop_ENABLE_MPI
-/// The MPI thread support monoprop requests and requires. SERIALIZED, not FUNNELED, while the legacy
-/// Hybrid transport still calls MPI from its partition-0 workers.
-inline constexpr int kRequiredThreadLevel = MPI_THREAD_SERIALIZED;
+/// The MPI thread support monoprop requests and requires. FUNNELED: only the thread that initialized MPI, as the
+/// primary of the library's OpenMP team, ever calls MPI. A higher level is accepted and changes nothing: workers still
+/// never call MPI, and public calls must still come from the initializing thread.
+inline constexpr int kRequiredThreadLevel = MPI_THREAD_FUNNELED;
 
 /// Whether \a provided thread support satisfies \a required; MPI orders the levels
 /// SINGLE < FUNNELED < SERIALIZED < MULTIPLE. A higher level never relaxes the initializing-thread rule.
@@ -70,8 +75,9 @@ constexpr auto thread_level_name(int level) noexcept -> const char * {
     return "an unknown MPI thread level";
 }
 
-/// Initialize MPI at kRequiredThreadLevel unless the host already did, then check the level actually
-/// provided in either case, aborting if it is too low. Host-initialized MPI is never reinitialized.
+/// Initialize MPI requesting kRequiredThreadLevel unless the host already did, then check the level actually
+/// provided in either case: a level below it prints a diagnostic and aborts MPI_COMM_WORLD. Host-initialized MPI is
+/// never reinitialized.
 monoprop_EXPORT auto init(int *argc = nullptr, char ***argv = nullptr) -> void;
 monoprop_EXPORT auto finalize() -> void;
 
@@ -127,19 +133,12 @@ monoprop_EXPORT auto require_thread_support() -> void;
 ///
 /// A call from any other thread breaks the host contract, whatever thread support MPI provides: it prints a
 /// diagnostic and calls std::abort without calling MPI_Abort or any other communication, so the launcher
-/// must end the peers. A no-op without MPI or while MPI is not initialized. Guard the one-store path only;
-/// the legacy Hybrid transport legitimately calls MPI from its partition workers.
+/// must end the peers. A no-op without MPI or while MPI is not initialized. Every MPI-using propagator
+/// operation checks it on entry.
 monoprop_EXPORT auto require_initializing_thread() -> void;
 
 monoprop_EXPORT auto rank(const Comm &comm) -> int;
 monoprop_EXPORT auto size(const Comm &comm) -> int;
-
-// size() split into ranks * partitions: routing needs to tell a network hop from a shared-memory copy.
-struct Geometry {
-    int ranks = 1;
-    int partitions = 1;
-};
-monoprop_EXPORT auto geometry(const Comm &comm) -> Geometry;
 
 // Whether this communicator's exchanges go point-to-point: agreed collectively once and cached on it,
 // because ranks that disagree hang. Throws RoutingDisagreement on every rank together on a mismatch.
@@ -147,17 +146,12 @@ monoprop_EXPORT auto routes_pairwise(const Comm &comm) -> bool;
 
 template <typename T>
 inline auto allreduce_sum(T local_val, Comm comm) -> T {
-    if (comm.kind == Comm::Kind::Shm) {
-        return comm.shm->allreduce_sum<T>(comm.shm_rank, local_val);
-    }
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        return comm.hyb->allreduce_sum<T>(comm.shm_rank, local_val);
-    }
     T global_val{};
     MPI_Allreduce(&local_val, &global_val, 1, datatype<T>::get(), MPI_SUM, comm.mpi);
     return global_val;
 #else
+    (void)comm; // single participant: identity
     return local_val;
 #endif
 }
@@ -289,8 +283,8 @@ inline auto prepare_recv_layout_(PendingAlltoallv<T> &pending,
     pending.recv_buffer.resize(static_cast<size_t>(checked_mpi_count(running, "Total recv count")));
 }
 
-// The count exchange runs eagerly (recv_counts known on return); the Kind::Mpi payload is non-blocking
-// (wait_into completes it), Shm / single-process transfer here.
+// The count exchange runs eagerly (recv_counts known on return); the MPI payload is non-blocking (wait_into
+// completes it), and the single-process stub copies here.
 // skip_self: do not send the self slot (the caller handles self inline) — self send/recv = 0.
 // known_recv_counts: recv counts already known (e.g. the transpose of the query counts), so skip the
 // count exchange. The self slot is also zeroed when skip_self is set.
@@ -302,13 +296,12 @@ template <typename T>
                                           PeerPlan plan = {}) -> PendingAlltoallv<T> {
     const int num_ranks = size(comm);
     const int me = rank(comm);
-    const auto geom = geometry(comm);
-    require_routable(plan, geom.ranks);
+    require_routable(plan, num_ranks);
     PendingAlltoallv<T> h;
     h.num_ranks = num_ranks;
-    // The plan's window is the mask. send_data need only cover it; what lies outside must be empty.
-    h.window =
-        plan.window(static_cast<size_t>(me), static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
+    // The plan's window is the mask (one owner per rank). send_data need only cover it; what lies outside must be
+    // empty.
+    h.window = plan.window(static_cast<size_t>(me), static_cast<size_t>(num_ranks), 1);
     const SlotWindow supplied = send_data.window();
     if (h.window.stop() > static_cast<size_t>(num_ranks) || supplied.base > h.window.base
         || supplied.stop() < h.window.stop()) {
@@ -351,88 +344,44 @@ template <typename T>
 
     h.recv_counts.assign(static_cast<size_t>(num_ranks), 0);
 
-    const AlltoallvResolveArgs<T> resolve_args{.send = h.send_buffer.data(),
-                                               .send_counts = h.send_counts.data(),
-                                               .send_displs = h.send_displs.data(),
-                                               .recv = h.recv_buffer,
-                                               .recv_counts = h.recv_counts.data(),
-                                               .recv_displs = h.recv_displs.data()};
-    // Fused fast path (query round, recv layout unknown): resolve recv counts AND move payload in one
-    // in-process verb, folding away the count exchange's barriers (Shm 4→2, Hybrid 6→4). It fills
-    // recv_counts/recv_displs and resizes recv_buffer; known-layout and pure-MPI paths fall through.
-    if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Shm) {
-        comm.shm->alltoallv_resolve<T>(comm.shm_rank, resolve_args);
-        return h;
-    }
-#ifdef monoprop_ENABLE_MPI
-    if (known_recv_counts == nullptr && comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv_resolve<T>(comm.shm_rank, resolve_args, datatype<T>::get(), plan);
-        return h;
-    }
-#endif
-
     prepare_recv_layout_(h, known_recv_counts, self, comm, plan);
 
+#ifdef monoprop_ENABLE_MPI
     // Taken after the resize above: recv_buffer may have reallocated.
-    const auto flat = FlatAlltoallvArgs<T>{.send = h.send_buffer.data(),
-                                           .send_counts = h.send_counts.data(),
-                                           .send_displs = h.send_displs.data(),
-                                           .recv = h.recv_buffer.data(),
-                                           .recv_counts = h.recv_counts.data(),
-                                           .recv_displs = h.recv_displs.data()}
-                          .bytes();
-    if (comm.kind == Comm::Kind::Shm) {
-        // ShmComm needs no send counts: its peers pull using the publisher's displacements.
-        comm.shm->alltoallv(comm.shm_rank,
-                            flat.send,
-                            flat.send_displs,
-                            flat.recv,
-                            flat.recv_counts,
-                            flat.recv_displs,
-                            flat.elem);
+    if (plan.dense()) {
+        h.requests.resize(1);
+        h.posted = 1;
+        MPI_Ialltoallv(h.send_buffer.data(),
+                       h.send_counts.data(),
+                       h.send_displs.data(),
+                       datatype<T>::get(),
+                       h.recv_buffer.data(),
+                       h.recv_counts.data(),
+                       h.recv_displs.data(),
+                       datatype<T>::get(),
+                       comm.mpi,
+                       h.requests.data());
     }
-#ifdef monoprop_ENABLE_MPI
-    else if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoallv(comm.shm_rank, flat, datatype<T>::get(), plan);
-    }
-#endif
     else {
-#ifdef monoprop_ENABLE_MPI
-        if (plan.dense()) {
-            h.requests.resize(1);
-            h.posted = 1;
-            MPI_Ialltoallv(h.send_buffer.data(),
-                           h.send_counts.data(),
-                           h.send_displs.data(),
-                           datatype<T>::get(),
-                           h.recv_buffer.data(),
-                           h.recv_counts.data(),
-                           h.recv_displs.data(),
-                           datatype<T>::get(),
-                           comm.mpi,
-                           h.requests.data());
-        }
-        else {
-            // S == 1 world: point-to-point with the peer, left in flight like MPI_Ialltoallv.
-            const SparsePairwiseArgs pairwise{
-                .plan = plan,
-                .me = me,
-                .num_ranks = num_ranks,
-                .comm = comm.mpi,
-                .tag = kFlatPayloadTag,
-                .datatype = datatype<T>::get(),
-                .elem = sizeof(T),
-                .send = reinterpret_cast<const std::byte *>(h.send_buffer.data()),
-                .send_layout = {.counts = h.send_counts.data(), .displs = h.send_displs.data()},
-                .recv = reinterpret_cast<std::byte *>(h.recv_buffer.data()),
-                .recv_layout = {.counts = h.recv_counts.data(), .displs = h.recv_displs.data()},
-            };
-            h.posted = sparse_pairwise(pairwise, h.requests);
-        }
-#else
-        h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
-#endif
+        // Point-to-point with the plan's one peer, left in flight like MPI_Ialltoallv.
+        const SparsePairwiseArgs pairwise{
+            .plan = plan,
+            .me = me,
+            .num_ranks = num_ranks,
+            .comm = comm.mpi,
+            .tag = kFlatPayloadTag,
+            .datatype = datatype<T>::get(),
+            .elem = sizeof(T),
+            .send = reinterpret_cast<const std::byte *>(h.send_buffer.data()),
+            .send_layout = {.counts = h.send_counts.data(), .displs = h.send_displs.data()},
+            .recv = reinterpret_cast<std::byte *>(h.recv_buffer.data()),
+            .recv_layout = {.counts = h.recv_counts.data(), .displs = h.recv_displs.data()},
+        };
+        h.posted = sparse_pairwise(pairwise, h.requests);
     }
+#else
+    h.recv_buffer = h.send_buffer; // single participant: self round-trip (layouts identical)
+#endif
     return h;
 }
 

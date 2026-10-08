@@ -23,7 +23,7 @@
 #include "monoprop/detail/sharded/State.h"
 
 /*
- * Test-only observation of the sharded prototype root (monoprop_SHARDED_OPENMP_PROTOTYPE).
+ * Test-only observation of the sharded root.
  *
  * The rank-level MonomialPropagator holds a pointer to a RootObserver that is null in production and can be set only
  * through the test suite's PropagatorTestAccess. Every seam the root calls -- seeding, copying, construction,
@@ -46,7 +46,7 @@ enum class RootWork : std::uint8_t {
 };
 
 /*!
- * \brief Test-only observer of the prototype root; every method defaults to doing nothing.
+ * \brief Test-only observer of the root; every method defaults to doing nothing.
  *
  * Inherits the evaluation seam's visit(), so one object observes evaluation, replay and retained preparation too.
  */

@@ -57,8 +57,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     auto name = std::format("MonomialPropagator{:03d}", NumModes);
     auto cls = nb::class_<MonomialPropagator<NumModes>>(mod, name.c_str());
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-    // The sharded candidate has no partition, thread or shard argument: T is the budget captured at construction.
+    // No partition, thread or shard argument: T is the budget captured at construction.
     cls.def(
         "__init__",
         [](MonomialPropagator<NumModes> *t,
@@ -97,49 +96,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
         "Instantiate the simulator; its shard count is the thread budget captured from monoprop_NUM_THREADS.");
-#else
-    cls.def(
-        "__init__",
-        [](MonomialPropagator<NumModes> *t,
-           const std::map<std::vector<size_t>, std::complex<double>> &initial_operator,
-           unsigned int cutoff,
-           const std::vector<size_t> &initial_state,
-           nb::object py_comm,
-           std::optional<unsigned int> schrodinger_cutoff,
-           std::optional<double> lower_atol,
-           std::optional<double> upper_atol,
-           const std::string &cutoff_type,
-           std::optional<std::vector<std::vector<size_t>>> basis_change,
-           size_t logical_num_modes,
-           const std::string &basis,
-           size_t partitions) {
-            new (t) MonomialPropagator<NumModes>(initial_operator,
-                                                 cutoff,
-                                                 initial_state,
-                                                 schrodinger_cutoff,
-                                                 get_mpi_comm(py_comm),
-                                                 lower_atol,
-                                                 upper_atol,
-                                                 cutoff_type_str_2_enum(cutoff_type),
-                                                 basis_change,
-                                                 logical_num_modes,
-                                                 basis_str_2_enum(basis),
-                                                 partitions);
-        },
-        "initial_operator"_a,
-        "cutoff"_a,
-        "initial_state"_a,
-        "comm"_a = nb::none(),
-        "schrodinger_cutoff"_a = std::nullopt,
-        "lower_atol"_a = std::nullopt,
-        "upper_atol"_a = std::nullopt,
-        "cutoff_type"_a = "length",
-        "basis_change"_a = std::nullopt,
-        "logical_num_modes"_a = NumModes,
-        "basis"_a = "majorana",
-        "partitions"_a = 0,
-        "Instantiate the simulator.");
-#endif
 
     cls.def("build_graph",
             &MonomialPropagator<NumModes>::build_graph,
@@ -316,8 +272,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_init_operator_entries", b.init_operator_entries}};
     });
 
-    // Summed over this rank's stores. The graph's slot arrays are indexed by the flat world (ranks x shards, or ranks
-    // x partitions in the legacy runtime), so these grow with T as well as with the MPI rank count.
+    // Summed over this rank's stores. The graph's slot arrays are indexed by the flat world (ranks x shards), so these
+    // grow with T as well as with the MPI rank count.
     cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.graph_memory_usage();
         return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},

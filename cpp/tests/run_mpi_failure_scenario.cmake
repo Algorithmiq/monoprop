@@ -1,12 +1,14 @@
-# Runs one mpi_failure_driver scenario under the MPI launcher and checks that the job fails promptly.
+# Runs one mpi_failure_driver scenario under the MPI launcher and checks how the job ends.
 #
 # Inputs (-D): MPIEXEC, NUMPROC_FLAG, PREFLAGS (MPIEXEC_PREFLAGS, may be empty), DRIVER, SCENARIO, OPTION
 # (may be empty), EXPECT (regex that must appear in the combined output), FORBID (optional regex that must
-# not), TIMEOUT_SECONDS (default 30).
+# not), EXPECT_SUCCESS (optional; ON for an acceptance scenario), TIMEOUT_SECONDS (default 30).
 #
-# Passing requires a nonzero exit before the timeout with EXPECT in the output. A timeout is a failure,
-# never a pass: it means some rank was left blocked. The launcher must end the peers of a rank that exits
-# abnormally (Open MPI's default); the wrong-thread case depends on that policy.
+# A failure scenario passes on a nonzero exit before the timeout with EXPECT in the output; an acceptance
+# scenario (EXPECT_SUCCESS) passes on exit 0 before the timeout with EXPECT in the output. A timeout is a
+# failure, never a pass: it means some rank was left blocked. The launcher must end the peers of a rank that
+# exits abnormally (Open MPI's default); the wrong-thread case depends on that policy. "NOT EXERCISED" in the
+# output (the MPI library's provided thread level does not exercise the route) is reported as a skip.
 
 if(NOT DEFINED TIMEOUT_SECONDS)
   set(TIMEOUT_SECONDS 30)
@@ -59,7 +61,14 @@ if(_output MATCHES "NOT EXERCISED")
   endif()
   cmake_language(EXIT 77)
 endif()
-if("${_result}" STREQUAL "0")
+if(EXPECT_SUCCESS)
+  if(NOT "${_result}" STREQUAL "0")
+    message(
+      FATAL_ERROR
+      "FAILED: the acceptance scenario exited with ${_result}, not 0"
+    )
+  endif()
+elseif("${_result}" STREQUAL "0")
   message(
     FATAL_ERROR
     "FAILED: the job exited 0; the injected failure did not end it"
@@ -83,4 +92,10 @@ if(
 )
   message(FATAL_ERROR "FAILED: forbidden output /${FORBID}/ found")
 endif()
-message("PASSED: nonzero exit after ${_elapsed} s with the expected diagnostic")
+if(EXPECT_SUCCESS)
+  message("PASSED: exit 0 after ${_elapsed} s with the expected completion")
+else()
+  message(
+    "PASSED: nonzero exit after ${_elapsed} s with the expected diagnostic"
+  )
+endif()

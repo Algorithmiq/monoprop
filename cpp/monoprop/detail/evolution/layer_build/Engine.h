@@ -329,7 +329,8 @@ struct ContractSink {
 
 /*
  * Owns one layer's partner resolution over a compile-time Sink policy for one owner: the flat routing slot
- * `my_rank` out of `R` (a physical rank of the legacy runtime, or rank * T + shard of a sharded one), its store, its
+ * `my_rank` out of `R` (a physical rank of the low-level one-owner-per-rank engine, or rank * T + shard of a sharded
+ * root), its store, its
  * matched marks and its sink. combined_size = the pre-layer operator size, the source boundary.
  *
  * Each pass (leaders, then followers) is three owner-local phases with a handoff between them:
@@ -343,7 +344,7 @@ struct ContractSink {
  *
  * finish() then inserts the deferred same-owner misses (leaders, then followers) and finalizes the sink. The phases
  * perform no MPI, no barrier and no nested worksharing beyond the serial-or-budgeted kernels `options` selects; the
- * caller owns every handoff. run_exchange() is the legacy transport adapter over the same phases.
+ * caller owns every handoff. run_exchange() is the low-level engine's MPI transport adapter over the same phases.
  *
  * Handoff lifetimes: the payload prepare_exchange returns is read by its destinations until they have resolved it,
  * and consume_published still reads this owner's own sources and plain queries, so neither may change until this
@@ -552,7 +553,7 @@ struct LayerBuildEngine {
     }
 
     /*!
-     * \brief Legacy transport adapter: one pass over the same phases, with MPI or in-process communicator rounds.
+     * \brief The low-level engine's transport adapter: one pass over the same phases, with MPI rounds over `comm`.
      *
      * Round 1 carries the payload, and the resolver inserts absent partners in that same round; round 2 returns the
      * answers. Each round completes inside its handle's lifetime and under the distributed guard, so a failure after
@@ -778,7 +779,7 @@ template <size_t NumModes>
 struct GateScan {
     FusedScanResult<NumModes> streams; //!< Leader/follower queries, sources, values and self stages.
     CosMask cos_all;                   //!< Anticommuting rows, ascending and disjoint; empty for the fused sweep.
-    mpi::PeerPlan plan;                //!< The generator's peer plan (legacy transport only).
+    mpi::PeerPlan plan;                //!< The generator's peer plan (the low-level engine's transport only).
     mpi::SlotWindow window;            //!< The owner's destination window: every per-slot stream is sized to it.
     size_t combined_size = 0;          //!< Pre-layer store size: the source boundary and the matched-set bound.
     bool identity = false;             //!< Identity generator: nothing anticommutes and nothing is exchanged.
@@ -924,7 +925,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
-    // R is the flat world (ranks x partitions).
+    // R is the flat world: one owner per rank.
     const routing::Router router = router_for<NumModes>(comm);
     assert(router.flat_world() == R);
     // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).

@@ -19,8 +19,7 @@
 #include <limits>
 #include <stdexcept>
 
-// Below MPICompat.h so the in-process transports (ShmComm, HybridComm), which MPICompat.h includes,
-// narrow their counts through the same policy as the MPI collectives.
+// The one narrowing policy for every count and displacement handed to MPI; MPICompat.h re-exports it.
 
 namespace monoprop::mpi {
 

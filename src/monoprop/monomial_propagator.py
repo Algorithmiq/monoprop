@@ -68,13 +68,12 @@ class MonomialPropagator(ABC, Generic[T_op]):
         (front-to-back) builds ``a + b``. [build_graph][] numbers the axis to match either way.
 
     Note:
-        In a build of the sharded OpenMP runtime, a propagator reads its thread count once, when
-        it is constructed: ``monoprop_NUM_THREADS``, or the OpenMP default when that is unset.
-        It is also the number of shards per MPI rank, and copies keep it; set it, with
-        ``OMP_NUM_THREADS`` and ``OMP_DYNAMIC=FALSE``, before the process starts. The constructors
-        take no thread, shard or partition argument in either build. Energies and gradients are
-        global, while [size][], [evolved_operator][] and [contract_partially][] describe this
-        rank's terms only. See the parallelism guide for the launch contract.
+        A propagator reads its thread count once, when it is constructed: ``monoprop_NUM_THREADS``,
+        or the OpenMP default when that is unset. It is also the number of shards per MPI rank, and
+        copies keep it; set it, with ``OMP_NUM_THREADS`` and ``OMP_DYNAMIC=FALSE``, before the
+        process starts. The constructors take no thread, shard or partition argument. Energies and
+        gradients are global, while [size][], [evolved_operator][] and [contract_partially][]
+        describe this rank's terms only. See the parallelism guide for the launch contract.
     """
 
     _comm: MPI.Comm | None

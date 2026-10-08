@@ -22,12 +22,13 @@
  * are left out of T = 1.
  *
  * Oracles:
- * - The legacy partition facade (partitions = T over an in-process communicator; child t is flat owner t at geometry
- *   (1, T)), or at T = 1 the single store: per-shard evolved coefficients, local terms, energies and every gradient
- *   component, bitwise. The two paths share the extracted kernels (LayerReplay.h), so they can agree on a shared bug:
+ * - The rank-level root at the same launch (MPI_COMM_SELF, the launch's T), through its public operations: per-shard
+ *   evolved coefficients, local terms, energies and every gradient component, bitwise. It drives the same seams, so it
+ *   checks the root's wiring of them, never their arithmetic; so:
  * - an independent coefficient-map propagator (algebra primitives only) for exact-cutoff energies, the frozen exact
- *   energy of tests/data/random_exact.msgpack, closed-form single-gate fits and central finite differences;
- * - across T, global retained maps of the in-process T = 1 store.
+ *   energy of tests/data/random_exact.msgpack, closed-form single-gate fits and central finite differences.
+ * Bitwise equality with an independently implemented runtime at the same geometry, and the global retained maps
+ * across T, are checked from separate processes (tests/test_sharded_openmp.py); two runtimes never share a process.
  *
  * Workers never call BOOST_TEST. Observers write per-shard slots and assertions run after the team has joined.
  */
@@ -276,7 +277,7 @@ auto swap_basis(size_t logical) -> std::vector<VecZ> {
 
 // Every basis and picture, trimming cutoffs, coefficient cutoffs, length caps (two-pass fallback), a basis change,
 // odd Majorana generators and native Pauli folding.
-auto legacy_cases() -> std::vector<Case> {
+auto fixture_cases() -> std::vector<Case> {
     const auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
     const Fixture maj{.name = "majorana-heisenberg-logical-6",
                       .op = majorana_operator(6),
@@ -356,16 +357,14 @@ auto parameter_sets(const Circuit &c) -> std::vector<std::pair<std::string, VecD
     return sets;
 }
 
-// --- Legacy oracle ----------------------------------------------------------------------------------------------
+// --- The rank-level reference ---------------------------------------------------------------------------------
 
 template <size_t N>
 using Access = monoprop::detail::PropagatorTestAccess<N>;
 
-#ifdef monoprop_SHARDED_OPENMP_PROTOTYPE
-// The rank-level reference at geometry (1, T) in a candidate build: the candidate root over MPI_COMM_SELF at the
-// launch's T, through its public operations. It drives the same seams, so comparing against it checks the root's
-// wiring of them, while each case keeps its independent references; the legacy build compares against the legacy
-// partitions instead.
+// The rank-level reference at geometry (1, T): the root over MPI_COMM_SELF at the launch's T, through its public
+// operations. It drives the same seams, so comparing against it checks the root's wiring of them, while each case
+// keeps its independent references.
 template <size_t N>
 auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
     auto p = MonomialPropagator<N>(f.op,
@@ -382,61 +381,6 @@ auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
     BOOST_TEST_REQUIRE(Access<N>::shards(p).size() == threads);
     return p;
 }
-#else
-template <size_t N>
-auto legacy(const Fixture &f, size_t partitions, MPI_Comm comm = MPI_COMM_SELF) -> MonomialPropagator<N> {
-    return MonomialPropagator<N>(f.op,
-                                 f.cutoff,
-                                 f.initial_state,
-                                 f.schrodinger_cutoff,
-                                 comm,
-                                 f.lower_atol,
-                                 f.upper_atol,
-                                 f.cutoff_type,
-                                 f.basis_change,
-                                 f.logical,
-                                 f.basis,
-                                 partitions);
-}
-
-// The rank-level reference at geometry (1, T): the legacy partitions.
-template <size_t N>
-auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
-    return legacy<N>(f, threads);
-}
-
-// Per legacy store: the legacy energy evaluation's evolved operator and its local term at `params`.
-struct LegacyShard {
-    VecD evolved;
-    double local = 0.0;
-};
-
-template <size_t N>
-auto legacy_shards(MonomialPropagator<N> &p, size_t threads, const VecD &params) -> std::vector<LegacyShard> {
-    std::vector<LegacyShard> out(threads);
-    Access<N>::for_each_store(p, [&](size_t r, MonomialPropagator<N> &store) {
-        const auto state = Access<N>::evaluation_state(store);
-        out[r].evolved = Access<N>::evaluation_operator(store, params);
-        out[r].local = state.dot(out[r].evolved);
-    });
-    return out;
-}
-
-// Per legacy store: contract_partially(params, false), the picture's partial contraction.
-template <size_t N>
-auto legacy_contractions(MonomialPropagator<N> &p, size_t threads, const VecD &params) -> std::vector<VecD> {
-    std::vector<VecD> out(threads);
-    Access<N>::for_each_store(p, [&](size_t r, MonomialPropagator<N> &store) {
-        out[r] = store.contract_partially(params, false);
-    });
-    return out;
-}
-
-template <size_t N>
-auto legacy_owner(MonomialPropagator<N> &p, size_t shard) -> const MonomialPropagator<N> & {
-    return Access<N>::partition_count(p) == 0 ? p : Access<N>::partition(p, static_cast<int>(shard));
-}
-#endif
 
 // --- Sharded setup ----------------------------------------------------------------------------------------------
 
@@ -550,7 +494,7 @@ auto contraction_angles(const MPGraph &graph, bool schrodinger, const VecD &para
     return schrodinger ? map_params(params, mapping, gen, -1.0) : map_params(params, mapping, gen, 1.0, true);
 }
 
-// Coefficient-informed construction on the shards, with the angles the legacy build_graph derives.
+// Coefficient-informed construction on the shards, with the angles the root's build_graph derives.
 template <size_t N, class Observer = sharded::NoConstructionObserver>
 auto run_informed(Sharded<N> &s,
                   const Circuit &c,
@@ -627,20 +571,6 @@ auto energy_and_gradient(const sharded::RetainedEvaluation &r,
     const auto requests = r.requests(params);
     return sharded::ev_and_grad_sharded(requests, r.callbacks, team_options(), world.comm);
 }
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Per shard: the energy evaluation's evolved operator, through replay_shards().
-auto evaluation_operators(const sharded::RetainedEvaluation &r, const VecD &params) -> std::vector<VecD> {
-    std::vector<sharded::ReplayRequest> requests;
-    for (const auto &shard : r.shards) {
-        requests.push_back({.coeffs = shard.op, .graph = shard.graph->replay_view()});
-    }
-    const auto mapped = map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
-    auto outcome = sharded::replay_shards(requests, mapped, r.callbacks, team_options());
-    require_success(outcome.error, "replay_shards");
-    return std::move(outcome.coeffs);
-}
-#endif
 
 // --- Observation ------------------------------------------------------------------------------------------------
 
@@ -854,61 +784,6 @@ auto census(const sharded::Shards<N> &shards) -> Census {
 
 } // namespace
 
-// --- Fixed-geometry equality with the legacy partitions ---------------------------------------------------------
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// At (1, T), for every basis/picture fixture and parameter set (case angles, deep amplification, vanishing cosines):
-// per-shard evolved operators and local terms, the energy and every gradient component equal the legacy partitions'
-// bitwise, including through ev_sharded()/ev_and_grad_sharded().
-BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_legacy_partitions) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    size_t records_below = 0;
-    size_t cosine_sets = 0;
-    for (const auto &cs : legacy_cases()) {
-        BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto old = legacy<kN>(cs.f, threads);
-            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-            auto s = seed<kN>(cs.f, options);
-            run_graph<kN>(s, cs.c, cs.k);
-            const auto r = retain<kN>(s);
-            for (const auto &[name, params] : parameter_sets(cs.c)) {
-                BOOST_TEST_CONTEXT(name) {
-                    std::vector<uint8_t> wanted;
-                    const bool vanishes =
-                        replay::plan_cos_records(map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true),
-                                                 wanted);
-                    cosine_sets += vanishes ? 1 : 0;
-                    records_below += static_cast<size_t>(std::ranges::count_if(wanted, [](uint8_t w) {
-                        return (w & replay::kRecordRotationsBelow) != 0;
-                    }));
-                    const auto want = legacy_shards<kN>(old, threads, params);
-                    const auto got = evaluation_operators(r, params);
-                    const auto outcome = evaluate(r, params, false);
-                    require_success(outcome.error, "evaluate");
-                    for (size_t t = 0; t < threads; ++t) {
-                        BOOST_TEST((bits_of(got[t]) == bits_of(want[t].evolved)), "shard " << t);
-                        BOOST_TEST(bits(outcome.contributions[t]) == bits(want[t].local), "shard " << t);
-                    }
-                    const double e = old.expectation_value(params);
-                    BOOST_TEST(bits(energy(r, params)) == bits(e));
-                    const auto [ge, grad] = old.expectation_value_and_gradient(params);
-                    const auto [se, sgrad] = energy_and_gradient(r, params);
-                    BOOST_TEST(bits(se) == bits(ge));
-                    BOOST_TEST((bits_of(sgrad) == bits_of(grad)));
-                    const auto gout = evaluate(r, params, true);
-                    require_success(gout.error, "evaluate gradient");
-                    BOOST_TEST((bits_of(sharded::combine_gradients(gout.gradients)) == bits_of(grad)));
-                }
-            }
-        }
-    }
-    // The parameter sets reach both record branches.
-    BOOST_TEST(records_below > 0U);
-    BOOST_TEST(cosine_sets > 0U);
-}
-#endif
-
 // A small cross-shard fixture: every shard both publishes and reads partner endpoints in the same layer, so a finish
 // that read a partner's live (already cos-scaled) coefficients instead of its snapshot would be off by a factor cos.
 // Checked in both directions against the independent map propagator and its central differences.
@@ -941,7 +816,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_peers_read_published_snapshots,
 }
 
 // Whole self pairs, other-local-shard and multi-peer layouts, empty owners and no-work layers are all exercised at
-// T >= 2, and evaluation over them matches the legacy partitions.
+// T >= 2, and evaluation over them matches the root.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_covers_every_layout, *boost::unit_test::precondition(has_nonprimary_worker)) {
     const auto options = team_options();
     const size_t threads = team_size();
@@ -957,7 +832,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_covers_every_layout, *boost::unit_test::
     add_term(two.op, Basis::Majorana, {0, 1}, 0.5);
     add_term(two.op, Basis::Majorana, {}, 1.5);
     const Circuit few{.gates = {{}, {1, 2}}, .mapping = {0, 1}, .gen_coeffs = {1.0, 0.5}, .params = {0.3, 0.4}};
-    std::vector<Case> cases = legacy_cases();
+    std::vector<Case> cases = fixture_cases();
     cases.push_back({.f = two, .c = few});
     for (const auto &cs : cases) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
@@ -988,7 +863,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_covers_every_layout, *boost::unit_test::
 BOOST_AUTO_TEST_CASE(sharded_evaluation_identity_once_and_empty_parameters) {
     const auto options = team_options();
     const size_t threads = team_size();
-    for (const auto &cs : legacy_cases()) {
+    for (const auto &cs : fixture_cases()) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
             auto s = seed<kN>(cs.f, options);
             auto r = retain<kN>(s);
@@ -1028,7 +903,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_identity_once_and_empty_parameters) {
 BOOST_AUTO_TEST_CASE(sharded_evaluation_rejects_invalid_arguments_before_the_team) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     const auto r = retain<kN>(s);
@@ -1198,7 +1073,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_independent_references) {
 // The substantive cases of tests/test_deep_circuit_gradient.py through the sharded engine: a ZZ observable over eight
 // qubits propagated through layers of every ZZ term and an X on every qubit, with a pruning cutoff. Depth, vanishing
 // cosines (theta = pi/4 at unit generator coefficient) and angles that record nothing; each against central
-// differences of the sharded energy and bitwise against the legacy partitions.
+// differences of the sharded energy and bitwise against the root.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
     const auto options = team_options();
     const size_t threads = team_size();
@@ -1295,7 +1170,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
 BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_parameters_and_duplicate_records) {
     const auto options = team_options();
     const size_t threads = team_size();
-    for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[9]}) {
+    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[9]}) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
             auto s = seed<kN>(cs.f, options);
             run_graph<kN>(s, cs.c, cs.k);
@@ -1332,15 +1207,15 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_parameters_and_duplicate_record
     }
 }
 
-// Pared functionals equal the legacy partitions' (bitwise, energy and gradient) for positive, zero and negative
+// Pared functionals equal the root's (bitwise, energy and gradient) for positive, zero and negative
 // thresholds in both pictures; cross-owner lists are the unchanged shared cores; some layers really store a pruned
 // mask; and the owner seam uses the flat owner, not a communicator rank.
-BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_legacy) {
+BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_the_root) {
     const auto options = team_options();
     const size_t threads = team_size();
     size_t stored = 0;
     size_t empty_stored = 0;
-    for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[7], legacy_cases()[9]}) {
+    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
         auto s = seed<kN>(cs.f, options);
         run_graph<kN>(s, cs.c, cs.k);
         auto old = reference_root<kN>(cs.f, threads);
@@ -1411,7 +1286,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
     const size_t threads = team_size();
     const OneBlockRuns one_block_runs;
     size_t multi_partner_layers = 0;
-    for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[7], legacy_cases()[9]}) {
+    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
         auto s = seed<kN>(cs.f, options);
         run_graph<kN>(s, cs.c, cs.k);
         const auto r = retain<kN>(s);
@@ -1469,7 +1344,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
 BOOST_AUTO_TEST_CASE(sharded_evaluation_cosine_counts_reserve_records_exactly) {
     const auto options = team_options();
     size_t nonempty = 0;
-    for (const auto &cs : {legacy_cases()[0], legacy_cases()[1], legacy_cases()[7], legacy_cases()[9]}) {
+    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
         auto s = seed<kN>(cs.f, options);
         run_graph<kN>(s, cs.c, cs.k);
         const auto r = retain<kN>(s, 0.05);
@@ -1517,8 +1392,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_cosine_counts_reserve_records_exactly) {
 // A stored empty pruned cosine mask replays nothing: it is not a request to recompute the full mask.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_empty_stored_mask_applies_nothing) {
     const auto options = team_options();
-    auto s = seed<kN>(legacy_cases()[0].f, options);
-    run_graph<kN>(s, legacy_cases()[0].c, std::nullopt);
+    auto s = seed<kN>(fixture_cases()[0].f, options);
+    run_graph<kN>(s, fixture_cases()[0].c, std::nullopt);
     const auto &state = *s.shards[0];
     std::vector<Layer> layers;
     for (size_t l = 0; l < state.graph.layers(); ++l) {
@@ -1554,8 +1429,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_empty_stored_mask_applies_nothing) {
 BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_growth) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto small_case = legacy_cases()[9];
-    const auto large_case = legacy_cases()[7];
+    const auto small_case = fixture_cases()[9];
+    const auto large_case = fixture_cases()[7];
     auto small = seed<kN>(small_case.f, options);
     run_graph<kN>(small, small_case.c, std::nullopt);
     auto large = seed<kN>(large_case.f, options);
@@ -1606,141 +1481,6 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
     BOOST_TEST((bits_of(after.second) == bits_of(before.second)));
 }
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Partial contraction in both pictures: per-shard replay_shards() with contract_partially()'s angles and windows equals
-// every legacy child's contract_partially(params, false) bitwise.
-BOOST_AUTO_TEST_CASE(sharded_evaluation_partial_contraction_matches_legacy) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    for (const auto &cs : legacy_cases()) {
-        BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            const bool schrodinger = cs.f.schrodinger_cutoff.has_value();
-            auto s = seed<kN>(cs.f, options);
-            run_graph<kN>(s, cs.c, cs.k);
-            auto old = legacy<kN>(cs.f, threads);
-            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-            const auto want = legacy_contractions<kN>(old, threads, cs.c.params);
-            std::vector<VecD> start;
-            std::vector<MPGraphView> views;
-            std::vector<monoprop::detail::CosCallbacks> callbacks;
-            for (auto &state : s.shards) {
-                start.push_back(state->op.current_picture(schrodinger));
-                views.push_back(state->graph.slice_view(state->graph.layers()));
-            }
-            for (size_t t = 0; t < threads; ++t) {
-                callbacks.push_back(
-                    monoprop::detail::make_cos_callbacks<kN>(s.shards[t]->op.inverted_index(), views[t], cs.f.basis));
-            }
-            std::vector<sharded::ReplayRequest> requests;
-            for (size_t t = 0; t < threads; ++t) {
-                requests.push_back({.coeffs = start[t], .graph = views[t]});
-            }
-            const auto angles = contraction_angles(s.shards.front()->graph, schrodinger, cs.c.params);
-            const auto outcome = sharded::replay_shards(requests, angles, callbacks, options);
-            require_success(outcome.error, "replay_shards");
-            for (size_t t = 0; t < threads; ++t) {
-                BOOST_TEST((bits_of(outcome.coeffs[t]) == bits_of(want[t])), "shard " << t);
-            }
-        }
-    }
-}
-#endif
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Coefficient-informed construction, first and incremental (seed replay), in both pictures with cutoff-sensitive
-// atols and length caps: every shard's rows, coefficients, caches and graph layers equal the legacy child's after the
-// legacy coefficient-informed build_graph; the informed map differs from the structural one; and across T the global
-// retained keys agree with the in-process single store.
-BOOST_AUTO_TEST_CASE(sharded_evaluation_informed_construction_matches_legacy) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    size_t sensitive = 0;
-    const auto cases = legacy_cases();
-    for (const auto &cs : {cases[2], cases[3], cases[4], cases[5], cases[7], cases[9], cases[10]}) {
-        BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            const bool schrodinger = cs.f.schrodinger_cutoff.has_value();
-            // First build (picture seed), then an incremental one on the extended axis (replay seed).
-            // The engine's axis: the existing graph replays the prefix [0, m) as the seed, the new gates index past it.
-            const Circuit second = cs.f.basis == Basis::Pauli ? pauli_circuit() : majorana_circuit(cs.f.logical);
-            const VecD first_params = cs.c.params;
-            const size_t first_count = expected_num_params(cs.c.mapping);
-            Circuit second_circuit = second;
-            for (auto &m : second_circuit.mapping) {
-                m += first_count;
-            }
-            VecD second_params = cs.c.params;
-            second_params.insert(second_params.end(), second.params.begin(), second.params.end());
-            static_cast<void>(schrodinger);
-
-            auto old = legacy<kN>(cs.f, threads);
-            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, first_params, cs.k);
-            auto s = seed<kN>(cs.f, options);
-            require_success(run_informed<kN>(s, cs.c, first_params, cs.k).error, "informed build");
-            const auto compare = [&](const char *what) {
-                for (size_t t = 0; t < threads; ++t) {
-                    const auto want = Access<kN>::shard_state(legacy_owner(old, t));
-                    const auto &got = *s.shards[t];
-                    BOOST_TEST_CONTEXT(what << " shard " << t) {
-                        BOOST_TEST_REQUIRE(got.op.size() == want->op.size());
-                        for (size_t i = 0; i < got.op.size(); ++i) {
-                            BOOST_TEST((key_of<kN>(got.op.store->row(i)) == key_of<kN>(want->op.store->row(i))));
-                        }
-                        BOOST_TEST((bits_of(got.op.op_coeffs) == bits_of(want->op.op_coeffs)));
-                        BOOST_TEST((bits_of(got.op.state_coeffs) == bits_of(want->op.state_coeffs)));
-                        BOOST_TEST_REQUIRE(got.graph.layers() == want->graph.layers());
-                        for (size_t l = 0; l < got.graph.layers(); ++l) {
-                            const auto &a = got.graph.get_layer(l).core();
-                            const auto &b = want->graph.get_layer(l).core();
-                            BOOST_TEST((a.cross_rank.sin_send_indices == b.cross_rank.sin_send_indices));
-                            BOOST_TEST(a.scaled_count == b.scaled_count);
-                            BOOST_TEST(a.param_index == b.param_index);
-                            BOOST_TEST(bits(a.gen_coeff) == bits(b.gen_coeff));
-                            BOOST_TEST(a.gate_index == b.gate_index);
-                            BOOST_TEST((a.generator_words == b.generator_words));
-                        }
-                    }
-                }
-            };
-            compare("first");
-            const size_t offset = old.n_gates();
-            old.build_graph(second_circuit.gates,
-                            second_circuit.mapping,
-                            second_circuit.gen_coeffs,
-                            std::nullopt,
-                            second_params,
-                            std::nullopt);
-            require_success(run_informed<kN>(s, second_circuit, second_params, std::nullopt, offset).error,
-                            "incremental informed build");
-            compare("incremental");
-
-            // Cutoff sensitivity: the structural build of the same circuit keeps a different retained key set.
-            auto structural = seed<kN>(cs.f, options);
-            run_graph<kN>(structural, cs.c, cs.k);
-            auto informed = seed<kN>(cs.f, options);
-            require_success(run_informed<kN>(informed, cs.c, first_params, cs.k).error, "informed build");
-            sensitive += sharded::total_size(structural.shards) != sharded::total_size(informed.shards) ? 1 : 0;
-
-            // Across T: the informed global key set equals the in-process single store's.
-            auto single = legacy<kN>(cs.f, 1);
-            single.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, first_params, cs.k);
-            std::set<Key> want_keys;
-            std::set<Key> got_keys;
-            const auto one = Access<kN>::shard_state(single);
-            for (size_t i = 0; i < one->op.size(); ++i) {
-                want_keys.insert(key_of<kN>(one->op.store->row(i)));
-            }
-            for (const auto &state : informed.shards) {
-                for (size_t i = 0; i < state->op.size(); ++i) {
-                    got_keys.insert(key_of<kN>(state->op.store->row(i)));
-                }
-            }
-            BOOST_TEST((got_keys == want_keys));
-        }
-    }
-    BOOST_TEST(sensitive > 0U);
-}
-#endif
-
 namespace {
 
 // Captures each shard's evolving coefficients after every new-layer replay of an informed build.
@@ -1784,56 +1524,12 @@ auto check_replayed_coefficients(Sharded<N> &s, const std::vector<VecD> &last, c
 
 } // namespace
 
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-// Cutoff decisions follow the replayed coefficients: sweeping the lower atol over the range where rows are dropped,
-// every informed build equals the legacy children's rows and coefficients and the sweep really changes the retained row
-// count; and the evolving coefficients themselves equal an independent replay of the finished graph.
-BOOST_AUTO_TEST_CASE(sharded_evaluation_informed_decisions_follow_the_replayed_coefficients) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    const auto cases = legacy_cases();
-    for (const auto &base : {cases[1], cases[0], cases[10]}) {
-        std::set<size_t> sizes;
-        for (size_t i = 0; i < 24; ++i) {
-            auto cs = base;
-            cs.f.lower_atol = 1e-4 * std::pow(10.0, static_cast<double>(i) / 6.0);
-            // A larger angle on the second gate, so the replayed sine terms of the first gates matter.
-            cs.c.params[1] = 0.9;
-            BOOST_TEST_CONTEXT(label(cs) << " lower_atol " << *cs.f.lower_atol << " T=" << threads) {
-                auto old = legacy<kN>(cs.f, threads);
-                old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, cs.c.params, cs.k);
-                auto s = seed<kN>(cs.f, options);
-                std::vector<VecD> last(threads);
-                std::vector<size_t> calls(threads, 0);
-                require_success(run_informed<kN>(s, cs.c, cs.c.params, cs.k, 0, ReplayCapture{&last, &calls}).error,
-                                "informed build");
-                sizes.insert(sharded::total_size(s.shards));
-                for (const size_t n : calls) {
-                    BOOST_TEST(n == cs.c.gates.size());
-                }
-                check_replayed_coefficients<kN>(s, last, cs.c.params);
-                for (size_t t = 0; t < threads; ++t) {
-                    const auto want = Access<kN>::shard_state(legacy_owner(old, t));
-                    const auto &got = *s.shards[t];
-                    BOOST_TEST_REQUIRE(got.op.size() == want->op.size(), "shard " << t);
-                    for (size_t row = 0; row < got.op.size(); ++row) {
-                        BOOST_TEST((key_of<kN>(got.op.store->row(row)) == key_of<kN>(want->op.store->row(row))));
-                    }
-                    BOOST_TEST((bits_of(got.op.state_coeffs) == bits_of(want->op.state_coeffs)));
-                }
-            }
-        }
-        BOOST_TEST(sizes.size() > 2U, base.f.name << ": the sweep must change the retained row count");
-    }
-}
-#endif
-
 // Actual participation, asserted after the join: every evaluation, replay, retained-preparation and informed seed or
 // replay visit of shard t ran on worker t at nesting level 1 in a team of T, and every step is present.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_owners_do_their_own_work) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[1]; // Schrödinger, cross-owner traffic at T >= 2
+    const auto cs = fixture_cases()[1]; // Schrödinger, cross-owner traffic at T >= 2
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     const Recorder retain_log(threads);
@@ -1933,7 +1629,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_owners_do_their_own_work) {
 BOOST_AUTO_TEST_CASE(sharded_evaluation_opaque_callbacks_run_on_the_primary) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     auto r = retain<kN>(s);
@@ -1990,7 +1686,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_combination_folds_in_shard_order) {
     BOOST_CHECK_THROW((void)sharded::combine_gradients(std::vector<VecD>{{1.0}, {1.0, 2.0}}), std::invalid_argument);
     // The evaluator adds the identity to the fold of its per-shard terms, once.
     const auto options = team_options();
-    const auto cs = legacy_cases()[7];
+    const auto cs = fixture_cases()[7];
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     const auto r = retain<kN>(s);
@@ -2045,7 +1741,7 @@ auto no_later_work(const Recorder &rec, long long limit, size_t layers) -> bool 
 BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_work) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[1];
+    const auto cs = fixture_cases()[1];
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     const auto copy = sharded::copy_shards(options, s.shards);
@@ -2118,7 +1814,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_w
 BOOST_AUTO_TEST_CASE(sharded_evaluation_callback_paring_and_construction_failures) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[0];
+    const auto cs = fixture_cases()[0];
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     auto r = retain<kN>(s);
@@ -2239,7 +1935,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
                      *boost::unit_test::precondition(has_allocation_probe)) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto cs = legacy_cases()[1];
+    const auto cs = fixture_cases()[1];
     auto s = seed<kN>(cs.f, options);
     run_graph<kN>(s, cs.c, cs.k);
     const auto r = retain<kN>(s);
@@ -2307,137 +2003,3 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
     BOOST_TEST(bits(after.first) == bits(reference.first));
     BOOST_TEST((bits_of(after.second) == bits_of(reference.second)));
 }
-
-// --- Multi-rank: P ranks x T threads against the legacy hybrid -------------------------------------------------------
-//
-// Launched by cpp/tests/CMakeLists.txt with monoprop_TEST_SHARDED_RANKS = P under mpiexec (never by the whole-suite MPI
-// variants). The legacy facade at partitions = T over MPI_COMM_WORLD routes over the same (P, T) flat owners, so
-// energies, gradients, pared functionals, contraction blocks and informed construction must agree bit for bit: every
-// replay step's remote partner values cross the physical round, and the finishes must read the pre-update snapshots.
-
-namespace {
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-auto multirank_launch(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
-    const int ranks = mpi::size(mpi::Comm(MPI_COMM_WORLD));
-    boost::test_tools::assertion_result result(text != nullptr && ranks >= 2 && std::stoi(text) == ranks);
-    result.message()
-        << "needs a dedicated multi-rank launch (monoprop_TEST_SHARDED_RANKS = the world size, at least 2)";
-    return result;
-}
-#endif
-
-// The rank's contraction blocks through replay_shards(), concatenated in shard order, as the legacy facade returns.
-template <size_t N>
-auto contraction(Sharded<N> &s, const VecD &params) -> VecD {
-    const bool schrodinger = s.schrodinger();
-    std::vector<VecD> start;
-    std::vector<MPGraphView> views;
-    std::vector<monoprop::detail::CosCallbacks> callbacks;
-    for (auto &state : s.shards) {
-        start.push_back(state->op.current_picture(schrodinger));
-        views.push_back(state->graph.slice_view(state->graph.layers()));
-    }
-    std::vector<sharded::ReplayRequest> requests;
-    for (size_t t = 0; t < s.shards.size(); ++t) {
-        callbacks.push_back(
-            monoprop::detail::make_cos_callbacks<N>(s.shards[t]->op.inverted_index(), views[t], s.f.basis));
-        requests.push_back({.coeffs = start[t], .graph = views[t]});
-    }
-    const auto angles = contraction_angles(s.shards.front()->graph, schrodinger, params);
-    const auto outcome = sharded::replay_shards(requests, angles, callbacks, team_options(), nullptr, s.world);
-    require_success(outcome.error, "replay_shards");
-    VecD out;
-    for (const auto &block : outcome.coeffs) {
-        out.insert(out.end(), block.begin(), block.end());
-    }
-    return out;
-}
-
-} // namespace
-
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-BOOST_AUTO_TEST_CASE(sharded_evaluation_multirank_matches_the_legacy_hybrid,
-                     *boost::unit_test::precondition(multirank_launch)) {
-    const auto options = team_options();
-    const size_t threads = team_size();
-    const auto world = sharded::PhysicalWorld::of(mpi::Comm(MPI_COMM_WORLD));
-    for (const auto &cs : legacy_cases()) {
-        BOOST_TEST_CONTEXT(label(cs) << " rank " << world.rank << " of " << world.ranks << " T=" << threads) {
-            auto old = legacy<kN>(cs.f, threads, MPI_COMM_WORLD);
-            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-            auto s = seed<kN>(cs.f, options, world);
-            run_graph<kN>(s, cs.c, cs.k);
-            const auto r = retain<kN>(s);
-            const auto pared = retain<kN>(s, 1e-3);
-            for (const auto &[name, params] : parameter_sets(cs.c)) {
-                BOOST_TEST_CONTEXT(name) {
-                    BOOST_TEST(bits(energy(r, params, world)) == bits(old.expectation_value(params)));
-                    const auto [ge, grad] = old.expectation_value_and_gradient(params);
-                    const auto [se, sgrad] = energy_and_gradient(r, params, world);
-                    BOOST_TEST(bits(se) == bits(ge));
-                    BOOST_TEST((bits_of(sgrad) == bits_of(grad)));
-                    const auto [pe, pgrad] = old.expectation_value_and_gradient_functional(1e-3)(params);
-                    const auto [qe, qgrad] = energy_and_gradient(pared, params, world);
-                    BOOST_TEST(bits(qe) == bits(pe));
-                    BOOST_TEST((bits_of(qgrad) == bits_of(pgrad)));
-                }
-            }
-            BOOST_TEST(
-                (bits_of(contraction<kN>(s, cs.c.params)) == bits_of(old.contract_partially(cs.c.params, false))));
-        }
-    }
-    // Coefficient-informed construction, first and incremental (the seed replay crosses ranks too).
-    const auto cases = legacy_cases();
-    for (const auto &cs : {cases[2], cases[3], cases[5], cases[7], cases[9], cases[10]}) {
-        BOOST_TEST_CONTEXT("informed " << label(cs) << " rank " << world.rank << " T=" << threads) {
-            const Circuit second = cs.f.basis == Basis::Pauli ? pauli_circuit() : majorana_circuit(cs.f.logical);
-            const size_t first_count = expected_num_params(cs.c.mapping);
-            Circuit second_circuit = second;
-            for (auto &m : second_circuit.mapping) {
-                m += first_count;
-            }
-            VecD second_params = cs.c.params;
-            second_params.insert(second_params.end(), second.params.begin(), second.params.end());
-            auto old = legacy<kN>(cs.f, threads, MPI_COMM_WORLD);
-            auto s = seed<kN>(cs.f, options, world);
-            const auto compare = [&](const char *what) {
-                for (size_t t = 0; t < threads; ++t) {
-                    const auto want = Access<kN>::shard_state(legacy_owner(old, t));
-                    const auto &got = *s.shards[t];
-                    BOOST_TEST_CONTEXT(what << " shard " << t) {
-                        BOOST_TEST_REQUIRE(got.op.size() == want->op.size());
-                        size_t rows_differ = 0;
-                        for (size_t i = 0; i < got.op.size(); ++i) {
-                            rows_differ +=
-                                key_of<kN>(got.op.store->row(i)) == key_of<kN>(want->op.store->row(i)) ? 0 : 1;
-                        }
-                        BOOST_TEST(rows_differ == 0U);
-                        BOOST_TEST((bits_of(got.op.op_coeffs) == bits_of(want->op.op_coeffs)));
-                        BOOST_TEST((bits_of(got.op.state_coeffs) == bits_of(want->op.state_coeffs)));
-                        BOOST_TEST_REQUIRE(got.graph.layers() == want->graph.layers());
-                        for (size_t l = 0; l < got.graph.layers(); ++l) {
-                            BOOST_TEST((got.graph.get_layer(l).core().cross_rank.sin_send_indices
-                                        == want->graph.get_layer(l).core().cross_rank.sin_send_indices));
-                        }
-                    }
-                }
-            };
-            old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, cs.c.params, cs.k);
-            require_success(run_informed<kN>(s, cs.c, cs.c.params, cs.k).error, "informed build");
-            compare("first");
-            const size_t offset = old.n_gates();
-            old.build_graph(second_circuit.gates,
-                            second_circuit.mapping,
-                            second_circuit.gen_coeffs,
-                            std::nullopt,
-                            second_params,
-                            std::nullopt);
-            require_success(run_informed<kN>(s, second_circuit, second_params, std::nullopt, offset).error,
-                            "incremental informed build");
-            compare("incremental");
-        }
-    }
-}
-#endif

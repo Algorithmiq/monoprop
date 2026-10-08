@@ -25,14 +25,9 @@ static auto init() -> bool {
 }
 
 auto main(int argc, char* argv[]) -> int {
-    // The sharded candidate's thread budget is the launch's: CTest registers ordinary cases at monoprop_NUM_THREADS=1
-    // and fixed-T launches with their own value, and one launch leaves the variable unset on purpose, so the runner
-    // never supplies it (cpp/tests/README.md).
-#ifndef monoprop_SHARDED_OPENMP_PROTOTYPE
-    // Legacy runtime only, until it is removed: overwrite=0, so an explicit environment override still wins; why it
-    // is off: cpp/tests/README.md.
-    setenv("monoprop_PARTITIONS", "off", 0);
-#endif
+    // The thread budget is the launch's: CTest registers ordinary cases at monoprop_NUM_THREADS=1 and fixed-T launches
+    // with their own value, and one launch leaves the variable unset on purpose, so the runner never supplies it
+    // (cpp/tests/README.md).
     monoprop::mpi::init(&argc, &argv);
     int result = boost::unit_test::unit_test_main(&init, argc, argv);
     monoprop::mpi::finalize();

@@ -49,11 +49,11 @@ inline auto describe_exception(const std::exception_ptr &error) noexcept -> std:
 /*!
  * \brief Handle a failure on the calling rank during a distributed operation, from the controlling thread.
  *
- * On an ordinary MPI communicator with more than one rank, the peers may already be committed to a
- * communication this rank will never join, and no exception can release them. So this reports the rank
- * and the underlying error on stderr and calls `MPI_Abort` on \a comm; if `MPI_Abort` returns, it calls
- * `std::terminate`. On one rank, without MPI, or on a legacy in-process communicator (whose partition
- * runtime poisons its own transport), it rethrows \a error unchanged, preserving the original type.
+ * On a communicator with more than one rank, the peers may already be committed to a communication this
+ * rank will never join, and no exception can release them. So this reports the rank and the underlying
+ * error on stderr and calls `MPI_Abort` on \a comm; if `MPI_Abort` returns, it calls `std::terminate`.
+ * Composing the report cannot throw ahead of the abort: if it fails, a fixed diagnostic is printed
+ * instead. On one rank or without MPI, it rethrows \a error unchanged, preserving the original type.
  *
  * Callers catch failures where they happen, inside the lifetime of any posted request handle
  * (mpi::Ticket, mpi::PendingAlltoallv), so that unwinding never drains requests peers will not complete.
@@ -64,15 +64,15 @@ inline auto describe_exception(const std::exception_ptr &error) noexcept -> std:
  */
 [[noreturn]] inline auto operation_failed(const Comm &comm, std::exception_ptr error) -> void {
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Mpi) {
-        int initialized = 0;
-        int finalized = 0;
-        MPI_Initialized(&initialized);
-        MPI_Finalized(&finalized);
-        int size = 1;
-        if (initialized != 0 && finalized == 0 && MPI_Comm_size(comm.mpi, &size) == MPI_SUCCESS && size > 1) {
-            int rank = 0;
-            MPI_Comm_rank(comm.mpi, &rank);
+    int initialized = 0;
+    int finalized = 0;
+    MPI_Initialized(&initialized);
+    MPI_Finalized(&finalized);
+    int size = 1;
+    if (initialized != 0 && finalized == 0 && MPI_Comm_size(comm.mpi, &size) == MPI_SUCCESS && size > 1) {
+        int rank = 0;
+        MPI_Comm_rank(comm.mpi, &rank);
+        try {
             const auto line =
                 std::format("monoprop: rank {} of {}: a distributed operation failed on this rank: {}. Its peers may "
                             "already be waiting on communication this rank will not complete, so monoprop is "
@@ -81,10 +81,15 @@ inline auto describe_exception(const std::exception_ptr &error) noexcept -> std:
                             size,
                             describe_exception(error));
             std::fputs(line.c_str(), stderr);
-            std::fflush(stderr);
-            MPI_Abort(comm.mpi, 1);
-            std::terminate();
         }
+        catch (...) {
+            std::fputs("monoprop: a distributed operation failed on this rank (its description could not be "
+                       "formatted); aborting the communicator rather than leaving its peers blocked.\n",
+                       stderr);
+        }
+        std::fflush(stderr);
+        MPI_Abort(comm.mpi, 1);
+        std::terminate();
     }
 #else
     (void)comm;

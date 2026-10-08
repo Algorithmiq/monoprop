@@ -33,9 +33,7 @@ namespace monoprop::mpi {
 // in flight matching a payload receive. Engine.h's two rounds may share kFlatPayloadTag: MPI does not
 // overtake within (src, dst, tag, comm), round 1 completes before round 2 posts, and both ends skip a
 // zero-count leg on the same (transposed) value.
-inline constexpr int kHybridCountTag = 0x6D70; // 'mp'
-inline constexpr int kHybridPayloadTag = 0x6D71;
-inline constexpr int kFlatPayloadTag = 0x6D72;
+inline constexpr int kFlatPayloadTag = 0x6D72; // 'mr'
 inline constexpr int kFlatCountTag = 0x6D73;
 // Graph replay payload (Exchange.h), distinct from the build path's rounds on the same communicator.
 inline constexpr int kFlatReplayTag = 0x6D74;

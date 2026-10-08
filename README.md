@@ -112,15 +112,18 @@ GitHub Actions calls, so a lane can be reproduced locally.
 
 Full instructions — prerequisites, MPI options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
-In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
-locate `hwloc`, and OpenMP for C++ in every configuration, including builds without
-MPI. GCC ships its OpenMP runtime; Clang needs the matching `libomp`, and Apple Clang
-needs Homebrew's `libomp` with `OpenMP_ROOT="$(brew --prefix libomp)"` set.
+In particular, from-source builds require OpenMP for C++ in every configuration,
+including builds without MPI. GCC ships its OpenMP runtime; Clang needs the matching
+`libomp`, and Apple Clang needs Homebrew's `libomp` with
+`OpenMP_ROOT="$(brew --prefix libomp)"` set. MPI is optional and off by default.
 
-Default builds run the legacy partition runtime. Its replacement, the sharded OpenMP
-runtime (one OpenMP thread per shard, a fixed `monoprop_NUM_THREADS` per MPI rank, and a
-C++ constructor without the partition arguments), is selected for now only by the temporary
-`monoprop_SHARDED_OPENMP_PROTOTYPE=ON` build option; see the
+Every build runs the sharded OpenMP runtime: each MPI rank (or the one process
+without MPI) owns one shard per OpenMP thread, with a fixed `monoprop_NUM_THREADS`
+(and `OMP_NUM_THREADS`, `OMP_DYNAMIC=FALSE`) set before launch and import, the same on
+every rank. There is no partition count or runtime selector, and placement belongs
+to the launcher and OpenMP. With MPI, `MPI_THREAD_FUNNELED` is enough. The removal of
+the partition runtime changed the C++ constructor and ABI, so rebuild C++ consumers
+together with the library; see the
 [parallelism guide](https://docs.monoprop.algorithmiq.tech/features/parallelism).
 
 ## Running the tests
@@ -187,7 +190,7 @@ The repository is a [Nix flake](https://wiki.nixos.org/wiki/Flakes), so on Nix o
 NixOS none of the prerequisites have to be installed by hand:
 
 ```bash
-nix develop            # dev shell: C++ toolchain, OpenMP, hwloc, MPI, uv, just, node
+nix develop            # dev shell: C++ toolchain, OpenMP, MPI, uv, just, node
 nix build .#monoprop   # build the package (`.#monoprop-mpi` for the MPI build)
 nix run                # Python interpreter with monoprop importable
 ```

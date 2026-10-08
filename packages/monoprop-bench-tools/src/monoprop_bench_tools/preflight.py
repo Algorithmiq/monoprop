@@ -39,12 +39,23 @@ RUNTIME_SHAPES = ("partitions", "openmp")
 #: The runtime shape each comparison arm must declare.
 ARM_SHAPES = {"baseline": "partitions", "candidate": "openmp"}
 
-#: Literals the extension embeds (``src/monoprop/bindings/bindings.cpp.in``) and exposes as
-#: ``_core.__runtime_identity__``; chosen by the compile definition that selects the runtime.
-#: A binary built before the marker existed (the preserved partition baseline) carries neither.
+#: Literals an extension embeds (``src/monoprop/bindings/bindings.cpp.in``) and exposes as
+#: ``_core.__runtime_identity__``, by the build that produced it: the final sharded runtime, and the two
+#: runtimes of the pre-removal development builds (the sharded prototype and the legacy partitions),
+#: whose archived evidence stays readable. Each is matched with its terminating NUL, so no marker matches
+#: as the prefix of another (``...=sharded-openmp`` is a prefix of the prototype's). A binary built
+#: before the markers existed (the preserved partition baseline) carries none.
 RUNTIME_MARKERS = {
-    "sharded": b"monoprop-runtime=sharded-openmp-prototype",
-    "legacy": b"monoprop-runtime=legacy-partitions",
+    "sharded-openmp": b"monoprop-runtime=sharded-openmp\0",
+    "sharded-openmp-prototype": b"monoprop-runtime=sharded-openmp-prototype\0",
+    "legacy-partitions": b"monoprop-runtime=legacy-partitions\0",
+}
+
+#: The runtime each marker identifies: both sharded builds run the sharded engine.
+MARKER_RUNTIMES = {
+    "sharded-openmp": "sharded",
+    "sharded-openmp-prototype": "sharded",
+    "legacy-partitions": "legacy",
 }
 
 #: The runtime each shape must be served by: only a sharded build can measure ``openmp``.
@@ -239,9 +250,11 @@ def _scan(binary: Path, chunk: int = 1 << 20) -> tuple[str, set[str]]:
 def runtime_identity(binary: Path, attribute: object) -> dict[str, Any]:
     """Return the runtime an extension binary was compiled with, from its own bytes.
 
-    Development provenance for the sharded OpenMP refactor, never a runtime selector: the
-    literal is found in the file whose hash a measurement records, and must agree with the
-    attribute the imported module reports.
+    Provenance, never a runtime selector: the literal is found in the file whose hash a
+    measurement records, and must agree with the attribute the imported module reports. The
+    attribute names the build exactly (final or prototype sharded runtime, or legacy
+    partitions); evidence of the final binary is told apart from pre-removal evidence by it and
+    by the recorded hash, never by an arm label.
 
     Args:
         binary: The extension file the process imported (``monoprop._core.__file__``).
@@ -252,15 +265,15 @@ def runtime_identity(binary: Path, attribute: object) -> dict[str, Any]:
         marker at all), ``attribute`` and the binary's ``sha256``.
 
     Raises:
-        PreflightError: If the binary carries both markers, or the attribute disagrees with the
-            marker it carries (or claims one that a historical binary lacks).
+        PreflightError: If the binary carries more than one marker, or the attribute disagrees
+            with the marker it carries (or claims one that an unmarked binary lacks).
     """
     sha, found = _scan(binary)
     present = [name for name in RUNTIME_MARKERS if name in found]
     if len(present) > 1:
-        msg = f"{binary} carries both runtime markers; its identity is ambiguous."
+        msg = f"{binary} carries several runtime markers {present}; its identity is ambiguous."
         raise PreflightError(msg)
-    expected = RUNTIME_MARKERS[present[0]].decode() if present else None
+    expected = RUNTIME_MARKERS[present[0]][:-1].decode() if present else None
     if attribute != expected:
         msg = (
             f"{binary} reports __runtime_identity__={attribute!r}, but its bytes carry "
@@ -268,7 +281,7 @@ def runtime_identity(binary: Path, attribute: object) -> dict[str, Any]:
         )
         raise PreflightError(msg)
     return {
-        "runtime": present[0] if present else "legacy",
+        "runtime": MARKER_RUNTIMES[present[0]] if present else "legacy",
         "marked": bool(present),
         "attribute": attribute,
         "sha256": sha,

@@ -14,7 +14,7 @@
 
 #pragma once
 
-// Included only by MonomialPropagator.inl, and only with monoprop_SHARDED_OPENMP_PROTOTYPE.
+// Included only by MonomialPropagator.inl.
 
 #include <exception>
 #include <format>
@@ -35,8 +35,7 @@
 #include "monoprop/detail/sharded/Team.h"
 
 /*
- * The sharded OpenMP prototype root: MonomialPropagator over the T shard states of one rank (temporary development
- * build; see docs/content/docs/building.mdx).
+ * The sharded OpenMP root: MonomialPropagator over the T shard states of one rank.
  *
  * Ownership. The root owns configuration, the ordinary communicator of P ranks, the captured budget (T threads = T
  * shards), the prepared (P, T) router, the replicated identity coefficient, the initial-operator epoch, validity, and
@@ -53,12 +52,13 @@
  * result reduction, while a pre-mutation failure leaves it usable. There is no rollback.
  *
  * Ranks. Every rank constructs and calls the root collectively, with the same arguments. Rank-local results
- * (exports, contraction blocks, size() and the memory aggregates) cover this rank's shards, as the legacy runtime's
- * do; energies and gradients are reduced over the communicator after the ascending-shard fold, with the identity
- * once. Inside a team only the primary, which is MPI's initializing thread, makes MPI calls.
+ * (exports, contraction blocks, size() and the memory aggregates) cover this rank's shards; energies and gradients
+ * are reduced over the communicator after the ascending-shard fold, with the identity once. Inside a team only the
+ * primary, which is MPI's initializing thread, makes MPI calls, so MPI_THREAD_FUNNELED suffices.
  *
  * Launch contract (not checked): exactly T workers per team, OMP_DYNAMIC=FALSE and no limit below T, the same T on
- * every rank; an ordinary communicator; public calls from MPI's initializing thread, outside any OpenMP region.
+ * every rank; public calls outside any OpenMP region. Checked: every MPI-using public call comes from MPI's
+ * initializing thread (a wrong thread fails fast, locally), and initialized MPI provides at least FUNNELED.
  */
 
 namespace monoprop {
@@ -112,13 +112,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
       cutoff_type_{cutoff_type},
       basis_change_{std::move(basis_change)},
       basis_{basis},
-      one_store_{true},
       observer_{observer} {
     // The geometry is the launch's: P ranks of comm x the captured budget T. No argument or other environment variable
-    // (monoprop_PARTITIONS included, which only the legacy runtime reads) selects or checks it.
-    if (comm.kind != mpi::Comm::Kind::Mpi) {
-        throw PropagatorConfigError("The sharded OpenMP prototype needs an ordinary MPI communicator.");
-    }
+    // selects or checks it (the removed partition runtime's monoprop_PARTITIONS is never read).
     // Before any MPI query or collective in this constructor.
     mpi::require_initializing_thread();
     try {
@@ -209,7 +205,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       basis_change_(other.basis_change_),
       basis_(other.basis_),
       parallel_(other.parallel_),
-      one_store_(other.one_store_),
       router_(other.router_),
       world_(other.world_),
       observer_(other.observer_),
@@ -398,7 +393,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         }
         validate_gate_indices(local_gates, majoranas.size());
         VecD mapped_params;
-        // Replay angles of the existing layers, exactly as contract_partially() computes them for the legacy seed.
+        // Replay angles of the existing layers, exactly as contract_partially() computes them, for the seed.
         std::optional<VecD> seed_params;
         if (parameters.has_value()) {
             validate_parameters_length(*parameters, parameter_mapping);

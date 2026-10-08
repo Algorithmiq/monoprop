@@ -15,8 +15,9 @@ on:
         type: string
       rungs:
         description: >-
-          One rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`.
-          `partitions` is an integer or `per-rank` for (physical cores / ranks).
+          One rung per line, `<name> <ranks> <threads> <rounds> | <pytest args>`.
+          `threads` (OpenMP threads, and so shards, per rank) is an integer or `per-rank` for
+          (physical cores / ranks).
           Blank lines and `#` comments are ignored. A name may carry a `.suffix`: the
           Bencher testbed is the part before the first `.`, so rungs sharing a prefix
           share a plot, which is how one shape measured by two processes keeps its rows
@@ -47,7 +48,7 @@ jobs:
         with:
           # A cache filled by a non-MPI build would restore a monoprop without MPI, which every
           # rung below then shares.
-          cache-suffix: benchmark-mpi
+          cache-suffix: benchmark-mpi-sharded
           # The build below requires MPI::MPI_CXX, and the multi-rank rungs need mpiexec.
           mpi: "on"
 
@@ -79,7 +80,7 @@ jobs:
           mkdir -p benches/results
           # fd 3, because mpiexec forwards its own stdin to rank 0 and would eat the rung list.
           while IFS='|' read -r head args <&3; do
-            IFS=$' \t' read -r rung ranks partitions rounds <<<"$head"
+            IFS=$' \t' read -r rung ranks threads rounds <<<"$head"
             case "${rung:-}" in '' | '#'*) continue ;; esac
             # The name reaches a result filename, a Bencher testbed and the prefix split
             # below, so hold it to what all three accept. A leading `.` would split to an
@@ -94,9 +95,9 @@ jobs:
             # `0` divides by zero at per-rank and reaches `mpiexec -n 0` otherwise; and `08` is
             # an invalid octal literal there. Rejecting leading zeros keeps that arithmetic
             # base 10.
-            for field in ranks partitions rounds; do
+            for field in ranks threads rounds; do
               value="${!field:-}"
-              [[ "$field" == partitions && "$value" == per-rank ]] && continue
+              [[ "$field" == threads && "$value" == per-rank ]] && continue
               case "$value" in
                 '') echo "::error::rung $rung has no $field"; exit 1 ;;
                 *[!0-9]* | 0*)
@@ -104,13 +105,13 @@ jobs:
                   exit 1 ;;
               esac
             done
-            if [[ "$partitions" == per-rank ]]; then
-              partitions=$((BENCH_CORES / ranks))
+            if [[ "$threads" == per-rank ]]; then
+              threads=$((BENCH_CORES / ranks))
             fi
             # Oversubscription reports a plausible wall time and would silently corrupt the
             # testbed.
-            if ((partitions < 1 || ranks * partitions > BENCH_CORES)); then
-              echo "::error::rung $rung wants ${ranks}x${partitions} on $BENCH_CORES physical cores"
+            if ((threads < 1 || ranks * threads > BENCH_CORES)); then
+              echo "::error::rung $rung wants ${ranks}x${threads} on $BENCH_CORES physical cores"
               exit 1
             fi
             # xargs honours quotes in `-k "a and b"` without evaluating the input.
@@ -123,23 +124,25 @@ jobs:
               readarray -t argv <<< "$parsed"
             fi
             label="$BENCH_LABEL-$rung"
-            echo "::group::$rung: ${ranks}x${partitions}, $rounds rounds -> $label"
-            # `monoprop_PARTITIONS` also sizes the pinning below -- unpinned ranks vary by more
+            echo "::group::$rung: ${ranks}x${threads}, $rounds rounds -> $label"
+            # An exact team of T per rank, one thread per core of the rank's slot: placement is
+            # the launcher's and OpenMP's, never the library's. Unpinned threads vary by more
             # than the effects being tracked.
-            export monoprop_PARTITIONS="$partitions" monoprop_NUM_THREADS="$partitions"
+            export monoprop_NUM_THREADS="$threads" OMP_NUM_THREADS="$threads" OMP_DYNAMIC=FALSE
+            export OMP_PROC_BIND=close OMP_PLACES=cores
             export monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS=benches/results
             if ((ranks == 1)); then
               uv run --no-sync python -m pytest benches -o filterwarnings=default \
-                --benchmark-json="benches/results/time-$label.json" \
+                --runtime-shape=openmp --benchmark-json="benches/results/time-$label.json" \
                 -m "${monoprop_BENCH_MARKERS-not slow}" \
                 --bench-rounds "$rounds" "${argv[@]}"
             else
               uv run --no-sync mpiexec -n "$ranks" \
-                --map-by "slot:PE=$monoprop_PARTITIONS" --bind-to core \
+                --map-by "slot:PE=$threads" --bind-to core \
                 -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS \
-                -x monoprop_PARTITIONS -x monoprop_NUM_THREADS \
+                -x monoprop_NUM_THREADS -x OMP_NUM_THREADS -x OMP_DYNAMIC -x OMP_PROC_BIND -x OMP_PLACES \
                 python -m pytest benches -o filterwarnings=default \
-                --benchmark-json="benches/results/time-$label.json" \
+                --runtime-shape=openmp --benchmark-json="benches/results/time-$label.json" \
                 -m "${monoprop_BENCH_MARKERS-not slow}" \
                 --bench-rounds "$rounds" "${argv[@]}"
             fi
@@ -148,7 +151,7 @@ jobs:
             # To the log too: a rung that OOMs the instance takes the artifact with it.
             cat "bmf-$rung.json"
             uv run --no-sync python .github/workflows/scripts/check_shape.py \
-              "benches/results/$label.json" "$ranks" "$partitions"
+              "benches/results/$label.json" "$ranks" "$threads"
             echo "::endgroup::"
           done 3<<< "$RUNGS"
 

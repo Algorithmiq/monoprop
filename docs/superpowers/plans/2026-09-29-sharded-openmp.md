@@ -47,7 +47,8 @@ demonstrated (102 of 250 cells pass all five gates). Four owner-authorized remed
 the remedy rounds) fixed the two largest remaining failure classes and a regression of the remedy rounds. S7 has not
 been re-run on the remedied source. On 2026-10-07 the owner waived the S7-pass prerequisite for S8: S8 may proceed
 without a passing pre-removal campaign, and one parity campaign on S8's final binary replaces an S7 re-run. The final
-acceptance gates are unchanged. S8 is not started and needs its own authorization.
+acceptance gates are unchanged. S8 was separately authorized on 2026-10-07; its cutover is implemented and locally
+verified, uncommitted (outcome under Task S8); its optimization points and final campaign await separate approval.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1229,10 +1230,33 @@ coverage has migrated. Update `detail/mpi/{Comm,MPICompat,MPIUtils,Exchange}.h`,
 `pyproject.toml`, installed smoke tests and docs as applicable. Audit other tracked dependency references before
 editing; do not touch unrelated caches.
 
-- [ ] Add/activate host-FUNNELED acceptance and insufficient-actual-support tests before lowering initialization/support
+**Outcome (2026-10-07, in progress):** cutover implemented and locally verified, uncommitted; optimization points
+proposed, not run; final campaign not run. Start: `d023e67`. Ledger, removal/coverage ledger, proposal and handoff:
+`/home/ubuntu/s8-artifacts/` (`LEDGER.md`, `REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `HANDOFF.md`), outside
+the checkout. **S8 cutover implemented and locally verified; optimization/final-campaign authorization pending.**
+
+- One runtime: the selector, the legacy root, `PartitionGroup`, `CpuTopology`, `ShmComm`, `HybridComm`,
+  `PartitionBarrier`, `CpuRelax`, the partition-count agreement, the permissive cached thread parser and every direct
+  hwloc/pkg-config input (CMake, package config, Nix, Homebrew/apt lists, `install-deps.sh`, wheel `before-all`) are
+  gone. `mpi::Comm` holds only an ordinary communicator; `geometry()` and the in-process verb bundles are gone; the
+  real-MPI helpers of the low-level engine and the exported evaluation functions stay. The initializing-thread check
+  no longer hangs off the removed `one_store_` flag: every MPI-using operation runs it.
+- FUNNELED: `mpi::init` requests it and every construction requires at least it; `MpiThreadLevelUnsupported` moved to
+  `MPICompat.h`; diagnostics before an abort no longer allocate unguarded. RED first on the pre-cutover code (unit
+  level test, host-FUNNELED acceptance, SINGLE diagnostic, wrong thread at FUNNELED, Python mpi4py subprocesses), then
+  GREEN with exact requested/provided levels recorded (`mpi_failure_*`, `tests/test_mpi_thread_support.py`).
+- Identity: the extension embeds the unconditional, NUL-terminated `monoprop-runtime=sharded-openmp`; the bench-tools
+  preflight reads it and still reads the archived prototype/legacy markers (driver unchanged at `0813b7db…`).
+- Tests: legacy-only suites deleted; their plain-MPI arms ported (`mpi_alltoallv_tests.cpp`); the low-level failure
+  scenarios moved to the T = 1 root's sole shard; a caller-local-round failure scenario added after a mutant showed the
+  gap. Bitwise differential pre/post at fixed (P, T): GCC MPI-off 27/27, GCC MPI 136/136 rank documents, Clang 27/27.
+- Pending: Nix, macOS, Linux aarch64, CI wheels (manylinux images), minimum-version compilers, multi-node; TSan of
+  Open MPI's own MULTIPLE-level locking (one report inside libopen-pal, no monoprop frame) is inconclusive.
+
+- [x] Add/activate host-FUNNELED acceptance and insufficient-actual-support tests before lowering initialization/support
   requirements. Test initializing-thread ownership inside the library team and wrong-host-thread rejection. Ensure no
   old worker path remains executable before claiming FUNNELED.
-- [ ] Remove facade dispatch, custom barriers/queues/thread pinning, local collective tags and the temporary development
+- [x] Remove facade dispatch, custom barriers/queues/thread pinning, local collective tags and the temporary development
   selector. Keep real-MPI communication and source-order data types. Search confirms no production references remain:
 
 ```bash
@@ -1244,11 +1268,11 @@ rg -n 'hwloc|pkg.?config|SHARDED_OPENMP_PROTOTYPE' \
 
   Explain legitimate negative fixtures/history; production remnants fail the audit. Delete direct hwloc discovery,
   headers, link/export flags and native/wheel/Nix build inputs. An MPI/OpenMP runtime's transitive hwloc is allowed.
-- [ ] Preserve PUBLIC `OpenMP::OpenMP_CXX` on object and shared targets plus installed
+- [x] Preserve PUBLIC `OpenMP::OpenMP_CXX` on object and shared targets plus installed
   `find_dependency(OpenMP REQUIRED COMPONENTS CXX)`. Run `just test-find-package` against each installed R/M package,
   link-export probes, wheel-repair imports and relevant Nix/platform builds. Record unavailable qualification as
   pending.
-- [ ] Rebuild the final candidate, rerun full R/M C++/Python tests, installed consumers, failure drivers, stress and
+- [x] Rebuild the final candidate, rerun full R/M C++/Python tests, installed consumers, failure drivers, stress and
   qualified sanitizers. Check ordinary aggregate/export semantics and raw-accessor rejection again on the final binary.
 - [ ] Take up the open optimization points recorded after S7 ("Still open: optimization points for the end of S8"):
   first-call costs of small evaluations, MPI 1x1 single-thread construction, and the constant memory overheads

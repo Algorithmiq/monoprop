@@ -67,11 +67,15 @@ just build-docs
   primitive is `detail/parallel/Workshare.h::for_blocks`. Never call `omp_set_*` from the library.
   The library calls the runtime (`ThreadBudget.cpp`), so `import monoprop` loads it: with `OMP_PLACES`
   set and binding on, the importing thread is bound to the first place.
-- Transitional one-store prototype: only explicit `partitions=1` on an ordinary comm captures
-  `monoprop_NUM_THREADS` (strict parser) and enforces MPI's initializing thread. Every state operation
-  separates validation from mutation (`run_operation_`): a failure after mutation starts invalidates the
-  object and aborts a multi-rank ordinary communicator (`mpi::operation_failed`). Catch failures inside
-  posted `Ticket`/`PendingAlltoallv` lifetimes, never only at the outermost level.
+- One runtime: each rank's `MonomialPropagator` owns T shards (`detail/sharded/`), T captured once at
+  construction from `monoprop_NUM_THREADS` (strict parser; unset falls back to `omp_get_max_threads()`).
+  There is no partition runtime, selector or `monoprop_PARTITIONS` reader. Every MPI-using operation
+  enforces MPI's initializing thread; only that thread (the team's primary) calls MPI, so FUNNELED is
+  required. Every state operation separates validation from mutation (`run_operation_`): a failure after
+  mutation starts invalidates the object and aborts a multi-rank communicator (`mpi::operation_failed`).
+  Catch failures inside posted `Ticket`/`PendingAlltoallv`/physical-round lifetimes, never only at the
+  outermost level. `detail::build_layer` is the low-level one-owner-per-rank engine the tests and the
+  exported evaluation functions keep.
 - Threaded kernels (`scale_cos_*`, `apply_fused_contract`, the `fused_find_and_collect` scan, the resolve
   phases: incoming decode, `probe_frozen_positions`, certified-sink scatter) take a defaulted test-only
   range observer; participation tests read it (`cpp/tests/KernelTestSupport.h`, `ScanTestSupport.h`).
