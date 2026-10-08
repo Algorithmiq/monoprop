@@ -52,7 +52,7 @@ monoprop-bench-bmf = "monoprop_bench_tools.bmf:main"
 
 
 [dependency-groups]
-test = ["pytest>=8.2.2,<9.1"]
+test = ["pytest>=8.2.2,<9.2"]
 
 
 # Only consulted when this package is tested on its own; a run from the
