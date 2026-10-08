@@ -289,13 +289,11 @@ public:
     auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
-    /// The expectation value of each of `terms` under the truncated evolution, in query order, gathered
-    /// across ranks and partitions: the derivative of expectation_value() with respect to that term's
-    /// initial-operator coefficient, so it equals expectation_value() after re-weighting the initial
-    /// operator to that term alone, and E = Σ coeff·value over the initial operator. One adjoint replay of
-    /// the graph (see term_values()), independent of the current coefficients. The empty term reads 1.
-    /// Keys must be canonical. Throws OperatorTermNotFound in Heisenberg for a term no rank carries;
-    /// Schrodinger reads such a term as 0, since the truncated state carries no weight there.
+    /// The derivative of expectation_value() with respect to each of `terms`' initial coefficients, in
+    /// query order; the empty term reads 1. In Heisenberg this is the term's expectation value only for a
+    /// term of the initial operator, since a row created mid-circuit was not propagated from the start.
+    /// Keys must be canonical. A term absent from the evolved operator throws OperatorTermNotFound in
+    /// Heisenberg and reads 0 in Schrodinger.
     auto term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 

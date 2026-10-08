@@ -52,10 +52,9 @@ Schrödinger picture the state is evolved independently, so you can change the
 observable arbitrarily and read it off against the same evolved state; in the Heisenberg
 picture the observable can be re-weighted.
 
-To re-weight repeatedly, pass the coefficients as an array in the order the initial operator was
-given at construction to
-[update_initial_coefficients][monoprop.monomial_propagator.MonomialPropagator.update_initial_coefficients].
-Its terms are encoded once at construction, so no operator is built or encoded per call:
+[update_initial_coefficients][monoprop.monomial_propagator.MonomialPropagator.update_initial_coefficients]
+re-weights from an array of coefficients, in the order the initial operator was given at
+construction:
 
 ```python
 from monoprop import MajoranaPropagator, MajoranaOperator

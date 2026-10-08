@@ -346,8 +346,7 @@ auto term_values(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     if (!cos.scale) {
         throw MissingLayerCallback("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
     }
-    // The forward kernel at −θ is the exact transpose of the layer at θ, cosine-only rows included, so the
-    // reverse replay matches the state ev_and_grad's reverse pass leaves behind without its op recovery.
+    // The forward kernel at −θ is the exact transpose of the layer at θ, cosine-only rows included.
     auto &mapped_params = eval_scratch().mapped_params;
     fill_mapped_params(mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, -1.0, true);
     for (size_t i = request.graph.layers(); i-- > 0;) {

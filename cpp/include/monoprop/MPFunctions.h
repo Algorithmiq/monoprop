@@ -104,10 +104,7 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
-/// The adjoint sweep Mᵀ·state, one entry per local operator row: entry j is ∂E/∂op_j, the expectation
-/// value row j contributes per unit of its un-evolved coefficient, so E = e_core + Σ_j op_j·result_j.
-/// Each layer's transpose is the same layer at −θ (the cosine set is diagonal, the rotation phases
-/// antisymmetric), so this is one reverse replay with no forward pass and no division by the cosine;
+/// The adjoint sweep Mᵀ·state, one entry per local operator row: entry j is ∂E/∂op_j.
 /// `request.op` is not read. `cos.scale` is required if `request.params` is non-empty.
 monoprop_EXPORT auto term_values(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,

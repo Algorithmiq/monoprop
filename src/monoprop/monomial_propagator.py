@@ -78,7 +78,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
     _system_size: int
     _initial_state: list[int]
     _initial_terms: list[tuple[int, ...]]
-    _real_term_values: bool = False
     _simulator: object
 
     def _init_simulator(
@@ -122,8 +121,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._n_params = 0
         self._system_size = num_modes
         self._initial_state = list(initial_state)
-        # Engine keys in the order the caller gave the initial operator: the order of
-        # term_expectation_values() and update_initial_coefficients(), encoded once here.
         self._initial_terms = list(majorana_operator.terms)
         # dispatch() returns the concrete adapter class for this mode count;
         # call it with keyword args matching the public constructor.
@@ -625,55 +622,47 @@ class MonomialPropagator(ABC, Generic[T_op]):
     ) -> np.ndarray:
         """Return the expectation value of each term under the truncated evolution.
 
-        For an initial operator ``O = sum_i c_i * P_i``, the propagator's expectation value is
-        linear in the coefficients: ``expectation_value(parameters) = sum_i c_i * v_i(parameters)``,
-        plus the identity's coefficient. The built graph fixes the evolution, truncation included,
-        so the coefficients only weight the sum. This method returns the ``v_i(parameters)``:
-        ``v_i(parameters)`` is the value [expectation_value][] would give at ``parameters`` for
-        ``P_i`` alone with coefficient 1. The values depend on ``parameters`` but not on the
-        coefficients, so re-weighting with [update_initial_operator][] or
-        [update_initial_coefficients][] does not change them.
+        For an initial operator ``O = sum_i c_i * P_i``, [expectation_value][] is
+        ``sum_i c_i * v_i`` plus the identity's coefficient, and this returns the ``v_i``. They
+        depend on ``parameters`` but not on the coefficients. All values come from one backward
+        pass over the graph, at about the cost of one [expectation_value][] call.
 
-        All values come from one backward pass over the graph, which costs about as much as one
-        [expectation_value][] call, however many terms are read. For example, a Heisenberg
-        propagator whose initial operator holds many observables reads all of their expectation
-        values in one call, instead of one [expectation_value][] call per observable.
+        In the Heisenberg picture, a value is the expectation value only for a term of the initial
+        operator. A term the graph created mid-circuit reads the derivative of
+        [expectation_value][] with respect to its coefficient, under a graph that did not
+        propagate it from the start.
 
         Args:
             parameters: Variational parameter values (see [expectation_value][]).
             terms: The operator terms to read, canonical as for [evolved_operator_coefficients][].
                 ``None`` (default) reads every term of the initial operator given at
-                construction, in its order, without re-encoding them.
+                construction, in its order.
 
         Returns:
-            One value per term, in order: ``float64`` for Pauli strings, which are Hermitian, and
-            ``complex`` for Majorana monomials, read so that a monomial's coefficient times its
-            value is its contribution. The empty term reads 1.
+            A complex NumPy array, one value per term, in order, such that a term's coefficient
+            times its value is its contribution. The empty term reads 1.
 
         Raises:
             TypeError: If an operator term is of the wrong form for the front-end.
             ValueError: If a term is not a canonical monomial.
-            RuntimeError: In the Heisenberg picture, if a term is absent from the operator. The
-                Schrodinger picture reads an absent term as 0.
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
+                operator. The Schrodinger picture reads an absent term as 0.
         """
         slots = (
             self._initial_terms if terms is None else self._encode_terms(list(terms))
         )
-        values = np.asarray(
+        return np.asarray(
             self._simulator.term_expectation_values(self._bind(parameters), slots),
             dtype=complex,
         )
-        return values.real.copy() if self._real_term_values else values
 
     def update_initial_coefficients(
         self, coefficients: Sequence[complex] | np.ndarray
     ) -> None:
         """Re-weight the initial operator from coefficients in its construction order.
 
-        The array form of [update_initial_operator][] for repeated re-weighting: the terms are
-        the initial operator given at construction, in its order, already encoded, so no
-        operator is built or encoded per call. Like [update_initial_operator][], it keeps the
-        graph and invalidates functionals created earlier.
+        The array form of [update_initial_operator][]: like it, it keeps the graph and
+        invalidates functionals created earlier.
 
         Args:
             coefficients: One coefficient per initial-operator term, in the order of the initial

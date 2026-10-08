@@ -1337,8 +1337,7 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
             }
             continue;
         }
-        // The value is ∂E/∂(encoded coefficient); E = Σ coeff·value needs it per unit of the decoded one,
-        // which divides by the hermitian phase -- a unit, so the conjugate of the decode.
+        // Per unit of the decoded coefficient: the phase is a unit, so dividing by it conjugates the decode.
         out[q] = std::conj(algebra_decode_coeff<NumModes>(basis_, gathered[q], keys[q]));
     }
     return out;

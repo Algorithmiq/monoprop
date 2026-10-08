@@ -18,14 +18,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from .conversion_utils import _local_slots_to_pauli, _pauli_to_local_slots
 from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
-    import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
@@ -40,9 +41,6 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
     surface. The cutoff is qubit Pauli weight -- the number of qubits a retained term touches --
     so ``cutoff_type`` is fixed and read-only here.
     """
-
-    # Pauli strings are Hermitian, so their expectation values are real.
-    _real_term_values = True
 
     def __init__(
         self,
@@ -238,6 +236,34 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
         )
+
+    def term_expectation_values(
+        self,
+        parameters: ParameterValues = None,
+        *,
+        terms: Iterable[OperatorTerm] | None = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each Pauli string under the truncated evolution.
+
+        As [term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values],
+        with real values, since Pauli strings are Hermitian.
+
+        Args:
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
+            terms: [Pauli][monoprop.pauli.Pauli] terms to read. ``None`` (default) reads every term
+                of the initial operator given at construction, in its order.
+
+        Returns:
+            A ``float64`` NumPy array, one value per term, in order. The identity reads 1.
+
+        Raises:
+            TypeError: If a term is not a [Pauli][monoprop.pauli.Pauli].
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
+                operator. The Schrodinger picture reads an absent term as 0.
+        """
+        values = super().term_expectation_values(parameters, terms=terms)
+        return np.ascontiguousarray(values.real)
 
     def update_initial_operator(self, new_operator: PauliOperator) -> None:
         """Replace the *initial operator* (existing terms only).

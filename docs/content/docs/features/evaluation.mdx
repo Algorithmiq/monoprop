@@ -164,13 +164,12 @@ over every surviving term.
 
 ## Expectation value of every initial term
 
-A Heisenberg graph built for an initial operator $O = \sum_i c_i P_i$ already determines every
-$\langle P_i \rangle$ under the truncated evolution, so many observables need neither a
-Schrödinger graph nor one evaluation per term.
+For an initial operator $O = \sum_i c_i P_i$, the expectation value is linear in the
+coefficients: $E = \sum_i c_i v_i$, plus the identity's coefficient, where $v_i$ is the value of
+$P_i$ under the truncated evolution.
 [term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values]
-returns them all from one adjoint replay of the graph, at the cost of about one
-[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] however many
-terms there are:
+returns every $v_i$ from one adjoint replay of the graph, at about the cost of one
+[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]:
 
 ```python
 import numpy as np
@@ -187,22 +186,12 @@ values = sim.term_expectation_values(parameters)  # one per observable, in const
 assert np.isclose(values.sum(), sim.expectation_value(parameters))
 ```
 
-The built graph fixes the evolution, truncation included, so the expectation value is linear in
-the initial coefficients: $E = \sum_i c_i v_i$, plus the identity's coefficient. The values are the
-$v_i$: $v_i$ is what
-[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] would
-return for $P_i$ alone with coefficient 1, so re-weighting the operator does not change them. Pass `terms=` to read a subset, or a
-Schrödinger propagator's observable terms; there an absent term reads 0, while Heisenberg raises
-for a term outside its operator.
-
-For a loss over many observables, read the values, form the weights $w_i = \partial L / \partial
-\langle P_i \rangle$, re-weight with
+The values do not depend on the coefficients, so re-weighting the operator does not change them.
+Pass `terms=` to read a subset, or a Schrödinger propagator's observable terms; there an absent
+term reads 0, while Heisenberg raises for a term absent from the evolved operator. In Heisenberg,
+a value is $\langle P \rangle$ only for a term of the initial operator: a term the graph created
+mid-circuit reads the derivative with respect to its coefficient, under a graph that did not
+propagate it from the start. Re-weighting with
 [update_initial_coefficients][monoprop.monomial_propagator.MonomialPropagator.update_initial_coefficients]
-and take the [gradient][monoprop.monomial_propagator.MonomialPropagator.gradient]: the gradient of
-$\sum_i w_i \langle P_i \rangle$ is $dL/d\theta$.
-
-```python notest
-values = sim.term_expectation_values(parameters)
-sim.update_initial_coefficients(loss_weights(values))
-grad = sim.gradient(parameters)
-```
+by $w_i = \partial L / \partial v_i$ makes the
+[gradient][monoprop.monomial_propagator.MonomialPropagator.gradient] that of a loss $L$ of the values.
