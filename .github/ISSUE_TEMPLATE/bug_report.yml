@@ -61,7 +61,7 @@ body:
     id: python_version
     attributes:
       label: Python version
-      placeholder: "e.g. 3.11.9 — run: python --version"
+      placeholder: "e.g. 3.12.0 — run: python --version"
     validations:
       required: true
 
