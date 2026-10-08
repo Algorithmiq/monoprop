@@ -165,8 +165,8 @@ over every surviving term.
 ## Expectation value of every initial term
 
 For an initial operator $O = \sum_i c_i P_i$, the expectation value is linear in the
-coefficients: $E = \sum_i c_i v_i$, plus the identity's coefficient, where $v_i$ is the value of
-$P_i$ under the truncated evolution.
+coefficients: $E = \sum_i c_i v_i$, where $v_i$ is the value of $P_i$ under the truncated
+evolution. The sum includes the identity, whose value is 1.
 [term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values]
 returns every $v_i$ from one adjoint replay of the graph, at about the cost of one
 [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]:

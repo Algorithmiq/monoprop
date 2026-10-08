@@ -623,9 +623,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """Return the expectation value of each term under the truncated evolution.
 
         For an initial operator ``O = sum_i c_i * P_i``, [expectation_value][] is
-        ``sum_i c_i * v_i`` plus the identity's coefficient, and this returns the ``v_i``. They
-        depend on ``parameters`` but not on the coefficients. All values come from one backward
-        pass over the graph, at about the cost of one [expectation_value][] call.
+        ``sum_i c_i * v_i``, and this returns the ``v_i``. The sum includes the identity, whose
+        value is 1. The values depend on ``parameters`` but not on the coefficients. All come from
+        one backward pass over the graph, at about the cost of one [expectation_value][] call.
 
         In the Heisenberg picture, a value is the expectation value only for a term of the initial
         operator. A term the graph created mid-circuit reads the derivative of
