@@ -50,7 +50,10 @@ without a passing pre-removal campaign, and one parity campaign on S8's final bi
 acceptance gates are unchanged. S8 was separately authorized on 2026-10-07; its cutover is implemented and locally
 verified (outcome under Task S8). Its optimization points were taken up in owner-approved rounds on 2026-10-07/08 and
 the kept changes verified; the owner had the work committed and pushed on 2026-10-08. S8's final parity campaign
-awaits separate authorization.
+ran on 2026-10-08/09 under separate authorization: 145 of 250 cells pass all five gates (S7: 102), so strict parity
+is not demonstrated (outcome under Task S8). The owner accepted the MPI 1x1 runtime tail and left the T = 96 slow
+starts to the medians before the campaign. An optimization round on the largest remaining misses is to be discussed
+next.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1234,11 +1237,13 @@ coverage has migrated. Update `detail/mpi/{Comm,MPICompat,MPIUtils,Exchange}.h`,
 `pyproject.toml`, installed smoke tests and docs as applicable. Audit other tracked dependency references before
 editing; do not touch unrelated caches.
 
-**Outcome (2026-10-07/08, in progress):** cutover implemented and locally verified; optimization rounds run and their
-kept changes verified; committed and pushed at the owner's request on 2026-10-08; final campaign not run. Start:
+**Outcome (2026-10-07/09, in progress):** cutover implemented and locally verified; optimization rounds run and their
+kept changes verified; committed and pushed at the owner's request on 2026-10-08; final campaign run 2026-10-08/09
+(145 of 250 cells pass; see below). Start:
 `d023e67`. Ledger, removal/coverage ledger, proposal, findings and handoff: `/home/ubuntu/s8-artifacts/` (`LEDGER.md`,
-`REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `opt/FINDINGS-*.md`, `HANDOFF.md`), outside the checkout. **S8
-cutover and optimization rounds implemented and locally verified; final-campaign authorization pending.**
+`REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `opt/FINDINGS-*.md`, `HANDOFF.md`, `campaign/reports/REPORT.md`),
+outside the checkout. **S8 cutover and optimization rounds implemented, verified and pushed; final campaign: 145 of
+250 cells pass, strict parity not demonstrated.**
 
 - One runtime: the selector, the legacy root, `PartitionGroup`, `CpuTopology`, `ShmComm`, `HybridComm`,
   `PartitionBarrier`, `CpuRelax`, the partition-count agreement, the permissive cached thread parser and every direct
@@ -1313,6 +1318,39 @@ cutover and optimization rounds implemented and locally verified; final-campaign
   - Evidence retention: S7's raw candidate term files (about 20 GB) were moved off the host by the owner on
     2026-10-08, verified against a sha256 manifest kept beside S7's reports. The baseline and Task 1's formal evidence
     are untouched.
+- Final parity campaign (owner-approved 2026-10-08; run 2026-10-08T18:24Z – 2026-10-09T14:13Z):
+  - **Setup.** The binaries were `venv-r2` / `venv-m2`, built from the sources of `d359c15`. The runner was derived
+    from S7's (`s8-artifacts/campaign/s8run.py`), with the frozen driver, workloads and comparator unchanged.
+    - Runtime was judged under option B: Task 1's archived s01..s05, plus the fresh repeats.
+    - Memory was judged against fresh baseline samples only.
+    - A cell repeated (ten pairs on both arms) when a mapped gate failed at five.
+    - The page-cache protocol ran every 25 cells: hash the binaries, evict the shared objects, then one warm-up per
+      arm and build.
+    - The verdict is strict: no known-deviation exemptions.
+  - **Budget.** Setup about 6 min of 1.5 h; measurement 15.94 h of 20 h; comparison 2.14 h of 4 h. No stop and no
+    failed launch. 109 cells repeated. Numerics agree in 250/250 cells, and the runner's verdicts equal the full
+    comparison's.
+  - **Verdict: 145 of 250 cells pass all five gates** (S7: 102). 62 cells newly pass, 19 newly fail, 83 pass in both
+    and 86 fail in both.
+
+    | Geometry | S8 pass | S7 pass |
+    | --- | --- | --- |
+    | MPI-off 1x96 | 45 / 62 | 14 |
+    | MPI 1x96 | 44 / 62 | 26 |
+    | MPI 2x48 | 39 / 62 | 39 |
+    | MPI 1x1 | 5 / 52 | 11 |
+    | Multi-rank splitmix / linear | 12 / 12 | 12 |
+
+  - **Runtime failures (57 cells).** 41 are MPI 1x1, the accepted tail. The others:
+    - reference-pared pare-construct-schr at T = 96 and 2x48: 1.28–1.40;
+    - reference energy-hubb at 2x48: 1.27;
+    - four tiny build-graph/propagate cells at 2x48: 1.06–1.28;
+    - a few reference(-pared) energy/gradient-hubb and pare-construct-heis cells: 1.02–1.08.
+  - **Memory failures** (80 cells on operation peaks, 66 on construction peaks):
+    - median failing ratio 1.003, maximum 1.017;
+    - excess: median 0.56 MiB, p90 7 MiB, maximum 30 MiB;
+    - most new failures come from judging against the fresh baseline, which runs lower than the archived samples;
+    - large cells: 25 of 30 pass; the five failures are memory only, at most +0.5 %.
 
 - [x] Add/activate host-FUNNELED acceptance and insufficient-actual-support tests before lowering initialization/support
   requirements. Test initializing-thread ownership inside the library team and wrong-host-thread rejection. Ensure no
@@ -1340,7 +1378,7 @@ rg -n 'hwloc|pkg.?config|SHARDED_OPENMP_PROTOTYPE' \
   (re-measured on the post-removal binary first). Same rules as the post-S7 rounds: a separately approved
   measurement budget, profile before changing, keep a change only if measured better, full verification of what is
   kept. Points that stay open are reported with the final acceptance evidence.
-- [ ] Obtain any required final-measurement budget and rerun affected parity on the final binary. If removal changes
+- [x] Obtain any required final-measurement budget and rerun affected parity on the final binary. If removal changes
   measured code/configuration, all affected frozen cells need new candidate evidence; do not relabel pre-removal hashes
   as final. Retain the baseline and original formal evidence.
 - [ ] Self-review the diff against the spec and record unresolved numerical/concurrency/MPI concerns. Independent review
