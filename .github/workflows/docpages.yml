@@ -49,7 +49,7 @@ jobs:
           cache-suffix: documentation
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7.0.0
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
           cache: npm
