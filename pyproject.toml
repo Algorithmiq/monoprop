@@ -84,7 +84,7 @@ test = [
 ]
 # What `uv run pytest` needs at the repository root, which also collects the
 # workspace members' suites (see `testpaths`).
-workspace-test = [{ include-group = "test" }, "monoprop-bench-tools"]
+workspace-test = [{ include-group = "test" }, "monoprop-bench-tools", "monoprop-cirq"]
 bench = [{ include-group = "workspace-test" }, "pytest-benchmark>=5"]
 
 
@@ -112,6 +112,7 @@ exclude = ["packages/bench-third-party"]
 
 [tool.uv.sources]
 monoprop-bench-tools = { workspace = true }
+monoprop-cirq = { workspace = true }
 
 
 [[tool.dynamic-metadata]]
@@ -187,7 +188,7 @@ addopts = [
 ]
 xfail_strict = true
 filterwarnings = ["error"]
-testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
+testpaths = ["tests", "packages/monoprop-bench-tools/tests", "packages/monoprop-cirq/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
 python_files = ["test_*.py", "bench_*.py"]
@@ -234,6 +235,7 @@ exclude_also = [
 exclude = [
   "src/monoprop/_version.py",
   "packages/monoprop-bench-tools/src/monoprop_bench_tools/_version.py",
+  "packages/monoprop-cirq/src/monoprop_cirq/_version.py",
   "docs/conf.py",
   "performance_scripts/*.py",
   ".github/workflows/scripts/*.py",
