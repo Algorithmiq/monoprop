@@ -52,8 +52,9 @@ verified (outcome under Task S8). Its optimization points were taken up in owner
 the kept changes verified; the owner had the work committed and pushed on 2026-10-08. S8's final parity campaign
 ran on 2026-10-08/09 under separate authorization: 145 of 250 cells pass all five gates (S7: 102), so strict parity
 is not demonstrated (outcome under Task S8). The owner accepted the MPI 1x1 runtime tail and left the T = 96 slow
-starts to the medians before the campaign. An optimization round on the largest remaining misses is to be discussed
-next.
+starts to the medians before the campaign. An owner-approved optimization round on the memory misses (round 5,
+2026-10-10) followed, verified and pushed at the owner's request (outcome under Task S8); its binaries have no
+campaign evidence yet.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1237,13 +1238,14 @@ coverage has migrated. Update `detail/mpi/{Comm,MPICompat,MPIUtils,Exchange}.h`,
 `pyproject.toml`, installed smoke tests and docs as applicable. Audit other tracked dependency references before
 editing; do not touch unrelated caches.
 
-**Outcome (2026-10-07/09, in progress):** cutover implemented and locally verified; optimization rounds run and their
+**Outcome (2026-10-07/10, in progress):** cutover implemented and locally verified; optimization rounds run and their
 kept changes verified; committed and pushed at the owner's request on 2026-10-08; final campaign run 2026-10-08/09
-(145 of 250 cells pass; see below). Start:
+(145 of 250 cells pass; see below); optimization round 5 run, verified and pushed on 2026-10-10, re-measured on
+targeted cells only. Start:
 `d023e67`. Ledger, removal/coverage ledger, proposal, findings and handoff: `/home/ubuntu/s8-artifacts/` (`LEDGER.md`,
 `REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `opt/FINDINGS-*.md`, `HANDOFF.md`, `campaign/reports/REPORT.md`),
 outside the checkout. **S8 cutover and optimization rounds implemented, verified and pushed; final campaign: 145 of
-250 cells pass, strict parity not demonstrated.**
+250 cells pass, strict parity not demonstrated; round 5 implemented, verified and pushed, without campaign evidence.**
 
 - One runtime: the selector, the legacy root, `PartitionGroup`, `CpuTopology`, `ShmComm`, `HybridComm`,
   `PartitionBarrier`, `CpuRelax`, the partition-count agreement, the permissive cached thread parser and every direct
@@ -1351,6 +1353,45 @@ outside the checkout. **S8 cutover and optimization rounds implemented, verified
     - excess: median 0.56 MiB, p90 7 MiB, maximum 30 MiB;
     - most new failures come from judging against the fresh baseline, which runs lower than the archived samples;
     - large cells: 25 of 30 pass; the five failures are memory only, at most +0.5 %.
+- Round 5 (owner-approved 2026-10-10: options D and B, the memory misses; measurement budget 75 min, 19.5 used;
+  diagnostics and findings in `s8-artifacts/opt/FINDINGS-ROUND5.md`):
+  - **Diagnostics.** The campaign's own window floors and peaks split each excess into what was resident when the
+    window opened and what the window added. The timed pytest node, instrumented, and a live-byte allocation tracer
+    on `-g` builds of both revisions attributed the rest:
+    - **Worker stacks.** Seeding ran on every worker with two `MPOperator<N>` in its frame (about 112 N bytes each:
+      the inverted index holds its 2N columns inline). GCC's stack-clash probes touch every page of such a frame, and
+      the OpenMP pool keeps the pages for the process's life: 9 resident pages per worker at N = 128 against the
+      baseline threads' 3, +2.2 MiB per process at T = 96.
+    - **Hubbard first calls.** Partner staging widened to a step's largest block (about 47 KiB per owner), and
+      per-step publication and staging buffers reallocated by small increments (`std::vector::resize()` grows from
+      the size, not the capacity): 5.3k reallocations per call at T = 96, fragmenting the owners' arenas.
+    - **2x48.** Construction's physical rounds kept their mapped staging through every later evaluation, and a
+      growing round held its old and new staging at once.
+    - libgomp's own pages, +0.3 MiB per process, are the required OpenMP dependency, and most of the tiny 1x1 excess.
+  - **Kept, bitwise-neutral** (differential 27/27 and 136/136 against the cutover build), each with a test that
+    failed first or that a mutant shows biting:
+    - seeding fills each shard's operator in place on the heap (`seed_operator(seed, owner, op)`,
+      `ShardState(bool)`); a worker keeps 4 stack pages;
+    - construction's query and answer rounds unmap their staging when a construction ends
+      (`PhysicalExchange::release_staging()`); the replay round keeps its staging; an outgrown staging block is
+      unmapped before the larger one is mapped;
+    - partner staging is never wider than its run (4096 values, unchanged): a larger block is read in place from the
+      partner's publication (`staging_capacity(run, step_values)`);
+    - per-step buffers grow by capacity (`grow_to()`).
+  - **Verified:** the full matrix as before plus three new C++ tests (ctest 484 / 537), ASan/UBSan, Python ASan, the
+    TSan selection (156/156), `prek`. Commit `4fdddbc`.
+  - **Re-measured** (3 pairs per cell on 26 cells, page-cache protocol, against fresh baseline samples):
+    - now pass every memory gate: all eight measured tiny Pauli cells at T = 96 (−1.1 to −1.9 MiB, campaign +0.6 to
+      +1.4), reference gradient-hubb at 1x96, MPI-off and 2x48 (−0.5 to −16.7 MiB, campaign +5.7 to +7.3),
+      build-graph-hubb and gradient-heis at 2x48;
+    - hair-line: energy-hubb at 2x48 (construction max 1.0002–1.0004), reference-pared gradient-hubb 1x96 (1.0001);
+    - still above: energy-hubb at 1x96 and MPI-off (+3.7 to +3.9 MiB, campaign +7.2 to +7.8), energy-heis at 1x96 and
+      MPI-off (+3.3 to +3.5), build-graph-hubb at 1x96 and MPI-off (+1.2 to +1.4), gradient-schr 1x96 (+0.4);
+    - runtime: no regression. In the timed pytest node the round-5 build ran 20.8 ms against 21.5 ms for a
+      byte-identical rebuild of the campaign binary (energy-hubb 2x48, six interleaved launches each).
+  - **Still open:** the Hubbard energy remainder is mostly the partner staging run itself (32 KiB per owner); a
+    smaller run cost gradient Hubbard 1.8–4 % before. The campaign verdict above stands until a re-run on the
+    round-5 binaries, full or partial, which awaits the owner.
 
 - [x] Add/activate host-FUNNELED acceptance and insufficient-actual-support tests before lowering initialization/support
   requirements. Test initializing-thread ownership inside the library team and wrong-host-thread rejection. Ensure no
