@@ -79,7 +79,7 @@ test = [
   "pytest-datadir",
   # depend on branch which only outputs from rank zero
   "pytest-mpi @ git+https://github.com/aragilar/pytest-mpi.git@nonzero",
-  "pytest>=8.2.2,<9.1",
+  "pytest>=8.2.2,<9.2",
   "tabulate>=0.9",
 ]
 # What `uv run pytest` needs at the repository root, which also collects the
