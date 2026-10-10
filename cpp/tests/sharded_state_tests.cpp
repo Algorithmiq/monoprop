@@ -33,6 +33,9 @@
 #include <boost/test/unit_test.hpp>
 
 #include <omp.h>
+#include <pthread.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -574,6 +577,84 @@ auto small_state(bool schrodinger) -> std::unique_ptr<State> {
     op.store->emplace(indices_to_bitset<kN>({0, 1}), 0);
     op.op_coeffs.assign(1, 1.0);
     return std::make_unique<State>(std::move(op), schrodinger);
+}
+
+// --- Worker stack use -------------------------------------------------------------------------------------------
+
+// Instrumented builds lay out frames differently (redzones, fake stacks), so the page count below means nothing there.
+auto has_plain_stack_frames(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    constexpr bool instrumented = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    constexpr bool instrumented = true;
+#else
+    constexpr bool instrumented = false;
+#endif
+#else
+    constexpr bool instrumented = false;
+#endif
+    boost::test_tools::assertion_result result(!instrumented);
+    result.message() << "a sanitizer build lays out stack frames differently";
+    return result;
+}
+
+/*
+ * The bytes of a fresh, never-touched thread stack that `body` makes resident, `body` run on that thread. The stack is
+ * an anonymous mapping without huge pages, so residency is per page and counts every page a frame touched (GCC's
+ * stack-clash probes touch each page of a large frame). Pages the thread start itself touched are not counted.
+ */
+template <class Body>
+auto stack_bytes_touched(Body &&body) -> size_t {
+    constexpr size_t stack_bytes = size_t{8} << 20;
+    const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+    void *stack =
+        ::mmap(nullptr, stack_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    BOOST_TEST_REQUIRE(stack != MAP_FAILED);
+    (void)::madvise(stack, stack_bytes, MADV_NOHUGEPAGE);
+    struct Run {
+        Body *body;
+        void *stack;
+        size_t bytes;
+        size_t page;
+        size_t before = 0;
+        size_t after = 0;
+        std::exception_ptr error{};
+    } run{.body = &body, .stack = stack, .bytes = stack_bytes, .page = page};
+    static constexpr auto trampoline = [](void *arg) -> void * {
+        auto &r = *static_cast<Run *>(arg);
+        try {
+            const auto resident_pages = [&r] {
+                auto pages = std::vector<unsigned char>(r.bytes / r.page);
+                if (::mincore(r.stack, r.bytes, pages.data()) != 0) {
+                    throw std::runtime_error("mincore failed");
+                }
+                return static_cast<size_t>(std::ranges::count_if(pages, [](unsigned char p) { return (p & 1U) != 0; }));
+            };
+            r.before = resident_pages();
+            (*r.body)();
+            r.after = resident_pages();
+        }
+        catch (...) {
+            r.error = std::current_exception();
+        }
+        return nullptr;
+    };
+    pthread_attr_t attr;
+    ::pthread_attr_init(&attr);
+    ::pthread_attr_setstack(&attr, stack, stack_bytes);
+    pthread_t thread;
+    const int created = ::pthread_create(&thread, &attr, +trampoline, &run);
+    ::pthread_attr_destroy(&attr);
+    if (created == 0) {
+        ::pthread_join(thread, nullptr);
+    }
+    ::munmap(stack, stack_bytes);
+    BOOST_TEST_REQUIRE(created == 0);
+    if (run.error) {
+        std::rethrow_exception(run.error);
+    }
+    return (run.after - run.before) * page;
 }
 
 } // namespace
@@ -1254,4 +1335,44 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_allocation_failures_leave_sources_intact
             BOOST_TEST(damaged == 0U);
         }
     }
+}
+
+// --- Worker stack use -------------------------------------------------------------------------------------------
+
+/*
+ * Seeding runs on every worker, and the OpenMP pool keeps each worker's stack pages resident for the process's life.
+ * An MPOperator<N> is about 112 N bytes (its inverted index holds 2N columns inline), so an operator in a seeding
+ * frame would cost every worker that much stack: the state is built in place on the heap instead. Measured on the
+ * calling thread, which runs a team of one, at a large NumModes where one operator spans many pages.
+ */
+BOOST_AUTO_TEST_CASE(sharded_state_seeding_keeps_operators_off_the_worker_stack,
+                     *boost::unit_test::precondition(has_plain_stack_frames)) {
+    constexpr size_t modes = 512;
+    constexpr size_t logical = 8;
+    OperatorDict op;
+    for (const auto &[indices, value] :
+         std::vector<std::pair<VecZ, double>>{{{0, 1}, 0.5}, {{2, 3}, -0.25}, {{0, 1, 2, 3}, 0.125}, {{}, 1.0}}) {
+        op[indices] = algebra_decode_coeff<modes>(Basis::Majorana,
+                                                  std::complex<double>(value, 0.0),
+                                                  indices_to_bitset<modes>(indices));
+    }
+    const VecZ initial_state = {0, 1};
+    const auto cutoff_fn = monoprop::detail::cutoff_function<modes>(CutoffType::Length, 4, logical);
+    const auto seed =
+        sharded::OperatorSeed<modes>{.initial_operator = op,
+                                     .initial_state = initial_state,
+                                     .router = routing::make_router<modes>(1, 1),
+                                     .basis = Basis::Majorana,
+                                     .logical_num_modes = logical,
+                                     .paired = std::nullopt,
+                                     .inline_width = sharded::packed_inline_width<modes>(false, cutoff_fn)};
+    auto shards = sharded::Shards<modes>{};
+    const auto touched =
+        stack_bytes_touched([&] { shards = sharded::seed_shards(parallel::Options{.threads = 1}, seed, 0); });
+    BOOST_TEST_REQUIRE(shards.size() == 1U);
+    BOOST_TEST(shards.front()->size() == 3U);
+    BOOST_TEST(shards.front()->op.inverted_index_.has_value());
+    BOOST_TEST_MESSAGE("seeding touched " << touched << " stack bytes; one operator is "
+                                          << sizeof(monoprop::detail::MPOperator<modes>));
+    BOOST_TEST(touched < sizeof(monoprop::detail::MPOperator<modes>));
 }

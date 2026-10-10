@@ -307,7 +307,7 @@ struct PartnerStaging {
     struct Block {
         size_t rank = 0;              //!< The partner's flat slot.
         size_t count = 0;             //!< The values it published for this owner.
-        const double *data = nullptr; //!< Where the apply reads them, once staged.
+        const double *data = nullptr; //!< Where the apply reads them: staged, or the partner's block if over a run.
     };
     std::vector<size_t> position;          //!< Per flat slot: its index in `blocks`.
     std::vector<Block> blocks;             //!< The step's partners, in the order the apply visits them.
@@ -316,15 +316,33 @@ struct PartnerStaging {
 };
 
 /*!
- * \brief The size of a step's staging run: the step's values when they fit one run of `run_values`, else one run, and
- *        never less than the step's largest block (nor one value).
+ * \brief The size of a step's staging run: the step's values when they fit one run of `run_values`, else one run (and
+ *        never less than one value).
  *
  * A step whose values fit one run stages all of them in one run either way, so sizing by need changes no copy and no
  * read, only how much an owner reserves: a whole default run per owner was most of a small evaluation's first-call
- * page faults and, at T = 96, 3 MiB of resident memory.
+ * page faults and, at T = 96, 3 MiB of resident memory. A block larger than the run is read where its partner
+ * published it rather than staged: widening every owner's staging to the step's largest block held about 1.3 MiB more
+ * at T = 96 on Hubbard models, and a block that large is a sequential read the apply streams on its own.
  */
-[[nodiscard]] constexpr auto staging_capacity(size_t run_values, size_t step_values, size_t largest_block) -> size_t {
-    return std::max({std::min(run_values, step_values), largest_block, size_t{1}});
+[[nodiscard]] constexpr auto staging_capacity(size_t run_values, size_t step_values) -> size_t {
+    return std::max(std::min(run_values, step_values), size_t{1});
+}
+
+/*!
+ * \brief Resize `v` to `n` elements, reallocating only past its capacity and then to at least twice that capacity.
+ *
+ * std::vector::resize() grows from the current size: an owner's per-step buffer whose size falls and rises from step to
+ * step would reallocate by small increments each time it passes its old capacity, thousands of times in a T = 96
+ * evaluation, and every reallocation copies the block and leaves the old one free in the owner's malloc arena. Values
+ * below `n` are kept, as resize() keeps them.
+ */
+template <class T>
+auto grow_to(std::vector<T> &v, size_t n) -> void {
+    if (n > v.capacity()) {
+        v.reserve(std::max(n, 2 * v.capacity()));
+    }
+    v.resize(n);
 }
 
 //! One owner's private forward-step scratch: its self slot's pre-cosine sources and its partner staging.

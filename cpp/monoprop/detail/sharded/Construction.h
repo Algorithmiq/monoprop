@@ -1080,6 +1080,13 @@ auto run_gates(parallel::Options options,
     if (error && (live(queries) || live(answers) || live(replay))) {
         mpi::operation_failed(world.comm, error);
     }
+    // The owner's construction rounds keep no staging between operations: no evaluation reads it, so holding it would
+    // add the largest construction round to every later operation's memory. The next construction maps it again. The
+    // replay round keeps its staging, which every evaluation reuses. A round with a live request keeps its staging.
+    if (multirank && ctx.rounds != nullptr) {
+        ctx.rounds->release_staging(PhysicalRounds::Kind::queries);
+        ctx.rounds->release_staging(Fused ? PhysicalRounds::Kind::fused_answers : PhysicalRounds::Kind::graph_answers);
+    }
     return ConstructionOutcome{.error = error, .mutation_started = mutation_started};
 }
 

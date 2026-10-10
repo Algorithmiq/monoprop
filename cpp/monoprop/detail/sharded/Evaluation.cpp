@@ -68,32 +68,36 @@ auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step
  * Every partner's block was written by another core and is read once. Copying a run of consecutive blocks back to back
  * keeps many of those transfers in flight, where reading them inside the apply loop exposes each one, and the apply
  * then reads the run from cache. The first run is staged before the apply starts; the apply visits the partners in
- * their canonical order, so each later request either hits the current run or starts the next one. The block checks,
- * the values and the order the apply reads them in are unchanged. The staging is the owner's, reached through a plain
+ * their canonical order, so each later request either hits the current run or starts the next one. A block larger
+ * than a run is not staged: it forms a run of its own, read where the partner published it. The block checks, the
+ * values and the order the apply reads them in are unchanged. The staging is the owner's, reached through a plain
  * reference: a thread-local object here costs a TLS lookup at every use in the copy loop.
  */
 template <size_t Scale>
 auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_t flat_owner, PartnerStaging &staging) {
     staging.position.assign(layer.cross_rank_rank_count(), 0);
     staging.blocks.clear();
-    size_t largest = 0;
     size_t total = 0;
     layer.for_each_occupied_slot([&](size_t rank, const CrossRankSlotView &slot) {
         if (rank != flat_owner) {
             staging.position[rank] = staging.blocks.size();
             staging.blocks.push_back({.rank = rank, .count = Scale * slot.sin_send_count});
-            largest = std::max(largest, Scale * slot.sin_send_count);
             total += Scale * slot.sin_send_count;
         }
     });
-    staging.values.resize(staging_capacity(staging.run_values, total, largest));
+    grow_to(staging.values, staging_capacity(staging.run_values, total));
     // Stage one run of consecutive blocks starting at `first`; returns the index after the run.
     const auto stage = [&board, &staging, flat_owner](size_t first) {
         auto &blocks = staging.blocks;
         const size_t room = staging.values.size();
+        if (first < blocks.size() && blocks[first].count > room) {
+            // Larger than a run: a run of its own, read in place.
+            blocks[first].data = board.block(blocks[first].rank, flat_owner, blocks[first].count);
+            return first + 1;
+        }
         size_t filled = 0;
         size_t next = first;
-        // The first block always fits: the capacity covers the step's largest one.
+        // The first block fits: a larger one took the branch above.
         while (next < blocks.size() && blocks[next].count <= room - filled) {
             double *const dst = staging.values.data() + filled;
             std::copy_n(board.block(blocks[next].rank, flat_owner, blocks[next].count), blocks[next].count, dst);
@@ -317,7 +321,7 @@ struct EvaluationRun {
             }
             // Scale 2: each rotation endpoint carries both the state and the op value.
             publication_layout(layer.cross_rank(), flat, 2, out.layout, "Layer derivative exchange");
-            out.values.resize(out.layout.total_count);
+            grow_to(out.values, out.layout.total_count);
             replay::pack_derivative_payload(f.snap, layer, flat, [&out](size_t rank) {
                 return out.values.data() + out.layout.displs[rank];
             });
@@ -616,7 +620,7 @@ auto forward_publish(const VecD &coeffs,
                      PublishedEndpoints &out) -> void {
     replay::snapshot_self_sources(coeffs, layer, scratch.self_sources);
     publication_layout(layer.cross_rank(), flat_owner, 1, out.layout, "Layer exchange");
-    out.values.resize(out.layout.total_count);
+    grow_to(out.values, out.layout.total_count);
     replay::pack_evolution_payload(coeffs, layer, flat_owner, [&out](size_t rank) {
         return out.values.data() + out.layout.displs[rank];
     });

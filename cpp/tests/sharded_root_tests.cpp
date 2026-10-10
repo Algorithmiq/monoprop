@@ -1205,6 +1205,36 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_operations_reuse_the_owners_rounds,
     BOOST_TEST(Access::rounds(*copy)->peek(Kind::queries).threads() == 0U);
 }
 
+/*
+ * Construction's rounds keep no staging between operations: an evaluation reuses none of it, and holding it would add
+ * the largest construction round to every later operation's memory. The replay round keeps its staging, which every
+ * evaluation reuses. The rounds themselves stay the owner's, and a later construction gives the same results.
+ */
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_construction_returns_its_staging,
+                     *boost::unit_test::precondition(has_routable_ranks)) {
+    using Kind = sharded::PhysicalRounds::Kind;
+    const auto &data = lih();
+    const size_t team = launch_team();
+    auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
+    auto self = make_on(mpi::Comm(MPI_COMM_SELF));
+    const sharded::PhysicalRounds *rounds = Access::rounds(*world);
+    BOOST_TEST_REQUIRE(rounds != nullptr);
+    build(*world);
+    build(*self);
+    BOOST_TEST(rounds->peek(Kind::queries).threads() == team);
+    BOOST_TEST(rounds->peek(Kind::graph_answers).threads() == team);
+    BOOST_TEST(rounds->peek(Kind::queries).staging_bytes() == 0U);
+    BOOST_TEST(rounds->peek(Kind::graph_answers).staging_bytes() == 0U);
+    BOOST_TEST(close(world->expectation_value(data.parameters), self->expectation_value(data.parameters)));
+    BOOST_TEST(rounds->peek(Kind::replay).staging_bytes() > 0U);
+    // A second construction plans and maps its staging again.
+    build(*world);
+    build(*self);
+    BOOST_TEST(rounds->peek(Kind::queries).staging_bytes() == 0U);
+    BOOST_TEST(mpi::allreduce_sum<size_t>(world->size(), mpi::Comm(MPI_COMM_WORLD)) == self->size());
+    BOOST_TEST(close(world->expectation_value(data.parameters), self->expectation_value(data.parameters)));
+}
+
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_matches_one_process, *boost::unit_test::precondition(has_routable_ranks)) {
     const auto &data = lih();
     for (const Config config : {Config{},

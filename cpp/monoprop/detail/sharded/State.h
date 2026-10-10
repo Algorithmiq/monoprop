@@ -174,21 +174,23 @@ struct OperatorSeed {
 /*!
  * \brief Seed one owner's operator: its routed share of the initial rows, pending entries and warm caches.
  *
- * Owner-local: reads `seed` and allocates only the returned operator plus transient owner-local lists, so it may run
- * concurrently for different owners. Rows are this owner's keys in input order (Heisenberg) or in the paired
- * basis's emission order (Schrödinger), numbered 0, 1, 2, ... as they are kept, so fixed geometry reproduces the
- * same rows. The paired basis is streamed, never materialized. Heisenberg owners reserve their own term count;
- * Schrödinger owners reserve the basis's per-owner share. The identity term is skipped here: its coefficient is
- * rank-level metadata, while Schrödinger's identity basis row is an ordinary routed row with coefficient 0.
+ * Owner-local: reads `seed` and allocates only into `op` plus transient owner-local lists, so it may run concurrently
+ * for different owners. Rows are this owner's keys in input order (Heisenberg) or in the paired basis's emission order
+ * (Schrödinger), numbered 0, 1, 2, ... as they are kept, so fixed geometry reproduces the same rows. The paired basis
+ * is streamed, never materialized. Heisenberg owners reserve their own term count; Schrödinger owners reserve the
+ * basis's per-owner share. The identity term is skipped here: its coefficient is rank-level metadata, while
+ * Schrödinger's identity basis row is an ordinary routed row with coefficient 0.
+ *
+ * The operator is filled where it lives rather than returned: an MPOperator is about 112 NumModes bytes (its inverted
+ * index holds its columns inline), and a copy in a worker's frame would stay resident on every worker's stack.
  *
  * \param seed       Prepared inputs; the operator must have passed validate_initial_operator().
  * \param flat_owner This owner's flat routing slot, `rank * T + shard`.
- * \return The seeded operator, with the sparse state warmed for Heisenberg and the dense live state for Schrödinger,
- *         then the inverted index.
+ * \param op         A default-constructed operator; on return it is seeded, with the sparse state warmed for
+ *                   Heisenberg and the dense live state for Schrödinger, then the inverted index.
  */
 template <size_t NumModes>
-auto seed_operator(const OperatorSeed<NumModes> &seed, size_t flat_owner) -> MPOperator<NumModes> {
-    auto op = MPOperator<NumModes>{};
+auto seed_operator(const OperatorSeed<NumModes> &seed, size_t flat_owner, MPOperator<NumModes> &op) -> void {
     op.basis = seed.basis;
     const auto owns = [&](const Monomial<NumModes> &mono) {
         return seed.router.template dest<NumModes>(mono) == flat_owner;
@@ -236,7 +238,6 @@ auto seed_operator(const OperatorSeed<NumModes> &seed, size_t flat_owner) -> MPO
 
     op.initial_state = seed.initial_state;
     op.initialize_caches(seed.paired.has_value());
-    return op;
 }
 
 /*!
@@ -253,11 +254,17 @@ struct ShardState {
     MatchedEpochSet matched; //!< Layer-build follower marks, indexed by rows of `op`.
 
     /*!
-     * \brief Adopt a seeded operator with an empty graph.
-     * \param op          The operator, typically from seed_operator().
+     * \brief Adopt an operator with an empty graph.
+     * \param op          The operator, moved in.
      * \param schrodinger Whether the graph records Schrödinger layers.
      */
     ShardState(MPOperator<NumModes> op, bool schrodinger) : op(std::move(op)), graph(schrodinger) {}
+
+    /*!
+     * \brief An empty operator built in place, with an empty graph; seed_operator() then fills it where it lives.
+     * \param schrodinger Whether the graph records Schrödinger layers.
+     */
+    explicit ShardState(bool schrodinger) : graph(schrodinger) {}
 
     ShardState(const ShardState &) = default;                    //!< Deep copy; graph cores stay shared.
     auto operator=(const ShardState &) -> ShardState & = delete; //!< States are replaced, not assigned.
@@ -378,8 +385,9 @@ auto seed_shards(parallel::Options options,
     const auto threads = static_cast<size_t>(options.threads);
     return make_shards<NumModes>(options, [&](size_t shard) {
         observer.begin(ShardWork::seed, shard);
-        auto state = std::make_unique<ShardState<NumModes>>(seed_operator(seed, (rank * threads) + shard),
-                                                            seed.paired.has_value());
+        // Built on the heap and seeded in place: no operator passes through this worker's frame.
+        auto state = std::make_unique<ShardState<NumModes>>(seed.paired.has_value());
+        seed_operator(seed, (rank * threads) + shard, state->op);
         observer.end(ShardWork::seed, shard);
         return state;
     });

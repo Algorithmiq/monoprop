@@ -1269,32 +1269,60 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_the_root) {
     BOOST_TEST_MESSAGE("pared layers storing a mask: " << stored << ", of which empty: " << empty_stored);
 }
 
-// A step's staging holds what the step reads when that fits one run, else one run, and always its largest block: a
-// small layer stages exactly as before (all of it in one run) without reserving a whole default run per owner.
+// A step's staging holds what the step reads when that fits one run, else one run: a small layer stages exactly as
+// before (all of it in one run) without reserving a whole default run per owner, and a block larger than the run is
+// read where its partner published it instead of widening every owner's staging to it.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_capacity_is_sized_by_need) {
-    BOOST_TEST(sharded::staging_capacity(4096, 300, 40) == 300U);     // a small step: exactly its values
-    BOOST_TEST(sharded::staging_capacity(4096, 10000, 40) == 4096U);  // a large step: one default run
-    BOOST_TEST(sharded::staging_capacity(4096, 9000, 5000) == 5000U); // never below the largest block
-    BOOST_TEST(sharded::staging_capacity(1, 300, 40) == 40U);         // test seam: one block per run
-    BOOST_TEST(sharded::staging_capacity(4096, 0, 0) == 1U);          // never empty
+    BOOST_TEST(sharded::staging_capacity(4096, 300) == 300U);    // a small step: exactly its values
+    BOOST_TEST(sharded::staging_capacity(4096, 10000) == 4096U); // a large step: one default run
+    BOOST_TEST(sharded::staging_capacity(4096, 9000) == 4096U);  // never above the run, whatever its largest block
+    BOOST_TEST(sharded::staging_capacity(1, 300) == 1U);         // test seam: one value per run
+    BOOST_TEST(sharded::staging_capacity(4096, 0) == 1U);        // never empty
 }
 
-// Stages every partner block in a run of its own, so small layers exercise the multi-run staging of the finishes.
-class OneBlockRuns final : public sharded::EvaluationObserver {
+// Per-step buffers whose size falls and rises reallocate only past their capacity, and then at least double it; a plain
+// resize() grows from the current size, by little more than the step's increase.
+BOOST_AUTO_TEST_CASE(sharded_evaluation_step_buffers_grow_by_capacity) {
+    std::vector<double> v;
+    sharded::grow_to(v, 1000);
+    for (size_t i = 0; i < v.size(); ++i) {
+        v[i] = static_cast<double>(i);
+    }
+    const size_t capacity = v.capacity();
+    sharded::grow_to(v, 100); // a smaller step keeps the block
+    const double *block = v.data();
+    sharded::grow_to(v, 900);
+    BOOST_TEST(v.data() == block); // within the capacity: no reallocation
+    BOOST_TEST(v.capacity() == capacity);
+    sharded::grow_to(v, capacity + 1); // past it: at least doubled
+    BOOST_TEST(v.capacity() >= 2 * capacity);
+    BOOST_TEST(v[99] == 99.0); // the values below the size are kept
+    BOOST_TEST(v.size() == capacity + 1);
+}
+
+// Runs of `values` values: blocks up to that size are staged, several to a run where they fit; larger ones are read in
+// place. One value per run reads nearly every block in place; two mixes the two kinds within a step.
+class SmallRuns final : public sharded::EvaluationObserver {
 public:
+    explicit SmallRuns(size_t values) : values_(values) {}
     auto visit(E /*work*/, size_t /*step*/, size_t /*shard*/) const -> void override {}
-    [[nodiscard]] auto staging_run() const noexcept -> size_t override { return 1; }
+    [[nodiscard]] auto staging_run() const noexcept -> size_t override { return values_; }
+
+private:
+    size_t values_;
 };
 
 /*
- * Partner blocks staged one per run give bitwise the results of the default runs, which hold a whole small layer: the
- * staging changes where the finishes read the partners' values, never which values or in which order. Covers forward
- * and reverse finishes (energy, gradient) and the in-team forward replay (replay_shards()).
+ * Partner blocks staged in small runs, or read in place when larger than a run, give bitwise the results of the default
+ * runs, which hold a whole small layer: the staging changes where the finishes read the partners' values, never which
+ * values or in which order. Covers forward and reverse finishes (energy, gradient) and the in-team forward replay
+ * (replay_shards()).
  */
 BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const OneBlockRuns one_block_runs;
+    const SmallRuns one_value_runs(1);
+    const SmallRuns two_value_runs(2);
     size_t multi_partner_layers = 0;
     for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
         auto s = seed<kN>(cs.f, options);
@@ -1310,37 +1338,38 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
             }
         }
         for (const auto &[name, params] : parameter_sets(cs.c)) {
-            BOOST_TEST_CONTEXT(label(cs) << " " << name << " T=" << threads) {
-                const auto requests = r.requests(params);
-                for (const bool gradient : {false, true}) {
-                    const auto plain = sharded::evaluate_shards(requests, r.callbacks, options, gradient);
-                    const auto runs =
-                        sharded::evaluate_shards(requests, r.callbacks, options, gradient, &one_block_runs);
-                    require_success(plain.error, "evaluate_shards");
-                    require_success(runs.error, "evaluate_shards, one block per run");
-                    BOOST_TEST((bits_of(runs.contributions) == bits_of(plain.contributions)));
-                    BOOST_TEST_REQUIRE(runs.gradients.size() == plain.gradients.size());
-                    for (size_t t = 0; t < plain.gradients.size(); ++t) {
-                        BOOST_TEST((bits_of(runs.gradients[t]) == bits_of(plain.gradients[t])), "shard " << t);
+            for (const SmallRuns *small : {&one_value_runs, &two_value_runs}) {
+                BOOST_TEST_CONTEXT(label(cs) << " " << name << " T=" << threads << " run=" << small->staging_run()) {
+                    const auto requests = r.requests(params);
+                    for (const bool gradient : {false, true}) {
+                        const auto plain = sharded::evaluate_shards(requests, r.callbacks, options, gradient);
+                        const auto runs = sharded::evaluate_shards(requests, r.callbacks, options, gradient, small);
+                        require_success(plain.error, "evaluate_shards");
+                        require_success(runs.error, "evaluate_shards, small runs");
+                        BOOST_TEST((bits_of(runs.contributions) == bits_of(plain.contributions)));
+                        BOOST_TEST_REQUIRE(runs.gradients.size() == plain.gradients.size());
+                        for (size_t t = 0; t < plain.gradients.size(); ++t) {
+                            BOOST_TEST((bits_of(runs.gradients[t]) == bits_of(plain.gradients[t])), "shard " << t);
+                        }
                     }
-                }
-                std::vector<sharded::ReplayRequest> replays;
-                for (const auto &shard : r.shards) {
-                    replays.push_back({.coeffs = shard.op, .graph = shard.graph->replay_view()});
-                }
-                const auto mapped = map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
-                const auto plain = sharded::replay_shards(replays, mapped, r.callbacks, options);
-                const auto runs = sharded::replay_shards(replays, mapped, r.callbacks, options, &one_block_runs);
-                require_success(plain.error, "replay_shards");
-                require_success(runs.error, "replay_shards, one block per run");
-                BOOST_TEST_REQUIRE(runs.coeffs.size() == plain.coeffs.size());
-                for (size_t t = 0; t < plain.coeffs.size(); ++t) {
-                    BOOST_TEST((bits_of(runs.coeffs[t]) == bits_of(plain.coeffs[t])), "shard " << t);
+                    std::vector<sharded::ReplayRequest> replays;
+                    for (const auto &shard : r.shards) {
+                        replays.push_back({.coeffs = shard.op, .graph = shard.graph->replay_view()});
+                    }
+                    const auto mapped = map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
+                    const auto plain = sharded::replay_shards(replays, mapped, r.callbacks, options);
+                    const auto runs = sharded::replay_shards(replays, mapped, r.callbacks, options, small);
+                    require_success(plain.error, "replay_shards");
+                    require_success(runs.error, "replay_shards, small runs");
+                    BOOST_TEST_REQUIRE(runs.coeffs.size() == plain.coeffs.size());
+                    for (size_t t = 0; t < plain.coeffs.size(); ++t) {
+                        BOOST_TEST((bits_of(runs.coeffs[t]) == bits_of(plain.coeffs[t])), "shard " << t);
+                    }
                 }
             }
         }
     }
-    // With three or more shards some owner has several partners in a layer, so one block per run means several runs.
+    // With three or more shards some owner has several partners in a layer, so small runs mean several runs.
     if (threads >= 3) {
         BOOST_TEST(multi_partner_layers > 0U);
     }

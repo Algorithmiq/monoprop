@@ -164,7 +164,7 @@ their default budget.
 | Entries | Build | What they run |
 | --- | --- | --- |
 | `sharded_exchange_mpi2_t*`, `_mpi3_t*` | every MPI build | the physical round (`detail/sharded/Exchange.h`): closed-form blocks over both transports, with exchanged and known counts (count blocks of every wire width), the XOR peer, empty rounds, staging reuse, request moves |
-| `sharded_root_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix`, `_mpi3_t2_linear_rejected` | every MPI build | the root over P ranks against one process, raw access and derived hooks per rank, MPI on the primary only, the owner's physical rounds reused across operations and never shared by a copy, and the unroutable-geometry rejection |
+| `sharded_root_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix`, `_mpi3_t2_linear_rejected` | every MPI build | the root over P ranks against one process, raw access and derived hooks per rank, MPI on the primary only, the owner's physical rounds reused across operations and never shared by a copy, construction rounds unmapping their staging when a construction ends while the replay round keeps its staging, and the unroutable-geometry rejection |
 | `sharded_world_equivalence_mpi2_t*`, `_mpi4_t*` | every MPI build | the serial-against-world cases of `mpi_distributed_layer_equivalence.cpp` and `mpi_fresh_insert_equivalence.cpp` |
 | `monoprop_link_export_probe_mpi2_t1`, `_t2` | every MPI build | the shared-library consumer on two ranks, comparing the root on the world communicator with one process |
 | `monoprop_unit_tests.x_mpi_2`, `_mpi_4` | every MPI build | the whole suite at T = 1 per rank |

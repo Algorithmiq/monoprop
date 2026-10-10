@@ -387,6 +387,14 @@ struct PhysicalExchange::State {
     auto size_stage(Staging &stage, size_t elements) const -> void {
         // At least one element, so MPI never sees a null buffer.
         const size_t need = std::max<size_t>(elements, 1) * elem;
+        if (stage.capacity() < need) {
+            // A round is sized while idle, before anything is packed, so the staging holds nothing yet: the old block
+            // is unmapped before the larger one is mapped, rather than copied into it with both resident. Capacity
+            // still grows geometrically, as resize() would; only the `need` bytes written become resident.
+            const size_t capacity = std::max(need, 2 * stage.size());
+            Staging{}.swap(stage);
+            stage.reserve(capacity);
+        }
         if (stage.size() < need) {
             stage.resize(need);
         }
@@ -491,6 +499,22 @@ auto PhysicalExchange::peers() const noexcept -> std::span<const size_t> {
 
 auto PhysicalExchange::live() const noexcept -> int {
     return state_ ? state_->posted + state_->count_posted : 0;
+}
+
+auto PhysicalExchange::staging_bytes() const noexcept -> size_t {
+    return state_ ? state_->send_stage.size() + state_->recv_stage.size() : 0;
+}
+
+auto PhysicalExchange::release_staging() noexcept -> void {
+    if (!state_ || live() != 0) {
+        return;
+    }
+    State &s = *state_;
+    Staging{}.swap(s.send_stage);
+    Staging{}.swap(s.recv_stage);
+    // Staging is sized by the plans: the next round must plan again before it packs.
+    s.send_planned = false;
+    s.recv_planned = false;
 }
 
 auto PhysicalExchange::reset_rows(size_t shard) -> void {

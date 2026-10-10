@@ -201,6 +201,16 @@ public:
     [[nodiscard]] monoprop_EXPORT auto peers() const noexcept -> std::span<const size_t>;
     //! Requests posted and not yet waited, payload and counts together.
     [[nodiscard]] monoprop_EXPORT auto live() const noexcept -> int;
+    //! Bytes of send and receive staging held now: the largest round planned since the last release, 0 if none.
+    [[nodiscard]] monoprop_EXPORT auto staging_bytes() const noexcept -> size_t;
+    /*!
+     * \brief Unmap the send and receive staging; the next plan maps what it then needs.
+     *
+     * The count tables and peers are kept; the plans are dropped, so the next round plans before it packs, as every
+     * round does. Does nothing while a request is live, since MPI may still read or write the staging, and nothing on
+     * an inert exchange.
+     */
+    monoprop_EXPORT auto release_staging() noexcept -> void;
 
     // --- Owner side: count rows (row `shard` has one writer, owner `shard`) ------------------------------------------
 
@@ -340,10 +350,12 @@ private:
 /*!
  * \brief The physical rounds of one rank-level owner, kept across its operations.
  *
- * Every construction, evaluation and replay call of an owner reuses these rounds instead of allocating its own, so
- * their staging grows to a high-water mark once. Rounds allocated per call
- * free their staging at every call's end: each such free of a large mmapped block raised glibc's dynamic mmap threshold
- * a step further, and the later per-gate transient allocations then stayed resident in fragmented thread arenas.
+ * Every construction, evaluation and replay call of an owner reuses these rounds instead of allocating its own. The
+ * replay round's staging grows to a high-water mark once and stays, since every evaluation reuses it; the construction
+ * rounds unmap theirs when a construction ends (release_staging()), since no evaluation reads it. Staging is mapped
+ * directly, so neither its growth nor its release moves glibc's dynamic mmap threshold: rounds allocated per call
+ * through malloc raised it at every free of a large block, after which the per-gate transient allocations stayed
+ * resident in fragmented thread arenas.
  *
  * One owner uses its rounds from one operation at a time, on its calling thread; copies of an owner get their own empty
  * set, never a shared one. A round is created on first use, and recreated if the geometry it was created for changed.
@@ -368,6 +380,9 @@ public:
     [[nodiscard]] auto peek(Kind kind) const -> const PhysicalExchange & {
         return rounds_.at(static_cast<size_t>(kind));
     }
+
+    //! Unmap the staging of the round of `kind` (PhysicalExchange::release_staging()); the round itself is kept.
+    auto release_staging(Kind kind) noexcept -> void { rounds_[static_cast<size_t>(kind)].release_staging(); }
 
 private:
     std::array<PhysicalExchange, 4> rounds_; //!< Indexed by Kind; inert until first use.
