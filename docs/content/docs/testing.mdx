@@ -231,31 +231,6 @@ def problem(request: pytest.FixtureRequest) -> FermionicProblem:
 
 The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
 
-#### Cases built in code
-
-When the inputs of a parametrized test are built in Python rather than loaded from disk, collect
-them as `case_*` methods of a class. `case_factories` parametrizes over every such method, in
-definition order and with the method name minus `case_` as the ID. Each test calls its factory,
-so objects from optional dependencies such as Qiskit are never built at collection time:
-
-```python notest
-from tests.cases import case_factories
-
-
-class ExpGateAtolCases:
-    def case_single_excitation(self):
-        ...
-        return generator, 1e-8, expected
-
-
-@pytest.mark.parametrize("case_factory", case_factories(ExpGateAtolCases))
-def test_exp_gate_applies_atol_truncation(case_factory):
-    generator, atol, expected = case_factory()
-    ...
-```
-
-A new `case_*` method is picked up automatically.
-
 #### Adding a new msgpack fixture
 
 If your test requires a new reference problem, add a `.msgpack` file to `tests/data/` following the

@@ -19,8 +19,6 @@ import sys
 
 import pytest
 
-from tests.cases import case_factories
-
 try:
     from qiskit import QuantumCircuit
     from qiskit.circuit import QuantumRegister
@@ -229,6 +227,20 @@ class TestToQiskitOperator:
         to_qiskit_operator(PauliOperator({"XZ": 1.0}, num_qubits=2), num_qubits=2)
 
 
+def _case_factories(cases: type) -> list:
+    """Parametrize over the ``case_*`` methods of ``cases``, in definition order.
+
+    Each param is the bound method, not its result: the cases build qiskit objects, which must not
+    happen at collection time when qiskit is not installed.
+    """
+    instance = cases()
+    return [
+        pytest.param(getattr(instance, name), id=name.removeprefix("case_"))
+        for name in vars(cases)
+        if name.startswith("case_")
+    ]
+
+
 @requires_qiskit
 @pytest.mark.qiskit
 class ToQiskitCircuitCases:
@@ -267,7 +279,7 @@ class ToQiskitCircuitCases:
 @requires_qiskit
 @pytest.mark.qiskit
 class TestToQiskitCircuit:
-    @pytest.mark.parametrize("case_factory", case_factories(ToQiskitCircuitCases))
+    @pytest.mark.parametrize("case_factory", _case_factories(ToQiskitCircuitCases))
     def test_to_qiskit_circuit(self, case_factory):
         circuit, num_qubits, expected = case_factory()
         converted = to_qiskit_circuit(circuit, num_qubits)
@@ -338,7 +350,7 @@ class QiskitCircuitsCases:
 @requires_qiskit
 @pytest.mark.qiskit
 class TestFromQiskitCircuit:
-    @pytest.mark.parametrize("case_factory", case_factories(QiskitCircuitsCases))
+    @pytest.mark.parametrize("case_factory", _case_factories(QiskitCircuitsCases))
     def test_valid_circuits(self, case_factory):
         circuit, expected = case_factory()
         converted_circuit = from_qiskit_circuit(circuit, [])

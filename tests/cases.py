@@ -19,14 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pytest
 from msgpack import unpackb
 
 from monoprop.circuit import Circuit
 from monoprop.majorana import MajoranaOperator
 
 if TYPE_CHECKING:
-    from _pytest.mark import ParameterSet
     from numpy import ndarray
 
 
@@ -107,17 +105,3 @@ EXACT_PROBLEMS = ("rx_rz_ry_rz_exact", "random_exact", "lih_fermionic_spin_exact
 def load_reference(name: str) -> FermionicProblem:
     """Load ``tests/data/<name>.msgpack``; each call returns a fresh, independently mutable problem."""
     return load_problem(DATA / f"{name}.msgpack")
-
-
-def case_factories(cases: type) -> list[ParameterSet]:
-    """Parametrize over the ``case_*`` methods of ``cases``, in definition order.
-
-    Each param is the bound method, not its result, so the case is only built when the test calls
-    it -- objects from optional dependencies are never constructed at collection time.
-    """
-    instance = cases()
-    return [
-        pytest.param(getattr(instance, name), id=name.removeprefix("case_"))
-        for name in vars(cases)
-        if name.startswith("case_")
-    ]
