@@ -189,16 +189,20 @@ class TestPauli:
 
 #### Data-driven integration test
 
-Use the function-scoped `problem` fixture to test against the reference msgpack
-data. By default it runs each test against the three entries in
-`FERMIONIC_PROBLEMS` in `tests/cases.py`, loading a fresh problem for each invocation
-through `lazy_shared_datadir`. The `problem`, `serial_comm`, and `comm` fixtures
-are provided by `conftest.py`.
+`tests/cases.py` loads the reference msgpack problems in `tests/data/`.
+`load_reference("<name>")` returns a fresh problem for `tests/data/<name>.msgpack` on every call.
+Most tests use a single problem, so they define a local `problem` fixture in their own module:
 
 ```python notest
 import pytest
 
 from monoprop import MajoranaPropagator
+from tests.cases import FermionicProblem, load_reference
+
+
+@pytest.fixture
+def problem() -> FermionicProblem:
+    return load_reference("lih_fermionic_spin_exact")
 
 
 def test_energy_matches_reference(problem, comm):
@@ -213,32 +217,50 @@ def test_energy_matches_reference(problem, comm):
     assert abs(energy - problem.exact_expval) < 1e-8
 ```
 
-Indirect parametrization overrides the default problem list for a given test.
-Reuse `MOLECULE_PROBLEMS`, `COMMUTATOR_PROBLEMS`, or `ORBITAL_ROTATION_PROBLEMS`
-to select the corresponding subset without changing the test body:
+`EXACT_PROBLEMS` lists the problems small enough to check exact energies and gradients in every
+propagation mode. Parametrize over it to run a test against all of them:
 
 ```python notest
-from tests.cases import COMMUTATOR_PROBLEMS
+from tests.cases import EXACT_PROBLEMS, FermionicProblem, load_reference
 
-@pytest.mark.parametrize("problem", COMMUTATOR_PROBLEMS, indirect=True)
-def test_only_commutator_cases(problem, serial_comm): ...
+
+@pytest.fixture(params=EXACT_PROBLEMS)
+def problem(request: pytest.FixtureRequest) -> FermionicProblem:
+    return load_reference(request.param)
 ```
+
+The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
+
+#### Cases built in code
+
+When the inputs of a parametrized test are built in Python rather than loaded from disk, collect
+them as `case_*` methods of a class. `case_factories` parametrizes over every such method, in
+definition order and with the method name minus `case_` as the ID. Each test calls its factory,
+so objects from optional dependencies such as Qiskit are never built at collection time:
+
+```python notest
+from tests.cases import case_factories
+
+
+class ExpGateAtolCases:
+    def case_single_excitation(self):
+        ...
+        return generator, 1e-8, expected
+
+
+@pytest.mark.parametrize("case_factory", case_factories(ExpGateAtolCases))
+def test_exp_gate_applies_atol_truncation(case_factory):
+    generator, atol, expected = case_factory()
+    ...
+```
+
+A new `case_*` method is picked up automatically.
 
 #### Adding a new msgpack fixture
 
-If your test requires a new reference problem, add a `.msgpack` file to
-`tests/data/` following the schema in `tests/data/README.md`, then add a
-`pytest.param` entry to the appropriate lists in `tests/cases.py`. Use the filename
-without its extension as the value and a descriptive case ID. Reuse the same
-entry in each applicable subset:
-
-```python
-import pytest
-
-new_problem = pytest.param("my_new_problem", id="my_new_problem")
-FERMIONIC_PROBLEMS.append(new_problem)
-COMMUTATOR_PROBLEMS.append(new_problem)
-```
+If your test requires a new reference problem, add a `.msgpack` file to `tests/data/` following the
+schema in `tests/data/README.md` and load it with `load_reference`. Add its name to
+`EXACT_PROBLEMS` only if every test parametrized over that tuple should also check it.
 
 ### C++ tests
 

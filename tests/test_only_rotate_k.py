@@ -22,7 +22,13 @@ import pytest
 from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
-from tests.cases import ORBITAL_ROTATION_PROBLEMS
+from tests.cases import FermionicProblem, load_reference
+
+
+@pytest.fixture
+def problem() -> FermionicProblem:
+    """An 8e8o molecule whose circuit ends in a run of orbital-rotation gates."""
+    return load_reference("S0_8e8o_majoranic_c8")
 
 
 @pytest.fixture
@@ -141,7 +147,6 @@ def test_basic_orbital_rotation(serial_comm):
             )
 
 
-@pytest.mark.parametrize("problem", ORBITAL_ROTATION_PROBLEMS, indirect=True)
 @pytest.mark.parametrize("inplace", [False, True])
 def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     """Tests size/graph_size (rank-local) so uses serial_comm."""

@@ -53,7 +53,7 @@ just build-docs
 
 ## Notes
 
-- Python cases live in `tests/cases.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
+- Python cases live in `tests/cases.py` (`load_reference(name)` reads `tests/data/<name>.msgpack`); C++ uses
   `test_utils::load_case()` from `cpp/tests/TestData.h`.
 - Pytest's fd capture hides C++ stderr such as `COMMPROF`; rerun with `-s`.
 - `uv sync` does not relink `bin/monoprop_unit_tests.x` -- compare mtimes and use the standalone

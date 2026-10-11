@@ -20,8 +20,6 @@ rank-local, so every propagator here is built on ``serial_comm`` (see the note i
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -33,14 +31,12 @@ from monoprop import (
 )
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
-from tests.cases import load_problem
+from tests.cases import load_reference
 
 try:
     from mpi4py import MPI
 except ImportError:  # pragma: no cover - exercised in wheel-test environments
     MPI = None
-
-DATA = Path(__file__).parent / "data"
 
 N_QUBITS = 6
 
@@ -50,7 +46,7 @@ SERIAL_COMM = None if MPI is None else MPI.COMM_SELF
 @pytest.fixture(scope="module")
 def problem():
     """The Majorana case the tests below share; they read it and never mutate it."""
-    return load_problem(DATA / "random_exact.msgpack")
+    return load_reference("random_exact")
 
 
 @pytest.fixture(scope="module")

@@ -20,7 +20,12 @@ from monoprop import (
     MajoranaPropagator,
 )
 from monoprop.majorana import MajoranaOperator
-from tests.cases import MOLECULE_PROBLEMS
+from tests.cases import FermionicProblem, load_reference
+
+
+@pytest.fixture
+def problem() -> FermionicProblem:
+    return load_reference("lih_fermionic_spin_exact")
 
 
 class TestUpdateMethods:
@@ -196,7 +201,6 @@ class TestUpdateMethods:
         assert mp.cutoff == 4
 
 
-@pytest.mark.parametrize("problem", MOLECULE_PROBLEMS, indirect=True)
 @pytest.mark.parametrize("test_type", ["cutoff", "lower_atol", "upper_atol"])
 def test_evolutions_after_updates(problem, test_type, serial_comm):
     circuit = problem.monomial_circuit.to_circuit()

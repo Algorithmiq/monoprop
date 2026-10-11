@@ -17,7 +17,12 @@ from __future__ import annotations
 import pytest
 
 from monoprop import MajoranaPropagator, jordan_wigner_basis_change
-from tests.cases import COMMUTATOR_PROBLEMS
+from tests.cases import FermionicProblem, load_reference
+
+
+@pytest.fixture
+def problem() -> FermionicProblem:
+    return load_reference("lih_fermionic_spin_exact")
 
 
 def _bound_simulator_type(problem, serial_comm):
@@ -67,7 +72,6 @@ def _evolve_bound_core(core, monomial_circuit):
     return parameters, coeffs
 
 
-@pytest.mark.parametrize("problem", COMMUTATOR_PROBLEMS, indirect=True)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
@@ -80,7 +84,6 @@ def test_bound_constructor_accepts_declared_arguments(
     assert core.schrodinger is schrodinger
 
 
-@pytest.mark.parametrize("problem", COMMUTATOR_PROBLEMS, indirect=True)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
@@ -101,7 +104,6 @@ def test_bound_mutators_accept_declared_arguments(problem, serial_comm, schrodin
     assert core.basis_change is None
 
 
-@pytest.mark.parametrize("problem", COMMUTATOR_PROBLEMS, indirect=True)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
@@ -126,7 +128,6 @@ def test_bound_expectation_value_methods_accept_declared_arguments(
     assert len(coeffs) > 0
 
 
-@pytest.mark.parametrize("problem", COMMUTATOR_PROBLEMS, indirect=True)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
@@ -167,7 +168,6 @@ _GRAPH_DIAGNOSTIC_KEYS = (
 )
 
 
-@pytest.mark.parametrize("problem", COMMUTATOR_PROBLEMS, indirect=True)
 def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
     """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
     monomial_circuit = problem.monomial_circuit

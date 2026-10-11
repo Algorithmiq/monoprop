@@ -19,6 +19,8 @@ import sys
 
 import pytest
 
+from tests.cases import case_factories
+
 try:
     from qiskit import QuantumCircuit
     from qiskit.circuit import QuantumRegister
@@ -265,13 +267,7 @@ class ToQiskitCircuitCases:
 @requires_qiskit
 @pytest.mark.qiskit
 class TestToQiskitCircuit:
-    @pytest.mark.parametrize(
-        "case_factory",
-        [
-            pytest.param(ToQiskitCircuitCases().case_single_gate, id="single_gate"),
-            pytest.param(ToQiskitCircuitCases().case_local_gate, id="local_gate"),
-        ],
-    )
+    @pytest.mark.parametrize("case_factory", case_factories(ToQiskitCircuitCases))
     def test_to_qiskit_circuit(self, case_factory):
         circuit, num_qubits, expected = case_factory()
         converted = to_qiskit_circuit(circuit, num_qubits)
@@ -342,26 +338,7 @@ class QiskitCircuitsCases:
 @requires_qiskit
 @pytest.mark.qiskit
 class TestFromQiskitCircuit:
-    @pytest.mark.parametrize(
-        "case_factory",
-        [
-            pytest.param(
-                QiskitCircuitsCases().case_single_pauli_evolution_gate,
-                id="single_pauli_evolution_gate",
-            ),
-            pytest.param(
-                QiskitCircuitsCases().case_multiple_pauli_evolution_gates,
-                id="multiple_pauli_evolution_gates",
-            ),
-            pytest.param(
-                QiskitCircuitsCases().case_rotation_gates_equivalent_to_pauli_evolution,
-                id="rotation_gates_equivalent_to_pauli_evolution",
-            ),
-            pytest.param(
-                QiskitCircuitsCases().case_barrier_ignored, id="barrier_ignored"
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("case_factory", case_factories(QiskitCircuitsCases))
     def test_valid_circuits(self, case_factory):
         circuit, expected = case_factory()
         converted_circuit = from_qiskit_circuit(circuit, [])

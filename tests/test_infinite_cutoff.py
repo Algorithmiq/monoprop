@@ -18,6 +18,12 @@ import numpy as np
 import pytest
 
 from monoprop import MajoranaPropagator
+from tests.cases import EXACT_PROBLEMS, FermionicProblem, load_reference
+
+
+@pytest.fixture(params=EXACT_PROBLEMS)
+def problem(request: pytest.FixtureRequest) -> FermionicProblem:
+    return load_reference(request.param)
 
 
 def _create_mp(problem, comm, *, schrodinger_cutoff=None):

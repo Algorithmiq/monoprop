@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tests.cases import load_problem
+from tests.cases import load_reference
 
 MPI = pytest.importorskip("mpi4py").MPI
 
@@ -30,9 +30,8 @@ from monoprop import MajoranaPropagator  # noqa: E402
 
 
 @pytest.fixture
-def lih_fermionic_spin_exact(lazy_shared_datadir):
-    data_path = lazy_shared_datadir / "lih_fermionic_spin_exact.msgpack"
-    return load_problem(data_path)
+def lih_fermionic_spin_exact():
+    return load_reference("lih_fermionic_spin_exact")
 
 
 def _make_mp(problem, comm, *, schrodinger=False):

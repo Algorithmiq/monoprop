@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -31,10 +31,10 @@ from monoprop.circuit import validate_parameter_mapping
 from monoprop.fermi import FermiOperator
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
-from tests.cases import load_problem
+from tests.cases import EXACT_PROBLEMS, case_factories, load_reference
 
-DATA = Path(__file__).parent / "data"
-FIXTURES = ["rx_rz_ry_rz_exact", "random_exact", "lih_fermionic_spin_exact"]
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _propagator(problem):
@@ -161,16 +161,17 @@ class ExpGateAtolCases:
         return generator, 1e-5, expected
 
 
-@pytest.mark.parametrize(
-    "case_factory",
-    [
-        pytest.param(ExpGateAtolCases().case_single_excitation, id="single_excitation"),
-        pytest.param(ExpGateAtolCases().case_double_excitation, id="double_excitation"),
-        pytest.param(ExpGateAtolCases().case_majorana_operator, id="majorana_operator"),
-        pytest.param(ExpGateAtolCases().case_pauli_operator, id="pauli_operator"),
+@pytest.mark.parametrize("case_factory", case_factories(ExpGateAtolCases))
+def test_exp_gate_applies_atol_truncation(
+    case_factory: Callable[
+        [],
+        tuple[
+            FermiOperator | MajoranaOperator | PauliOperator,
+            float,
+            MajoranaOperator | PauliOperator,
+        ],
     ],
-)
-def test_exp_gate_applies_atol_truncation(case_factory) -> None:
+) -> None:
     generator, atol, expected = case_factory()
     truncated = ExpGate(generator, atol=atol).generator
 
@@ -243,7 +244,7 @@ def test_unbound_circuit_with_identity_gate_needs_no_parameters() -> None:
 
 def test_to_circuit_round_trips_sequence() -> None:
     """Circuit.from_dense_arrays reproduces the dense arrays and mapping."""
-    problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
+    problem = load_reference("lih_fermionic_spin_exact")
     mc = problem.monomial_circuit
     circuit = mc.to_circuit()
 
@@ -470,9 +471,9 @@ def test_hermitian_majorana_generator_matches_structural() -> None:
     assert from_hermitian.isclose(from_structural)
 
 
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_expectation_value_matches_exact(fixture: str) -> None:
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
@@ -484,7 +485,7 @@ def test_expectation_value_matches_exact(fixture: str) -> None:
 
 
 def test_eval_rejects_wrong_parameter_length() -> None:
-    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    problem = load_reference("rx_rz_ry_rz_exact")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
@@ -492,9 +493,9 @@ def test_eval_rejects_wrong_parameter_length() -> None:
         prop.expval([0.1])  # graph has more than one parameter
 
 
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_pared_functional_matches_unpared(fixture: str) -> None:
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
@@ -506,7 +507,7 @@ def test_pared_functional_matches_unpared(fixture: str) -> None:
 
 
 def test_from_circuit_propagates_in_place() -> None:
-    problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
+    problem = load_reference("lih_fermionic_spin_exact")
     circuit = problem.monomial_circuit.to_circuit()
     prop = MajoranaPropagator.from_circuit(
         circuit, problem.operator, cutoff=2 * problem.n_modes
@@ -521,7 +522,7 @@ def test_from_circuit_propagates_in_place() -> None:
 
 
 def test_parameter_mapping_getter_reflects_graph() -> None:
-    problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
+    problem = load_reference("lih_fermionic_spin_exact")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
@@ -535,7 +536,7 @@ def test_parameter_mapping_getter_reflects_graph() -> None:
 
 
 def test_parameter_mapping_setter_ties_parameters() -> None:
-    problem = load_problem(DATA / "lih_fermionic_spin_exact.msgpack")
+    problem = load_reference("lih_fermionic_spin_exact")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
@@ -552,7 +553,7 @@ def test_parameter_mapping_setter_ties_parameters() -> None:
 
 
 def test_parameter_mapping_setter_validates() -> None:
-    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    problem = load_reference("rx_rz_ry_rz_exact")
     circuit = problem.monomial_circuit.to_circuit()
     prop = _propagator(problem)
     prop.build_graph(circuit)
@@ -614,7 +615,7 @@ def test_parameter_mapping_setter_accepts_per_gate() -> None:
 
 
 def test_majorana_propagator_rejects_pauli_circuit() -> None:
-    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    problem = load_reference("rx_rz_ry_rz_exact")
     prop = _propagator(problem)
     circuit = Circuit(
         gates=(ExpGate(PauliOperator({"Z": 1.0}, num_qubits=problem.n_modes)),),
@@ -627,7 +628,7 @@ def test_majorana_propagator_rejects_pauli_circuit() -> None:
 
 
 def test_propagate_rejects_mismatched_initial_state() -> None:
-    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    problem = load_reference("rx_rz_ry_rz_exact")
     prop = _propagator(problem)  # built with the fixture's initial state ([])
     gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=problem.n_modes))
     circuit = Circuit(
@@ -643,7 +644,7 @@ def test_propagate_rejects_mismatched_initial_state() -> None:
 
 def test_propagate_accepts_empty_initial_state() -> None:
     """An empty circuit.initial_state defers to the propagator's reference state."""
-    problem = load_problem(DATA / "rx_rz_ry_rz_exact.msgpack")
+    problem = load_reference("rx_rz_ry_rz_exact")
     prop = _propagator(problem)
     gate = ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=problem.n_modes))
     circuit = Circuit((gate,), system_size=problem.n_modes, parameters=(0.1,))
@@ -660,9 +661,9 @@ def _schrodinger_propagator(problem):
     )
 
 
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
     split = len(gates) // 2
@@ -692,14 +693,14 @@ def test_build_graph_accumulates_layers_and_parameters(fixture: str) -> None:
     assert twice.n_parameters == single.n_parameters
 
 
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     """Composing two circuit halves with ``+`` and building in one call matches.
 
     Picture-independent: the whole sequence goes in one build_graph call, so there is no
     back-to-front reordering across calls to reason about.
     """
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
     split = len(gates) // 2
@@ -729,14 +730,14 @@ def test_compose_then_single_build_matches_single_call(fixture: str) -> None:
     np.testing.assert_allclose(fused.expval(composed), problem.exact_expval)
 
 
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     """In Schrodinger picture, building in two forward calls equals a single call.
 
     (In Heisenberg picture each call applies its gates back-to-front, so a forward
     split is deliberately *not* equivalent to one call -- compose with ``+`` instead.)
     """
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
     params = list(map(float, problem.monomial_circuit.parameters))
@@ -773,7 +774,7 @@ def test_build_graph_in_two_calls_schrodinger(fixture: str) -> None:
     ],
     ids=["heisenberg", "schrodinger"],
 )
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_incremental_build_wires_the_picture_s_equivalent_circuit(
     fixture: str, make_propagator, equivalent_circuit
 ) -> None:
@@ -784,7 +785,7 @@ def test_incremental_build_wires_the_picture_s_equivalent_circuit(
     Asserted away from the build angles and on the gradient: a mis-wired axis can still land on
     the right value at one parameter vector, but not on a whole gradient.
     """
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     gates = problem.monomial_circuit.to_circuit().gates
     split = len(gates) // 2
 
@@ -1009,10 +1010,10 @@ def test_extend_seed_parameters_are_read_on_the_post_call_axis() -> None:
     assert signature(seeded) == signature(single)
 
 
-@pytest.mark.parametrize("fixture", FIXTURES)
+@pytest.mark.parametrize("fixture", EXACT_PROBLEMS)
 def test_build_graph_twice_with_seed_regeneration(fixture: str) -> None:
     """Extending a non-empty graph with seed_parameters regenerates the seed internally."""
-    problem = load_problem(DATA / f"{fixture}.msgpack")
+    problem = load_reference(fixture)
     circuit = problem.monomial_circuit.to_circuit()
     gates = circuit.gates
     params = list(map(float, problem.monomial_circuit.parameters))

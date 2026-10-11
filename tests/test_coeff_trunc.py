@@ -19,7 +19,12 @@ import pytest
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.majorana import MajoranaOperator
-from tests.cases import MOLECULE_PROBLEMS, FermionicProblem
+from tests.cases import FermionicProblem, load_reference
+
+
+@pytest.fixture
+def problem() -> FermionicProblem:
+    return load_reference("lih_fermionic_spin_exact")
 
 
 def _create_mp(
@@ -93,7 +98,6 @@ def test_coeff_trunc(serial_comm):
         _check_dicts(test_op, expected)
 
 
-@pytest.mark.parametrize("problem", MOLECULE_PROBLEMS, indirect=True)
 @pytest.mark.parametrize("schrodinger", [True, False])
 @pytest.mark.parametrize("upper_atol", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4])
 @pytest.mark.parametrize("lower_atol", [1e-5, 1e-6])

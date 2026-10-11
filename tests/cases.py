@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -25,8 +26,7 @@ from monoprop.circuit import Circuit
 from monoprop.majorana import MajoranaOperator
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
+    from _pytest.mark import ParameterSet
     from numpy import ndarray
 
 
@@ -98,15 +98,26 @@ def load_problem(path: Path) -> FermionicProblem:
     )
 
 
-MOLECULE_PROBLEMS = [
-    pytest.param("lih_fermionic_spin_exact", id="LiH_fermionic_spin"),
-]
-COMMUTATOR_PROBLEMS = [*MOLECULE_PROBLEMS]
-FERMIONIC_PROBLEMS = [
-    *MOLECULE_PROBLEMS,
-    pytest.param("rx_rz_ry_rz_exact", id="rx_rz_ry_rz"),
-    pytest.param("random_exact", id="random_circuit"),
-]
-ORBITAL_ROTATION_PROBLEMS = [
-    pytest.param("S0_8e8o_majoranic_c8", id="S0_8e8o"),
-]
+DATA = Path(__file__).parent / "data"
+
+# Reference problems small enough to check exact energies and gradients in every propagation mode.
+EXACT_PROBLEMS = ("rx_rz_ry_rz_exact", "random_exact", "lih_fermionic_spin_exact")
+
+
+def load_reference(name: str) -> FermionicProblem:
+    """Load ``tests/data/<name>.msgpack``; each call returns a fresh, independently mutable problem."""
+    return load_problem(DATA / f"{name}.msgpack")
+
+
+def case_factories(cases: type) -> list[ParameterSet]:
+    """Parametrize over the ``case_*`` methods of ``cases``, in definition order.
+
+    Each param is the bound method, not its result, so the case is only built when the test calls
+    it -- objects from optional dependencies are never constructed at collection time.
+    """
+    instance = cases()
+    return [
+        pytest.param(getattr(instance, name), id=name.removeprefix("case_"))
+        for name in vars(cases)
+        if name.startswith("case_")
+    ]
