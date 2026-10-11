@@ -126,9 +126,7 @@ auto make_fold_cache(const InvertedIndex<NumModes> &sc,
     return p;
 }
 
-// The one fold-word mask rule, shared by fold_word and recipe_fold_word and matching
-// even_parity_scan_pass1. `row_parity` is passed in so callers hoist it out of the loop and no long-lived
-// mask holds an index pointer (see FoldMask).
+// Fold-word mask for a FoldCache, matching for_each_fold_word. Callers hoist `row_parity`.
 [[gnu::always_inline]] inline auto apply_fold_mask(uint64_t bits,
                                                    size_t wi,
                                                    const FoldMask &f,
@@ -179,49 +177,38 @@ auto make_lazy_fold(const InvertedIndex<NumModes> &sc,
     return r;
 }
 
-// The recompute analogue of fold_word, over a freshly-built block word (bb = the block's first fold word).
-template <size_t NumModes>
-[[gnu::always_inline]] inline auto recipe_fold_word(const LazyFold<NumModes> &r,
-                                                    const uint64_t *blk,
-                                                    size_t bb,
-                                                    size_t wi,
-                                                    const uint64_t *row_parity) -> uint64_t {
-    return apply_fold_mask(blk[wi - bb], wi, r.fold, row_parity);
+// A layer's cosine fold words, ascending, via the build scan's fold kernel.
+template <size_t NumModes, typename WordOp>
+[[gnu::always_inline]] inline auto for_each_lazy_fold_word(const InvertedIndex<NumModes> &sc,
+                                                           const LazyFold<NumModes> &r,
+                                                           WordOp &&on_word) -> void {
+    for_each_fold_word<NumModes>(sc,
+                                 {r.columns.data(), r.columns.size()},
+                                 0,
+                                 r.fold.mask_words,
+                                 r.fold.last_word,
+                                 r.fold.last_mask,
+                                 fold_row_parity<NumModes>(sc, r.fold),
+                                 on_word,
+                                 [](size_t, size_t) {});
 }
 
-// Append a layer's cosine-set indices to `out`, walking the same blocks as scale_cos_* rather than sharing
-// a visitor with them, so the scaling kernels stay verbatim.
+// Append a layer's cosine-set indices to `out`, ascending.
 template <size_t NumModes>
 auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, std::vector<TermIndex> &out)
     -> void {
-    const size_t mask_words = r.fold.mask_words;
-    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
-    std::vector<uint64_t> &blk = column_block_scratch();
-    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
-        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
-        for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64,
-                               recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity),
-                               [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
-        }
-    }
+    for_each_lazy_fold_word<NumModes>(sc, r, [&out](size_t wi, uint64_t bits) {
+        for_each_cos_index(wi * 64, bits, [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
+    });
 }
 
 // The number of indices cos_indices_lazy() appends: the same fold, popcounted.
 template <size_t NumModes>
 auto cos_count_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r) -> size_t {
-    const size_t mask_words = r.fold.mask_words;
-    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
-    std::vector<uint64_t> &blk = column_block_scratch();
     size_t count = 0;
-    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
-        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
-        for (size_t wi = bb; wi < be; ++wi) {
-            count += static_cast<size_t>(std::popcount(recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity)));
-        }
-    }
+    for_each_lazy_fold_word<NumModes>(sc, r, [&count](size_t /*wi*/, uint64_t bits) {
+        count += static_cast<size_t>(std::popcount(bits));
+    });
     return count;
 }
 
@@ -243,7 +230,9 @@ inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) ->
 /*!
  * \brief Multiply every coefficient in a layer's recomputed cosine set by `cos_val`.
  *
- * Each kColumnBlockWords fold block is one logical range, so the ranges touch disjoint coefficients.
+ * Each kColumnBlockWords fold block is one logical range, so the ranges touch disjoint coefficients. A range runs
+ * the build scan's fold kernel over its own words (for_each_fold_word(), posting-driven where the columns are sparse
+ * enough); its scratch is the executing thread's own, and no caller is inside another fold.
  *
  * \param sc       The inverted index the fold reads; must not change during the call.
  * \param r        The layer's fold recipe.
@@ -268,21 +257,24 @@ auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
     observer.prepare(KernelRange::cos_lazy, ranges);
     parallel::for_blocks(ranges, options, [&](size_t range) {
         observer.visit(KernelRange::cos_lazy, range);
-        // Worker-private: never the caller's thread_local column_block_scratch(). combine_columns_block
-        // writes every word of [bb, be) before any is read.
-        std::array<uint64_t, kColumnBlockWords> blk;
         const size_t bb = range * kColumnBlockWords;
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, columns, blk.data(), bb, be);
-        // apply_fold_mask compares wi with the fold's global last word, so only the real tail is masked.
-        for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
-                coeff[i] *= cos_val;
-            });
-        }
+        for_each_fold_word<NumModes>(
+            sc,
+            columns,
+            bb,
+            be,
+            r.fold.last_word,
+            r.fold.last_mask,
+            row_parity,
+            [&](size_t wi, uint64_t bits) {
+                for_each_cos_index(wi * 64, bits, [&](size_t i) { coeff[i] *= cos_val; });
+            },
+            [](size_t, size_t) {});
     });
 }
 
+// Sums in ascending index order.
 template <size_t NumModes>
 auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          const LazyFold<NumModes> &r,
@@ -291,21 +283,14 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          double cos_val,
                          double sec_val,
                          [[maybe_unused]] parallel::Options options = {}) -> double {
-    const size_t mask_words = r.fold.mask_words;
-    const uint64_t *row_parity = fold_row_parity<NumModes>(sc, r.fold);
     double loc = 0.0;
-    std::vector<uint64_t> &blk = column_block_scratch();
-    for (size_t bb = 0; bb < mask_words; bb += kColumnBlockWords) {
-        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
-        combine_columns_block<NumModes>(sc, {r.columns.data(), r.columns.size()}, blk.data(), bb, be);
-        for (size_t wi = bb; wi < be; ++wi) {
-            for_each_cos_index(wi * 64, recipe_fold_word<NumModes>(r, blk.data(), bb, wi, row_parity), [&](size_t i) {
-                loc += state[i] * ham[i];
-                ham[i] *= sec_val;
-                state[i] *= cos_val;
-            });
-        }
-    }
+    for_each_lazy_fold_word<NumModes>(sc, r, [&](size_t wi, uint64_t bits) {
+        for_each_cos_index(wi * 64, bits, [&](size_t i) {
+            loc += state[i] * ham[i];
+            ham[i] *= sec_val;
+            state[i] *= cos_val;
+        });
+    });
     return loc;
 }
 

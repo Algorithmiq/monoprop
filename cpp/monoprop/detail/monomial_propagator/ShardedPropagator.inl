@@ -16,11 +16,14 @@
 
 // Included only by MonomialPropagator.inl.
 
+#include <cmath>
+#include <complex>
 #include <exception>
 #include <format>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <utility>
@@ -821,6 +824,50 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
             });
         }
         return terms;
+    });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    // Checked: these are user-supplied indices. Past the storage width the unchecked encode's bit position
+    // underflows into an out-of-bounds write; between the logical and storage widths it encodes a monomial outside
+    // this propagator's system, which reads back 0 instead of raising.
+    auto keys = terms | std::views::transform([this](const VecZ &term) {
+                    return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                })
+                | std::ranges::to<std::vector<Monomial<NumModes>>>();
+    return run_operation_(true, [&](bool &mutation_started) -> std::vector<std::complex<double>> {
+        validate_parameters_length(parameters, graph_gate_arrays_().first);
+        const auto blocks = contract_blocks_(parameters, false, mutation_started, nullptr);
+        std::vector<std::complex<double>> out(keys.size());
+        std::vector<size_t> rows(keys.size());
+        // Shards hold disjoint rows, so at most one finds a key; a key no shard of this rank holds stays 0, as
+        // evolved_operator_terms() leaves it out. Rank-local, like evolved_operator_terms().
+        for (size_t shard = 0; shard < shards_.size(); ++shard) {
+            detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
+            const VecD &evolved = blocks[shard];
+            shards_[shard]->op.store->find_batch(keys.data(), keys.size(), rows.data());
+            for (size_t q = 0; q < keys.size(); ++q) {
+                if (rows[q] < evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+                    out[q] = algebra_decode_coeff<NumModes>(basis_, evolved[rows[q]], keys[q]);
+                }
+            }
+        }
+        // Round off the anti-hermitian numerical noise, as evolved_operator_terms() does.
+        for (auto &coeff : out) {
+            coeff = {std::round(coeff.real() * 1e12) / 1e12, std::round(coeff.imag() * 1e12) / 1e12};
+        }
+        // Heisenberg only: the empty monomial is the rank-level core term, never a row of a shard.
+        if (!schrodinger_) {
+            const auto core = core_term();
+            for (size_t q = 0; q < terms.size(); ++q) {
+                if (terms[q].empty()) {
+                    out[q] = {core, 0.0};
+                }
+            }
+        }
+        return out;
     });
 }
 

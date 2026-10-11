@@ -135,7 +135,9 @@ assumes the launch supplies exactly T workers. Run them with
 The owner-initialized shard state (`detail/sharded/State.h`), the direct-buffer construction and propagation
 engine (`detail/sharded/Construction.h`) and the snapshot-safe evaluation (`detail/sharded/Evaluation.h`) follow
 the same pattern with `sharded_state_env_t1`, `_t2` and `_t4`, `sharded_construction_env_t1`, `_t2` and `_t4`
-and `sharded_evaluation_env_t1`, `_t2` and `_t4`. Select all of them with `-R '^sharded_'`. The unit-test
+and `sharded_evaluation_env_t1`, `_t2` and `_t4`. Select all of them with `-R '^sharded_'`.
+`evolved_coefficients_env_t2` and `_t4` rerun the `evolved_operator_coefficients()` cases with several shards per
+rank, against `evolved_operator_terms()` at the same T. The unit-test
 executable replaces the global `operator new`/`delete` family (`cpp/tests/AllocationProbe.cpp`) so these
 cases can inject real allocation failures; the library and installed consumers are unaffected. Their oracles are
 independent references and the root at the same launch; bitwise comparisons with a separately built runtime run

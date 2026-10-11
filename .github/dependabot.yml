@@ -1,5 +1,17 @@
 version: 2
 updates:
+  # Maintain the root uv workspace and the standalone benchmark lockfile
+  - package-ecosystem: "uv"
+    directories:
+      - "/"
+      - "/packages/bench-third-party"
+    schedule:
+      interval: "weekly"
+    groups:
+      python:
+        patterns:
+          - "*"
+
   # Maintain dependencies for npm packages in docs/
   - package-ecosystem: "npm"
     directory: "/docs"

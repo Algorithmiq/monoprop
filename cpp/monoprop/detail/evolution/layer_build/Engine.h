@@ -742,6 +742,15 @@ private:
                                              options,
                                              observer,
                                              KernelRange::self_probe);
+            // Overlap the batch's scattered hit-coefficient misses; smaller operators are cache-resident.
+            if constexpr (requires { sink.op_coeffs[size_t{}]; }) {
+                constexpr auto prefetch_hit_min_rows = size_t{1} << 21;
+                for (auto j = size_t{0}; op_size >= prefetch_hit_min_rows && j < m; ++j) {
+                    if (self_found_[j] < op_size) {
+                        __builtin_prefetch(&sink.op_coeffs[self_found_[j]]);
+                    }
+                }
+            }
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {

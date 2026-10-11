@@ -80,7 +80,8 @@ public:
 
 /// A raw-layout accessor (mp_op(), indexing(), graph(), graph_data()) was called on a propagator whose rank holds more
 /// than one shard. The shard count is the thread budget T captured at construction, so the remedy is a launch with
-/// monoprop_NUM_THREADS=1; the shard-transparent accessors and evolved_operator_terms() work at every T.
+/// monoprop_NUM_THREADS=1; the shard-transparent accessors, evolved_operator_terms() and
+/// evolved_operator_coefficients() work at every T.
 class MultiShardUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -300,6 +301,10 @@ public:
     /// Coefficients are rounded to 1e-12. Contracts non-inplace. Core term excluded.
     auto evolved_operator_terms(const VecD &parameters, double atol)
         -> std::vector<std::pair<VecZ, std::complex<double>>>;
+
+    /// As evolved_operator_terms(), but only for requested terms. Keys must be canonical.
+    auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+        -> std::vector<std::complex<double>>;
 
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 

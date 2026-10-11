@@ -131,10 +131,10 @@ class ExpGate:
         """Return a copy of ``generator`` with terms of magnitude ``<= atol`` dropped."""
         if isinstance(generator, PauliOperator):
             terms = {p: c for p, c in generator.terms.items() if abs(c) > atol}
-            return PauliOperator(terms, generator.num_qubits)
+            return PauliOperator(terms, generator.num_qubits, skip_validation=True)
 
         terms = {m: c for m, c in generator.terms.items() if abs(c) > atol}
-        return MajoranaOperator(terms, generator.num_modes)
+        return MajoranaOperator(terms, generator.num_modes, skip_validation=True)
 
     @classmethod
     def _structural_gate(

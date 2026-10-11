@@ -247,6 +247,16 @@ foreach(_threads IN ITEMS 1 2 4)
   )
 endforeach()
 
+# evolved_operator_coefficients() probes every shard of the rank: its suite reruns at T = 2 and 4, where the keys spread
+# over several shards, against the shard-transparent evolved_operator_terms() oracle at the same T.
+foreach(_threads IN ITEMS 2 4)
+  monoprop_add_launch_env_case(
+    evolved_coefficients_env_t${_threads}
+    "evolved_coefficients_*"
+    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
+  )
+endforeach()
+
 # Direct-buffer construction and propagation (detail/sharded/Construction.h) under the same exact-team launches: one
 # fresh process per T. Cases that need a nonprimary worker are left out of T = 1. A timeout is a hang, not a pass.
 set(

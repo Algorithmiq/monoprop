@@ -1,13 +1,13 @@
 {
   buildPythonPackage,
+  isPyPy,
 
   # build tooling
   cmake,
   ninja,
-  pathspec,
   scikit-build-core,
 
-  nanobind,
+  nanobind_3,
 }:
 
 # The compiled half of nanobind's split mode: monoprop's `_core` carries no backend
@@ -22,11 +22,14 @@ buildPythonPackage {
   version = "1.0.0";
   pyproject = true;
 
+  disabled = isPyPy;
+
   # The subproject's CMake resolves `../cmake/nanobind-config.cmake` and compiles
   # headers from `../include`, so the whole checkout is unpacked and only the build
-  # directory moves down.
-  inherit (nanobind) src;
-  sourceRoot = "${nanobind.src.name}/nanobind-backend";
+  # directory moves down. Sharing nanobind's source keeps the backend ABI in step
+  # with the headers monoprop compiles against.
+  inherit (nanobind_3) src;
+  sourceRoot = "${nanobind_3.src.name}/nanobind-backend";
 
   # scikit-build-core invokes CMake itself; the nixpkgs hook must not configure
   # the tree first.
@@ -37,10 +40,7 @@ buildPythonPackage {
     ninja
   ];
 
-  build-system = [
-    pathspec
-    scikit-build-core
-  ];
+  build-system = [ scikit-build-core ];
 
   # `fill()` dispatches lazily on the ABI major, so importing the package alone
   # would not load the compiled module.
@@ -50,7 +50,7 @@ buildPythonPackage {
   ];
 
   meta = {
-    inherit (nanobind.meta) homepage license platforms;
+    inherit (nanobind_3.meta) homepage license platforms;
     description = "Compiled nanobind backend for extensions built in split mode";
   };
 }

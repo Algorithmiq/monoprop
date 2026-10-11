@@ -51,22 +51,29 @@ class Majorana:
 
     __slots__ = ("indices",)
 
-    def __init__(self, *indices: int) -> None:
+    def __init__(self, *indices: int, skip_validation: bool = False) -> None:
         """Initialize the Majorana monomial from its indices.
 
         Args:
             *indices: The Majorana indices, in sorted ascending order.
+            skip_validation: If ``True``, skip the sign and sortedness checks. Only pass
+                ``True`` for indices already known to be sorted, distinct and non-negative,
+                e.g. from trusted internal code.
 
         Raises:
-            ValueError: If indices are not sorted, or any index is negative or repeated.
+            ValueError: If indices are not sorted, or any index is negative or repeated, unless
+                ``skip_validation`` is ``True``.
         """
-        if any(i < 0 for i in indices):
-            raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
-        is_strictly_increasing = all(x < y for x, y in pairwise(indices))
-        if not is_strictly_increasing:
-            raise ValueError(
-                f"Majorana indices must be distinct and sorted; got {indices}."
-            )
+        if not skip_validation:
+            if any(i < 0 for i in indices):
+                raise ValueError(
+                    f"Majorana indices must be non-negative; got {indices}."
+                )
+            is_strictly_increasing = all(x < y for x, y in pairwise(indices))
+            if not is_strictly_increasing:
+                raise ValueError(
+                    f"Majorana indices must be distinct and sorted; got {indices}."
+                )
 
         self.indices = indices
 
@@ -92,7 +99,7 @@ class Majorana:
             raise ValueError(f"Majorana indices must be non-negative; got {indices}.")
         sorted_values = _remove_repeated_pairs(tuple(sorted(indices)))
         sign = float(_parity(indices))
-        return cls(*sorted_values), sign
+        return cls(*sorted_values, skip_validation=True), sign
 
     def __eq__(self, other: object) -> bool:
         """Two Majorana terms are equal when their sorted indices match."""
@@ -123,6 +130,8 @@ class MajoranaOperator:
         self,
         terms: Mapping[Majorana | Sequence[int], complex],
         num_modes: int,
+        *,
+        skip_validation: bool = False,
     ) -> None:
         """Initialize the Majorana operator from a term mapping.
 
@@ -137,10 +146,14 @@ class MajoranaOperator:
                 also authored as a [MajoranaOperator][] (wrapped in
                 [ExpGate][monoprop.circuit.ExpGate]) -- bare [Majorana][] terms are not accepted
                 by ``ExpGate``, since the operator is what carries the mode count.
+            skip_validation: If ``True``, skip the per-term index-range check. Only
+                pass ``True`` for terms already known to be in range, e.g. from trusted internal
+                code; ``num_modes`` itself is still validated either way.
 
         Raises:
             TypeError: If ``num_modes`` is not an integer.
-            ValueError: If ``num_modes`` is negative or a term index is out of range.
+            ValueError: If ``num_modes`` is negative, or a term index is out of range and
+                ``skip_validation`` is ``False``.
         """
         # Route raw index tuples through Majorana so they get the same non-negative/distinct
         # validation a Majorana key already carries (a bare tuple would otherwise slip past it).
@@ -148,12 +161,13 @@ class MajoranaOperator:
             key.indices if isinstance(key, Majorana) else tuple(key) for key in terms
         ]
         self.num_modes = _validate_system_size(num_modes, argument_name="num_modes")
-        for majorana in majoranas:
-            # majoranas are sorted in here
-            if majorana and majorana[-1] >= 2 * self.num_modes:
-                raise ValueError(
-                    f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
-                )
+        if not skip_validation:
+            for majorana in majoranas:
+                # Keys are assumed sorted, so the last index is the largest.
+                if majorana and majorana[-1] >= 2 * self.num_modes:
+                    raise ValueError(
+                        f"Majorana term {majorana} acts on an index >= num_modes={self.num_modes}."
+                    )
         self.terms = self._accumulate(majoranas, list(terms.values()))
 
     @classmethod
