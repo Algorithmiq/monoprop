@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .conversion_utils import _local_slots_to_pauli
+from .conversion_utils import _local_slots_to_pauli, _pauli_to_local_slots
 from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import ParameterValues
+    from .monomial_propagator import OperatorTerm, ParameterValues
 
 
 class PauliPropagator(MonomialPropagator[PauliOperator]):
@@ -116,9 +116,28 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         """
         raw = self._simulator.evolved_operator(self._bind(parameters), atol)  # type: ignore[attr-defined]
         terms: dict[Pauli, complex] = {
-            Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
+            Pauli(*_local_slots_to_pauli(slots), skip_validation=True): coeff
+            for slots, coeff in raw.items()
         }
-        return PauliOperator(terms, self.num_qubits)
+        return PauliOperator(terms, self.num_qubits, skip_validation=True)
+
+    def _encode_terms(self, terms: Sequence[OperatorTerm]) -> list[tuple[int, ...]]:
+        """Encode qubit Pauli terms into the engine's symplectic slots.
+
+        Args:
+            terms: [Pauli][monoprop.pauli.Pauli] terms.
+
+        Returns:
+            The terms' symplectic slot indices, in query order.
+        """
+        slots = []
+        for term in terms:
+            if not isinstance(term, Pauli):
+                raise TypeError(
+                    f"Pauli terms are Pauli objects; got {type(term).__name__}."
+                )
+            slots.append(_pauli_to_local_slots(term.string, term.qubits))
+        return slots
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
@@ -190,20 +209,22 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Builds (or extends) the reusable evolution graph, recording each layer's gate
         information (the parameter that drives it and its generator coefficient) so that
         later evaluation takes only ``parameters``. The circuit's angle indices are local
-        (``0``-based); when extending a non-empty graph they are shifted up onto the
-        accumulated parameter axis automatically, so each call's circuit is authored
-        independently.
+        (``0``-based), so each call's circuit is authored independently; they join the
+        accumulated axis in the order of the equivalent single circuit, which is ``b + a``
+        for ``build_graph(a); build_graph(b)`` in Heisenberg and ``a + b`` in Schrodinger.
+        Heisenberg therefore lifts the indices already in the graph by
+        ``circuit.n_parameters``, numbering an extension exactly like the one-call build.
 
         Args:
             circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
-            seed_parameters: The full parameter vector covering the whole accumulated graph,
-                used to regenerate the coefficient seed (by contracting the existing graph) so
-                coefficient truncation sees realistic coefficients when extending. Only needed
-                when extending a non-empty graph *with* coefficient-informed truncation; on the
-                first (or a single) call it defaults to the circuit's own parameters. When
-                omitted while extending, the new layers are built structurally (coefficient
-                truncation is skipped for them); the engine validates the length of an explicit
-                seed.
+            seed_parameters: The full parameter vector covering the whole accumulated graph, on
+                the axis the graph has *after* this call, used to regenerate the coefficient seed
+                (by contracting the existing graph) so coefficient truncation sees realistic
+                coefficients when extending. Only needed when extending a non-empty graph *with*
+                coefficient-informed truncation; on the first (or a single) call it defaults to
+                the circuit's own parameters. When omitted while extending, the new layers are
+                built structurally (coefficient truncation is skipped for them); the engine
+                validates the length of an explicit seed.
             only_rotate_len_k: If provided, apply gates to Pauli terms of length <= k in the
                 evolved operator even if they anticommute. Length is counted in the engine's
                 slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``

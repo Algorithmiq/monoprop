@@ -70,6 +70,7 @@ auto &acquire_flat_exchange_buffers() {
 }
 
 // A property of the communicator, not the layer: all ranks participate even at local total_count 0.
+// Also under the pairwise arm: a rank that skips the round strands the others either way.
 auto layer_exchange_participates(const mpi::Comm &comm) -> bool {
     return mpi::size(comm) != 1;
 }
@@ -112,7 +113,8 @@ inline auto begin_flat_exchange(FlatExchangeBuffers &buffers, const mpi::Comm &c
                                                       .recv_counts = layout.counts.data(),
                                                       .recv_displs = layout.displs.data()},
                                                      mpi::size(comm),
-                                                     comm);
+                                                     comm,
+                                                     mpi::routes_pairwise(comm));
     return handle;
 }
 

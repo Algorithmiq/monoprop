@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -122,6 +123,35 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             "Partition count differs across MPI ranks — every rank must resolve the same "
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
     }
+
+    // Before the partition workers start: a child throwing after its siblings enter a collective
+    // poisons the shared-memory transport and masks this error.
+    size_t max_pairs = 0;
+    size_t expected_schrodinger_local_terms = 1;
+    if (schrodinger_) {
+        const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
+        max_pairs = sc / 2 + sc % 2;
+        const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
+        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
+        const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
+        const size_t world_slots = n_partitions * static_cast<size_t>(mpi::size(comm));
+        const size_t share = global_terms / std::max<size_t>(1, world_slots);
+        if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
+            const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
+            const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
+            throw PropagatorConfigError(
+                std::format("schrodinger_cutoff ({}) admits {} paired basis terms over {} active modes, "
+                            "about {} per world slot — more than can be walked or addressed. Lower "
+                            "schrodinger_cutoff, or raise the rank x partition count (currently {}).",
+                            *schrodinger_cutoff,
+                            how_many,
+                            logical_num_modes_,
+                            per_slot,
+                            world_slots));
+        }
+        expected_schrodinger_local_terms = std::max<size_t>(1, share);
+    }
+
     if (n_partitions > 1) {
         PartitionChildFactory factory =
             child_factory ? std::move(child_factory) : PartitionChildFactory{[=](mpi::Comm partition_comm) {
@@ -144,8 +174,9 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         return;
     }
 
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
+    check_routing_agreement(comm_);                             // fail here rather than hang the first exchange
+    const routing::Router router = router_for<NumModes>(comm_); // geometry() can hit MPI: never per term
     MonomialList<NumModes> local_heisenberg_terms;
 
     double core_term = 0.0;
@@ -158,7 +189,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             core_term = encoded_coeff;
             continue;
         }
-        if (my_rank == find_rank<NumModes>(majorana_bitset, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(majorana_bitset, router)) {
             mp_op_.init_op_map[majorana_bitset] = encoded_coeff;
             local_heisenberg_terms.push_back(majorana_bitset);
         }
@@ -167,30 +198,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // Schrodinger's initial rows are the global paired basis, hash-partitioned over the P = R*S world
     // slots; Heisenberg's local_heisenberg_terms was already filtered to this slot's share above. Hence the
     // two reserves: a global count needs its 1/P share, a local one already is the share.
-    size_t max_pairs = 0;
-    size_t expected_local_terms = std::max<size_t>(1, local_heisenberg_terms.size());
-    if (schrodinger_) {
-        const auto sc = std::min(*schrodinger_cutoff, static_cast<unsigned int>(2 * logical_num_modes_));
-        max_pairs = sc / 2 + sc % 2;
-        const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
-        // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
-        const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
-        const size_t share = global_terms / std::max<size_t>(1, num_ranks);
-        if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
-            const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
-            const auto per_slot = uncountable ? std::string("as many") : std::format("{}", share);
-            throw PropagatorConfigError(
-                std::format("schrodinger_cutoff ({}) admits {} paired basis terms over {} active modes, "
-                            "about {} per world slot — more than can be walked or addressed. Lower "
-                            "schrodinger_cutoff, or raise the rank x partition count (currently {}).",
-                            *schrodinger_cutoff,
-                            how_many,
-                            logical_num_modes_,
-                            per_slot,
-                            num_ranks));
-        }
-        expected_local_terms = std::max<size_t>(1, share);
-    }
+    const size_t expected_local_terms =
+        schrodinger_ ? expected_schrodinger_local_terms : std::max<size_t>(1, local_heisenberg_terms.size());
 
     // Must run before the store: packed_inline_width_() derives the packed-row width from cutoff_fn_.
     regenerate_cutoff_fn_();
@@ -203,7 +212,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
     // The initial monomials are distinct, so emplace (insert-if-absent) is an assigning insert here. A row
     // index is a position in the kept subsequence, so the enumeration order below is load-bearing.
     const auto keep_if_owned = [&](const Monomial<NumModes> &mono) {
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(mono, router)) {
             mp_op_.append_term(mono);
             mp_op_.store->emplace(mono, i++);
         }
@@ -241,6 +250,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
+      routing_coverage_reported_(other.routing_coverage_reported_),
       logical_num_modes_(other.logical_num_modes_),
       cutoff_type_(other.cutoff_type_),
       basis_change_(other.basis_change_),
@@ -402,7 +412,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
         for_each_partition_([&](MonomialPropagator &s) { s.update_initial_operator(op_dict); });
         return {};
     }
-    const size_t num_ranks = static_cast<size_t>(mpi::size(comm_));
+    const routing::Router router = router_for<NumModes>(comm_); // hoisted, never per term
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm_));
 
     OperatorDict new_op;
@@ -412,7 +422,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
             core_term_ = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
             continue;
         }
-        if (my_rank == find_rank<NumModes>(mono, num_ranks)) {
+        if (my_rank == find_rank<NumModes>(mono, router)) {
             const auto mono_indices = bitset_to_indices<NumModes>(mono);
             new_op[mono_indices] = coeff;
         }
@@ -755,10 +765,52 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void {
+    // One report per rank, so only its partition 0 speaks.
+    if (routing_coverage_reported_ || comm_.shm_rank != 0) {
+        return;
+    }
+    const routing::Router router = router_for<NumModes>(comm_);
+    if (!router.is_linear()) {
+        routing_coverage_reported_ = true;
+        return; // splitmix: no subspace to fall short of
+    }
+    std::vector<uint64_t> shifts;
+    shifts.reserve(majoranas.size());
+    for (const auto &gate : majoranas) {
+        // Out-of-range indices are build_evolve_result_'s to reject; leave the latch clear for a retry.
+        if (std::ranges::any_of(gate, [this](size_t i) { return i >= 2 * logical_num_modes_; })) {
+            return;
+        }
+        shifts.push_back(static_cast<uint64_t>(router.rank_shift<NumModes>(indices_to_bitset<NumModes>(gate))));
+    }
+    routing_coverage_reported_ = true;
+    std::ranges::sort(shifts);
+    shifts.erase(std::ranges::unique(shifts).begin(), shifts.end());
+    const size_t span = routing::gf2_rank(shifts);
+    if (span >= router.linear_bits()) {
+        return;
+    }
+    // A warning: ownership is still correct, the ranks are just under-used. Reports capacity (cosets),
+    // not idle ranks, which also depend on how the initial operator straddles them.
+    const auto line =
+        std::format("COMMROUTE rank={} linear_bits={} shift_rank={} shifts={} ranks_per_coset={} rank_cosets={}\n",
+                    static_cast<size_t>(mpi::rank(comm_)) / router.partitions(),
+                    router.linear_bits(),
+                    span,
+                    shifts.size(),
+                    size_t{1} << span,
+                    router.ranks() >> span);
+    std::fputs(line.c_str(), stderr);
+    std::fflush(stderr);
+}
+
+template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
                                                   EvolutionFunc evolution_func) -> void {
+    report_routing_coverage_(majoranas);
     // Serial per partition; parallelism comes from partitioning the operator across cores.
     for (size_t i = 0; i < majoranas.size(); ++i) {
         const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
@@ -1167,6 +1219,78 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
         return collect(*this);
     }
     return concat_partitions_(collect);
+}
+
+namespace detail {
+
+/// Coefficients of `keys` in `p`'s evolved operator, in query order; a key `p` does not carry yields 0.
+/// `p` must be unpartitioned -- a partition, or a propagator that was never partitioned -- so that
+/// indexing() is available. Non-inplace. Rank-local.
+template <size_t NumModes>
+auto probe_coefficients(MonomialPropagator<NumModes> &p,
+                        const VecD &parameters,
+                        const std::vector<Monomial<NumModes>> &keys) -> std::vector<std::complex<double>> {
+    const VecD evolved = p.contract_partially(parameters, false);
+    std::vector<size_t> rows(keys.size());
+    p.indexing().find_batch(keys.data(), keys.size(), rows.data());
+    std::vector<std::complex<double>> found(keys.size());
+    for (size_t q = 0; q < keys.size(); ++q) {
+        if (rows[q] >= evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+            continue;
+        }
+        found[q] = algebra_decode_coeff<NumModes>(p.basis(), evolved[rows[q]], keys[q]);
+    }
+    return found;
+}
+
+} // namespace detail
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    // Checked: these are user-supplied indices. Past the storage width the unchecked encode's bit
+    // position underflows into an out-of-bounds write; between the logical and storage widths it
+    // encodes a monomial outside this propagator's system, which reads back 0 instead of raising.
+    auto keys = terms | std::views::transform([this](const VecZ &term) {
+                    return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                })
+                | std::ranges::to<std::vector<Monomial<NumModes>>>();
+
+    // map_partitions_ takes a callable over MonomialPropagator &, so the free function is bound to
+    // this query rather than called directly.
+    const auto probe = [&parameters, &keys](MonomialPropagator &p) {
+        return detail::probe_coefficients(p, parameters, keys);
+    };
+
+    std::vector<std::complex<double>> out(terms.size());
+    if (!partition_group_) {
+        out = probe(*this);
+    }
+    else {
+        // The partitions are disjoint, so at most one contributes per key.
+        for (const auto &partition_found : map_partitions_(probe)) {
+            for (size_t q = 0; q < out.size(); ++q) {
+                out[q] += partition_found[q];
+            }
+        }
+    }
+
+    // Round off the anti-hermitian numerical noise.
+    for (auto &coeff : out) {
+        coeff = {std::round(coeff.real() * 1e12) / 1e12, std::round(coeff.imag() * 1e12) / 1e12};
+    }
+
+    // Heisenberg only: the empty monomial is diverted to core_term_ instead of indexed, so the probe
+    // cannot have found it.
+    if (!schrodinger_) {
+        const auto core = core_term();
+        for (size_t q = 0; q < terms.size(); ++q) {
+            if (terms[q].empty()) {
+                out[q] = {core, 0.0};
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace monoprop

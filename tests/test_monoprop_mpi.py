@@ -134,6 +134,39 @@ class TestMPISimulator:
             combined_grad, lih_fermionic_spin_exact.exact_gradient, atol=1e-9
         )
 
+    def test_evolved_operator_coefficients_is_rank_local(
+        self, lih_fermionic_spin_exact
+    ):
+        """Each rank answers for the terms it owns, and the ranks' answers sum to the serial result."""
+        problem = lih_fermionic_spin_exact
+        parameters = problem.monomial_circuit.parameters
+
+        serial, serial_circuit = _make_mp(problem, MPI.COMM_SELF)
+        serial.build_graph(serial_circuit)
+        # Sorted so every rank queries the same terms in the same order.
+        terms = sorted(
+            t for t in serial.evolved_operator(parameters, atol=0.0).terms if t
+        )
+        assert terms
+        expected = serial.evolved_operator_coefficients(terms, parameters)
+
+        world, world_circuit = _make_mp(problem, MPI.COMM_WORLD)
+        world.build_graph(world_circuit)
+        local = world.evolved_operator_coefficients(terms, parameters)
+
+        summed = np.zeros_like(local)
+        MPI.COMM_WORLD.Allreduce(local, summed, op=MPI.SUM)
+
+        np.testing.assert_allclose(summed, expected, atol=1e-9)
+
+        if MPI.COMM_WORLD.size > 1:
+            # Counted against the terms each rank *owns* rather than against its nonzero
+            # coefficients.
+            local_terms = world.evolved_operator(parameters, atol=0.0).terms
+            owned = sum(1 for t in local_terms if t)  # the identity is on every rank
+            busiest = MPI.COMM_WORLD.allreduce(owned, op=MPI.MAX)
+            assert busiest < len(terms)
+
     @pytest.mark.mpi(min_size=2)
     def test_custom_communicator_split(self, lih_fermionic_spin_exact):
         rank = MPI.COMM_WORLD.Get_rank()

@@ -16,13 +16,15 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from monoprop.conversion_utils import _extend_pauli_string
 
 try:
     from qiskit import QuantumCircuit
     from qiskit.circuit.library import PauliEvolutionGate
     from qiskit.quantum_info import Pauli as QiskitPauli
-    from qiskit.quantum_info import SparsePauliOp
+    from qiskit.quantum_info import SparseObservable, SparsePauliOp
 except ImportError as e:
     raise ImportError(
         "qiskit is required to use monoprop.qiskit_conversion. Install it with: pip install qiskit"
@@ -50,31 +52,49 @@ VALID_PAULI_GATES = PAULI_EVOLUTION_EQUIVALENT.union(
 
 
 def from_qiskit_operator(
-    qiskit_op: SparsePauliOp | QiskitPauli, *, atol: float = 1e-8
+    qiskit_op: SparsePauliOp | SparseObservable | QiskitPauli,
+    *,
+    atol: float = 1e-8,
+    skip_validation: bool = False,
 ) -> PauliOperator:
     """Convert a Qiskit operator to a PauliOperator.
 
     Requires the operator to be Hermitian
 
     Args:
-        qiskit_op: A qiskit Pauli operator, or a single ``Pauli``, which carries one term and so
-            skips the ``simplify()``.
+        qiskit_op: A qiskit Pauli operator, a ``SparseObservable``, or a single ``Pauli``, which
+            carries one term and so skips the ``simplify()``. A ``SparseObservable`` is expanded
+            into a ``SparsePauliOp`` first (see ``SparsePauliOp.from_sparse_observable``), which is
+            exponential in its number of single-qubit projector terms.
         atol: Absolute tolerance for the ``simplify()`` run first, which drops smaller terms.
+        skip_validation: If ``True``, skip the check that every coefficient is real; the
+            imaginary parts are then silently dropped. Only pass ``True`` for operators already
+            known to be Hermitian.
 
     Returns:
         A PauliOperator instance representing the given operator.
+
+    Raises:
+        ValueError: If a coefficient is complex, unless ``skip_validation`` is ``True``.
     """
+    if isinstance(qiskit_op, SparseObservable):
+        qiskit_op = SparsePauliOp.from_sparse_observable(qiskit_op)
     qiskit_op = (
         SparsePauliOp(qiskit_op)  # Handles signs/phases
         if isinstance(qiskit_op, QiskitPauli)
         else qiskit_op.simplify(atol=atol)
     )
-    pauli_strings: list[str] = qiskit_op.paulis.to_labels(array=True)  # type: ignore
-    pauli_strings = [
-        s[::-1] for s in pauli_strings
-    ]  # reverse the strings to match monoprop convention
+    if not skip_validation and np.iscomplexobj(np.real_if_close(qiskit_op.coeffs)):
+        raise ValueError("Operator has complex terms")
+    # to_sparse_list() pairs each label with the qubits it acts on directly, unlike the dense
+    # to_labels()/coeffs split, which needs every term reversed and widened to num_qubits.
+    paulis = []
+    coeffs = []
+    for label, indices, coeff in qiskit_op.to_sparse_list():
+        paulis.append(Pauli(label, indices, skip_validation=True))
+        coeffs.append(coeff)
     return PauliOperator._from_terms(
-        pauli_strings, list(qiskit_op.coeffs), num_qubits=qiskit_op.num_qubits
+        paulis, coeffs, num_qubits=qiskit_op.num_qubits, skip_validation=True
     )
 
 
@@ -122,11 +142,16 @@ def _place_operator(
     """Remap a local operator on ``0..len(qubits)-1`` onto global ``qubits``, at full width."""
     return PauliOperator._from_terms(
         [
-            Pauli(pauli.string, tuple(qubits[q] for q in pauli.qubits))
+            Pauli(
+                pauli.string,
+                tuple(qubits[q] for q in pauli.qubits),
+                skip_validation=True,
+            )
             for pauli in local_op.terms
         ],
         list(local_op.terms.values()),
         num_qubits=num_qubits,
+        skip_validation=True,
     )
 
 
@@ -142,6 +167,7 @@ def _negated(operator: PauliOperator) -> PauliOperator:
         list(operator.terms),
         [-coeff for coeff in operator.terms.values()],
         num_qubits=operator.num_qubits,
+        skip_validation=True,
     )
 
 
@@ -186,6 +212,7 @@ def from_qiskit_circuit(
                 list(placed.terms),
                 [-0.5 * coeff for coeff in placed.terms.values()],
                 num_qubits=num_qubits,
+                skip_validation=True,
             )
         elif gate_name == "PauliEvolution":
             parameter = g_op.time
@@ -197,7 +224,10 @@ def from_qiskit_circuit(
             pauli_string = gate_name[1:].upper()
             # R<P>(t) == exp(-i t P/2), i.e. exp(+i t (-P/2)).
             generator = PauliOperator._from_terms(
-                [Pauli(pauli_string, qubits)], [-0.5], num_qubits=num_qubits
+                [Pauli(pauli_string, qubits, skip_validation=True)],
+                [-0.5],
+                num_qubits=num_qubits,
+                skip_validation=True,
             )
         else:
             raise ValueError(

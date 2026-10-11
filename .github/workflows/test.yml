@@ -118,7 +118,7 @@ jobs:
         run: just test-py-mpi "1;2;4" -m mpi
 
       - name: Upload serial test results to Codecov
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: pytest-${{ steps.test-group-label.outputs.label }}.xml, ctest-serial-${{ steps.test-group-label.outputs.label }}.xml
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload MPI C++ test results to Codecov
         if: matrix.mpi == 'on'
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ctest-mpi-${{ steps.test-group-label.outputs.label }}.xml

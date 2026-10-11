@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "TestUtilities.h"
@@ -311,9 +312,18 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     const auto gen = generator_of<kNumModes>(layer);
     const auto scaled_count = layer.scaled_count();
 
-    const uint64_t *before = sim.mp_op().inverted_index().row_parity_words();
+    auto &index = sim.mp_op().inverted_index();
+    const uint64_t *before = index.row_parity_words();
     BOOST_REQUIRE(before != nullptr);
-    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
+    auto recipe = monoprop::detail::make_lazy_fold<kNumModes>(index, gen, scaled_count, kBasis);
+
+    // Keep the old allocation alive so the rebuilt index cannot reuse its address. Poisoning it also
+    // makes a stale row-parity pointer retained by the recipe observably incorrect below.
+    auto old_row_parity = std::move(index.row_parity_);
+    BOOST_REQUIRE_EQUAL(old_row_parity.data(), before);
+    for (auto &word : old_row_parity) {
+        word = ~word;
+    }
 
     // Grow the operator, forcing the index and its row parity onto fresh storage.
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);

@@ -1,6 +1,9 @@
+# 4 as well as 2: at R = 2 the only shifts are 0 and 1, so a non-zero shift always pairs a rank with
+# its single neighbour and no case distinguishes the shift from the rank index. R = 4 gives shifts
+# 0..3 and a dense pairwise round of 2 * (R - 1) posts, which R = 2 cannot tell from a single leg.
 set(
   monoprop_MPI_TEST_PROCS
-  "2"
+  "2;4"
   CACHE STRING
   "Semicolon-separated list of ranks for MPI test variants"
 )

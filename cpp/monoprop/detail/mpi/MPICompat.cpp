@@ -14,9 +14,16 @@
 
 #include "monoprop/detail/mpi/Exchange.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <format>
 #include <print>
 #include <stdexcept>
+
+#ifdef monoprop_ENABLE_MPI
+#include "monoprop/detail/mpi/Pairwise.h"
+#include "monoprop/detail/mpi/Routing.h"
+#endif
 
 namespace monoprop::mpi {
 
@@ -31,10 +38,9 @@ auto init(int *argc, char ***argv) -> void {
         auto provided = 0;
         MPI_Init_thread(argc, argv, required, &provided);
         if (provided < required) {
-            auto comm = MPI_COMM_WORLD;
             std::print("Sorry, the MPI library does not provide MPI_THREAD_SERIALIZED support, which is required "
                        "by the partition/MPI hybrid transport.\n");
-            MPI_Abort(comm, 1);
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
 }
@@ -84,6 +90,58 @@ auto size(const Comm &comm) -> int {
 #endif
 }
 
+#ifdef monoprop_ENABLE_MPI
+namespace {
+// Cached as a communicator attribute, so a recycled MPI_Comm handle cannot inherit a stale answer.
+auto routing_keyval() -> int {
+    static const int keyval = [] {
+        int k = MPI_KEYVAL_INVALID;
+        MPI_Comm_create_keyval(MPI_COMM_NULL_COPY_FN, MPI_COMM_NULL_DELETE_FN, &k, nullptr);
+        return k;
+    }();
+    return keyval;
+}
+} // namespace
+#endif
+
+auto routes_pairwise(const Comm &comm) -> bool {
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return comm.hyb->routes_pairwise();
+    }
+    if (comm.kind == Comm::Kind::Mpi) {
+        const int ranks = size(comm);
+        if (ranks <= 1) {
+            return false; // no peer to pair with, and no collective to agree through
+        }
+        void *cached = nullptr;
+        int found = 0;
+        MPI_Comm_get_attr(comm.mpi, routing_keyval(), &cached, &found);
+        if (found != 0) {
+            return reinterpret_cast<intptr_t>(cached) != 0;
+        }
+        const bool pairwise = agree_routes_pairwise(comm.mpi, ranks, routing::Config::from_env(1));
+        MPI_Comm_set_attr(comm.mpi, routing_keyval(), reinterpret_cast<void *>(static_cast<intptr_t>(pairwise)));
+        return pairwise;
+    }
+#endif
+    return false; // Shm is one rank; there is no inter-rank transport to choose
+}
+
+auto geometry(const Comm &comm) -> Geometry {
+    if (comm.kind == Comm::Kind::Shm) {
+        return {.ranks = 1, .partitions = comm.shm->size()};
+    }
+#ifdef monoprop_ENABLE_MPI
+    if (comm.kind == Comm::Kind::Hybrid) {
+        return {.ranks = comm.hyb->ranks(), .partitions = comm.hyb->partitions()};
+    }
+    return {.ranks = size(comm), .partitions = 1};
+#else
+    return {.ranks = 1, .partitions = 1};
+#endif
+}
+
 auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->allreduce_sum_inplace(comm.shm_rank, values.data(), values.size());
@@ -100,19 +158,46 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm) -> void {
+auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
+    require_routable(plan, geometry(comm).ranks);
     if (comm.kind == Comm::Kind::Shm) {
         comm.shm->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
         return;
     }
 #ifdef monoprop_ENABLE_MPI
     if (comm.kind == Comm::Kind::Hybrid) {
-        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts);
+        comm.hyb->alltoall_counts(comm.shm_rank, send_counts, recv_counts, plan);
+        return;
+    }
+    if (!plan.dense()) {
+        // S == 1 world: one int with the peer. Non-peers are zero by definition, so clear them.
+        int me = 0;
+        MPI_Comm_rank(comm.mpi, &me);
+        std::fill(recv_counts, recv_counts + n, 0);
+        const PeerLayout one{.block = 1};
+        // Eager: the caller reads recv_counts on return.
+        std::vector<MPI_Request> reqs;
+        const SparsePairwiseArgs pairwise{
+            .plan = plan,
+            .me = me,
+            .num_ranks = n,
+            .comm = comm.mpi,
+            .tag = kFlatCountTag,
+            .datatype = MPI_INT,
+            .elem = sizeof(int),
+            .send = reinterpret_cast<const std::byte *>(send_counts),
+            .send_layout = one,
+            .recv = reinterpret_cast<std::byte *>(recv_counts),
+            .recv_layout = one,
+        };
+        const int posted = sparse_pairwise(pairwise, reqs);
+        MPI_Waitall(posted, reqs.data(), MPI_STATUSES_IGNORE);
         return;
     }
     (void)n;
     MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
 #else
+    (void)plan; // single participant: nothing to narrow
     for (int i = 0; i < n; ++i) {
         recv_counts[i] = send_counts[i];
     }

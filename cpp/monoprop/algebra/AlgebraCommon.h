@@ -16,9 +16,12 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -47,7 +50,7 @@ template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes> {
     Monomial<NumModes> bs;
     for (const auto &bit_loc : arr) {
-        bs.set(2 * NumModes - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
+        bs.set((2 * NumModes) - 1 - bit_loc); // MSb0 convention: index 0 maps to the top bit
     }
     return bs;
 }
@@ -143,16 +146,77 @@ template <size_t NumModes>
         const uint64_t pair_mask = even_mask & active_mask;
         const uint64_t first_pair = active_word & pair_mask;
         const uint64_t second_pair = (active_word >> 1) & pair_mask;
-        return {static_cast<size_t>(std::popcount(first_pair ^ second_pair)),
-                static_cast<size_t>(std::popcount(active_word)),
-                static_cast<size_t>(std::popcount(first_pair | second_pair))};
+        return {.xor_sum = static_cast<size_t>(std::popcount(first_pair ^ second_pair)),
+                .popcount_sum = static_cast<size_t>(std::popcount(active_word)),
+                .or_sum = static_cast<size_t>(std::popcount(first_pair | second_pair))};
     }
 
     const auto active_mono = logical_num_modes == NumModes ? mono : (mono >> active_bit_offset);
     const auto mask = even_bits<2 * NumModes, LSb0>();
     const auto first_pair = active_mono & mask;
     const auto second_pair = (active_mono >> 1) & mask;
-    return {(first_pair ^ second_pair).count(), active_mono.count(), (first_pair | second_pair).count()};
+    return {.xor_sum = (first_pair ^ second_pair).count(),
+            .popcount_sum = active_mono.count(),
+            .or_sum = (first_pair | second_pair).count()};
+}
+
+/*! @brief cutoff_sums from ascending positions. Slots below the active-mode offset are skipped. */
+template <size_t NumModes, typename PosT>
+[[gnu::always_inline]] inline auto cutoff_sums_positions(std::span<const PosT> pos, size_t logical_num_modes)
+    -> CutoffSums {
+    const size_t active_bit_offset = 2 * (NumModes - logical_num_modes);
+    const size_t n = pos.size();
+    size_t j = 0;
+    while (j < n && static_cast<size_t>(pos[j]) < active_bit_offset) {
+        ++j;
+    }
+    const size_t popcount = n - j;
+    size_t pairs = 0;
+    for (; j + 1 < n; ++j) {
+        const auto p = static_cast<size_t>(pos[j]);
+        pairs += static_cast<size_t>((p % 2 == 0) && static_cast<size_t>(pos[j + 1]) == p + 1);
+    }
+    return {.xor_sum = popcount - (2 * pairs), .popcount_sum = popcount, .or_sum = popcount - pairs};
+}
+
+/*! @brief True iff the ascending positions form (2q, 2q + 1) pairs only. */
+template <typename PosT>
+[[gnu::always_inline]] inline auto positions_fully_paired(std::span<const PosT> pos) -> bool {
+    if (pos.size() % 2 != 0) {
+        return false;
+    }
+    for (size_t j = 0; j < pos.size(); j += 2) {
+        if (pos[j] % 2 != 0 || static_cast<size_t>(pos[j + 1]) != static_cast<size_t>(pos[j]) + 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*! @brief Fully paired rows in [first, op.size()), ascending. Inline rows are tested on their positions. */
+template <size_t NumModes, typename Rows>
+auto fully_paired_rows_from(size_t first, const Rows &op) -> VecZ {
+    VecZ result;
+    const auto mask = even_bits<2 * NumModes, LSb0>();
+    for (size_t i = first; i < op.size(); ++i) {
+        bool paired = false;
+        // At one word the dense compare is cheaper.
+        if constexpr (Monomial<NumModes>::num_words() > 1 && requires { op.row_positions(i).inlined(); }) {
+            if (const auto row = op.row_positions(i); row.inlined()) {
+                paired = positions_fully_paired(row.pos);
+            }
+            else {
+                paired = is_paired<NumModes>(materialize_row<NumModes>(op, i), mask);
+            }
+        }
+        else {
+            paired = is_paired<NumModes>(materialize_row<NumModes>(op, i), mask);
+        }
+        if (paired) {
+            result.push_back(i);
+        }
+    }
+    return result;
 }
 
 // Both cutoffs below keep a fully paired monomial (xor_sum == 0) unconditionally: those are the only
@@ -251,6 +315,33 @@ public:
         return cutoff_fn_(mono);
     }
 
+    /*! @brief True for the built-in cutoffs; a custom CutoffFn needs the dense monomial. */
+    [[nodiscard]] auto has_positions_form() const -> bool {
+        return length_cutoff_ != nullptr || support_cutoff_ != nullptr;
+    }
+
+    /*! @brief passes_with_popcount on ascending positions.
+     *
+     *  `pairs` is the number of paired modes {2m, 2m+1} in `pos`. Requires has_positions_form().
+     */
+    template <typename PosT>
+    [[gnu::always_inline]] auto passes_positions(std::span<const PosT> pos, size_t pairs) const -> bool {
+        assert(has_positions_form());
+        const size_t n = pos.size();
+        if (length_cutoff_ != nullptr) {
+            if (n <= length_cutoff_->cutoff) {
+                return true;
+            }
+            const auto sums = sums_from_pairs_(pos, pairs, length_cutoff_->logical_num_modes);
+            return sums.xor_sum == 0 || sums.popcount_sum <= length_cutoff_->cutoff;
+        }
+        if (n <= support_cutoff_->cutoff) {
+            return true;
+        }
+        const auto sums = sums_from_pairs_(pos, pairs, support_cutoff_->logical_num_modes);
+        return sums.xor_sum == 0 || sums.or_sum <= support_cutoff_->cutoff;
+    }
+
     // Upper bound on the set bits (physical slots) a surviving term can carry, so the store can size
     // its packed inline rows. A length cutoff counts set bits directly; a support cutoff counts
     // modes/qubits, each spanning two slots, hence the x2.
@@ -265,6 +356,18 @@ public:
     }
 
 private:
+    /*! @brief cutoff_sums from positions; with every mode active the pair count gives the sums directly. */
+    template <typename PosT>
+    [[gnu::always_inline]] static auto sums_from_pairs_(std::span<const PosT> pos,
+                                                        size_t pairs,
+                                                        size_t logical_num_modes) -> CutoffSums {
+        if (logical_num_modes == NumModes) {
+            const size_t n = pos.size();
+            return {.xor_sum = n - (2 * pairs), .popcount_sum = n, .or_sum = n - pairs};
+        }
+        return cutoff_sums_positions<NumModes>(pos, logical_num_modes);
+    }
+
     const CutoffFn<NumModes> &cutoff_fn_;
     const LengthCutoff<NumModes> *length_cutoff_;
     const SupportCutoff<NumModes> *support_cutoff_;

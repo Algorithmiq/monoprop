@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "SlotBlocks.h"
 #include "ThreadHarness.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Exchange.h"
@@ -78,9 +79,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_source_order_and_tags) {
                     send[static_cast<size_t>(t)].push_back(r * 1000 + j);
                 }
             }
-            auto h = monoprop::mpi::begin_alltoallv(send, c);
-            std::vector<std::vector<int>> got;
-            h.wait_into(got);
+            const auto got = test_utils::exchange_blocks(send, c);
             recv[static_cast<size_t>(r)] = got;
         });
         for (const auto &e : errs) {
@@ -110,9 +109,7 @@ BOOST_AUTO_TEST_CASE(shm_comm_begin_alltoallv_skip_self) {
         for (int t = 0; t < S; ++t) {
             send[static_cast<size_t>(t)] = {r * 10 + 1, r * 10 + 2};
         }
-        auto h = monoprop::mpi::begin_alltoallv(send, c, /*skip_self=*/true);
-        std::vector<std::vector<int>> got;
-        h.wait_into(got);
+        const auto got = test_utils::exchange_blocks(send, c, /*skip_self=*/true);
         recv[static_cast<size_t>(r)] = got;
     });
     for (const auto &e : errs) {

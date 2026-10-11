@@ -19,6 +19,7 @@
 #include <complex>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 #include "TestUtilities.h"
@@ -33,6 +34,23 @@ using test_utils::SimulatorConfig;
 namespace {
 constexpr size_t N = 8;
 using MP = MonomialPropagator<N>;
+
+// Construct an invalid partitioned Schrodinger propagator. Its cardinality check must run before
+// partition workers start, or a worker's exception is masked by the poisoned shared-memory transport.
+auto make_oversized_partitioned_schrodinger() -> MonomialPropagator<64> {
+    return MonomialPropagator<64>(OperatorDict{{VecZ{0, 1}, std::complex<double>(0.0, 1.0)}},
+                                  /*cutoff=*/4,
+                                  VecZ{},
+                                  /*schrodinger_cutoff=*/128,
+                                  MPI_COMM_SELF,
+                                  std::nullopt,
+                                  std::nullopt,
+                                  CutoffType::Length,
+                                  std::nullopt,
+                                  /*logical_num_modes=*/64,
+                                  Basis::Majorana,
+                                  /*partitions=*/2);
+}
 
 // Construct with the full argument list; individual cases vary just the field(s) under test.
 auto make(const OperatorDict &op,
@@ -105,6 +123,14 @@ BOOST_AUTO_TEST_CASE(ctor_operator_index_out_of_range_throws) {
     OperatorDict op;
     op[VecZ{20}] = std::complex<double>(1.0, 0.0); // 20 >= 2*logical (=16)
     BOOST_CHECK_THROW(make(op), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(ctor_partitioned_schrodinger_cardinality_error_is_not_masked) {
+    BOOST_CHECK_EXCEPTION(make_oversized_partitioned_schrodinger(),
+                          PropagatorConfigError,
+                          [](const PropagatorConfigError &error) {
+                              return std::string_view{error.what()}.contains("schrodinger_cutoff");
+                          });
 }
 
 // A gate generator index outside the system must throw, not underflow 2*NumModes-1-index into an

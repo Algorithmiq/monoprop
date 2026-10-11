@@ -162,7 +162,7 @@ jobs:
             benches/results/*.json
           if-no-files-found: warn
 
-      - uses: bencherdev/bencher@v0.6.12
+      - uses: bencherdev/bencher@v0.6.13
 
       # The project slug and API key go through the environment: `bencher` reads
       # BENCHER_PROJECT / BENCHER_API_KEY natively, and it keeps a maintainer-set

@@ -15,7 +15,6 @@
 #pragma once
 
 #include <algorithm>
-#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -35,7 +34,7 @@
 // Forward-declared to break an include cycle with algebra/Algebra.h.
 namespace monoprop {
 template <size_t NumModes, typename Rows>
-auto is_fully_paired(const VecZ &inds, const Rows &op) -> VecZ;
+auto fully_paired_rows_from(size_t first, const Rows &op) -> VecZ;
 
 template <size_t NumModes>
 auto indices_to_bitset(const VecZ &arr) -> Monomial<NumModes>;
@@ -235,9 +234,7 @@ struct MPOperator {
             return;
         }
 
-        VecZ new_inds(size() - state_scored_rows_);
-        std::iota(new_inds.begin(), new_inds.end(), state_scored_rows_); // NOLINT(modernize-use-ranges)
-        const auto paired_inds = is_fully_paired<NumModes>(new_inds, *store);
+        const auto paired_inds = fully_paired_rows_from<NumModes>(state_scored_rows_, *store);
         state_rows_.reserve(state_rows_.size() + paired_inds.size());
         state_vals_.reserve(state_vals_.size() + paired_inds.size());
 
