@@ -213,8 +213,7 @@ def test_energy_matches_reference(problem, comm):
 
 For tests that specifically require the LiH molecule and its commutator data,
 request `lih_problem`. For orbital-rotation checks using the S0 molecule, request
-`orbital_rotation_problem`. These named fixtures each load one problem; no tag
-filtering or case-selection decorator is needed.
+`orbital_rotation_problem`.
 
 ```python notest
 def test_lih_reference(lih_problem, serial_comm): ...
