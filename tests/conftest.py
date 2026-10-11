@@ -23,9 +23,16 @@ allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+from tests.cases import FERMIONIC_PROBLEMS, load_problem
+
+if TYPE_CHECKING:
+    from pytest_datadir.plugin import LazyDataDir
+
+    from tests.cases import FermionicProblem
 
 try:
     from mpi4py import MPI
@@ -65,3 +72,11 @@ def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
 def serial_comm() -> Any:  # noqa: ANN401
     """Single-rank communicator for tests that inspect rank-local operator state."""
     return None if MPI is None else MPI.COMM_SELF
+
+
+@pytest.fixture(params=FERMIONIC_PROBLEMS)
+def problem(
+    request: pytest.FixtureRequest, lazy_shared_datadir: LazyDataDir
+) -> FermionicProblem:
+    """Load a fresh reference problem for each test invocation."""
+    return load_problem(lazy_shared_datadir / f"{request.param}.msgpack")

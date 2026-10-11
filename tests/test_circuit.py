@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from pytest_cases import case, parametrize_with_cases
 
 from monoprop import (
     Circuit,
@@ -112,7 +111,6 @@ def test_exp_gate_system_size_reads_from_generator(
 
 
 class ExpGateAtolCases:
-    @case(id="single_excitation")
     def case_single_excitation(self):
         generator = FermiOperator(
             [
@@ -125,7 +123,6 @@ class ExpGateAtolCases:
         expected = MajoranaOperator({(0, 2): 0.5, (1, 3): 0.5}, num_modes=2)
         return generator, 1e-8, expected
 
-    @case(id="double_excitation")
     def case_double_excitation(self):
         generator = FermiOperator(
             [
@@ -150,13 +147,11 @@ class ExpGateAtolCases:
         )
         return generator, 1e-8, expected
 
-    @case(id="majorana_operator")
     def case_majorana_operator(self):
         generator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 1e-10j}, num_modes=2)
         expected = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         return generator, 1e-8, expected
 
-    @case(id="pauli_operator")
     def case_pauli_operator(self):
         generator = PauliOperator(
             {Pauli("XX"): 1.0, Pauli("ZZ"): 1e-4, Pauli("YY"): 1e-6},
@@ -166,12 +161,17 @@ class ExpGateAtolCases:
         return generator, 1e-5, expected
 
 
-@parametrize_with_cases("generator, atol, expected", cases=ExpGateAtolCases)
-def test_exp_gate_applies_atol_truncation(
-    generator: FermiOperator | MajoranaOperator | PauliOperator,
-    atol: float,
-    expected: MajoranaOperator | PauliOperator,
-) -> None:
+@pytest.mark.parametrize(
+    "case_factory",
+    [
+        pytest.param(ExpGateAtolCases().case_single_excitation, id="single_excitation"),
+        pytest.param(ExpGateAtolCases().case_double_excitation, id="double_excitation"),
+        pytest.param(ExpGateAtolCases().case_majorana_operator, id="majorana_operator"),
+        pytest.param(ExpGateAtolCases().case_pauli_operator, id="pauli_operator"),
+    ],
+)
+def test_exp_gate_applies_atol_truncation(case_factory) -> None:
+    generator, atol, expected = case_factory()
     truncated = ExpGate(generator, atol=atol).generator
 
     assert isinstance(truncated, type(expected))

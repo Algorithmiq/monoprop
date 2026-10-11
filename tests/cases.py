@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 from msgpack import unpackb
-from pytest_cases import case
 
 from monoprop.circuit import Circuit
 from monoprop.majorana import MajoranaOperator
@@ -98,27 +98,15 @@ def load_problem(path: Path) -> FermionicProblem:
     )
 
 
-def _create_case(pth: Path, fname: str) -> FermionicProblem:
-    return load_problem(pth / f"{fname}.msgpack")
-
-
-class CasesFermionicProblemOrbitalRotations:
-    @case(id="S0_8e8o", tags=["molecule", "only_rotate_len_k"])
-    def case_s0_8e8o(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        return _create_case(lazy_shared_datadir, "S0_8e8o_majoranic_c8")
-
-
-class CasesFermionicProblem:
-    @case(id="LiH_fermionic_spin", tags=["molecule", "has_commutator_data"])
-    def case_lih_fermionic_spin(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        return _create_case(lazy_shared_datadir, "lih_fermionic_spin_exact")
-
-    @case(id="rx_rz_ry_rz")
-    def case_rx_rz_ry_rz(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """A 1q circuit of RX and RZ rotations."""
-        return _create_case(lazy_shared_datadir, "rx_rz_ry_rz_exact")
-
-    @case(id="random_circuit")
-    def case_random_circuit(self, lazy_shared_datadir: Path) -> FermionicProblem:
-        """A 1q circuit of random rotations."""
-        return _create_case(lazy_shared_datadir, "random_exact")
+MOLECULE_PROBLEMS = [
+    pytest.param("lih_fermionic_spin_exact", id="LiH_fermionic_spin"),
+]
+COMMUTATOR_PROBLEMS = [*MOLECULE_PROBLEMS]
+FERMIONIC_PROBLEMS = [
+    *MOLECULE_PROBLEMS,
+    pytest.param("rx_rz_ry_rz_exact", id="rx_rz_ry_rz"),
+    pytest.param("random_exact", id="random_circuit"),
+]
+ORBITAL_ROTATION_PROBLEMS = [
+    pytest.param("S0_8e8o_majoranic_c8", id="S0_8e8o"),
+]

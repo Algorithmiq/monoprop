@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.majorana import MajoranaOperator
-from tests.cases import CasesFermionicProblem, FermionicProblem
+from tests.cases import MOLECULE_PROBLEMS, FermionicProblem
 
 
 def _create_mp(
@@ -94,7 +93,7 @@ def test_coeff_trunc(serial_comm):
         _check_dicts(test_op, expected)
 
 
-@parametrize_with_cases("problem", cases=CasesFermionicProblem, has_tag="molecule")
+@pytest.mark.parametrize("problem", MOLECULE_PROBLEMS, indirect=True)
 @pytest.mark.parametrize("schrodinger", [True, False])
 @pytest.mark.parametrize("upper_atol", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4])
 @pytest.mark.parametrize("lower_atol", [1e-5, 1e-6])

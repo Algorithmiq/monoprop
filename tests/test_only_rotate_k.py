@@ -18,12 +18,11 @@ from contextlib import nullcontext as does_not_raise
 
 import numpy as np
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
-from tests.cases import CasesFermionicProblemOrbitalRotations
+from tests.cases import ORBITAL_ROTATION_PROBLEMS
 
 
 @pytest.fixture
@@ -142,9 +141,7 @@ def test_basic_orbital_rotation(serial_comm):
             )
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblemOrbitalRotations, has_tag="only_rotate_len_k"
-)
+@pytest.mark.parametrize("problem", ORBITAL_ROTATION_PROBLEMS, indirect=True)
 @pytest.mark.parametrize("inplace", [False, True])
 def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     """Tests size/graph_size (rank-local) so uses serial_comm."""

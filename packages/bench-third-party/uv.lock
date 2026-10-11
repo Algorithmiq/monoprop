@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -1541,9 +1541,8 @@ provides-extras = ["mpi", "qiskit"]
 bench = [
     { name = "monoprop-bench-tools", editable = "../monoprop-bench-tools" },
     { name = "psutil", specifier = ">=7.2" },
-    { name = "pytest", specifier = ">=8.2.2,<9.2" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-benchmark", specifier = ">=5" },
-    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
@@ -1572,8 +1571,7 @@ interactive = [
 ]
 test = [
     { name = "psutil", specifier = ">=7.2" },
-    { name = "pytest", specifier = ">=8.2.2,<9.2" },
-    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
@@ -1582,8 +1580,7 @@ test = [
 workspace-test = [
     { name = "monoprop-bench-tools", editable = "../monoprop-bench-tools" },
     { name = "psutil", specifier = ">=7.2" },
-    { name = "pytest", specifier = ">=8.2.2,<9.2" },
-    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
+    { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },

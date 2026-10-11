@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import (
     Circuit,
@@ -21,7 +20,7 @@ from monoprop import (
     MajoranaPropagator,
 )
 from monoprop.majorana import MajoranaOperator
-from tests.cases import CasesFermionicProblem
+from tests.cases import MOLECULE_PROBLEMS
 
 
 class TestUpdateMethods:
@@ -197,7 +196,7 @@ class TestUpdateMethods:
         assert mp.cutoff == 4
 
 
-@parametrize_with_cases("problem", cases=CasesFermionicProblem, has_tag="molecule")
+@pytest.mark.parametrize("problem", MOLECULE_PROBLEMS, indirect=True)
 @pytest.mark.parametrize("test_type", ["cutoff", "lower_atol", "upper_atol"])
 def test_evolutions_after_updates(problem, test_type, serial_comm):
     circuit = problem.monomial_circuit.to_circuit()
