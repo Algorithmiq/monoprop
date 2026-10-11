@@ -14,13 +14,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.majorana import MajoranaOperator
-from tests.cases import CasesFermionicProblem, FermionicProblem
+
+if TYPE_CHECKING:
+    from tests.cases import FermionicProblem
 
 
 def _create_mp(
@@ -94,18 +97,22 @@ def test_coeff_trunc(serial_comm):
         _check_dicts(test_op, expected)
 
 
-@parametrize_with_cases("problem", cases=CasesFermionicProblem, has_tag="molecule")
 @pytest.mark.parametrize("schrodinger", [True, False])
 @pytest.mark.parametrize("upper_atol", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4])
 @pytest.mark.parametrize("lower_atol", [1e-5, 1e-6])
 @pytest.mark.parametrize("cutoff", [4, 6, 8])
 def test_coeff_trunc_build_graph_and_inplace_equiv(
-    problem: FermionicProblem, schrodinger, upper_atol, lower_atol, cutoff, serial_comm
+    lih_problem: FermionicProblem,
+    schrodinger,
+    upper_atol,
+    lower_atol,
+    cutoff,
+    serial_comm,
 ):
     """Check that build graph with coeffs and inplace version match."""
-    n_modes = problem.n_modes
-    fermionic_operator = problem.operator
-    monomial_circuit = problem.monomial_circuit
+    n_modes = lih_problem.n_modes
+    fermionic_operator = lih_problem.operator
+    monomial_circuit = lih_problem.monomial_circuit
     schrodinger_cutoff_val = 2 * n_modes if schrodinger else None
     circuit = monomial_circuit.to_circuit()
     parameters = monomial_circuit.parameters

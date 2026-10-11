@@ -74,7 +74,6 @@ interactive = [
 # workspace member would drag monoprop back in from source.
 test = [
   "psutil>=7.2",
-  "pytest-cases>=3.8.6,<4",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
   # depend on branch which only outputs from rank zero
@@ -197,7 +196,7 @@ markers = [
   "mpi: mark test as requiring --with-mpi (pytest-mpi)",
   "qiskit: mark test as requiring qiskit (optional dependency)",
 ]
-required_plugins = ["pytest-cases", "pytest-datadir", "pytest-mpi"]
+required_plugins = ["pytest-datadir", "pytest-mpi"]
 
 
 [tool.coverage.run]
