@@ -123,8 +123,8 @@ def guide(ax, rs, order, colour):
         xs,
         [y0 * (x / x0) ** order for x in xs],
         ls=":",
-        lw=0.9,
-        alpha=0.6,
+        # Full opacity and a heavier stroke: at alpha 0.6 the guides vanished on paper.
+        lw=1.3,
         color=colour,
         zorder=1,
     )
@@ -180,7 +180,6 @@ def draw(groups, outdir=FIGS):
         ha="right",
         va="bottom",
         fontsize=NOTE,
-        alpha=0.7,
     )
     fig.tight_layout()
     save(fig, outdir, STEM)
