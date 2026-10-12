@@ -216,7 +216,7 @@ def build_hubbard2d(lx: int, ly: int, cutoff: int, comm=None):
     hop-down per bond class, the interaction), as circuits in the order they propagate: the
     last group first, as the Heisenberg picture applies a circuit. Propagating them one by
     one is exactly propagating ``circuit``, and timing them one by one resolves the term
-    count's thousandfold rise within the second layer, which the crossover panel needs.
+    count's thousandfold rise within the second layer.
     """
     num_sites = lx * ly
     num_modes = 2 * num_sites
@@ -479,8 +479,8 @@ def main() -> None:
     memory_bytes = 0
     expectation = float("nan")
     # Per step (one propagate call: a layer, or a gate group of one for hubbard2d): the
-    # minimum over rounds of its time, and the terms it leaves. The crossover panel plots
-    # these; the whole-run minimum above stays the N-sweep quantity.
+    # minimum over rounds of its time, and the terms it leaves. Recorded for per-step analysis;
+    # the figure plots the whole-run minimum above.
     steps = [circuit] if steps is None else steps
     step_seconds = [float("inf")] * (args.layers * len(steps))
     step_terms: list[int] | None = None

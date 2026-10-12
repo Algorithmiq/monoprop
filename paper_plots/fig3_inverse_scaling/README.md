@@ -1,42 +1,69 @@
-# Paper Fig. 3 — inverse time scaling with qubit number, and where dense codes stay faster
+# Paper Fig. 3 — inverse time scaling with qubit number, at three circuit depths
 
-Two rows, two columns (paper `fig:inverse-scaling`, a page-wide `figure*`):
+One column per model (paper `fig:inverse-scaling`, a page-wide `figure*`), each a cost panel over
+a work-per-gate strip that shares its N axis:
 
-| | (a, c) cost per term vs N | (b, d) cost per gate vs K |
+| | (a) kicked Ising (Pauli) | (b) 2D Hubbard (Majorana) |
 | --- | --- | --- |
-| **kicked Ising** (Pauli) | monoprop, `PauliPropagation.jl` 0.9.0, `ppvm`; N = 32 … 1024, 7 layers | monoprop vs `PauliPropagation.jl` at N = 32, 128, 512; 9 layers, one point per layer |
-| **2D Hubbard** (Majorana) | monoprop, `MajoranaPropagation.jl` 0.4.1; N = 32 … 1024 modes, 2 Trotter steps | monoprop vs `MajoranaPropagation.jl` at N = 32, 128, 256; one point per commuting gate group |
+| engines | monoprop, `PauliPropagation.jl` 0.9.0, `ppvm` | monoprop, `MajoranaPropagation.jl` 0.4.1 |
+| N | 32 … 1024 qubits | 32 … 1024 modes |
+| depths (small / medium / large) | 5 / 7 / 9 layers | 1 / 2 / 3 Trotter steps (3 steps up to N = 128) |
 
-monoprop's per-gate cost is ~`a + bK/N` while a dense engine pays ~`K` times a per-term cost that
-grows with the number of machine words a string spans. So the left column falls as `1/N` for
-monoprop and not for the references, and the right column shows the regime the left one hides:
-at small N and small K, `PauliPropagation.jl` is faster.
+- **Panel:** nanoseconds for one gate to act on one term, against N. Colour is the engine, shade
+  the depth (light small, dark large). The dashed line is 1/N. A point over the 15-min limit is an
+  open marker on the "> 15 min" rail at the top of the panel.
+- **Strip:** the work per gate, from counts rather than timings. A dense code tests all K terms
+  against each gate (vermillion); only the terms that anticommute with the gate change, and those
+  are the ones monoprop's index visits (blue). The bracket gives their ratio at the medium depth's
+  largest counted N.
+
+A gate anticommutes with ~cK/N terms (c ≈ 4 for kicked Ising, 4–8 for Hubbard), and at fixed
+depth K grows ∝ N, so monoprop's work per gate is flat in N while a dense code's grows ∝ N; and
+a dense code's per-term test also grows with the machine words a string spans. Hence monoprop's
+cost per term falls as 1/N and the references' does not. Where K is small and strings fit one
+word (kicked Ising at N ≤ 64), `PauliPropagation.jl` is faster.
 
 ## Result
 
-Every number below is printed by `make_figure.py` and written to `figures/captions.txt`, computed
-from the rows, never typed. ns per gate per term (panels a, c):
+Every number below comes from the rows; `make_figure.py` prints the exponents and ratios and
+writes them to `figures/captions.txt`. ns per gate per term:
 
-| N | monoprop (Pauli) | PP.jl | ppvm | monoprop (Majorana) | MP.jl |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 32 | 1.82 | **0.72** | 3.20 | **2.60** | 5.20 |
-| 64 | 1.00 | **0.86** | 3.87 | **1.16** | 4.31 |
-| 128 | **0.52** | 1.25 | 4.43 | **0.55** | 4.58 |
-| 256 | **0.275** | 1.98 | 5.71 | **0.267** | 6.25 |
-| 512 | **0.140** | 3.40 | 7.61 | **0.125** | > 15 min |
-| 1024 | **0.071** | > 15 min | > 15 min | **0.062** | > 15 min |
+| N | mono 5 | PP.jl 5 | ppvm 5 | mono 7 | PP.jl 7 | ppvm 7 | mono 9 | PP.jl 9 | ppvm 9 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 1.48 | **0.47** | 1.38 | 1.82 | **0.72** | 3.20 | 2.10 | **0.87** | 4.77 |
+| 64 | 0.80 | **0.48** | 1.46 | 1.00 | **0.86** | 3.86 | 1.16 | **0.92** | 5.27 |
+| 128 | **0.43** | 1.11 | 2.92 | **0.52** | 1.25 | 4.43 | **0.58** | 1.34 | 5.61 |
+| 256 | **0.229** | 1.73 | 4.13 | **0.275** | 1.98 | 5.71 | **0.307** | 2.14 | 7.04 |
+| 512 | **0.115** | 2.99 | 5.72 | **0.140** | 3.40 | 7.60 | **0.157** | > 15 min¹ | > 15 min |
+| 1024 | **0.059** | 5.05 | 8.70 | **0.071** | > 15 min | > 15 min | **0.079** | > 15 min² | > 15 min² |
 
-- **Kicked Ising.** Fitted over N ≤ 512: monoprop N^−0.93, `PauliPropagation.jl` N^+0.57, `ppvm`
-  N^+0.31. `PauliPropagation.jl` is 2.5× faster than monoprop at N=32 and level at N=64; monoprop
-  leads it 2.4× at N=128 and 24× at N=512, and leads `ppvm` 1.8× at N=32 and 54× at N=512. At
-  N=1024 monoprop takes 26 s for 2.5e7 terms; both references exceed 15 min.
-- **Crossover (b).** monoprop's floor is ~3.5 µs per gate against ~1 µs for `PauliPropagation.jl`.
-  At N=32 `PauliPropagation.jl` is ~3× faster at every K up to 1.8e6 (no crossover); at N=128
-  monoprop overtakes it at K* ≈ 1.1e3 and leads 2.3× at K ≈ 7e6; at N=512 monoprop is faster at
-  every K, by 23× at K ≈ 3e7.
-- **2D Hubbard.** Fitted over N ≤ 256: monoprop N^−1.09, `MajoranaPropagation.jl` N^+0.09. monoprop is
-  faster at every N and every K measured: 2.0× per term at N=32, 23× at N=256. At N=1024 monoprop
-  propagates 3.0e8 terms in 90 s.
+| N | mono 1 | MP.jl 1 | mono 2 | MP.jl 2 | mono 3 | MP.jl 3 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | **16.7** | 26.6 | **2.60** | 5.20 | **5.28** | 13.0 |
+| 64 | **6.97** | 19.6 | **1.16** | 4.31 | **2.63** | 11.5 |
+| 128 | **3.10** | 17.5 | **0.55** | 4.58 | **1.08** | > 15 min¹ |
+| 256 | **1.53** | 23.8 | **0.267** | 6.25 | | |
+| 512 | **0.87** | 33.5 | **0.125** | > 15 min | | |
+| 1024 | **0.55** | 64.7 | **0.062** | > 15 min | | |
+
+¹ One round finished past the limit (`PauliPropagation.jl` 1314 s, `MajoranaPropagation.jl`
+1098 s): drawn on the rail, in no fit. ² Not run: the engine already exceeded the limit at 7
+layers, N = 1024 (`implied` rows).
+
+- **Kicked Ising.** monoprop falls as N^−0.93 at every depth. `PauliPropagation.jl` grows as
+  N^+0.73 / +0.57 / +0.44 and `ppvm` as N^+0.56 / +0.31 / +0.18 at 5 / 7 / 9 layers (each fitted
+  over the widest N every engine finished: 1024, 512, 256). `PauliPropagation.jl` is 2.4–3.1×
+  faster than monoprop at N = 32 at every depth and still faster at N = 64; monoprop leads from
+  N = 128 (2.3–2.6×) to 86× at N = 1024, 5 layers. `ppvm` is 7% faster than monoprop at N = 32 and 5
+  layers, and 150× slower at N = 1024.
+- **2D Hubbard.** monoprop falls as N^−0.99 / −1.09 / −1.01 at 1 / 2 / 3 steps;
+  `MajoranaPropagation.jl` goes as N^+0.26 / +0.09 / −0.18. monoprop is faster at every point,
+  even at one step where K is 512–32,384 and the per-gate fixed cost dominates: 1.6× at N = 32,
+  120× at N = 1024.
+- **Work per gate.** The anticommuting terms per gate are 4.06–4.68 K/N for kicked Ising and
+  3.75–7.90 K/N for Hubbard, at every counted point; so the ratio K / anticommuting grows ∝ N, to
+  220–252× at N = 1024 (kicked Ising) and 65× at N = 512 (Hubbard, 2 steps). The 2-step Hubbard
+  point at N = 1024 (3.0e8 terms) is not counted: the counter needs ~1 KB per term.
 
 ## Workloads (identical for all engines)
 
@@ -56,16 +83,16 @@ from the rows, never typed. ns per gate per term (panels a, c):
   The Hubbard drivers take no tolerance at all, and the figure refuses a row with one.
 
 `make_figure.py` **refuses to build** unless, at every point, every engine reports the same term
-count (and the same per-step term sequence in the per-step sweeps), gate count and expectation value
-(agreeing to 1.4e-11), one thread, and one Deucalion x86 node.
+count, gate count and expectation value (agreeing to 1.6e-11), one thread, and one Deucalion x86
+node, and every count saw the timed operator's term count.
 
 ## Timing rules
 
-- **One node, packed.** All points ran in one allocation on `cnx002` (job 2018658; the Hubbard N=256
-  per-step pair in job 2020273 on the same node). `scripts/slurm/campaign.sbatch` runs up to eight
-  points at once, one per NUMA domain (CPUs 8, 24, …, 120, `taskset`), longest first. The pilot
-  (job 2016941) timed four points alone, beside seven copies, and alone again: packed/alone medians
-  were 0.999–1.005, and 1.037 for one Julia point whose two alone runs differed by 4.7%.
+- **One node, packed.** All points ran on `cnx002`: the medium depths in job 2018658, the small
+  and large ones in job 2023575. `scripts/slurm/campaign.sbatch` runs up to eight points at once,
+  one per NUMA domain (CPUs 8, 24, …, 120, `taskset`), longest first. The pilot (job 2016941) timed
+  four points alone, beside seven copies, and alone again: packed/alone medians were
+  0.999–1.005, and 1.037 for one Julia point whose two alone runs differed by 4.7%.
 - **Same repetition rule for every engine** (`keep_timing` in each driver): the minimum of up to 10
   rounds on a freshly built operator; always a second round when two fit in the limit, since a
   fresh process's first round can be far slower (`PauliPropagation.jl` at N=32: 0.36 s vs 0.19 s);
@@ -73,22 +100,24 @@ count (and the same per-step term sequence in the per-step sweeps), gate count a
   `time_limit`. (The previous version of this figure took monoprop's best of 10 against one round of
   each reference, which flattered monoprop at small N.)
 - **Time limit.** 15 min of timed propagation per point, the same for every engine; the process is
-  killed at 15 min + 10 min of setup. A killed point is a `timeout` row, labelled "> 15 min" in the
-  figure; a row whose single round ran past 15 min would be labelled the same. The `PauliPropagation.jl`
-  per-step N=512 run (one round, 22 min) is the one point over the limit that is plotted: in the
-  per-step sweep the steps, not the total, are the measurement.
-- **Per step.** Panels b and d time each propagate call: one per layer for kicked Ising, one per
-  commuting gate group (nine per Trotter step) for Hubbard, whose K rises a thousandfold within the
-  second step. A step's K is the geometric mean of the terms entering and leaving it.
+  killed at 15 min + 10 min of setup. A killed point is a `timeout` row; a row whose single round
+  ran past 15 min (two here) is no better than a bound either. Both are drawn on the "> 15 min"
+  rail and enter no fit. `IMPLIED` points are written as timeout rows without running, with an
+  `implied` reason: an engine that exceeded the limit at 7 layers is not rerun at 9 at the same N.
+- **Counting is separate and untimed.** `scripts/count_anticommuting.py` (job 2023594, `cnx003`)
+  propagates the same circuit with monoprop, exports the operator, and counts exactly, for each
+  gate of one layer, the terms anticommuting with it: a term anticommutes with a multi-term
+  generator (a hopping gate's two bilinears, the interaction's diagonal monomials) when it
+  anticommutes with any of them. Validated against a gate-by-gate brute force on small lattices
+  (kicked Ising N = 8–16, Hubbard 2×2 to 4×4).
 
 ## Data and provenance
 
-| file | panel | engines |
+| file | what | rows |
 | --- | --- | --- |
-| `data/pauli_nsweep.jsonl` | a | monoprop, `PauliPropagation.jl` (`julia_pauli`), `ppvm` |
-| `data/pauli_perlayer.jsonl` | b | monoprop, `PauliPropagation.jl` |
-| `data/majorana_nsweep.jsonl` | c | monoprop, `MajoranaPropagation.jl` (`julia_majorana`) |
-| `data/majorana_perlayer.jsonl` | d | monoprop, `MajoranaPropagation.jl` |
+| `data/pauli.jsonl` | panel a: monoprop, `PauliPropagation.jl` (`julia_pauli`), `ppvm` | one per engine, depth (`layers`) and N |
+| `data/majorana.jsonl` | panel b: monoprop, `MajoranaPropagation.jl` (`julia_majorana`) | one per engine, depth (Trotter steps, `layers`) and N |
+| `data/counts.jsonl` | the strips: `num_terms`, `anticommuting_per_gate` | one per depth and N that monoprop finished |
 
 | engine | version |
 | --- | --- |
@@ -118,28 +147,40 @@ PauliPropagation 0.8). Fill in a copy of `scripts/slurm/site.env.example` (monop
 internet), then from this directory:
 
 ```bash
-sbatch -A <account> -p <partition> -t 01:45:00 --chdir="$PWD" \
-    scripts/slurm/campaign.sbatch /path/to/site.env          # every point, one node
-python merge_octave_runs.py "$RUN_DIR"                       # checks, then writes data/
+sbatch -A <account> -p <partition> -t 02:30:00 --chdir="$PWD" \
+    scripts/slurm/campaign.sbatch /path/to/site.env          # every timed point, one node
+sbatch -A <account> -p <partition> -t 03:00:00 --chdir="$PWD" \
+    scripts/slurm/count.sbatch /path/to/site.env             # the strips, any node
+python merge_octave_runs.py <campaign RUN_DIR> <count RUN_DIR>   # checks, then writes data/
 python make_figure.py
 ```
 
-`campaign.sbatch` takes `ROWS`, `SWEEPS`, `NSWEEP_NS`, `PERLAYER_NS` and `MAX_CONCURRENCY` from the
-environment to run a subset; `scripts/slurm/octave_point.sbatch` runs one engine at one or more N.
-`merge_octave_runs.py` takes several run directories, keeps each dataset's N grid (`GRID`), and
-refuses on more than one row per engine and N, a wrong engine field or library version, differing
-workload keys, more than one thread, term/gate/per-step mismatches, expectation spreads above 1e-9,
-or a timeout in a per-step sweep. `--dry-run` writes nothing; `--allow-partial --outdir <dir>`
-previews a campaign in flight.
+`campaign.sbatch` takes `ROWS`, `NS`, `PAULI_LAYERS`, `HUBBARD_LAYERS`, `MAX_N`, `IMPLIED` and
+`MAX_CONCURRENCY` from the environment (see `site.env.example`); `scripts/slurm/octave_point.sbatch`
+runs one engine at one depth and one or more N. `count.sbatch` takes the same depth knobs and runs
+the points above ~1.5e7 terms (`BIG`) one at a time. `merge_octave_runs.py` takes any number of
+run directories, keys rows by the depth they record (both file-name styles), and refuses on more
+than one row per engine, depth and N, a wrong engine field or library version, differing workload
+keys, more than one thread, term or gate mismatches, expectation spreads above 1e-9, or a count
+whose term count differs from the timed row. `--dry-run` writes nothing; `--allow-partial --outdir
+<dir>` previews a campaign in flight, and `make_figure.py --allow-partial --data <dir> --outdir
+<dir>` draws it.
 
 ## Method notes
 
-- **Fit window.** Each row's exponents are fitted over the widest N range every engine finished
-  (N ≤ 512 kicked Ising, N ≤ 256 Hubbard). Points above it are drawn but enter no fit.
+- **Fit window.** Each depth's exponents are fitted over the widest N range every engine finished
+  there (kicked Ising N ≤ 1024 / 512 / 256, Hubbard N ≤ 1024 / 256 / 64). Points above it are drawn
+  but enter no fit.
 - **Why PauliPropagation.jl wins at small N.** Up to N = 64 a Pauli string is one or two machine
   words, so the dense anticommutation test is a single AND and popcount; monoprop's index lookup
   and its higher per-gate setup (~3.5 µs against ~1 µs) only pay off once strings span several
   words. `PauliPropagation.jl`'s per-term cost then grows with the word count while monoprop's falls.
+  Profiled at N = 32 (callgrind, 7 layers): monoprop spends ~620 instructions on each
+  anticommuting term (position-list partner merge, term rebuild, sign, position-comparing hash
+  lookup); finding the anticommuting terms is under 0.5%. The same algorithm on one-word terms
+  matches `PauliPropagation.jl` (0.10 s against 0.107 s for the layer, monoprop 0.30 s). Of the
+  ~3.5 µs per gate, ~1.6 µs is Python-side circuit preparation and ~1.2 µs C++ per-gate
+  allocation and setup.
 - **Why monoprop sits above 1/N (kicked Ising).** Per-term instruction counts are flat in N
   (full-size callgrind, PR #383). The gap accrues below N=256 as one-time steps: the operator
   outgrows a 16 MiB L3 slice, and above N=128 stored term positions widen from 8 to 16 bits.
@@ -149,7 +190,8 @@ previews a campaign in flight.
 ```
 make_figure.py          the figure, the like-for-like checks and the caption
 merge_octave_runs.py    checks and merges campaign run directories into data/
-data/                   the four merged JSONL files above
-scripts/                the four drivers, julia-pauli/ and julia-majorana/ projects, slurm/
+data/                   pauli.jsonl, majorana.jsonl, counts.jsonl
+scripts/                the four drivers, count_anticommuting.py, julia-pauli/ and
+                        julia-majorana/ projects, slurm/ (campaign, octave_point, count)
 figures/                fig3_inverse_scaling.{pdf,png}, captions.txt
 ```

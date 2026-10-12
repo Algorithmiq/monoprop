@@ -12,36 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Paper Fig. 3 -- what a gate costs, per term against N and per gate against K.
+"""Paper Fig. 3 -- what a gate costs per term against N, at three circuit depths.
 
-Two rows, one per basis: the kicked-Ising chain against PauliPropagation.jl and ppvm, and the
-2D Hubbard lattice against MajoranaPropagation.jl. Two columns:
+One column per model: the kicked-Ising chain against PauliPropagation.jl and ppvm, and the 2D
+Hubbard lattice against MajoranaPropagation.jl. Each column is a tall panel over a strip,
+sharing the N axis:
 
-* left, the N sweep: nanoseconds for one gate to act on one term, against N. monoprop's per-gate
-  cost is ~K/N while a dense engine pays ~K, so on this axis monoprop falls as 1/N and the
-  references do not.
-* right, the per-step sweep at fixed N: microseconds per gate against the term count K, both
-  engines drawn, one point per propagate call (a layer; for Hubbard, one of a layer's nine
-  commuting gate groups, which resolves the thousandfold rise of K within a layer). A dense
-  engine's per-term cost grows with N (its words widen); monoprop's falls as 1/N above a
-  per-gate floor. Where the two lines cross, the crossover K* is marked.
+* the panel: nanoseconds for one gate to act on one term, against N, at a small, a medium and a
+  large depth (colour is the engine, shade is the depth). A dense engine tests every one of the
+  K terms against every gate; monoprop visits only the terms that anticommute with it, so on
+  this axis monoprop falls as 1/N and the references do not.
+* the strip: that work per gate, from counts rather than timings -- the K terms a dense code
+  tests, and the terms that anticommute with the gate (``scripts/count_anticommuting.py``),
+  whose ratio grows as N.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
-refuses to plot unless term counts (per layer, in the per-layer sweep), gate counts and
-expectation values agree. Reads data/*.jsonl (written by merge_octave_runs.py) and nothing else.
+refuses to plot unless term counts, gate counts and expectation values agree at every point,
+and the counts must have seen the same operator. Reads data/*.jsonl (written by
+merge_octave_runs.py) and nothing else.
 
-A point whose engine was killed at the time limit, or whose one round alone ran past it, is
-not plotted but labelled "> 15 min" at its N, and enters no fit.
+A point whose engine was killed at the time limit, or whose one round alone ran past it, enters
+no fit and is drawn as an open marker on the "> 15 min" rail at the top of its panel.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import textwrap
-from itertools import pairwise
 from pathlib import Path
 
 import matplotlib as mpl
@@ -49,15 +48,16 @@ import matplotlib as mpl
 mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import to_hex, to_rgb
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FixedFormatter, FixedLocator
-from merge_octave_runs import DATASETS
+from matplotlib.transforms import blended_transform_factory
+from merge_octave_runs import COUNTS, DEPTHS, ROWS
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 STEM = "fig3_inverse_scaling"
 
-MILLION = 1.0e6
 # The Deucalion x86 compute nodes (cnxNNN) are one hardware type. The rows record only the
 # hostname, so the CPU model is stated here, not measured.
 CPU = "AMD EPYC 7742 (Zen 2), 128 cores, SMT off"
@@ -77,7 +77,7 @@ plt.rcParams.update(
         "axes.labelsize": 8.0,
         "xtick.labelsize": 7.0,
         "ytick.labelsize": 7.0,
-        "legend.fontsize": 6.8,
+        "legend.fontsize": 6.6,
         "axes.linewidth": 0.8,
         "savefig.dpi": 300,
         "figure.dpi": 150,
@@ -85,8 +85,8 @@ plt.rcParams.update(
         "ps.fonttype": 42,
     }
 )
-# Colour carries the engine's role (Okabe-Ito, CVD-safe, separable in grey): monoprop, the Julia
-# reference of the row, and ppvm. In the crossover panels the marker carries N.
+# Colour carries the engine's role (Okabe-Ito, CVD-safe): monoprop, the Julia reference of the
+# column, and ppvm. Shade carries the depth.
 ROLE = {
     "monoprop": "monoprop",
     "monoprop-majorana": "monoprop",
@@ -107,22 +107,23 @@ LABEL = {
     "julia-majorana": "MajoranaPropagation.jl",
     "ppvm": "ppvm",
 }
-N_MARKER = {32: "o", 128: "s", 256: "v", 512: "^"}
-LINE_WIDTH = 1.4
-MARKER_SIZE = 4.0
-MARKER_EDGE = 0.9
-# The 1/N guide and the reference marks are near-black so that they survive a printer.
-GUIDE = "#333333"
-GUIDE_WIDTH = 1.1
+# Small depths are mixed towards white, large ones towards black; medium is the engine colour.
+SHADE = ((1.0, 0.5), (None, 0.0), (0.0, 0.42))
+LINE_WIDTH = 1.3
+MARKER_SIZE = 3.2
+MARKER_EDGE = 0.8
+# The 1/N guide and the strip's bracket are near-black so that they survive a printer.
+GUIDE = "#222222"
+GUIDE_WIDTH = 1.2
 GRID = "#d5d5d5"
-SHADE = "#D55E00"
+RAIL = 0.94  # axes fraction of the timeout rail
 PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
 
-# Page width, two rows of two panels.
-FIGSIZE = (7.0, 5.3)
-ROWS = (
-    ("pauli", "Kicked Ising", "qubits $N$"),
-    ("majorana", "2D Hubbard", "modes $N$"),
+# Page width; one column per model, each a panel over a strip.
+FIGSIZE = (7.0, 4.8)
+COLUMNS = (
+    ("pauli", "Kicked Ising", "qubits $N$", "layers"),
+    ("majorana", "2D Hubbard", "modes $N$", "Trotter steps"),
 )
 
 
@@ -141,17 +142,25 @@ def _engine_key(row):
     )
 
 
-def _style(engine, *, marker=None):
+def shade(color, depth_index):
+    target, t = SHADE[depth_index]
+    if target is None:
+        return color
+    rgb = np.array(to_rgb(color))
+    return to_hex(rgb + (target - rgb) * t)
+
+
+def _style(engine, depth_index=1):
     role = ROLE[engine]
-    ls, default_marker = ENGINE_STYLE[role]
-    color = ENGINE_COLOR[role]
+    ls, marker = ENGINE_STYLE[role]
+    color = shade(ENGINE_COLOR[role], depth_index)
     return {
         "ls": ls,
-        "marker": marker or default_marker,
+        "marker": marker,
         "color": color,
         "lw": LINE_WIDTH,
-        "ms": MARKER_SIZE - 1.2,
-        "mew": MARKER_EDGE - 0.2,
+        "ms": MARKER_SIZE,
+        "mew": MARKER_EDGE,
         "mfc": color if role == "monoprop" else "white",
         "mec": color,
         "zorder": 3 if role == "monoprop" else 2,
@@ -159,51 +168,70 @@ def _style(engine, *, marker=None):
 
 
 def _per_gate_per_term(row):
-    """Nanoseconds for one gate to act on one term: the N-sweep quantity."""
+    """Nanoseconds for one gate to act on one term: the panel's quantity."""
     return row["seconds"] / row["gates"] / row["num_terms"] * 1e9
 
 
 def _exponent(xs, ys):
-    lx, ly = np.log(xs), np.log(ys)
-    return float(np.polyfit(lx, ly, 1)[0])
+    return float(np.polyfit(np.log(xs), np.log(ys), 1)[0])
+
+
+def by_depth(rows):
+    """{layers: rows} in the order of the row's depths."""
+    out = {}
+    for r in rows:
+        out.setdefault(r["layers"], []).append(r)
+    return dict(sorted(out.items()))
 
 
 # --------------------------------------------------------------------------- #
 # Fairness preconditions -- the figure refuses to build if any of them fails
 # --------------------------------------------------------------------------- #
-def check_same_workload(datasets, expectation_tol=1e-9):
+def check_same_workload(datasets, counts, expectation_tol=1e-9, *, partial=False):
     """Every engine propagated the same operator through the same circuit, at every point.
 
     Returns the problems and the worst expectation spread, so the caption quotes a measured
     agreement.
     """
     problems, worst = [], 0.0
-    for (kind, sweep), rows in datasets.items():
+    for kind, rows in datasets.items():
         done = [r for r in rows if not r.get("timeout")]
         # The cutoff alone bounds every operator: a tolerance would make term counts depend on
         # rounding, and the comparison is defined without one.
         problems += [
-            f"{kind}/{sweep} {_engine_key(r)} N={r['num_qubits']}: lower_atol {r['lower_atol']}"
+            f"{kind} {_engine_key(r)} N={r['num_qubits']}: lower_atol {r['lower_atol']}"
             for r in done
             if r["lower_atol"] != 0
         ]
-        for n in sorted({r["num_qubits"] for r in done}):
-            at = {_engine_key(r): r for r in done if r["num_qubits"] == n}
+        for point in sorted({(r["layers"], r["num_qubits"]) for r in done}):
+            at = {
+                _engine_key(r): r
+                for r in done
+                if (r["layers"], r["num_qubits"]) == point
+            }
             if len(at) < 2:
                 continue
-            keys = ["num_terms", "gates", "layers", "lower_atol", "cutoff"]
-            if sweep == "perlayer":
-                keys += ["layer_terms", "gates_per_layer", "step_terms", "step_gates"]
-            for key in keys:
-                vals = {e: json.dumps(r.get(key)) for e, r in at.items()}
-                if len(set(vals.values())) != 1:
-                    problems.append(f"{kind}/{sweep} N={n}: {key} differs")
+            for key in ("num_terms", "gates", "lower_atol", "cutoff"):
+                if len({json.dumps(r.get(key)) for r in at.values()}) != 1:
+                    problems.append(
+                        f"{kind} depth {point[0]} N={point[1]}: {key} differs"
+                    )
             exps = [r["expectation"] for r in at.values()]
             spread = max(exps) - min(exps)
             worst = max(worst, spread)
             if spread > expectation_tol:
                 problems.append(
-                    f"{kind}/{sweep} N={n}: expectation spread {spread:.2e}"
+                    f"{kind} depth {point[0]} N={point[1]}: spread {spread:.2e}"
+                )
+        terms = {(r["layers"], r["num_qubits"]): r["num_terms"] for r in done}
+        for c in counts:
+            if c["basis"] != kind:
+                continue
+            want = terms.get((c["layers"], c["num_qubits"]))
+            if want != c["num_terms"] and not (partial and want is None):
+                problems.append(
+                    f"{kind} depth {c['layers']} N={c['num_qubits']}: count saw "
+                    f"{c['num_terms']} terms, timed {want}"
                 )
     return problems, worst
 
@@ -258,69 +286,83 @@ def _limit(row):
     return limit if limit is not None and row["seconds"] > limit else None
 
 
-def nsweep_series(rows, engines):
-    """{engine: (completed [(N, ns)], censored [(N, lower-bound ns, limit s)])}.
-
-    A timed-out point has no row of its own, so its bound uses the gate and term counts of an
-    engine that finished at that N (every engine runs the same workload, checked above).
-    """
-    done = [r for r in rows if not r.get("timeout")]
-    ref = {r["num_qubits"]: r for r in done}
+def series(rows, engines):
+    """{engine: (completed [(N, ns)], censored [N])} for one depth."""
     out = {}
     for e in engines:
         mine = [r for r in rows if _engine_key(r) == e]
         pts = sorted(
             (r["num_qubits"], _per_gate_per_term(r)) for r in mine if _limit(r) is None
         )
-        bounds = sorted(
-            (
-                r["num_qubits"],
-                _limit(r)
-                / ref[r["num_qubits"]]["gates"]
-                / ref[r["num_qubits"]]["num_terms"]
-                * 1e9,
-                _limit(r),
-            )
-            for r in mine
-            if _limit(r) is not None and r["num_qubits"] in ref
-        )
-        out[e] = (pts, bounds)
+        out[e] = (pts, sorted(r["num_qubits"] for r in mine if _limit(r) is not None))
     return out
 
 
-def fit_window(series):
-    """The widest N <= nmax every engine completed, so every exponent is like for like."""
-    complete = set.intersection(*({n for n, _ in pts} for pts, _ in series.values()))
-    return max(complete)
+def fit_window(ser):
+    """The widest N every engine completed, so every exponent is like for like."""
+    return max(
+        set.intersection(*({n for n, _ in pts} for pts, _ in ser.values() if pts))
+    )
 
 
-def scaling_panel(ax, rows, engines, xlabel):
-    series = nsweep_series(rows, engines)
-    nmax = fit_window(series)
-    exps = {}
-    for e in engines:
-        pts, bounds = series[e]
-        xs, ys = zip(*pts, strict=True)
-        ax.plot(xs, ys, **_style(e))
-        fitted = [(n, y) for n, y in pts if n <= nmax]
-        exps[e] = _exponent(*zip(*fitted, strict=True))
-        st = _style(e)
-        # A point killed at the limit bounds the cost per term only from below, and that bound
-        # (limit / gates / terms) can sit under the last finished point, so drawing it as a
-        # marker would read as a speed-up. It is labelled instead, in the engine's colour, at
-        # the height of the engine's last finished point.
-        for n, _, ceiling in bounds:
-            ax.annotate(
-                f"> {ceiling / 60:.0f} min",
-                xy=(n, ys[-1]),
-                ha="center",
-                va="center",
-                fontsize=6.0,
-                color=st["color"],
-            )
-    mono = series[engines[0]][0]
-    xs = [n for n, _ in mono]
-    x0, y0 = mono[0]
+def _log2_axis(ax, ns):
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_locator(FixedLocator(ns))
+    ax.xaxis.set_major_formatter(FixedFormatter([str(n) for n in ns]))
+    ax.xaxis.set_minor_locator(FixedLocator([]))
+    ax.set_xlim(ns[0] / 1.15, ns[-1] * 1.15)
+
+
+def cost_panel(ax, rows, engines, depth_word, all_depths):
+    """The ns-per-gate-per-term panel: every engine at every depth, timeouts on the rail."""
+    depths = by_depth(rows)
+    results, rail = {}, {}
+    # A depth's shade is fixed by its place among the row's depths, even with one missing.
+    shades = [all_depths.index(layers) for layers in depths]
+    for i, (layers, drows) in zip(shades, depths.items(), strict=True):
+        ser = series(drows, engines)
+        nmax = fit_window(ser)
+        exps = {}
+        for e in engines:
+            pts, censored = ser[e]
+            if pts:
+                ax.plot(*zip(*pts, strict=True), **_style(e, i))
+            fitted = [(n, y) for n, y in pts if n <= nmax]
+            exps[e] = _exponent(*zip(*fitted, strict=True)) if len(fitted) > 1 else None
+            for n in censored:
+                rail.setdefault(n, []).append((e, i))
+        mono = [
+            r for r in drows if _engine_key(r) == engines[0] and not r.get("timeout")
+        ]
+        results[layers] = {
+            "series": ser,
+            "exponents": exps,
+            "fit_nmax": nmax,
+            "terms": sorted((r["num_qubits"], r["num_terms"]) for r in mono),
+            "implied": sorted(
+                (_engine_key(r), r["num_qubits"], r["implied"])
+                for r in drows
+                if r.get("implied")
+            ),
+        }
+
+    ns = sorted({r["num_qubits"] for r in rows})
+    lo = min(
+        y for v in results.values() for pts, _ in v["series"].values() for _, y in pts
+    )
+    hi = max(
+        y for v in results.values() for pts, _ in v["series"].values() for _, y in pts
+    )
+    ax.set_yscale("log")
+    # Room above the highest point for the rail, below the lowest for the guide's label.
+    ax.set_ylim(lo / 3.0, hi * 9.0)
+    _log2_axis(ax, ns)
+
+    # The 1/N guide, through monoprop's first point at the medium depth.
+    mid = results.get(all_depths[1], next(iter(results.values())))["series"][
+        engines[0]
+    ][0]
+    (x0, y0), xs = mid[0], [n for n, _ in mid]
     ax.plot(
         xs,
         [y0 * x0 / x for x in xs],
@@ -329,213 +371,226 @@ def scaling_panel(ax, rows, engines, xlabel):
         lw=GUIDE_WIDTH,
         zorder=1,
     )
-    lx = xs[0] * (xs[-1] / xs[0]) ** 0.62
+    lx = xs[0] * (xs[-1] / xs[0]) ** 0.55
     ax.annotate(
         "$\\propto 1/N$",
         xy=(lx, y0 * x0 / lx),
-        xytext=(0, -9),
+        xytext=(-4, -4),
         textcoords="offset points",
         va="top",
-        ha="center",
+        ha="right",
         color=GUIDE,
         fontsize=7.0,
     )
 
-    ax.set_xscale("log", base=2)
-    ax.set_yscale("log")
-    ax.xaxis.set_major_locator(FixedLocator(xs))
-    ax.xaxis.set_major_formatter(FixedFormatter([str(x) for x in xs]))
-    ax.xaxis.set_minor_locator(FixedLocator([]))
-    ax.set_xlim(xs[0] / 1.12, xs[-1] * 1.12)
-    ax.set_xlabel(xlabel)
+    # The rail: a point censored by the time limit has no cost to plot, only a lower bound
+    # that can sit under the last finished point, so it is marked above the data instead.
+    tr = blended_transform_factory(ax.transData, ax.transAxes)
+    ax.plot(
+        [0, 1],
+        [RAIL, RAIL],
+        transform=ax.transAxes,
+        color="#999999",
+        lw=0.5,
+        ls=(0, (1, 2)),
+        zorder=0,
+    )
+    for n, marks in rail.items():
+        for k, (e, i) in enumerate(marks):
+            dx = 2 ** ((k - (len(marks) - 1) / 2) * 0.075)
+            st = _style(e, i)
+            ax.plot(
+                [n * dx],
+                [RAIL],
+                transform=tr,
+                ls="none",
+                marker=st["marker"],
+                ms=MARKER_SIZE + 0.4,
+                mew=MARKER_EDGE,
+                mfc="white",
+                mec=st["color"],
+                clip_on=False,
+                zorder=4,
+            )
+    ax.text(
+        0.01,
+        RAIL,
+        f"> {_ceiling_minutes(rows)} min",
+        transform=ax.transAxes,
+        ha="left",
+        va="center",
+        fontsize=6.4,
+        color="#555555",
+        bbox={"fc": "white", "ec": "none", "pad": 0.6},
+        zorder=5,
+    )
     ax.set_ylabel("ns per gate, per term")
     _frame(ax)
-    lo = min(y for pts, _ in series.values() for _, y in pts)
-    hi = max(y for pts, _ in series.values() for _, y in pts)
-    ax.set_ylim(lo / 3.4, hi * 2.0)
-    handles = [
+
+    engine_handles = [
+        Line2D([], [], **{**_style(e), "lw": LINE_WIDTH + 0.2}, label=LABEL[e])
+        for e in engines
+    ]
+    depth_handles = [
         Line2D(
             [],
             [],
-            **{**_style(e), "ms": MARKER_SIZE, "lw": LINE_WIDTH + 0.2},
-            label=f"{LABEL[e]}  $\\propto N^{{{exps[e]:+.2f}}}$",
+            color=shade("#555555", i),
+            lw=2.4,
+            label=_depth_name(layers, depth_word)
+            + (
+                f": $K$ = {_sci(res['terms'][0][1])}–{_sci(res['terms'][-1][1])}"
+                if res["terms"]
+                else ""
+            ),
         )
-        for e in engines
+        for i, (layers, res) in zip(shades, results.items(), strict=True)
     ]
-    ax.legend(
-        handles=handles,
+    leg = ax.legend(
+        handles=engine_handles,
         frameon=False,
         loc="lower left",
         handlelength=2.2,
         handletextpad=0.5,
-        borderaxespad=0.0,
-        labelspacing=0.35,
-    )
-    return {"series": series, "exponents": exps, "fit_nmax": nmax}
-
-
-def layer_points(row):
-    """[(K, microseconds per gate)] for each step (propagate call) of a per-layer row.
-
-    K is the geometric mean of the terms entering and leaving the step: its gates act on an
-    operator growing between the two.
-    """
-    k_in = [row["initial_terms"], *row["step_terms"][:-1]]
-    return [
-        (math.sqrt(a * b), t / g * MILLION)
-        for a, b, t, g in zip(
-            k_in, row["step_terms"], row["step_seconds"], row["step_gates"], strict=True
-        )
-    ]
-
-
-def crossing(mono, ref):
-    """The K at which monoprop's per-gate time first drops below the reference's, or None.
-
-    Both engines' layers share K exactly, so the ratio is taken layer by layer and the crossing
-    interpolated in log-log between the two layers that bracket it. None if monoprop is never
-    slower (no crossing in range) or never faster.
-    """
-    ratio = [(k, tm / tr) for (k, tm), (_, tr) in zip(mono, ref, strict=True)]
-    for (k0, r0), (k1, r1) in pairwise(ratio):
-        if r0 >= 1.0 > r1:
-            f = math.log(r0) / (math.log(r0) - math.log(r1))
-            return math.exp(math.log(k0) + f * (math.log(k1) - math.log(k0)))
-    return None
-
-
-def crossover_panel(ax, rows, engines):
-    mono_e, ref_e = engines[0], engines[1]
-    by = {(_engine_key(r), r["num_qubits"]): r for r in rows}
-    ns = sorted({r["num_qubits"] for r in rows})
-    stars, out = [], {}
-    for n in ns:
-        mono, ref = layer_points(by[(mono_e, n)]), layer_points(by[(ref_e, n)])
-        for e, pts in ((mono_e, mono), (ref_e, ref)):
-            ax.plot(*zip(*pts, strict=True), **_style(e, marker=N_MARKER.get(n, "D")))
-        kstar = crossing(mono, ref)
-        out[n] = {
-            "k_star": kstar,
-            "ratio_last": ref[-1][1] / mono[-1][1],
-            "ratio_first": ref[0][1] / mono[0][1],
-            "k_last": mono[-1][0],
-            "k_first": mono[0][0],
-        }
-        if kstar is not None:
-            t = math.exp(
-                np.interp(
-                    math.log(kstar),
-                    np.log([k for k, _ in mono]),
-                    np.log([t for _, t in mono]),
-                )
-            )
-            stars.append((kstar, t))
-    for k, t in stars:
-        ax.plot(
-            [k],
-            [t],
-            marker="D",
-            ms=4.2,
-            mfc=GUIDE,
-            mec="white",
-            mew=0.6,
-            ls="none",
-            zorder=5,
-        )
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("terms $K$")
-    ax.set_ylabel("µs per gate")
-    _frame(ax)
-    xlo, xhi = ax.get_xlim()
-    # The regions are labelled only when every N crosses: otherwise "faster" left of a K* is
-    # not true of every line, and the caption says which engine is faster at every K.
-    if stars and len(stars) == len(ns):
-        kmin = min(k for k, _ in stars)
-        ax.axvspan(xlo, kmin, color=SHADE, alpha=0.07, lw=0, zorder=0)
-        ax.text(
-            0.03,
-            0.97,
-            f"{LABEL[ref_e]}\nfaster",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=6.6,
-            color="#8a3a00",
-        )
-        ax.text(
-            0.97,
-            0.03,
-            "monoprop faster",
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=6.6,
-            color="#004f7c",
-        )
-    ax.set_xlim(xlo, xhi)
-    handles = (
-        [
-            Line2D(
-                [],
-                [],
-                **{**_style(e), "marker": None, "lw": LINE_WIDTH + 0.2},
-                label=LABEL[e],
-            )
-            for e in (mono_e, ref_e)
-        ]
-        + [
-            Line2D(
-                [],
-                [],
-                ls="none",
-                marker=N_MARKER.get(n, "D"),
-                ms=MARKER_SIZE,
-                mfc="#777777",
-                mec="#777777",
-                label=f"$N={n}$",
-            )
-            for n in ns
-        ]
-        + [
-            Line2D(
-                [],
-                [],
-                ls="none",
-                marker="D",
-                ms=4.2,
-                mfc=GUIDE,
-                mec="white",
-                label="crossover $K^*$",
-            )
-        ][: len(stars) > 0]
-    )
-    ax.legend(
-        handles=handles,
-        frameon=False,
-        loc="upper left",
-        bbox_to_anchor=(0.0, 0.86),
-        handlelength=2.0,
-        handletextpad=0.5,
-        borderaxespad=0.0,
+        borderaxespad=0.2,
         labelspacing=0.3,
     )
+    ax.add_artist(leg)
+    ax.legend(
+        handles=depth_handles,
+        frameon=False,
+        loc="upper right",
+        bbox_to_anchor=(1.0, RAIL - 0.04),
+        handlelength=1.4,
+        handletextpad=0.5,
+        borderaxespad=0.2,
+        labelspacing=0.3,
+    )
+    return results
+
+
+def _depth_name(layers, depth_word):
+    """'1 Trotter step', '2 Trotter steps'."""
+    return f"{layers} {depth_word if layers > 1 else depth_word[:-1]}"
+
+
+def _sci(x):
+    """3.2×10⁵ in mathtext."""
+    e = int(np.floor(np.log10(x)))
+    m = x / 10**e
+    return f"${m:.1f}\\times10^{{{e}}}$"
+
+
+def work_strip(ax, counts, kind, xlabel, ns):
+    """Terms per gate: the K a dense code tests, and the anticommuting terms monoprop visits."""
+    mine = by_depth([c for c in counts if c["basis"] == kind])
+    out = {}
+    for layers, unsorted in mine.items():
+        i = DEPTHS[kind].index(layers)
+        cs = sorted(unsorted, key=lambda c: c["num_qubits"])
+        n = [c["num_qubits"] for c in cs]
+        k = [c["num_terms"] for c in cs]
+        a = [c["anticommuting_per_gate"] for c in cs]
+        common = {
+            "lw": LINE_WIDTH,
+            "ms": MARKER_SIZE - 0.6,
+            "mew": MARKER_EDGE,
+            "marker": "o",
+        }
+        dense = shade(ENGINE_COLOR["julia"], i)
+        mono = shade(ENGINE_COLOR["monoprop"], i)
+        ax.plot(n, k, ls="--", color=dense, mfc="white", mec=dense, zorder=2, **common)
+        ax.plot(n, a, ls="-", color=mono, mfc=mono, mec=mono, zorder=3, **common)
+        out[layers] = {
+            c["num_qubits"]: (c["num_terms"], c["anticommuting_per_gate"]) for c in cs
+        }
+
+    # The bracket: the gap between the two at the medium depth's largest counted N.
+    mid = out.get(DEPTHS[kind][1], next(iter(out.values())))
+    nb = max(mid)
+    kb, ab = mid[nb]
+    xb = nb * 1.09
+    ax.annotate(
+        "",
+        xy=(xb, kb),
+        xytext=(xb, ab),
+        arrowprops={
+            "arrowstyle": "<->",
+            "color": GUIDE,
+            "lw": 0.9,
+            "shrinkA": 0,
+            "shrinkB": 0,
+        },
+        annotation_clip=False,
+    )
+    ax.text(
+        xb * 1.04,
+        np.sqrt(kb * ab),
+        f"{kb / ab:.0f}×",
+        ha="left",
+        va="center",
+        fontsize=6.6,
+        color=GUIDE,
+    )
+    ax.set_yscale("log")
+    _log2_axis(ax, ns)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("terms per gate")
+    _frame(ax)
+    leg = ax.legend(
+        handles=[
+            Line2D(
+                [],
+                [],
+                ls="--",
+                marker="o",
+                ms=MARKER_SIZE - 0.6,
+                color=ENGINE_COLOR["julia"],
+                mfc="white",
+                lw=LINE_WIDTH,
+                label="all $K$ terms (dense codes)",
+            ),
+            Line2D(
+                [],
+                [],
+                ls="-",
+                marker="o",
+                ms=MARKER_SIZE - 0.6,
+                color=ENGINE_COLOR["monoprop"],
+                lw=LINE_WIDTH,
+                label="anticommuting (monoprop)",
+            ),
+        ],
+        frameon=False,
+        loc="lower left",
+        bbox_to_anchor=(-0.13, 0.97),
+        ncol=2,
+        handlelength=1.7,
+        handletextpad=0.4,
+        columnspacing=0.8,
+        borderaxespad=0.0,
+    )
+    # Above the strip, in the gap under the panel's tick row: out of the layout, which would
+    # otherwise shrink the axes to make room for it.
+    leg.set_in_layout(False)
     return out
 
 
-def draw(datasets, outdir: Path):
-    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE, constrained_layout=True)
+def draw(datasets, counts, outdir: Path):
+    fig = plt.figure(figsize=FIGSIZE, layout="constrained")
+    fig.get_layout_engine().set(h_pad=0.04, hspace=0.07)
+    grid = fig.add_gridspec(2, 2, height_ratios=(2.2, 1.2))
     results = {}
-    for i, (kind, title, xlabel) in enumerate(ROWS):
-        engines = DATASETS[(kind, "nsweep")][1]
-        results[(kind, "nsweep")] = scaling_panel(
-            axes[i, 0], datasets[(kind, "nsweep")], engines, xlabel
-        )
-        results[(kind, "perlayer")] = crossover_panel(
-            axes[i, 1], datasets[(kind, "perlayer")], DATASETS[(kind, "perlayer")][1]
-        )
-        axes[i, 0].set_title(f"({'ac'[i]})  {title}: cost per term", loc="left")
-        axes[i, 1].set_title(f"({'bd'[i]})  {title}: cost per gate", loc="left")
+    for j, (kind, title, xlabel, depth_word) in enumerate(COLUMNS):
+        top = fig.add_subplot(grid[0, j])
+        strip = fig.add_subplot(grid[1, j], sharex=top)
+        engines = ROWS[kind][1]
+        res = cost_panel(top, datasets[kind], engines, depth_word, DEPTHS[kind])
+        ns = sorted({r["num_qubits"] for r in datasets[kind]})
+        work = work_strip(strip, counts, kind, xlabel, ns)
+        top.tick_params(labelbottom=False)
+        top.set_title(f"({'ab'[j]})  {title}", loc="left")
+        results[kind] = {"cost": res, "work": work}
     outdir.mkdir(parents=True, exist_ok=True)
     outs = []
     for ext, dpi in (("pdf", None), ("png", PNG_DPI)):
@@ -556,21 +611,9 @@ def _para(text):
     )
 
 
-def _crossover_text(v, ref_label):
-    if v["k_star"] is not None:
-        return f"K*={v['k_star']:.2g}"
-    if v["ratio_first"] < 1 and v["ratio_last"] < 1:
-        return f"no crossover, {ref_label} faster at every K"
-    if v["ratio_first"] > 1 and v["ratio_last"] > 1:
-        return "no crossover, monoprop faster at every K"
-    return "no single crossover"
-
-
-def _ceiling_minutes(datasets):
+def _ceiling_minutes(rows):
     """The time limit, from the timeout rows; the campaign default when nothing timed out."""
-    ceilings = {
-        r["ceiling_seconds"] for rs in datasets.values() for r in rs if r.get("timeout")
-    }
+    ceilings = {r["ceiling_seconds"] for r in rows if r.get("timeout")}
     if len(ceilings) > 1:
         raise SystemExit(f"timeout rows disagree on the time limit: {sorted(ceilings)}")
     return f"{(ceilings.pop() if ceilings else CEILING_DEFAULT_S) / 60:.0f}"
@@ -583,67 +626,71 @@ def _max_rounds(datasets):
     return rounds.pop()
 
 
+def _depth_text(engines, layers, depth_word, v):
+    ser, mono = v["series"], dict(v["series"][engines[0]][0])
+    exps = ", ".join(f"{LABEL[e]} N^{v['exponents'][e]:+.2f}" for e in engines)
+    leads = []
+    for e in engines[1:]:
+        pts = dict(ser[e][0])
+        common = sorted(set(pts) & set(mono))
+        r0, r1 = pts[common[0]] / mono[common[0]], pts[common[-1]] / mono[common[-1]]
+        leads.append(
+            f"{LABEL[e]}/monoprop {r0:.2g}x at N={common[0]}, {r1:.2g}x at N={common[-1]}"
+        )
+        timed_out = ser[e][1]
+        implied = [n for x, n, _ in v["implied"] if x == e]
+        run = [n for n in timed_out if n not in implied]
+        if run:
+            leads.append(f"{LABEL[e]} over the limit at N={', '.join(map(str, run))}")
+        if implied:
+            leads.append(
+                f"{LABEL[e]} not run at N={', '.join(map(str, implied))} (over the limit "
+                "at a shallower depth)"
+            )
+    (n0, k0), (n1, k1) = v["terms"][0], v["terms"][-1]
+    return (
+        f"{_depth_name(layers, depth_word)}: K={k0:,} at N={n0} to {k1:,} at N={n1}; fitted over "
+        f"N <= {v['fit_nmax']}: {exps}; " + "; ".join(leads)
+    )
+
+
 def write_caption(outdir: Path, datasets, results, *, spread, hosts):
     parts = []
-    for kind, title, _ in ROWS:
-        rows = datasets[(kind, "nsweep")]
-        engines = DATASETS[(kind, "nsweep")][1]
-        res = results[(kind, "nsweep")]
-        mono_pts = res["series"][engines[0]][0]
-        lo = next(
-            r
-            for r in rows
-            if _engine_key(r) == engines[0] and r["num_qubits"] == mono_pts[0][0]
-        )
-        hi = next(
-            r
-            for r in rows
-            if _engine_key(r) == engines[0] and r["num_qubits"] == mono_pts[-1][0]
-        )
-        exps = ", ".join(f"{LABEL[e]} N^{res['exponents'][e]:+.2f}" for e in engines)
-        leads = []
-        for e in engines[1:]:
-            pts = dict(res["series"][e][0])
-            mono = dict(mono_pts)
-            common = sorted(set(pts) & set(mono))
-            leads.append(
-                f"{LABEL[e]} pays {pts[common[0]] / mono[common[0]]:.2g}x monoprop's per-term "
-                f"cost at N={common[0]} and {pts[common[-1]] / mono[common[-1]]:.2g}x at "
-                f"N={common[-1]}"
-            )
-            timeouts = [n for n, _, _ in res["series"][e][1]]
-            if timeouts:
-                leads.append(
-                    f"{LABEL[e]} exceeded the time limit at N={', '.join(map(str, timeouts))} "
-                    "(labelled in the figure)"
-                )
+    for kind, title, _, depth_word in COLUMNS:
+        engines = ROWS[kind][1]
+        cost = results[kind]["cost"]
+        texts = [
+            _depth_text(engines, layers, depth_word, v) for layers, v in cost.items()
+        ]
+        parts.append(_para(f"{title}, cost per term. " + ". ".join(texts) + "."))
+        work = results[kind]["work"]
+        scaled = [n * a / k for pts in work.values() for n, (k, a) in pts.items()]
+        missing = [
+            f"{_depth_name(layers, depth_word)} N={n}"
+            for layers, v in cost.items()
+            for n, _ in v["terms"]
+            if n not in work.get(layers, {})
+        ]
         parts.append(
             _para(
-                f"{title}, N sweep ({lo['layers']} layers, cutoff {lo['cutoff']} and no coefficient "
-                f"truncation): {lo['num_terms']:,} terms at N={lo['num_qubits']} to "
-                f"{hi['num_terms']:,} at N={hi['num_qubits']}. Fitted over N <= {res['fit_nmax']} "
-                f"(the widest range every engine finished): {exps}. "
-                + "; ".join(leads)
+                f"{title}, work per gate: the anticommuting terms per gate are "
+                f"{min(scaled):.2f}K/N to {max(scaled):.2f}K/N over every counted point"
+                + (
+                    f" (not counted: {', '.join(missing)}, too large for the counter)"
+                    if missing
+                    else ""
+                )
                 + "."
             )
         )
-        cross = results[(kind, "perlayer")]
-        ref_e = DATASETS[(kind, "perlayer")][1][1]
-        per_n = "; ".join(
-            f"N={n}: {_crossover_text(v, LABEL[ref_e])}; {LABEL[ref_e]} takes "
-            f"{v['ratio_first']:.2g}x monoprop's time per gate at K~{v['k_first']:.2g} and "
-            f"{v['ratio_last']:.2g}x at K~{v['k_last']:.2g}"
-            for n, v in cross.items()
-        )
-        parts.append(_para(f"{title}, step by step: {per_n}."))
     parts.append(
         _para(
-            f"Agreement: identical term and gate counts at every point (per step in the per-step "
-            f"sweeps), expectation values within {spread:.1e}. One thread, one pinned core, one "
-            f"exclusive node ({', '.join(hosts)}; {MACHINE}). Every engine runs under the same "
-            f"{_ceiling_minutes(datasets)} min limit of timed propagation per point, and the same "
-            f"rule for repetitions: the minimum of up to {_max_rounds(datasets)} fresh rounds, "
-            f"at least two wherever two fit in the limit."
+            f"Agreement: identical term and gate counts at every point, expectation values within "
+            f"{spread:.1e}. One thread, one pinned core, one exclusive node ({', '.join(hosts)}; "
+            f"{MACHINE}). Every engine runs under the same "
+            f"{_ceiling_minutes([r for rs in datasets.values() for r in rs])} min limit of timed "
+            f"propagation per point, and the same rule for repetitions: the minimum of up to "
+            f"{_max_rounds(datasets)} fresh rounds, at least two wherever two fit in the limit."
         )
     )
     out = outdir / "captions.txt"
@@ -657,16 +704,33 @@ def main() -> None:
         "--data", type=Path, default=DATA, help="directory of the merged JSONL files"
     )
     ap.add_argument("--outdir", type=Path, default=HERE / "figures")
+    ap.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="draw a campaign in flight (missing depths allowed, no caption); never into figures/",
+    )
     args = ap.parse_args()
+    if args.allow_partial and args.outdir.resolve() == HERE / "figures":
+        raise SystemExit(
+            "--allow-partial output is a preview: pass --outdir outside figures/"
+        )
 
-    datasets = {key: load(args.data / name) for key, (name, _) in DATASETS.items()}
-    problems, spread = check_same_workload(datasets)
+    datasets = {kind: load(args.data / name) for kind, (name, _) in ROWS.items()}
+    counts = load(args.data / COUNTS)
+    for kind, rows in datasets.items():
+        depths = sorted({r["layers"] for r in rows})
+        if depths != list(DEPTHS[kind]) and not args.allow_partial:
+            raise SystemExit(f"{kind}: depths {depths}, want {list(DEPTHS[kind])}")
+    problems, spread = check_same_workload(datasets, counts, partial=args.allow_partial)
     thread_problems, hosts = check_single_thread(datasets)
     if problems + thread_problems:
         raise SystemExit(
             "\n".join(["not measured like for like:", *problems, *thread_problems])
         )
-    outs, results = draw(datasets, args.outdir)
+    outs, results = draw(datasets, counts, args.outdir)
+    if args.allow_partial:
+        print("preview:", *outs, sep="\n  ")
+        return
     cap = write_caption(args.outdir, datasets, results, spread=spread, hosts=hosts)
     print(cap.read_text())
     print("wrote:", *outs, cap, sep="\n  ")

@@ -1,32 +1,33 @@
-Kicked Ising, N sweep (7 layers, cutoff 6 and no coefficient truncation): 607,054 terms at
-N=32 to 25,254,286 at N=1024. Fitted over N <= 512 (the widest range every engine finished):
-monoprop N^-0.93, PauliPropagation.jl N^+0.57, ppvm N^+0.31. PauliPropagation.jl pays 0.4x
-monoprop's per-term cost at N=32 and 24x at N=512; PauliPropagation.jl exceeded the time limit
-at N=1024 (labelled in the figure); ppvm pays 1.8x monoprop's per-term cost at N=32 and 54x at
-N=512; ppvm exceeded the time limit at N=1024 (labelled in the figure).
+Kicked Ising, cost per term. 5 layers: K=119,280 at N=32 to 4,646,768 at N=1024; fitted over N
+<= 1024: monoprop N^-0.93, PauliPropagation.jl N^+0.73, ppvm N^+0.56;
+PauliPropagation.jl/monoprop 0.32x at N=32, 86x at N=1024; ppvm/monoprop 0.93x at N=32,
+1.5e+02x at N=1024. 7 layers: K=607,054 at N=32 to 25,254,286 at N=1024; fitted over N <= 512:
+monoprop N^-0.93, PauliPropagation.jl N^+0.57, ppvm N^+0.31; PauliPropagation.jl/monoprop 0.4x
+at N=32, 24x at N=512; PauliPropagation.jl over the limit at N=1024; ppvm/monoprop 1.8x at
+N=32, 54x at N=512; ppvm over the limit at N=1024. 9 layers: K=1,765,604 at N=32 to 78,510,692
+at N=1024; fitted over N <= 256: monoprop N^-0.93, PauliPropagation.jl N^+0.44, ppvm N^+0.18;
+PauliPropagation.jl/monoprop 0.42x at N=32, 7x at N=256; PauliPropagation.jl over the limit at
+N=512; PauliPropagation.jl not run at N=1024 (over the limit at a shallower depth);
+ppvm/monoprop 2.3x at N=32, 23x at N=256; ppvm over the limit at N=512; ppvm not run at N=1024
+(over the limit at a shallower depth).
 
-Kicked Ising, step by step: N=32: no crossover, PauliPropagation.jl faster at every K;
-PauliPropagation.jl takes 0.27x monoprop's time per gate at K~45 and 0.34x at K~1.4e+06;
-N=128: K*=1.1e+03; PauliPropagation.jl takes 0.37x monoprop's time per gate at K~1.8e+02 and
-2.3x at K~7.1e+06; N=512: no crossover, monoprop faster at every K; PauliPropagation.jl takes
-2.1x monoprop's time per gate at K~7.2e+02 and 23x at K~3e+07.
+Kicked Ising, work per gate: the anticommuting terms per gate are 4.06K/N to 4.68K/N over
+every counted point.
 
-2D Hubbard, N sweep (2 layers, cutoff 4 and no coefficient truncation): 279,264 terms at N=32
-to 296,047,360 at N=1024. Fitted over N <= 256 (the widest range every engine finished):
-monoprop N^-1.09, MajoranaPropagation.jl N^+0.09. MajoranaPropagation.jl pays 2x monoprop's
-per-term cost at N=32 and 23x at N=256; MajoranaPropagation.jl exceeded the time limit at
-N=512, 1024 (labelled in the figure).
+2D Hubbard, cost per term. 1 Trotter step: K=512 at N=32 to 32,384 at N=1024; fitted over N <=
+1024: monoprop N^-0.99, MajoranaPropagation.jl N^+0.26; MajoranaPropagation.jl/monoprop 1.6x
+at N=32, 1.2e+02x at N=1024. 2 Trotter steps: K=279,264 at N=32 to 296,047,360 at N=1024;
+fitted over N <= 256: monoprop N^-1.09, MajoranaPropagation.jl N^+0.09;
+MajoranaPropagation.jl/monoprop 2x at N=32, 23x at N=256; MajoranaPropagation.jl over the
+limit at N=512, 1024. 3 Trotter steps: K=536,860 at N=32 to 101,450,612 at N=128; fitted over
+N <= 64: monoprop N^-1.01, MajoranaPropagation.jl N^-0.18; MajoranaPropagation.jl/monoprop
+2.5x at N=32, 4.4x at N=64; MajoranaPropagation.jl over the limit at N=128.
 
-2D Hubbard, step by step: N=32: no crossover, monoprop faster at every K;
-MajoranaPropagation.jl takes 1.8x monoprop's time per gate at K~32 and 2.1x at K~2.2e+05;
-N=128: no crossover, monoprop faster at every K; MajoranaPropagation.jl takes 2.5x monoprop's
-time per gate at K~1.3e+02 and 8.4x at K~9.2e+06; N=256: no crossover, monoprop faster at
-every K; MajoranaPropagation.jl takes 3.9x monoprop's time per gate at K~2.6e+02 and 24x at
-K~2.7e+07.
+2D Hubbard, work per gate: the anticommuting terms per gate are 3.75K/N to 7.90K/N over every
+counted point (not counted: 2 Trotter steps N=1024, too large for the counter).
 
-Agreement: identical term and gate counts at every point (per step in the per-step sweeps),
-expectation values within 1.4e-11. One thread, one pinned core, one exclusive node
-(cnx002.deucalion.macc.fccn.pt; Deucalion x86, AMD EPYC 7742 (Zen 2), 128 cores, SMT off).
-Every engine runs under the same 15 min limit of timed propagation per point, and the same
-rule for repetitions: the minimum of up to 10 fresh rounds, at least two wherever two fit in
-the limit.
+Agreement: identical term and gate counts at every point, expectation values within 1.6e-11.
+One thread, one pinned core, one exclusive node (cnx002.deucalion.macc.fccn.pt; Deucalion x86,
+AMD EPYC 7742 (Zen 2), 128 cores, SMT off). Every engine runs under the same 15 min limit of
+timed propagation per point, and the same rule for repetitions: the minimum of up to 10 fresh
+rounds, at least two wherever two fit in the limit.

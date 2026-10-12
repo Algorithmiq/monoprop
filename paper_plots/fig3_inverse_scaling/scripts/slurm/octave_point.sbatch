@@ -12,8 +12,9 @@
 #     sbatch --chdir=. -J mono-1024 scripts/slurm/octave_point.sbatch \
 #         /path/to/site.env nsweep 7 monoprop 1024
 #
-# <sweep> is `nsweep` (panels a, c: the time of the whole run) or `perlayer` (panels b, d:
-# the time of each propagate call, one per layer, or one per gate group for Hubbard).
+# <sweep> is `nsweep` (the figure: the time of the whole run at <layers> layers or Trotter
+# steps) or `perlayer` (the time of each propagate call, one per layer, or one per gate group
+# for Hubbard; recorded by the drivers, not drawn).
 #
 # Every engine in both sweeps is timed by the same rule (keep_timing in the drivers): up to
 # MAX_ROUNDS fresh rounds, the minimum kept; always a second round when it fits, since a
@@ -67,7 +68,7 @@ SUFFIX="$(
     IFS=-
     echo "${NS[*]}"
 )"
-OUT="$RUN_DIR/${SWEEP}/${ENGINE}_N${SUFFIX}.jsonl"
+OUT="$RUN_DIR/${SWEEP}/${ENGINE}_L${LAYERS}_N${SUFFIX}.jsonl"
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 log "sweep=$SWEEP engine=$ENGINE N=${NS[*]} layers=$LAYERS cutoff=$CUTOFF hubbard_cutoff=$HUBBARD_CUTOFF"
@@ -187,6 +188,19 @@ run_point() {
     return 0
 }
 
+# IMPLIED_TIMEOUT="<reason>": record the points as timeouts without running them, for an
+# engine that already exceeded the limit on a smaller workload of the same row.
+if [[ -n "${IMPLIED_TIMEOUT:-}" ]]; then
+    for n in "${NS[@]}"; do
+        cutoff="$CUTOFF"
+        [[ "$ENGINE" == *majorana ]] && cutoff="$HUBBARD_CUTOFF"
+        log "IMPLIED $ENGINE N=$n: $IMPLIED_TIMEOUT"
+        timeout_row "$ENGINE" "$n" "$MAX_ROUNDS" "$cutoff"
+        sed -i '$ s|}$|, "implied": "'"$IMPLIED_TIMEOUT"'"}|' "$OUT"
+    done
+    rm -rf "$TMPDIR"
+    exit 0
+fi
 for n in "${NS[@]}"; do
     run_point "$ENGINE" "$n"
 done
