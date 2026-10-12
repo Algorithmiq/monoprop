@@ -53,8 +53,10 @@ the kept changes verified; the owner had the work committed and pushed on 2026-1
 ran on 2026-10-08/09 under separate authorization: 145 of 250 cells pass all five gates (S7: 102), so strict parity
 is not demonstrated (outcome under Task S8). The owner accepted the MPI 1x1 runtime tail and left the T = 96 slow
 starts to the medians before the campaign. An owner-approved optimization round on the memory misses (round 5,
-2026-10-10) followed, verified and pushed at the owner's request (outcome under Task S8); its binaries have no
-campaign evidence yet.
+2026-10-10) followed, verified and pushed at the owner's request (outcome under Task S8). On 2026-10-11 the owner
+had `origin/main` merged into the branch (main's two engine changes ported onto the shards), then approved a
+measurement round against round 5 (step 6) and the two fixes it led to; both pushed at the owner's request. No
+binary after the campaign has campaign evidence yet.
 
 This replaces the abandoned one-store Tasks 7–13 in the
 [historical plan](2026-09-18-rank-local-openmp.md). Its Tasks 0–6 remain historical evidence, not an unexecuted queue.
@@ -1238,14 +1240,15 @@ coverage has migrated. Update `detail/mpi/{Comm,MPICompat,MPIUtils,Exchange}.h`,
 `pyproject.toml`, installed smoke tests and docs as applicable. Audit other tracked dependency references before
 editing; do not touch unrelated caches.
 
-**Outcome (2026-10-07/10, in progress):** cutover implemented and locally verified; optimization rounds run and their
+**Outcome (2026-10-07/11, in progress):** cutover implemented and locally verified; optimization rounds run and their
 kept changes verified; committed and pushed at the owner's request on 2026-10-08; final campaign run 2026-10-08/09
-(145 of 250 cells pass; see below); optimization round 5 run, verified and pushed on 2026-10-10, re-measured on
-targeted cells only. Start:
+(145 of 250 cells pass; see below); optimization round 5 run, verified and pushed on 2026-10-10; `origin/main` merged,
+step 6 measured and its fixes pushed on 2026-10-11, all re-measured on targeted cells only. Start:
 `d023e67`. Ledger, removal/coverage ledger, proposal, findings and handoff: `/home/ubuntu/s8-artifacts/` (`LEDGER.md`,
 `REMOVAL-LEDGER.md`, `OPTIMIZATION-PROPOSAL.md`, `opt/FINDINGS-*.md`, `HANDOFF.md`, `campaign/reports/REPORT.md`),
 outside the checkout. **S8 cutover and optimization rounds implemented, verified and pushed; final campaign: 145 of
-250 cells pass, strict parity not demonstrated; round 5 implemented, verified and pushed, without campaign evidence.**
+250 cells pass, strict parity not demonstrated; round 5, the merge of main and step 6's fixes implemented, verified and
+pushed, without campaign evidence.**
 
 - One runtime: the selector, the legacy root, `PartitionGroup`, `CpuTopology`, `ShmComm`, `HybridComm`,
   `PartitionBarrier`, `CpuRelax`, the partition-count agreement, the permissive cached thread parser and every direct
@@ -1392,6 +1395,48 @@ outside the checkout. **S8 cutover and optimization rounds implemented, verified
   - **Still open:** the Hubbard energy remainder is mostly the partner staging run itself (32 KiB per owner); a
     smaller run cost gradient Hubbard 1.8–4 % before. The campaign verdict above stands until a re-run on the
     round-5 binaries, full or partial, which awaits the owner.
+- Merge of `origin/main` (owner, 2026-10-11, option A: one merge rather than a rebase; commit `94cbf92`):
+  - **Scope.** Main had 18 commits since `90d5717`: dependency and CI bumps, the 0.9.2 version, Pauli
+    `skip_validation`, upstream nanobind 3.1.0 with per-interpreter Nix packages, and two engine changes:
+    `evolved_operator_coefficients()` (#337) and the N-independent emit and posting-driven fold (#383). Eleven files
+    conflicted; git rerere recorded the resolutions.
+  - **Ported onto the shards:**
+    - `evolved_operator_coefficients()` probes every shard's store against its contracted block. Shards hold
+      disjoint rows, so at most one finds a key. It is rank-local under MPI, as on main, and the Heisenberg
+      identity is the rank-level core term. Main's C++ suite runs at the launch's T and again at T = 2 and 4
+      (`evolved_coefficients_env_t2`, `_t4`), instead of comparing partition counts inside one process.
+    - The scan's positions emit runs in the range kernel when there is one flat owner (P = T = 1), which is main's
+      single-rank condition. The prefetch-ahead loop binds the `thread_local` `nz` once.
+    - The threaded cosine scaling keeps its fold-block ranges; each range runs main's fold over its own words.
+    - Nix: main's per-interpreter checks and CI, with the hwloc and `pkg-config` inputs still gone.
+  - **Verified:** bitwise differential against the cutover build 27/27 and 136/136, so #383 changes no result; the
+    full matrix with main's new tests (ctest 505 / 558; pytest 916 / 892 / 892 and 1003 / 955 / 955; `mpiexec -n 2`
+    785); ASan/UBSan, Python ASan and the TSan selection clean.
+- Step 6 (owner-approved 2026-10-11, 25 min of measurement, 19.2 used; findings in
+  `s8-artifacts/opt/FINDINGS-STEP6.md`): the merged binaries against round 5's, rebuilt byte-identically.
+  - **Gains from #383:** reference build-graph-hubb −60 to −72 MiB at every geometry, so it now passes at 1x96 and
+    MPI-off; reference propagate-hubb 1x1 runtime 0.94 (17.2 s against the campaign's 18.2 s).
+  - **Losses, attributed by phase:** the merged cosine scaling ran main's fold on every owner, and the fold took a
+    second 8 KiB zero block per thread before knowing whether any block used postings: +1.4 MiB of thread heap per
+    process at T = 96, which failed six memory gates round 5 passed. The fold's setup also dominated small folds: a
+    T = 1 tiny energy call went from 12.4 to 17.8 µs.
+  - **Kept, bitwise-neutral** (commit `1a4573d`):
+    - one fold block per thread (`SharedFoldBlock`), which the posting fold re-zeroes only after a word sweep;
+    - per-call cosine folds of one block take the direct word sweep (`for_each_cos_fold_word()`), longer folds
+      main's kernel.
+    - Test `sparse_fold_word_and_posting_kernels_share_one_block`, RED first; the direct sweep is a recorded TDD
+      exception, with a mutant that fails 24 tests.
+  - **Verified:** as after the merge, plus the new test (ctest 506 / 559). Under TSan,
+    `mpi_failure_host_initialized_multiple` and the `wrong_thread_entry_*` scenarios now time out, also on a build
+    of `94cbf92` without the fixes whose sources completed the first of them earlier the same day; they pass in the
+    release build. This is host or TSan/Open MPI state and stays inconclusive.
+  - **Re-measured** (20 cells, 3 pairs each, against fresh baseline samples):
+    - five of the six cells pass again; reference gradient-hubb 1x96 is at 1.0005;
+    - tiny T = 1 energy calls are back to 13.4 µs warm and 28.8 µs first, runtime ratio 1.09 (campaign 1.16);
+    - the build-graph-hubb gains are kept, and reference energy-heis MPI-off is +1.7 MiB (round 5 +3.5);
+    - still failing among the measured cells: reference energy-hubb 1x96 and MPI-off (+4.3 to +5.0 MiB),
+      gradient-schr 1x96 (+1.6 MiB), and energy-hubb 2x48 and the pared Hubbard cells at 1.0008–1.0015.
+  - The campaign verdict above stands until a re-run on the current binaries, which awaits the owner.
 
 - [x] Add/activate host-FUNNELED acceptance and insufficient-actual-support tests before lowering initialization/support
   requirements. Test initializing-thread ownership inside the library team and wrong-host-thread rejection. Ensure no
