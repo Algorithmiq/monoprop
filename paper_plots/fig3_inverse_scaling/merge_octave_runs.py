@@ -12,34 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check the Fig. 3 octave sweep's per-job JSONL files and merge them into data/.
+"""Check the Fig. 3 campaign's per-point JSONL files and merge them into data/.
 
-Each slot's rows are written, as recorded and ordered by N, to the file the figure reads:
+A campaign run directory (``RUN_DIR`` of ``scripts/slurm/campaign.sbatch``) holds
+``nsweep/`` and ``perlayer/``, each with one ``<engine>_N<n>.jsonl`` per point. They merge
+into one file per panel source:
 
-    slot           engine field   data/ file
-    monoprop       monoprop       monoprop_pauli_octave_l7_deucalion.jsonl
-    monoprop-main  monoprop       monoprop_main_pauli_octave_l7_deucalion.jsonl
-    ppvm           ppvm           ppvm_pauli_octave_l7_deucalion.jsonl
-    julia          julia_pauli    julia_pauli_octave_v082_l7_deucalion.jsonl
+    dataset             panels   engines (file prefix)                 data/ file
+    pauli/nsweep        (a)      monoprop, julia, ppvm                 pauli_nsweep.jsonl
+    pauli/perlayer      (b)      monoprop, julia                       pauli_perlayer.jsonl
+    majorana/nsweep     (c)      monoprop-majorana, julia-majorana     majorana_nsweep.jsonl
+    majorana/perlayer   (d)      monoprop-majorana, julia-majorana     majorana_perlayer.jsonl
 
-The two monoprop builds share an engine field, so the slot, not the row, tells them apart.
+Refused on failure: more than one row per engine and N; an engine field that does not match
+its file; layers, cutoff, lower_atol or observable differing within a dataset; any row not
+single-threaded; PauliPropagation.jl not at v0.9.0 or MajoranaPropagation.jl not at v0.4.1;
+and, between the engines at one N, a different term count, gate count or (per layer) term
+sequence, or expectations further apart than 1e-9. A point killed at its time limit is a
+``timeout`` row: allowed in an N sweep, where the figure draws it as a lower bound, but not
+in a per-layer sweep, whose rows must be complete. Every engine must reach every N of its
+dataset's grid (``GRID``), as a row or a timeout row; rows at other N are reported and left out.
 
-Refused on failure: more than one row per N per slot, an engine field not matching its
-slot, any row not at 7 layers, cutoff 6 and one thread, mismatched lower_atol or
-observable, term or gate counts differing between slots, expectations differing by more
-than 1e-9, both monoprop slots at the same version, and PauliPropagation.jl not at v0.8.2.
-Every slot must reach every N <= FIT_NMAX. A slot missing points above that is reported,
-not refused. Hostnames are reported only; check_single_thread in make_figure.py judges them.
+    python merge_octave_runs.py ../../../runs/fig3/campaign-<jobid>
 
-    python merge_octave_runs.py \\
-        --monoprop      ../../runs/fig6/octave-mono-ref-664f84c0 \\
-        --monoprop-main ../../runs/fig6/octave-mono-ref-508b536e-r2 \\
-        --ppvm          ../../runs/fig6/octave-deucalion \\
-        --julia         ../../runs/fig6/octave-deucalion
-
-A slot takes run directories or JSONL files. ``--dry-run`` writes nothing.
-``--allow-partial`` turns missing points and slots into notes, for a sweep still in
-flight, and must write outside data/ (``--outdir``).
+``--dry-run`` writes nothing. ``--allow-partial`` turns missing points into notes, for a
+campaign still in flight, and must write outside data/ (``--outdir``).
 """
 
 from __future__ import annotations
@@ -52,194 +49,214 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 
-# The slot -> (engine field the rows must carry, run-dir glob, data/ file name). The figure
-# imports DEUCALION_FILES, so the merge and the default figure build cannot disagree on names.
-SLOTS = {
-    "monoprop": ("monoprop", "monoprop_N*.jsonl"),
-    "monoprop-main": ("monoprop", "monoprop_N*.jsonl"),
-    "ppvm": ("ppvm", "ppvm_N*.jsonl"),
-    "julia": ("julia_pauli", "julia_N*.jsonl"),
+# Imported by make_figure.py, so the merge and the figure cannot disagree on names.
+DATASETS = {
+    ("pauli", "nsweep"): ("pauli_nsweep.jsonl", ("monoprop", "julia", "ppvm")),
+    ("pauli", "perlayer"): ("pauli_perlayer.jsonl", ("monoprop", "julia")),
+    ("majorana", "nsweep"): (
+        "majorana_nsweep.jsonl",
+        ("monoprop-majorana", "julia-majorana"),
+    ),
+    ("majorana", "perlayer"): (
+        "majorana_perlayer.jsonl",
+        ("monoprop-majorana", "julia-majorana"),
+    ),
 }
-DEUCALION_FILES = {
-    "monoprop": "monoprop_pauli_octave_l7_deucalion.jsonl",
-    "monoprop-main": "monoprop_main_pauli_octave_l7_deucalion.jsonl",
-    "ppvm": "ppvm_pauli_octave_l7_deucalion.jsonl",
-    "julia": "julia_pauli_octave_v082_l7_deucalion.jsonl",
+# The engine field each driver writes, by the file prefix the campaign gives it.
+ENGINE_FIELD = {
+    "monoprop": "monoprop",
+    "monoprop-majorana": "monoprop",
+    "julia": "julia_pauli",
+    "julia-majorana": "julia_majorana",
+    "ppvm": "ppvm",
 }
-# Slots the figure cannot be built without. monoprop-main only adds the "before" reference.
-REQUIRED = ("monoprop", "ppvm", "julia")
-
-GRID = (32, 64, 128, 256, 512, 1024)
-# Must equal FIT_NMAX in make_figure.py (not imported: that module pulls in
-# matplotlib, and this one runs anywhere). Inside it a missing point would move an exponent.
-FIT_NMAX = 512
-JULIA_VERSION = "0.8.2"
-# The file names say l7, and the figure draws one cutoff.
-LAYERS, CUTOFF = 7, 6
+LIBRARY_VERSION = {"julia": "0.9.0", "julia-majorana": "0.4.1"}
+NSWEEP_GRID = (32, 64, 128, 256, 512, 1024)
+# Per-layer sweeps need every engine to finish, so the top N is the largest that the
+# reference completes within the time limit: MajoranaPropagation.jl does not at N=512.
+GRID = {
+    ("pauli", "nsweep"): NSWEEP_GRID,
+    ("majorana", "nsweep"): NSWEEP_GRID,
+    ("pauli", "perlayer"): (32, 128, 512),
+    ("majorana", "perlayer"): (32, 128, 256),
+}
 EXPECTATION_TOL = 1e-9
-# Must be the same on every row of every slot.
-WORKLOAD_KEYS = (
-    "cutoff",
-    "layers",
-    "lower_atol",
-    "observable",
-    "basis",
-    "active_window",
-)
+# Must be the same on every row of a dataset.
+WORKLOAD_KEYS = ("cutoff", "layers", "lower_atol", "observable", "basis")
 
 
-def _gather(slot, sources, *, allow_partial):
-    """[(N, raw line, row, source)] for one slot, from run directories and/or files.
-
-    A run directory holding none of the slot's files yet (a job still pending) is an error,
-    or under --allow-partial simply contributes nothing.
-    """
-    _, pattern = SLOTS[slot]
-    files = []
-    for src in sources:
-        if src.is_dir():
-            found = sorted(src.glob(pattern))
-            if not found and not allow_partial:
-                raise SystemExit(f"--{slot}: no {pattern} in {src}")
-            files += found
-        elif src.is_file():
-            files.append(src)
-        else:
-            raise SystemExit(f"--{slot}: {src} does not exist")
+def _gather(run_dirs, sweep, engine):
+    """[(N, raw line, row, source)] for one engine of one sweep."""
     out = []
-    for f in files:
-        for raw in f.read_text().splitlines():
-            if raw.strip():
-                row = json.loads(raw)
-                out.append((row["num_qubits"], raw.strip(), row, f))
+    for run_dir in run_dirs:
+        for f in sorted((run_dir / sweep).glob(f"{engine}_N*.jsonl")):
+            for raw in f.read_text().splitlines():
+                if raw.strip():
+                    row = json.loads(raw)
+                    out.append((row["num_qubits"], raw.strip(), row, f))
     return out
 
 
-def _row_problems(slot, n, row, src):
+def _collect(run_dirs, sweep, engines, grid):
+    """({engine: rows on the grid}, ["engine N=n" for each row off it])."""
+    by_engine, ignored = {}, []
+    for e in engines:
+        rows = _gather(run_dirs, sweep, e)
+        ignored += sorted({f"{e} N={n}" for n, *_ in rows if n not in grid})
+        if rows := [t for t in rows if t[0] in grid]:
+            by_engine[e] = rows
+    return by_engine, ignored
+
+
+def _row_problems(engine, n, row, src):
     """What is wrong with one row on its own."""
-    engine, _ = SLOTS[slot]
     out = []
-    if row["engine"] != engine:
-        out.append(f"{slot}: N={n} in {src} has engine {row['engine']!r}")
-    if (row["layers"], row["cutoff"]) != (LAYERS, CUTOFF):
-        out.append(
-            f"{slot}: N={n} has layers={row['layers']} cutoff={row['cutoff']}, "
-            f"expected {LAYERS} and {CUTOFF}"
-        )
+    if row["engine"] != ENGINE_FIELD[engine]:
+        out.append(f"{engine}: N={n} in {src} has engine {row['engine']!r}")
+    if row.get("timeout"):
+        return out
     if str(row["num_threads"]) != "1":
-        out.append(f"{slot}: N={n} num_threads={row['num_threads']!r}")
-    if slot == "julia" and row.get("library_version") != JULIA_VERSION:
+        out.append(f"{engine}: N={n} num_threads={row['num_threads']!r}")
+    want = LIBRARY_VERSION.get(engine)
+    if want and row.get("library_version") != want:
         out.append(
-            f"julia: N={n} library_version {row.get('library_version')!r}, the file name "
-            f"says v{JULIA_VERSION}"
+            f"{engine}: N={n} library_version {row.get('library_version')!r}, want {want}"
         )
     return out
 
 
-def _check_slot(slot, rows):
-    """(problems, gaps inside the fit window, gaps above it) for one slot."""
+def _engine_problems(sweep, grid, engine, rows):
+    """(problems, missing N) for one engine's rows of one dataset."""
     problems, by_n = [], {}
     for n, _, row, src in rows:
         by_n.setdefault(n, []).append(src)
-        problems += _row_problems(slot, n, row, src)
+        problems += _row_problems(engine, n, row, src)
+        if row.get("timeout") and sweep == "perlayer":
+            problems.append(f"{engine}: N={n} timed out in the per-layer sweep")
     problems += [
-        f"{slot}: {len(srcs)} rows at N={n} ({', '.join(map(str, srcs))})"
+        f"{engine}: {len(srcs)} rows at N={n}"
         for n, srcs in sorted(by_n.items())
         if len(srcs) > 1
     ]
-    stray = sorted(set(by_n) - set(GRID))
+    stray = sorted(set(by_n) - set(grid))
     if stray:
-        problems.append(f"{slot}: N outside the octave grid: {stray}")
-    missing = [n for n in GRID if n not in by_n]
-    return (
-        problems,
-        [n for n in missing if n <= FIT_NMAX],
-        [n for n in missing if n > FIT_NMAX],
-    )
+        problems.append(f"{engine}: N outside the {sweep} grid: {stray}")
+    return problems, [n for n in grid if n not in by_n]
 
 
-def _check_across(slots):
-    """Problems between slots: one workload, the same operator at every N, two builds."""
-    problems = []
-    every = [row for rows in slots.values() for _, _, row, _ in rows]
+def check_dataset(sweep, grid, by_engine, *, allow_partial):
+    """(problems, notes) for one dataset, {engine: rows}."""
+    problems, notes = [], []
+    partial = notes if allow_partial else problems
+    for engine, rows in by_engine.items():
+        engine_problems, missing = _engine_problems(sweep, grid, engine, rows)
+        problems += engine_problems
+        if missing:
+            partial.append(f"{engine}: missing N={missing}")
+
+    done = [
+        row
+        for rows in by_engine.values()
+        for _, _, row, _ in rows
+        if not row.get("timeout")
+    ]
     for key in WORKLOAD_KEYS:
-        vals = sorted({json.dumps(r.get(key)) for r in every})
+        vals = sorted({json.dumps(r.get(key)) for r in done})
         if len(vals) > 1:
             problems.append(f"{key} differs across rows: {', '.join(vals)}")
-    for n in GRID:
+    for n in grid:
         at = {
-            slot: row for slot, rows in slots.items() for m, _, row, _ in rows if m == n
+            engine: row
+            for engine, rows in by_engine.items()
+            for m, _, row, _ in rows
+            if m == n and not row.get("timeout")
         }
-        if len(at) < 2:
-            continue
-        for key in ("num_terms", "gates"):
-            vals = {slot: row[key] for slot, row in at.items()}
-            if len(set(vals.values())) != 1:
-                detail = ", ".join(f"{s}={v}" for s, v in vals.items())
-                problems.append(f"N={n}: {key} differs -- {detail}")
-        exps = [row["expectation"] for row in at.values()]
-        if max(exps) - min(exps) > EXPECTATION_TOL:
-            problems.append(f"N={n}: expectation spread {max(exps) - min(exps):.3e}")
-    if "monoprop" in slots and "monoprop-main" in slots:
-        new, old = (
-            {row.get("library_version") for _, _, row, _ in slots[s]}
-            for s in ("monoprop", "monoprop-main")
-        )
-        if new & old:
-            problems.append(
-                f"monoprop and monoprop-main share library_version {sorted(new & old)}: "
-                "the same build (or run directory) passed twice?"
-            )
+        if len(at) > 1:
+            problems += _agreement_problems(sweep, n, at)
+    return problems, notes
+
+
+def _agreement_problems(sweep, n, at):
+    """What differs between the engines' rows {engine: row} at one N."""
+    problems = []
+    keys = ["num_terms", "gates"]
+    if sweep == "perlayer":
+        keys += [
+            "gates_per_layer",
+            "initial_terms",
+            "layer_terms",
+            "step_gates",
+            "step_terms",
+        ]
+    for key in keys:
+        vals = {engine: json.dumps(row.get(key)) for engine, row in at.items()}
+        if len(set(vals.values())) != 1:
+            detail = ", ".join(f"{e}={v[:80]}" for e, v in vals.items())
+            problems.append(f"N={n}: {key} differs -- {detail}")
+    exps = [row["expectation"] for row in at.values()]
+    if max(exps) - min(exps) > EXPECTATION_TOL:
+        problems.append(f"N={n}: expectation spread {max(exps) - min(exps):.3e}")
     return problems
 
 
-def check(slots, *, allow_partial):
-    """(problems, notes) for the gathered slots. Problems refuse the merge.
-
-    Under ``allow_partial`` a missing slot or a gap inside the fit window is a note instead.
-    """
-    problems, notes = [], []
-    partial = notes if allow_partial else problems
-    partial += [f"{slot}: no rows given" for slot in REQUIRED if slot not in slots]
-    for slot, rows in slots.items():
-        slot_problems, inside, above = _check_slot(slot, rows)
-        problems += slot_problems
-        if inside:
-            partial.append(f"{slot}: missing N={inside} (inside the fit window)")
-        if above:
-            notes.append(f"{slot}: missing N={above} (above N={FIT_NMAX}: drawn-only)")
-    return problems + _check_across(slots), notes
-
-
-def _summary(slot, rows):
+def _summary(engine, rows):
     ns = sorted(n for n, *_ in rows)
+    timeouts = sorted(n for n, _, row, _ in rows if row.get("timeout"))
     hosts = sorted({row["host"] for _, _, row, _ in rows})
-    versions = sorted({str(row.get("library_version")) for _, _, row, _ in rows})
+    versions = sorted(
+        {
+            str(row.get("library_version"))
+            for _, _, row, _ in rows
+            if not row.get("timeout")
+        }
+    )
     rounds = sorted({str(row.get("rounds")) for _, _, row, _ in rows})
     return (
-        f"  {slot:<14} N={ns}  rounds={'/'.join(rounds)}  version={', '.join(versions)}\n"
-        f"  {'':<14} hosts: {', '.join(hosts)}"
+        f"    {engine:<18} N={ns}  timeouts={timeouts}  rounds={'/'.join(rounds)}  "
+        f"version={', '.join(versions)}  hosts={', '.join(hosts)}"
     )
+
+
+def _merge_dataset(args, row_kind, sweep, engines):
+    """(problems, merged lines or None) for one dataset, reporting as it goes."""
+    grid = GRID[(row_kind, sweep)]
+    by_engine, ignored = _collect(args.run_dirs, sweep, engines, grid)
+    print(f"{row_kind}/{sweep}:")
+    if not by_engine:
+        if args.allow_partial:
+            print("  note: no rows")
+            return [], None
+        return ["no rows"], None
+    for engine, rows in by_engine.items():
+        print(_summary(engine, rows))
+    if ignored:
+        print(
+            f"  ignored, outside the {row_kind}/{sweep} grid {grid}: {', '.join(ignored)}"
+        )
+    problems, notes = check_dataset(
+        sweep, grid, by_engine, allow_partial=args.allow_partial
+    )
+    for note in notes:
+        print(f"  note: {note}")
+    lines = [
+        raw
+        for e in engines
+        for _, raw, _, _ in sorted(by_engine.get(e, []), key=lambda t: t[0])
+    ]
+    return problems, lines
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    for slot in SLOTS:
-        ap.add_argument(
-            f"--{slot}",
-            nargs="+",
-            type=Path,
-            default=None,
-            help=f"run directories (globbed for {SLOTS[slot][1]}) or JSONL files",
-        )
+    ap.add_argument("run_dirs", nargs="+", type=Path, help="campaign RUN_DIRs")
     ap.add_argument("--outdir", type=Path, default=DATA)
     ap.add_argument("--dry-run", action="store_true", help="check and report only")
     ap.add_argument(
         "--allow-partial",
         action="store_true",
-        help="missing points/slots become notes; for previews, never into data/",
+        help="missing points become notes; for previews, never into data/",
     )
     ap.add_argument("--force", action="store_true", help="overwrite existing outputs")
     args = ap.parse_args()
@@ -250,35 +267,24 @@ def main() -> None:
             "--allow-partial output is a preview: pass --outdir outside data/"
         )
 
-    gathered = {
-        slot: _gather(slot, srcs, allow_partial=args.allow_partial)
-        for slot in SLOTS
-        if (srcs := getattr(args, slot.replace("-", "_"))) is not None
-    }
-    slots = {slot: rows for slot, rows in gathered.items() if rows}
-    problems, notes = check(slots, allow_partial=args.allow_partial)
-
-    print("slots:")
-    for slot, rows in slots.items():
-        print(_summary(slot, rows))
-    for note in notes:
-        print(f"  note: {note}")
-    if problems:
-        print("refused:", *problems, sep="\n  ", file=sys.stderr)
+    all_problems, writes = [], {}
+    for (row_kind, sweep), (name, engines) in DATASETS.items():
+        problems, lines = _merge_dataset(args, row_kind, sweep, engines)
+        all_problems += [f"{row_kind}/{sweep}: {p}" for p in problems]
+        if lines is not None:
+            writes[outdir / name] = lines
+    if all_problems:
+        print("refused:", *all_problems, sep="\n  ", file=sys.stderr)
         raise SystemExit(1)
-    print(
-        "  checks passed: one row per N, identical num_terms/gates/expectation, 1 thread"
-    )
+    print("  checks passed: one row per N, identical terms/gates/expectation, 1 thread")
 
-    targets = {slot: outdir / DEUCALION_FILES[slot] for slot in slots}
-    clobber = [p for p in targets.values() if p.exists()]
+    clobber = [p for p in writes if p.exists()]
     if clobber and not args.force and not args.dry_run:
         raise SystemExit(
             f"exists (pass --force to overwrite): {', '.join(map(str, clobber))}"
         )
     print("\nwould write:" if args.dry_run else "\nwrote:")
-    for slot, path in targets.items():
-        lines = [raw for _, raw, _, _ in sorted(slots[slot], key=lambda t: t[0])]
+    for path, lines in writes.items():
         if not args.dry_run:
             outdir.mkdir(parents=True, exist_ok=True)
             path.write_text("\n".join(lines) + "\n")

@@ -34,6 +34,7 @@ import json
 import math
 import os
 import socket
+from itertools import pairwise
 from pathlib import Path
 from time import perf_counter, process_time
 
@@ -59,16 +60,49 @@ def _bricklayer_topology(num_sites: int) -> list[tuple[int, int]]:
     return topo
 
 
-def _hubbard_terms(
-    num_sites: int, hopping: float, interaction: float, num_modes: int
-) -> list[FermiOperator]:
-    """First-order Trotter terms of the 1D Hubbard model (mu = 0).
+def _checkerboard_classes(lx: int, ly: int) -> list[list[tuple[int, int]]]:
+    """0-indexed open-boundary bonds of an ``lx`` x ``ly`` lattice, site ``y * lx + x``.
 
-    Every term carries the full ``num_modes`` width, not just the width of its own
-    support: a gate's generator must match the circuit's ``system_size``.
+    The bonds come in four classes, each a matching (no two bonds share a site): horizontal
+    bonds from even ``x``, from odd ``x``, then vertical bonds from even ``y``, from odd ``y``;
+    row-major within a class. Gates within a class commute, so a layer moves a mode at most
+    two sites along each axis and the operator's light cone grows by a fixed radius per
+    layer. Ordering the bonds row by row instead lets one layer's sequence of
+    non-commuting hops carry a mode across the whole lattice, and the term count then grows
+    with a power of the lattice size rather than linearly in it. The MajoranaPropagation.jl
+    driver builds the same order.
+    """
+    horizontal = [
+        [(y * lx + x, y * lx + x + 1) for y in range(ly) for x in range(p, lx - 1, 2)]
+        for p in (0, 1)
+    ]
+    vertical = [
+        [(y * lx + x, (y + 1) * lx + x) for y in range(p, ly - 1, 2) for x in range(lx)]
+        for p in (0, 1)
+    ]
+    return [*horizontal, *vertical]
+
+
+def _checkerboard_topology(lx: int, ly: int) -> list[tuple[int, int]]:
+    """The bonds of :func:`_checkerboard_classes`, class after class."""
+    return [bond for group in _checkerboard_classes(lx, ly) for bond in group]
+
+
+def _hubbard_terms(
+    num_sites: int,
+    hopping: float,
+    interaction: float,
+    num_modes: int,
+    topology: list[tuple[int, int]] | None = None,
+) -> list[FermiOperator]:
+    """First-order Trotter terms of the Hubbard model (mu = 0) on ``topology``.
+
+    The default topology is the 1D bricklayer chain. Every term carries the full
+    ``num_modes`` width, not just the width of its own support: a gate's generator must
+    match the circuit's ``system_size``.
     """
     terms: list[FermiOperator] = []
-    topo = _bricklayer_topology(num_sites)
+    topo = _bricklayer_topology(num_sites) if topology is None else topology
     for spin in ("up", "down"):
         for left_site, right_site in topo:
             left, right = _mode(left_site, spin), _mode(right_site, spin)
@@ -157,6 +191,84 @@ def build_majorana(
         )
 
     return factory, circuit
+
+
+def build_hubbard2d(lx: int, ly: int, cutoff: int, comm=None):
+    """Return (propagator_factory, circuit, steps) for one Trotter step of the 2D Hubbard model.
+
+    An open ``lx`` x ``ly`` lattice of spinful sites, ``2 * lx * ly`` modes, ``t = 1``,
+    ``U = 1.5``, ``dt = 0.07``: hop-up on every bond, then hop-down on every bond, then
+    ``n_up n_down`` on every site, with the bonds in the order of
+    :func:`_checkerboard_topology`. The state is the Neel checkerboard (spin up where
+    ``x + y`` is even) and the observable is the staggered magnetisation
+    ``sum_s (-1)^(x+y) (n_up - n_down)``, which is extensive and not conserved.
+
+    Truncation is the support cutoff alone, with no coefficient tolerance
+    (``lower_atol = 0``): a monomial survives if it touches at most
+    ``cutoff`` modes or is fully paired. MajoranaPropagation.jl has no native truncation
+    with that rule, so its driver passes the same rule as a ``customtruncfunc``.
+
+    ``ExpGate`` applies ``exp(+i dt H)``; MajoranaPropagation.jl's ``FermionicRotation``
+    applies ``exp(-i theta O)``, so its driver takes ``theta = +t dt`` for hopping and
+    ``theta = -U dt`` for the interaction, the identical circuit.
+
+    ``steps`` splits the layer into its nine commuting gate groups (hop-up per bond class,
+    hop-down per bond class, the interaction), as circuits in the order they propagate: the
+    last group first, as the Heisenberg picture applies a circuit. Propagating them one by
+    one is exactly propagating ``circuit``, and timing them one by one resolves the term
+    count's thousandfold rise within the second layer, which the crossover panel needs.
+    """
+    num_sites = lx * ly
+    num_modes = 2 * num_sites
+    hopping, interaction, dt = 1.0, 1.5, 0.07
+    topology = _checkerboard_topology(lx, ly)
+    gates = [
+        ExpGate(t)
+        for t in _hubbard_terms(num_sites, hopping, interaction, num_modes, topology)
+    ]
+
+    def parity(site: int) -> int:
+        return (site % lx + site // lx) % 2
+
+    occupied = [_mode(s, "up" if parity(s) == 0 else "down") for s in range(num_sites)]
+    circuit = Circuit(
+        gates=gates,
+        system_size=num_modes,
+        parameters=[dt] * len(gates),
+        initial_state=occupied,
+    )
+    sizes = [len(c) for c in _checkerboard_classes(lx, ly)] * 2 + [num_sites]
+    bounds = [sum(sizes[:i]) for i in range(len(sizes) + 1)]
+    steps = [
+        Circuit(
+            gates=gates[lo:hi],
+            system_size=num_modes,
+            parameters=[dt] * (hi - lo),
+            initial_state=occupied,
+        )
+        for lo, hi in reversed(list(pairwise(bounds)))
+        if hi > lo
+    ]
+    terms, coeffs = [], []
+    for s in range(num_sites):
+        sign = 1.0 if parity(s) == 0 else -1.0
+        terms.append(((_mode(s, "up"), "+"), (_mode(s, "up"), "-")))
+        coeffs.append(sign)
+        terms.append(((_mode(s, "down"), "+"), (_mode(s, "down"), "-")))
+        coeffs.append(-sign)
+    observable_op = FermiOperator(terms=terms, coefficients=coeffs, num_modes=num_modes)
+
+    def factory():
+        return MajoranaPropagator(
+            observable_op,
+            circuit.initial_state,
+            cutoff=cutoff,
+            cutoff_type="support",
+            lower_atol=0.0,
+            comm=comm,
+        )
+
+    return factory, circuit, steps
 
 
 # --------------------------------------------------------------------------- #
@@ -255,11 +367,61 @@ def build_pauli(
 # --------------------------------------------------------------------------- #
 
 
+# Rounds after the second stop once this much propagation has been timed.
+ROUND_BUDGET_S = 60.0
+
+
+def keep_timing(
+    rounds_done: int, timed: float, last: float, time_limit: float | None
+) -> bool:
+    """Whether to time another round; every Fig. 3 driver applies this same rule.
+
+    The first timed round of a fresh process can be far slower than the next (the first
+    PauliPropagation.jl round at N=32 took 1.9x the second), so a point gets a second round
+    whenever one fits, and further rounds while under ``ROUND_BUDGET_S``. No round starts that
+    would be expected to end past ``time_limit``.
+    """
+    if time_limit is not None and timed + last > time_limit:
+        return False
+    return rounds_done < 2 or timed < ROUND_BUDGET_S
+
+
 def save_result(output_path, record) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def _build_model(args, parser):
+    """(factory, circuit, steps) for the parsed arguments; ``steps`` is None but for hubbard2d."""
+    if args.model == "hubbard2d":
+        if args.basis != "majorana" or args.lx is None or args.ly is None:
+            parser.error("--model hubbard2d needs --basis majorana, --lx and --ly")
+        if args.num_qubits != 2 * args.lx * args.ly:
+            parser.error("--num-qubits must equal 2 * lx * ly for --model hubbard2d")
+        if args.lower_atol != 0:
+            parser.error(
+                "--model hubbard2d is truncated by the cutoff alone: --lower-atol 0"
+            )
+        return build_hubbard2d(args.lx, args.ly, args.cutoff)
+    if args.basis == "majorana":
+        if args.active_window is not None:
+            parser.error("--active-window is implemented for the Pauli basis only")
+        return (
+            *build_majorana(
+                args.num_qubits, args.cutoff, args.lower_atol, args.observable
+            ),
+            None,
+        )
+    factory, circuit = build_pauli(
+        args.num_qubits,
+        args.cutoff,
+        args.lower_atol,
+        args.observable,
+        active_window=args.active_window,
+    )
+    return factory, circuit, None
 
 
 def main() -> None:
@@ -270,6 +432,15 @@ def main() -> None:
     parser.add_argument(
         "--observable", choices=["extensive", "local"], default="extensive"
     )
+    parser.add_argument(
+        "--model",
+        choices=["chain", "hubbard2d"],
+        default="chain",
+        help="chain: the kicked-Ising (pauli) or 1D Hubbard (majorana) chain; hubbard2d: the "
+        "--lx x --ly Hubbard lattice, majorana basis, --num-qubits = 2 * lx * ly modes",
+    )
+    parser.add_argument("--lx", type=int, default=None)
+    parser.add_argument("--ly", type=int, default=None)
     parser.add_argument(
         "--layers", type=int, default=1, help="number of layers to apply (default 1)"
     )
@@ -286,49 +457,69 @@ def main() -> None:
         "--rounds",
         type=int,
         default=3,
-        help="fresh rebuild+apply repetitions; min time is kept",
+        help="at most this many fresh rebuild+apply repetitions; min time is kept",
+    )
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=None,
+        help="seconds of timed propagation allowed for the whole point: no round is started "
+        "that would be expected to end past it (default: no limit)",
     )
     parser.add_argument(
         "--out", "-o", required=True, help="JSONL results file (appended to)"
     )
     args = parser.parse_args()
 
-    if args.basis == "majorana":
-        if args.active_window is not None:
-            parser.error("--active-window is implemented for the Pauli basis only")
-        factory, circuit = build_majorana(
-            args.num_qubits, args.cutoff, args.lower_atol, args.observable
-        )
-    else:
-        factory, circuit = build_pauli(
-            args.num_qubits,
-            args.cutoff,
-            args.lower_atol,
-            args.observable,
-            active_window=args.active_window,
-        )
+    factory, circuit, steps = _build_model(args, parser)
 
     best = float("inf")
     best_cpu = float("nan")
     num_terms = 0
     memory_bytes = 0
     expectation = float("nan")
-    for _ in range(max(1, args.rounds)):
+    # Per step (one propagate call: a layer, or a gate group of one for hubbard2d): the
+    # minimum over rounds of its time, and the terms it leaves. The crossover panel plots
+    # these; the whole-run minimum above stays the N-sweep quantity.
+    steps = [circuit] if steps is None else steps
+    step_seconds = [float("inf")] * (args.layers * len(steps))
+    step_terms: list[int] | None = None
+    initial_terms = 0
+    rounds_done, timed = 0, 0.0
+    while rounds_done < max(1, args.rounds):
         sim = factory()  # fresh operator each round (propagate mutates in place)
+        initial_terms = sim.size()
+        terms_now = []
         c0, t0 = process_time(), perf_counter()
         for _ in range(args.layers):
-            sim.propagate(circuit)
+            for step in steps:
+                tl = perf_counter()
+                sim.propagate(step)
+                i = len(terms_now)
+                step_seconds[i] = min(step_seconds[i], perf_counter() - tl)
+                terms_now.append(sim.size())
         dt, cpu = perf_counter() - t0, process_time() - c0
+        if step_terms is not None and terms_now != step_terms:
+            raise RuntimeError("per-step term counts differ between rounds")
+        step_terms = terms_now
         if dt < best:
             best, best_cpu = dt, cpu
         num_terms = sim.size()
         memory_bytes = sim._simulator.operator_memory_bytes()
         expectation = float(sim.expectation_value())
         del sim
+        rounds_done += 1
+        timed += dt
+        if not keep_timing(rounds_done, timed, dt, args.time_limit):
+            break
 
     record = {
         "engine": "monoprop",
         "basis": args.basis,
+        "model": "kicked_ising"
+        if args.basis == "pauli"
+        else ("hubbard2d" if args.model == "hubbard2d" else "hubbard1d"),
+        "lattice": [args.lx, args.ly] if args.model == "hubbard2d" else None,
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
         "observable": args.observable,
@@ -342,12 +533,25 @@ def main() -> None:
         # The number of timed repetitions the reported minimum was taken over. Recorded
         # because a min-of-1 and a min-of-10 are different measurements, and the shipped
         # data used to carry no way to tell them apart.
-        "rounds": max(1, args.rounds),
+        "rounds": rounds_done,
+        "max_rounds": max(1, args.rounds),
+        "time_limit": args.time_limit,
         "expectation": expectation,
         # Provenance. The shipped Leonardo data carries none of this, so a record from it
         # cannot be audited or told apart from a workstation run; every new record can.
         "active_window": args.active_window,
         "gates": len(circuit.gates) * args.layers,
+        "gates_per_layer": len(circuit.gates),
+        "initial_terms": int(initial_terms),
+        "layer_terms": step_terms[len(steps) - 1 :: len(steps)],
+        # A layer's time is the sum of its steps' minima.
+        "layer_seconds": [
+            sum(step_seconds[i : i + len(steps)])
+            for i in range(0, len(step_seconds), len(steps))
+        ],
+        "step_gates": [len(step.gates) for step in steps] * args.layers,
+        "step_terms": step_terms,
+        "step_seconds": step_seconds,
         "cpu_seconds": best_cpu,
         "busy_cores": (best_cpu / best) if best else float("nan"),
         "host": socket.gethostname(),

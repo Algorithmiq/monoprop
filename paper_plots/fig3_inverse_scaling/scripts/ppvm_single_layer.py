@@ -93,6 +93,20 @@ def save_result(output_path, record) -> None:
         f.write(json.dumps(record) + "\n")
 
 
+# The round rule of monoprop_single_layer.keep_timing, copied because this driver runs in
+# ppvm's own environment, without monoprop.
+ROUND_BUDGET_S = 60.0
+
+
+def keep_timing(
+    rounds_done: int, timed: float, last: float, time_limit: float | None
+) -> bool:
+    """Whether to time another round: a second whenever it fits, more while under budget."""
+    if time_limit is not None and timed + last > time_limit:
+        return False
+    return rounds_done < 2 or timed < ROUND_BUDGET_S
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--num-qubits", type=int, required=True)
@@ -112,7 +126,13 @@ def main() -> None:
         "--rounds",
         type=int,
         default=3,
-        help="fresh rebuild+apply repetitions; min time is kept",
+        help="at most this many fresh rebuild+apply repetitions; min time is kept",
+    )
+    parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=None,
+        help="seconds of timed propagation allowed for the whole point (default: no limit)",
     )
     parser.add_argument(
         "--out", "-o", required=True, help="JSONL results file (appended to)"
@@ -129,12 +149,17 @@ def main() -> None:
     best_cpu = float("nan")
     num_terms = 0
     expectation = float("nan")
-    for _ in range(max(1, args.rounds)):
+    rounds_done, timed = 0, 0.0
+    while rounds_done < max(1, args.rounds):
         seconds, cpu, num_terms, expectation = run(
             args.num_qubits, active, args.cutoff, args.lower_atol, args.layers
         )
         if seconds < best:
             best, best_cpu = seconds, cpu
+        rounds_done += 1
+        timed += seconds
+        if not keep_timing(rounds_done, timed, seconds, args.time_limit):
+            break
 
     memory_bytes = peak_rss_bytes()
     gates = (active + max(0, active - 1)) * args.layers
@@ -155,7 +180,9 @@ def main() -> None:
         # The number of timed repetitions the reported minimum was taken over. Recorded
         # because a min-of-1 and a min-of-10 are different measurements, and the shipped
         # data used to carry no way to tell them apart.
-        "rounds": max(1, args.rounds),
+        "rounds": rounds_done,
+        "max_rounds": max(1, args.rounds),
+        "time_limit": args.time_limit,
         "expectation": expectation,
         "active_window": args.active_window,
         "gates": gates,

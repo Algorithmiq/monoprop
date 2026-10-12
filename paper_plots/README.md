@@ -8,7 +8,7 @@ caption computed from the plotted rows. Nothing here is a figure the paper does 
 | --- | --- | --- | --- | --- | --- |
 | Fig. 1 | `fig:mpi-scaling` | [`fig1_strong_weak_scaling/`](fig1_strong_weak_scaling) | `make_figure.py` | `data/SCALE-CELLS.tsv` | rebuilds from data |
 | Fig. 2 | `fig:inverted-index` | — | TikZ in the paper repo (`figures/inverted-index-majorana.tex`) | — | not a data plot |
-| Fig. 3 | `fig:inverse-scaling` | [`fig3_inverse_scaling/`](fig3_inverse_scaling) | `make_figure.py` | `data/*_octave_l7_deucalion.jsonl` | rebuilds from data |
+| Fig. 3 | `fig:inverse-scaling` | [`fig3_inverse_scaling/`](fig3_inverse_scaling) | `make_figure.py` | `data/{pauli,majorana}_{nsweep,perlayer}.jsonl` | rebuilds from data |
 | Fig. 4 | `fig:graph-gradient` | [`fig4_graph_gradient/`](fig4_graph_gradient) | not recovered | not recovered | **frozen PDF** |
 | Fig. 5 | `fig:selection-scaling` | [`fig5_selection_scaling/`](fig5_selection_scaling) | `make_figure.py` | `data/selection_scaling.jsonl` | rebuilds from data |
 
@@ -46,7 +46,7 @@ the PDFs into the paper repository's `figures/` under the same names.
 README.md
 ruff.toml                  lint scope for this package (extends the repository configuration)
 fig1_strong_weak_scaling/  Hubbard strong and weak scaling, 128-8192 cores (+ scripts/ for the campaign)
-fig3_inverse_scaling/      kicked-Ising per-gate cost, monoprop vs ppvm vs PauliPropagation.jl
+fig3_inverse_scaling/      per-term and per-gate cost: kicked Ising vs PauliPropagation.jl and ppvm, 2D Hubbard vs MajoranaPropagation.jl
 fig4_graph_gradient/       surrogate-graph build and gradient cost (frozen PDF + provenance)
 fig5_selection_scaling/    gate-selection cost against the mode count
 ```
