@@ -68,12 +68,13 @@ ROWS = {
 }
 COUNTS = "counts.jsonl"
 # Small, medium and large, in layers (a Hubbard layer is one Trotter step).
-DEPTHS = {"pauli": (7, 10, 13), "majorana": (3, 4, 5)}
+DEPTHS = {"pauli": (7, 10, 13), "majorana": (1, 2, 3)}
 NS = (32, 64, 128, 256, 512, 1024)
 # (row, depth) -> largest N, for a depth that does not fit a node at the top of NS.
-MAX_N: dict[tuple[str, int], int] = {}
-# Pauli weight; Hubbard support (modes touched, fully paired monomials kept).
-CUTOFF = {"pauli": 6, "majorana": 3}
+MAX_N: dict[tuple[str, int], int] = {("majorana", 3): 256}
+# (cutoff, cutoff_type): Pauli weight; Hubbard support (modes touched) or length (Majoranas),
+# fully paired monomials kept under either.
+CUTOFF = {"pauli": (6, None), "majorana": (4, "length")}
 # Timed propagation allowed per point, the same for every engine (octave_point's CEILING_S).
 CEILING_S = 1800
 # octave_point's ROUND_BUDGET_S: rounds continue while the timed total is under it.
@@ -128,6 +129,14 @@ def settled(row, ceiling=CEILING_S):
     )
 
 
+def cutoff_of(row):
+    """(cutoff, cutoff_type) of a row; Hubbard rows from before the field are support."""
+    kind = row.get("cutoff_type")
+    if kind is None and row["basis"] == "majorana":
+        kind = "support"
+    return row["cutoff"], kind
+
+
 def _read(path):
     return [
         (raw.strip(), json.loads(raw))
@@ -140,7 +149,7 @@ def _take(points, notes, rank, f, engine, cutoff):
     """Add one file's rows to ``points`` under ``gather``'s rule; the rows left out by cutoff."""
     other_cutoff = 0
     for raw, row in _read(f):
-        if row["cutoff"] != cutoff:
+        if cutoff_of(row) != cutoff:
             other_cutoff += 1
             continue
         key = (engine, row["layers"], row["num_qubits"])
@@ -342,7 +351,11 @@ def gather_counts(run_dirs):
     for rank, run_dir in enumerate(run_dirs):
         for f in sorted((run_dir / "count").glob("*.jsonl")):
             for raw, row in _read(f):
-                if row["cutoff"] != CUTOFF[row["basis"]]:
+                # As for timed rows, other cutoffs and depths are earlier workloads.
+                if (
+                    cutoff_of(row) != CUTOFF[row["basis"]]
+                    or row["layers"] not in DEPTHS[row["basis"]]
+                ):
                     continue
                 key = (row["basis"], row["layers"], row["num_qubits"])
                 # As for timed rows, a later run directory replaces an earlier one.

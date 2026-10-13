@@ -86,6 +86,17 @@ function support_truncation(::Type{TT}, nmodes::Int, cutoff::Int) where {TT}
     end
 end
 
+# monoprop's cutoff_type="length": drop a string of more than `cutoff` Majoranas unless it is
+# fully paired. MajoranaPropagation's own max_weight has no paired exception, so it is passed as
+# a custom function too.
+function length_truncation(::Type{TT}, nmodes::Int, cutoff::Int) where {TT}
+    mask = create_unpaired_mask(TT, nmodes)
+    return function (mstr, coeff)
+        unpaired = count_ones((mstr ⊻ (mstr << 1)) & mask)
+        return count_ones(mstr) > cutoff && unpaired > 0
+    end
+end
+
 # The round rule of monoprop_single_layer.keep_timing: a second round whenever it fits (a
 # fresh process's first round can be far slower), more while under ROUND_BUDGET_S, and none
 # that would be expected to end past the point's time limit (negative: no limit).
@@ -109,6 +120,7 @@ function main()
         "--lx"; arg_type = Int; required = true
         "--ly"; arg_type = Int; required = true
         "--cutoff"; arg_type = Int; required = true
+        "--cutoff-type"; arg_type = String; default = "support"
         "--layers"; arg_type = Int; default = 1
         "--rounds"; arg_type = Int; default = 3
         "--time-limit"; arg_type = Float64; default = -1.0
@@ -129,7 +141,9 @@ function main()
     steps = layer_steps(lx, ly)
     sum(length, steps) == length(layer_circuit) || error("steps do not tile the layer")
     TT = typeof(first(terms(build_observable(lx, ly))))
-    truncfunc = support_truncation(TT, nmodes, cutoff)
+    cutoff_type = args["cutoff-type"]
+    cutoff_type in ("support", "length") || error("--cutoff-type must be support or length")
+    truncfunc = (cutoff_type == "support" ? support_truncation : length_truncation)(TT, nmodes, cutoff)
     fock = FockState(nsites, :checkerboard, true; nx = lx)
     # truncate_each_mr: truncate after every Majorana rotation, as monoprop does. By default a
     # hopping gate (two commuting rotations) is truncated only once, after both, which keeps
@@ -195,6 +209,7 @@ function main()
         "lattice" => [lx, ly],
         "num_qubits" => nmodes,
         "cutoff" => cutoff,
+        "cutoff_type" => cutoff_type,
         "observable" => "extensive",
         "layers" => layers,
         "lower_atol" => atol,
@@ -225,7 +240,7 @@ function main()
         "pauli_propagation_version" => string(pkgversion(PauliPropagation)),
         "julia_version" => string(VERSION),
         "backend" => "vector",
-        "truncation" => "customtruncfunc: support > cutoff and not fully paired; " *
+        "truncation" => "customtruncfunc: $(cutoff_type) > cutoff and not fully paired; " *
                         "truncate_each_mr = true",
         "result_type" => string(typeof(result)),
         "library_threading" => false,

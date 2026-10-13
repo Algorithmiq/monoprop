@@ -193,7 +193,9 @@ def build_majorana(
     return factory, circuit
 
 
-def build_hubbard2d(lx: int, ly: int, cutoff: int, comm=None):
+def build_hubbard2d(
+    lx: int, ly: int, cutoff: int, comm=None, cutoff_type: str = "support"
+):
     """Return (propagator_factory, circuit, steps) for one Trotter step of the 2D Hubbard model.
 
     An open ``lx`` x ``ly`` lattice of spinful sites, ``2 * lx * ly`` modes, ``t = 1``,
@@ -263,7 +265,7 @@ def build_hubbard2d(lx: int, ly: int, cutoff: int, comm=None):
             observable_op,
             circuit.initial_state,
             cutoff=cutoff,
-            cutoff_type="support",
+            cutoff_type=cutoff_type,
             lower_atol=0.0,
             comm=comm,
         )
@@ -404,7 +406,9 @@ def _build_model(args, parser):
             parser.error(
                 "--model hubbard2d is truncated by the cutoff alone: --lower-atol 0"
             )
-        return build_hubbard2d(args.lx, args.ly, args.cutoff)
+        return build_hubbard2d(
+            args.lx, args.ly, args.cutoff, cutoff_type=args.cutoff_type
+        )
     if args.basis == "majorana":
         if args.active_window is not None:
             parser.error("--active-window is implemented for the Pauli basis only")
@@ -438,6 +442,13 @@ def main() -> None:
         default="chain",
         help="chain: the kicked-Ising (pauli) or 1D Hubbard (majorana) chain; hubbard2d: the "
         "--lx x --ly Hubbard lattice, majorana basis, --num-qubits = 2 * lx * ly modes",
+    )
+    parser.add_argument(
+        "--cutoff-type",
+        choices=["support", "length"],
+        default="support",
+        help="hubbard2d only: bound the modes a monomial touches (support) or its Majorana "
+        "count (length); fully paired monomials are kept under either",
     )
     parser.add_argument("--lx", type=int, default=None)
     parser.add_argument("--ly", type=int, default=None)
@@ -522,6 +533,7 @@ def main() -> None:
         "lattice": [args.lx, args.ly] if args.model == "hubbard2d" else None,
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
+        "cutoff_type": args.cutoff_type if args.model == "hubbard2d" else None,
         "observable": args.observable,
         "layers": args.layers,
         "lower_atol": args.lower_atol,

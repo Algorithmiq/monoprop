@@ -26,7 +26,7 @@ One page-wide row of three panels:
   to the caption.
 * (c) the work behind it, from counts rather than timings: the share of the K terms a gate
   touches. A dense code tests all of them; monoprop visits only those that anticommute with
-  the gate (``scripts/count_anticommuting.py``), a share that falls as about 5/N.
+  the gate (``scripts/count_anticommuting.py``), a share that falls as about 4/N to 8/N.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
@@ -146,6 +146,20 @@ MODELS = (
     ("pauli", "Kicked Ising chain", "qubits $N$", "layers"),
     ("majorana", "2D Hubbard lattice", "modes $N$", "layers"),
 )
+# Where each engine is named in its cost panel: (N, side of the bundle, horizontal alignment,
+# gap in points). The name sits that far above or below the envelope of the engine's depths at
+# that N, so it follows the data.
+NAME_AT = {
+    "pauli": {
+        "ppvm": (64, "above", "center", 5),
+        "julia": (256, "below", "left", 14),
+        "monoprop": (128, "below", "center", 5),
+    },
+    "majorana": {
+        "julia-majorana": (32, "above", "left", 9),
+        "monoprop-majorana": (256, "above", "center", 5),
+    },
+}
 # The work panel tells the models apart without the engine colours.
 MODEL_STYLE = {"pauli": "o", "majorana": "s"}
 BAND = "#ececec"  # what the index skips
@@ -398,9 +412,12 @@ def cost_panel(ax, rows, kind, ns, depth_word):
         zorder=1,
     )
 
+    for e, (n, side, ha, gap) in NAME_AT[kind].items():
+        _name(ax, stats, e, n, side, ha, gap)
+
     # Depth key: the shade ramp in grey, so it applies to every engine.
     grey = "#555555"
-    ax.legend(
+    key = ax.legend(
         [Line2D([], [], color=shade(grey, i), lw=LINE_WIDTH + 0.4) for i in range(3)],
         [str(layers) for layers in DEPTHS[kind]],
         title=depth_word,
@@ -415,10 +432,39 @@ def cost_panel(ax, rows, kind, ns, depth_word):
         borderaxespad=0.3,
         alignment="left",
     )
+    ax.add_artist(key)
+    ax.legend(
+        [Line2D([], [], ls=GUIDE_DASH, color=GUIDE, lw=GUIDE_WIDTH)],
+        ["$\\propto 1/N$"],
+        loc="lower right",
+        frameon=False,
+        fontsize=6.4,
+        handlelength=2.2,
+        handletextpad=0.4,
+        borderaxespad=0.3,
+    )
     ax.set_yscale("log")
     _log2_axis(ax, ns)
     _frame(ax)
     return stats
+
+
+def _name(ax, stats, engine, n, side, ha, gap):
+    """Name an engine in ink beside its bundle: above or below every depth's value at ``n``."""
+    ys = [y for st in stats.values() for x, y in st["series"][engine][0] if x == n]
+    if not ys:
+        raise ValueError(f"{engine}: no point at N={n} to name it by")
+    above = side == "above"
+    ax.annotate(
+        LABEL[engine],
+        xy=(n, max(ys) if above else min(ys)),
+        xytext=(-3 if ha == "left" else 0, gap if above else -gap),
+        textcoords="offset points",
+        ha=ha,
+        va="bottom" if above else "top",
+        fontsize=6.8,
+        color=INK,
+    )
 
 
 def work_panel(ax, counts, ns):
@@ -426,7 +472,7 @@ def work_panel(ax, counts, ns):
 
     A dense code tests every term (the 100% line); monoprop visits only the terms that
     anticommute with the gate (``scripts/count_anticommuting.py``), a share that falls as
-    about 5/N. The band between them is what the index skips.
+    about 4/N to 8/N. The band between them is what the index skips.
     """
     out, shares = {}, {}
     for kind, _, _, _ in MODELS:
@@ -460,8 +506,10 @@ def work_panel(ax, counts, ns):
         )
     dense = ENGINE_COLOR["julia"]
     ax.axhline(100, color=dense, lw=LINE_WIDTH, ls=ENGINE_STYLE["julia"][0], zorder=2)
+    # The band starts above both lines, over the N where each was counted.
     n, low = shares["pauli"]
-    top = np.maximum(low, np.interp(n, *shares["majorana"]))
+    hub_n, hub = shares["majorana"]
+    top = np.where(n <= hub_n.max(), np.maximum(low, np.interp(n, hub_n, hub)), low)
     ax.fill_between(n, top, 100, color=BAND, lw=0, zorder=0)
     ax.text(
         np.sqrt(n[0] * n[-1]) * 1.4,
@@ -504,26 +552,6 @@ def work_panel(ax, counts, ns):
     return out
 
 
-def _legend(fig):
-    """One key for the figure: the engines and the 1/N guide."""
-    handles = [
-        Line2D([], [], **{**_style(e), "zorder": None})
-        for e in ("monoprop", "julia", "julia-majorana", "ppvm")
-    ]
-    handles.append(Line2D([], [], ls=GUIDE_DASH, color=GUIDE, lw=GUIDE_WIDTH))
-    labels = [LABEL[e] for e in ("monoprop", "julia", "julia-majorana", "ppvm")]
-    fig.legend(
-        handles,
-        [*labels, "$\\propto 1/N$"],
-        loc="outside upper center",
-        ncol=5,
-        frameon=False,
-        handlelength=2.4,
-        columnspacing=1.6,
-        handletextpad=0.5,
-    )
-
-
 def draw(datasets, counts, outdir: Path):
     fig = plt.figure(figsize=FIGSIZE, layout="constrained")
     fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.06)
@@ -549,7 +577,6 @@ def draw(datasets, counts, outdir: Path):
     wax.set_ylabel("share of the $K$ terms, per gate", labelpad=2)
     for kind in work:
         results[kind]["work"] = work[kind]
-    _legend(fig)
     outdir.mkdir(parents=True, exist_ok=True)
     outs = []
     for ext, dpi in (("pdf", None), ("png", PNG_DPI)):

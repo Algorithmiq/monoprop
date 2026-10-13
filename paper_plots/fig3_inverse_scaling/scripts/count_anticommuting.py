@@ -125,6 +125,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--basis", choices=["pauli", "majorana"], required=True)
     ap.add_argument("--num-qubits", type=int, required=True)
+    ap.add_argument("--cutoff-type", choices=["support", "length"], default="support")
     ap.add_argument("--lx", type=int, default=None)
     ap.add_argument("--ly", type=int, default=None)
     ap.add_argument("--cutoff", type=int, required=True)
@@ -133,7 +134,9 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.basis == "majorana":
-        factory, circuit, steps = single.build_hubbard2d(args.lx, args.ly, args.cutoff)
+        factory, circuit, steps = single.build_hubbard2d(
+            args.lx, args.ly, args.cutoff, cutoff_type=args.cutoff_type
+        )
     else:
         factory, circuit = single.build_pauli(
             args.num_qubits, args.cutoff, 0.0, "extensive"
@@ -157,6 +160,7 @@ def main() -> None:
         "lattice": [args.lx, args.ly] if args.basis == "majorana" else None,
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
+        "cutoff_type": args.cutoff_type if args.basis == "majorana" else None,
         "layers": args.layers,
         "lower_atol": 0.0,
         "num_terms": int(size),

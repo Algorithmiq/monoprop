@@ -50,8 +50,10 @@ source "$SITE"
 
 PLOTS="$PWD" # --chdir points at paper_plots/fig3_inverse_scaling/
 CUTOFF=6
-# The Hubbard support cutoff (modes touched; fully paired monomials are always kept).
+# The Hubbard cutoff: support (modes touched) or length (Majoranas); fully paired monomials
+# are always kept.
 HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
+HUBBARD_CUTOFF_TYPE="${HUBBARD_CUTOFF_TYPE:-support}"
 # No coefficient truncation for any engine: the cutoff alone fixes the term set, so term
 # counts agree exactly between engines. The Hubbard drivers do not even take a tolerance.
 ATOL=0
@@ -72,7 +74,7 @@ SUFFIX="$(
 OUT="$RUN_DIR/${SWEEP}/${ENGINE}_L${LAYERS}_N${SUFFIX}.jsonl"
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
-log "sweep=$SWEEP engine=$ENGINE N=${NS[*]} layers=$LAYERS cutoff=$CUTOFF hubbard_cutoff=$HUBBARD_CUTOFF"
+log "sweep=$SWEEP engine=$ENGINE N=${NS[*]} layers=$LAYERS cutoff=$CUTOFF hubbard_cutoff=$HUBBARD_CUTOFF/$HUBBARD_CUTOFF_TYPE"
 log "host=$(hostname) node=${SLURMD_NODENAME:-?} job=${SLURM_JOB_ID:-?} out=$OUT"
 mkdir -p "$RUN_DIR/$SWEEP" || { echo "FATAL: cannot create $RUN_DIR/$SWEEP" >&2; exit 1; }
 echo "$SWEEP $ENGINE N=${NS[*]} layers=$LAYERS host=$(hostname) node=${SLURMD_NODENAME:-?} job=${SLURM_JOB_ID:-?} $(date -u --iso-8601=seconds)" \
@@ -109,16 +111,16 @@ PIN=(taskset -c "$PIN_CPU")
 
 # A killed point leaves no row of its own, so write one: the figure draws it as a lower bound.
 timeout_row() {
-    local engine="$1" n="$2" rounds="$3" basis=pauli
-    [[ "$engine" == *majorana ]] && basis=majorana
+    local engine="$1" n="$2" rounds="$3" basis=pauli kind=null
+    [[ "$engine" == *majorana ]] && basis=majorana kind="\"$HUBBARD_CUTOFF_TYPE\""
     # The engine field the driver itself would have written.
     case "$engine" in
         julia) engine=julia_pauli ;;
         julia-majorana) engine=julia_majorana ;;
         monoprop-majorana) engine=monoprop ;;
     esac
-    printf '{"engine": "%s", "basis": "%s", "timeout": true, "num_qubits": %d, "layers": %d, "cutoff": %d, "max_rounds": %d, "ceiling_seconds": %d, "host": "%s"}\n' \
-        "$engine" "$basis" "$n" "$LAYERS" "$4" "$rounds" "$CEILING_S" "$(hostname)" >>"$OUT"
+    printf '{"engine": "%s", "basis": "%s", "timeout": true, "num_qubits": %d, "layers": %d, "cutoff": %d, "cutoff_type": %s, "max_rounds": %d, "ceiling_seconds": %d, "host": "%s"}\n' \
+        "$engine" "$basis" "$n" "$LAYERS" "$4" "$kind" "$rounds" "$CEILING_S" "$(hostname)" >>"$OUT"
 }
 
 TIMEDOUT=0
@@ -147,8 +149,8 @@ run_point() {
         monoprop-majorana)
             "${PIN[@]}" timeout "$tmo" "$PYTHON" "$PLOTS/scripts/monoprop_single_layer.py" \
                 --basis majorana --model hubbard2d --lx "$lx" --ly "$ly" --num-qubits "$n" \
-                --cutoff "$cutoff" --layers "$LAYERS" --lower-atol "$ATOL" "${timing[@]}" \
-                --out "$OUT"
+                --cutoff "$cutoff" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --layers "$LAYERS" \
+                --lower-atol "$ATOL" "${timing[@]}" --out "$OUT"
             ;;
         ppvm)
             "${PIN[@]}" timeout "$tmo" "$PPVM_PYTHON" "$PLOTS/scripts/ppvm_single_layer.py" \
@@ -168,7 +170,8 @@ run_point() {
             "${PIN[@]}" timeout "$tmo" "$JULIA" --project="$PLOTS/scripts/julia-majorana" \
                 --startup-file=no --history-file=no --banner=no --gcthreads=1,0 \
                 "$PLOTS/scripts/julia_majorana_hubbard2d.jl" \
-                --lx "$lx" --ly "$ly" --cutoff "$cutoff" --layers "$LAYERS" \
+                --lx "$lx" --ly "$ly" --cutoff "$cutoff" --cutoff-type "$HUBBARD_CUTOFF_TYPE" \
+                --layers "$LAYERS" \
                 "${timing[@]}" "${per_layer[@]}" --out "$OUT"
             ;;
         *)
