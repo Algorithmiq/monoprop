@@ -60,8 +60,14 @@ def _bricklayer_topology(num_sites: int) -> list[tuple[int, int]]:
     return topo
 
 
-def _checkerboard_classes(lx: int, ly: int) -> list[list[tuple[int, int]]]:
-    """0-indexed open-boundary bonds of an ``lx`` x ``ly`` lattice, site ``y * lx + x``.
+def _checkerboard_classes(
+    lx: int, ly: int, periodic: bool = False
+) -> list[list[tuple[int, int]]]:
+    """0-indexed bonds of an ``lx`` x ``ly`` lattice, site ``y * lx + x``.
+
+    Open boundaries by default; ``periodic`` adds the bonds that wrap each row and column
+    (a torus), which needs even ``lx, ly >= 4`` so that the wrapping bonds join the odd classes
+    and no bond appears twice.
 
     The bonds come in four classes, each a matching (no two bonds share a site): horizontal
     bonds from even ``x``, from odd ``x``, then vertical bonds from even ``y``, from odd ``y``;
@@ -72,20 +78,34 @@ def _checkerboard_classes(lx: int, ly: int) -> list[list[tuple[int, int]]]:
     with a power of the lattice size rather than linearly in it. The MajoranaPropagation.jl
     driver builds the same order.
     """
+    if periodic and (lx < 4 or ly < 4 or lx % 2 or ly % 2):
+        msg = f"a periodic lattice needs even lx, ly >= 4, got {lx} x {ly}"
+        raise ValueError(msg)
+    wrap = 1 if periodic else 0
     horizontal = [
-        [(y * lx + x, y * lx + x + 1) for y in range(ly) for x in range(p, lx - 1, 2)]
+        [
+            (y * lx + x, y * lx + (x + 1) % lx)
+            for y in range(ly)
+            for x in range(p, lx - 1 + wrap, 2)
+        ]
         for p in (0, 1)
     ]
     vertical = [
-        [(y * lx + x, (y + 1) * lx + x) for y in range(p, ly - 1, 2) for x in range(lx)]
+        [
+            (y * lx + x, ((y + 1) % ly) * lx + x)
+            for y in range(p, ly - 1 + wrap, 2)
+            for x in range(lx)
+        ]
         for p in (0, 1)
     ]
     return [*horizontal, *vertical]
 
 
-def _checkerboard_topology(lx: int, ly: int) -> list[tuple[int, int]]:
+def _checkerboard_topology(
+    lx: int, ly: int, periodic: bool = False
+) -> list[tuple[int, int]]:
     """The bonds of :func:`_checkerboard_classes`, class after class."""
-    return [bond for group in _checkerboard_classes(lx, ly) for bond in group]
+    return [bond for group in _checkerboard_classes(lx, ly, periodic) for bond in group]
 
 
 def _hubbard_terms(
@@ -194,13 +214,18 @@ def build_majorana(
 
 
 def build_hubbard2d(
-    lx: int, ly: int, cutoff: int, comm=None, cutoff_type: str = "support"
+    lx: int,
+    ly: int,
+    cutoff: int,
+    comm=None,
+    cutoff_type: str = "support",
+    boundary: str = "open",
 ):
     """Return (propagator_factory, circuit, steps) for one Trotter step of the 2D Hubbard model.
 
-    An open ``lx`` x ``ly`` lattice of spinful sites, ``2 * lx * ly`` modes, ``t = 1``,
-    ``U = 1.5``, ``dt = 0.07``: hop-up on every bond, then hop-down on every bond, then
-    ``n_up n_down`` on every site, with the bonds in the order of
+    An ``lx`` x ``ly`` lattice of spinful sites, open or (``boundary="periodic"``) a torus,
+    ``2 * lx * ly`` modes, ``t = 1``, ``U = 1.5``, ``dt = 0.07``: hop-up on every bond, then
+    hop-down on every bond, then ``n_up n_down`` on every site, with the bonds in the order of
     :func:`_checkerboard_topology`. The state is the Neel checkerboard (spin up where
     ``x + y`` is even) and the observable is the staggered magnetisation
     ``sum_s (-1)^(x+y) (n_up - n_down)``, which is extensive and not conserved.
@@ -220,10 +245,14 @@ def build_hubbard2d(
     one is exactly propagating ``circuit``, and timing them one by one resolves the term
     count's thousandfold rise within the second layer.
     """
+    if boundary not in ("open", "periodic"):
+        msg = f"boundary must be open or periodic, got {boundary!r}"
+        raise ValueError(msg)
+    periodic = boundary == "periodic"
     num_sites = lx * ly
     num_modes = 2 * num_sites
     hopping, interaction, dt = 1.0, 1.5, 0.07
-    topology = _checkerboard_topology(lx, ly)
+    topology = _checkerboard_topology(lx, ly, periodic)
     gates = [
         ExpGate(t)
         for t in _hubbard_terms(num_sites, hopping, interaction, num_modes, topology)
@@ -239,7 +268,7 @@ def build_hubbard2d(
         parameters=[dt] * len(gates),
         initial_state=occupied,
     )
-    sizes = [len(c) for c in _checkerboard_classes(lx, ly)] * 2 + [num_sites]
+    sizes = [len(c) for c in _checkerboard_classes(lx, ly, periodic)] * 2 + [num_sites]
     bounds = [sum(sizes[:i]) for i in range(len(sizes) + 1)]
     steps = [
         Circuit(
@@ -407,7 +436,11 @@ def _build_model(args, parser):
                 "--model hubbard2d is truncated by the cutoff alone: --lower-atol 0"
             )
         return build_hubbard2d(
-            args.lx, args.ly, args.cutoff, cutoff_type=args.cutoff_type
+            args.lx,
+            args.ly,
+            args.cutoff,
+            cutoff_type=args.cutoff_type,
+            boundary=args.boundary,
         )
     if args.basis == "majorana":
         if args.active_window is not None:
@@ -449,6 +482,12 @@ def main() -> None:
         default="support",
         help="hubbard2d only: bound the modes a monomial touches (support) or its Majorana "
         "count (length); fully paired monomials are kept under either",
+    )
+    parser.add_argument(
+        "--boundary",
+        choices=["open", "periodic"],
+        default="open",
+        help="hubbard2d only: an open lattice, or a torus (periodic in x and y)",
     )
     parser.add_argument("--lx", type=int, default=None)
     parser.add_argument("--ly", type=int, default=None)
@@ -534,6 +573,7 @@ def main() -> None:
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
         "cutoff_type": args.cutoff_type if args.model == "hubbard2d" else None,
+        "boundary": args.boundary if args.model == "hubbard2d" else None,
         "observable": args.observable,
         "layers": args.layers,
         "lower_atol": args.lower_atol,

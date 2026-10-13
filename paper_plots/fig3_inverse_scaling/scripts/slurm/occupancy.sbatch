@@ -34,12 +34,13 @@ PAULI_DEPTH="${PAULI_DEPTH:-13}"
 HUBBARD_DEPTH="${HUBBARD_DEPTH:-5}"
 HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
 HUBBARD_CUTOFF_TYPE="${HUBBARD_CUTOFF_TYPE:-support}"
+HUBBARD_BOUNDARY="${HUBBARD_BOUNDARY:-open}"
 MAX_TERMS="${MAX_TERMS:-1.6e8}"
 BIG="${BIG:-pauli:256 pauli:512 pauli:1024 majorana:512 majorana:1024}"
 SMALL_WORKERS="${SMALL_WORKERS:-3}"
-declare -A LATTICE=([32]="4 4" [64]="8 4" [128]="8 8" [256]="16 8" [512]="16 16" [1024]="32 16")
+declare -A LATTICE=([32]="4 4" [64]="8 4" [72]="6 6" [128]="8 8" [242]="11 11" [256]="16 8" [512]="16 16" [968]="22 22" [1024]="32 16")
 
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 monoprop_NUM_THREADS=1
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 monoprop_NUM_THREADS=1 monoprop_PARTITIONS=1
 export PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1
 mkdir -p "$RUN_DIR/occupancy"
 
@@ -55,7 +56,7 @@ occupancy_point() {
     if [[ "$row" == majorana ]]; then
         read -r lx ly <<<"${LATTICE[$n]}"
         "$PYTHON" scripts/occupancy.py --basis majorana --num-qubits "$n" --lx "$lx" --ly "$ly" \
-            --cutoff "$HUBBARD_CUTOFF" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --layers "$HUBBARD_DEPTH" --max-terms "$MAX_TERMS" --out "$out"
+            --cutoff "$HUBBARD_CUTOFF" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --boundary "$HUBBARD_BOUNDARY" --layers "$HUBBARD_DEPTH" --max-terms "$MAX_TERMS" --out "$out"
     else
         "$PYTHON" scripts/occupancy.py --basis pauli --num-qubits "$n" --cutoff 6 \
             --layers "$PAULI_DEPTH" --max-terms "$MAX_TERMS" --out "$out"
@@ -72,6 +73,6 @@ done
 echo "[occupancy] host=$(hostname) job=${SLURM_JOB_ID:-?} big=${#big[@]} small=${#small[@]} out=$RUN_DIR/occupancy"
 
 (for item in "${big[@]}"; do occupancy_point $item; done) &
-printf '%s\n' "${small[@]}" | xargs -P "$SMALL_WORKERS" -I{} bash -c "$(declare -f occupancy_point); $(declare -p LATTICE); RUN_DIR='$RUN_DIR' PYTHON='$PYTHON' HUBBARD_CUTOFF='$HUBBARD_CUTOFF' HUBBARD_CUTOFF_TYPE='$HUBBARD_CUTOFF_TYPE' PAULI_DEPTH='$PAULI_DEPTH' HUBBARD_DEPTH='$HUBBARD_DEPTH' MAX_TERMS='$MAX_TERMS' occupancy_point {}"
+printf '%s\n' "${small[@]}" | xargs -P "$SMALL_WORKERS" -I{} bash -c "$(declare -f occupancy_point); $(declare -p LATTICE); RUN_DIR='$RUN_DIR' PYTHON='$PYTHON' HUBBARD_CUTOFF='$HUBBARD_CUTOFF' HUBBARD_CUTOFF_TYPE='$HUBBARD_CUTOFF_TYPE' HUBBARD_BOUNDARY='$HUBBARD_BOUNDARY' PAULI_DEPTH='$PAULI_DEPTH' HUBBARD_DEPTH='$HUBBARD_DEPTH' MAX_TERMS='$MAX_TERMS' occupancy_point {}"
 wait
 echo "[occupancy] done $(date -u --iso-8601=seconds)"

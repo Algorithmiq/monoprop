@@ -16,19 +16,19 @@ shallower depth).
 Kicked Ising chain, work per gate: the anticommuting terms per gate are 4.43K/N to 4.92K/N
 over every counted point (not counted: 13 layers N=1024, too large for the counter).
 
-2D Hubbard lattice, cost per term. 1 layer: K=512 at N=32 to 32,384 at N=1024; fitted over N
-<= 1024: monoprop N^-0.99, MajoranaPropagation.jl N^+0.21; MajoranaPropagation.jl/monoprop
-1.6x at N=32, 98x at N=1024. 2 layers: K=189,408 at N=32 to 278,235,648 at N=1024; fitted over
-N <= 256: monoprop N^-1.12, MajoranaPropagation.jl N^+0.00; MajoranaPropagation.jl/monoprop
-2.1x at N=32, 23x at N=256; MajoranaPropagation.jl over the limit at N=512;
-MajoranaPropagation.jl not run at N=1024 (over the limit at a shallower depth). 3 layers:
-K=247,008 at N=32 to 635,436,800 at N=256; fitted over N <= 128: monoprop N^-1.13,
-MajoranaPropagation.jl N^-0.14; MajoranaPropagation.jl/monoprop 2.6x at N=32, 10x at N=128;
-MajoranaPropagation.jl over the limit at N=256.
+2D Hubbard lattice, cost per term. 3 layers: K=16,608 at N=32 to 30,226,584 at N=968; fitted
+over N <= 512: monoprop N^-1.25, MajoranaPropagation.jl N^+0.12;
+MajoranaPropagation.jl/monoprop 3.3x at N=32, 1.5e+02x at N=512; MajoranaPropagation.jl over
+the limit at N=968. 4 layers: K=16,608 at N=32 to 93,835,176 at N=968; fitted over N <= 242:
+monoprop N^-1.22, MajoranaPropagation.jl N^+0.01; MajoranaPropagation.jl/monoprop 3.5x at
+N=32, 43x at N=242; MajoranaPropagation.jl over the limit at N=512; MajoranaPropagation.jl not
+run at N=968 (over the limit at a shallower depth). 5 layers: K=16,608 at N=32 to 197,427,944
+at N=968; fitted over N <= 242: monoprop N^-1.12, MajoranaPropagation.jl N^+0.13;
+MajoranaPropagation.jl/monoprop 3.6x at N=32, 45x at N=242; MajoranaPropagation.jl over the
+limit at N=512, 968.
 
-2D Hubbard lattice, work per gate: the anticommuting terms per gate are 3.75K/N to 7.95K/N
-over every counted point (not counted: 2 layers N=1024, 3 layers N=256, too large for the
-counter).
+2D Hubbard lattice, work per gate: the anticommuting terms per gate are 5.22K/N to 5.66K/N
+over every counted point.
 
 Agreement: identical term and gate counts at every point, expectation values within 1.2e-13.
 One thread, one pinned core, one exclusive node (cnx002.deucalion.macc.fccn.pt; Deucalion x86,

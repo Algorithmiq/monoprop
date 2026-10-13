@@ -42,9 +42,10 @@ SKIP="${SKIP:-pauli:13:1024 majorana:5:1024}"
 SMALL_WORKERS="${SMALL_WORKERS:-3}"
 HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
 HUBBARD_CUTOFF_TYPE="${HUBBARD_CUTOFF_TYPE:-support}"
-declare -A LATTICE=([32]="4 4" [64]="8 4" [128]="8 8" [256]="16 8" [512]="16 16" [1024]="32 16")
+HUBBARD_BOUNDARY="${HUBBARD_BOUNDARY:-open}"
+declare -A LATTICE=([32]="4 4" [64]="8 4" [72]="6 6" [128]="8 8" [242]="11 11" [256]="16 8" [512]="16 16" [968]="22 22" [1024]="32 16")
 
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 monoprop_NUM_THREADS=1
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 monoprop_NUM_THREADS=1 monoprop_PARTITIONS=1
 export PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1
 mkdir -p "$RUN_DIR/count"
 
@@ -75,7 +76,7 @@ count_point() {
     if [[ "$row" == majorana ]]; then
         read -r lx ly <<<"${LATTICE[$n]}"
         "$PYTHON" scripts/count_anticommuting.py --basis majorana --num-qubits "$n" \
-            --lx "$lx" --ly "$ly" --cutoff "$HUBBARD_CUTOFF" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --layers "$layers" --out "$out"
+            --lx "$lx" --ly "$ly" --cutoff "$HUBBARD_CUTOFF" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --boundary "$HUBBARD_BOUNDARY" --layers "$layers" --out "$out"
     else
         "$PYTHON" scripts/count_anticommuting.py --basis pauli --num-qubits "$n" \
             --cutoff 6 --layers "$layers" --out "$out"
@@ -97,6 +98,6 @@ echo "[count] host=$(hostname) job=${SLURM_JOB_ID:-?} big=${#big[@]} small=${#sm
 
 # The big points one at a time, beside the small ones.
 (for item in "${big[@]}"; do count_point $item; done) &
-printf '%s\n' "${small[@]}" | xargs -P "$SMALL_WORKERS" -I{} bash -c "$(declare -f count_point); $(declare -p LATTICE); RUN_DIR='$RUN_DIR' PYTHON='$PYTHON' HUBBARD_CUTOFF='$HUBBARD_CUTOFF' HUBBARD_CUTOFF_TYPE='$HUBBARD_CUTOFF_TYPE' count_point {}"
+printf '%s\n' "${small[@]}" | xargs -P "$SMALL_WORKERS" -I{} bash -c "$(declare -f count_point); $(declare -p LATTICE); RUN_DIR='$RUN_DIR' PYTHON='$PYTHON' HUBBARD_CUTOFF='$HUBBARD_CUTOFF' HUBBARD_CUTOFF_TYPE='$HUBBARD_CUTOFF_TYPE' HUBBARD_BOUNDARY='$HUBBARD_BOUNDARY' count_point {}"
 wait
 echo "[count] done $(date -u --iso-8601=seconds)"

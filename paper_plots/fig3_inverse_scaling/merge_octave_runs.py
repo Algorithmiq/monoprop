@@ -67,14 +67,22 @@ ROWS = {
     "majorana": ("majorana.jsonl", ("monoprop-majorana", "julia-majorana")),
 }
 COUNTS = "counts.jsonl"
-# Small, medium and large, in layers (a Hubbard layer is one Trotter step).
-DEPTHS = {"pauli": (7, 10, 13), "majorana": (1, 2, 3)}
+# Small, medium and large, in layers (a Hubbard layer is one whole Trotter step). At the
+# Hubbard support cutoff 3, three to five steps hold about as many terms per mode at the top
+# of the grid as 7 to 13 kicked-Ising layers, and monoprop finishes every point.
+DEPTHS = {"pauli": (7, 10, 13), "majorana": (3, 4, 5)}
 NS = (32, 64, 128, 256, 512, 1024)
-# (row, depth) -> largest N, for a depth that does not fit a node at the top of NS.
-MAX_N: dict[tuple[str, int], int] = {("majorana", 3): 256}
-# (cutoff, cutoff_type): Pauli weight; Hubbard support (modes touched) or length (Majoranas),
-# fully paired monomials kept under either.
-CUTOFF = {"pauli": (6, None), "majorana": (4, "length")}
+# The Hubbard lattices are square, L x L with N = 2 L^2 modes: 4, 6, 8, 11, 16 and 22 sites a
+# side, about doubling N each step under the 1024-mode build.
+HUBBARD_NS = (32, 72, 128, 242, 512, 968)
+HUBBARD_LATTICE = {2 * side * side: (side, side) for side in (4, 6, 8, 11, 16, 22)}
+GRID = {"pauli": NS, "majorana": HUBBARD_NS}
+# (row, depth) -> largest N, for a depth that does not fit a node at the top of its grid.
+MAX_N: dict[tuple[str, int], int] = {}
+# (cutoff, cutoff_type, boundary): Pauli weight on the open chain; Hubbard support (modes
+# touched) or length (Majoranas), fully paired monomials kept under either, on an open lattice
+# or a torus.
+CUTOFF = {"pauli": (6, None, None), "majorana": (3, "support", "open")}
 # Timed propagation allowed per point, the same for every engine (octave_point's CEILING_S).
 CEILING_S = 1800
 # octave_point's ROUND_BUDGET_S: rounds continue while the timed total is under it.
@@ -98,8 +106,9 @@ FILE_NAME = re.compile(r"^(?P<engine>.+?)_(?:L\d+_)?N[\d-]+\.jsonl$")
 
 def grid(row_kind, layers):
     """The N values of one (row, depth) dataset."""
-    cap = MAX_N.get((row_kind, layers), max(NS))
-    return tuple(n for n in NS if n <= cap)
+    ns = GRID[row_kind]
+    cap = MAX_N.get((row_kind, layers), max(ns))
+    return tuple(n for n in ns if n <= cap)
 
 
 def settled(row, ceiling=CEILING_S):
@@ -130,11 +139,28 @@ def settled(row, ceiling=CEILING_S):
 
 
 def cutoff_of(row):
-    """(cutoff, cutoff_type) of a row; Hubbard rows from before the field are support."""
-    kind = row.get("cutoff_type")
-    if kind is None and row["basis"] == "majorana":
-        kind = "support"
-    return row["cutoff"], kind
+    """(cutoff, cutoff_type, boundary) of a row.
+
+    Hubbard rows from before a field are support-truncated, on an open lattice.
+    """
+    kind, boundary = row.get("cutoff_type"), row.get("boundary")
+    if row["basis"] == "majorana":
+        kind, boundary = kind or "support", boundary or "open"
+    return row["cutoff"], kind, boundary
+
+
+def on_lattice(row):
+    """Whether a Hubbard row is on the figure's square lattice for its N (Pauli rows always are).
+
+    Earlier campaigns ran 2:1 lattices (8 x 4, 16 x 8, 32 x 16) at the N between the squares;
+    their rows are another workload. A timeout row names no lattice, so its N alone decides.
+    """
+    if row["basis"] != "majorana":
+        return True
+    want = HUBBARD_LATTICE.get(row["num_qubits"])
+    return want is not None and (
+        row.get("lattice") is None or tuple(row["lattice"]) == want
+    )
 
 
 def _read(path):
@@ -146,10 +172,11 @@ def _read(path):
 
 
 def _take(points, notes, rank, f, engine, cutoff):
-    """Add one file's rows to ``points`` under ``gather``'s rule; the rows left out by cutoff."""
+    """Add one file's rows to ``points`` under ``gather``'s rule; the rows left out by cutoff
+    or lattice."""
     other_cutoff = 0
     for raw, row in _read(f):
-        if cutoff_of(row) != cutoff:
+        if cutoff_of(row) != cutoff or not on_lattice(row):
             other_cutoff += 1
             continue
         key = (engine, row["layers"], row["num_qubits"])
@@ -178,7 +205,9 @@ def gather(run_dirs, engines, cutoff):
             if m and m["engine"] in engines:
                 other_cutoff += _take(points, notes, rank, f, m["engine"], cutoff)
     if other_cutoff:
-        notes.append(f"left out {other_cutoff} rows at a cutoff other than {cutoff}")
+        notes.append(
+            f"left out {other_cutoff} rows at a cutoff other than {cutoff} or another lattice"
+        )
     out = {}
     for (engine, layers, _), (_, entries) in points.items():
         out.setdefault((engine, layers), []).extend(entries)
@@ -354,6 +383,7 @@ def gather_counts(run_dirs):
                 # As for timed rows, other cutoffs and depths are earlier workloads.
                 if (
                     cutoff_of(row) != CUTOFF[row["basis"]]
+                    or not on_lattice(row)
                     or row["layers"] not in DEPTHS[row["basis"]]
                 ):
                     continue

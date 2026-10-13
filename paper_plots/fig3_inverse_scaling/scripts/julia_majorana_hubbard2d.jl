@@ -15,14 +15,16 @@ end
 # applies exp(+i dt H) with H = -t hop + U n_up n_dn; FermionicRotation applies exp(-i theta O),
 # so hopping takes theta = +t dt and the interaction theta = -U dt.
 # _checkerboard_topology in monoprop_single_layer.py, 1-based: horizontal bonds from even x,
-# from odd x, then vertical bonds from even y, from odd y; each class a matching.
-function checkerboard_topology(lx::Int, ly::Int)
-    site(x, y) = y * lx + x + 1
+# from odd x, then vertical bonds from even y, from odd y; each class a matching. `periodic`
+# adds the bonds that wrap each row and column (a torus; even lx, ly >= 4), in the odd classes.
+function checkerboard_topology(lx::Int, ly::Int, periodic::Bool)
+    site(x, y) = mod(y, ly) * lx + mod(x, lx) + 1
+    wrap = periodic ? 1 : 0
     bonds = Tuple{Int,Int}[]
-    for p in (0, 1), y in 0:(ly - 1), x in p:2:(lx - 2)
+    for p in (0, 1), y in 0:(ly - 1), x in p:2:(lx - 2 + wrap)
         push!(bonds, (site(x, y), site(x + 1, y)))
     end
-    for p in (0, 1), y in p:2:(ly - 2), x in 0:(lx - 1)
+    for p in (0, 1), y in p:2:(ly - 2 + wrap), x in 0:(lx - 1)
         push!(bonds, (site(x, y), site(x, y + 1)))
     end
     return bonds
@@ -31,16 +33,18 @@ end
 # One layer's nine commuting gate groups (hop-up per bond class, hop-down per bond class, the
 # interaction) as index ranges into the layer circuit, in the order they propagate: the last
 # group first, as the Heisenberg picture applies a circuit. build_hubbard2d's `steps`.
-function layer_steps(lx::Int, ly::Int)
-    classes = [ly * length(0:2:(lx - 2)), ly * length(1:2:(lx - 2)),
-               lx * length(0:2:(ly - 2)), lx * length(1:2:(ly - 2))]
+function layer_steps(lx::Int, ly::Int, periodic::Bool)
+    wrap = periodic ? 1 : 0
+    classes = [ly * length(0:2:(lx - 2 + wrap)), ly * length(1:2:(lx - 2 + wrap)),
+               lx * length(0:2:(ly - 2 + wrap)), lx * length(1:2:(ly - 2 + wrap))]
     sizes = [classes; classes; lx * ly]
     bounds = cumsum([0; sizes])
     return [(bounds[i] + 1):bounds[i + 1] for i in reverse(eachindex(sizes)) if sizes[i] > 0]
 end
 
-function build_circuit(lx::Int, ly::Int, layers::Int; t = 1.0, U = 1.5, dt = 0.07)
-    topology = checkerboard_topology(lx, ly)
+function build_circuit(lx::Int, ly::Int, layers::Int, periodic::Bool; t = 1.0, U = 1.5,
+                       dt = 0.07)
+    topology = checkerboard_topology(lx, ly, periodic)
     circuit = FermionicRotation[]
     thetas = Float64[]
     for _ in 1:layers
@@ -121,6 +125,7 @@ function main()
         "--ly"; arg_type = Int; required = true
         "--cutoff"; arg_type = Int; required = true
         "--cutoff-type"; arg_type = String; default = "support"
+        "--boundary"; arg_type = String; default = "open"
         "--layers"; arg_type = Int; default = 1
         "--rounds"; arg_type = Int; default = 3
         "--time-limit"; arg_type = Float64; default = -1.0
@@ -136,9 +141,14 @@ function main()
     atol = 0.0
     rounds = max(1, args["rounds"])
 
-    circuit, thetas = build_circuit(lx, ly, layers)
-    layer_circuit, layer_thetas = build_circuit(lx, ly, 1)
-    steps = layer_steps(lx, ly)
+    boundary = args["boundary"]
+    boundary in ("open", "periodic") || error("--boundary must be open or periodic")
+    periodic = boundary == "periodic"
+    !periodic || (lx >= 4 && ly >= 4 && iseven(lx) && iseven(ly)) ||
+        error("a periodic lattice needs even lx, ly >= 4")
+    circuit, thetas = build_circuit(lx, ly, layers, periodic)
+    layer_circuit, layer_thetas = build_circuit(lx, ly, 1, periodic)
+    steps = layer_steps(lx, ly, periodic)
     sum(length, steps) == length(layer_circuit) || error("steps do not tile the layer")
     TT = typeof(first(terms(build_observable(lx, ly))))
     cutoff_type = args["cutoff-type"]
@@ -210,6 +220,7 @@ function main()
         "num_qubits" => nmodes,
         "cutoff" => cutoff,
         "cutoff_type" => cutoff_type,
+        "boundary" => boundary,
         "observable" => "extensive",
         "layers" => layers,
         "lower_atol" => atol,

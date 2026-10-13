@@ -14,17 +14,22 @@
 
 """Appendix figure: how the Fig. 3 operators spread over the anticommutation index.
 
-A gate reads the index lists of the positions it acts on, so its cost is the length of those
-lists. The longest list over the mean, c, bounds the worst single gate (paper, Definition
-``def:even-occupancy``). What a layer pays is the total over its gates, and since every
-position is read by a bounded number of gates per layer, that total is a bounded multiple of the
-whole index: the average gate reads lists of about the mean length, whatever c is. This draws
-both from the list lengths measured after every layer (``scripts/occupancy.py``):
+monoprop applies a gate one generator monomial at a time, and each scan reads whole index
+lists, so its cost is the length of the lists it reads. The longest list over the mean, c,
+bounds the worst single scan (paper, Definition ``def:even-occupancy``). What a layer pays is
+the total over its scans, and every list is read a fixed number of times per layer
+(``scripts/read_weights.py``), so the average scan reads lists of about the mean length.
 
-* (a)-(c) the list length of every site of the Hubbard lattice, row by row, over the mean,
-  after two layers, on the three largest lattices measured; shade is the distance from the
-  open edge;
-* (d) against N, at the medium depth of each model: c, and the average list a gate reads over
+At fixed depth a list depends only on the circuit within the light cone of its position. On the
+Hubbard torus every site is alike and every list is the same length. On the open kicked-Ising
+chain only a strip at each end is shorter; every list beyond it is the same bulk list, for
+every N. This draws, from the list lengths measured after every layer
+(``scripts/occupancy.py``):
+
+* (a) kicked Ising: each qubit's lists against its distance from the chain's end, over the bulk
+  list, at each depth on the longest chain measured (every shorter chain falls on the same
+  curve, which the build checks);
+* (b) against N, at the medium depth of each model: c, and the average list a scan reads over
   one layer, both over the mean list.
 
     python occupancy_figure.py --merge <occupancy run dir> ...   # writes data/occupancy.jsonl
@@ -40,67 +45,80 @@ from pathlib import Path
 import make_figure as mf
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import to_hex, to_rgb
-from matplotlib.patches import Patch
 from merge_octave_runs import CUTOFF, DEPTHS, NS, cutoff_of
 
 OCCUPANCY = "occupancy.jsonl"
+WEIGHTS = "read_weights.json"
 STEM = "fig3_occupancy"
-# The Hubbard lattice of each mode count, as the campaign builds it.
-LATTICE = {
-    32: (4, 4),
-    64: (8, 4),
-    128: (8, 8),
-    256: (16, 8),
-    512: (16, 16),
-    1024: (32, 16),
-}
-FIGSIZE = (7.0, 2.4)
-# The lattices of panels (a)-(c), at the medium Hubbard depth.
-SITE_PANELS = (128, 256, 512)
-# Sites from the open edge, in bands of two (the profile steps every two sites): light at the
-# edge, dark in the interior.
-EDGE_BANDS = ((0, 1), (2, 3), (4, 5), (6, 7))
-EDGE_MIX = (0.62, 0.42, 0.2, 0.0)
-MODEL_NAME = {"pauli": "kicked Ising", "majorana": "2D Hubbard"}
-LONGEST = "#8a8a8a"
+FIGSIZE = (7.0, 2.35)
+# Panel (a) shows the first qubits of the chain, past the widest strip (2 * 13 - 2 = 24).
+PROFILE_QUBITS = 30
+LONGEST = "#6b6b6b"
+MODEL_NAME = {"pauli": "kicked Ising, open chain", "majorana": "2D Hubbard, torus"}
 
 
-def _edge_distance(lx, ly):
-    x, y = np.arange(lx * ly) % lx, np.arange(lx * ly) // lx
-    return x, y, np.minimum.reduce([x, lx - 1 - x, y, ly - 1 - y])
+def qubit_lists(row):
+    """Each qubit's two lists added (monoprop stores qubit q as slots 2q and 2q+1)."""
+    return np.asarray(row["list_lengths"], float).reshape(-1, 2).sum(axis=1)
 
 
-def gate_read(row):
-    """The average list a gate of one layer reads, over the mean list.
+def strip(row):
+    """(bulk list per qubit, strip width): the longest per-qubit total, and the first qubit
+    from either end that holds it."""
+    per = qubit_lists(row)
+    n = len(per)
+    dist = np.minimum(np.arange(n), n - 1 - np.arange(n))
+    return per.max(), int(dist[per == per.max()].min())
 
-    Kicked Ising: X_q reads index 2q+1, Z_q Z_{q+1} reads 2q and 2q+2. Hubbard: the hops of
-    a bond read the four indices of each of its two sites over the two spins, and the
-    interaction the four of its site. Each read is weighted by the gates that make it.
+
+def check_profiles(rows):
+    """Every chain longer than twice its strip has the same per-qubit lists from either end.
+
+    Returns {layers: (bulk, strip width, the N checked)}.
+    """
+    out = {}
+    for layers in DEPTHS["pauli"]:
+        mine = sorted(
+            (r for r in rows if r["basis"] == "pauli" and r["layers"] == layers),
+            key=lambda r: r["num_qubits"],
+        )
+        longest = qubit_lists(mine[-1])
+        bulk, width = strip(mine[-1])
+        checked = []
+        for r in mine:
+            per = qubit_lists(r)
+            if len(per) < 2 * width + 2:
+                continue
+            half = len(per) // 2
+            if not (
+                np.array_equal(per[:half], longest[:half])
+                and np.array_equal(per[::-1][:half], longest[::-1][:half])
+            ):
+                raise SystemExit(
+                    f"kicked Ising {layers} layers: N={r['num_qubits']} profile differs"
+                )
+            checked.append(r["num_qubits"])
+        out[layers] = (bulk, width, checked)
+    return out
+
+
+def gate_read(row, weights):
+    """The average list a scan of one layer reads, over the mean list.
+
+    Each list is weighted by the number of scans of one layer that fold it in full.
     """
     lengths = np.asarray(row["list_lengths"], float)
-    n = row["num_qubits"]
-    if row["basis"] == "pauli":
-        degree = np.full(n, 2.0)
-        degree[[0, -1]] = 1
-        reads = lengths[1::2].sum() + (degree * lengths[0::2]).sum()
-        positions = n + 2 * (n - 1)
-    else:
-        lx, ly = LATTICE[n]
-        x, y, _ = _edge_distance(lx, ly)
-        degree = (x > 0).astype(float) + (x < lx - 1) + (y > 0) + (y < ly - 1)
-        per_site = lengths.reshape(lx * ly, 4).sum(axis=1)
-        reads = ((degree + 1) * per_site).sum()
-        positions = 4 * (degree + 1).sum()
-    return float(reads / positions / lengths.mean())
+    fold = np.asarray(weights[f"{row['basis']}:{row['num_qubits']}"]["fold"], float)
+    return float((fold * lengths).sum() / fold.sum() / lengths.mean())
 
 
 def merge(run_dirs, out: Path) -> None:
-    """Rows at the Fig. 3 cutoffs and depths, one per (model, N, layers); refuse duplicates.
+    """Rows at the Fig. 3 workload and depths, one per (model, N, layers).
 
-    Every row gains ``gate_read_over_mean``; the per-position list lengths are kept for the
-    Hubbard rows only, which panels (a)-(c) draw.
+    A second row for the same key must be the identical measurement (a rerun); anything else
+    is refused. Every row gains ``gate_read_over_mean``.
     """
+    weights = json.loads((mf.DATA / WEIGHTS).read_text())
     rows = {}
     for run_dir in run_dirs:
         for f in sorted((run_dir / "occupancy").glob("*.jsonl")):
@@ -115,161 +133,128 @@ def merge(run_dirs, out: Path) -> None:
                     continue
                 key = (r["basis"], r["num_qubits"], r["layers"])
                 if key in rows:
-                    raise SystemExit(f"{key}: two rows ({rows[key]['source']}, {f})")
-                r["gate_read_over_mean"] = gate_read(r)
-                if r["basis"] == "pauli":
-                    r.pop("list_lengths")
+                    held = rows[key]
+                    if (held["num_terms"], held["list_lengths"]) != (
+                        r["num_terms"],
+                        r["list_lengths"],
+                    ):
+                        raise SystemExit(f"{key}: two rows ({held['source']}, {f})")
+                    continue
+                r["gate_read_over_mean"] = gate_read(r, weights)
                 rows[key] = {**r, "source": str(f)}
     out.write_text("".join(json.dumps(rows[k]) + "\n" for k in sorted(rows)))
     print(f"wrote {len(rows)} rows to {out}")
 
 
-def _band_colors():
-    blue = np.array(to_rgb(mf.ENGINE_COLOR["monoprop"]))
-    return [to_hex(blue + (1 - blue) * t) for t in EDGE_MIX]
-
-
-def site_panel(ax, row, letter):
-    """One bar per site, row by row, over the mean; the mean as the dashed line."""
-    lx, ly = LATTICE[row["num_qubits"]]
-    per_site = np.asarray(row["list_lengths"], float).reshape(lx * ly, 4).sum(axis=1)
-    ratio = per_site / per_site.mean()
-    _, _, dist = _edge_distance(lx, ly)
-    colors = _band_colors()
-    band = np.minimum(dist // 2, len(colors) - 1)
-    ax.bar(
-        np.arange(lx * ly),
-        ratio,
-        width=1.0,
-        color=[colors[b] for b in band],
-        lw=0,
-        zorder=2,
-    )
-    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.GUIDE_DASH, zorder=3)
-    top = int(ratio.argmax())
+def profile_panel(ax, rows, profiles):
+    """Each qubit's lists over the bulk list, from the chain's end, one line per depth."""
+    color = mf.ENGINE_COLOR["monoprop"]
+    for j, layers in enumerate(DEPTHS["pauli"]):
+        bulk, width, _ = profiles[layers]
+        row = max(
+            (r for r in rows if r["basis"] == "pauli" and r["layers"] == layers),
+            key=lambda r: r["num_qubits"],
+        )
+        per = qubit_lists(row)[: PROFILE_QUBITS + 1] / bulk
+        ax.plot(
+            np.arange(len(per)),
+            per,
+            **mf._style(color, j),
+            label=f"{layers} layers: flat from qubit {width}",
+            zorder=3,
+        )
+    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.DENSE_DASH, zorder=1)
     ax.annotate(
-        f"$c={ratio.max():.2f}$",
-        xy=(top, ratio.max()),
+        "bulk list, the same at every $N$",
+        xy=(PROFILE_QUBITS, 1),
         xytext=(0, 3),
         textcoords="offset points",
-        ha="center",
+        ha="right",
         va="bottom",
-        fontsize=6.6,
+        fontsize=6.4,
         color=mf.INK,
     )
-    # A tick at the start of every row of the lattice.
-    ax.set_xticks(np.arange(0, lx * ly, lx), labels=[])
-    ax.tick_params(axis="x", length=2)
-    ax.set_xlim(-0.5, lx * ly - 0.5)
-    ax.set_ylim(0, 2.15)
-    ax.grid(visible=True, axis="y", color=mf.GRID, lw=0.5)
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
+    ax.set_xlim(-0.5, PROFILE_QUBITS + 0.5)
+    ax.set_ylim(0, 1.12)
+    mf._frame(ax)
+    ax.legend(
+        loc="lower right",
+        title="one curve per depth for every $N$",
+        title_fontsize=6.4,
+        alignment="left",
+        frameon=False,
+        fontsize=6.4,
+        handlelength=2.6,
+        borderaxespad=0.3,
+    )
     ax.set_title(
-        f"({letter}) {lx}×{ly}, $N={row['num_qubits']}$",
+        "(a) Kicked Ising chain: lists near the open end",
         loc="left",
         fontsize=7.8,
         color=mf.INK,
     )
+    ax.set_xlabel("qubit, counted from the end of the chain", labelpad=1.5)
+    ax.set_ylabel("qubit's lists / bulk", labelpad=2)
 
 
 def read_panel(ax, rows):
-    """c and the average list a gate reads, over the mean, at each model's medium depth."""
+    """c and the average list a scan reads, over the mean, at each model's medium depth."""
     blue = mf.ENGINE_COLOR["monoprop"]
-    for kind, marker in mf.MODEL_STYLE.items():
+    for kind in ("pauli", "majorana"):
         layers = DEPTHS[kind][1]
         mine = sorted(
             (r for r in rows if r["basis"] == kind and r["layers"] == layers),
             key=lambda r: r["num_qubits"],
         )
         n = [r["num_qubits"] for r in mine]
-        filled = kind == "pauli"
-        for key, color, ls, z in (
-            ("c_max_over_mean", LONGEST, (0, (3, 1.6)), 2),
-            ("gate_read_over_mean", blue, "-", 3),
+        for key, color, z in (
+            ("c_max_over_mean", LONGEST, 2),
+            ("gate_read_over_mean", blue, 3),
         ):
-            ax.plot(
-                n,
-                [r[key] for r in mine],
-                color=color,
-                ls=ls,
-                lw=mf.LINE_WIDTH,
-                marker=marker,
-                ms=mf.MARKER_SIZE - 0.3,
-                mfc=color if filled else "white",
-                mec="white" if filled else color,
-                mew=mf.RING if filled else mf.MARKER_EDGE,
-                zorder=z,
+            style = mf._style(color, 1)
+            if kind == "majorana":
+                style |= {"mfc": "white", "mec": color, "mew": 0.9}
+            ax.plot(n, [r[key] for r in mine], **style, zorder=z)
+        if kind == "pauli":
+            ax.annotate(
+                f"{MODEL_NAME[kind]}: longest ($c$)",
+                xy=(n[0], mine[0]["c_max_over_mean"]),
+                xytext=(5, 2),
+                textcoords="offset points",
+                ha="left",
+                va="bottom",
+                fontsize=6.4,
+                color=mf.INK,
             )
-        # Each longest-list line is named at its far end from the other.
-        first, last = (mine[0], mine[-1])
-        anchor, ha, dx = (first, "left", 4) if filled else (last, "right", -6)
-        ax.annotate(
-            f"{MODEL_NAME[kind]}, longest ($c$)",
-            xy=(anchor["num_qubits"], anchor["c_max_over_mean"]),
-            xytext=(dx, 4 if filled else 0),
-            textcoords="offset points",
-            ha=ha,
-            va="bottom" if filled else "center",
-            fontsize=6.4,
-            color=mf.INK,
-        )
-    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.GUIDE_DASH, zorder=1)
+    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.DENSE_DASH, zorder=1)
     ax.annotate(
-        "both: the list a gate reads,\naveraged over a layer",
-        xy=(min(NS), 0.99),
-        xytext=(-2, -5),
+        "both models: the list a scan reads;\n"
+        f"{MODEL_NAME['majorana']} (open markers): also the longest",
+        xy=(min(NS), 0.985),
+        xytext=(-2, -4),
         textcoords="offset points",
         ha="left",
         va="top",
         fontsize=6.4,
         color=mf.INK,
-        linespacing=1.1,
+        linespacing=1.15,
     )
-    ax.set_ylim(0.82, 2.15)
+    ax.set_ylim(0.82, 1.62)
     mf._log2_axis(ax, list(NS))
     mf._frame(ax)
-    ax.set_title("(d) Longest and read", loc="left", fontsize=7.8, color=mf.INK)
+    ax.set_title(
+        "(b) Longest list and list read", loc="left", fontsize=7.8, color=mf.INK
+    )
     ax.set_xlabel("$N$", labelpad=1.5)
     ax.set_ylabel("list length / mean", labelpad=2)
 
 
-def draw(rows, outdir: Path):
+def draw(rows, profiles, outdir: Path):
     fig = plt.figure(figsize=FIGSIZE, layout="constrained")
-    fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.05)
-    grid = fig.add_gridspec(1, 4, width_ratios=(0.85, 1.0, 1.35, 1.35))
-    layers = DEPTHS["majorana"][1]
-    by_n = {
-        r["num_qubits"]: r
-        for r in rows
-        if r["basis"] == "majorana" and r["layers"] == layers
-    }
-    axes = []
-    for j, n in enumerate(SITE_PANELS):
-        ax = fig.add_subplot(grid[0, j], sharey=axes[0] if axes else None)
-        site_panel(ax, by_n[n], "abc"[j])
-        axes.append(ax)
-    axes[0].set_ylabel(f"site's lists / mean, {layers} layers", labelpad=2)
-    for ax in axes[1:]:
-        ax.tick_params(labelleft=False)
-    axes[1].set_xlabel("sites in row order (a tick starts each row)", labelpad=1.5)
-    axes[0].legend(
-        [Patch(color=c, lw=0) for c in _band_colors()],
-        [f"{lo}–{hi}" for lo, hi in EDGE_BANDS],
-        title="sites from edge",
-        title_fontsize=6.0,
-        loc="upper left",
-        ncol=2,
-        frameon=False,
-        fontsize=6.0,
-        handlelength=0.9,
-        handletextpad=0.35,
-        columnspacing=0.6,
-        borderaxespad=0.2,
-        alignment="left",
-    )
-    read_panel(fig.add_subplot(grid[0, 3]), rows)
+    fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.06)
+    grid = fig.add_gridspec(1, 2, width_ratios=(1.35, 1.0))
+    profile_panel(fig.add_subplot(grid[0, 0]), rows, profiles)
+    read_panel(fig.add_subplot(grid[0, 1]), rows)
     outdir.mkdir(parents=True, exist_ok=True)
     outs = []
     for ext, dpi in (("pdf", None), ("png", mf.PNG_DPI)):
@@ -280,14 +265,20 @@ def draw(rows, outdir: Path):
     return outs
 
 
-def summary(rows) -> str:
-    """The numbers the appendix quotes: c and the average read, per model, depth and N."""
-    lines = []
+def summary(rows, profiles) -> str:
+    """The numbers the appendix quotes."""
+    lines = [
+        f"kicked Ising {layers} layers: bulk {bulk:.0f} per qubit, flat from qubit {width}, "
+        f"same profile at N={checked}"
+        for layers, (bulk, width, checked) in profiles.items()
+    ]
     for kind in ("pauli", "majorana"):
         mine = [r for r in rows if r["basis"] == kind]
+        if not mine:
+            continue
         for key, name in (("c_max_over_mean", "c"), ("gate_read_over_mean", "read")):
             values = [r[key] for r in mine]
-            lines.append(f"{kind} {name}: {min(values):.3f} to {max(values):.3f}")
+            lines.append(f"{kind} {name}: {min(values):.4f} to {max(values):.4f}")
         for layers in DEPTHS[kind]:
             pts = sorted(
                 (r["num_qubits"], r["c_max_over_mean"], r["gate_read_over_mean"])
@@ -310,8 +301,9 @@ def main() -> None:
     if args.merge:
         merge(args.merge, path)
     rows = mf.load(path)
-    print(*draw(rows, args.outdir), sep="\n")
-    print(summary(rows))
+    profiles = check_profiles(rows)
+    print(*draw(rows, profiles, args.outdir), sep="\n")
+    print(summary(rows, profiles))
 
 
 if __name__ == "__main__":

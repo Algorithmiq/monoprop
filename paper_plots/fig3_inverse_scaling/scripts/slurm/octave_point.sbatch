@@ -54,6 +54,8 @@ CUTOFF=6
 # are always kept.
 HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
 HUBBARD_CUTOFF_TYPE="${HUBBARD_CUTOFF_TYPE:-support}"
+# The Hubbard lattice: open, or periodic in x and y (a torus).
+HUBBARD_BOUNDARY="${HUBBARD_BOUNDARY:-open}"
 # No coefficient truncation for any engine: the cutoff alone fixes the term set, so term
 # counts agree exactly between engines. The Hubbard drivers do not even take a tolerance.
 ATOL=0
@@ -63,7 +65,7 @@ MAX_ROUNDS="${MAX_ROUNDS:-10}"
 CEILING_S="${CEILING_S:-1800}"
 SETUP_S="${SETUP_S:-600}"
 # Modes -> the lx x ly lattice of the Hubbard row, as near square as the octave allows.
-declare -A LATTICE=([32]="4 4" [64]="8 4" [128]="8 8" [256]="16 8" [512]="16 16" [1024]="32 16")
+declare -A LATTICE=([32]="4 4" [64]="8 4" [72]="6 6" [128]="8 8" [242]="11 11" [256]="16 8" [512]="16 16" [968]="22 22" [1024]="32 16")
 
 # One writer per file: concurrent appends from several nodes to one file over NFS can
 # interleave. The file is named for this job's own N set; merge afterwards.
@@ -74,7 +76,7 @@ SUFFIX="$(
 OUT="$RUN_DIR/${SWEEP}/${ENGINE}_L${LAYERS}_N${SUFFIX}.jsonl"
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
-log "sweep=$SWEEP engine=$ENGINE N=${NS[*]} layers=$LAYERS cutoff=$CUTOFF hubbard_cutoff=$HUBBARD_CUTOFF/$HUBBARD_CUTOFF_TYPE"
+log "sweep=$SWEEP engine=$ENGINE N=${NS[*]} layers=$LAYERS cutoff=$CUTOFF hubbard_cutoff=$HUBBARD_CUTOFF/$HUBBARD_CUTOFF_TYPE/$HUBBARD_BOUNDARY"
 log "host=$(hostname) node=${SLURMD_NODENAME:-?} job=${SLURM_JOB_ID:-?} out=$OUT"
 mkdir -p "$RUN_DIR/$SWEEP" || { echo "FATAL: cannot create $RUN_DIR/$SWEEP" >&2; exit 1; }
 echo "$SWEEP $ENGINE N=${NS[*]} layers=$LAYERS host=$(hostname) node=${SLURMD_NODENAME:-?} job=${SLURM_JOB_ID:-?} $(date -u --iso-8601=seconds)" \
@@ -91,7 +93,9 @@ mkdir -p "$TMPDIR"
 [[ -n "${JULIA_DEPOT_PATH:-}" ]] && export JULIA_DEPOT_PATH
 
 # The drivers record these verbatim into each row, and the figure refuses anything but 1.
-export monoprop_NUM_THREADS=1 RAYON_NUM_THREADS=1 JULIA_NUM_THREADS=1
+# One partition: at lower_atol = 0 the term count can depend on it, and S = 1 matches the
+# reference codes term for term.
+export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1 RAYON_NUM_THREADS=1 JULIA_NUM_THREADS=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1
 
@@ -111,16 +115,18 @@ PIN=(taskset -c "$PIN_CPU")
 
 # A killed point leaves no row of its own, so write one: the figure draws it as a lower bound.
 timeout_row() {
-    local engine="$1" n="$2" rounds="$3" basis=pauli kind=null
-    [[ "$engine" == *majorana ]] && basis=majorana kind="\"$HUBBARD_CUTOFF_TYPE\""
+    local engine="$1" n="$2" rounds="$3" basis=pauli kind=null boundary=null
+    if [[ "$engine" == *majorana ]]; then
+        basis=majorana kind="\"$HUBBARD_CUTOFF_TYPE\"" boundary="\"$HUBBARD_BOUNDARY\""
+    fi
     # The engine field the driver itself would have written.
     case "$engine" in
         julia) engine=julia_pauli ;;
         julia-majorana) engine=julia_majorana ;;
         monoprop-majorana) engine=monoprop ;;
     esac
-    printf '{"engine": "%s", "basis": "%s", "timeout": true, "num_qubits": %d, "layers": %d, "cutoff": %d, "cutoff_type": %s, "max_rounds": %d, "ceiling_seconds": %d, "host": "%s"}\n' \
-        "$engine" "$basis" "$n" "$LAYERS" "$4" "$kind" "$rounds" "$CEILING_S" "$(hostname)" >>"$OUT"
+    printf '{"engine": "%s", "basis": "%s", "timeout": true, "num_qubits": %d, "layers": %d, "cutoff": %d, "cutoff_type": %s, "boundary": %s, "max_rounds": %d, "ceiling_seconds": %d, "host": "%s"}\n' \
+        "$engine" "$basis" "$n" "$LAYERS" "$4" "$kind" "$boundary" "$rounds" "$CEILING_S" "$(hostname)" >>"$OUT"
 }
 
 TIMEDOUT=0
@@ -150,7 +156,7 @@ run_point() {
             "${PIN[@]}" timeout "$tmo" "$PYTHON" "$PLOTS/scripts/monoprop_single_layer.py" \
                 --basis majorana --model hubbard2d --lx "$lx" --ly "$ly" --num-qubits "$n" \
                 --cutoff "$cutoff" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --layers "$LAYERS" \
-                --lower-atol "$ATOL" "${timing[@]}" --out "$OUT"
+                --boundary "$HUBBARD_BOUNDARY" --lower-atol "$ATOL" "${timing[@]}" --out "$OUT"
             ;;
         ppvm)
             "${PIN[@]}" timeout "$tmo" "$PPVM_PYTHON" "$PLOTS/scripts/ppvm_single_layer.py" \
@@ -171,7 +177,7 @@ run_point() {
                 --startup-file=no --history-file=no --banner=no --gcthreads=1,0 \
                 "$PLOTS/scripts/julia_majorana_hubbard2d.jl" \
                 --lx "$lx" --ly "$ly" --cutoff "$cutoff" --cutoff-type "$HUBBARD_CUTOFF_TYPE" \
-                --layers "$LAYERS" \
+                --boundary "$HUBBARD_BOUNDARY" --layers "$LAYERS" \
                 "${timing[@]}" "${per_layer[@]}" --out "$OUT"
             ;;
         *)

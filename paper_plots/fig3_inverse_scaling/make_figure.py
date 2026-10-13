@@ -18,15 +18,15 @@ One page-wide row of three panels:
 
 * (a), (b) the cost: nanoseconds for one gate to act on one term, against N, for the
   kicked-Ising chain against PauliPropagation.jl and ppvm, and the 2D Hubbard lattice against
-  MajoranaPropagation.jl. Colour is the engine and shade the depth (small, medium, large); the
-  three depths of an engine lie close together, and only the medium one carries markers. A
-  dense engine tests every one of the K terms against every gate; monoprop visits only the
-  terms that anticommute with it, so on this axis monoprop falls as 1/N and the references do
-  not. Each engine's exponent per depth, over the widest N every engine finished there, goes
-  to the caption.
+  MajoranaPropagation.jl. Colour is the engine, each in its own colour, every series the same
+  solid line; the marker is the depth (small, medium, large), the same for every engine and
+  keyed with the engines in each panel's lower left. The two panels share the y axis. A dense
+  engine tests every one of the K terms against every gate; monoprop visits only the terms that
+  anticommute with it, so on this axis monoprop falls as 1/N and the references do not. Each
+  engine's exponent per depth, over the widest N every engine finished there, goes to the caption.
 * (c) the work behind it, from counts rather than timings: the share of the K terms a gate
   touches. A dense code tests all of them; monoprop visits only those that anticommute with
-  the gate (``scripts/count_anticommuting.py``), a share that falls as about 4/N to 8/N.
+  the gate (``scripts/count_anticommuting.py``), a share that falls as about 4/N to 6/N.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
@@ -51,9 +51,10 @@ import matplotlib as mpl
 mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import to_hex, to_rgb
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.ticker import FixedFormatter, FixedLocator
+from matplotlib.transforms import ScaledTranslation
 from merge_octave_runs import CEILING_S, COUNTS, DEPTHS, ROWS
 
 HERE = Path(__file__).resolve().parent
@@ -102,22 +103,17 @@ plt.rcParams.update(
         "ps.fonttype": 42,
     }
 )
-# Colour carries the engine's role (Okabe-Ito; passes the CVD and normal-vision checks over all
-# three pairs): monoprop, the Julia reference of the row, and ppvm. Line style and marker repeat
-# the role for print. In the work panel, shade carries the depth.
-ROLE = {
-    "monoprop": "monoprop",
-    "monoprop-majorana": "monoprop",
-    "julia": "julia",
-    "julia-majorana": "julia",
-    "ppvm": "ppvm",
+# Colour is the engine, one hue each. The two Julia references never share a panel but are
+# different codes, so they get different colours: Okabe-Ito for three, and Tol's wine for
+# MajoranaPropagation.jl, which clears the colour-blind check against the other three.
+MONOPROP = "#0072B2"
+ENGINE_COLOR = {
+    "monoprop": MONOPROP,
+    "monoprop-majorana": MONOPROP,
+    "julia": "#D55E00",
+    "julia-majorana": "#882255",
+    "ppvm": "#009E73",
 }
-ENGINE_STYLE = {
-    "monoprop": ("-", "o"),
-    "julia": ((0, (4, 2)), "o"),
-    "ppvm": ((0, (1, 1.5)), "^"),
-}
-ENGINE_COLOR = {"monoprop": "#0072B2", "julia": "#D55E00", "ppvm": "#009E73"}
 LABEL = {
     "monoprop": "monoprop",
     "monoprop-majorana": "monoprop",
@@ -125,44 +121,37 @@ LABEL = {
     "julia-majorana": "MajoranaPropagation.jl",
     "ppvm": "ppvm",
 }
-# Small depths mixed towards white, large ones towards black; medium is the engine colour. Each
-# three-step ramp passes the ordinal checks (monotone lightness, light end >= 2:1 on white).
-SHADE = ((1.0, 0.42), (None, 0.0), (0.0, 0.42))
-LINE_WIDTH = 1.25
-MARKER_SIZE = 3.6
-MARKER_EDGE = 0.75
+# Depth (small, medium, large) is the marker alone, the same for every engine; every series is
+# the same solid line at the full engine colour. Triangles read smaller than circles and
+# squares at one size, hence the larger one.
+DEPTH_STYLE = (
+    {"marker": "o", "ls": "-", "ms": 3.4},
+    {"marker": "s", "ls": "-", "ms": 3.1},
+    {"marker": "^", "ls": "-", "ms": 3.9},
+)
+LINE_WIDTH = 1.15
 # A white ring keeps a filled marker legible where it crosses another line.
 RING = 0.5
-# The 1/N guide and the gap bracket are near-black so that they survive a printer.
+# The 1/N guide and the 100% line are near-black or grey so that they survive a printer, and
+# dashed, unlike every series.
 GUIDE = "#222222"
-GUIDE_WIDTH = 1.1
-GUIDE_DASH = (0, (5, 2.5))
+GUIDE_WIDTH = 1.0
+GUIDE_DASH = (0, (6, 1.6, 1.2, 1.6))
+DENSE_DASH = (0, (5, 2))
 GRID = "#e6e6e6"
 PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
 
-# Page width, one row: a cost panel per model, then the work per gate of both.
-FIGSIZE = (7.0, 2.7)
+# Page width, one row: a cost panel per model, then the work per gate of both; each panel keys
+# its own engines and depths in its lower left.
+FIGSIZE = (7.0, 2.3)
 MODELS = (
     ("pauli", "Kicked Ising chain", "qubits $N$", "layers"),
     ("majorana", "2D Hubbard lattice", "modes $N$", "layers"),
 )
-# Where each engine is named in its cost panel: (N, side of the bundle, horizontal alignment,
-# gap in points). The name sits that far above or below the envelope of the engine's depths at
-# that N, so it follows the data.
-NAME_AT = {
-    "pauli": {
-        "ppvm": (64, "above", "center", 5),
-        "julia": (256, "below", "left", 14),
-        "monoprop": (128, "below", "center", 5),
-    },
-    "majorana": {
-        "julia-majorana": (32, "above", "left", 9),
-        "monoprop-majorana": (256, "above", "center", 5),
-    },
-}
-# The work panel tells the models apart without the engine colours.
-MODEL_STYLE = {"pauli": "o", "majorana": "s"}
 BAND = "#ececec"  # what the index skips
+# The cost axis reaches this factor below the cheapest point, which leaves the lower left of
+# each cost panel clear for its key.
+COST_FLOOR = 6.0
 
 
 def load(path):
@@ -180,29 +169,16 @@ def _engine_key(row):
     )
 
 
-def shade(color, depth_index):
-    target, t = SHADE[depth_index]
-    if target is None:
-        return color
-    rgb = np.array(to_rgb(color))
-    return to_hex(rgb + (target - rgb) * t)
-
-
-def _style(engine, depth_index=1):
-    role = ROLE[engine]
-    ls, marker = ENGINE_STYLE[role]
-    color = shade(ENGINE_COLOR[role], depth_index)
-    filled = role == "monoprop"
+def _style(color, depth_index=1):
+    """One series: ``color`` at full strength, a solid line with the depth's marker."""
+    depth = DEPTH_STYLE[depth_index]
     return {
-        "ls": ls,
-        "marker": marker,
+        **depth,
         "color": color,
         "lw": LINE_WIDTH,
-        "ms": MARKER_SIZE + (0.5 if filled else 0.0),
-        "mew": RING if filled else MARKER_EDGE,
-        "mfc": color if filled else "white",
-        "mec": "white" if filled else color,
-        "zorder": 3 if filled else 2,
+        "mfc": color,
+        "mec": "white",
+        "mew": RING,
     }
 
 
@@ -379,12 +355,12 @@ def depth_stats(rows, engines):
     }
 
 
-def cost_panel(ax, rows, kind, ns, depth_word):
+def cost_panel(ax, rows, kind, ns):
     """ns per gate per term against N: every engine at every depth, and the 1/N guide.
 
-    Depth is the shade of the engine's colour; only the medium depth carries markers, so the
-    three depths of one engine read as one bundle. A point over the time limit has no cost to
-    plot, only a bound, and is left out (the caption lists it).
+    Colour is the engine; the marker is the depth, the same for every engine, keyed in the
+    panel's lower left with this panel's layer counts. A point over the time limit has no cost
+    to plot, only a bound, and is left out (the caption lists it).
     """
     engines = ROWS[kind][1]
     stats = {}
@@ -394,11 +370,10 @@ def cost_panel(ax, rows, kind, ns, depth_word):
         )
         for e in engines:
             pts, _ = st["series"][e]
-            style = _style(e, i)
-            if i != 1:
-                style.update(marker="none", lw=LINE_WIDTH - 0.25)
+            # monoprop on top: its bundle is the one the figure is about.
+            z = 3 if e == engines[0] else 2
             if pts:
-                ax.plot(*zip(*pts, strict=True), **style, solid_capstyle="round")
+                ax.plot(*zip(*pts, strict=True), **_style(ENGINE_COLOR[e], i), zorder=z)
 
     # The 1/N guide, through monoprop's first point at the medium depth.
     mono = stats[DEPTHS[kind][1]]["series"][engines[0]][0]
@@ -411,37 +386,22 @@ def cost_panel(ax, rows, kind, ns, depth_word):
         lw=GUIDE_WIDTH,
         zorder=1,
     )
-
-    for e, (n, side, ha, gap) in NAME_AT[kind].items():
-        _name(ax, stats, e, n, side, ha, gap)
-
-    # Depth key: the shade ramp in grey, so it applies to every engine.
-    grey = "#555555"
-    key = ax.legend(
-        [Line2D([], [], color=shade(grey, i), lw=LINE_WIDTH + 0.4) for i in range(3)],
-        [str(layers) for layers in DEPTHS[kind]],
-        title=depth_word,
-        title_fontsize=6.2,
-        loc="lower left",
-        ncol=3,
-        frameon=False,
-        fontsize=6.2,
-        handlelength=1.3,
-        handletextpad=0.35,
-        columnspacing=0.8,
-        borderaxespad=0.3,
-        alignment="left",
+    # The key: this panel's engines and the guide, one per row, over one row of its depths.
+    depths = DEPTHS[kind]
+    _panel_legend(
+        ax,
+        [Line2D([], [], **{**_style(INK_2, i), "ls": ""}) for i in range(len(depths))],
+        [str(n) for n in depths[:-1]] + [f"{depths[-1]} layers"],
+        ncol=len(depths),
+        handlelength=0.9,
+        handletextpad=0.25,
     )
-    ax.add_artist(key)
-    ax.legend(
-        [Line2D([], [], ls=GUIDE_DASH, color=GUIDE, lw=GUIDE_WIDTH)],
-        ["$\\propto 1/N$"],
-        loc="lower right",
-        frameon=False,
-        fontsize=6.4,
-        handlelength=2.2,
-        handletextpad=0.4,
-        borderaxespad=0.3,
+    _panel_legend(
+        ax,
+        [Line2D([], [], color=ENGINE_COLOR[e], lw=LINE_WIDTH + 0.3) for e in engines]
+        + [Line2D([], [], ls=GUIDE_DASH, color=GUIDE, lw=GUIDE_WIDTH)],
+        [LABEL[e] for e in engines] + ["$\\propto 1/N$"],
+        rows_below=1,
     )
     ax.set_yscale("log")
     _log2_axis(ax, ns)
@@ -449,22 +409,40 @@ def cost_panel(ax, rows, kind, ns, depth_word):
     return stats
 
 
-def _name(ax, stats, engine, n, side, ha, gap):
-    """Name an engine in ink beside its bundle: above or below every depth's value at ``n``."""
-    ys = [y for st in stats.values() for x, y in st["series"][engine][0] if x == n]
-    if not ys:
-        raise ValueError(f"{engine}: no point at N={n} to name it by")
-    above = side == "above"
-    ax.annotate(
-        LABEL[engine],
-        xy=(n, max(ys) if above else min(ys)),
-        xytext=(-3 if ha == "left" else 0, gap if above else -gap),
-        textcoords="offset points",
-        ha=ha,
-        va="bottom" if above else "top",
-        fontsize=6.8,
-        color=INK,
+KEY_SIZE = 6.3  # points
+KEY_SPACING = 0.28  # of the font size, between rows
+
+
+def _panel_legend(ax, handles, labels, *, ncol=1, rows_below=0, **kw):
+    """A frameless key in the panel's lower left, the same in every panel.
+
+    ``rows_below`` lifts it by that many key rows, over a key already drawn there; a panel can
+    hold several, each kept as its own artist.
+    """
+    lift = rows_below * KEY_SIZE * (1 + KEY_SPACING) / 72
+    key = ax.legend(
+        handles,
+        labels,
+        loc="lower left",
+        bbox_to_anchor=(0, 0),
+        bbox_transform=ax.transAxes
+        + ScaledTranslation(0, lift, ax.figure.dpi_scale_trans),
+        ncol=ncol,
+        frameon=False,
+        fontsize=KEY_SIZE,
+        labelcolor=INK,
+        labelspacing=KEY_SPACING,
+        borderaxespad=0.35,
+        **{"handlelength": 1.9, "handletextpad": 0.45, "columnspacing": 0.7} | kw,
     )
+    # Kept as a plain artist, so that the next key does not replace it (and it is drawn once).
+    ax.legend_ = None
+    ax.add_artist(key)
+
+
+# Panel (c): both lines are monoprop at the medium depth, so the model is the marker's fill.
+WORK_FILL = {"pauli": True, "majorana": False}
+WORK_NAME = {"pauli": "kicked Ising", "majorana": "2D Hubbard"}
 
 
 def work_panel(ax, counts, ns):
@@ -472,9 +450,11 @@ def work_panel(ax, counts, ns):
 
     A dense code tests every term (the 100% line); monoprop visits only the terms that
     anticommute with the gate (``scripts/count_anticommuting.py``), a share that falls as
-    about 4/N to 8/N. The band between them is what the index skips.
+    about 4/N to 6/N. The band between them is what the index skips. Both lines are monoprop at
+    the medium depth, so they wear its colour and that depth's style, the Hubbard marker open;
+    the key in the lower left names them.
     """
-    out, shares = {}, {}
+    out, shares, handles, labels = {}, {}, [], []
     for kind, _, _, _ in MODELS:
         cs = sorted(
             (c for c in counts if c["basis"] == kind), key=lambda c: c["num_qubits"]
@@ -491,61 +471,22 @@ def work_panel(ax, counts, ns):
         n = np.array([x for x, _ in mid], float)
         share = np.array([100 * a / k for _, (k, a) in mid])
         shares[kind] = (n, share)
-        filled = kind == "pauli"
-        ax.plot(
-            n,
-            share,
-            color=ENGINE_COLOR["monoprop"],
-            lw=LINE_WIDTH,
-            marker=MODEL_STYLE[kind],
-            ms=MARKER_SIZE - 0.4,
-            mfc=ENGINE_COLOR["monoprop"] if filled else "white",
-            mec="white" if filled else ENGINE_COLOR["monoprop"],
-            mew=RING if filled else MARKER_EDGE,
-            zorder=3,
-        )
-    dense = ENGINE_COLOR["julia"]
-    ax.axhline(100, color=dense, lw=LINE_WIDTH, ls=ENGINE_STYLE["julia"][0], zorder=2)
-    # The band starts above both lines, over the N where each was counted.
-    n, low = shares["pauli"]
-    hub_n, hub = shares["majorana"]
-    top = np.where(n <= hub_n.max(), np.maximum(low, np.interp(n, hub_n, hub)), low)
-    ax.fill_between(n, top, 100, color=BAND, lw=0, zorder=0)
-    ax.text(
-        np.sqrt(n[0] * n[-1]) * 1.4,
-        12,
-        "skipped by\nthe index",
-        ha="center",
-        va="center",
-        fontsize=6.6,
-        color=INK_2,
-        linespacing=1.1,
-    )
-    ax.legend(
-        [
-            Line2D(
-                [],
-                [],
-                color=ENGINE_COLOR["monoprop"],
-                lw=LINE_WIDTH,
-                marker=MODEL_STYLE[kind],
-                ms=MARKER_SIZE - 0.4,
-                mfc=ENGINE_COLOR["monoprop"] if kind == "pauli" else "white",
-                mec="white" if kind == "pauli" else ENGINE_COLOR["monoprop"],
-                mew=RING if kind == "pauli" else MARKER_EDGE,
-            )
-            for kind in ("pauli", "majorana")
-        ],
-        ["monoprop, kicked Ising", "monoprop, 2D Hubbard"],
-        loc="lower left",
-        frameon=False,
-        fontsize=6.2,
-        handlelength=1.8,
-        labelspacing=0.25,
-        borderaxespad=0.3,
-    )
+        style = _style(MONOPROP, 1)
+        if not WORK_FILL[kind]:
+            style |= {"mfc": "white", "mec": MONOPROP, "mew": 0.9}
+        handles.append(ax.plot(n, share, **style, zorder=3)[0])
+        layers = DEPTHS[kind][1]
+        labels.append(f"{WORK_NAME[kind]}, {layers} layer{'s' if layers > 1 else ''}")
+    ax.axhline(100, color=INK_2, lw=LINE_WIDTH, ls=DENSE_DASH, zorder=2)
+    # The band runs from the lowest line, the share monoprop touches at its sparsest, up to
+    # the 100% a dense code tests.
+    low_n, low = min(shares.values(), key=lambda s: s[1][-1])
+    ax.fill_between(low_n, low, 100, color=BAND, lw=0, zorder=0)
+    handles.append(Patch(facecolor=BAND, edgecolor="none"))
+    labels.append("skipped by the index")
+    _panel_legend(ax, handles, labels)
     ax.set_yscale("log")
-    ax.set_ylim(0.15, 400)
+    ax.set_ylim(0.03, 250)
     ax.yaxis.set_major_formatter(lambda y, _: f"{y:g}%")
     _log2_axis(ax, ns)
     _frame(ax)
@@ -555,23 +496,34 @@ def work_panel(ax, counts, ns):
 def draw(datasets, counts, outdir: Path):
     fig = plt.figure(figsize=FIGSIZE, layout="constrained")
     fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.06)
-    grid = fig.add_gridspec(1, 3, width_ratios=(1.15, 1.15, 1))
+    grid = fig.add_gridspec(1, 3)
     results = {}
-    for j, (kind, title, axis, depth_word) in enumerate(MODELS):
+    # (a) and (b) share one cost axis, with room at the bottom for the keys.
+    ys = [
+        _per_gate_per_term(x)
+        for rows in datasets.values()
+        for x in rows
+        if _limit(x) is None
+    ]
+    first = None
+    for j, (kind, title, axis, _) in enumerate(MODELS):
         rows = datasets[kind]
         ns = sorted({x["num_qubits"] for x in rows})
-        ax = fig.add_subplot(grid[0, j])
-        cost = cost_panel(ax, rows, kind, ns, depth_word)
+        ax = fig.add_subplot(grid[0, j], sharey=first)
+        first = first or ax
+        cost = cost_panel(ax, rows, kind, ns)
         ax.set_title(f"({'ab'[j]}) {title}", loc="left", fontsize=7.8, color=INK)
         ax.set_xlabel(axis, labelpad=1.5)
         if j == 0:
             ax.set_ylabel("ns per gate, per term", labelpad=2)
-        # Room below the lowest point for the depth key.
-        ys = [_per_gate_per_term(x) for x in rows if _limit(x) is None]
-        ax.set_ylim(min(ys) / 4.0, max(ys) * 1.8)
+        else:
+            ax.tick_params(labelleft=False)
         results[kind] = {"cost": cost}
+    first.set_ylim(min(ys) / COST_FLOOR, max(ys) * 1.6)
     wax = fig.add_subplot(grid[0, 2])
-    work = work_panel(wax, counts, ns)
+    # Panel (c) holds both models; its ticks are the chain's powers of two, and the square
+    # Hubbard lattices' N fall between them.
+    work = work_panel(wax, counts, sorted({x["num_qubits"] for x in datasets["pauli"]}))
     wax.set_title("(c) Terms a gate touches", loc="left", fontsize=7.8, color=INK)
     wax.set_xlabel("$N$", labelpad=1.5)
     wax.set_ylabel("share of the $K$ terms, per gate", labelpad=2)

@@ -126,6 +126,7 @@ def main() -> None:
     ap.add_argument("--basis", choices=["pauli", "majorana"], required=True)
     ap.add_argument("--num-qubits", type=int, required=True)
     ap.add_argument("--cutoff-type", choices=["support", "length"], default="support")
+    ap.add_argument("--boundary", choices=["open", "periodic"], default="open")
     ap.add_argument("--lx", type=int, default=None)
     ap.add_argument("--ly", type=int, default=None)
     ap.add_argument("--cutoff", type=int, required=True)
@@ -135,7 +136,11 @@ def main() -> None:
 
     if args.basis == "majorana":
         factory, circuit, steps = single.build_hubbard2d(
-            args.lx, args.ly, args.cutoff, cutoff_type=args.cutoff_type
+            args.lx,
+            args.ly,
+            args.cutoff,
+            cutoff_type=args.cutoff_type,
+            boundary=args.boundary,
         )
     else:
         factory, circuit = single.build_pauli(
@@ -161,6 +166,7 @@ def main() -> None:
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
         "cutoff_type": args.cutoff_type if args.basis == "majorana" else None,
+        "boundary": args.boundary if args.basis == "majorana" else None,
         "layers": args.layers,
         "lower_atol": 0.0,
         "num_terms": int(size),
