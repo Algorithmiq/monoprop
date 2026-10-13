@@ -85,11 +85,17 @@ N = 512 they would not fit a node.
   3.75–7.95 K/N for Hubbard, at every counted point; so the ratio K / anticommuting grows ∝ N, to
   216–231× (kicked Ising, N = 1024) and 65–130× (Hubbard, N = 512).
 - **Even support** (`occupancy_figure.py`, `figures/fig3_occupancy.*`, paper appendix
-  `app:measured-occupancy`). The longest index list over the mean, c, after every layer: kicked
-  Ising c ≤ 1.56 (N = 32), falling with N to 1.04–1.05 at N = 1024; Hubbard c ≤ 1.82 (N = 512, 2
-  layers), from the open boundary: edge sites hold fewer terms than the bulk, and c is the bulk
-  over the lattice mean. After one layer (a 2-site depleted strip) c turns over, 1.44 at N = 128
-  to 1.14 at N = 1024; after two (a ~7-site strip) it is still rising at N = 512.
+  `app:measured-occupancy`). After every layer, from the index list lengths: the longest list
+  over the mean, c, and the average list a gate reads over one layer, over the mean. The second
+  is what the runtime pays: every position is read by at most r gates of a layer (r = 2 kicked
+  Ising, 5 Hubbard), so a layer reads at most r × the whole index and the average gate costs
+  O(K/N) whatever c is. Measured, it stays within 1.5% (kicked Ising) and 2.5% (Hubbard) of
+  the mean at every depth and N. c only bounds the worst single gate: kicked Ising c ≤ 1.56
+  (N = 32), falling to 1.04–1.05 at N = 1024; Hubbard c grows to 1.82 (N = 512, 2 layers), from
+  the open boundary. The per-site bars (panels a–c) show the edge strip below the mean and the
+  interior above it; after two layers the strip is ~7 sites wide, half the 16×16 lattice, so the
+  interior has not reached its bulk value. After one layer (a 2-site strip) c turns over, 1.44 at
+  N = 128 to 1.14 at N = 1024.
 
 ## Workloads (identical for all engines)
 

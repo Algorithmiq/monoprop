@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Appendix figure: how evenly the Fig. 3 operators are spread over the anticommutation index.
+"""Appendix figure: how the Fig. 3 operators spread over the anticommutation index.
 
-The O(K/N) bound holds for an evenly supported operator, whose longest index list is within a
-constant factor c of the mean (paper, Definition ``def:even-occupancy``). This measures c on
-the operators Fig. 3 times, after every layer (``scripts/occupancy.py``):
+A gate reads the index lists of the positions it acts on, so its cost is the length of those
+lists. The longest list over the mean, c, bounds the worst single gate (paper, Definition
+``def:even-occupancy``). What a layer pays is the total over its gates, and since every
+position is read by a bounded number of gates per layer, that total is a bounded multiple of the
+whole index: the average gate reads lists of about the mean length, whatever c is. This draws
+both from the list lengths measured after every layer (``scripts/occupancy.py``):
 
-* (a), (b) c = longest list / mean list against N, at the three Fig. 3 depths of each model;
-* (c) where the long lists are on the Hubbard lattice: the mean list length at each distance
-  from the open edge, relative to the mean over the lattice, at the medium depth.
+* (a)-(c) the list length of every site of the Hubbard lattice, row by row, over the mean,
+  after two layers, on the three largest lattices measured; shade is the distance from the
+  open edge;
+* (d) against N, at the medium depth of each model: c, and the average list a gate reads over
+  one layer, both over the mean list.
 
     python occupancy_figure.py --merge <occupancy run dir> ...   # writes data/occupancy.jsonl
     python occupancy_figure.py                                    # draws from it
@@ -35,8 +40,9 @@ from pathlib import Path
 import make_figure as mf
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
-from merge_octave_runs import CUTOFF, DEPTHS, MAX_N, NS, cutoff_of
+from matplotlib.colors import to_hex, to_rgb
+from matplotlib.patches import Patch
+from merge_octave_runs import CUTOFF, DEPTHS, NS, cutoff_of
 
 OCCUPANCY = "occupancy.jsonl"
 STEM = "fig3_occupancy"
@@ -49,16 +55,51 @@ LATTICE = {
     512: (16, 16),
     1024: (32, 16),
 }
-FIGSIZE = (7.0, 2.3)
-TITLE = {"pauli": "(a) Kicked Ising chain", "majorana": "(b) 2D Hubbard lattice"}
-AXIS = {"pauli": "qubits $N$", "majorana": "modes $N$"}
+FIGSIZE = (7.0, 2.4)
+# The lattices of panels (a)-(c), at the medium Hubbard depth.
+SITE_PANELS = (128, 256, 512)
+# Sites from the open edge, in bands of two (the profile steps every two sites): light at the
+# edge, dark in the interior.
+EDGE_BANDS = ((0, 1), (2, 3), (4, 5), (6, 7))
+EDGE_MIX = (0.62, 0.42, 0.2, 0.0)
+MODEL_NAME = {"pauli": "kicked Ising", "majorana": "2D Hubbard"}
+LONGEST = "#8a8a8a"
+
+
+def _edge_distance(lx, ly):
+    x, y = np.arange(lx * ly) % lx, np.arange(lx * ly) // lx
+    return x, y, np.minimum.reduce([x, lx - 1 - x, y, ly - 1 - y])
+
+
+def gate_read(row):
+    """The average list a gate of one layer reads, over the mean list.
+
+    Kicked Ising: X_q reads index 2q+1, Z_q Z_{q+1} reads 2q and 2q+2. Hubbard: the hops of
+    a bond read the four indices of each of its two sites over the two spins, and the
+    interaction the four of its site. Each read is weighted by the gates that make it.
+    """
+    lengths = np.asarray(row["list_lengths"], float)
+    n = row["num_qubits"]
+    if row["basis"] == "pauli":
+        degree = np.full(n, 2.0)
+        degree[[0, -1]] = 1
+        reads = lengths[1::2].sum() + (degree * lengths[0::2]).sum()
+        positions = n + 2 * (n - 1)
+    else:
+        lx, ly = LATTICE[n]
+        x, y, _ = _edge_distance(lx, ly)
+        degree = (x > 0).astype(float) + (x < lx - 1) + (y > 0) + (y < ly - 1)
+        per_site = lengths.reshape(lx * ly, 4).sum(axis=1)
+        reads = ((degree + 1) * per_site).sum()
+        positions = 4 * (degree + 1).sum()
+    return float(reads / positions / lengths.mean())
 
 
 def merge(run_dirs, out: Path) -> None:
     """Rows at the Fig. 3 cutoffs and depths, one per (model, N, layers); refuse duplicates.
 
-    The per-position list lengths are kept for the Hubbard rows only, which panel (c) maps onto
-    the lattice; a kicked-Ising row keeps its summary.
+    Every row gains ``gate_read_over_mean``; the per-position list lengths are kept for the
+    Hubbard rows only, which panels (a)-(c) draw.
     """
     rows = {}
     for run_dir in run_dirs:
@@ -75,6 +116,7 @@ def merge(run_dirs, out: Path) -> None:
                 key = (r["basis"], r["num_qubits"], r["layers"])
                 if key in rows:
                     raise SystemExit(f"{key}: two rows ({rows[key]['source']}, {f})")
+                r["gate_read_over_mean"] = gate_read(r)
                 if r["basis"] == "pauli":
                     r.pop("list_lengths")
                 rows[key] = {**r, "source": str(f)}
@@ -82,119 +124,152 @@ def merge(run_dirs, out: Path) -> None:
     print(f"wrote {len(rows)} rows to {out}")
 
 
-def edge_profile(row):
-    """{distance from the open edge: mean list length of a site there / mean over sites}."""
+def _band_colors():
+    blue = np.array(to_rgb(mf.ENGINE_COLOR["monoprop"]))
+    return [to_hex(blue + (1 - blue) * t) for t in EDGE_MIX]
+
+
+def site_panel(ax, row, letter):
+    """One bar per site, row by row, over the mean; the mean as the dashed line."""
     lx, ly = LATTICE[row["num_qubits"]]
-    # Four Majorana positions per site: two spin modes, interleaved, two Majoranas each.
     per_site = np.asarray(row["list_lengths"], float).reshape(lx * ly, 4).sum(axis=1)
-    x, y = np.arange(lx * ly) % lx, np.arange(lx * ly) // lx
-    dist = np.minimum.reduce([x, lx - 1 - x, y, ly - 1 - y])
-    return {
-        int(d): float(per_site[dist == d].mean() / per_site.mean())
-        for d in np.unique(dist)
-    }
-
-
-def c_panel(ax, rows, kind):
-    for i, layers in enumerate(DEPTHS[kind]):
-        pts = sorted(
-            (r["num_qubits"], r["c_max_over_mean"])
-            for r in rows
-            if r["basis"] == kind and r["layers"] == layers
-        )
-        style = mf._style("monoprop", i)
-        if i != 1:
-            style.update(marker="none", lw=mf.LINE_WIDTH - 0.25)
-        ax.plot(*zip(*pts, strict=True), **style, solid_capstyle="round")
-    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.GUIDE_DASH, zorder=1)
-    grey = "#555555"
-    ax.legend(
-        [
-            Line2D([], [], color=mf.shade(grey, i), lw=mf.LINE_WIDTH + 0.4)
-            for i in range(3)
-        ],
-        [str(layers) for layers in DEPTHS[kind]],
-        title="layers",
-        title_fontsize=6.2,
-        loc="upper right" if kind == "pauli" else "upper left",
-        ncol=3,
-        frameon=False,
-        fontsize=6.2,
-        handlelength=1.3,
-        handletextpad=0.35,
-        columnspacing=0.8,
-        borderaxespad=0.3,
-        alignment="left",
+    ratio = per_site / per_site.mean()
+    _, _, dist = _edge_distance(lx, ly)
+    colors = _band_colors()
+    band = np.minimum(dist // 2, len(colors) - 1)
+    ax.bar(
+        np.arange(lx * ly),
+        ratio,
+        width=1.0,
+        color=[colors[b] for b in band],
+        lw=0,
+        zorder=2,
     )
-    ax.set_ylim(0.9, 2.0)
+    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.GUIDE_DASH, zorder=3)
+    top = int(ratio.argmax())
+    ax.annotate(
+        f"$c={ratio.max():.2f}$",
+        xy=(top, ratio.max()),
+        xytext=(0, 3),
+        textcoords="offset points",
+        ha="center",
+        va="bottom",
+        fontsize=6.6,
+        color=mf.INK,
+    )
+    # A tick at the start of every row of the lattice.
+    ax.set_xticks(np.arange(0, lx * ly, lx), labels=[])
+    ax.tick_params(axis="x", length=2)
+    ax.set_xlim(-0.5, lx * ly - 0.5)
+    ax.set_ylim(0, 2.15)
+    ax.grid(visible=True, axis="y", color=mf.GRID, lw=0.5)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.set_title(
+        f"({letter}) {lx}×{ly}, $N={row['num_qubits']}$",
+        loc="left",
+        fontsize=7.8,
+        color=mf.INK,
+    )
+
+
+def read_panel(ax, rows):
+    """c and the average list a gate reads, over the mean, at each model's medium depth."""
+    blue = mf.ENGINE_COLOR["monoprop"]
+    for kind, marker in mf.MODEL_STYLE.items():
+        layers = DEPTHS[kind][1]
+        mine = sorted(
+            (r for r in rows if r["basis"] == kind and r["layers"] == layers),
+            key=lambda r: r["num_qubits"],
+        )
+        n = [r["num_qubits"] for r in mine]
+        filled = kind == "pauli"
+        for key, color, ls, z in (
+            ("c_max_over_mean", LONGEST, (0, (3, 1.6)), 2),
+            ("gate_read_over_mean", blue, "-", 3),
+        ):
+            ax.plot(
+                n,
+                [r[key] for r in mine],
+                color=color,
+                ls=ls,
+                lw=mf.LINE_WIDTH,
+                marker=marker,
+                ms=mf.MARKER_SIZE - 0.3,
+                mfc=color if filled else "white",
+                mec="white" if filled else color,
+                mew=mf.RING if filled else mf.MARKER_EDGE,
+                zorder=z,
+            )
+        # Each longest-list line is named at its far end from the other.
+        first, last = (mine[0], mine[-1])
+        anchor, ha, dx = (first, "left", 4) if filled else (last, "right", -6)
+        ax.annotate(
+            f"{MODEL_NAME[kind]}, longest ($c$)",
+            xy=(anchor["num_qubits"], anchor["c_max_over_mean"]),
+            xytext=(dx, 4 if filled else 0),
+            textcoords="offset points",
+            ha=ha,
+            va="bottom" if filled else "center",
+            fontsize=6.4,
+            color=mf.INK,
+        )
+    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.GUIDE_DASH, zorder=1)
+    ax.annotate(
+        "both: the list a gate reads,\naveraged over a layer",
+        xy=(min(NS), 0.99),
+        xytext=(-2, -5),
+        textcoords="offset points",
+        ha="left",
+        va="top",
+        fontsize=6.4,
+        color=mf.INK,
+        linespacing=1.1,
+    )
+    ax.set_ylim(0.82, 2.15)
     mf._log2_axis(ax, list(NS))
     mf._frame(ax)
-    ax.set_title(TITLE[kind], loc="left", fontsize=7.8, color=mf.INK)
-    ax.set_xlabel(AXIS[kind], labelpad=1.5)
-
-
-def profile_panel(ax, rows):
-    layers = DEPTHS["majorana"][1]
-    mine = sorted(
-        (r for r in rows if r["basis"] == "majorana" and r["layers"] == layers),
-        key=lambda r: r["num_qubits"],
-    )
-    mine = [r for r in mine if r["num_qubits"] >= 128]
-    handles, labels = [], []
-    for i, r in enumerate(mine):
-        prof = edge_profile(r)
-        # Lattices from small to large take the depth ramp from light to dark.
-        tone = mf.shade(
-            mf.ENGINE_COLOR["monoprop"], round(2 * i / max(len(mine) - 1, 1))
-        )
-        (line,) = ax.plot(
-            list(prof),
-            list(prof.values()),
-            color=tone,
-            lw=mf.LINE_WIDTH,
-            marker="o",
-            ms=mf.MARKER_SIZE - 0.6,
-            mfc=tone,
-            mec="white",
-            mew=mf.RING,
-        )
-        lx, ly = LATTICE[r["num_qubits"]]
-        handles.append(line)
-        labels.append(f"{lx}×{ly}")
-    ax.axhline(1, color=mf.GUIDE, lw=mf.GUIDE_WIDTH, ls=mf.GUIDE_DASH, zorder=1)
-    ax.legend(
-        handles,
-        labels,
-        title="lattice",
-        title_fontsize=6.2,
-        loc="lower right",
-        frameon=False,
-        fontsize=6.2,
-        handlelength=1.6,
-        labelspacing=0.25,
-        borderaxespad=0.3,
-        alignment="left",
-    )
-    ax.set_xlim(-0.5, 9)
-    ax.set_xticks(range(0, 9, 2))
-    mf._frame(ax)
-    ax.set_title(
-        f"(c) Hubbard, {layers} layers: by site", loc="left", fontsize=7.8, color=mf.INK
-    )
-    ax.set_xlabel("sites from the open edge", labelpad=1.5)
-    ax.set_ylabel("site's lists / mean", labelpad=2)
+    ax.set_title("(d) Longest and read", loc="left", fontsize=7.8, color=mf.INK)
+    ax.set_xlabel("$N$", labelpad=1.5)
+    ax.set_ylabel("list length / mean", labelpad=2)
 
 
 def draw(rows, outdir: Path):
     fig = plt.figure(figsize=FIGSIZE, layout="constrained")
-    fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.06)
-    grid = fig.add_gridspec(1, 3, width_ratios=(1.15, 1.15, 1))
-    for j, kind in enumerate(("pauli", "majorana")):
-        ax = fig.add_subplot(grid[0, j])
-        c_panel(ax, rows, kind)
-        if j == 0:
-            ax.set_ylabel("longest list / mean, $c$", labelpad=2)
-    profile_panel(fig.add_subplot(grid[0, 2]), rows)
+    fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.05)
+    grid = fig.add_gridspec(1, 4, width_ratios=(0.85, 1.0, 1.35, 1.35))
+    layers = DEPTHS["majorana"][1]
+    by_n = {
+        r["num_qubits"]: r
+        for r in rows
+        if r["basis"] == "majorana" and r["layers"] == layers
+    }
+    axes = []
+    for j, n in enumerate(SITE_PANELS):
+        ax = fig.add_subplot(grid[0, j], sharey=axes[0] if axes else None)
+        site_panel(ax, by_n[n], "abc"[j])
+        axes.append(ax)
+    axes[0].set_ylabel(f"site's lists / mean, {layers} layers", labelpad=2)
+    for ax in axes[1:]:
+        ax.tick_params(labelleft=False)
+    axes[1].set_xlabel("sites in row order (a tick starts each row)", labelpad=1.5)
+    axes[0].legend(
+        [Patch(color=c, lw=0) for c in _band_colors()],
+        [f"{lo}–{hi}" for lo, hi in EDGE_BANDS],
+        title="sites from edge",
+        title_fontsize=6.0,
+        loc="upper left",
+        ncol=2,
+        frameon=False,
+        fontsize=6.0,
+        handlelength=0.9,
+        handletextpad=0.35,
+        columnspacing=0.6,
+        borderaxespad=0.2,
+        alignment="left",
+    )
+    read_panel(fig.add_subplot(grid[0, 3]), rows)
     outdir.mkdir(parents=True, exist_ok=True)
     outs = []
     for ext, dpi in (("pdf", None), ("png", mf.PNG_DPI)):
@@ -206,26 +281,22 @@ def draw(rows, outdir: Path):
 
 
 def summary(rows) -> str:
-    """The numbers the appendix quotes: the largest c per model, and c at the largest N."""
+    """The numbers the appendix quotes: c and the average read, per model, depth and N."""
     lines = []
     for kind in ("pauli", "majorana"):
         mine = [r for r in rows if r["basis"] == kind]
-        worst = max(mine, key=lambda r: r["c_max_over_mean"])
-        lines.append(
-            f"{kind}: largest c = {worst['c_max_over_mean']:.3f} "
-            f"(N={worst['num_qubits']}, {worst['layers']} layers)"
-        )
+        for key, name in (("c_max_over_mean", "c"), ("gate_read_over_mean", "read")):
+            values = [r[key] for r in mine]
+            lines.append(f"{kind} {name}: {min(values):.3f} to {max(values):.3f}")
         for layers in DEPTHS[kind]:
             pts = sorted(
-                (r["num_qubits"], r["c_max_over_mean"])
+                (r["num_qubits"], r["c_max_over_mean"], r["gate_read_over_mean"])
                 for r in mine
                 if r["layers"] == layers
             )
-            cap = MAX_N.get((kind, layers))
             lines.append(
                 f"  {layers} layers: "
-                + ", ".join(f"N={n} {c:.3f}" for n, c in pts)
-                + (f" (timed to N={cap})" if cap else "")
+                + ", ".join(f"N={n} c={c:.3f} read={g:.3f}" for n, c, g in pts)
             )
     return "\n".join(lines)
 
