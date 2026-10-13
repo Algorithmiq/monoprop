@@ -31,7 +31,7 @@ from monoprop.circuit import validate_parameter_mapping
 from monoprop.fermi import FermiOperator
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
-from tests.cases import load_problem
+from tests.reference_data import load_problem
 
 DATA = Path(__file__).parent / "data"
 FIXTURES = ["rx_rz_ry_rz_exact", "random_exact", "lih_fermionic_spin_exact"]

@@ -27,12 +27,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from tests.cases import load_problem
+from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.cases import FermionicProblem
+    from tests.reference_data import FermionicProblem
 
 try:
     from mpi4py import MPI

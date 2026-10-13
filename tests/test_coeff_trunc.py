@@ -23,10 +23,11 @@ from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.majorana import MajoranaOperator
 
 if TYPE_CHECKING:
-    from tests.cases import FermionicProblem
+    from tests.reference_data import FermionicProblem
 
 
 def _create_mp(
+    *,
     op,
     initial_state,
     comm,
@@ -79,7 +80,12 @@ def test_coeff_trunc(serial_comm):
 
     def get_test_dict(upper_atol, lower_atol, cutoff):
         mp = _create_mp(
-            op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
+            op=op,
+            initial_state=sequence.initial_state,
+            comm=serial_comm,
+            upper_atol=upper_atol,
+            lower_atol=lower_atol,
+            cutoff=cutoff,
         )
         mp.propagate(circuit)
         return mp.evolved_operator()
@@ -102,6 +108,7 @@ def test_coeff_trunc(serial_comm):
 @pytest.mark.parametrize("lower_atol", [1e-5, 1e-6])
 @pytest.mark.parametrize("cutoff", [4, 6, 8])
 def test_coeff_trunc_build_graph_and_inplace_equiv(
+    *,
     lih_problem: FermionicProblem,
     schrodinger,
     upper_atol,
@@ -118,25 +125,25 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     parameters = monomial_circuit.parameters
 
     mp_inplace = _create_mp(
-        fermionic_operator,
-        monomial_circuit.initial_state,
-        serial_comm,
-        upper_atol,
-        lower_atol,
-        cutoff,
-        schrodinger_cutoff_val,
+        op=fermionic_operator,
+        initial_state=monomial_circuit.initial_state,
+        comm=serial_comm,
+        upper_atol=upper_atol,
+        lower_atol=lower_atol,
+        cutoff=cutoff,
+        schrodinger_cutoff=schrodinger_cutoff_val,
     )
     mp_inplace.propagate(circuit)
     expval_inplace = mp_inplace.expval()
 
     mp_build = _create_mp(
-        fermionic_operator,
-        monomial_circuit.initial_state,
-        serial_comm,
-        upper_atol,
-        lower_atol,
-        cutoff,
-        schrodinger_cutoff_val,
+        op=fermionic_operator,
+        initial_state=monomial_circuit.initial_state,
+        comm=serial_comm,
+        upper_atol=upper_atol,
+        lower_atol=lower_atol,
+        cutoff=cutoff,
+        schrodinger_cutoff=schrodinger_cutoff_val,
     )
     # Coefficient-informed build: the seed is regenerated internally from parameters.
     mp_build.build_graph(circuit)
@@ -220,7 +227,12 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
 
     for upper_atol, lower_atol in atol_combinations:
         mp = _create_mp(
-            op, sequence.initial_state, serial_comm, upper_atol, lower_atol, cutoff
+            op=op,
+            initial_state=sequence.initial_state,
+            comm=serial_comm,
+            upper_atol=upper_atol,
+            lower_atol=lower_atol,
+            cutoff=cutoff,
         )
         mp.build_graph(circuit)
 

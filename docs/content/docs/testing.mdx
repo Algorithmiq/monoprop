@@ -192,7 +192,7 @@ class TestPauli:
 The `problem` fixture in `tests/conftest.py` is parametrized over the three
 general reference problems: LiH, RX/RZ/RY/RZ rotations, and a random circuit.
 Each invocation loads a fresh problem from `tests/data/` using `load_problem()`
-in `tests/cases.py`. Its explicit case IDs make failures easy to identify.
+in `tests/reference_data.py`. Its explicit case IDs make failures easy to identify.
 The `serial_comm` and `comm` fixtures are also provided by `conftest.py`.
 
 ```python notest
@@ -240,7 +240,7 @@ instead:
 ```python notest
 import pytest
 
-from tests.cases import load_problem
+from tests.reference_data import load_problem
 
 
 @pytest.fixture
