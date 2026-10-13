@@ -24,17 +24,18 @@ One page-wide row of three panels:
   terms that anticommute with it, so on this axis monoprop falls as 1/N and the references do
   not. Each engine's exponent per depth, over the widest N every engine finished there, goes
   to the caption.
-* (c) the work per gate behind it, from counts rather than timings: the K terms a dense code
-  tests per term that anticommutes with the gate (``scripts/count_anticommuting.py``), which
-  grows as N for both models and every depth.
+* (c) the work behind it, from counts rather than timings: the share of the K terms a gate
+  touches. A dense code tests all of them; monoprop visits only those that anticommute with
+  the gate (``scripts/count_anticommuting.py``), a share that falls as about 5/N.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
 and the counts must have seen the same operator. Reads data/*.jsonl (written by
 merge_octave_runs.py) and nothing else.
 
-A point whose engine was killed at the time limit, or whose one round alone ran past it, enters
-no fit and is drawn as an open marker on the rail at the top of its panel.
+A point whose engine was killed at the time limit, whose one round alone ran past it, or that
+was not run because a shallower circuit already exceeded it, has no cost to plot: it is left
+out of the figure and the fits, and the caption lists it.
 """
 
 from __future__ import annotations
@@ -53,7 +54,6 @@ import numpy as np
 from matplotlib.colors import to_hex, to_rgb
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FixedFormatter, FixedLocator
-from matplotlib.transforms import blended_transform_factory
 from merge_octave_runs import CEILING_S, COUNTS, DEPTHS, ROWS
 
 HERE = Path(__file__).resolve().parent
@@ -70,7 +70,7 @@ HOST = re.compile(r"cnx\d+(\.deucalion\.macc\.fccn\.pt)?")
 # a series colour; a coloured mark beside it carries the identity.
 INK = "#1a1a1a"
 INK_2 = "#4d4d4d"  # secondary text, axes and ticks
-INK_3 = "#7a7a7a"  # muted: subtitles, the rail label
+INK_3 = "#7a7a7a"  # muted text
 plt.rcParams.update(
     {
         "font.family": "serif",
@@ -138,17 +138,17 @@ GUIDE = "#222222"
 GUIDE_WIDTH = 1.1
 GUIDE_DASH = (0, (5, 2.5))
 GRID = "#e6e6e6"
-RAIL = 0.94  # axes fraction of the timeout rail
 PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
 
 # Page width, one row: a cost panel per model, then the work per gate of both.
 FIGSIZE = (7.0, 2.7)
 MODELS = (
     ("pauli", "Kicked Ising chain", "qubits $N$", "layers"),
-    ("majorana", "2D Hubbard lattice", "modes $N$", "Trotter steps"),
+    ("majorana", "2D Hubbard lattice", "modes $N$", "layers"),
 )
 # The work panel tells the models apart without the engine colours.
-MODEL_STYLE = {"pauli": (INK, "o"), "majorana": (INK_3, "s")}
+MODEL_STYLE = {"pauli": "o", "majorana": "s"}
+BAND = "#ececec"  # what the index skips
 
 
 def load(path):
@@ -339,7 +339,7 @@ def _log2_axis(ax, ns):
 
 
 def _depth_name(layers, depth_word):
-    """'1 Trotter step', '2 Trotter steps'."""
+    """'1 layer', '2 layers'."""
     return f"{layers} {depth_word if layers > 1 else depth_word[:-1]}"
 
 
@@ -366,26 +366,25 @@ def depth_stats(rows, engines):
 
 
 def cost_panel(ax, rows, kind, ns, depth_word):
-    """ns per gate per term against N: every engine at every depth, the 1/N guide, the rail.
+    """ns per gate per term against N: every engine at every depth, and the 1/N guide.
 
     Depth is the shade of the engine's colour; only the medium depth carries markers, so the
-    three depths of one engine read as one bundle.
+    three depths of one engine read as one bundle. A point over the time limit has no cost to
+    plot, only a bound, and is left out (the caption lists it).
     """
     engines = ROWS[kind][1]
-    stats, rail = {}, {}
+    stats = {}
     for i, layers in enumerate(DEPTHS[kind]):
         st = stats[layers] = depth_stats(
             [r for r in rows if r["layers"] == layers], engines
         )
         for e in engines:
-            pts, censored = st["series"][e]
+            pts, _ = st["series"][e]
             style = _style(e, i)
             if i != 1:
                 style.update(marker="none", lw=LINE_WIDTH - 0.25)
             if pts:
                 ax.plot(*zip(*pts, strict=True), **style, solid_capstyle="round")
-            for n in censored:
-                rail.setdefault(n, []).append((e, i))
 
     # The 1/N guide, through monoprop's first point at the medium depth.
     mono = stats[DEPTHS[kind][1]]["series"][engines[0]][0]
@@ -397,45 +396,6 @@ def cost_panel(ax, rows, kind, ns, depth_word):
         color=GUIDE,
         lw=GUIDE_WIDTH,
         zorder=1,
-    )
-
-    # The rail: a point censored by the time limit has no cost to plot, only a lower bound
-    # that can sit under the last finished point, so it is marked above the data instead,
-    # the marks at one N stepping left from it.
-    tr = blended_transform_factory(ax.transData, ax.transAxes)
-    ax.plot(
-        [0, 1],
-        [RAIL + 0.045] * 2,
-        transform=ax.transAxes,
-        color="#c8c8c8",
-        lw=0.5,
-        zorder=0,
-    )
-    for n, marks in rail.items():
-        for k, (e, i) in enumerate(sorted(marks, key=lambda m: (ROLE[m[0]], m[1]))):
-            st = _style(e, i)
-            ax.plot(
-                [n * 2 ** (-0.3 * (len(marks) - 1 - k))],
-                [RAIL],
-                transform=tr,
-                ls="none",
-                marker=st["marker"],
-                ms=MARKER_SIZE - 0.4,
-                mew=MARKER_EDGE,
-                mfc="white",
-                mec=st["color"],
-                clip_on=False,
-                zorder=4,
-            )
-    ax.text(
-        0.03,
-        RAIL,
-        f"> {CEILING_S / 60:.0f} min",
-        transform=ax.transAxes,
-        ha="left",
-        va="center",
-        fontsize=6.0,
-        color=INK_3,
     )
 
     # Depth key: the shade ramp in grey, so it applies to every engine.
@@ -462,66 +422,83 @@ def cost_panel(ax, rows, kind, ns, depth_word):
 
 
 def work_panel(ax, counts, ns):
-    """K / anticommuting per gate for both models: the terms a dense code tests per term the
-    index visits, against N. Every depth is drawn; they lie on one line."""
-    out = {}
-    ends = {}
-    for kind, title, _, _ in MODELS:
-        color, marker = MODEL_STYLE[kind]
-        mine = by_depth([c for c in counts if c["basis"] == kind])
-        out[kind] = {}
-        for layers, unsorted in mine.items():
-            mid = layers == DEPTHS[kind][1]
-            cs = sorted(unsorted, key=lambda c: c["num_qubits"])
-            n = [c["num_qubits"] for c in cs]
-            ratio = [c["num_terms"] / c["anticommuting_per_gate"] for c in cs]
-            ax.plot(
-                n,
-                ratio,
-                color=color,
-                lw=LINE_WIDTH if mid else LINE_WIDTH - 0.5,
-                alpha=1.0 if mid else 0.45,
-                marker=marker if mid else "none",
-                ms=MARKER_SIZE - 0.6,
-                mfc=color,
-                mec="white",
-                mew=RING,
-                zorder=3 if mid else 2,
-            )
-            out[kind][layers] = {
+    """The share of the K terms a gate touches, against N, at the medium depth of each model.
+
+    A dense code tests every term (the 100% line); monoprop visits only the terms that
+    anticommute with the gate (``scripts/count_anticommuting.py``), a share that falls as
+    about 5/N. The band between them is what the index skips.
+    """
+    out, shares = {}, {}
+    for kind, _, _, _ in MODELS:
+        cs = sorted(
+            (c for c in counts if c["basis"] == kind), key=lambda c: c["num_qubits"]
+        )
+        out[kind] = {
+            layers: {
                 c["num_qubits"]: (c["num_terms"], c["anticommuting_per_gate"])
                 for c in cs
+                if c["layers"] == layers
             }
-            if mid:
-                ends[kind] = (n[-1], ratio[-1], n[0], ratio[0])
-    # Direct labels in ink: the model beside its line, the ratio at its last point. Both
-    # lines are the N guide themselves, so none is drawn.
-    for kind, title, _, _ in MODELS:
-        x1, y1, x0, y0 = ends[kind]
-        above = kind == "pauli"
-        # Beside the steep line: the upper one labelled to its left, the lower to its right.
-        xm = 2 ** np.round(np.log2(np.sqrt(x0 * x1)) + (0.5 if above else -0.5))
-        ax.annotate(
-            "kicked Ising" if above else "2D Hubbard",
-            xy=(xm, y0 * xm / x0),
-            xytext=(-7, 0) if above else (7, 0),
-            textcoords="offset points",
-            ha="right" if above else "left",
-            va="center",
-            fontsize=6.6,
-            color=INK,
+            for layers in sorted({c["layers"] for c in cs})
+        }
+        mid = sorted(out[kind][DEPTHS[kind][1]].items())
+        n = np.array([x for x, _ in mid], float)
+        share = np.array([100 * a / k for _, (k, a) in mid])
+        shares[kind] = (n, share)
+        filled = kind == "pauli"
+        ax.plot(
+            n,
+            share,
+            color=ENGINE_COLOR["monoprop"],
+            lw=LINE_WIDTH,
+            marker=MODEL_STYLE[kind],
+            ms=MARKER_SIZE - 0.4,
+            mfc=ENGINE_COLOR["monoprop"] if filled else "white",
+            mec="white" if filled else ENGINE_COLOR["monoprop"],
+            mew=RING if filled else MARKER_EDGE,
+            zorder=3,
         )
-        ax.annotate(
-            f"{y1:.0f}×",
-            xy=(x1, y1),
-            xytext=(-5, 4) if above else (4, -5),
-            textcoords="offset points",
-            ha="right" if above else "left",
-            va="bottom" if above else "top",
-            fontsize=6.6,
-            color=INK,
-        )
+    dense = ENGINE_COLOR["julia"]
+    ax.axhline(100, color=dense, lw=LINE_WIDTH, ls=ENGINE_STYLE["julia"][0], zorder=2)
+    n, low = shares["pauli"]
+    top = np.maximum(low, np.interp(n, *shares["majorana"]))
+    ax.fill_between(n, top, 100, color=BAND, lw=0, zorder=0)
+    ax.text(
+        np.sqrt(n[0] * n[-1]) * 1.4,
+        12,
+        "skipped by\nthe index",
+        ha="center",
+        va="center",
+        fontsize=6.6,
+        color=INK_2,
+        linespacing=1.1,
+    )
+    ax.legend(
+        [
+            Line2D(
+                [],
+                [],
+                color=ENGINE_COLOR["monoprop"],
+                lw=LINE_WIDTH,
+                marker=MODEL_STYLE[kind],
+                ms=MARKER_SIZE - 0.4,
+                mfc=ENGINE_COLOR["monoprop"] if kind == "pauli" else "white",
+                mec="white" if kind == "pauli" else ENGINE_COLOR["monoprop"],
+                mew=RING if kind == "pauli" else MARKER_EDGE,
+            )
+            for kind in ("pauli", "majorana")
+        ],
+        ["monoprop, kicked Ising", "monoprop, 2D Hubbard"],
+        loc="lower left",
+        frameon=False,
+        fontsize=6.2,
+        handlelength=1.8,
+        labelspacing=0.25,
+        borderaxespad=0.3,
+    )
     ax.set_yscale("log")
+    ax.set_ylim(0.15, 400)
+    ax.yaxis.set_major_formatter(lambda y, _: f"{y:g}%")
     _log2_axis(ax, ns)
     _frame(ax)
     return out
@@ -561,15 +538,15 @@ def draw(datasets, counts, outdir: Path):
         ax.set_xlabel(axis, labelpad=1.5)
         if j == 0:
             ax.set_ylabel("ns per gate, per term", labelpad=2)
-        # Room above the highest point for the rail, below the lowest for the depth key.
+        # Room below the lowest point for the depth key.
         ys = [_per_gate_per_term(x) for x in rows if _limit(x) is None]
-        ax.set_ylim(min(ys) / 4.0, max(ys) * 8.0)
+        ax.set_ylim(min(ys) / 4.0, max(ys) * 1.8)
         results[kind] = {"cost": cost}
     wax = fig.add_subplot(grid[0, 2])
     work = work_panel(wax, counts, ns)
-    wax.set_title("(c) Work per gate", loc="left", fontsize=7.8, color=INK)
+    wax.set_title("(c) Terms a gate touches", loc="left", fontsize=7.8, color=INK)
     wax.set_xlabel("$N$", labelpad=1.5)
-    wax.set_ylabel("terms tested / terms visited", labelpad=2)
+    wax.set_ylabel("share of the $K$ terms, per gate", labelpad=2)
     for kind in work:
         results[kind]["work"] = work[kind]
     _legend(fig)

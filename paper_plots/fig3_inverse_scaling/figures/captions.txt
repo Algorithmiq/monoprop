@@ -13,13 +13,13 @@ run at N=1024 (over the limit at a shallower depth).
 Kicked Ising chain, work per gate: the anticommuting terms per gate are 4.06K/N to 4.68K/N
 over every counted point.
 
-2D Hubbard lattice, cost per term. 2 Trotter steps: K=13,680 at N=32 to 4,733,200 at N=1024;
-fitted over N <= 1024: monoprop N^-1.07, MajoranaPropagation.jl N^+0.48;
-MajoranaPropagation.jl/monoprop 2.7x at N=32, 5.6e+02x at N=1024. 3 Trotter steps: K=16,608 at
-N=32 to 31,014,272 at N=1024; fitted over N <= 512: monoprop N^-1.24, MajoranaPropagation.jl
+2D Hubbard lattice, cost per term. 2 layers: K=13,680 at N=32 to 4,733,200 at N=1024; fitted
+over N <= 1024: monoprop N^-1.07, MajoranaPropagation.jl N^+0.48;
+MajoranaPropagation.jl/monoprop 2.7x at N=32, 5.6e+02x at N=1024. 3 layers: K=16,608 at N=32
+to 31,014,272 at N=1024; fitted over N <= 512: monoprop N^-1.24, MajoranaPropagation.jl
 N^+0.15; MajoranaPropagation.jl/monoprop 3.3x at N=32, 1.5e+02x at N=512;
-MajoranaPropagation.jl over the limit at N=1024. 4 Trotter steps: K=16,608 at N=32 to
-93,456,080 at N=1024; fitted over N <= 256: monoprop N^-1.26, MajoranaPropagation.jl N^+0.03;
+MajoranaPropagation.jl over the limit at N=1024. 4 layers: K=16,608 at N=32 to 93,456,080 at
+N=1024; fitted over N <= 256: monoprop N^-1.26, MajoranaPropagation.jl N^+0.03;
 MajoranaPropagation.jl/monoprop 3.5x at N=32, 49x at N=256; MajoranaPropagation.jl over the
 limit at N=512; MajoranaPropagation.jl not run at N=1024 (over the limit at a shallower
 depth).
