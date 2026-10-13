@@ -17,7 +17,10 @@
 A timing run directory (``RUN_DIR`` of ``scripts/slurm/campaign.sbatch``) holds ``nsweep/``
 with one ``<engine>_L<layers>_N<n>.jsonl`` per point (``<engine>_N<n>.jsonl`` in campaigns
 that ran one depth); a counting run directory (``scripts/slurm/count.sbatch``) holds ``count/``.
-Rows are keyed by the depth they record, not by their file name. They merge into:
+Rows are keyed by the depth they record, not by their file name, and a row at another cutoff
+than the figure's (``CUTOFF``) belongs to an earlier version of the workload and is left out.
+When run directories hold the same point, the one given last wins: list a rerun after the
+campaign it repeats. They merge into:
 
     row        engines (file prefix)                 data/ file
     pauli      monoprop, julia, ppvm                 pauli.jsonl      (panel a)
@@ -32,6 +35,10 @@ different term or gate count, or expectations further apart than 1e-9. A point k
 time limit is a ``timeout`` row, drawn as a lower bound; an ``implied`` timeout row was not run,
 because the engine already exceeded the limit on a shallower circuit at the same N. Every
 engine must reach every N of its dataset's grid (``grid``), as a row or a timeout row.
+
+Every point is held to one time limit, ``CEILING_S``. A row measured under a shorter one is
+kept only if it is ``settled``: the repetition rule would have produced the same row under
+``CEILING_S`` (see :func:`settled`). A timeout under a shorter limit is not settled.
 
 A count must report the same number of terms as monoprop's timed row at its point, and every
 point monoprop finished needs one, unless it holds more than ``COUNT_MAX_TERMS`` terms, past
@@ -61,10 +68,16 @@ ROWS = {
 }
 COUNTS = "counts.jsonl"
 # Small, medium and large: kicked-Ising layers, Hubbard Trotter steps.
-DEPTHS = {"pauli": (5, 7, 9), "majorana": (1, 2, 3)}
+DEPTHS = {"pauli": (5, 7, 9), "majorana": (2, 3, 4)}
 NS = (32, 64, 128, 256, 512, 1024)
-# Three Hubbard steps hold 1.0e8 terms at N=128; the large line stops there.
-MAX_N = {("majorana", 3): 128}
+# (row, depth) -> largest N, for a depth that does not fit a node at the top of NS.
+MAX_N: dict[tuple[str, int], int] = {}
+# Pauli weight; Hubbard support (modes touched, fully paired monomials kept).
+CUTOFF = {"pauli": 6, "majorana": 3}
+# Timed propagation allowed per point, the same for every engine (octave_point's CEILING_S).
+CEILING_S = 1800
+# octave_point's ROUND_BUDGET_S: rounds continue while the timed total is under it.
+ROUND_BUDGET_S = 60
 # ~1 KB per term at the counter's peak, against a 223 GiB node.
 COUNT_MAX_TERMS = 2e8
 # The engine field each driver writes, by the file prefix the campaign gives it.
@@ -88,6 +101,32 @@ def grid(row_kind, layers):
     return tuple(n for n in NS if n <= cap)
 
 
+def settled(row, ceiling=CEILING_S):
+    """Whether a finished row would be the same under ``ceiling`` as under its own limit.
+
+    The repetition rule (``keep_timing`` in the drivers) reads the limit only to refuse a round
+    that would end past it. So a row is unaffected by a longer limit when its limit never
+    refused a round: it ran ``max_rounds``, or stopped on the ``ROUND_BUDGET_S`` budget (two
+    rounds or more, totalling at least the budget), or ran far inside its own limit, or its one
+    round is longer than half of ``ceiling``, so that no second round fits under ``ceiling``
+    either. A row whose one round already ran past ``ceiling`` is the same bound under both.
+    """
+    if row.get("timeout"):
+        return False
+    # Past the limit in its first round, a row is the same bound under either limit.
+    if row.get("time_limit") == ceiling or row["seconds"] > ceiling:
+        return True
+    rounds, t = row["rounds"], row["seconds"]
+    # ``seconds`` is the fastest round; a fresh process's first round can take ~2x as long, so
+    # the one more round a limit could have refused ends by 2 * (rounds + 1) * t.
+    return (
+        rounds >= row["max_rounds"]
+        or (rounds >= 2 and rounds * t >= ROUND_BUDGET_S)
+        or (rounds >= 2 and 2 * (rounds + 1) * t <= row["time_limit"])
+        or (rounds == 1 and 2 * t > ceiling)
+    )
+
+
 def _read(path):
     return [
         (raw.strip(), json.loads(raw))
@@ -96,18 +135,44 @@ def _read(path):
     ]
 
 
-def gather(run_dirs, engines):
-    """{(engine, layers): [(N, raw line, row, source)]} from every run's nsweep/."""
-    out = {}
-    for run_dir in run_dirs:
+def _take(points, notes, rank, f, engine, cutoff):
+    """Add one file's rows to ``points`` under ``gather``'s rule; the rows left out by cutoff."""
+    other_cutoff = 0
+    for raw, row in _read(f):
+        if row["cutoff"] != cutoff:
+            other_cutoff += 1
+            continue
+        key = (engine, row["layers"], row["num_qubits"])
+        held = points.get(key)
+        if held is None or held[0] < rank:
+            if held is not None:
+                notes.append(
+                    f"{engine} depth {key[1]} N={key[2]}: {f} replaces {held[1][0][3]}"
+                )
+            points[key] = (rank, [])
+        if points[key][0] == rank:
+            points[key][1].append((row["num_qubits"], raw, row, f))
+    return other_cutoff
+
+
+def gather(run_dirs, engines, cutoff):
+    """({(engine, layers): [(N, raw line, row, source)]}, notes) from every run's nsweep/.
+
+    Rows at another cutoff are dropped; a point found in a later run directory replaces the
+    same point from an earlier one (duplicates within one directory are kept, and refused).
+    """
+    points, notes, other_cutoff = {}, [], 0
+    for rank, run_dir in enumerate(run_dirs):
         for f in sorted((run_dir / "nsweep").glob("*.jsonl")):
             m = FILE_NAME.match(f.name)
-            if not m or m["engine"] not in engines:
-                continue
-            for raw, row in _read(f):
-                key = (m["engine"], row["layers"])
-                out.setdefault(key, []).append((row["num_qubits"], raw, row, f))
-    return out
+            if m and m["engine"] in engines:
+                other_cutoff += _take(points, notes, rank, f, m["engine"], cutoff)
+    if other_cutoff:
+        notes.append(f"left out {other_cutoff} rows at a cutoff other than {cutoff}")
+    out = {}
+    for (engine, layers, _), (_, entries) in points.items():
+        out.setdefault((engine, layers), []).extend(entries)
+    return out, notes
 
 
 def _row_problems(engine, n, row, src):
@@ -116,7 +181,16 @@ def _row_problems(engine, n, row, src):
     if row["engine"] != ENGINE_FIELD[engine]:
         out.append(f"{engine}: N={n} in {src} has engine {row['engine']!r}")
     if row.get("timeout"):
+        if not row.get("implied") and row["ceiling_seconds"] != CEILING_S:
+            out.append(
+                f"{engine}: N={n} timed out at {row['ceiling_seconds']} s, not {CEILING_S}"
+            )
         return out
+    if not settled(row):
+        out.append(
+            f"{engine}: N={n} measured under a {row.get('time_limit')} s limit and not settled "
+            f"under {CEILING_S} s (rounds={row['rounds']}, {row['seconds']:.0f} s): rerun"
+        )
     if str(row["num_threads"]) != "1":
         out.append(f"{engine}: N={n} num_threads={row['num_threads']!r}")
     want = LIBRARY_VERSION.get(engine)
@@ -196,9 +270,32 @@ def _summary(engine, rows):
     )
 
 
+def _stray(rows, engines, layers, ns):
+    """The points of one depth outside its N grid."""
+    return sorted(
+        {
+            f"{e} N={t[0]}"
+            for e in engines
+            for t in rows.get((e, layers), [])
+            if t[0] not in ns
+        }
+    )
+
+
+def _collect(by_engine, engines, layers, lines, terms):
+    """Append one depth's raw lines in engine and N order, and record monoprop's term counts."""
+    for e in engines:
+        for n, raw, row, _ in sorted(by_engine.get(e, []), key=lambda t: t[0]):
+            lines.append(raw)
+            if e.startswith("monoprop") and not row.get("timeout"):
+                terms[(layers, n)] = row["num_terms"]
+
+
 def merge_row(args, row_kind, engines):
     """(problems, merged lines, {(layers, N): monoprop terms}) for one row of the figure."""
-    rows = gather(args.run_dirs, engines)
+    rows, gather_notes = gather(args.run_dirs, engines, CUTOFF[row_kind])
+    for note in gather_notes:
+        print(f"  {row_kind}: {note}")
     problems, lines, terms = [], [], {}
     for layers in DEPTHS[row_kind]:
         ns = grid(row_kind, layers)
@@ -207,14 +304,7 @@ def merge_row(args, row_kind, engines):
         }
         by_engine = {e: r for e, r in by_engine.items() if r}
         print(f"{row_kind} at depth {layers}:")
-        stray = sorted(
-            {
-                f"{e} N={t[0]}"
-                for e in engines
-                for t in rows.get((e, layers), [])
-                if t[0] not in ns
-            }
-        )
+        stray = _stray(rows, engines, layers, ns)
         if stray:
             problems.append(
                 f"depth {layers}: rows outside the grid {ns}: {', '.join(stray)}"
@@ -232,11 +322,7 @@ def merge_row(args, row_kind, engines):
         problems += [f"depth {layers}: {x}" for x in p]
         for note in notes:
             print(f"  note: {note}")
-        for e in engines:
-            for n, raw, row, _ in sorted(by_engine.get(e, []), key=lambda t: t[0]):
-                lines.append(raw)
-                if e.startswith("monoprop") and not row.get("timeout"):
-                    terms[(layers, n)] = row["num_terms"]
+        _collect(by_engine, engines, layers, lines, terms)
     extra = sorted({layers for _, layers in rows} - set(DEPTHS[row_kind]))
     if extra:
         problems.append(f"rows at depths outside {DEPTHS[row_kind]}: {extra}")
@@ -244,12 +330,21 @@ def merge_row(args, row_kind, engines):
 
 
 def gather_counts(run_dirs):
-    """{(basis, layers, N): [(raw line, row, source)]} from every run's count/."""
-    seen = {}
-    for run_dir in run_dirs:
+    """{(basis, layers, N): [(raw line, row, source)]} from every run's count/, at ``CUTOFF``.
+
+    A point found in a later run directory replaces the same point from an earlier one.
+    """
+    seen, rank_of = {}, {}
+    for rank, run_dir in enumerate(run_dirs):
         for f in sorted((run_dir / "count").glob("*.jsonl")):
             for raw, row in _read(f):
+                if row["cutoff"] != CUTOFF[row["basis"]]:
+                    continue
                 key = (row["basis"], row["layers"], row["num_qubits"])
+                # As for timed rows, a later run directory replaces an earlier one.
+                if rank_of.setdefault(key, rank) < rank:
+                    rank_of[key] = rank
+                    seen.pop(key, None)
                 seen.setdefault(key, []).append((raw, row, f))
     return seen
 

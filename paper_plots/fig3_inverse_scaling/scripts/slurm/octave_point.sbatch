@@ -50,14 +50,15 @@ source "$SITE"
 
 PLOTS="$PWD" # --chdir points at paper_plots/fig3_inverse_scaling/
 CUTOFF=6
-# The Hubbard support cutoff; the site file may override it while the pilot sizes the model.
-HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-4}"
+# The Hubbard support cutoff (modes touched; fully paired monomials are always kept).
+HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
 # No coefficient truncation for any engine: the cutoff alone fixes the term set, so term
 # counts agree exactly between engines. The Hubbard drivers do not even take a tolerance.
 ATOL=0
 MAX_ROUNDS="${MAX_ROUNDS:-10}"
-# The paper's limit is 15 min of timed propagation per point, the same for every engine.
-CEILING_S="${CEILING_S:-900}"
+# The paper's limit is 30 min of timed propagation per point, the same for every engine
+# (merge_octave_runs.CEILING_S).
+CEILING_S="${CEILING_S:-1800}"
 SETUP_S="${SETUP_S:-600}"
 # Modes -> the lx x ly lattice of the Hubbard row, as near square as the octave allows.
 declare -A LATTICE=([32]="4 4" [64]="8 4" [128]="8 8" [256]="16 8" [512]="16 16" [1024]="32 16")

@@ -14,17 +14,19 @@
 
 """Paper Fig. 3 -- what a gate costs per term against N, at three circuit depths.
 
-One column per model: the kicked-Ising chain against PauliPropagation.jl and ppvm, and the 2D
-Hubbard lattice against MajoranaPropagation.jl. Each column is a tall panel over a strip,
-sharing the N axis:
+One page-wide row of three panels:
 
-* the panel: nanoseconds for one gate to act on one term, against N, at a small, a medium and a
-  large depth (colour is the engine, shade is the depth). A dense engine tests every one of the
-  K terms against every gate; monoprop visits only the terms that anticommute with it, so on
-  this axis monoprop falls as 1/N and the references do not.
-* the strip: that work per gate, from counts rather than timings -- the K terms a dense code
-  tests, and the terms that anticommute with the gate (``scripts/count_anticommuting.py``),
-  whose ratio grows as N.
+* (a), (b) the cost: nanoseconds for one gate to act on one term, against N, for the
+  kicked-Ising chain against PauliPropagation.jl and ppvm, and the 2D Hubbard lattice against
+  MajoranaPropagation.jl. Colour is the engine and shade the depth (small, medium, large); the
+  three depths of an engine lie close together, and only the medium one carries markers. A
+  dense engine tests every one of the K terms against every gate; monoprop visits only the
+  terms that anticommute with it, so on this axis monoprop falls as 1/N and the references do
+  not. Each engine's exponent per depth, over the widest N every engine finished there, goes
+  to the caption.
+* (c) the work per gate behind it, from counts rather than timings: the K terms a dense code
+  tests per term that anticommutes with the gate (``scripts/count_anticommuting.py``), which
+  grows as N for both models and every depth.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
@@ -32,7 +34,7 @@ and the counts must have seen the same operator. Reads data/*.jsonl (written by
 merge_octave_runs.py) and nothing else.
 
 A point whose engine was killed at the time limit, or whose one round alone ran past it, enters
-no fit and is drawn as an open marker on the "> 15 min" rail at the top of its panel.
+no fit and is drawn as an open marker on the rail at the top of its panel.
 """
 
 from __future__ import annotations
@@ -52,7 +54,7 @@ from matplotlib.colors import to_hex, to_rgb
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FixedFormatter, FixedLocator
 from matplotlib.transforms import blended_transform_factory
-from merge_octave_runs import COUNTS, DEPTHS, ROWS
+from merge_octave_runs import CEILING_S, COUNTS, DEPTHS, ROWS
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -63,30 +65,46 @@ STEM = "fig3_inverse_scaling"
 CPU = "AMD EPYC 7742 (Zen 2), 128 cores, SMT off"
 MACHINE = f"Deucalion x86, {CPU}"
 HOST = re.compile(r"cnx\d+(\.deucalion\.macc\.fccn\.pt)?")
-# octave_point.sbatch's CEILING_S default, quoted when no point timed out.
-CEILING_DEFAULT_S = 900
 
-# Print styling: mathtext only, TrueType embedded so the text stays selectable.
+# Print styling: mathtext only, TrueType embedded so the text stays selectable. Text is ink, never
+# a series colour; a coloured mark beside it carries the identity.
+INK = "#1a1a1a"
+INK_2 = "#4d4d4d"  # secondary text, axes and ticks
+INK_3 = "#7a7a7a"  # muted: subtitles, the rail label
 plt.rcParams.update(
     {
         "font.family": "serif",
         "font.serif": ["DejaVu Serif"],
         "mathtext.fontset": "dejavuserif",
-        "font.size": 8.0,
-        "axes.titlesize": 9.0,
-        "axes.labelsize": 8.0,
-        "xtick.labelsize": 7.0,
-        "ytick.labelsize": 7.0,
-        "legend.fontsize": 6.6,
-        "axes.linewidth": 0.8,
+        "font.size": 7.5,
+        "text.color": INK,
+        "axes.titlesize": 7.6,
+        "axes.labelsize": 7.4,
+        "axes.labelcolor": INK,
+        "axes.edgecolor": INK_2,
+        "axes.linewidth": 0.6,
+        "xtick.color": INK_2,
+        "ytick.color": INK_2,
+        "xtick.labelcolor": INK,
+        "ytick.labelcolor": INK,
+        "xtick.labelsize": 6.4,
+        "ytick.labelsize": 6.6,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+        "ytick.minor.width": 0.4,
+        "xtick.major.size": 2.5,
+        "ytick.major.size": 2.5,
+        "ytick.minor.size": 1.5,
+        "legend.fontsize": 6.8,
         "savefig.dpi": 300,
         "figure.dpi": 150,
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     }
 )
-# Colour carries the engine's role (Okabe-Ito, CVD-safe): monoprop, the Julia reference of the
-# column, and ppvm. Shade carries the depth.
+# Colour carries the engine's role (Okabe-Ito; passes the CVD and normal-vision checks over all
+# three pairs): monoprop, the Julia reference of the row, and ppvm. Line style and marker repeat
+# the role for print. In the work panel, shade carries the depth.
 ROLE = {
     "monoprop": "monoprop",
     "monoprop-majorana": "monoprop",
@@ -96,8 +114,8 @@ ROLE = {
 }
 ENGINE_STYLE = {
     "monoprop": ("-", "o"),
-    "julia": ("--", "o"),
-    "ppvm": ((0, (1, 1.6)), "^"),
+    "julia": ((0, (4, 2)), "o"),
+    "ppvm": ((0, (1, 1.5)), "^"),
 }
 ENGINE_COLOR = {"monoprop": "#0072B2", "julia": "#D55E00", "ppvm": "#009E73"}
 LABEL = {
@@ -107,24 +125,30 @@ LABEL = {
     "julia-majorana": "MajoranaPropagation.jl",
     "ppvm": "ppvm",
 }
-# Small depths are mixed towards white, large ones towards black; medium is the engine colour.
-SHADE = ((1.0, 0.5), (None, 0.0), (0.0, 0.42))
-LINE_WIDTH = 1.3
-MARKER_SIZE = 3.2
-MARKER_EDGE = 0.8
-# The 1/N guide and the strip's bracket are near-black so that they survive a printer.
+# Small depths mixed towards white, large ones towards black; medium is the engine colour. Each
+# three-step ramp passes the ordinal checks (monotone lightness, light end >= 2:1 on white).
+SHADE = ((1.0, 0.42), (None, 0.0), (0.0, 0.42))
+LINE_WIDTH = 1.25
+MARKER_SIZE = 3.6
+MARKER_EDGE = 0.75
+# A white ring keeps a filled marker legible where it crosses another line.
+RING = 0.5
+# The 1/N guide and the gap bracket are near-black so that they survive a printer.
 GUIDE = "#222222"
-GUIDE_WIDTH = 1.2
-GRID = "#d5d5d5"
+GUIDE_WIDTH = 1.1
+GUIDE_DASH = (0, (5, 2.5))
+GRID = "#e6e6e6"
 RAIL = 0.94  # axes fraction of the timeout rail
 PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
 
-# Page width; one column per model, each a panel over a strip.
-FIGSIZE = (7.0, 4.8)
-COLUMNS = (
-    ("pauli", "Kicked Ising", "qubits $N$", "layers"),
-    ("majorana", "2D Hubbard", "modes $N$", "Trotter steps"),
+# Page width, one row: a cost panel per model, then the work per gate of both.
+FIGSIZE = (7.0, 2.7)
+MODELS = (
+    ("pauli", "Kicked Ising chain", "qubits $N$", "layers"),
+    ("majorana", "2D Hubbard lattice", "modes $N$", "Trotter steps"),
 )
+# The work panel tells the models apart without the engine colours.
+MODEL_STYLE = {"pauli": (INK, "o"), "majorana": (INK_3, "s")}
 
 
 def load(path):
@@ -154,16 +178,17 @@ def _style(engine, depth_index=1):
     role = ROLE[engine]
     ls, marker = ENGINE_STYLE[role]
     color = shade(ENGINE_COLOR[role], depth_index)
+    filled = role == "monoprop"
     return {
         "ls": ls,
         "marker": marker,
         "color": color,
         "lw": LINE_WIDTH,
-        "ms": MARKER_SIZE,
-        "mew": MARKER_EDGE,
-        "mfc": color if role == "monoprop" else "white",
-        "mec": color,
-        "zorder": 3 if role == "monoprop" else 2,
+        "ms": MARKER_SIZE + (0.5 if filled else 0.0),
+        "mew": RING if filled else MARKER_EDGE,
+        "mfc": color if filled else "white",
+        "mec": "white" if filled else color,
+        "zorder": 3 if filled else 2,
     }
 
 
@@ -266,24 +291,24 @@ def check_single_thread(datasets):
 # Panels
 # --------------------------------------------------------------------------- #
 def _frame(ax):
-    ax.grid(visible=True, which="major", color=GRID, lw=0.4, alpha=0.9)
-    ax.grid(visible=True, which="minor", axis="y", color=GRID, lw=0.3, alpha=0.5)
+    """Hairline solid grid at the major ticks only, no top or right spine."""
+    ax.grid(visible=True, which="major", color=GRID, lw=0.5)
+    ax.grid(visible=False, which="minor")
     ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
 
 
 def _limit(row):
-    """The row's time limit if the point is censored by it, else None.
+    """The time limit if the point is censored by it, else None.
 
-    A killed point carries ``ceiling_seconds``; a point whose single round finished past its
-    ``time_limit`` (allowed for, since the kill comes only after the setup allowance) is no
-    better than a bound either.
+    A killed point carries ``ceiling_seconds``; a point whose single round finished past the
+    limit (allowed for, since the kill comes only after the setup allowance) is no better than a
+    bound either. Rows measured under a shorter limit enter only if ``settled`` under this one.
     """
     if row.get("timeout"):
         return row["ceiling_seconds"]
-    limit = row.get("time_limit")
-    return limit if limit is not None and row["seconds"] > limit else None
+    return CEILING_S if row["seconds"] > CEILING_S else None
 
 
 def series(rows, engines):
@@ -310,163 +335,7 @@ def _log2_axis(ax, ns):
     ax.xaxis.set_major_locator(FixedLocator(ns))
     ax.xaxis.set_major_formatter(FixedFormatter([str(n) for n in ns]))
     ax.xaxis.set_minor_locator(FixedLocator([]))
-    ax.set_xlim(ns[0] / 1.15, ns[-1] * 1.15)
-
-
-def cost_panel(ax, rows, engines, depth_word, all_depths):
-    """The ns-per-gate-per-term panel: every engine at every depth, timeouts on the rail."""
-    depths = by_depth(rows)
-    results, rail = {}, {}
-    # A depth's shade is fixed by its place among the row's depths, even with one missing.
-    shades = [all_depths.index(layers) for layers in depths]
-    for i, (layers, drows) in zip(shades, depths.items(), strict=True):
-        ser = series(drows, engines)
-        nmax = fit_window(ser)
-        exps = {}
-        for e in engines:
-            pts, censored = ser[e]
-            if pts:
-                ax.plot(*zip(*pts, strict=True), **_style(e, i))
-            fitted = [(n, y) for n, y in pts if n <= nmax]
-            exps[e] = _exponent(*zip(*fitted, strict=True)) if len(fitted) > 1 else None
-            for n in censored:
-                rail.setdefault(n, []).append((e, i))
-        mono = [
-            r for r in drows if _engine_key(r) == engines[0] and not r.get("timeout")
-        ]
-        results[layers] = {
-            "series": ser,
-            "exponents": exps,
-            "fit_nmax": nmax,
-            "terms": sorted((r["num_qubits"], r["num_terms"]) for r in mono),
-            "implied": sorted(
-                (_engine_key(r), r["num_qubits"], r["implied"])
-                for r in drows
-                if r.get("implied")
-            ),
-        }
-
-    ns = sorted({r["num_qubits"] for r in rows})
-    lo = min(
-        y for v in results.values() for pts, _ in v["series"].values() for _, y in pts
-    )
-    hi = max(
-        y for v in results.values() for pts, _ in v["series"].values() for _, y in pts
-    )
-    ax.set_yscale("log")
-    # Room above the highest point for the rail, below the lowest for the guide's label.
-    ax.set_ylim(lo / 3.0, hi * 9.0)
-    _log2_axis(ax, ns)
-
-    # The 1/N guide, through monoprop's first point at the medium depth.
-    mid = results.get(all_depths[1], next(iter(results.values())))["series"][
-        engines[0]
-    ][0]
-    (x0, y0), xs = mid[0], [n for n, _ in mid]
-    ax.plot(
-        xs,
-        [y0 * x0 / x for x in xs],
-        ls=(0, (5, 3)),
-        color=GUIDE,
-        lw=GUIDE_WIDTH,
-        zorder=1,
-    )
-    lx = xs[0] * (xs[-1] / xs[0]) ** 0.55
-    ax.annotate(
-        "$\\propto 1/N$",
-        xy=(lx, y0 * x0 / lx),
-        xytext=(-4, -4),
-        textcoords="offset points",
-        va="top",
-        ha="right",
-        color=GUIDE,
-        fontsize=7.0,
-    )
-
-    # The rail: a point censored by the time limit has no cost to plot, only a lower bound
-    # that can sit under the last finished point, so it is marked above the data instead.
-    tr = blended_transform_factory(ax.transData, ax.transAxes)
-    ax.plot(
-        [0, 1],
-        [RAIL, RAIL],
-        transform=ax.transAxes,
-        color="#999999",
-        lw=0.5,
-        ls=(0, (1, 2)),
-        zorder=0,
-    )
-    for n, marks in rail.items():
-        for k, (e, i) in enumerate(marks):
-            dx = 2 ** ((k - (len(marks) - 1) / 2) * 0.075)
-            st = _style(e, i)
-            ax.plot(
-                [n * dx],
-                [RAIL],
-                transform=tr,
-                ls="none",
-                marker=st["marker"],
-                ms=MARKER_SIZE + 0.4,
-                mew=MARKER_EDGE,
-                mfc="white",
-                mec=st["color"],
-                clip_on=False,
-                zorder=4,
-            )
-    ax.text(
-        0.01,
-        RAIL,
-        f"> {_ceiling_minutes(rows)} min",
-        transform=ax.transAxes,
-        ha="left",
-        va="center",
-        fontsize=6.4,
-        color="#555555",
-        bbox={"fc": "white", "ec": "none", "pad": 0.6},
-        zorder=5,
-    )
-    ax.set_ylabel("ns per gate, per term")
-    _frame(ax)
-
-    engine_handles = [
-        Line2D([], [], **{**_style(e), "lw": LINE_WIDTH + 0.2}, label=LABEL[e])
-        for e in engines
-    ]
-    depth_handles = [
-        Line2D(
-            [],
-            [],
-            color=shade("#555555", i),
-            lw=2.4,
-            label=_depth_name(layers, depth_word)
-            + (
-                f": $K$ = {_sci(res['terms'][0][1])}–{_sci(res['terms'][-1][1])}"
-                if res["terms"]
-                else ""
-            ),
-        )
-        for i, (layers, res) in zip(shades, results.items(), strict=True)
-    ]
-    leg = ax.legend(
-        handles=engine_handles,
-        frameon=False,
-        loc="lower left",
-        handlelength=2.2,
-        handletextpad=0.5,
-        borderaxespad=0.2,
-        labelspacing=0.3,
-    )
-    ax.add_artist(leg)
-    ax.legend(
-        handles=depth_handles,
-        frameon=False,
-        loc="upper right",
-        bbox_to_anchor=(1.0, RAIL - 0.04),
-        handlelength=1.4,
-        handletextpad=0.5,
-        borderaxespad=0.2,
-        labelspacing=0.3,
-    )
-    return results
+    ax.set_xlim(ns[0] / 1.2, ns[-1] * 1.2)
 
 
 def _depth_name(layers, depth_word):
@@ -474,123 +343,236 @@ def _depth_name(layers, depth_word):
     return f"{layers} {depth_word if layers > 1 else depth_word[:-1]}"
 
 
-def _sci(x):
-    """3.2×10⁵ in mathtext."""
-    e = int(np.floor(np.log10(x)))
-    m = x / 10**e
-    return f"${m:.1f}\\times10^{{{e}}}$"
+def depth_stats(rows, engines):
+    """One depth's series, exponents over the common fit window, term counts and implied rows."""
+    ser = series(rows, engines)
+    nmax = fit_window(ser)
+    exps = {}
+    for e in engines:
+        fitted = [(n, y) for n, y in ser[e][0] if n <= nmax]
+        exps[e] = _exponent(*zip(*fitted, strict=True)) if len(fitted) > 1 else None
+    done = [r for r in rows if _engine_key(r) == engines[0] and not r.get("timeout")]
+    return {
+        "series": ser,
+        "exponents": exps,
+        "fit_nmax": nmax,
+        "terms": sorted((r["num_qubits"], r["num_terms"]) for r in done),
+        "implied": sorted(
+            (_engine_key(r), r["num_qubits"], r["implied"])
+            for r in rows
+            if r.get("implied")
+        ),
+    }
 
 
-def work_strip(ax, counts, kind, xlabel, ns):
-    """Terms per gate: the K a dense code tests, and the anticommuting terms monoprop visits."""
-    mine = by_depth([c for c in counts if c["basis"] == kind])
-    out = {}
-    for layers, unsorted in mine.items():
-        i = DEPTHS[kind].index(layers)
-        cs = sorted(unsorted, key=lambda c: c["num_qubits"])
-        n = [c["num_qubits"] for c in cs]
-        k = [c["num_terms"] for c in cs]
-        a = [c["anticommuting_per_gate"] for c in cs]
-        common = {
-            "lw": LINE_WIDTH,
-            "ms": MARKER_SIZE - 0.6,
-            "mew": MARKER_EDGE,
-            "marker": "o",
-        }
-        dense = shade(ENGINE_COLOR["julia"], i)
-        mono = shade(ENGINE_COLOR["monoprop"], i)
-        ax.plot(n, k, ls="--", color=dense, mfc="white", mec=dense, zorder=2, **common)
-        ax.plot(n, a, ls="-", color=mono, mfc=mono, mec=mono, zorder=3, **common)
-        out[layers] = {
-            c["num_qubits"]: (c["num_terms"], c["anticommuting_per_gate"]) for c in cs
-        }
+def cost_panel(ax, rows, kind, ns, depth_word):
+    """ns per gate per term against N: every engine at every depth, the 1/N guide, the rail.
 
-    # The bracket: the gap between the two at the medium depth's largest counted N.
-    mid = out.get(DEPTHS[kind][1], next(iter(out.values())))
-    nb = max(mid)
-    kb, ab = mid[nb]
-    xb = nb * 1.09
-    ax.annotate(
-        "",
-        xy=(xb, kb),
-        xytext=(xb, ab),
-        arrowprops={
-            "arrowstyle": "<->",
-            "color": GUIDE,
-            "lw": 0.9,
-            "shrinkA": 0,
-            "shrinkB": 0,
-        },
-        annotation_clip=False,
+    Depth is the shade of the engine's colour; only the medium depth carries markers, so the
+    three depths of one engine read as one bundle.
+    """
+    engines = ROWS[kind][1]
+    stats, rail = {}, {}
+    for i, layers in enumerate(DEPTHS[kind]):
+        st = stats[layers] = depth_stats(
+            [r for r in rows if r["layers"] == layers], engines
+        )
+        for e in engines:
+            pts, censored = st["series"][e]
+            style = _style(e, i)
+            if i != 1:
+                style.update(marker="none", lw=LINE_WIDTH - 0.25)
+            if pts:
+                ax.plot(*zip(*pts, strict=True), **style, solid_capstyle="round")
+            for n in censored:
+                rail.setdefault(n, []).append((e, i))
+
+    # The 1/N guide, through monoprop's first point at the medium depth.
+    mono = stats[DEPTHS[kind][1]]["series"][engines[0]][0]
+    (x0, y0), xs = mono[0], [n for n, _ in mono]
+    ax.plot(
+        xs,
+        [y0 * x0 / x for x in xs],
+        ls=GUIDE_DASH,
+        color=GUIDE,
+        lw=GUIDE_WIDTH,
+        zorder=1,
     )
+
+    # The rail: a point censored by the time limit has no cost to plot, only a lower bound
+    # that can sit under the last finished point, so it is marked above the data instead,
+    # the marks at one N stepping left from it.
+    tr = blended_transform_factory(ax.transData, ax.transAxes)
+    ax.plot(
+        [0, 1],
+        [RAIL + 0.045] * 2,
+        transform=ax.transAxes,
+        color="#c8c8c8",
+        lw=0.5,
+        zorder=0,
+    )
+    for n, marks in rail.items():
+        for k, (e, i) in enumerate(sorted(marks, key=lambda m: (ROLE[m[0]], m[1]))):
+            st = _style(e, i)
+            ax.plot(
+                [n * 2 ** (-0.3 * (len(marks) - 1 - k))],
+                [RAIL],
+                transform=tr,
+                ls="none",
+                marker=st["marker"],
+                ms=MARKER_SIZE - 0.4,
+                mew=MARKER_EDGE,
+                mfc="white",
+                mec=st["color"],
+                clip_on=False,
+                zorder=4,
+            )
     ax.text(
-        xb * 1.04,
-        np.sqrt(kb * ab),
-        f"{kb / ab:.0f}×",
+        0.03,
+        RAIL,
+        f"> {CEILING_S / 60:.0f} min",
+        transform=ax.transAxes,
         ha="left",
         va="center",
-        fontsize=6.6,
-        color=GUIDE,
+        fontsize=6.0,
+        color=INK_3,
+    )
+
+    # Depth key: the shade ramp in grey, so it applies to every engine.
+    grey = "#555555"
+    ax.legend(
+        [Line2D([], [], color=shade(grey, i), lw=LINE_WIDTH + 0.4) for i in range(3)],
+        [str(layers) for layers in DEPTHS[kind]],
+        title=depth_word,
+        title_fontsize=6.2,
+        loc="lower left",
+        ncol=3,
+        frameon=False,
+        fontsize=6.2,
+        handlelength=1.3,
+        handletextpad=0.35,
+        columnspacing=0.8,
+        borderaxespad=0.3,
+        alignment="left",
     )
     ax.set_yscale("log")
     _log2_axis(ax, ns)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("terms per gate")
     _frame(ax)
-    leg = ax.legend(
-        handles=[
-            Line2D(
-                [],
-                [],
-                ls="--",
-                marker="o",
+    return stats
+
+
+def work_panel(ax, counts, ns):
+    """K / anticommuting per gate for both models: the terms a dense code tests per term the
+    index visits, against N. Every depth is drawn; they lie on one line."""
+    out = {}
+    ends = {}
+    for kind, title, _, _ in MODELS:
+        color, marker = MODEL_STYLE[kind]
+        mine = by_depth([c for c in counts if c["basis"] == kind])
+        out[kind] = {}
+        for layers, unsorted in mine.items():
+            mid = layers == DEPTHS[kind][1]
+            cs = sorted(unsorted, key=lambda c: c["num_qubits"])
+            n = [c["num_qubits"] for c in cs]
+            ratio = [c["num_terms"] / c["anticommuting_per_gate"] for c in cs]
+            ax.plot(
+                n,
+                ratio,
+                color=color,
+                lw=LINE_WIDTH if mid else LINE_WIDTH - 0.5,
+                alpha=1.0 if mid else 0.45,
+                marker=marker if mid else "none",
                 ms=MARKER_SIZE - 0.6,
-                color=ENGINE_COLOR["julia"],
-                mfc="white",
-                lw=LINE_WIDTH,
-                label="all $K$ terms (dense codes)",
-            ),
-            Line2D(
-                [],
-                [],
-                ls="-",
-                marker="o",
-                ms=MARKER_SIZE - 0.6,
-                color=ENGINE_COLOR["monoprop"],
-                lw=LINE_WIDTH,
-                label="anticommuting (monoprop)",
-            ),
-        ],
-        frameon=False,
-        loc="lower left",
-        bbox_to_anchor=(-0.13, 0.97),
-        ncol=2,
-        handlelength=1.7,
-        handletextpad=0.4,
-        columnspacing=0.8,
-        borderaxespad=0.0,
-    )
-    # Above the strip, in the gap under the panel's tick row: out of the layout, which would
-    # otherwise shrink the axes to make room for it.
-    leg.set_in_layout(False)
+                mfc=color,
+                mec="white",
+                mew=RING,
+                zorder=3 if mid else 2,
+            )
+            out[kind][layers] = {
+                c["num_qubits"]: (c["num_terms"], c["anticommuting_per_gate"])
+                for c in cs
+            }
+            if mid:
+                ends[kind] = (n[-1], ratio[-1], n[0], ratio[0])
+    # Direct labels in ink: the model beside its line, the ratio at its last point. Both
+    # lines are the N guide themselves, so none is drawn.
+    for kind, title, _, _ in MODELS:
+        x1, y1, x0, y0 = ends[kind]
+        above = kind == "pauli"
+        # Beside the steep line: the upper one labelled to its left, the lower to its right.
+        xm = 2 ** np.round(np.log2(np.sqrt(x0 * x1)) + (0.5 if above else -0.5))
+        ax.annotate(
+            "kicked Ising" if above else "2D Hubbard",
+            xy=(xm, y0 * xm / x0),
+            xytext=(-7, 0) if above else (7, 0),
+            textcoords="offset points",
+            ha="right" if above else "left",
+            va="center",
+            fontsize=6.6,
+            color=INK,
+        )
+        ax.annotate(
+            f"{y1:.0f}×",
+            xy=(x1, y1),
+            xytext=(-5, 4) if above else (4, -5),
+            textcoords="offset points",
+            ha="right" if above else "left",
+            va="bottom" if above else "top",
+            fontsize=6.6,
+            color=INK,
+        )
+    ax.set_yscale("log")
+    _log2_axis(ax, ns)
+    _frame(ax)
     return out
+
+
+def _legend(fig):
+    """One key for the figure: the engines and the 1/N guide."""
+    handles = [
+        Line2D([], [], **{**_style(e), "zorder": None})
+        for e in ("monoprop", "julia", "julia-majorana", "ppvm")
+    ]
+    handles.append(Line2D([], [], ls=GUIDE_DASH, color=GUIDE, lw=GUIDE_WIDTH))
+    labels = [LABEL[e] for e in ("monoprop", "julia", "julia-majorana", "ppvm")]
+    fig.legend(
+        handles,
+        [*labels, "$\\propto 1/N$"],
+        loc="outside upper center",
+        ncol=5,
+        frameon=False,
+        handlelength=2.4,
+        columnspacing=1.6,
+        handletextpad=0.5,
+    )
 
 
 def draw(datasets, counts, outdir: Path):
     fig = plt.figure(figsize=FIGSIZE, layout="constrained")
-    fig.get_layout_engine().set(h_pad=0.04, hspace=0.07)
-    grid = fig.add_gridspec(2, 2, height_ratios=(2.2, 1.2))
+    fig.get_layout_engine().set(w_pad=0.03, h_pad=0.02, wspace=0.06)
+    grid = fig.add_gridspec(1, 3, width_ratios=(1.15, 1.15, 1))
     results = {}
-    for j, (kind, title, xlabel, depth_word) in enumerate(COLUMNS):
-        top = fig.add_subplot(grid[0, j])
-        strip = fig.add_subplot(grid[1, j], sharex=top)
-        engines = ROWS[kind][1]
-        res = cost_panel(top, datasets[kind], engines, depth_word, DEPTHS[kind])
-        ns = sorted({r["num_qubits"] for r in datasets[kind]})
-        work = work_strip(strip, counts, kind, xlabel, ns)
-        top.tick_params(labelbottom=False)
-        top.set_title(f"({'ab'[j]})  {title}", loc="left")
-        results[kind] = {"cost": res, "work": work}
+    for j, (kind, title, axis, depth_word) in enumerate(MODELS):
+        rows = datasets[kind]
+        ns = sorted({x["num_qubits"] for x in rows})
+        ax = fig.add_subplot(grid[0, j])
+        cost = cost_panel(ax, rows, kind, ns, depth_word)
+        ax.set_title(f"({'ab'[j]}) {title}", loc="left", fontsize=7.8, color=INK)
+        ax.set_xlabel(axis, labelpad=1.5)
+        if j == 0:
+            ax.set_ylabel("ns per gate, per term", labelpad=2)
+        # Room above the highest point for the rail, below the lowest for the depth key.
+        ys = [_per_gate_per_term(x) for x in rows if _limit(x) is None]
+        ax.set_ylim(min(ys) / 4.0, max(ys) * 8.0)
+        results[kind] = {"cost": cost}
+    wax = fig.add_subplot(grid[0, 2])
+    work = work_panel(wax, counts, ns)
+    wax.set_title("(c) Work per gate", loc="left", fontsize=7.8, color=INK)
+    wax.set_xlabel("$N$", labelpad=1.5)
+    wax.set_ylabel("terms tested / terms visited", labelpad=2)
+    for kind in work:
+        results[kind]["work"] = work[kind]
+    _legend(fig)
     outdir.mkdir(parents=True, exist_ok=True)
     outs = []
     for ext, dpi in (("pdf", None), ("png", PNG_DPI)):
@@ -612,11 +594,15 @@ def _para(text):
 
 
 def _ceiling_minutes(rows):
-    """The time limit, from the timeout rows; the campaign default when nothing timed out."""
-    ceilings = {r["ceiling_seconds"] for r in rows if r.get("timeout")}
-    if len(ceilings) > 1:
-        raise SystemExit(f"timeout rows disagree on the time limit: {sorted(ceilings)}")
-    return f"{(ceilings.pop() if ceilings else CEILING_DEFAULT_S) / 60:.0f}"
+    """The time limit, checked against every timeout row that was run."""
+    ceilings = {
+        r["ceiling_seconds"] for r in rows if r.get("timeout") and not r.get("implied")
+    }
+    if ceilings - {CEILING_S}:
+        raise SystemExit(
+            f"timeout rows at another limit than {CEILING_S} s: {sorted(ceilings)}"
+        )
+    return f"{CEILING_S / 60:.0f}"
 
 
 def _max_rounds(datasets):
@@ -656,7 +642,7 @@ def _depth_text(engines, layers, depth_word, v):
 
 def write_caption(outdir: Path, datasets, results, *, spread, hosts):
     parts = []
-    for kind, title, _, depth_word in COLUMNS:
+    for kind, title, _, depth_word in MODELS:
         engines = ROWS[kind][1]
         cost = results[kind]["cost"]
         texts = [

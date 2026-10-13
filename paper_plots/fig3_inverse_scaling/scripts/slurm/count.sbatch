@@ -32,14 +32,14 @@ fi
 ROWS="${ROWS:-pauli majorana}"
 NS="${NS:-32 64 128 256 512 1024}"
 PAULI_LAYERS="${PAULI_LAYERS:-5 7 9}"
-HUBBARD_LAYERS="${HUBBARD_LAYERS:-1 2 3}"
-MAX_N="${MAX_N:-majorana:3:128}"
-# "<row>:<layers>:<N>" points by size: three Hubbard steps hold 1.0e8 terms at N=128, two steps
-# 1.3e8 at N=512 and 3.0e8 at N=1024.
-BIG="${BIG:-pauli:7:1024 pauli:9:256 pauli:9:512 pauli:9:1024 majorana:2:256 majorana:2:512 majorana:3:128}"
-SKIP="${SKIP:-majorana:2:1024}"
+HUBBARD_LAYERS="${HUBBARD_LAYERS:-2 3 4}"
+MAX_N="${MAX_N-}"
+# "<row>:<layers>:<N>" points by size: nine kicked-Ising layers hold 7.9e7 terms at N=1024, four
+# Hubbard steps 9.3e7.
+BIG="${BIG:-pauli:7:1024 pauli:9:256 pauli:9:512 pauli:9:1024 majorana:3:512 majorana:3:1024 majorana:4:512 majorana:4:1024}"
+SKIP="${SKIP:-}"
 SMALL_WORKERS="${SMALL_WORKERS:-3}"
-HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-4}"
+HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
 declare -A LATTICE=([32]="4 4" [64]="8 4" [128]="8 8" [256]="16 8" [512]="16 16" [1024]="32 16")
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 monoprop_NUM_THREADS=1
