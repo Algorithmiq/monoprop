@@ -23,7 +23,8 @@
 #
 # Engines: monoprop, ppvm, julia (PauliPropagation.jl) on the kicked-Ising chain of N qubits;
 # monoprop-majorana, julia-majorana (MajoranaPropagation.jl) on the 2D Hubbard lattice of
-# N modes, N = 2 * lx * ly, with the lattice taken from LATTICE below.
+# N modes, N = 2 * lx * ly, with the lattice taken from LATTICE below; monoprop-tfim,
+# julia-tfim, ppvm-tfim on the open L x L transverse-field Ising lattice of N = L^2 qubits.
 #
 # PARAMETERS ARRIVE AS POSITIONAL ARGUMENTS, NEVER VIA --export. Naming a variable in
 # --export makes Slurm rebuild the user environment by running a login shell on the node;
@@ -119,14 +120,18 @@ timeout_row() {
     if [[ "$engine" == *majorana ]]; then
         basis=majorana kind="\"$HUBBARD_CUTOFF_TYPE\"" boundary="\"$HUBBARD_BOUNDARY\""
     fi
+    local model=null
+    [[ "$engine" == *tfim ]] && model='"tfim2d"'
     # The engine field the driver itself would have written.
     case "$engine" in
         julia) engine=julia_pauli ;;
         julia-majorana) engine=julia_majorana ;;
-        monoprop-majorana) engine=monoprop ;;
+        monoprop-majorana | monoprop-tfim) engine=monoprop ;;
+        julia-tfim) engine=julia_pauli ;;
+        ppvm-tfim) engine=ppvm ;;
     esac
-    printf '{"engine": "%s", "basis": "%s", "timeout": true, "num_qubits": %d, "layers": %d, "cutoff": %d, "cutoff_type": %s, "boundary": %s, "max_rounds": %d, "ceiling_seconds": %d, "host": "%s"}\n' \
-        "$engine" "$basis" "$n" "$LAYERS" "$4" "$kind" "$boundary" "$rounds" "$CEILING_S" "$(hostname)" >>"$OUT"
+    printf '{"engine": "%s", "basis": "%s", "model": %s, "timeout": true, "num_qubits": %d, "layers": %d, "cutoff": %d, "cutoff_type": %s, "boundary": %s, "max_rounds": %d, "ceiling_seconds": %d, "host": "%s"}\n' \
+        "$engine" "$basis" "$model" "$n" "$LAYERS" "$4" "$kind" "$boundary" "$rounds" "$CEILING_S" "$(hostname)" >>"$OUT"
 }
 
 TIMEDOUT=0
@@ -139,6 +144,9 @@ run_point() {
         cutoff="$HUBBARD_CUTOFF"
         [[ -n "${LATTICE[$n]:-}" ]] || { log "FATAL no lattice for N=$n"; return 1; }
         read -r lx ly <<<"${LATTICE[$n]}"
+    elif [[ "$engine" == *tfim ]]; then
+        lx="$(awk -v n="$n" 'BEGIN {print int(sqrt(n) + 0.5)}')" ly="$lx"
+        ((lx * ly == n)) || { log "FATAL N=$n is not a square lattice"; return 1; }
     fi
     if [[ -f "$OUT" ]] && grep -Eq "\"num_qubits\": ?${n}([,}])" "$OUT"; then
         log "SKIP  $engine N=$n (already present)"
@@ -157,6 +165,24 @@ run_point() {
                 --basis majorana --model hubbard2d --lx "$lx" --ly "$ly" --num-qubits "$n" \
                 --cutoff "$cutoff" --cutoff-type "$HUBBARD_CUTOFF_TYPE" --layers "$LAYERS" \
                 --boundary "$HUBBARD_BOUNDARY" --lower-atol "$ATOL" "${timing[@]}" --out "$OUT"
+            ;;
+        monoprop-tfim)
+            "${PIN[@]}" timeout "$tmo" "$PYTHON" "$PLOTS/scripts/monoprop_single_layer.py" \
+                --basis pauli --model tfim2d --lx "$lx" --ly "$ly" --num-qubits "$n" \
+                --cutoff "$cutoff" --layers "$LAYERS" --lower-atol "$ATOL" "${timing[@]}" \
+                --out "$OUT"
+            ;;
+        ppvm-tfim)
+            "${PIN[@]}" timeout "$tmo" "$PPVM_PYTHON" "$PLOTS/scripts/ppvm_single_layer.py" \
+                --num-qubits "$n" --lx "$lx" --ly "$ly" --cutoff "$cutoff" --layers "$LAYERS" \
+                --lower-atol "$ATOL" "${timing[@]}" --out "$OUT"
+            ;;
+        julia-tfim)
+            "${PIN[@]}" timeout "$tmo" "$JULIA" --project="$PLOTS/scripts/julia-pauli" \
+                --startup-file=no --history-file=no --banner=no --gcthreads=1,0 \
+                "$PLOTS/scripts/julia_pauli_single_layer.jl" \
+                --num-qubits "$n" --lx "$lx" --ly "$ly" --cutoff "$cutoff" --layers "$LAYERS" \
+                --lower-atol "$ATOL" "${timing[@]}" "${per_layer[@]}" --out "$OUT"
             ;;
         ppvm)
             "${PIN[@]}" timeout "$tmo" "$PPVM_PYTHON" "$PLOTS/scripts/ppvm_single_layer.py" \

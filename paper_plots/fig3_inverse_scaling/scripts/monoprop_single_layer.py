@@ -395,6 +395,69 @@ def build_pauli(
     return factory, circuit
 
 
+def _square_bonds(lx: int, ly: int) -> list[tuple[int, int]]:
+    """0-indexed nearest-neighbour bonds of an open ``lx`` x ``ly`` lattice, qubit
+    ``y * lx + x``: every horizontal bond row by row, then every vertical one."""
+    horizontal = [
+        (y * lx + x, y * lx + x + 1) for y in range(ly) for x in range(lx - 1)
+    ]
+    vertical = [
+        (y * lx + x, (y + 1) * lx + x) for y in range(ly - 1) for x in range(lx)
+    ]
+    return horizontal + vertical
+
+
+def build_tfim2d(lx: int, ly: int, cutoff: int, comm=None):
+    """Return (propagator_factory, circuit) for one Trotter step of the 2D transverse-field
+    Ising model on an open ``lx`` x ``ly`` lattice.
+
+    ``H = -J sum_<ij> Z_i Z_j - h sum_i X_i`` with ``J = 1``, ``h = 2``, ``dt = 0.1``: an X
+    rotation on every qubit, then a ZZ rotation on every bond in the order of
+    :func:`_square_bonds`, at PauliPropagation.jl angles ``2 h dt`` and ``2 J dt``
+    (``exp(-i t/2 P)``; monoprop's ``ExpGate`` takes ``-t/2``, as in :func:`build_pauli`). The
+    observable is the magnetisation ``sum_i Z_i``, truncated by Pauli weight alone (no
+    coefficient tolerance).
+    """
+    num_qubits = lx * ly
+    coupling, field, dt = 1.0, 2.0, 0.1
+    t_x, t_zz = 2 * field * dt, 2 * coupling * dt
+    gate_angles = [
+        (
+            ExpGate(PauliOperator({Pauli("X", (i,)): 1.0}, num_qubits=num_qubits)),
+            -t_x / 2,
+        )
+        for i in range(num_qubits)
+    ]
+    gate_angles += [
+        (
+            ExpGate(PauliOperator({Pauli("ZZ", (i, j)): 1.0}, num_qubits=num_qubits)),
+            -t_zz / 2,
+        )
+        for i, j in _square_bonds(lx, ly)
+    ]
+    circuit = Circuit(
+        gates=tuple(g for g, _ in gate_angles),
+        system_size=num_qubits,
+        parameters=tuple(a for _, a in gate_angles),
+        initial_state=[],
+    )
+    observable_op = PauliOperator(
+        {"I" * i + "Z" + "I" * (num_qubits - i - 1): 1.0 for i in range(num_qubits)},
+        num_qubits=num_qubits,
+    )
+
+    def factory():
+        return PauliPropagator(
+            observable_op,
+            circuit.initial_state,
+            cutoff=cutoff,
+            lower_atol=0.0,
+            comm=comm,
+        )
+
+    return factory, circuit
+
+
 # --------------------------------------------------------------------------- #
 
 
@@ -424,17 +487,28 @@ def save_result(output_path, record) -> None:
         f.write(json.dumps(record) + "\n")
 
 
+def _check_lattice(args, parser, basis: str, per_site: int) -> None:
+    """Exit unless a lattice model has its basis, --lx/--ly, N = per_site * lx * ly and no
+    coefficient tolerance."""
+    if args.basis != basis or args.lx is None or args.ly is None:
+        parser.error(f"--model {args.model} needs --basis {basis}, --lx and --ly")
+    if args.num_qubits != per_site * args.lx * args.ly:
+        parser.error(
+            f"--num-qubits must equal {per_site} * lx * ly for --model {args.model}"
+        )
+    if args.lower_atol != 0:
+        parser.error(
+            f"--model {args.model} is truncated by the cutoff alone: --lower-atol 0"
+        )
+
+
 def _build_model(args, parser):
     """(factory, circuit, steps) for the parsed arguments; ``steps`` is None but for hubbard2d."""
+    if args.model == "tfim2d":
+        _check_lattice(args, parser, "pauli", 1)
+        return (*build_tfim2d(args.lx, args.ly, args.cutoff), None)
     if args.model == "hubbard2d":
-        if args.basis != "majorana" or args.lx is None or args.ly is None:
-            parser.error("--model hubbard2d needs --basis majorana, --lx and --ly")
-        if args.num_qubits != 2 * args.lx * args.ly:
-            parser.error("--num-qubits must equal 2 * lx * ly for --model hubbard2d")
-        if args.lower_atol != 0:
-            parser.error(
-                "--model hubbard2d is truncated by the cutoff alone: --lower-atol 0"
-            )
+        _check_lattice(args, parser, "majorana", 2)
         return build_hubbard2d(
             args.lx,
             args.ly,
@@ -471,10 +545,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        choices=["chain", "hubbard2d"],
+        choices=["chain", "hubbard2d", "tfim2d"],
         default="chain",
         help="chain: the kicked-Ising (pauli) or 1D Hubbard (majorana) chain; hubbard2d: the "
-        "--lx x --ly Hubbard lattice, majorana basis, --num-qubits = 2 * lx * ly modes",
+        "--lx x --ly Hubbard lattice, majorana basis, --num-qubits = 2 * lx * ly modes; "
+        "tfim2d: the --lx x --ly transverse-field Ising lattice, pauli basis, "
+        "--num-qubits = lx * ly",
     )
     parser.add_argument(
         "--cutoff-type",
@@ -566,10 +642,12 @@ def main() -> None:
     record = {
         "engine": "monoprop",
         "basis": args.basis,
-        "model": "kicked_ising"
-        if args.basis == "pauli"
-        else ("hubbard2d" if args.model == "hubbard2d" else "hubbard1d"),
-        "lattice": [args.lx, args.ly] if args.model == "hubbard2d" else None,
+        "model": {"tfim2d": "tfim2d", "hubbard2d": "hubbard2d"}.get(
+            args.model, "kicked_ising" if args.basis == "pauli" else "hubbard1d"
+        ),
+        "lattice": [args.lx, args.ly]
+        if args.model in ("hubbard2d", "tfim2d")
+        else None,
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
         "cutoff_type": args.cutoff_type if args.model == "hubbard2d" else None,

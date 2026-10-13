@@ -55,13 +55,41 @@ def peak_rss_bytes() -> int:
     return peak if os.uname().sysname == "Darwin" else peak * 1024
 
 
-def run(num_qubits: int, active: int, cutoff: int, lower_atol: float, layers: int):
-    """Apply `layers` kicked-Ising layers and return (seconds, cpu, terms, expectation)."""
+def square_bonds(lx: int, ly: int) -> list[tuple[int, int]]:
+    """monoprop_single_layer._square_bonds: horizontal bonds row by row, then vertical."""
+    horizontal = [
+        (y * lx + x, y * lx + x + 1) for y in range(ly) for x in range(lx - 1)
+    ]
+    vertical = [
+        (y * lx + x, (y + 1) * lx + x) for y in range(ly - 1) for x in range(lx)
+    ]
+    return horizontal + vertical
+
+
+def run(
+    num_qubits: int,
+    active: int,
+    cutoff: int,
+    lower_atol: float,
+    layers: int,
+    lattice: tuple[int, int] | None = None,
+):
+    """Apply `layers` kicked-Ising layers and return (seconds, cpu, terms, expectation).
+
+    With ``lattice`` = (lx, ly), the layers are 2D transverse-field Ising Trotter steps
+    instead (monoprop_single_layer.build_tfim2d): X at ``2 h dt = 0.4`` on every qubit, then
+    ZZ at ``2 J dt = 0.2`` on every bond of the open lattice.
+    """
     from ppvm import PauliSum  # noqa: PLC0415
 
     theta = math.pi / 4
     coupling = math.pi / 4
     edges = [(i, i + 1) for i in range(active - 1)]
+    if lattice is not None:
+        theta, coupling = 0.4, 0.2
+        # Heisenberg order: the declared circuit's bonds back to front, then its X rotations
+        # back to front, gate for gate as the other two engines apply them.
+        edges = square_bonds(*lattice)[::-1]
 
     pauli_sum = PauliSum.new(
         n_qubits=num_qubits,
@@ -80,7 +108,7 @@ def run(num_qubits: int, active: int, cutoff: int, lower_atol: float, layers: in
     for _ in range(layers):
         for i, k in edges:
             pauli_sum.rzz(i, k, coupling)
-        for i in range(active):
+        for i in range(active) if lattice is None else reversed(range(active)):
             pauli_sum.rx(i, theta)
     seconds, cpu = perf_counter() - t0, process_time() - c0
     return seconds, cpu, len(pauli_sum), float(pauli_sum.overlap_with_zero())
@@ -137,7 +165,16 @@ def main() -> None:
     parser.add_argument(
         "--out", "-o", required=True, help="JSONL results file (appended to)"
     )
+    parser.add_argument("--lx", type=int, default=None, help="2D TFIM lattice width")
+    parser.add_argument("--ly", type=int, default=None, help="2D TFIM lattice height")
     args = parser.parse_args()
+    lattice = None
+    if args.lx is not None or args.ly is not None:
+        if args.lx is None or args.ly is None or args.lx * args.ly != args.num_qubits:
+            parser.error("--lx and --ly need lx * ly == --num-qubits")
+        if args.active_window is not None:
+            parser.error("--lx/--ly take no --active-window")
+        lattice = (args.lx, args.ly)
 
     active = args.num_qubits if args.active_window is None else args.active_window
     if not 1 <= active <= args.num_qubits:
@@ -152,7 +189,7 @@ def main() -> None:
     rounds_done, timed = 0, 0.0
     while rounds_done < max(1, args.rounds):
         seconds, cpu, num_terms, expectation = run(
-            args.num_qubits, active, args.cutoff, args.lower_atol, args.layers
+            args.num_qubits, active, args.cutoff, args.lower_atol, args.layers, lattice
         )
         if seconds < best:
             best, best_cpu = seconds, cpu
@@ -162,10 +199,13 @@ def main() -> None:
             break
 
     memory_bytes = peak_rss_bytes()
-    gates = (active + max(0, active - 1)) * args.layers
+    bonds = max(0, active - 1) if lattice is None else len(square_bonds(*lattice))
+    gates = (active + bonds) * args.layers
     record = {
         "engine": "ppvm",
         "basis": "pauli",
+        "model": "kicked_ising" if lattice is None else "tfim2d",
+        "lattice": None if lattice is None else list(lattice),
         "num_qubits": args.num_qubits,
         "cutoff": args.cutoff,
         "observable": "extensive",

@@ -33,9 +33,12 @@ fi
 
 ROWS="${ROWS:-pauli majorana}"
 NS="${NS:-32 64 128 256 512 1024}"
+# The 2D TFIM row's N = L^2 for open L x L lattices.
+NS_TFIM="${NS_TFIM:-16 36 64 121 256 484 1024}"
 # Depths: small, medium and large, in layers (kicked Ising) or Trotter steps (Hubbard).
 PAULI_LAYERS="${PAULI_LAYERS:-7 10 13}"
 HUBBARD_LAYERS="${HUBBARD_LAYERS:-3 4 5}"
+TFIM_LAYERS="${TFIM_LAYERS:-2 3 4}"
 # "<row>:<layers>:<max N>" caps for a depth that does not fit a node at the largest N; none
 # for the figure (set it empty, not unset, to keep none).
 MAX_N="${MAX_N-}"
@@ -56,6 +59,14 @@ engines_for() {
     case "$1" in
         pauli) echo "monoprop julia ppvm" ;;
         majorana) echo "monoprop-majorana julia-majorana" ;;
+        tfim) echo "monoprop-tfim julia-tfim ppvm-tfim" ;;
+    esac
+}
+
+ns_for() {
+    case "$1" in
+        tfim) echo "$NS_TFIM" ;;
+        *) echo "$NS" ;;
     esac
 }
 
@@ -63,6 +74,7 @@ layers_for() {
     case "$1" in
         pauli) echo "$PAULI_LAYERS" ;;
         majorana) echo "$HUBBARD_LAYERS" ;;
+        tfim) echo "$TFIM_LAYERS" ;;
     esac
 }
 
@@ -106,9 +118,17 @@ sys.exit(0 if r.get("timeout") or r["seconds"] > float(sys.argv[2]) else 1)' "$o
 }
 
 # A rough relative cost, only to order the queue: references pay ~K per gate, monoprop ~K/N,
-# K grows ~N at fixed depth and steeply with depth.
+# K grows ~N at fixed depth and steeply with depth (for the TFIM, ~K/N per layer as sized).
 estimate() {
-    local engine="$1" n="$2" layers="$3"
+    local engine="$1" n="$2" layers="$3" per_qubit
+    if [[ "$engine" == *tfim ]]; then
+        per_qubit=$((layers <= 2 ? 1 : layers == 3 ? 150 : 4000))
+        case "$engine" in
+            monoprop*) echo $((n * per_qubit * 100)) ;;
+            *) echo $((n * n * per_qubit)) ;;
+        esac
+        return
+    fi
     case "$engine" in
         monoprop*) echo $((n * 10 * layers * layers)) ;;
         *) echo $((n * n * layers * layers)) ;;
@@ -128,7 +148,7 @@ QUEUE="$(mktemp "${TMPDIR:-/tmp}/fig3-queue.XXXXXX")"
 for row in $ROWS; do
     for layers in $(layers_for "$row"); do
         cap="$(max_n "$row" "$layers")"
-        for n in $NS; do
+        for n in $(ns_for "$row"); do
             ((n <= cap)) || continue
             for engine in $(engines_for "$row"); do
                 # A conditional point goes last, after the point it waits for.

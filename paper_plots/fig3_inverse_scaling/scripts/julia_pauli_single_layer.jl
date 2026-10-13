@@ -28,6 +28,29 @@ function build_circuit(nqubits::Int, layers::Int, theta::Float64, coupling::Floa
     return circuit, thetas
 end
 
+# build_tfim2d in monoprop_single_layer.py: an open lx x ly lattice, qubit y * lx + x + 1; per
+# layer an X rotation on every qubit, then a ZZ rotation on every horizontal bond row by row,
+# then every vertical one (_square_bonds), at angles 2 h dt and 2 J dt with J = 1, h = 2,
+# dt = 0.1.
+function build_tfim2d(lx::Int, ly::Int, layers::Int; J = 1.0, h = 2.0, dt = 0.1)
+    site(x, y) = y * lx + x + 1
+    bonds = [[(site(x, y), site(x + 1, y)) for y in 0:(ly - 1) for x in 0:(lx - 2)];
+             [(site(x, y), site(x, y + 1)) for y in 0:(ly - 2) for x in 0:(lx - 1)]]
+    circuit = Gate[]
+    thetas = Float64[]
+    for _ in 1:layers
+        for q in 1:(lx * ly)
+            push!(circuit, PauliRotation(:X, q))
+            push!(thetas, 2 * h * dt)
+        end
+        for (i, j) in bonds
+            push!(circuit, PauliRotation([:Z, :Z], [i, j]))
+            push!(thetas, 2 * J * dt)
+        end
+    end
+    return circuit, thetas
+end
+
 function build_observable(nqubits::Int, active::Int = nqubits)
     psum = VectorPauliSum(nqubits)                # extensive: sum_i Z_i over the active window
     for q in 1:active
@@ -61,6 +84,8 @@ function main()
         "--layers"; arg_type = Int; default = 5
         "--lower-atol"; arg_type = Float64; default = 1e-8
         "--active-window"; arg_type = Int; default = -1
+        "--lx"; arg_type = Int; default = -1
+        "--ly"; arg_type = Int; default = -1
         "--rounds"; arg_type = Int; default = 3
         "--time-limit"; arg_type = Float64; default = -1.0
         "--per-layer"; action = :store_true
@@ -81,11 +106,17 @@ function main()
 
     theta = pi / 4
     coupling = pi / 4
-    circuit, thetas = build_circuit(nq, layers, theta, coupling, active)
+    # --lx/--ly: the 2D transverse-field Ising lattice instead of the kicked-Ising chain.
+    tfim = args["lx"] > 0
+    !tfim || (args["ly"] > 0 && args["lx"] * args["ly"] == nq && active == nq) ||
+        error("--lx and --ly need lx * ly == --num-qubits and no --active-window")
+    make(l) = tfim ? build_tfim2d(args["lx"], args["ly"], l) :
+              build_circuit(nq, l, theta, coupling, active)
+    circuit, thetas = make(layers)
 
     # JIT warm-up
     let wc, wt
-        wc, wt = build_circuit(nq, 1, theta, coupling, active)
+        wc, wt = make(1)
         propagate(wc, build_observable(nq, active), wt;
                   min_abs_coeff = atol, max_weight = cutoff, heisenberg = true,
                   thread = false)
@@ -103,7 +134,7 @@ function main()
     # --per-layer: one propagate! per layer on a propagation cache built once before the clock
     # starts, as monoprop's propagator is, so the cache keeps its buffers across layers and the
     # per-layer split adds no allocation that a whole-circuit call would not pay.
-    layer_circuit, layer_thetas = build_circuit(nq, 1, theta, coupling, active)
+    layer_circuit, layer_thetas = make(1)
     layer_seconds = fill(Inf, layers)
     layer_terms = Int[]
     rounds_done, timed = 0, 0.0
@@ -148,7 +179,8 @@ function main()
     record = Dict(
         "engine" => "julia_pauli",
         "basis" => "pauli",
-        "model" => "kicked_ising",
+        "model" => tfim ? "tfim2d" : "kicked_ising",
+        "lattice" => tfim ? [args["lx"], args["ly"]] : nothing,
         "per_layer" => args["per-layer"],
         "gates_per_layer" => length(layer_circuit),
         "initial_terms" => active,
