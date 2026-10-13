@@ -31,13 +31,14 @@ fi
 
 ROWS="${ROWS:-pauli majorana}"
 NS="${NS:-32 64 128 256 512 1024}"
-PAULI_LAYERS="${PAULI_LAYERS:-5 7 9}"
-HUBBARD_LAYERS="${HUBBARD_LAYERS:-2 3 4}"
+PAULI_LAYERS="${PAULI_LAYERS:-7 10 13}"
+HUBBARD_LAYERS="${HUBBARD_LAYERS:-3 4 5}"
 MAX_N="${MAX_N-}"
-# "<row>:<layers>:<N>" points by size: nine kicked-Ising layers hold 7.9e7 terms at N=1024, four
-# Hubbard steps 9.3e7.
-BIG="${BIG:-pauli:7:1024 pauli:9:256 pauli:9:512 pauli:9:1024 majorana:3:512 majorana:3:1024 majorana:4:512 majorana:4:1024}"
-SKIP="${SKIP:-}"
+# "<row>:<layers>:<N>" points by size: ten kicked-Ising layers hold ~1.3e8 terms at N=1024, four
+# Hubbard layers 9.3e7. Thirteen kicked-Ising and five Hubbard layers at N=1024 (~3e8 terms) do
+# not fit the counter on one node.
+BIG="${BIG:-pauli:7:1024 pauli:10:512 pauli:10:1024 pauli:13:256 pauli:13:512 majorana:4:512 majorana:4:1024 majorana:5:512}"
+SKIP="${SKIP:-pauli:13:1024 majorana:5:1024}"
 SMALL_WORKERS="${SMALL_WORKERS:-3}"
 HUBBARD_CUTOFF="${HUBBARD_CUTOFF:-3}"
 declare -A LATTICE=([32]="4 4" [64]="8 4" [128]="8 8" [256]="16 8" [512]="16 16" [1024]="32 16")

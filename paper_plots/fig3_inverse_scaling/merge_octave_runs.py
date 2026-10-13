@@ -67,8 +67,8 @@ ROWS = {
     "majorana": ("majorana.jsonl", ("monoprop-majorana", "julia-majorana")),
 }
 COUNTS = "counts.jsonl"
-# Small, medium and large: kicked-Ising layers, Hubbard Trotter steps.
-DEPTHS = {"pauli": (5, 7, 9), "majorana": (2, 3, 4)}
+# Small, medium and large, in layers (a Hubbard layer is one Trotter step).
+DEPTHS = {"pauli": (7, 10, 13), "majorana": (3, 4, 5)}
 NS = (32, 64, 128, 256, 512, 1024)
 # (row, depth) -> largest N, for a depth that does not fit a node at the top of NS.
 MAX_N: dict[tuple[str, int], int] = {}
@@ -110,9 +110,10 @@ def settled(row, ceiling=CEILING_S):
     rounds or more, totalling at least the budget), or ran far inside its own limit, or its one
     round is longer than half of ``ceiling``, so that no second round fits under ``ceiling``
     either. A row whose one round already ran past ``ceiling`` is the same bound under both.
+    A timeout, run or implied, settles a point only under the limit it was recorded at.
     """
     if row.get("timeout"):
-        return False
+        return row.get("ceiling_seconds") == ceiling
     # Past the limit in its first round, a row is the same bound under either limit.
     if row.get("time_limit") == ceiling or row["seconds"] > ceiling:
         return True
@@ -323,9 +324,12 @@ def merge_row(args, row_kind, engines):
         for note in notes:
             print(f"  note: {note}")
         _collect(by_engine, engines, layers, lines, terms)
+    # Earlier campaigns measured other depths too; they stay in their run directories.
     extra = sorted({layers for _, layers in rows} - set(DEPTHS[row_kind]))
     if extra:
-        problems.append(f"rows at depths outside {DEPTHS[row_kind]}: {extra}")
+        print(
+            f"  {row_kind}: left out rows at depths outside {DEPTHS[row_kind]}: {extra}"
+        )
     return problems, lines, terms
 
 

@@ -34,8 +34,8 @@ fi
 ROWS="${ROWS:-pauli majorana}"
 NS="${NS:-32 64 128 256 512 1024}"
 # Depths: small, medium and large, in layers (kicked Ising) or Trotter steps (Hubbard).
-PAULI_LAYERS="${PAULI_LAYERS:-5 7 9}"
-HUBBARD_LAYERS="${HUBBARD_LAYERS:-2 3 4}"
+PAULI_LAYERS="${PAULI_LAYERS:-7 10 13}"
+HUBBARD_LAYERS="${HUBBARD_LAYERS:-3 4 5}"
 # "<row>:<layers>:<max N>" caps for a depth that does not fit a node at the largest N; none
 # for the figure (set it empty, not unset, to keep none).
 MAX_N="${MAX_N-}"
