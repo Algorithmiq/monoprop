@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ["3.12", "3.14"]
         runner: [ubuntu-26.04, ubuntu-26.04-arm, macos-15]
         compiler: [default, g++-14, clang++-18]
         mpi: ["off"]
@@ -38,15 +38,15 @@ jobs:
           - compiler: clang++-18
             runner: macos-15
         include:
-          - python-version: "3.11"
+          - python-version: "3.12"
             runner: ubuntu-26.04
             compiler: default
             mpi: "on"
-          - python-version: "3.11"
+          - python-version: "3.12"
             runner: ubuntu-26.04-arm
             compiler: default
             mpi: "on"
-          - python-version: "3.11"
+          - python-version: "3.12"
             runner: macos-15
             compiler: default
             mpi: "on"

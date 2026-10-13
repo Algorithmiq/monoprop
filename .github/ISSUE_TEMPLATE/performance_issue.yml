@@ -126,7 +126,7 @@ body:
     id: python_version
     attributes:
       label: Python version
-      placeholder: "e.g. 3.11.9"
+      placeholder: "e.g. 3.12.0"
     validations:
       required: true
 

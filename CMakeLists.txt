@@ -55,7 +55,7 @@ option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 set(Python_FIND_VIRTUALENV FIRST)
 find_package(
   Python
-  3.11
+  3.12
   REQUIRED
   COMPONENTS
     Interpreter
