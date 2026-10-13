@@ -189,19 +189,16 @@ class TestPauli:
 
 #### Data-driven integration test
 
-Use `parametrize_with_cases` to test against the reference msgpack fixtures.
-The `cases.py` module defines `CasesFermionicProblem`, which exposes all fixtures
-in `tests/data/`. The `serial_comm` and `comm` fixtures are provided by `conftest.py`.
+The `problem` fixture in `tests/conftest.py` is parametrized over the three
+general reference problems: LiH, RX/RZ/RY/RZ rotations, and a random circuit.
+Each invocation loads a fresh problem from `tests/data/` using `load_problem()`
+in `tests/cases.py`. Its explicit case IDs make failures easy to identify.
+The `serial_comm` and `comm` fixtures are also provided by `conftest.py`.
 
 ```python notest
-import pytest
-from pytest_cases import parametrize_with_cases
-
 from monoprop import MajoranaPropagator
-from tests.cases import CasesFermionicProblem
 
 
-@parametrize_with_cases("problem", cases=CasesFermionicProblem)
 def test_energy_matches_reference(problem, comm):
     mp = MajoranaPropagator(
         problem.operator,
@@ -214,26 +211,41 @@ def test_energy_matches_reference(problem, comm):
     assert abs(energy - problem.exact_expval) < 1e-8
 ```
 
-Tag filtering narrows which fixtures run in a given test:
+For tests that specifically require the LiH molecule and its commutator data,
+request `lih_problem`. For orbital-rotation checks using the S0 molecule, request
+`orbital_rotation_problem`.
 
 ```python notest
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
-def test_only_commutator_cases(problem, serial_comm): ...
+def test_lih_reference(lih_problem, serial_comm): ...
 ```
+
+Use `@pytest.mark.parametrize` with `pytest.param(..., id="...")` for small
+in-memory tables. When each scenario needs substantial or optional-library setup,
+separate test functions keep the setup next to its assertions and construct objects
+only when the test runs.
 
 #### Adding a new msgpack fixture
 
-If your test requires a new reference problem, add a `.msgpack` file to `tests/data/` following the schema in `tests/data/README.md`, then register a new case in `tests/cases.py`:
+Add a `.msgpack` file to `tests/data/` following the schema in
+`tests/data/README.md`. To exercise it in every test requesting `problem`, add a
+`pytest.param` entry to that fixture's `params` list in `tests/conftest.py`:
 
-```python
-from pytest_cases import case
+```python notest
+pytest.param("my_new_problem", id="my_new_problem"),
+```
 
-class CasesFermionicProblem:
-    @case(id="my_new_problem", tags=["has_commutator_data"])
-    def case_my_new_problem(self, shared_datadir):
-        return load_problem(shared_datadir / "my_new_problem.msgpack")
+If the problem is only appropriate for specific tests, define a named fixture
+instead:
+
+```python notest
+import pytest
+
+from tests.cases import load_problem
+
+
+@pytest.fixture
+def my_new_problem(lazy_shared_datadir):
+    return load_problem(lazy_shared_datadir / "my_new_problem.msgpack")
 ```
 
 ### C++ tests

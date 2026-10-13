@@ -15,10 +15,8 @@
 from __future__ import annotations
 
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import MajoranaPropagator, jordan_wigner_basis_change
-from tests.cases import CasesFermionicProblem
 
 
 def _bound_simulator_type(problem, serial_comm):
@@ -68,55 +66,48 @@ def _evolve_bound_core(core, monomial_circuit):
     return parameters, coeffs
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
 def test_bound_constructor_accepts_declared_arguments(
-    problem, serial_comm, schrodinger
+    lih_problem, serial_comm, schrodinger
 ):
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
 
-    assert core.num_modes == problem.n_modes
+    assert core.num_modes == lih_problem.n_modes
     assert core.schrodinger is schrodinger
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_mutators_accept_declared_arguments(problem, serial_comm, schrodinger):
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+def test_bound_mutators_accept_declared_arguments(
+    lih_problem, serial_comm, schrodinger
+):
+    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
 
     core.lower_atol = 1e-12
     core.lower_atol = None
     core.upper_atol = 1e-12
     core.upper_atol = None
-    core.cutoff = 2 * problem.n_modes
+    core.cutoff = 2 * lih_problem.n_modes
     core.cutoff_type = "length"
-    core.basis_change = jordan_wigner_basis_change(problem.n_modes)
+    core.basis_change = jordan_wigner_basis_change(lih_problem.n_modes)
     core.basis_change = None
 
-    assert core.cutoff == 2 * problem.n_modes
+    assert core.cutoff == 2 * lih_problem.n_modes
     assert core.cutoff_type == "length"
     assert core.basis_change is None
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
 def test_bound_expectation_value_methods_accept_declared_arguments(
-    problem, serial_comm, schrodinger
+    lih_problem, serial_comm, schrodinger
 ):
-    monomial_circuit = problem.monomial_circuit
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+    monomial_circuit = lih_problem.monomial_circuit
+    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
     parameters, coeffs = _evolve_bound_core(core, monomial_circuit)
 
     expectation_value_fn = core.expectation_value_functional(pare_threshold=None)
@@ -133,17 +124,14 @@ def test_bound_expectation_value_methods_accept_declared_arguments(
     assert len(coeffs) > 0
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
 def test_bound_graph_methods_accept_declared_arguments(
-    problem, serial_comm, schrodinger
+    lih_problem, serial_comm, schrodinger
 ):
-    monomial_circuit = problem.monomial_circuit
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+    monomial_circuit = lih_problem.monomial_circuit
+    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
     parameters, _ = _evolve_bound_core(core, monomial_circuit)
 
     evolved_operator = core.evolved_operator(parameters, 1e-12)
@@ -154,7 +142,7 @@ def test_bound_graph_methods_accept_declared_arguments(
     assert len(graph_size) == 2
     assert core.graph_layers() is not None
 
-    core.update_initial_operator(op_dict=problem.operator.terms)
+    core.update_initial_operator(op_dict=lih_problem.operator.terms)
 
 
 # The ledger keys are a measurement contract: an A/B reads this dictionary from two builds and
@@ -176,13 +164,10 @@ _GRAPH_DIAGNOSTIC_KEYS = (
 )
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
-def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
+def test_graph_memory_breakdown_keys_and_totals(lih_problem, serial_comm):
     """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
-    monomial_circuit = problem.monomial_circuit
-    core = _make_bound_core(problem, serial_comm, schrodinger=False)
+    monomial_circuit = lih_problem.monomial_circuit
+    core = _make_bound_core(lih_problem, serial_comm, schrodinger=False)
     _evolve_bound_core(core, monomial_circuit)
 
     breakdown = core.graph_memory_breakdown()

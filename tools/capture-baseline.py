@@ -41,8 +41,7 @@ relative tolerance. It exists for a change that reorders on purpose -- a second 
 hashes rows differently, say, and so accumulates in a different order. Do not use it to wave through
 a diff whose ordering was supposed to be stable.
 
-Usage (needs the `test` dependency group synced -- this reuses tests/cases.py, which imports
-pytest-cases):
+Usage (reuses the reference-data loader in tests/cases.py):
     uv sync --all-extras --group test
     uv run --no-sync python tools/capture-baseline.py --out .baseline-capture/<label>
 
