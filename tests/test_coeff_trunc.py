@@ -23,7 +23,7 @@ from monoprop import Circuit, ExpGate, MajoranaPropagator
 from monoprop.majorana import MajoranaOperator
 
 if TYPE_CHECKING:
-    from tests.cases import FermionicProblem
+    from tests.reference_data import FermionicProblem
 
 
 def _create_mp(

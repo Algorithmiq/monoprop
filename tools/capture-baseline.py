@@ -41,7 +41,7 @@ relative tolerance. It exists for a change that reorders on purpose -- a second 
 hashes rows differently, say, and so accumulates in a different order. Do not use it to wave through
 a diff whose ordering was supposed to be stable.
 
-Usage (reuses the reference-data loader in tests/cases.py):
+Usage (reuses the reference-data loader in tests/reference_data.py):
     uv sync --all-extras --group test
     uv run --no-sync python tools/capture-baseline.py --out .baseline-capture/<label>
 
@@ -97,14 +97,14 @@ _EXACT_FIXTURES = frozenset(
 )
 
 
-def _load_cases_module() -> Any:  # noqa: ANN401
-    """Import tests/cases.py by path (tests/ is not a package; pytest uses --import-mode=importlib)."""
+def _load_reference_data_module() -> Any:  # noqa: ANN401
+    """Import tests/reference_data.py by path (pytest uses --import-mode=importlib)."""
     spec = importlib.util.spec_from_file_location(
-        "_baseline_tests_cases", REPO_ROOT / "tests" / "cases.py"
+        "_baseline_tests_reference_data", REPO_ROOT / "tests" / "reference_data.py"
     )
     if spec is None or spec.loader is None:
         raise ImportError(
-            f"Could not load a module spec for {REPO_ROOT / 'tests' / 'cases.py'}."
+            f"Could not load a module spec for {REPO_ROOT / 'tests' / 'reference_data.py'}."
         )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -394,7 +394,7 @@ def main() -> int:
     comm = _comm()
     rank = 0 if comm is None else comm.Get_rank()
 
-    cases_mod = _load_cases_module()
+    cases_mod = _load_reference_data_module()
     all_records: list[dict[str, Any]] = []
     for path in sorted(DATA_DIR.glob("*.msgpack")):
         all_records.extend(_capture_majorana_case(cases_mod, path, comm))

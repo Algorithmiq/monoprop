@@ -33,7 +33,7 @@ from monoprop import (
 )
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
-from tests.cases import load_problem
+from tests.reference_data import load_problem
 
 try:
     from mpi4py import MPI
