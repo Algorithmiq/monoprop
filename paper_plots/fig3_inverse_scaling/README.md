@@ -19,13 +19,15 @@ One page-wide row of three panels (paper `fig:inverse-scaling`, a `figure*`):
   the cheapest point to leave that corner clear. A point over the 30-min limit, or not run because a
   smaller workload already exceeded it, has no cost to plot and is left out; the caption lists
   them. The fitted exponents are in the caption and below, not on the figure.
-- **(c) terms a gate touches:** from counts rather than timings, the share of the K terms one
-  gate touches, at the medium depth of each model (monoprop blue squares, filled for kicked
-  Ising and open for Hubbard, keyed in the lower left like the cost panels). A dense code tests
-  all of them (the grey dashed 100% line); monoprop visits only those that anticommute with the
-  gate, a share that falls from 15% (kicked Ising) and 16% (Hubbard) at N = 32 to 0.46% at
-  N = 1024 and 0.58% at N = 968; the two lines nearly coincide. The grey band, from the lower line up to 100%, is what the
-  index skips.
+- **(c) terms a gate reads:** from counts rather than timings, the share of the K terms one
+  gate reads and rotates, at the medium depth of each model (monoprop blue squares, filled for
+  kicked Ising and open for Hubbard, keyed in the lower left like the cost panels). A dense code
+  tests all of them (the grey dashed 100% line). monoprop reads the index lists of the gate's
+  anticommutation support (dotted: every entry of every list its scans fold, 30% of K at N = 32
+  for both models, 0.94% at N = 1024 and 1.0% at N = 968) and rotates only their symmetric
+  difference, the anticommuting set (solid: 15% and 16% at N = 32, 0.46% at N = 1024 and 0.58%
+  at N = 968). The grey band, from the higher read line up to 100%, is what the index never
+  reads.
 
 The design went through a busier eight-panel version (one panel per depth, plus K and the
 anticommuting count as separate lines); since the depths of one engine nearly coincide, they
@@ -93,7 +95,10 @@ at the same depth (`implied` rows). monoprop finishes every Hubbard point.
   the same terms there and separate from N = 242.
 - **Work per gate.** The anticommuting terms per gate are 4.43–4.92 K/N for kicked Ising and
   5.22–5.66 K/N for Hubbard, at every counted point; so the ratio K / anticommuting grows ∝ N, to
-  216–231× (kicked Ising, N = 1024) and 171× (Hubbard, N = 968).
+  216–231× (kicked Ising, N = 1024) and 171× (Hubbard, N = 968). At the medium depth a gate reads
+  9.6–9.8 K/N index entries for both models, 2.03–2.04× its anticommuting set for kicked Ising
+  (an X gate reads exactly its anticommuting set, a ZZ gate four lists) and 1.73–1.86× for
+  Hubbard.
 - **Even support** (`occupancy_figure.py`, not in the paper; its data are the earlier
   length-4 Hubbard workload). After every layer, from the index list lengths: the longest list
   over the mean, c, and the average list a gate reads over one layer, over the mean.
@@ -155,12 +160,17 @@ node, and every count saw the timed operator's term count.
   by this rule (`SETTLED_IN`), and `merge_octave_runs.py` applies it again, refusing an
   unsettled row; a later run directory replaces an earlier one per engine, depth and N.
 - **Counting is separate and untimed.** `scripts/count_anticommuting.py` (jobs 2026811, 2027833,
-  2029403 and 2029624)
+  2029403 and 2029624; the medium depths again in 2030444, adding the index reads)
   propagates the same circuit with monoprop, exports the operator, and counts exactly, for each
   gate of one layer, the terms anticommuting with it: a term anticommutes with a multi-term
   generator (a hopping gate's two bilinears, the interaction's diagonal monomials) when it
   anticommutes with any of them. Validated against a gate-by-gate brute force on small lattices
-  (kicked Ising N = 8–16, Hubbard 2×2 to 4×4).
+  (kicked Ising N = 8–16, Hubbard 2×2 to 4×4). Beside it, the index entries the same gates read:
+  for each scan (one generator monomial) the lengths of the lists it XOR-folds in full
+  (`scripts/read_weights.py`), summed over the layer and divided by its gates; the pivot list,
+  read only where the fold is nonzero, is left out, and a list held as a dense bitmap is read as
+  K/64 words, counted here by its entries. Checked against a per-scan brute force (Hubbard 4×4,
+  kicked Ising N = 12).
 
 ## Data and provenance
 
@@ -168,7 +178,7 @@ node, and every count saw the timed operator's term count.
 | --- | --- | --- |
 | `data/pauli.jsonl` | panel a: monoprop, `PauliPropagation.jl` (`julia_pauli`), `ppvm` | one per engine, depth (`layers`) and N |
 | `data/majorana.jsonl` | panel b: monoprop, `MajoranaPropagation.jl` (`julia_majorana`) | one per engine, depth (`layers`, one Trotter step each) and N |
-| `data/counts.jsonl` | panel c: `num_terms`, `anticommuting_per_gate` | one per depth and N that monoprop finished, up to 2e8 terms |
+| `data/counts.jsonl` | panel c: `num_terms`, `anticommuting_per_gate`, `index_reads_per_gate` (medium depths) | one per depth and N that monoprop finished, up to 2e8 terms |
 | `data/occupancy.jsonl` | `occupancy_figure.py` (not in the paper; earlier length-4 Hubbard workload): c and the list-length summary | one per model, depth and N, up to 1.6e8 terms (`scripts/occupancy.py`) |
 
 | engine | version |
@@ -224,7 +234,7 @@ differs from the timed row. The figure's data came from
 R=<runs>/fig3
 python merge_octave_runs.py $R/campaign-2018658 $R/campaign-2023575 $R/campaign-2026810 \
     $R/campaign-2027832 $R/campaign-2027835 $R/count-2026811 $R/count-2027833 \
-    $R/campaign-2029402 $R/count-2029403 $R/count-2029624
+    $R/campaign-2029402 $R/count-2029403 $R/count-2029624 $R/count-2030444
 ```
 
 with the Hubbard campaign submitted as `ROWS=majorana NS="32 72 128 242 512 968"

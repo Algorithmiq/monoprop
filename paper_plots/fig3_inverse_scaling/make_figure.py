@@ -25,8 +25,9 @@ One page-wide row of three panels:
   anticommute with it, so on this axis monoprop falls as 1/N and the references do not. Each
   engine's exponent per depth, over the widest N every engine finished there, goes to the caption.
 * (c) the work behind it, from counts rather than timings: the share of the K terms a gate
-  touches. A dense code tests all of them; monoprop visits only those that anticommute with
-  the gate (``scripts/count_anticommuting.py``), a share that falls as about 4/N to 6/N.
+  reads and rotates. A dense code tests all of them; monoprop reads the index lists of the
+  gate's anticommutation support and rotates only the terms that anticommute with the gate
+  (``scripts/count_anticommuting.py``); both shares fall about as 1/N.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
@@ -440,50 +441,82 @@ def _panel_legend(ax, handles, labels, *, ncol=1, rows_below=0, **kw):
     ax.add_artist(key)
 
 
-# Panel (c): both lines are monoprop at the medium depth, so the model is the marker's fill.
+# Panel (c): every line is monoprop at the medium depth, so the model is the marker's fill and
+# the quantity the line style: the index entries a gate reads dotted, the anticommuting set solid.
 WORK_FILL = {"pauli": True, "majorana": False}
 WORK_NAME = {"pauli": "kicked Ising", "majorana": "2D Hubbard"}
+READ_DASH = (0, (1.3, 1.3))
+
+
+def _log_interp(x, xs, ys):
+    """``ys`` at ``x``, linear in log-log between the points ``xs``; None outside them."""
+    if not xs[0] <= x <= xs[-1]:
+        return None
+    return float(np.exp(np.interp(np.log(x), np.log(xs), np.log(ys))))
 
 
 def work_panel(ax, counts, ns):
-    """The share of the K terms a gate touches, against N, at the medium depth of each model.
+    """The share of the K terms a gate reads and rotates, against N, at the medium depth.
 
-    A dense code tests every term (the 100% line); monoprop visits only the terms that
-    anticommute with the gate (``scripts/count_anticommuting.py``), a share that falls as
-    about 4/N to 6/N. The band between them is what the index skips. Both lines are monoprop at
-    the medium depth, so they wear its colour and that depth's style, the Hubbard marker open;
-    the key in the lower left names them.
+    A dense code tests every term (the 100% line). monoprop reads the index lists of the gate's
+    anticommutation support (``index_reads_per_gate``: the entries of every list its scans fold)
+    and rotates only the terms in their symmetric difference, the anticommuting set
+    (``anticommuting_per_gate``); both from ``scripts/count_anticommuting.py`` and both falling
+    about as 1/N. The band, above the higher read line, is what the index never reads.
     """
-    out, shares, handles, labels = {}, {}, [], []
+    out, reads, handles, labels = {}, {}, [], []
     for kind, _, _, _ in MODELS:
         cs = sorted(
             (c for c in counts if c["basis"] == kind), key=lambda c: c["num_qubits"]
         )
         out[kind] = {
             layers: {
-                c["num_qubits"]: (c["num_terms"], c["anticommuting_per_gate"])
+                c["num_qubits"]: (
+                    c["num_terms"],
+                    c["anticommuting_per_gate"],
+                    c.get("index_reads_per_gate"),
+                )
                 for c in cs
                 if c["layers"] == layers
             }
             for layers in sorted({c["layers"] for c in cs})
         }
         mid = sorted(out[kind][DEPTHS[kind][1]].items())
+        if any(r is None for _, (_, _, r) in mid):
+            raise SystemExit(
+                f"{kind}: a medium-depth count has no index_reads_per_gate"
+            )
         n = np.array([x for x, _ in mid], float)
-        share = np.array([100 * a / k for _, (k, a) in mid])
-        shares[kind] = (n, share)
+        anti = np.array([100 * a / k for _, (k, a, _) in mid])
+        read = np.array([100 * r / k for _, (k, _, r) in mid])
+        reads[kind] = (n, read)
         style = _style(MONOPROP, 1)
         if not WORK_FILL[kind]:
             style |= {"mfc": "white", "mec": MONOPROP, "mew": 0.9}
-        handles.append(ax.plot(n, share, **style, zorder=3)[0])
+        ax.plot(n, read, **style | {"ls": READ_DASH}, zorder=3)
+        ax.plot(n, anti, **style, zorder=3)
+        handles.append(Line2D([], [], **{**style, "ls": ""}))
         layers = DEPTHS[kind][1]
         labels.append(f"{WORK_NAME[kind]}, {layers} layer{'s' if layers > 1 else ''}")
+    handles += [
+        Line2D([], [], color=MONOPROP, lw=LINE_WIDTH, ls=READ_DASH),
+        Line2D([], [], color=MONOPROP, lw=LINE_WIDTH),
+    ]
+    labels += ["index entries read", "anticommuting set"]
     ax.axhline(100, color=INK_2, lw=LINE_WIDTH, ls=DENSE_DASH, zorder=2)
-    # The band runs from the lowest line, the share monoprop touches at its sparsest, up to
-    # the 100% a dense code tests.
-    low_n, low = min(shares.values(), key=lambda s: s[1][-1])
-    ax.fill_between(low_n, low, 100, color=BAND, lw=0, zorder=0)
+    # The band runs from the higher of the read lines at each N up to the 100% a dense code tests.
+    grid = sorted({x for n, _ in reads.values() for x in n})
+    edge = [
+        max(
+            v
+            for n, r in reads.values()
+            if (v := _log_interp(x, list(n), list(r))) is not None
+        )
+        for x in grid
+    ]
+    ax.fill_between(grid, edge, 100, color=BAND, lw=0, zorder=0)
     handles.append(Patch(facecolor=BAND, edgecolor="none"))
-    labels.append("skipped by the index")
+    labels.append("never read")
     _panel_legend(ax, handles, labels)
     ax.set_yscale("log")
     ax.set_ylim(0.03, 250)
@@ -524,7 +557,7 @@ def draw(datasets, counts, outdir: Path):
     # Panel (c) holds both models; its ticks are the chain's powers of two, and the square
     # Hubbard lattices' N fall between them.
     work = work_panel(wax, counts, sorted({x["num_qubits"] for x in datasets["pauli"]}))
-    wax.set_title("(c) Terms a gate touches", loc="left", fontsize=7.8, color=INK)
+    wax.set_title("(c) Terms a gate reads", loc="left", fontsize=7.8, color=INK)
     wax.set_xlabel("$N$", labelpad=1.5)
     wax.set_ylabel("share of the $K$ terms, per gate", labelpad=2)
     for kind in work:
@@ -606,7 +639,10 @@ def write_caption(outdir: Path, datasets, results, *, spread, hosts):
         ]
         parts.append(_para(f"{title}, cost per term. " + ". ".join(texts) + "."))
         work = results[kind]["work"]
-        scaled = [n * a / k for pts in work.values() for n, (k, a) in pts.items()]
+        scaled = [n * a / k for pts in work.values() for n, (k, a, _) in pts.items()]
+        mid = work[DEPTHS[kind][1]]
+        read_scaled = [n * r / k for n, (k, _, r) in mid.items()]
+        read_over = [r / a for k, a, r in mid.values()]
         missing = [
             f"{_depth_name(layers, depth_word)} N={n}"
             for layers, v in cost.items()
@@ -622,7 +658,9 @@ def write_caption(outdir: Path, datasets, results, *, spread, hosts):
                     if missing
                     else ""
                 )
-                + "."
+                + f"; at {_depth_name(DEPTHS[kind][1], depth_word)} a gate reads "
+                f"{min(read_scaled):.2f}K/N to {max(read_scaled):.2f}K/N index entries, "
+                f"{min(read_over):.2f} to {max(read_over):.2f} times its anticommuting set."
             )
         )
     parts.append(

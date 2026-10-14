@@ -21,7 +21,14 @@ measured here, untimed, on the operator monoprop holds after the last layer:
 
     anticommuting per gate = (1 / G) * sum over the G gates of one layer of |anti(gate)|,
 
-an exact count over the exported operator. A term anticommutes with a multi-term generator (a
+an exact count over the exported operator. Beside it, the index entries the same gates read:
+
+    index reads per gate = (1 / G) * sum over the layer's scans of the lengths of the lists folded,
+
+where each scan (one generator monomial) XOR-folds the lists of G's positions (Majorana) or of
+J(G) (Pauli) in full (scripts/read_weights.py); the pivot list, read only where the fold is
+nonzero, is left out. A list held as a dense bitmap (over 1/64 of the terms) is read as K/64
+words rather than entry by entry; the count is of entries either way. A term anticommutes with a multi-term generator (a
 hopping gate's two bilinears, the interaction's three diagonal monomials) when it anticommutes
 with any of them. The rules for the two models' gates are written out per term and evaluated
 in numpy over chunks of the exported operator; they were checked against a gate-by-gate
@@ -42,6 +49,7 @@ from time import perf_counter
 
 import monoprop_single_layer as single
 import numpy as np
+import read_weights
 from monoprop import __version__ as monoprop_version
 
 CHUNK = 4_000_000
@@ -108,17 +116,20 @@ def _hubbard_chunk(keys, lx: int, ly: int) -> int:
     return total
 
 
-def count(sim, args) -> tuple[int, int]:
-    """(terms, sum over one layer's gates of the terms anticommuting with each)."""
+def count(sim, args) -> tuple[int, int, np.ndarray]:
+    """(terms, sum over one layer's gates of the terms anticommuting with each, the length of
+    every index list)."""
     keys = [k for k in sim._simulator.evolved_operator([], 0.0) if k]
     total = 0
+    lists = np.zeros(2 * args.num_qubits, dtype=np.int64)
     for lo in range(0, len(keys), CHUNK):
         chunk = [tuple(sorted(k)) for k in keys[lo : lo + CHUNK]]
+        lists += np.bincount(_flatten(chunk)[0], minlength=len(lists))
         if args.basis == "pauli":
             total += _pauli_chunk(chunk, args.num_qubits)
         else:
             total += _hubbard_chunk(chunk, args.lx, args.ly)
-    return len(keys), total
+    return len(keys), total, lists
 
 
 def main() -> None:
@@ -153,8 +164,16 @@ def main() -> None:
             sim.propagate(step)
     size = sim.size()
     t0 = perf_counter()
-    num_terms, total = count(sim, args)
+    num_terms, total, lists = count(sim, args)
     gates = len(circuit.gates)
+    layer_gates = [g for step in steps for g in step.gates]
+    if len(layer_gates) != gates:
+        raise RuntimeError(f"steps hold {len(layer_gates)} gates, the layer {gates}")
+    fold = np.asarray(
+        read_weights.weights(layer_gates, args.num_qubits, args.basis == "pauli")[
+            "fold"
+        ]
+    )
     # The exported operator holds every term but the identity, which sim.size() may count.
     if num_terms not in (size, size - 1):
         raise RuntimeError(f"exported {num_terms} terms, propagator holds {size}")
@@ -172,6 +191,7 @@ def main() -> None:
         "num_terms": int(size),
         "gates_per_layer": gates,
         "anticommuting_per_gate": total / gates,
+        "index_reads_per_gate": int(fold @ lists) / gates,
         "count_seconds": perf_counter() - t0,
         "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
         "host": socket.gethostname(),
@@ -180,7 +200,8 @@ def main() -> None:
     print(
         f"[count/{args.basis}] N={args.num_qubits} L={args.layers} K={size} "
         f"anti/gate={record['anticommuting_per_gate']:.4g} "
-        f"({record['anticommuting_per_gate'] / size:.3g} of K) t={record['count_seconds']:.1f}s"
+        f"({record['anticommuting_per_gate'] / size:.3g} of K) "
+        f"reads/gate={record['index_reads_per_gate'] / size:.3g} of K t={record['count_seconds']:.1f}s"
     )
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with Path(args.out).open("a") as f:
