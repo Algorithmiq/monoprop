@@ -20,14 +20,14 @@ One page-wide row of three panels (paper `fig:inverse-scaling`, a `figure*`):
   smaller workload already exceeded it, has no cost to plot and is left out; the caption lists
   them. The fitted exponents are in the caption and below, not on the figure.
 - **(c) terms a gate reads:** from counts rather than timings, the share of the K terms one
-  gate reads and rotates, at the medium depth of each model (monoprop blue squares, filled for
-  kicked Ising and open for Hubbard, keyed in the lower left like the cost panels). A dense code
-  tests all of them (the grey dashed 100% line). monoprop reads the index lists of the gate's
-  anticommutation support (dotted: every entry of every list its scans fold, 30% of K at N = 32
-  for both models, 0.94% at N = 1024 and 1.0% at N = 968) and rotates only their symmetric
-  difference, the anticommuting set (solid: 15% and 16% at N = 32, 0.46% at N = 1024 and 0.58%
-  at N = 968). The grey band, from the higher read line up to 100%, is what the index never
-  reads.
+  gate reads and rotates, at the medium depth of each model (squares, filled for kicked Ising
+  and open for Hubbard, keyed in the lower left like the cost panels). A dense code reads all of
+  them (the black dashed 100% line, the top of the axis). monoprop reads the index lists of the
+  gate's anticommutation support (blue: every entry of every list its scans fold, 30% of K at
+  N = 32 for both models, 0.94% at N = 1024 and 1.0% at N = 968) and rotates only their
+  symmetric difference, the anticommuting set (black: 15% and 16% at N = 32, 0.46% at N = 1024
+  and 0.58% at N = 968). The grey band, from the higher read line up to 100%, is what the index
+  never reads, named in its middle.
 
 The design went through a busier eight-panel version (one panel per depth, plus K and the
 anticommuting count as separate lines); since the depths of one engine nearly coincide, they

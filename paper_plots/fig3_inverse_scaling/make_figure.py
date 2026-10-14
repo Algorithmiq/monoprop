@@ -53,7 +53,6 @@ mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 from matplotlib.ticker import FixedFormatter, FixedLocator
 from matplotlib.transforms import ScaledTranslation
 from merge_octave_runs import CEILING_S, COUNTS, DEPTHS, ROWS
@@ -144,7 +143,7 @@ PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
 
 # Page width, one row: a cost panel per model, then the work per gate of both; each panel keys
 # its own engines and depths in its lower left.
-FIGSIZE = (7.0, 2.3)
+FIGSIZE = (7.0, 2.85)
 MODELS = (
     ("pauli", "Kicked Ising chain", "qubits $N$", "layers"),
     ("majorana", "2D Hubbard lattice", "modes $N$", "layers"),
@@ -441,11 +440,10 @@ def _panel_legend(ax, handles, labels, *, ncol=1, rows_below=0, **kw):
     ax.add_artist(key)
 
 
-# Panel (c): every line is monoprop at the medium depth, so the model is the marker's fill and
-# the quantity the line style: the index entries a gate reads dotted, the anticommuting set solid.
+# Panel (c): the model is the marker's fill, the quantity the colour: what monoprop reads in
+# its blue, the anticommuting set and the dense code's 100% in ink.
 WORK_FILL = {"pauli": True, "majorana": False}
 WORK_NAME = {"pauli": "kicked Ising", "majorana": "2D Hubbard"}
-READ_DASH = (0, (1.3, 1.3))
 
 
 def _log_interp(x, xs, ys):
@@ -462,9 +460,11 @@ def work_panel(ax, counts, ns):
     anticommutation support (``index_reads_per_gate``: the entries of every list its scans fold)
     and rotates only the terms in their symmetric difference, the anticommuting set
     (``anticommuting_per_gate``); both from ``scripts/count_anticommuting.py`` and both falling
-    about as 1/N. The band, above the higher read line, is what the index never reads.
+    about as 1/N. The band, above the higher read line, is what the index never reads; it is
+    named in its middle. The axis stops at the dense code's 100%.
     """
-    out, reads, handles, labels = {}, {}, [], []
+    out, reads = {}, {}
+    model_keys = []
     for kind, _, _, _ in MODELS:
         cs = sorted(
             (c for c in counts if c["basis"] == kind), key=lambda c: c["num_qubits"]
@@ -490,21 +490,25 @@ def work_panel(ax, counts, ns):
         anti = np.array([100 * a / k for _, (k, a, _) in mid])
         read = np.array([100 * r / k for _, (k, _, r) in mid])
         reads[kind] = (n, read)
-        style = _style(MONOPROP, 1)
+        for color, ys in ((MONOPROP, read), (INK, anti)):
+            style = _style(color, 1)
+            if not WORK_FILL[kind]:
+                style |= {"mfc": "white", "mec": color, "mew": 0.9}
+            ax.plot(n, ys, **style, zorder=3)
+        key = _style(INK_2, 1) | {"ls": ""}
         if not WORK_FILL[kind]:
-            style |= {"mfc": "white", "mec": MONOPROP, "mew": 0.9}
-        ax.plot(n, read, **style | {"ls": READ_DASH}, zorder=3)
-        ax.plot(n, anti, **style, zorder=3)
-        handles.append(Line2D([], [], **{**style, "ls": ""}))
+            key |= {"mfc": "white", "mec": INK_2, "mew": 0.9}
         layers = DEPTHS[kind][1]
-        labels.append(f"{WORK_NAME[kind]}, {layers} layer{'s' if layers > 1 else ''}")
-    handles += [
-        Line2D([], [], color=MONOPROP, lw=LINE_WIDTH, ls=READ_DASH),
-        Line2D([], [], color=MONOPROP, lw=LINE_WIDTH),
-    ]
-    labels += ["index entries read", "anticommuting set"]
-    ax.axhline(100, color=INK_2, lw=LINE_WIDTH, ls=DENSE_DASH, zorder=2)
-    # The band runs from the higher of the read lines at each N up to the 100% a dense code tests.
+        model_keys.append(
+            (
+                Line2D([], [], **key),
+                f"{WORK_NAME[kind]}, {layers} layer{'s' if layers > 1 else ''}",
+            )
+        )
+    # The 100% line is the top of the axis; unclipped, so it is drawn at full width.
+    ax.axhline(100, color=INK, lw=LINE_WIDTH, ls=DENSE_DASH, zorder=2, clip_on=False)
+    # The band runs from the higher of the read lines at each N up to the 100% a dense code reads,
+    # and is named in its middle rather than in the key.
     grid = sorted({x for n, _ in reads.values() for x in n})
     edge = [
         max(
@@ -515,11 +519,30 @@ def work_panel(ax, counts, ns):
         for x in grid
     ]
     ax.fill_between(grid, edge, 100, color=BAND, lw=0, zorder=0)
-    handles.append(Patch(facecolor=BAND, edgecolor="none"))
-    labels.append("never read")
-    _panel_legend(ax, handles, labels)
+    mid_x = float(np.sqrt(grid[0] * grid[-1]))
+    mid_y = float(np.sqrt(100 * _log_interp(mid_x, grid, edge)))
+    ax.text(
+        mid_x,
+        mid_y,
+        "never read",
+        ha="center",
+        va="center",
+        fontsize=KEY_SIZE,
+        color=INK_2,
+    )
+    _panel_legend(
+        ax,
+        [
+            Line2D([], [], color=INK, lw=LINE_WIDTH, ls=DENSE_DASH),
+            Line2D([], [], color=MONOPROP, lw=LINE_WIDTH + 0.3),
+            Line2D([], [], color=INK, lw=LINE_WIDTH + 0.3),
+        ]
+        + [h for h, _ in model_keys],
+        ["read by a dense code", "read by monoprop", "anticommuting (rotated)"]
+        + [label for _, label in model_keys],
+    )
     ax.set_yscale("log")
-    ax.set_ylim(0.03, 250)
+    ax.set_ylim(0.03, 100)
     ax.yaxis.set_major_formatter(lambda y, _: f"{y:g}%")
     _log2_axis(ax, ns)
     _frame(ax)
@@ -552,7 +575,7 @@ def draw(datasets, counts, outdir: Path):
         else:
             ax.tick_params(labelleft=False)
         results[kind] = {"cost": cost}
-    first.set_ylim(min(ys) / COST_FLOOR, max(ys) * 1.6)
+    first.set_ylim(min(ys) / COST_FLOOR, max(ys) * 1.25)
     wax = fig.add_subplot(grid[0, 2])
     # Panel (c) holds both models; its ticks are the chain's powers of two, and the square
     # Hubbard lattices' N fall between them.
