@@ -27,8 +27,9 @@ One page-wide row of three panels:
 * (c) the work behind it, from counts rather than timings: the percentage of the operator's
   K terms a gate reads and rotates. A dense code reads all of them; monoprop reads the index
   lists of the gate's anticommutation support, and every engine rotates only the terms that
-  anticommute with the gate (``scripts/count_anticommuting.py``); both fall about as 1/N. The
-  colours are those of (a) and (b), and black again marks what holds for every engine.
+  anticommute with the gate (``scripts/count_anticommuting.py``); both fall about as 1/N. Both monoprop
+  lines are its blue, the reads solid and the anticommuting set dashed; the dense codes' 100% is
+  grey.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
@@ -133,9 +134,8 @@ DEPTH_STYLE = (
 LINE_WIDTH = 1.15
 # A white ring keeps a filled marker legible where it crosses another line.
 RING = 0.5
-# Black is what holds for every engine: the 1/N guide here, and in (c) the anticommuting set
-# that every exact engine rotates. The guide is dash-dot, unlike every series, and dark enough to
-# survive a printer.
+# The 1/N guide is near-black and dash-dot, unlike every series, and dark enough to survive a
+# printer.
 GUIDE = "#222222"
 GUIDE_WIDTH = 1.0
 GUIDE_DASH = (0, (6, 1.6, 1.2, 1.6))
@@ -143,6 +143,8 @@ GUIDE_DASH = (0, (6, 1.6, 1.2, 1.6))
 # every hue is already an engine's.
 DENSE_COLOR = "#6b6b6b"
 DENSE_DASH = (0, (4.0, 1.6))
+# monoprop's anticommuting set: its blue, dashed shorter than the dense codes' line.
+ANTI_DASH = (0, (2.2, 1.3))
 GRID = "#e6e6e6"
 PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
 
@@ -446,11 +448,10 @@ def _panel_legend(ax, handles, labels, *, ncol=1, rows_below=0, **kw):
     ax.add_artist(key)
 
 
-# Panel (c) keeps the colours of (a) and (b): monoprop's reads in its blue, the dense codes' 100%
-# in their colours, and the anticommuting set, which every exact engine rotates, in black like
-# the 1/N guide it explains. The model is the marker's fill, keyed in grey like the depths.
+# Panel (c) keeps monoprop's blue for both of its lines, reads solid and the anticommuting set
+# dashed, and the dense codes' 100% in grey. The model is the marker's fill, keyed in grey like
+# the depths and named by its panel.
 WORK_FILL = {"pauli": True, "majorana": False}
-WORK_NAME = {"pauli": "kicked Ising", "majorana": "2D Hubbard"}
 WORK_FLOOR = (
     0.04  # percent: below the lowest share, with the lower left clear for the key
 )
@@ -524,17 +525,17 @@ def _work_counts(counts, kind):
 
 
 def work_panel(ax, counts, ns):
-    """The share of the K terms a gate reads and rotates, against N, at the medium depth.
+    """The percentage of the K terms a gate reads and rotates, against N, at the medium depth.
 
     A dense code tests every term: the 100% line at the top of the axis, grey and dashed, as it
     holds for every dense engine and every hue is already an engine's. monoprop reads the index
     lists of the gate's anticommutation support (``index_reads_per_gate``: the entries of every
-    list its scans fold), in its blue, and
-    rotates only the terms in their symmetric difference, the anticommuting set
-    (``anticommuting_per_gate``), in black: every exact engine rotates that set, so it is drawn
-    like the 1/N guide of (a) and (b). Both come from ``scripts/count_anticommuting.py`` and both
-    fall about as 1/N. The grey band, above the higher read line, is what the index never reads,
-    named in its middle. The marker's fill is the model, keyed in grey.
+    list its scans fold), solid in its blue, and rotates only the terms in their symmetric
+    difference, the anticommuting set (``anticommuting_per_gate``), dashed in its blue. Both
+    come from ``scripts/count_anticommuting.py`` and both fall about as 1/N. The grey band,
+    above the higher read line, is what the index never reads, named in its middle. The
+    marker's fill is the model, keyed in grey above the lines as "(a) 10 layers" and "(b) 4
+    layers".
     """
     out, reads = {}, {}
     for kind, _, _, _ in MODELS:
@@ -548,7 +549,7 @@ def work_panel(ax, counts, ns):
         reads[kind] = (n, np.array([100 * r / k for _, (k, _, r) in mid]))
         ax.plot(n, reads[kind][1], **_work_style(MONOPROP, kind), zorder=3)
         anti = np.array([100 * a / k for _, (k, a, _) in mid])
-        ax.plot(n, anti, **_work_style(INK, kind), zorder=3)
+        ax.plot(n, anti, **_work_style(MONOPROP, kind) | {"ls": ANTI_DASH}, zorder=3)
     # The 100% line is the top of the axis; unclipped, so it is drawn at full width.
     _dense_line(ax, zorder=2, clip_on=False)
     _never_read(ax, reads)
@@ -556,20 +557,28 @@ def work_panel(ax, counts, ns):
         (
             # No white ring in the key, where the filled square would shrink to a dot.
             Line2D([], [], **(_work_style(INK_2, kind) | {"ls": "", "mec": INK_2})),
-            f"{WORK_NAME[kind]}, {_depth_name(DEPTHS[kind][1], 'layers')}",
+            f"({'ab'[j]}) {_depth_name(DEPTHS[kind][1], 'layers')}",
         )
-        for kind, _, _, _ in MODELS
+        for j, (kind, _, _, _) in enumerate(MODELS)
     ]
+    # The lines, then the models above them in one row, named by their panels in (a) and (b).
     _panel_legend(
         ax,
         [
             Line2D([], [], color=DENSE_COLOR, lw=LINE_WIDTH + 0.2, ls=DENSE_DASH),
             Line2D([], [], color=MONOPROP, lw=LINE_WIDTH + 0.3),
-            Line2D([], [], color=INK, lw=LINE_WIDTH + 0.3),
-        ]
-        + [h for h, _ in models],
-        ["read by dense codes", "read by monoprop", "anticommuting, rotated by all"]
-        + [label for _, label in models],
+            Line2D([], [], color=MONOPROP, lw=LINE_WIDTH + 0.3, ls=ANTI_DASH),
+        ],
+        ["read by dense codes", "read by monoprop", "anticommuting"],
+    )
+    _panel_legend(
+        ax,
+        [h for h, _ in models],
+        [label for _, label in models],
+        ncol=len(models),
+        rows_below=3,
+        handlelength=0.9,
+        handletextpad=0.25,
     )
     ax.set_yscale("log")
     ax.set_ylim(WORK_FLOOR, 100)
@@ -614,7 +623,7 @@ def draw(datasets, counts, outdir: Path):
     work = work_panel(wax, counts, sorted({x["num_qubits"] for x in datasets["pauli"]}))
     wax.set_title("(c) Work per gate", loc="left", fontsize=7.8, color=INK)
     wax.set_xlabel("$N$", labelpad=1.5)
-    wax.set_ylabel("% of the operator's terms, per gate", labelpad=2)
+    wax.set_ylabel("% of $K$ terms, per gate", labelpad=2)
     for kind in work:
         results[kind]["work"] = work[kind]
     outdir.mkdir(parents=True, exist_ok=True)
