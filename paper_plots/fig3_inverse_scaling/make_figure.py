@@ -156,7 +156,7 @@ MODELS = (
     ("pauli", "Kicked Ising chain", "qubits $N$", "layers"),
     ("majorana", "2D Hubbard lattice", "modes $N$", "layers"),
 )
-BAND = "#ececec"  # what the index skips
+BAND = "#d4d4d4"  # what the index skips; a ~17% grey, dark enough to survive a printer
 # The cost axis reaches this factor below the cheapest point, which leaves the lower left of
 # each cost panel clear for its key.
 COST_FLOOR = 6.0
@@ -501,7 +501,7 @@ def _never_read(ax, reads):
         linespacing=1.15,
         va="center",
         fontsize=KEY_SIZE + 0.3,
-        color=INK_2,
+        color=INK,
     )
 
 
