@@ -85,3 +85,18 @@ if importlib.util.find_spec("qiskit") is not None:
         "to_qiskit_circuit",
         "to_qiskit_operator",
     ]
+
+if importlib.util.find_spec("pennylane") is not None:
+    from .pennylane_conversion import (
+        from_pennylane_circuit,
+        from_pennylane_operator,
+        to_pennylane_circuit,
+        to_pennylane_operator,
+    )
+
+    __all__ += [
+        "from_pennylane_circuit",
+        "from_pennylane_operator",
+        "to_pennylane_circuit",
+        "to_pennylane_operator",
+    ]
