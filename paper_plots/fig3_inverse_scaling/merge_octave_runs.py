@@ -25,7 +25,8 @@ campaign it repeats. They merge into:
     row        engines (file prefix)                 data/ file
     pauli      monoprop, julia, ppvm                 pauli.jsonl      (panel a)
     majorana   monoprop-majorana, julia-majorana     majorana.jsonl   (panel b)
-    counts     count_anticommuting.py                counts.jsonl     (the strips)
+    counts     count_anticommuting.py                counts.jsonl     (panel c)
+    held       count_held.py                         held.jsonl       (the cost denominators)
 
 Each (row, depth) is checked as one dataset. Refused on failure: more than one row per engine,
 depth and N; an engine field that does not match its file; cutoff, lower_atol, observable or
@@ -42,7 +43,9 @@ kept only if it is ``settled``: the repetition rule would have produced the same
 
 A count must report the same number of terms as monoprop's timed row at its point, and every
 point monoprop finished needs one, unless it holds more than ``COUNT_MAX_TERMS`` terms, past
-which the counter does not fit a node.
+which the counter does not fit a node. A held count (the terms the operator holds when each gate
+is applied, summed over the run) must likewise match monoprop's term count, and every point
+monoprop finished needs one: the cost panels divide by it.
 
     python merge_octave_runs.py ../../../runs/fig3/campaign-<jobid> ... ../../../runs/fig3/count-<jobid>
 
@@ -67,6 +70,7 @@ ROWS = {
     "majorana": ("majorana.jsonl", ("monoprop-majorana", "julia-majorana")),
 }
 COUNTS = "counts.jsonl"
+HELD = "held.jsonl"
 # Small, medium and large, in layers (a Hubbard layer is one whole Trotter step). At the
 # Hubbard support cutoff 3, three to five steps hold about as many terms per mode at the top
 # of the grid as 7 to 13 kicked-Ising layers, and monoprop finishes every point.
@@ -371,14 +375,14 @@ def merge_row(args, row_kind, engines):
     return problems, lines, terms
 
 
-def gather_counts(run_dirs):
-    """{(basis, layers, N): [(raw line, row, source)]} from every run's count/, at ``CUTOFF``.
+def gather_counts(run_dirs, subdir="count"):
+    """{(basis, layers, N): [(raw line, row, source)]} from every run's ``subdir``/, at ``CUTOFF``.
 
     A point found in a later run directory replaces the same point from an earlier one.
     """
     seen, rank_of = {}, {}
     for rank, run_dir in enumerate(run_dirs):
-        for f in sorted((run_dir / "count").glob("*.jsonl")):
+        for f in sorted((run_dir / subdir).glob("*.jsonl")):
             for raw, row in _read(f):
                 # As for timed rows, other cutoffs and depths are earlier workloads.
                 if (
@@ -433,6 +437,36 @@ def merge_counts(args, timed):
     return problems, lines
 
 
+def merge_held(args, timed):
+    """(problems, lines) of the held-term counts: one per point monoprop finished, same K."""
+    problems, notes, lines = [], [], []
+    partial = notes if args.allow_partial else problems
+    seen = gather_counts(args.run_dirs, "held")
+    for (basis, layers, n), found in sorted(seen.items()):
+        where = f"{basis} depth {layers} N={n}"
+        if len(found) > 1:
+            problems.append(f"{where}: {len(found)} held rows")
+        raw, row, _ = found[0]
+        want = timed.get(basis, {}).get((layers, n))
+        if want is None:
+            partial.append(f"{where}: held count with no finished monoprop row")
+        elif row["num_terms"] != want:
+            problems.append(
+                f"{where}: held count ended at {row['num_terms']} terms, timed {want}"
+            )
+        lines.append(raw)
+    partial += [
+        f"{basis} depth {layers} N={n}: no held count"
+        for basis, points in timed.items()
+        for layers, n in sorted(points)
+        if (basis, layers, n) not in seen
+    ]
+    print(f"held: {len(lines)} rows")
+    for note in notes:
+        print(f"  note: {note}")
+    return problems, lines
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -464,6 +498,9 @@ def main() -> None:
     problems, lines = merge_counts(args, timed)
     all_problems += [f"counts: {p}" for p in problems]
     writes[outdir / COUNTS] = lines
+    problems, lines = merge_held(args, timed)
+    all_problems += [f"held: {p}" for p in problems]
+    writes[outdir / HELD] = lines
     if all_problems:
         print("refused:", *all_problems, sep="\n  ", file=sys.stderr)
         raise SystemExit(1)

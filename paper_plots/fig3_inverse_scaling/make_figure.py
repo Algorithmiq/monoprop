@@ -57,7 +57,7 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FixedFormatter, FixedLocator
 from matplotlib.transforms import ScaledTranslation
-from merge_octave_runs import CEILING_S, COUNTS, DEPTHS, ROWS
+from merge_octave_runs import CEILING_S, COUNTS, DEPTHS, HELD, ROWS
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -191,8 +191,40 @@ def _style(color, depth_index=1):
 
 
 def _per_gate_per_term(row):
-    """Nanoseconds for one gate to act on one term: the panel's quantity."""
-    return row["seconds"] / row["gates"] / row["num_terms"] * 1e9
+    """Nanoseconds for one gate to act on one term: the panel's quantity.
+
+    The work is the terms the operator holds when each gate is applied, summed over the run
+    (``held_terms``, from ``scripts/count_held.py``), not the gate count times the final term
+    count, which overstates it wherever the operator is still growing: by 1.5 to 6x here, and by
+    more on the large Hubbard lattices than on the small ones the cutoff saturates.
+    """
+    return row["seconds"] / row["held_terms"] * 1e9
+
+
+def attach_held(datasets, held, *, partial=False):
+    """Give every finished row its point's ``held_terms``; problems for any that has none.
+
+    One count serves every engine at a point: their term sets are identical (checked by
+    ``check_same_workload``), and the count's gate total must match the row's.
+    """
+    by_point = {(h["basis"], h["layers"], h["num_qubits"]): h for h in held}
+    problems = []
+    for rows in datasets.values():
+        for r in rows:
+            if r.get("timeout"):
+                continue
+            h = by_point.get((r["basis"], r["layers"], r["num_qubits"]))
+            where = (
+                f"{r['engine']} {r['basis']} depth {r['layers']} N={r['num_qubits']}"
+            )
+            if h is None:
+                if not partial:
+                    problems.append(f"{where}: no held count")
+                continue
+            if (h["gates"], h["num_terms"]) != (r["gates"], r["num_terms"]):
+                problems.append(f"{where}: held count saw another circuit or operator")
+            r["held_terms"] = h["held_terms"]
+    return problems
 
 
 def _exponent(xs, ys):
@@ -314,8 +346,12 @@ def series(rows, engines):
     out = {}
     for e in engines:
         mine = [r for r in rows if _engine_key(r) == e]
+        # A row has no held count only in an --allow-partial preview (attach_held refuses it
+        # otherwise), and is left out there.
         pts = sorted(
-            (r["num_qubits"], _per_gate_per_term(r)) for r in mine if _limit(r) is None
+            (r["num_qubits"], _per_gate_per_term(r))
+            for r in mine
+            if _limit(r) is None and "held_terms" in r
         )
         out[e] = (pts, sorted(r["num_qubits"] for r in mine if _limit(r) is not None))
     return out
@@ -598,7 +634,7 @@ def draw(datasets, counts, outdir: Path):
         _per_gate_per_term(x)
         for rows in datasets.values()
         for x in rows
-        if _limit(x) is None
+        if _limit(x) is None and "held_terms" in x
     ]
     first = None
     for j, (kind, title, axis, _) in enumerate(MODELS):
@@ -761,15 +797,25 @@ def main() -> None:
 
     datasets = {kind: load(args.data / name) for kind, (name, _) in ROWS.items()}
     counts = load(args.data / COUNTS)
+    held_problems = attach_held(
+        datasets, load(args.data / HELD), partial=args.allow_partial
+    )
     for kind, rows in datasets.items():
         depths = sorted({r["layers"] for r in rows})
         if depths != list(DEPTHS[kind]) and not args.allow_partial:
             raise SystemExit(f"{kind}: depths {depths}, want {list(DEPTHS[kind])}")
     problems, spread = check_same_workload(datasets, counts, partial=args.allow_partial)
     thread_problems, hosts = check_single_thread(datasets)
-    if problems + thread_problems:
+    if problems + thread_problems + held_problems:
         raise SystemExit(
-            "\n".join(["not measured like for like:", *problems, *thread_problems])
+            "\n".join(
+                [
+                    "not measured like for like:",
+                    *problems,
+                    *thread_problems,
+                    *held_problems,
+                ]
+            )
         )
     outs, results = draw(datasets, counts, args.outdir)
     if args.allow_partial:

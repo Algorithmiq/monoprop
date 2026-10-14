@@ -9,7 +9,8 @@ One page-wide row of three panels (paper `fig:inverse-scaling`, a `figure*`):
 | depths (small / medium / large) | 7 / 10 / 13 layers | 3 / 4 / 5 layers (one whole Trotter step each) |
 | cutoff | Pauli weight 6 | support 3 (modes a monomial acts on) |
 
-- **(a), (b) cost:** nanoseconds for one gate to act on one term, against N. Colour is the
+- **(a), (b) cost:** nanoseconds for one gate to act on one term the operator holds when the gate
+  is applied, against N. Colour is the
   engine, each its own (monoprop blue, `PauliPropagation.jl` vermillion, `MajoranaPropagation.jl`
   wine, `ppvm` green), every series the same solid line at full colour. The marker alone is the
   depth, the same for every engine: small a circle, medium a square, large a triangle, at every
@@ -55,43 +56,46 @@ references' does not. Where K is small and strings fit one word (kicked Ising at
 ## Result
 
 Every number below comes from the rows; `make_figure.py` prints the exponents and ratios and
-writes them to `figures/captions.txt`. ns per gate per term:
+writes them to `figures/captions.txt`. ns per gate per term held (the run time over the terms the
+operator holds as each gate is applied, summed over the gates; see *Cost per term held*):
 
 | N | mono 7 | PP.jl 7 | ppvm 7 | mono 10 | PP.jl 10 | ppvm 10 | mono 13 | PP.jl 13 | ppvm 13 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 32 | 1.82 | **0.72** | 3.20 | 2.19 | **0.898** | 5.42 | 2.47 | **0.933** | 7.17 |
-| 64 | 1.00 | **0.856** | 3.86 | 1.21 | **0.902** | 6.00 | 1.32 | **0.948** | 10.4 |
-| 128 | **0.52** | 1.25 | 4.43 | **0.607** | 1.36 | 6.13 | **0.635** | 1.44 | 7.26 |
-| 256 | **0.275** | 1.98 | 5.71 | **0.315** | 2.19 | 7.51 | **0.329** | 2.32 | > 30 min |
-| 512 | **0.140** | 3.40 | 7.59 | 0.161 | > 30 min | > 30 min² | 0.169 | > 30 min² | > 30 min² |
-| 1024 | 0.0707 | > 30 min¹ | > 30 min | 0.0807 | > 30 min² | > 30 min² | 0.0879 | > 30 min² | > 30 min² |
+| 32 | 10.8 | **4.30** | 19.1 | 11.6 | **4.76** | 28.7 | 12.1 | **4.58** | 35.2 |
+| 64 | 6.06 | **5.17** | 23.3 | 6.57 | **4.91** | 32.6 | 6.76 | **4.87** | 53.5 |
+| 128 | **3.15** | 7.54 | 26.8 | **3.34** | 7.47 | 33.7 | **3.31** | 7.49 | 37.8 |
+| 256 | **1.67** | 12.0 | 34.6 | **1.74** | 12.1 | 41.4 | **1.73** | 12.2 | > 30 min |
+| 512 | **0.848** | 20.6 | 46.1 | 0.891 | > 30 min | > 30 min² | 0.888 | > 30 min² | > 30 min² |
+| 1024 | 0.429 | > 30 min¹ | > 30 min | 0.446 | > 30 min² | > 30 min² | 0.463 | > 30 min² | > 30 min² |
 
 | N | lattice | mono 3 | MP.jl 3 | mono 4 | MP.jl 4 | mono 5 | MP.jl 5 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 32 | 4×4 | **5.37** | 17.7 | **6.67** | 23.5 | **7.43** | 26.5 |
-| 72 | 6×6 | **2.12** | 15.8 | **3.05** | 24.6 | **3.61** | 29.9 |
-| 128 | 8×8 | **0.891** | 13.8 | **1.34** | 22.6 | **1.71** | 30.3 |
-| 242 | 11×11 | **0.445** | 17.3 | **0.581** | 24.7 | **0.784** | 35.5 |
-| 512 | 16×16 | **0.173** | 25.8 | 0.203 | > 30 min | 0.248 | > 30 min |
-| 968 | 22×22 | 0.0946 | > 30 min | 0.106 | > 30 min² | 0.118 | > 30 min |
+| 32 | 4×4 | **12.1** | 40.1 | **11.5** | 40.3 | **11.2** | 39.8 |
+| 72 | 6×6 | **6.63** | 49.3 | **6.32** | 51.0 | **6.17** | 51.1 |
+| 128 | 8×8 | **3.75** | 57.9 | **3.52** | 59.2 | **3.38** | 59.9 |
+| 242 | 11×11 | **2.32** | 90.3 | **2.18** | 92.8 | **2.09** | 94.8 |
+| 512 | 16×16 | **1.00** | 150 | 0.999 | > 30 min | 0.986 | > 30 min |
+| 968 | 22×22 | 0.572 | > 30 min | 0.581 | > 30 min² | 0.576 | > 30 min |
 
 ¹ One round finished past the limit (2278 s): left out of the figure and the fits. ² Not run: the
 engine already exceeded the limit on a shallower circuit at the same N, or at the next smaller N
 at the same depth (`implied` rows). monoprop finishes every Hubbard point.
 
-- **Kicked Ising.** monoprop falls as N^−0.93 / −0.94 / −0.98 at 7 / 10 / 13 layers.
-  `PauliPropagation.jl` grows as N^+0.57 / +0.44 / +0.31 and `ppvm` as N^+0.31 / +0.14 / +0.01
+- **Kicked Ising.** monoprop falls as N^−0.92 / −0.92 / −0.94 at 7 / 10 / 13 layers.
+  `PauliPropagation.jl` grows as N^+0.57 / +0.46 / +0.35 and `ppvm` as N^+0.31 / +0.16 / +0.05
   (each fitted over the widest N every engine finished: 512, 256, 128). `PauliPropagation.jl` is
   2.4–2.6× faster than monoprop at N = 32 at every depth and still faster at N = 64; monoprop
   leads from N = 128 (2.2–2.4×) to 24× at N = 512, 7 layers. `ppvm` is 1.8–2.9× slower than
   monoprop at N = 32 and 54× slower at N = 512, 7 layers. Neither dense code finishes N = 1024
   at any depth; monoprop takes 26 s (7 layers, 2.5e7 terms) to 868 s (13 layers, 3.7e8 terms).
-- **2D Hubbard.** monoprop falls as N^−1.25 / −1.22 / −1.12 at 3 / 4 / 5 layers;
-  `MajoranaPropagation.jl` goes as N^+0.12 / +0.01 / +0.13 (fitted over N ≤ 512 / 242 / 242).
+- **2D Hubbard.** monoprop falls as N^−0.89 / −0.83 / −0.84 at 3 / 4 / 5 layers;
+  `MajoranaPropagation.jl` grows as N^+0.48 / +0.40 / +0.41 (fitted over N ≤ 512 / 242 / 242).
   monoprop is faster at every point: 3.3–3.6× at N = 32, 43–45× at N = 242 after 4 and 5 layers
-  and 149× at N = 512 after 3. Its slope is a little steeper than 1/N because its own cost per
-  visited term falls, 33–46 ns at N = 32 to 16–20 ns at N = 968; `MajoranaPropagation.jl` spends
-  14–36 ns per tested term. At 5 layers and N = 968 (2.0e8 terms) monoprop takes 271 s. The
+  and 149× at N = 512 after 3. In both models monoprop's slope is a little shallower than 1/N:
+  the terms rotated per gate stay ∝ K/N, but its cost per rotated term rises with N, about
+  70–80 ns at N = 32 to about 100 ns at the largest N (kicked Ising 78–99 ns, Hubbard 68–100 ns),
+  as the operator outgrows the caches. `PauliPropagation.jl` spends 4.3 ns per tested term at
+  N = 32 (7 layers) and 21 ns at N = 512; `MajoranaPropagation.jl` 40–150 ns. At 5 layers and N = 968 (2.0e8 terms) monoprop takes 271 s. The
   cutoff saturates the small lattices (4×4 from 3 layers, 6×6 and 8×8 from 4), so the depths hold
   the same terms there and separate from N = 242.
 - **Work per gate.** The anticommuting terms per gate are 4.43–4.92 K/N for kicked Ising and
@@ -160,6 +164,18 @@ node, and every count saw the timed operator's term count.
   limit. A 15-min timeout is never reused. `scripts/slurm/settled.py` filters the campaign queue
   by this rule (`SETTLED_IN`), and `merge_octave_runs.py` applies it again, refusing an
   unsettled row; a later run directory replaces an earlier one per engine, depth and N.
+- **Cost per term held.** `scripts/count_held.py` (job 2032025, `scripts/slurm/held.sbatch`,
+  untimed, any node) replays every timed circuit with monoprop one gate per propagate call, in
+  the order the timed run applies them (a propagate call's last gate first), and sums the
+  operator's size just before each gate. The replay must end every layer (kicked Ising) or gate
+  group (Hubbard) with the timed run's term count, and the merge refuses a held count whose K or
+  gate count differs. The term set is the same for every engine, so one count serves all.
+  Dividing instead by gates × final K overstates the work by 4.9–6.1× for kicked Ising, nearly
+  constant in N at each depth, but for Hubbard by 1.5–2.3× at N = 32 and 4.9–6.1× at N = 968
+  (the cutoff saturates the small lattices within two or three layers while the large ones
+  still grow two- to threefold per layer): that normalisation made monoprop look like
+  N^−1.12…−1.25 and `MajoranaPropagation.jl` flat (N^+0.01…+0.13). Ratios between codes do not
+  depend on it.
 - **Counting is separate and untimed.** `scripts/count_anticommuting.py` (jobs 2026811, 2027833,
   2029403 and 2029624; the medium depths again in 2030444, adding the index reads)
   propagates the same circuit with monoprop, exports the operator, and counts exactly, for each
@@ -180,6 +196,7 @@ node, and every count saw the timed operator's term count.
 | `data/pauli.jsonl` | panel a: monoprop, `PauliPropagation.jl` (`julia_pauli`), `ppvm` | one per engine, depth (`layers`) and N |
 | `data/majorana.jsonl` | panel b: monoprop, `MajoranaPropagation.jl` (`julia_majorana`) | one per engine, depth (`layers`, one Trotter step each) and N |
 | `data/counts.jsonl` | panel c: `num_terms`, `anticommuting_per_gate`, `index_reads_per_gate` (medium depths) | one per depth and N that monoprop finished, up to 2e8 terms |
+| `data/held.jsonl` | panels a, b: `held_terms` (and per layer), `gates`, `step_terms` | one per depth and N of the timed sweeps (`scripts/count_held.py`) |
 | `data/occupancy.jsonl` | `occupancy_figure.py` (not in the paper; earlier length-4 Hubbard workload): c and the list-length summary | one per model, depth and N, up to 1.6e8 terms (`scripts/occupancy.py`) |
 
 | engine | version |
@@ -215,7 +232,9 @@ sbatch -A <account> -p <partition> -t 04:00:00 --chdir="$PWD" \
     scripts/slurm/campaign.sbatch /path/to/site.env          # every timed point, one node
 sbatch -A <account> -p <partition> -t 03:00:00 --chdir="$PWD" \
     scripts/slurm/count.sbatch /path/to/site.env             # panel c, any node
-python merge_octave_runs.py <campaign RUN_DIR> <count RUN_DIR>   # checks, then writes data/
+sbatch -A <account> -p <partition> -t 02:00:00 --chdir="$PWD" \
+    scripts/slurm/held.sbatch /path/to/site.env              # terms held, any node
+python merge_octave_runs.py <campaign RUN_DIR> <count RUN_DIR> <held RUN_DIR>   # checks, writes data/
 python make_figure.py
 ```
 
@@ -229,13 +248,13 @@ run directories, keys rows by the depth they record (both file-name styles), and
 than one row per engine, depth and N, a wrong engine field or library version, differing workload
 keys, more than one thread, term or gate mismatches, expectation spreads above 1e-9, a row at another
 cutoff, a reused row that is not settled under the 30-min limit, or a count whose term count
-differs from the timed row. The figure's data came from
+differs from the timed row, or a held count with another K or gate count. The figure's data came from
 
 ```bash
 R=<runs>/fig3
 python merge_octave_runs.py $R/campaign-2018658 $R/campaign-2023575 $R/campaign-2026810 \
     $R/campaign-2027832 $R/campaign-2027835 $R/count-2026811 $R/count-2027833 \
-    $R/campaign-2029402 $R/count-2029403 $R/count-2029624 $R/count-2030444
+    $R/campaign-2029402 $R/count-2029403 $R/count-2029624 $R/count-2030444 $R/held-2032025
 ```
 
 with the Hubbard campaign submitted as `ROWS=majorana NS="32 72 128 242 512 968"
@@ -272,9 +291,9 @@ their run directories and are left out. `--dry-run` writes nothing; `--allow-par
 make_figure.py          the figure, the like-for-like checks and the caption
 occupancy_figure.py     how evenly the operators are supported (not in the paper)
 merge_octave_runs.py    checks and merges campaign run directories into data/
-data/                   pauli.jsonl, majorana.jsonl, counts.jsonl, occupancy.jsonl
-scripts/                the four drivers, count_anticommuting.py, occupancy.py, julia-pauli/
-                        and julia-majorana/ projects, slurm/ (campaign, octave_point, count,
-                        occupancy)
+data/                   pauli.jsonl, majorana.jsonl, counts.jsonl, held.jsonl, occupancy.jsonl
+scripts/                the four drivers, count_anticommuting.py, count_held.py, occupancy.py,
+                        julia-pauli/ and julia-majorana/ projects, slurm/ (campaign,
+                        octave_point, count, held, occupancy)
 figures/                fig3_inverse_scaling.{pdf,png}, fig3_occupancy.{pdf,png}, captions.txt
 ```

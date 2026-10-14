@@ -1,14 +1,14 @@
 Kicked Ising chain, cost per term. 7 layers: K=607,054 at N=32 to 25,254,286 at N=1024; fitted
-over N <= 512: monoprop N^-0.93, PauliPropagation.jl N^+0.57, ppvm N^+0.31;
+over N <= 512: monoprop N^-0.92, PauliPropagation.jl N^+0.57, ppvm N^+0.31;
 PauliPropagation.jl/monoprop 0.4x at N=32, 24x at N=512; PauliPropagation.jl over the limit at
 N=1024; ppvm/monoprop 1.8x at N=32, 54x at N=512; ppvm over the limit at N=1024. 10 layers:
-K=2,699,174 at N=32 to 124,252,902 at N=1024; fitted over N <= 256: monoprop N^-0.94,
-PauliPropagation.jl N^+0.44, ppvm N^+0.14; PauliPropagation.jl/monoprop 0.41x at N=32, 7x at
+K=2,699,174 at N=32 to 124,252,902 at N=1024; fitted over N <= 256: monoprop N^-0.92,
+PauliPropagation.jl N^+0.46, ppvm N^+0.16; PauliPropagation.jl/monoprop 0.41x at N=32, 7x at
 N=256; PauliPropagation.jl over the limit at N=512; PauliPropagation.jl not run at N=1024
 (over the limit at a shallower depth); ppvm/monoprop 2.5x at N=32, 24x at N=256; ppvm not run
 at N=512, 1024 (over the limit at a shallower depth). 13 layers: K=7,214,802 at N=32 to
-370,854,226 at N=1024; fitted over N <= 128: monoprop N^-0.98, PauliPropagation.jl N^+0.31,
-ppvm N^+0.01; PauliPropagation.jl/monoprop 0.38x at N=32, 7.1x at N=256; PauliPropagation.jl
+370,854,226 at N=1024; fitted over N <= 128: monoprop N^-0.94, PauliPropagation.jl N^+0.35,
+ppvm N^+0.05; PauliPropagation.jl/monoprop 0.38x at N=32, 7.1x at N=256; PauliPropagation.jl
 not run at N=512, 1024 (over the limit at a shallower depth); ppvm/monoprop 2.9x at N=32, 11x
 at N=128; ppvm over the limit at N=256; ppvm not run at N=512, 1024 (over the limit at a
 shallower depth).
@@ -19,13 +19,13 @@ layers a gate reads 9.63K/N to 9.69K/N index entries, 2.03 to 2.04 times its ant
 set.
 
 2D Hubbard lattice, cost per term. 3 layers: K=16,608 at N=32 to 30,226,584 at N=968; fitted
-over N <= 512: monoprop N^-1.25, MajoranaPropagation.jl N^+0.12;
+over N <= 512: monoprop N^-0.89, MajoranaPropagation.jl N^+0.48;
 MajoranaPropagation.jl/monoprop 3.3x at N=32, 1.5e+02x at N=512; MajoranaPropagation.jl over
 the limit at N=968. 4 layers: K=16,608 at N=32 to 93,835,176 at N=968; fitted over N <= 242:
-monoprop N^-1.22, MajoranaPropagation.jl N^+0.01; MajoranaPropagation.jl/monoprop 3.5x at
+monoprop N^-0.83, MajoranaPropagation.jl N^+0.40; MajoranaPropagation.jl/monoprop 3.5x at
 N=32, 43x at N=242; MajoranaPropagation.jl over the limit at N=512; MajoranaPropagation.jl not
 run at N=968 (over the limit at a shallower depth). 5 layers: K=16,608 at N=32 to 197,427,944
-at N=968; fitted over N <= 242: monoprop N^-1.12, MajoranaPropagation.jl N^+0.13;
+at N=968; fitted over N <= 242: monoprop N^-0.84, MajoranaPropagation.jl N^+0.41;
 MajoranaPropagation.jl/monoprop 3.6x at N=32, 45x at N=242; MajoranaPropagation.jl over the
 limit at N=512, 968.
 
