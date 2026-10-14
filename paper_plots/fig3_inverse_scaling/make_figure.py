@@ -569,7 +569,7 @@ def work_panel(ax, counts, ns):
             Line2D([], [], color=MONOPROP, lw=LINE_WIDTH + 0.3),
             Line2D([], [], color=INK, lw=LINE_WIDTH + 0.3, ls=ANTI_DASH),
         ],
-        ["read by dense codes", "read by monoprop", "anticommuting"],
+        ["read by dense codes", "read by monoprop", "anticommuting, $\\propto 1/N$"],
     )
     _panel_legend(
         ax,
