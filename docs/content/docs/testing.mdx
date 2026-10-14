@@ -19,10 +19,10 @@ just test              # build, then the Python and C++ suites
 just test-py           # the Python suite against whatever is installed
 ```
 
-This collects two suites: monoprop's own (`tests/`) and the one belonging to the
-`monoprop-bench-tools` workspace member (`packages/monoprop-bench-tools/tests/`).
-The member has to be installed for the second to import, which is what the
-`workspace-test` dependency group is for:
+This collects monoprop's own suite (`tests/`) and those of the workspace members
+listed in `testpaths` in `pyproject.toml`: `packages/monoprop-bench-tools/tests/`
+and `packages/monoprop-cirq/tests/`. The members have to be installed for their
+suites to import, which is what the `workspace-test` dependency group is for:
 
 ```bash
 uv sync --all-groups --all-extras   # or: uv sync --group workspace-test --all-extras

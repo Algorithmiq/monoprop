@@ -147,6 +147,8 @@ The repository is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/w
 - `packages/monoprop-bench-tools` is the reusable benchmark harness — peak-memory
   measurement, the benchmarked model builders, and the result renderers — published
   separately so scripts and notebooks can depend on it without the repository;
+- `packages/monoprop-cirq` converts Cirq Pauli operators and qubit circuits to and
+  from monoprop's `PauliOperator` and `Circuit`;
 - `packages/bench-third-party` holds the cross-engine comparison scripts. It has
   CUDA-specific pins, so it is a standalone uv project with its own lockfile;
 - `benches/` is monoprop's own benchmark suite, which uses the tooling above.

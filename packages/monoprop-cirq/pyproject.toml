@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "monoprop-cirq"
+authors = [
+  { name = "Algorithmiq Development Team", email = "aurora@algorithmiq.fi" },
+]
+description = "Convert Cirq circuits and operators to and from monoprop's native representations."
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Typing :: Typed",
+]
+dynamic = ["version"]
+# cirq-core, not the `cirq` metapackage, which pulls in every hardware vendor's SDK.
+dependencies = ["cirq-core>=1.4", "monoprop"]
+
+
+[project.urls]
+Homepage = "https://github.com/Algorithmiq/monoprop"
+"Bug Tracker" = "https://github.com/Algorithmiq/monoprop/issues"
+Changelog = "https://github.com/Algorithmiq/monoprop/releases"
+
+
+# Registers the package with monoprop's plugin discovery. Until monoprop ships a loader
+# for this group, import `monoprop_cirq` directly.
+[project.entry-points."monoprop.plugins"]
+cirq = "monoprop_cirq"
+
+
+[dependency-groups]
+# pytest-datadir: test_with_monoprop.py's `lazy_shared_datadir` fixture reads tests/data/hamiltonian_lih.json.
+test = ["pytest>=8.2.2,<9.1", "pytest-cases>=3.8.6,<4", "pytest-datadir"]
+
+
+# Only consulted when this package is tested on its own; a run from the
+# repository root is governed by the root pyproject.toml.
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]
+testpaths = ["tests"]
+
+
+# `monoprop` is a workspace member during development, but the published
+# distribution resolves it from PyPI like any other dependency.
+[tool.uv.sources]
+monoprop = { workspace = true }
+
+
+# The version comes from the repository's git tags. `root` points at the
+# repository, not this package.
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/monoprop_cirq/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monoprop_cirq"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE"]
