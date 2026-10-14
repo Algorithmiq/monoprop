@@ -27,9 +27,9 @@ One page-wide row of three panels:
 * (c) the work behind it, from counts rather than timings: the percentage of the operator's
   K terms a gate reads and rotates. A dense code reads all of them; monoprop reads the index
   lists of the gate's anticommutation support, and every engine rotates only the terms that
-  anticommute with the gate (``scripts/count_anticommuting.py``); both fall about as 1/N. Both monoprop
-  lines are its blue, the reads solid and the anticommuting set dashed; the dense codes' 100% is
-  grey.
+  anticommute with the gate (``scripts/count_anticommuting.py``); both fall about as 1/N.
+  monoprop's reads are its blue, the anticommuting set black and dashed; the dense codes' 100%
+  is orange and dashed.
 
 Every engine runs the identical circuit on the identical operator: ``check_same_workload``
 refuses to plot unless term counts, gate counts and expectation values agree at every point,
@@ -139,11 +139,11 @@ RING = 0.5
 GUIDE = "#222222"
 GUIDE_WIDTH = 1.0
 GUIDE_DASH = (0, (6, 1.6, 1.2, 1.6))
-# In (c) the dense codes' 100% is one grey dashed line: it holds for every dense engine, and
-# every hue is already an engine's.
-DENSE_COLOR = "#6b6b6b"
+# In (c) the dense codes' 100% is one orange dashed line (Okabe-Ito orange, apart from
+# PauliPropagation.jl's vermillion): it holds for every dense engine.
+DENSE_COLOR = "#E69F00"
 DENSE_DASH = (0, (4.0, 1.6))
-# monoprop's anticommuting set: its blue, dashed shorter than the dense codes' line.
+# The anticommuting set: black, dashed shorter than the dense codes' line.
 ANTI_DASH = (0, (2.2, 1.3))
 GRID = "#e6e6e6"
 PNG_DPI = 150  # preview only; the PDF keeps savefig.dpi
@@ -448,8 +448,8 @@ def _panel_legend(ax, handles, labels, *, ncol=1, rows_below=0, **kw):
     ax.add_artist(key)
 
 
-# Panel (c) keeps monoprop's blue for both of its lines, reads solid and the anticommuting set
-# dashed, and the dense codes' 100% in grey. The model is the marker's fill, keyed in grey like
+# Panel (c): monoprop's reads in its blue, the anticommuting set black and dashed, and the dense
+# codes' 100% orange and dashed. The model is the marker's fill, keyed in grey like
 # the depths and named by its panel.
 WORK_FILL = {"pauli": True, "majorana": False}
 WORK_FLOOR = (
@@ -527,11 +527,11 @@ def _work_counts(counts, kind):
 def work_panel(ax, counts, ns):
     """The percentage of the K terms a gate reads and rotates, against N, at the medium depth.
 
-    A dense code tests every term: the 100% line at the top of the axis, grey and dashed, as it
-    holds for every dense engine and every hue is already an engine's. monoprop reads the index
+    A dense code tests every term: the 100% line at the top of the axis, orange and dashed.
+    monoprop reads the index
     lists of the gate's anticommutation support (``index_reads_per_gate``: the entries of every
     list its scans fold), solid in its blue, and rotates only the terms in their symmetric
-    difference, the anticommuting set (``anticommuting_per_gate``), dashed in its blue. Both
+    difference, the anticommuting set (``anticommuting_per_gate``), black and dashed. Both
     come from ``scripts/count_anticommuting.py`` and both fall about as 1/N. The grey band,
     above the higher read line, is what the index never reads, named in its middle. The
     marker's fill is the model, keyed in grey above the lines as "(a) 10 layers" and "(b) 4
@@ -549,7 +549,7 @@ def work_panel(ax, counts, ns):
         reads[kind] = (n, np.array([100 * r / k for _, (k, _, r) in mid]))
         ax.plot(n, reads[kind][1], **_work_style(MONOPROP, kind), zorder=3)
         anti = np.array([100 * a / k for _, (k, a, _) in mid])
-        ax.plot(n, anti, **_work_style(MONOPROP, kind) | {"ls": ANTI_DASH}, zorder=3)
+        ax.plot(n, anti, **_work_style(INK, kind) | {"ls": ANTI_DASH}, zorder=3)
     # The 100% line is the top of the axis; unclipped, so it is drawn at full width.
     _dense_line(ax, zorder=2, clip_on=False)
     _never_read(ax, reads)
@@ -567,7 +567,7 @@ def work_panel(ax, counts, ns):
         [
             Line2D([], [], color=DENSE_COLOR, lw=LINE_WIDTH + 0.2, ls=DENSE_DASH),
             Line2D([], [], color=MONOPROP, lw=LINE_WIDTH + 0.3),
-            Line2D([], [], color=MONOPROP, lw=LINE_WIDTH + 0.3, ls=ANTI_DASH),
+            Line2D([], [], color=INK, lw=LINE_WIDTH + 0.3, ls=ANTI_DASH),
         ],
         ["read by dense codes", "read by monoprop", "anticommuting"],
     )
