@@ -24,11 +24,17 @@ allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 import monoprop
+from tests.reference_data import load_problem
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from tests.reference_data import FermionicProblem
 
 # An MPI-off build never initializes MPI, even where mpi4py happens to be installed: importing mpi4py.MPI would
 # initialize it as a side effect of collecting the suite.
@@ -72,3 +78,29 @@ def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
 def serial_comm() -> Any:  # noqa: ANN401
     """Single-rank communicator for tests that inspect rank-local operator state."""
     return None if MPI is None else MPI.COMM_SELF
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("lih_fermionic_spin_exact", id="LiH_fermionic_spin"),
+        pytest.param("rx_rz_ry_rz_exact", id="rx_rz_ry_rz"),
+        pytest.param("random_exact", id="random_circuit"),
+    ]
+)
+def problem(
+    request: pytest.FixtureRequest, lazy_shared_datadir: Path
+) -> FermionicProblem:
+    """Load each general reference problem, freshly for every test invocation."""
+    return load_problem(lazy_shared_datadir / f"{request.param}.msgpack")
+
+
+@pytest.fixture
+def lih_problem(lazy_shared_datadir: Path) -> FermionicProblem:
+    """Load the LiH molecule with commutator reference data."""
+    return load_problem(lazy_shared_datadir / "lih_fermionic_spin_exact.msgpack")
+
+
+@pytest.fixture
+def orbital_rotation_problem(lazy_shared_datadir: Path) -> FermionicProblem:
+    """Load the S0 molecule used to check orbital rotations."""
+    return load_problem(lazy_shared_datadir / "S0_8e8o_majoranic_c8.msgpack")

@@ -53,7 +53,7 @@ from monoprop import (  # noqa: E402
     _core,
 )
 from monoprop.circuit import expand_monomials  # noqa: E402
-from tests.cases import load_problem  # noqa: E402
+from tests.reference_data import load_problem  # noqa: E402
 
 
 def _hex(value: float) -> str:

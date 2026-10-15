@@ -53,7 +53,7 @@ just build-docs
 
 ## Notes
 
-- Python cases live in `tests/cases.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
+- Python reference data lives in `tests/reference_data.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
   `test_utils::load_case()` from `cpp/tests/TestData.h`.
 - Pytest's fd capture hides C++ stderr such as `COMMPROF`; rerun with `-s`.
 - Benchmark evidence: `pytest benches --runtime-shape=... --build-mode=...` refuses contradictory
