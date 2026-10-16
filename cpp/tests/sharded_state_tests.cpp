@@ -599,10 +599,18 @@ auto has_plain_stack_frames(boost::unit_test::test_unit_id) -> boost::test_tools
     return result;
 }
 
+// mincore's residency vector is `unsigned char *` on Linux, `char *` on macOS.
+#ifdef __APPLE__
+using ResidencyByte = char;
+#else
+using ResidencyByte = unsigned char;
+#endif
+
 /*
  * The bytes of a fresh, never-touched thread stack that `body` makes resident, `body` run on that thread. The stack is
- * an anonymous mapping without huge pages, so residency is per page and counts every page a frame touched (GCC's
- * stack-clash probes touch each page of a large frame). Pages the thread start itself touched are not counted.
+ * an anonymous mapping without huge pages (macOS has no MADV_NOHUGEPAGE, nor transparent huge pages to opt out of), so
+ * residency is per page and counts every page a frame touched (GCC's stack-clash probes touch each page of a large
+ * frame). Pages the thread start itself touched are not counted.
  */
 template <class Body>
 auto stack_bytes_touched(Body &&body) -> size_t {
@@ -611,7 +619,9 @@ auto stack_bytes_touched(Body &&body) -> size_t {
     void *stack =
         ::mmap(nullptr, stack_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     BOOST_TEST_REQUIRE(stack != MAP_FAILED);
+#ifdef MADV_NOHUGEPAGE
     (void)::madvise(stack, stack_bytes, MADV_NOHUGEPAGE);
+#endif
     struct Run {
         Body *body;
         void *stack;
@@ -625,11 +635,11 @@ auto stack_bytes_touched(Body &&body) -> size_t {
         auto &r = *static_cast<Run *>(arg);
         try {
             const auto resident_pages = [&r] {
-                auto pages = std::vector<unsigned char>(r.bytes / r.page);
+                auto pages = std::vector<ResidencyByte>(r.bytes / r.page);
                 if (::mincore(r.stack, r.bytes, pages.data()) != 0) {
                     throw std::runtime_error("mincore failed");
                 }
-                return static_cast<size_t>(std::ranges::count_if(pages, [](unsigned char p) { return (p & 1U) != 0; }));
+                return static_cast<size_t>(std::ranges::count_if(pages, [](ResidencyByte p) { return (p & 1U) != 0; }));
             };
             r.before = resident_pages();
             (*r.body)();
