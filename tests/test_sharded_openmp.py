@@ -474,6 +474,10 @@ def _run_ranks(
             "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",
             # Leave binding to OpenMP: by default each rank would be bound to one core and its T threads squeezed.
             "OMPI_MCA_hwloc_base_binding_policy": "none",
+            # _child_env drops the parent's launcher settings, including the justfile's oversubscription; restore it
+            # so 3- and 4-rank runs fit runners with fewer cores (Open MPI 4 and 5 spellings, ignored by MPICH).
+            "OMPI_MCA_rmaps_base_oversubscribe": "1",
+            "PRTE_MCA_rmaps_default_mapping_policy": ":oversubscribe",
             **(extra_env or {}),
         },
     )
