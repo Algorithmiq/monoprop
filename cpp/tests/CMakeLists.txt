@@ -360,7 +360,8 @@ set_tests_properties(
 # Multi-process launches of the sharded runtime: P ranks x T threads each, every rank with an exact team. The
 # multi-rank cases run only where monoprop_TEST_SHARDED_RANKS names the world size, so the whole-suite MPI variants
 # (default budget) skip them. Binding is left to the OpenMP settings: Open MPI would otherwise bind each rank to one
-# core and squeeze its T threads onto it (unknown OMPI_MCA_* variables are harmless under other MPIs).
+# core and squeeze its T threads onto it (unknown OMPI_MCA_* variables are harmless under other MPIs). Oversubscription
+# is allowed in both Open MPI spellings, so a direct `ctest -L mpi` fits 3- and 4-rank launches onto smaller hosts.
 function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
   cmake_parse_arguments("" "" "" "ENVIRONMENT" ${ARGN})
   add_test(
@@ -378,7 +379,7 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
       TIMEOUT
         300
       ENVIRONMENT
-        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
+        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
   )
 endfunction()
 
@@ -474,7 +475,7 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
         # As for the suite's MPI variants: CI containers may run as root. Binding is left to OpenMP, so a rank's two
         # threads are not squeezed onto one core.
         ENVIRONMENT
-          "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMP_DYNAMIC=FALSE"
+          "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;OMP_DYNAMIC=FALSE"
     )
   endfunction()
 

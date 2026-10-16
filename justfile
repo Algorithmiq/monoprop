@@ -190,7 +190,7 @@ test-py-asan:
     LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
     ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
     UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
-      uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
+      {{ test_launch }} uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
 
 # Print what test-py-asan sent to the log files. Silent when the tests themselves failed.
 
@@ -212,13 +212,15 @@ sanitizer-reports:
 # TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
 # restricted to the concurrency surface: the sharded runtime's team, state, construction,
 # evaluation, exchange and root suites and the fused-record launches (their fixed-T launches
-# included), and the OpenMP kernels' own budgets. Only Clang with LLVM's libomp and its Archer
+# included), every `openmp_` case (the workshare primitive, kernels, scan, resolve and budget
+# checks, and their fixed-T launches), the multi-shard coefficient launches and the threaded
+# lazy-fold checks. Only Clang with LLVM's libomp and its Archer
 # tool gives evidence; GCC's libgomp is not TSan-aware (docs/content/docs/building.mdx).
 
 test-cpp-tsan:
     #!/usr/bin/env bash
     set -euo pipefail
-    selection='^(sharded_(team|state|construction|evaluation|exchange|root)_|fused_env_t|openmp_env_)'
+    selection='^(sharded_(team|state|construction|evaluation|exchange|root)_|fused_env_t|openmp_|evolved_coefficients_env_t|combined_threaded_)'
     TSAN_OPTIONS="halt_on_error=1:history_size=4${TSAN_OPTIONS:+:$TSAN_OPTIONS}" \
       ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error -R "$selection"
 

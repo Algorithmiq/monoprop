@@ -371,7 +371,9 @@ just test-cpp-tsan
 
 `just test-cpp-tsan` is scoped to the concurrency surface, which is where its reports are worth the runtime cost:
 the sharded runtime's team, state, construction, evaluation, exchange and root tests (`sharded_`), the fused-record
-launches (`fused_env_t*`) and the budget launches (`openmp_env_*`). The OpenMP caveat below applies to all of them,
+launches (`fused_env_t*`), every `openmp_*` test (the workshare primitive, the threaded kernels, scan and resolve
+phases, and the budget launches), the multi-shard coefficient launches (`evolved_coefficients_env_t*`) and the threaded
+lazy-fold checks (`combined_threaded_*`). The OpenMP caveat below applies to all of them,
 and CI runs this leg with Clang, libomp and Archer for that reason.
 
 The OpenMP kernels (`openmp_*` tests) need an OpenMP runtime that TSan understands. GCC's libgomp is

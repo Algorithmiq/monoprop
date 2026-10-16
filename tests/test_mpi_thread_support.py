@@ -204,6 +204,8 @@ def test_single_level_aborts_two_ranks_promptly(tmp_path: Path) -> None:
 def test_wrong_thread_entry_fails_fast(level: str) -> None:
     # Higher thread support never allows a call from a thread other than the initializing one.
     result, doc = _single(level, "wrong-thread")
+    # No report at all means the probe died before the check: a failure, not an unexercised level.
+    assert doc, result.stderr[-4000:]
     if doc.get("provided") != level:
         pytest.skip(
             f"not exercised: requested {level} but the MPI library provided {doc.get('provided')}"
