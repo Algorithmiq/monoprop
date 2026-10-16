@@ -24,15 +24,20 @@ concurrency:
 
 jobs:
   flake:
-    name: Flake on ${{ matrix.runner }}
+    name: Flake on ${{ matrix.runner }} (Python ${{ matrix.python }})
     runs-on: ${{ matrix.runner }}
 
     continue-on-error: ${{ matrix.runner == 'macos-15' }}
 
+    # Each monoprop build is a heavy template + LTO compile, and a 7 GB macos-15
+    # runner swaps with more than two at once, so CI builds one interpreter.
+    # Python 3.12 is the one the binary cache covers least, i.e. the one whose
+    # dependency overrides in flake.nix are most likely to break.
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-26.04, macos-15, ubuntu-26.04-arm]
+        python: ["312"]
 
     steps:
       - name: Check out repository
@@ -41,22 +46,19 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31.11.1
 
-      # Builds the non-MPI package for every supported interpreter, so the build
-      # below reuses those store paths rather than compiling twice.
+      # Evaluates every output, the `nix run` app and the other interpreters'
+      # packages included, without building; the checks are the per-interpreter
+      # serial packages, built below for this job's interpreter only. Running the
+      # app would compile the default interpreter's package as well, and
+      # `pythonImportsCheck` already imports monoprop inside the sandbox.
       - name: Check flake
-        run: nix flake check --print-build-logs
+        run: nix flake check --no-build
 
       - name: Build packages
         run: >-
           nix build --print-build-logs
-          .#monoprop .#monoprop-mpi
-          .#monoprop-py312-mpi .#monoprop-py313-mpi
-
-      # `pythonImportsCheck` already imports the package inside the sandbox; this
-      # exercises the `nix run` app, i.e. the interpreter with monoprop propagated
-      # into its environment.
-      - name: Run app
-        run: nix run . -- -c 'import monoprop; print(monoprop.__version__)'
+          .#monoprop-py${{ matrix.python }}
+          .#monoprop-py${{ matrix.python }}-mpi
 
       - name: Check dev shell
         run: |

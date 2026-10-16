@@ -69,6 +69,17 @@
             });
           };
           monoprop-mpi = pyfinal.monoprop.override { withMPI = true; };
+        }
+        # The binary cache has no Python 3.12 mpi4py for the pinned nixpkgs, so it
+        # compiles locally and its test suite, which spawns MPI jobs, adds minutes to
+        # every build. It is overridden set-wide rather than handed to monoprop-mpi
+        # alone: mpi4py is propagated, and a second copy would collide with
+        # `ps.mpi4py` in `withPackages`. Its dependents are uncached there too, so no
+        # cached store path is lost.
+        // nixpkgs.lib.optionalAttrs (pyprev.pythonOlder "3.13") {
+          mpi4py = pyprev.mpi4py.overridePythonAttrs (_: {
+            doCheck = false;
+          });
         };
 
       monopropOverlay = final: prev: {
@@ -133,7 +144,7 @@
             devShells.default = pkgs.callPackage ./nix/devshell.nix { inherit python; };
 
             # One serial build per interpreter; the MPI variants share everything but
-            # the CMake switch and are built explicitly in CI.
+            # the CMake switch. CI evaluates all of them and builds Python 3.12 only.
             checks = lib.filterAttrs (name: _: !lib.hasSuffix "-mpi" name) perPython;
 
             formatter = pkgs.nixfmt-tree;
