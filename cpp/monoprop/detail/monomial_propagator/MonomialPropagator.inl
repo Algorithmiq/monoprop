@@ -14,24 +14,11 @@
 
 #pragma once
 
-#include <algorithm>
-#include <bit>
-#include <cassert>
-#include <chrono>
-#include <cmath>
-#include <complex>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <cstddef>
 #include <format>
-#include <functional>
-#include <limits>
-#include <numeric>
 #include <stdexcept>
-#include <string>
-#include <string_view>
-#include <thread>
 #include <utility>
+#include <vector>
 
 #include "monoprop/Validation.h"
 #include "monoprop/algebra/Algebra.h"

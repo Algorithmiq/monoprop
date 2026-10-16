@@ -332,12 +332,10 @@ def test_controls_and_lifecycle() -> None:
             "propagate_on_graph"
         ]
         assert "non-empty graph" in out["propagate_on_graph"]
-        # A missing Heisenberg term fails after the update started: the object is invalidated, copies refused.
+        # A missing Heisenberg term is an argument error: rejected before the update starts, the object stays usable.
         assert "not found" in out["missing_term_update"], out["missing_term_update"]
-        assert "no longer usable" in out["after_missing_term"], out[
-            "after_missing_term"
-        ]
-        assert "no longer usable" in out["copy_of_invalid"], out["copy_of_invalid"]
+        assert out["after_missing_term"] == "ok", out["after_missing_term"]
+        assert out["copy_after_missing_term"] == "ok", out["copy_after_missing_term"]
         # The replicated identity is added once, at every T.
         assert _f(out["core_only"]["energy"]) == 2.5
         assert out["core_only"]["map"] == {"[]": (2.5).hex()}

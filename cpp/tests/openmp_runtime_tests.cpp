@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -485,6 +486,13 @@ BOOST_AUTO_TEST_CASE(openmp_validation_errors_leave_the_owner_usable) {
     bad_operator[VecZ{0, 2 * kNumModes}] = 1.0;
     BOOST_CHECK_THROW(sim.update_initial_operator(bad_operator), std::exception);
     check_usable("out-of-range initial-operator index");
+    // Weight 2 * kNumModes is past the cutoff, so no shard holds the term: Heisenberg rejects it before the epoch
+    // moves.
+    VecZ absent_term(2 * kNumModes);
+    std::iota(absent_term.begin(), absent_term.end(), 0);
+    BOOST_CHECK_THROW(sim.update_initial_operator(OperatorDict{{absent_term, 1.0}}), std::runtime_error);
+    check_usable("initial-operator term absent from the operator");
+    BOOST_TEST(test_utils::near(retained(data.parameters), before));
     BOOST_TEST(test_utils::near(retained(data.parameters), before));
 }
 
@@ -524,12 +532,12 @@ BOOST_AUTO_TEST_CASE(openmp_thread_level_decisions_are_pure) {
                        == (provided >= MPI_THREAD_SERIALIZED));
             BOOST_TEST(mpi::thread_level_satisfies(provided, MPI_THREAD_FUNNELED) == (provided >= MPI_THREAD_FUNNELED));
             // FUNNELED is the requested and required level: SINGLE is refused, anything at or above FUNNELED serves.
-            BOOST_TEST(mpi::thread_level_satisfies(provided, mpi::kRequiredThreadLevel)
+            BOOST_TEST(mpi::thread_level_satisfies(provided, mpi::required_thread_level)
                        == (provided != MPI_THREAD_SINGLE));
         }
     }
     // Only the initializing thread, as the library team's primary, ever calls MPI.
-    BOOST_TEST(mpi::kRequiredThreadLevel == MPI_THREAD_FUNNELED);
+    BOOST_TEST(mpi::required_thread_level == MPI_THREAD_FUNNELED);
     BOOST_TEST(std::string(mpi::thread_level_name(MPI_THREAD_FUNNELED)) == "MPI_THREAD_FUNNELED");
 }
 
@@ -537,7 +545,7 @@ BOOST_AUTO_TEST_CASE(openmp_initialized_mpi_meets_the_required_level) {
     int provided = MPI_THREAD_SINGLE;
     MPI_Query_thread(&provided);
     BOOST_TEST_MESSAGE("MPI provided thread support: " << mpi::thread_level_name(provided));
-    BOOST_TEST(mpi::thread_level_satisfies(provided, mpi::kRequiredThreadLevel));
+    BOOST_TEST(mpi::thread_level_satisfies(provided, mpi::required_thread_level));
     BOOST_CHECK_NO_THROW(mpi::require_thread_support());
     int is_main = 0;
     MPI_Is_thread_main(&is_main);

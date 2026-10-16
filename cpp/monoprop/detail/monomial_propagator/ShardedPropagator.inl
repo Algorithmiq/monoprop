@@ -16,12 +16,15 @@
 
 // Included only by MonomialPropagator.inl.
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cstdio>
 #include <exception>
 #include <format>
 #include <functional>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -219,6 +222,13 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::mutation_failed_(std::exception_ptr error) -> void {
     invalidate_();
+    // A rank-local operation (settings, the parameter mapping) may run on any thread, so no MPI call is made before
+    // the thread is known: one rank has no peer to release and rethrows; above one rank only MPI's initializing thread
+    // may abort the communicator, and any other thread stops this process locally.
+    if (world_.ranks == 1) {
+        std::rethrow_exception(std::move(error));
+    }
+    mpi::require_initializing_thread();
     mpi::operation_failed(comm_, std::move(error));
 }
 
@@ -543,6 +553,10 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
             if (owner >= first_local && owner - first_local < shares.size()) {
                 shares[owner - first_local][bitset_to_indices<NumModes>(mono)] = coeff;
             }
+        }
+        // A term the operator lacks is an argument error: reject it before the epoch moves, as one shard alone would.
+        for (size_t shard = 0; shard < shares.size(); ++shard) {
+            shards_[shard]->op.require_updatable_terms(shares[shard], schrodinger_);
         }
 
         mutation_started = true;

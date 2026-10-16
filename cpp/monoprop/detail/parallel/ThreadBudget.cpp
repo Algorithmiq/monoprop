@@ -28,13 +28,13 @@
 namespace monoprop::detail::parallel {
 namespace {
 
-constexpr const char *kVariable = "monoprop_NUM_THREADS";
+constexpr const char *budget_variable = "monoprop_NUM_THREADS";
 
 [[noreturn]] auto reject(std::string_view text) -> void {
     throw std::invalid_argument(std::format("{}=\"{}\" is not a thread count: it must be a decimal integer from 1 "
                                             "to {} with no sign or spaces. Set it to the threads per process, or "
                                             "unset it to use the OpenMP runtime default.",
-                                            kVariable,
+                                            budget_variable,
                                             text,
                                             INT_MAX));
 }
@@ -46,9 +46,9 @@ auto resolve_thread_budget(std::optional<std::string_view> configured, int runti
         if (runtime_default < 1) {
             throw std::invalid_argument(std::format("{} is unset and the OpenMP runtime default thread count is {}, "
                                                     "not positive; set {} explicitly.",
-                                                    kVariable,
+                                                    budget_variable,
                                                     runtime_default,
-                                                    kVariable));
+                                                    budget_variable));
         }
         return {.threads = runtime_default};
     }
@@ -68,7 +68,7 @@ auto resolve_thread_budget(std::optional<std::string_view> configured, int runti
 }
 
 auto capture_thread_budget() -> Options {
-    const char *configured = std::getenv(kVariable);
+    const char *configured = std::getenv(budget_variable);
     return resolve_thread_budget(configured != nullptr ? std::optional<std::string_view>(configured) : std::nullopt,
                                  omp_get_max_threads());
 }

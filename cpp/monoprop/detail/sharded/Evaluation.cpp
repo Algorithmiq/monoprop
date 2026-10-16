@@ -249,7 +249,7 @@ struct EvaluationRun {
     }
 
     auto frame(size_t t) -> void {
-        notify(observer, EvaluationWork::frame, kNoStep, t);
+        notify(observer, EvaluationWork::frame, no_step, t);
         OwnerFrame &f = owner_frame();
         const EvalRequest &request = requests[t];
         if (!plan.empty) {
@@ -265,7 +265,7 @@ struct EvaluationRun {
                 (*gradients)[t].assign(request.params.size(), 0.0);
             }
         }
-        f.forward.partners.run_values = observer != nullptr ? observer->staging_run() : kStagingRunValues;
+        f.forward.partners.run_values = observer != nullptr ? observer->staging_run() : staging_run_values;
         f.accumulated = 0.0;
         f.self_pre = false;
         frames[t] = &f;
@@ -376,7 +376,7 @@ struct EvaluationRun {
     }
 
     auto contribution(size_t t) -> void {
-        notify(observer, EvaluationWork::contribution, kNoStep, t);
+        notify(observer, EvaluationWork::contribution, no_step, t);
         const EvalRequest &request = requests[t];
         if (plan.empty) {
             (*contributions)[t] = request.state.dot(request.op);
@@ -442,7 +442,7 @@ auto forward_steps(TeamFailure &failure,
     const size_t steps = job.params.size();
     const size_t flat = job.first_local + t;
     PhysicalExchange *const round = job.remote.round;
-    job.owners[t].scratch.partners.run_values = observer != nullptr ? observer->staging_run() : kStagingRunValues;
+    job.owners[t].scratch.partners.run_values = observer != nullptr ? observer->staging_run() : staging_run_values;
     const auto cosine = [&](size_t s, size_t step) {
         ForwardReplayOwner &owner = job.owners[s];
         notify(observer, EvaluationWork::cosine, step, s);
@@ -793,7 +793,7 @@ auto replay_shards(std::span<const ReplayRequest> requests,
     check_replay_job(job);
     outcome.error = run_team(options, [&](size_t t, TeamFailure &failure) noexcept {
         if (!phase(failure, t, [&] {
-                notify(observer, EvaluationWork::frame, kNoStep, t);
+                notify(observer, EvaluationWork::frame, no_step, t);
                 outcome.coeffs[t] = requests[t].coeffs; // allocated on the owner
             })) {
             return;

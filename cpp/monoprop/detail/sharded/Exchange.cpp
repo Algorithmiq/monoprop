@@ -756,14 +756,14 @@ auto PhysicalExchange::post_counts() -> void {
                   receivable,
                   MPI_BYTE,
                   peer,
-                  kShardedCountTag,
+                  sharded_count_tag,
                   s.comm.mpi,
                   &s.count_requests[static_cast<size_t>(n++)]);
         MPI_Isend(wire,
                   checked_int(static_cast<long long>(t2 * width), "count block"),
                   MPI_BYTE,
                   peer,
-                  kShardedCountTag,
+                  sharded_count_tag,
                   s.comm.mpi,
                   &s.count_requests[static_cast<size_t>(n++)]);
     }
@@ -908,16 +908,16 @@ auto PhysicalRounds::get(Kind kind, const PhysicalWorld &world, size_t threads) 
     if (round.threads() != threads || round.ranks() != world.ranks || round.rank() != world.rank) {
         switch (kind) {
             case Kind::queries:
-                round = PhysicalExchange(world, threads, ExchangeElement::u64, kShardedQueryTag);
+                round = PhysicalExchange(world, threads, ExchangeElement::u64, sharded_query_tag);
                 break;
             case Kind::graph_answers:
-                round = PhysicalExchange(world, threads, ExchangeElement::u32, kShardedAnswerTag);
+                round = PhysicalExchange(world, threads, ExchangeElement::u32, sharded_answer_tag);
                 break;
             case Kind::fused_answers:
-                round = PhysicalExchange(world, threads, ExchangeElement::f64, kShardedAnswerTag);
+                round = PhysicalExchange(world, threads, ExchangeElement::f64, sharded_answer_tag);
                 break;
             case Kind::replay:
-                round = PhysicalExchange(world, threads, ExchangeElement::f64, kShardedReplayTag);
+                round = PhysicalExchange(world, threads, ExchangeElement::f64, sharded_replay_tag);
                 break;
         }
     }

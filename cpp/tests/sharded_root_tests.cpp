@@ -128,13 +128,13 @@ public:
         note(Seam::evaluation, static_cast<int>(work), step, shard);
     }
     auto shard_work(sharded::ShardWork work, bool end, size_t shard) const -> void override {
-        note(Seam::shard, (2 * static_cast<int>(work)) + (end ? 1 : 0), sharded::kNoStep, shard);
+        note(Seam::shard, (2 * static_cast<int>(work)) + (end ? 1 : 0), sharded::no_step, shard);
     }
     auto construction(sharded::ConstructionWork work, size_t step, size_t shard) const -> void override {
         note(Seam::construction, static_cast<int>(work), step, shard);
     }
     auto root(sharded::RootWork work, size_t shard) const -> void override {
-        note(Seam::root, static_cast<int>(work), sharded::kNoStep, shard);
+        note(Seam::root, static_cast<int>(work), sharded::no_step, shard);
     }
 
 private:
@@ -439,7 +439,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_owns_t_routed_shards) {
             BOOST_TEST(static_cast<size_t>(Access::options(*sim).threads) == team);
             BOOST_TEST(shards.size() == team);
             BOOST_TEST(router.ranks() == 1U);
-            BOOST_TEST(router.partitions() == team);
+            BOOST_TEST(router.shards_per_rank() == team);
             std::set<VecZ> keys;
             size_t rows = 0;
             for (size_t t = 0; t < team; ++t) {
@@ -1163,7 +1163,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners, *boost::unit_t
     auto self = make_on(mpi::Comm(MPI_COMM_SELF));
     const auto &router = Access::router(*world);
     BOOST_TEST(router.ranks() == world_size());
-    BOOST_TEST(router.partitions() == team);
+    BOOST_TEST(router.shards_per_rank() == team);
     const auto &shards = Access::shards(*world);
     BOOST_TEST_REQUIRE(shards.size() == team);
     size_t misrouted = 0;

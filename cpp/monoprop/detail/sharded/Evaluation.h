@@ -97,7 +97,7 @@
 namespace monoprop::detail::sharded {
 
 //! The step reported for work outside a step loop.
-inline constexpr size_t kNoStep = std::numeric_limits<size_t>::max();
+inline constexpr size_t no_step = std::numeric_limits<size_t>::max();
 
 //! The owner work an evaluation reports to its observer.
 enum class EvaluationWork : std::uint8_t {
@@ -113,16 +113,16 @@ enum class EvaluationWork : std::uint8_t {
     retain,             //!< Retained preparation: snapshot, pare and build callbacks.
 };
 
+//! The values one run of staged partner blocks holds at least: small enough to stay cache-resident until applied.
+inline constexpr size_t staging_run_values = 4096;
+
 /*!
  * \brief Test-only observation seam; production passes none.
  *
  * `visit(work, step, shard)` runs inside the protected phase, on the thread that performs `work` for `shard` (its
- * owner, or the primary for an opaque callback), before that work. `step` is the replay step or kNoStep. An
+ * owner, or the primary for an opaque callback), before that work. `step` is the replay step or no_step. An
  * exception it throws is that phase's failure.
  */
-//! The values one run of staged partner blocks holds at least: small enough to stay cache-resident until applied.
-inline constexpr size_t kStagingRunValues = 4096;
-
 class EvaluationObserver {
 public:
     EvaluationObserver() = default;                                               //!< Stateless base.
@@ -136,7 +136,7 @@ public:
     virtual auto visit(EvaluationWork work, size_t step, size_t shard) const -> void = 0;
 
     //! Test-only: the minimum staging run of every owner's finishes, so small layers can cover multi-run staging.
-    [[nodiscard]] virtual auto staging_run() const noexcept -> size_t { return kStagingRunValues; }
+    [[nodiscard]] virtual auto staging_run() const noexcept -> size_t { return staging_run_values; }
 };
 
 // --- Owner-local replay phases ----------------------------------------------------------------------------------
@@ -309,10 +309,10 @@ struct PartnerStaging {
         size_t count = 0;             //!< The values it published for this owner.
         const double *data = nullptr; //!< Where the apply reads them: staged, or the partner's block if over a run.
     };
-    std::vector<size_t> position;          //!< Per flat slot: its index in `blocks`.
-    std::vector<Block> blocks;             //!< The step's partners, in the order the apply visits them.
-    VecD values;                           //!< The current run.
-    size_t run_values = kStagingRunValues; //!< The minimum run; EvaluationObserver::staging_run() in tests.
+    std::vector<size_t> position;           //!< Per flat slot: its index in `blocks`.
+    std::vector<Block> blocks;              //!< The step's partners, in the order the apply visits them.
+    VecD values;                            //!< The current run.
+    size_t run_values = staging_run_values; //!< The minimum run; EvaluationObserver::staging_run() in tests.
 };
 
 /*!
@@ -689,7 +689,7 @@ auto prepare_retained(parallel::Options options,
         }
         static_cast<void>(phase(failure, t, [&] {
             if (observer != nullptr) {
-                observer->visit(EvaluationWork::retain, kNoStep, t);
+                observer->visit(EvaluationWork::retain, no_step, t);
             }
             auto &op = shards[t]->op;
             const auto num_terms = op.size();

@@ -40,7 +40,7 @@
 
 namespace monoprop::mpi {
 
-/// Initialized MPI provides less thread support than monoprop requires (kRequiredThreadLevel).
+/// Initialized MPI provides less thread support than monoprop requires (required_thread_level).
 class MpiThreadLevelUnsupported : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -50,7 +50,7 @@ public:
 /// The MPI thread support monoprop requests and requires. FUNNELED: only the thread that initialized MPI, as the
 /// primary of the library's OpenMP team, ever calls MPI. A higher level is accepted and changes nothing: workers still
 /// never call MPI, and public calls must still come from the initializing thread.
-inline constexpr int kRequiredThreadLevel = MPI_THREAD_FUNNELED;
+inline constexpr int required_thread_level = MPI_THREAD_FUNNELED;
 
 /// Whether \a provided thread support satisfies \a required; MPI orders the levels
 /// SINGLE < FUNNELED < SERIALIZED < MULTIPLE. A higher level never relaxes the initializing-thread rule.
@@ -75,7 +75,7 @@ constexpr auto thread_level_name(int level) noexcept -> const char * {
     return "an unknown MPI thread level";
 }
 
-/// Initialize MPI requesting kRequiredThreadLevel unless the host already did, then check the level actually
+/// Initialize MPI requesting required_thread_level unless the host already did, then check the level actually
 /// provided in either case: a level below it prints a diagnostic and aborts MPI_COMM_WORLD. Host-initialized MPI is
 /// never reinitialized.
 monoprop_EXPORT auto init(int *argc = nullptr, char ***argv = nullptr) -> void;
@@ -125,7 +125,7 @@ inline auto init(int * /*argc*/ = nullptr, char *** /*argv*/ = nullptr) -> void 
 inline auto finalize() -> void {}
 #endif // monoprop_ENABLE_MPI
 
-/// Check that initialized MPI provides at least kRequiredThreadLevel, whoever initialized it.
+/// Check that initialized MPI provides at least required_thread_level, whoever initialized it.
 /// \throws MpiThreadLevelUnsupported if it does not. A no-op without MPI or before MPI is initialized.
 monoprop_EXPORT auto require_thread_support() -> void;
 

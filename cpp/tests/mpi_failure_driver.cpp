@@ -275,7 +275,7 @@ auto active_ticket_cosine_worker(int rank) -> void {
     const auto view = sim->graph().replay_view();
     // A stored mask of four kernel ranges, so the kernel really opens a team; the real layer is tiny.
     CosMask mask;
-    for (size_t w = 0; w < 4 * detail::kCosMaskRangeBlocks; ++w) {
+    for (size_t w = 0; w < 4 * detail::cos_mask_range_blocks; ++w) {
         mask.blocks.emplace_back(w * 64, ~uint64_t{0});
         mask.total_count += 64;
     }
@@ -554,19 +554,19 @@ auto main(int argc, char **argv) -> int {
                     option,
                     size,
                     host_owned ? "host-initialized" : "library-initialized",
-                    requested ? mpi::thread_level_name(*requested) : mpi::thread_level_name(mpi::kRequiredThreadLevel),
+                    requested ? mpi::thread_level_name(*requested) : mpi::thread_level_name(mpi::required_thread_level),
                     mpi::thread_level_name(provided)));
 
     const auto not_exercised = [&](std::string_view why) {
         say(rank,
             std::format("NOT EXERCISED: requested {} but the MPI library provided {}; {}",
-                        mpi::thread_level_name(requested.value_or(mpi::kRequiredThreadLevel)),
+                        mpi::thread_level_name(requested.value_or(mpi::required_thread_level)),
                         mpi::thread_level_name(provided),
                         why));
         MPI_Finalize();
         return kNotExercised;
     };
-    if (scenario == "insufficient-thread-level" && mpi::thread_level_satisfies(provided, mpi::kRequiredThreadLevel)) {
+    if (scenario == "insufficient-thread-level" && mpi::thread_level_satisfies(provided, mpi::required_thread_level)) {
         return not_exercised("the refusal needs a level below the required one");
     }
     if (scenario == "host-level" && provided != *requested) {

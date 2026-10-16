@@ -1793,11 +1793,11 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_w
         size_t step;
         bool gradient;
     };
-    const std::vector<Site> sites = {{E::frame, sharded::kNoStep, false},
+    const std::vector<Site> sites = {{E::frame, sharded::no_step, false},
                                      {E::publish, 0, false},
                                      {E::cosine, 2, false},
                                      {E::finish, 1, false},
-                                     {E::contribution, sharded::kNoStep, false},
+                                     {E::contribution, sharded::no_step, false},
                                      {E::record, 3, true},
                                      {E::reverse_publish, layers + 1, true},
                                      {E::reverse_accumulate, layers + 2, true},
@@ -1910,7 +1910,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_callback_paring_and_construction_failure
 
     // Paring: the last owner fails inside its retained preparation; mutation had started.
     {
-        const Recorder rec(threads, {{E::retain, sharded::kNoStep, threads - 1}});
+        const Recorder rec(threads, {{E::retain, sharded::no_step, threads - 1}});
         const auto outcome = sharded::prepare_retained<kN>(options, s.shards, retained_context(s, 1e-3), &rec);
         BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
         BOOST_TEST(outcome.mutation_started);
@@ -1918,7 +1918,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_callback_paring_and_construction_failure
         BOOST_TEST(message_of(outcome.error)
                    == std::format("injected failure: work {} step {} shard {}",
                                   static_cast<int>(E::retain),
-                                  sharded::kNoStep,
+                                  sharded::no_step,
                                   threads - 1));
     }
 
@@ -1994,8 +1994,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
         AllocAt at;
         bool allocates;
     };
-    const std::vector<Site> sites = {{{E::frame, sharded::kNoStep, threads - 1, 0}, true},
-                                     {{E::frame, sharded::kNoStep, 0, 0}, true},
+    const std::vector<Site> sites = {{{E::frame, sharded::no_step, threads - 1, 0}, true},
+                                     {{E::frame, sharded::no_step, 0, 0}, true},
                                      {{E::publish, 1, 0, 0}, true},
                                      {{E::reverse_publish, layers + 1, 0, 0}, true},
                                      {{E::record, static_cast<size_t>(vanishing - wanted.begin()), 0, 0}, false}};

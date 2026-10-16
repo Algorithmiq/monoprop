@@ -199,7 +199,7 @@ auto run_scan_on(const Op &op,
     const size_t shift = router.rank_shift<kModes>(s.gen);
     const mpi::PeerPlan plan{.sparse = router.is_linear(), .shift = static_cast<int>(shift)};
     Outcome out;
-    out.window = plan.window(g.my_rank, router.ranks(), router.partitions());
+    out.window = plan.window(g.my_rank, router.ranks(), router.shards_per_rank());
     out.my_rank = g.my_rank;
     out.coeffs = coefficients(op.size(), 0xC0EFFULL + g.my_rank);
     const double abs_sin = std::abs(std::sin(2 * s.param));

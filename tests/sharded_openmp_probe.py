@@ -376,7 +376,7 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
         },
     }
 
-    # Pre-mutation rejection leaves the object usable; a failure after mutation started invalidates it.
+    # Pre-mutation rejection leaves the object usable, a missing Heisenberg term included.
     sim = construct()
     sim.build_graph([[0, 2], [1, 3]], [0, 1], [1.0, 1.0])
     out["bad_parameter_count"] = _attempt(lambda: sim.expectation_value([0.1]))
@@ -388,7 +388,7 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
         lambda: sim.update_initial_operator({(4, 5): 1j})
     )
     out["after_missing_term"] = _attempt(lambda: sim.expectation_value([0.3, 0.2]))
-    out["copy_of_invalid"] = _attempt(lambda: copy.deepcopy(sim))
+    out["copy_after_missing_term"] = _attempt(lambda: copy.deepcopy(sim))
     return out
 
 

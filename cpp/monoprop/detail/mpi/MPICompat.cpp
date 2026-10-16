@@ -35,18 +35,18 @@ auto init(int *argc, char ***argv) -> void {
     int provided = MPI_THREAD_SINGLE;
     if (!initialized) {
         // Funneled: only this thread, as the primary of the library's team, ever calls MPI.
-        MPI_Init_thread(argc, argv, kRequiredThreadLevel, &provided);
+        MPI_Init_thread(argc, argv, required_thread_level, &provided);
     }
     else {
         // Host-initialized: never reinitialize, and never assume the host's request was granted.
         MPI_Query_thread(&provided);
     }
-    if (!thread_level_satisfies(provided, kRequiredThreadLevel)) {
+    if (!thread_level_satisfies(provided, required_thread_level)) {
         // Fixed strings only: nothing here may allocate (or throw) before the abort.
         std::fputs("monoprop: the MPI library provides ", stderr);
         std::fputs(thread_level_name(provided), stderr);
         std::fputs(" but monoprop requires ", stderr);
-        std::fputs(thread_level_name(kRequiredThreadLevel), stderr);
+        std::fputs(thread_level_name(required_thread_level), stderr);
         std::fputs("; aborting.\n", stderr);
         std::fflush(stderr);
         MPI_Abort(MPI_COMM_WORLD, 1);
@@ -71,14 +71,14 @@ auto require_thread_support() -> void {
     }
     int provided = MPI_THREAD_SINGLE;
     MPI_Query_thread(&provided);
-    if (!thread_level_satisfies(provided, kRequiredThreadLevel)) {
+    if (!thread_level_satisfies(provided, required_thread_level)) {
         throw MpiThreadLevelUnsupported(
             std::format("monoprop requires {} support from MPI, but the initialized MPI library provides {}. "
                         "Initialize MPI with MPI_Init_thread requesting {} or higher (mpi4py requests "
                         "MPI_THREAD_MULTIPLE unless mpi4py.rc.thread_level says otherwise).",
-                        thread_level_name(kRequiredThreadLevel),
+                        thread_level_name(required_thread_level),
                         thread_level_name(provided),
-                        thread_level_name(kRequiredThreadLevel)));
+                        thread_level_name(required_thread_level)));
     }
 #endif
 }

@@ -74,8 +74,9 @@ just build-docs
   required. Every state operation separates validation from mutation (`run_operation_`): a failure after
   mutation starts invalidates the object and aborts a multi-rank communicator (`mpi::operation_failed`).
   Catch failures inside posted `Ticket`/`PendingAlltoallv`/physical-round lifetimes, never only at the
-  outermost level. `detail::build_layer` is the low-level one-owner-per-rank engine the tests and the
-  exported evaluation functions keep.
+  outermost level. `detail::build_layer` (with `run_exchange` and `mpi::begin_alltoallv`) is the low-level
+  one-owner-per-rank engine kept only as the tests' reference; production builds layers through
+  `detail/sharded/Construction.h`.
 - Threaded kernels (`scale_cos_*`, `apply_fused_contract`, the `fused_find_and_collect` scan, the resolve
   phases: incoming decode, `probe_frozen_positions`, certified-sink scatter) take a defaulted test-only
   range observer; participation tests read it (`cpp/tests/KernelTestSupport.h`, `ScanTestSupport.h`).

@@ -262,7 +262,7 @@ def main():
         )
     cpu_total = process_cpu_seconds() - cpu_start
 
-    # The engine picks one partition per core when the env var is unset, so an unset value is
+    # The engine takes OpenMP's thread count when the env var is unset, so an unset value is
     # not "1 thread"; busy_cores is the only measurement of what the threads actually did.
     t_total = cumulative_runtimes[-1]
     busy_cores = cpu_total / t_total if t_total > 0 else float("nan")

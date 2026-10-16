@@ -39,17 +39,17 @@
 namespace monoprop::detail {
 
 //! Queries per logical block of the frozen probe and the incoming decode: a function of the query count only.
-inline constexpr size_t kProbeBlockQueries = 256;
+inline constexpr size_t probe_block_queries = 256;
 //! Queries per logical block of the incoming on_resolved scatter.
-inline constexpr size_t kResolveScatterBlock = 1024;
+inline constexpr size_t resolve_scatter_block = 1024;
 //! Most self queries probed per window; bounds the gathered scratch (at most 16 probe blocks per window).
-inline constexpr size_t kSelfProbeWindow = 4096;
+inline constexpr size_t self_probe_window = 4096;
 
 /*!
  * \brief Look up `out.size()` position-list queries in a frozen store, on up to `options.threads` workers.
  *
  * Query `q` is `pos_flat[pos_off[q], pos_off[q] + k_of[q])`; offsets are absolute into the one shared buffer.
- * The queries split into logical blocks of kProbeBlockQueries, each one OperatorIndex::find_batch_positions
+ * The queries split into logical blocks of probe_block_queries, each one OperatorIndex::find_batch_positions
  * call over its slice of `pos_off`, `k_of`, `out` and `hash_out`, so the batched pipeline, the exact collision
  * check and the cached hashes are the serial ones and the results are identical at every budget and team
  * size. `out[q]` is the row ID or OperatorIndex::kNotFound; `hash_out`, when not empty, receives each query's
@@ -91,13 +91,13 @@ auto probe_frozen_positions(const OperatorIndex<NumModes> &store,
                                                     pos_flat.size()));
         }
     }
-    const size_t blocks = logical_ranges(n, kProbeBlockQueries);
+    const size_t blocks = logical_ranges(n, probe_block_queries);
     observer.prepare(kind, blocks);
     // Each block writes only its own slice of `out` and `hash_out`; the store and pos_flat are read-only.
     parallel::for_blocks(blocks, options, [&](size_t block) {
         observer.visit(kind, block);
-        const size_t lo = block * kProbeBlockQueries;
-        const size_t m = std::min(kProbeBlockQueries, n - lo);
+        const size_t lo = block * probe_block_queries;
+        const size_t m = std::min(probe_block_queries, n - lo);
         store.find_batch_positions(pos_flat,
                                    pos_off.subspan(lo, m),
                                    k_of.subspan(lo, m),
@@ -279,12 +279,12 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
     assert(pos_at == positions);
 
     // 2. Decode disjoint records into their prepared spans.
-    const size_t blocks = logical_ranges(n, kProbeBlockQueries);
+    const size_t blocks = logical_ranges(n, probe_block_queries);
     observer.prepare(KernelRange::decode, blocks);
     parallel::for_blocks(blocks, options, [&](size_t block) {
         observer.visit(KernelRange::decode, block);
-        const size_t hi = std::min(n, (block + 1) * kProbeBlockQueries);
-        for (size_t g = block * kProbeBlockQueries; g < hi; ++g) {
+        const size_t hi = std::min(n, (block + 1) * probe_block_queries);
+        for (size_t g = block * probe_block_queries; g < hi; ++g) {
             const size_t k = pr.sender_wi[g];
             const typename QW::WireView buf = incoming[mpi::WindowIndex{k}];
             const auto d = QW::read_query(buf,
@@ -444,11 +444,11 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
     // (ip ≥ combined_size) skip the mark. prepare() sizes every sink container on the caller first.
     sink.prepare(pr, op, responses);
     const size_t n = pr.nq_total;
-    const size_t blocks = logical_ranges(n, kResolveScatterBlock);
+    const size_t blocks = logical_ranges(n, resolve_scatter_block);
     const auto scatter = [&](size_t block) {
         observer.visit(KernelRange::scatter, block);
-        const size_t hi = std::min(n, (block + 1) * kResolveScatterBlock);
-        for (size_t g = block * kResolveScatterBlock; g < hi; ++g) {
+        const size_t hi = std::min(n, (block + 1) * resolve_scatter_block);
+        for (size_t g = block * resolve_scatter_block; g < hi; ++g) {
             const mpi::WindowIndex s = pr.sender_index(g);
             const size_t q = g - pr.goff[s.value];
             const size_t ip = pr.idx_of[g];

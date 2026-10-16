@@ -874,7 +874,7 @@ BOOST_AUTO_TEST_CASE(openmp_incoming_decode_and_probe_workers_participate,
                                                   detail::QueryForm::Plain,
                                                   {.threads = threads},
                                                   AccumulatingObserver{&serial_log});
-        const size_t blocks = detail::logical_ranges(senders[0] + senders[2], detail::kProbeBlockQueries);
+        const size_t blocks = detail::logical_ranges(senders[0] + senders[2], detail::probe_block_queries);
         kernel_test::check_serial(kernel_test::slots_of(*serial_log.of(KernelRange::decode)[0]), blocks, "decode");
         kernel_test::check_serial(kernel_test::slots_of(*serial_log.of(KernelRange::incoming_probe)[0]),
                                   blocks,
@@ -1189,7 +1189,7 @@ BOOST_AUTO_TEST_CASE(openmp_resolve_scatter_stays_serial_without_the_capability)
     constexpr size_t N = 128;
     const mpi::SlotWindow window{.base = 1, .count = 2};
     const auto plan = plan_queries<N>(21, {1500, 1100}, HitMix::mixed);
-    const size_t blocks = detail::logical_ranges(2600, detail::kResolveScatterBlock);
+    const size_t blocks = detail::logical_ranges(2600, detail::resolve_scatter_block);
     const auto order_state = [](const auto &s) {
         return std::vector<std::vector<uint64_t>>{std::vector<uint64_t>(s.order.begin(), s.order.end())};
     };
@@ -1431,7 +1431,7 @@ BOOST_AUTO_TEST_CASE(openmp_self_windows_match_serial) {
             }
         }
     };
-    const size_t n_leader = (2 * detail::kSelfProbeWindow) + 37;
+    const size_t n_leader = (2 * detail::self_probe_window) + 37;
     std::vector<Monomial<N>> leader_keys;
     std::vector<size_t> leader_srcs;
     for (size_t q = 0; q < n_leader; ++q) {
@@ -1470,17 +1470,17 @@ BOOST_AUTO_TEST_CASE(openmp_self_windows_match_serial) {
             const auto threaded = run_at(threads);
             BOOST_TEST((serial.state == threaded.state), "contract=" << contract << " budget " << threads);
             const auto calls = threaded.log.of(KernelRange::self_probe);
-            const size_t leader_windows = detail::logical_ranges(n_leader, detail::kSelfProbeWindow);
-            const size_t follower_windows = detail::logical_ranges(kept_followers, detail::kSelfProbeWindow);
+            const size_t leader_windows = detail::logical_ranges(n_leader, detail::self_probe_window);
+            const size_t follower_windows = detail::logical_ranges(kept_followers, detail::self_probe_window);
             BOOST_REQUIRE(calls.size() == leader_windows + follower_windows);
             BOOST_TEST(calls[0]->worker.size() == 16U);
             BOOST_TEST(calls[leader_windows - 1]->worker.size() == 1U); // the 37-query tail
             BOOST_TEST(calls[leader_windows]->worker.size() == 16U);
             BOOST_TEST(
                 calls.back()->worker.size()
-                == detail::logical_ranges(kept_followers % detail::kSelfProbeWindow, detail::kProbeBlockQueries));
+                == detail::logical_ranges(kept_followers % detail::self_probe_window, detail::probe_block_queries));
             for (const auto *c : calls) {
-                BOOST_TEST(c->worker.size() <= detail::kSelfProbeWindow / detail::kProbeBlockQueries);
+                BOOST_TEST(c->worker.size() <= detail::self_probe_window / detail::probe_block_queries);
             }
         }
         if (!!kernel_test::runtime_offers_two_workers(0)) {

@@ -45,7 +45,7 @@
 namespace monoprop::detail {
 
 //! Stored mask blocks (one 64-bit word each) per scale_cos_mask range: as many words as a fold block.
-inline constexpr size_t kCosMaskRangeBlocks = kColumnBlockWords;
+inline constexpr size_t cos_mask_range_blocks = kColumnBlockWords;
 
 // Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore.
 template <size_t NumModes>
@@ -323,7 +323,7 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
 /*!
  * \brief Multiply every coefficient in a stored cosine mask by `cos_val`, leaving all others untouched.
  *
- * Each kCosMaskRangeBlocks run of mask blocks is one logical range. CosMask blocks are ascending with
+ * Each cos_mask_range_blocks run of mask blocks is one logical range. CosMask blocks are ascending with
  * distinct word-aligned bases, so the ranges touch disjoint coefficients.
  *
  * \param coeff    Coefficients, covering every index in `cos`.
@@ -339,12 +339,12 @@ auto scale_cos_mask(double *coeff,
                     parallel::Options options = {},
                     const Observer &observer = {}) -> void {
     const size_t n = cos.blocks.size();
-    const size_t ranges = logical_ranges(n, kCosMaskRangeBlocks);
+    const size_t ranges = logical_ranges(n, cos_mask_range_blocks);
     observer.prepare(KernelRange::cos_mask, ranges);
     parallel::for_blocks(ranges, options, [&](size_t range) {
         observer.visit(KernelRange::cos_mask, range);
-        const size_t hi = std::min(n, (range + 1) * kCosMaskRangeBlocks);
-        for (size_t k = range * kCosMaskRangeBlocks; k < hi; ++k) {
+        const size_t hi = std::min(n, (range + 1) * cos_mask_range_blocks);
+        for (size_t k = range * cos_mask_range_blocks; k < hi; ++k) {
             const auto [base, bits] = cos.blocks[k];
             for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
         }

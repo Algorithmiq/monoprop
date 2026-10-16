@@ -677,7 +677,7 @@ private:
 
     bool leaders_pass_ = true; // the pass the retained streams belong to, as prepare_exchange() adopted them
 
-    // Self-resolve scratch for one window of at most kSelfProbeWindow queries, reused across windows and both
+    // Self-resolve scratch for one window of at most self_probe_window queries, reused across windows and both
     // passes: gathered offsets (absolute into the stage), counts, results, hashes and the emission payload.
     std::vector<size_t> self_pos_off_;
     std::vector<uint32_t> self_k_of_;
@@ -696,7 +696,7 @@ private:
         -> void {
         const size_t op_size = local_op.store->size();
         const size_t hi = self_stage_.size();
-        const size_t cap = std::min(hi, kSelfProbeWindow);
+        const size_t cap = std::min(hi, self_probe_window);
         if constexpr (requires { sink.reserve_self_hits(hi); }) {
             sink.reserve_self_hits(hi);
         }
@@ -715,7 +715,7 @@ private:
         size_t q = 0;
         while (q < hi) {
             size_t m = 0;
-            for (; q < hi && m < kSelfProbeWindow; ++q) {
+            for (; q < hi && m < self_probe_window; ++q) {
                 const size_t src = ls[q];
                 if (!is_leader_pass && matched.is_marked(src)) {
                     continue; // follower already matched by a leader → not an independent rotation
@@ -835,7 +835,7 @@ auto scan_gate(MPOperator<NumModes> &local_op,
     const size_t gen_shift = router.rank_shift<NumModes>(gen);
     scan.plan = mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(gen_shift)};
     // S of the P slots under linear routing, all P otherwise; every per-slot array is sized to it.
-    scan.window = scan.plan.window(my_rank, router.ranks(), router.partitions());
+    scan.window = scan.plan.window(my_rank, router.ranks(), router.shards_per_rank());
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};

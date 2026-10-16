@@ -67,12 +67,12 @@ public:
 };
 
 //! Vectors at least this large give their spare capacity back in place; smaller ones are copied down to their size.
-inline constexpr size_t kSpareReleaseBytes = size_t{256} << 10;
+inline constexpr size_t spare_release_bytes = size_t{256} << 10;
 
 //! Whether release_spare_capacity() keeps a block of `capacity_bytes` in place (Linux only) rather than copying it.
 [[nodiscard]] constexpr auto releases_in_place(size_t capacity_bytes) noexcept -> bool {
 #ifdef __linux__
-    return capacity_bytes >= kSpareReleaseBytes;
+    return capacity_bytes >= spare_release_bytes;
 #else
     static_cast<void>(capacity_bytes);
     return false;
@@ -297,12 +297,29 @@ struct MPOperator {
         return copied(op_coeffs) + copied(state_rows_) + copied(state_vals_) + copied(state_coeffs);
     }
 
-    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.
-    // Heisenberg rejects a term absent from both (new monomials may have no graph paths); Schrödinger
-    // admits them freely (the state was already evolved). Returns the supplied terms with their encoded
-    // coefficients, in order.
+    // Throws OperatorTermNotFound for the first term update_initial_operator() would reject, changing nothing:
+    // Heisenberg rejects a term that is neither pending nor an evolved-operator row (new monomials may have no graph
+    // paths); Schrödinger admits every term (the state was already evolved).
+    auto require_updatable_terms(const OperatorDict &op_dict, bool schrodinger) const -> void {
+        if (schrodinger) {
+            return;
+        }
+        for (const auto &k : op_dict | std::views::keys) {
+            // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
+            const auto mono = indices_to_bitset<NumModes>(k);
+            if (!init_op_map.contains(mono) && !store->find(mono)) {
+                const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
+                throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
+            }
+        }
+    }
+
+    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized; the terms
+    // are checked with require_updatable_terms() first. Returns the supplied terms with their encoded coefficients, in
+    // order.
     auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
         -> std::pair<MonomialList<NumModes>, VecD> {
+        require_updatable_terms(op_dict, schrodinger);
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
@@ -318,12 +335,8 @@ struct MPOperator {
                 if (rank_init_op != init_op_map.end()) {
                     new_op_map[mono] = coeff;
                 }
-                else if (rank_evolved_op) {
-                    new_op_coeffs[*rank_evolved_op] = coeff;
-                }
                 else {
-                    const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
-                    throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
+                    new_op_coeffs[*rank_evolved_op] = coeff;
                 }
             }
             else {

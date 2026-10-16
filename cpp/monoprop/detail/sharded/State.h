@@ -359,7 +359,7 @@ auto make_shards(parallel::Options options, Initialize &&initialize) -> Shards<N
  * Shard t seeds flat owner `rank * T + t` through seed_operator(). An empty share still yields a valid empty state,
  * and its owner still participates in the team.
  *
- * \param options  The already-captured budget; its thread count T must equal `seed.router.partitions()`.
+ * \param options  The already-captured budget; its thread count T must equal `seed.router.shards_per_rank()`.
  * \param seed     Prepared inputs; see OperatorSeed.
  * \param rank     This process's rank, below `seed.router.ranks()`.
  * \param observer Test-only seam; see NoShardObserver.
@@ -373,14 +373,14 @@ auto seed_shards(parallel::Options options,
                  const OperatorSeed<NumModes> &seed,
                  size_t rank,
                  const Observer &observer = {}) -> Shards<NumModes> {
-    if (options.threads < 1 || seed.router.partitions() != static_cast<size_t>(options.threads)
+    if (options.threads < 1 || seed.router.shards_per_rank() != static_cast<size_t>(options.threads)
         || rank >= seed.router.ranks()) {
         throw std::invalid_argument(std::format("sharded::seed_shards: {} shards on rank {} do not fit routing "
                                                 "geometry ({} ranks, {} shards per rank)",
                                                 options.threads,
                                                 rank,
                                                 seed.router.ranks(),
-                                                seed.router.partitions()));
+                                                seed.router.shards_per_rank()));
     }
     const auto threads = static_cast<size_t>(options.threads);
     return make_shards<NumModes>(options, [&](size_t shard) {

@@ -1099,7 +1099,7 @@ auto check_owner_participation(const std::vector<ShardLog> &logs, size_t gates, 
             for (const auto &v : visits) {
                 // One region for a team; a one-worker team runs on the caller, without one.
                 one_team = one_team && v.team == static_cast<int>(threads) && v.level == (threads > 1 ? 1 : 0);
-                if (v.step != sharded::kNoStep) {
+                if (v.step != sharded::no_step) {
                     steps.insert(v.step);
                 }
                 const int expected = (opaque && v.work == W::traverse) ? 0 : static_cast<int>(t);
@@ -1632,7 +1632,7 @@ auto group_of(W work) -> int {
 }
 
 auto order_of(size_t step, W work) -> std::pair<long long, int> {
-    const long long s = step == sharded::kNoStep ? (work == W::caches ? 1LL << 40 : -1) : static_cast<long long>(step);
+    const long long s = step == sharded::no_step ? (work == W::caches ? 1LL << 40 : -1) : static_cast<long long>(step);
     return {s, group_of(work)};
 }
 
@@ -1683,7 +1683,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later
         for (const W work : works) {
             for (const size_t shard : {size_t{0}, threads - 1}) {
                 const bool loop = work != W::frame && work != W::picture && work != W::caches;
-                const size_t step = loop ? 1 : sharded::kNoStep;
+                const size_t step = loop ? 1 : sharded::no_step;
                 BOOST_TEST_CONTEXT((fused ? "propagate" : "graph")
                                    << " work " << static_cast<int>(work) << " shard " << shard) {
                     auto s = seed<kN>(cs.f, options);
@@ -1800,7 +1800,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
         size_t step;
         size_t shard;
     };
-    std::vector<Site> sites = {{W::frame, sharded::kNoStep, threads - 1},
+    std::vector<Site> sites = {{W::frame, sharded::no_step, threads - 1},
                                {W::traverse, 2, 0},
                                {W::finalize, 3, threads - 1}};
     sites.push_back({W::apply, 2, 0}); // propagation only; graph construction has no apply

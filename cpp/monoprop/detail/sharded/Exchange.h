@@ -96,10 +96,10 @@ enum class ExchangeTransport : std::uint8_t {
 };
 
 //! Tags of the sharded rounds, distinct from each other and from the low-level engine's (Pairwise.h).
-inline constexpr int kShardedQueryTag = 0x6D75;
-inline constexpr int kShardedAnswerTag = 0x6D76;
-inline constexpr int kShardedReplayTag = 0x6D77;
-inline constexpr int kShardedCountTag = 0x6D78; //!< Every count round.
+inline constexpr int sharded_query_tag = 0x6D75;
+inline constexpr int sharded_answer_tag = 0x6D76;
+inline constexpr int sharded_replay_tag = 0x6D77;
+inline constexpr int sharded_count_tag = 0x6D78; //!< Every count round.
 
 //! The element kind of a payload type.
 template <class T>

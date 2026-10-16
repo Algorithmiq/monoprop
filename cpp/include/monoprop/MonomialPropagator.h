@@ -138,19 +138,19 @@ public:
     auto mp_op() -> detail::MPOperator<NumModes> & { return sole_shard_("mp_op()").op; }
     auto mp_op() const -> const detail::MPOperator<NumModes> & { return sole_shard_("mp_op()").op; }
 
-    // Additive over the disjoint shards; each shard's graph holds its own layer cores.
+    /// This rank's graph memory, summed over its disjoint shards (each shard's graph holds its own layer cores).
     auto graph_memory_usage() const -> GraphMemoryBreakdown {
         require_valid_();
         return detail::sharded::graph_memory_usage(shards_);
     }
 
-    // Additive over the disjoint shards, each including its own matched marks.
+    /// This rank's operator memory, summed over its disjoint shards (each including its own matched marks).
     auto operator_memory_usage() const -> detail::MPOperatorMemoryBreakdown<NumModes> {
         require_valid_();
         return detail::sharded::operator_memory_usage(shards_);
     }
 
-    // Layer metadata is identical on every shard, so it is read once, never summed.
+    /// The number of graph layers; layer metadata is identical on every shard, so it is read once, never summed.
     auto graph_layers() const -> size_t {
         require_valid_();
         return shards_.front()->graph.layers();
@@ -235,7 +235,7 @@ public:
 
     auto basis() const -> Basis { return basis_; }
 
-    // Rank-level metadata: replicated, never seeded into a shard.
+    /// The initial operator's identity coefficient: rank-level metadata, replicated, never seeded into a shard.
     auto core_term() const -> double {
         require_valid_();
         return core_term_;
@@ -368,8 +368,9 @@ private:
     /// fast, locally, before any MPI call), then validity.
     auto enter_operation_(bool uses_mpi) const -> void;
 
-    /// A failure after mutation started: invalidate, then apply the distributed failure policy (mpi::operation_failed:
-    /// abort a multi-rank communicator, rethrow the original otherwise).
+    /// A failure after mutation started: invalidate, then rethrow the original on one rank; above one rank abort the
+    /// communicator (mpi::operation_failed) from MPI's initializing thread, or stop this process from any other
+    /// thread (mpi::require_initializing_thread).
     [[noreturn]] auto mutation_failed_(std::exception_ptr error) -> void;
 
     /// Run one state operation. `body(mutation_started)` validates first and sets `mutation_started`
@@ -440,8 +441,7 @@ private:
 
     /// The only shard, for the raw-layout accessors.
     /// \throws InvalidPropagatorError if invalid (checked first); MultiShardUnsupported unless launched with T = 1:
-    /// there is no
-    ///         single store to hand out, and shard 0 alone is not this rank's operator.
+    ///         there is no single store to hand out, and shard 0 alone is not this rank's operator.
     auto sole_shard_(const char *what) const -> const detail::sharded::ShardState<NumModes> &;
     auto sole_shard_(const char *what) -> detail::sharded::ShardState<NumModes> &;
 

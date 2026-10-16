@@ -29,7 +29,7 @@
 namespace monoprop::detail {
 
 //! Records per apply_fused_contract logical range, for both the insert gather and the rotation pass.
-inline constexpr size_t kFusedRecordRange = 1024;
+inline constexpr size_t fused_record_range = 1024;
 
 /*!
  * \brief Whether every coefficient slot the contract writes has exactly one writing record.
@@ -59,7 +59,7 @@ inline auto fused_add_owners_unique(const FusedContract &fc) -> bool {
  *
  * Out of line on purpose: the serial and every threaded range call this one compiled body, so however the
  * compiler contracts `cos·c + sin·φ·v` into a fused multiply-add, the choice is the same at every budget
- * and serial and threaded results stay bitwise equal. The cost is one call per kFusedRecordRange records.
+ * and serial and threaded results stay bitwise equal. The cost is one call per fused_record_range records.
  */
 [[gnu::noinline]] inline auto apply_fused_record_range(const FusedContract &fc,
                                                        double *c,
@@ -125,13 +125,13 @@ auto apply_fused_contract(FusedContract &fc,
     if (schrodinger) {
         RotationRec *const inserts = fc.inserts.data();
         const size_t n_inserts = fc.inserts.size();
-        const size_t ranges = logical_ranges(n_inserts, kFusedRecordRange);
+        const size_t ranges = logical_ranges(n_inserts, fused_record_range);
         observer.prepare(KernelRange::fused_gather, ranges);
         // Each range writes only its own records' snapshot field and reads coefficients nothing writes yet.
         parallel::for_blocks(ranges, options, [&](size_t range) {
             observer.visit(KernelRange::fused_gather, range);
-            const size_t hi = std::min(n_inserts, (range + 1) * kFusedRecordRange);
-            for (size_t k = range * kFusedRecordRange; k < hi; ++k) {
+            const size_t hi = std::min(n_inserts, (range + 1) * fused_record_range);
+            for (size_t k = range * fused_record_range; k < hi; ++k) {
                 inserts[k].v_tgt = c[inserts[k].tgt];
             }
         });
@@ -150,15 +150,21 @@ auto apply_fused_contract(FusedContract &fc,
     // the gate's cos in here (c = cos·c + sin).
     assert(fused_add_owners_unique(fc));
     const size_t n_records = fc.hits.size() + fc.inserts.size() + fc.cross_half.size();
-    const size_t ranges = logical_ranges(n_records, kFusedRecordRange);
+    const size_t ranges = logical_ranges(n_records, fused_record_range);
     observer.prepare(KernelRange::fused_apply, ranges);
     // Distinct records write distinct slots (the one-add-owner property above), and every value a record
     // reads is its own snapshot or its own slot, so the ranges need no synchronization. Never paper over a
     // violation with atomics: it would mean the scan emitted a slot twice.
     parallel::for_blocks(ranges, options, [&](size_t range) {
         observer.visit(KernelRange::fused_apply, range);
-        const size_t lo = range * kFusedRecordRange;
-        apply_fused_record_range(fc, c, lo, std::min(n_records, lo + kFusedRecordRange), cos_val, sin_val, fused_scale);
+        const size_t lo = range * fused_record_range;
+        apply_fused_record_range(fc,
+                                 c,
+                                 lo,
+                                 std::min(n_records, lo + fused_record_range),
+                                 cos_val,
+                                 sin_val,
+                                 fused_scale);
     });
 }
 

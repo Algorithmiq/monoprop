@@ -138,9 +138,10 @@
  * Failure: every call that can throw runs inside a phase. A failure suppresses every later phase body on every
  * worker, the team joins, and the original exception of the lowest-numbered failing worker is returned (not
  * rethrown) together with whether mutation had started. Nothing is rolled back: once mutation started, the shards
- * are partly updated and the rank-level owner must be treated as invalid. Independent copies are unaffected. If a
- * physical round still has live requests after a failed join, the seam hands the error to mpi::operation_failed()
- * itself, before any request owner is destroyed: on a multi-rank communicator that aborts it.
+ * are partly updated and the rank-level owner must be treated as invalid. Independent copies are unaffected. On a
+ * multi-rank communicator the seam hands every failure, before or after mutation, to mpi::operation_failed() itself,
+ * before any request owner is destroyed, which aborts the communicator: the peers would otherwise wait for this rank in
+ * the operation's rounds or later collectives.
  */
 
 namespace monoprop::detail::sharded {
@@ -169,7 +170,7 @@ enum class ConstructionWork : std::uint8_t {
  * \brief The observer production code uses: it does nothing and compiles away.
  *
  * `visit(work, step, shard)` runs inside the protected phase, on the thread that performs `work` for `shard`, before
- * that work; `step` is the gate-loop step or kNoStep. `kernels(shard)` supplies the range observer the shard's
+ * that work; `step` is the gate-loop step or no_step. `kernels(shard)` supplies the range observer the shard's
  * kernels and exchange phases report to (see NoRangeObserver and LayerBuildEngine); it is called once, by the owner,
  * in its frame phase. Tests substitute observers that record the executing worker, capture streams or throw; an
  * exception from either method is that phase's failure. A test observer may also define
@@ -259,8 +260,8 @@ struct InformedCircuit {
  * \brief What a construction reports after its team has joined.
  *
  * The seam a rank-level caller applies its validity policy at: with an error and `mutation_started`, the shards are
- * partly updated and the owner must be invalidated (and, in a multi-rank run, the communicator aborted) before the
- * error is rethrown; with an error and no mutation, the shards are unchanged and the owner stays usable.
+ * partly updated and the owner must be invalidated before the error is rethrown; with an error and no mutation, the
+ * shards are unchanged and the owner stays usable. A multi-rank failure never gets here: the seam aborts it.
  */
 struct ConstructionOutcome {
     std::exception_ptr error;      //!< The lowest-numbered failing worker's original exception, or empty.
@@ -509,12 +510,12 @@ auto check_arguments(const char *what,
     }
     // The router's geometry must be this process's: its ranks, and T shards per rank.
     if (ctx.router.ranks() != ctx.world.ranks || ctx.world.rank >= ctx.world.ranks
-        || ctx.router.partitions() != shards.size()) {
+        || ctx.router.shards_per_rank() != shards.size()) {
         throw std::invalid_argument(std::format("sharded::{}: routing geometry ({} ranks, {} shards per rank) does not "
                                                 "match rank {} of {} with {} shards",
                                                 what,
                                                 ctx.router.ranks(),
-                                                ctx.router.partitions(),
+                                                ctx.router.shards_per_rank(),
                                                 ctx.world.rank,
                                                 ctx.world.ranks,
                                                 shards.size()));
@@ -624,7 +625,7 @@ auto run_gates(parallel::Options options,
         ShardState<NumModes> &own = *shards[t];
 
         if (!phase(failure, t, [&] {
-                observer.visit(W::frame, kNoStep, t);
+                observer.visit(W::frame, no_step, t);
                 frames[t] = std::make_unique<Frame>(observer.kernels(t));
                 replay_pairs[t] = &frames[t]->replay_published;
             })) {
@@ -637,7 +638,7 @@ auto run_gates(parallel::Options options,
         if constexpr (Informed) {
             // The seed: the current picture, or the existing graph replayed from it at the seed angles.
             if (!phase(failure, t, [&] {
-                    observer.visit(W::seed, kNoStep, t);
+                    observer.visit(W::seed, no_step, t);
                     frame.informed = own.op.current_picture(schrodinger);
                     frame.coeffs = &frame.informed;
                     if (seed_params != nullptr) {
@@ -658,7 +659,7 @@ auto run_gates(parallel::Options options,
         }
         if constexpr (Fused) {
             if (!phase(failure, t, [&] {
-                    observer.visit(W::picture, kNoStep, t);
+                    observer.visit(W::picture, no_step, t);
                     // Materializes pending initial entries (Heisenberg) or scores the state (Schrödinger).
                     (void)own.op.current_picture(schrodinger);
                     frame.coeffs = schrodinger ? &own.op.state_coeffs : &own.op.op_coeffs;
@@ -1063,7 +1064,7 @@ auto run_gates(parallel::Options options,
 
         // The last phase: its decision ends the sequence either way.
         static_cast<void>(phase(failure, t, [&] {
-            observer.visit(W::caches, kNoStep, t);
+            observer.visit(W::caches, no_step, t);
             frame.work.reset();
             own.op.warm_caches(schrodinger);
             if (own.op.slack_copy_bytes() < small_slack_copy_bytes) {
@@ -1074,10 +1075,13 @@ auto run_gates(parallel::Options options,
             }
         }));
     });
-    // A request still live after a failed join belongs to a round some peer may never complete: hand the failure to
-    // the distributed policy now, before any request owner is destroyed (see the header comment).
-    const auto live = [](const PhysicalExchange *round) { return round != nullptr && round->live() != 0; };
-    if (error && (live(queries) || live(answers) || live(replay))) {
+    /*
+     * The peers run this same operation, so a failure here, before mutation (a frame allocation) or after it, leaves
+     * them waiting in its rounds or in a later collective, and a request still live belongs to a round some peer may
+     * never complete. On a multi-rank communicator the failure goes to the distributed policy now, before any request
+     * owner is destroyed (see the header comment).
+     */
+    if (error && multirank) {
         mpi::operation_failed(world.comm, error);
     }
     // The owner's construction rounds keep no staging between operations: no evaluation reads it, so holding it would
