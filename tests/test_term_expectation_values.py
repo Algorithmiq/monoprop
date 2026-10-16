@@ -27,7 +27,7 @@ import pytest
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.pauli import Pauli, PauliOperator
-from tests.cases import load_problem
+from tests.reference_data import load_problem
 
 DATA = Path(__file__).parent / "data"
 
