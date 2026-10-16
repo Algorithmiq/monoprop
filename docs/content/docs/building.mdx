@@ -21,7 +21,10 @@ without MPI, so a from-source build is required for multi-rank runs.
 
 ## Prerequisites
 
-- a C++23-compliant compiler; on Linux the minimum supported versions are **GCC 14** and **Clang 18**
+- a C++23-compliant compiler; on Linux the minimum supported versions are **GCC 14** and **Clang 18**.
+  GCC builds pass `-ffp-contract=on`, so GCC, like Clang by default, fuses a multiply and an add only within one
+  expression; the test suite's bitwise comparisons between code paths rely on it. A project that compiles the
+  installed headers itself uses its own contraction setting.
 - CMake and Ninja
 - Python 3.11 or newer and the `uv` package manager (for the bindings)
 - an MPI implementation such as Open MPI (only for MPI builds)
