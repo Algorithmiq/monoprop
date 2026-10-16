@@ -167,7 +167,7 @@ inline auto paired_op_size(size_t max_ones, size_t logical_num_modes) -> size_t 
 // The emission order is a contract. Ascending pair count, then, within a pair count, ascending
 // lexicographic order of the selected modes' index tuple. A distributed propagator turns this sequence
 // into row indices by keeping the entries it owns and numbering them 0, 1, 2, ..., so reordering the walk
-// renumbers every stored row and stops two runs at one (rank, partition) count from being bit-identical.
+// renumbers every stored row and stops two runs at one (rank, shard) count from being bit-identical.
 template <size_t NumModes, typename F>
 auto for_each_paired_monomial(size_t max_ones, size_t logical_num_modes, F &&f) -> void {
     // Clamp in pairs, not bits: max_ones counts pairs and bounds the fill over `selector`, one slot per mode.

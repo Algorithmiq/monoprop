@@ -28,6 +28,39 @@
 
 namespace monoprop::detail {
 
+/*!
+ * \brief The kinds of logical work range a threaded kernel reports to its range observer (see NoRangeObserver).
+ */
+enum class KernelRange {
+    cos_lazy,       //!< scale_cos_lazy: one range per kColumnBlockWords fold words.
+    cos_mask,       //!< scale_cos_mask: one range per cos_mask_range_blocks stored mask blocks.
+    fused_gather,   //!< apply_fused_contract insert snapshots: one range per fused_record_range records.
+    fused_apply,    //!< apply_fused_contract rotations: one range per fused_record_range records.
+    scan,           //!< fused_find_and_collect: one range per contiguous run of whole fold blocks (scan_ranges).
+    decode,         //!< probe_incoming_queries record decode: one range per probe_block_queries queries.
+    incoming_probe, //!< probe_frozen_positions over incoming queries: one range per probe_block_queries queries.
+    self_probe,     //!< probe_frozen_positions over one self window: one range per probe_block_queries queries.
+    scatter,        //!< resolve_incoming on_resolved scatter: one range per resolve_scatter_block queries.
+};
+
+/*!
+ * \brief The observer production kernels use: it does nothing and compiles away.
+ *
+ * A kernel calls `prepare(kind, ranges)` once on the calling thread before any range runs, then
+ * `visit(kind, range)` at the start of each logical range, from whichever thread owns that range. Tests
+ * substitute an observer that records the worker of each range; that seam is the only reason the kernels
+ * take an observer, and no production caller passes one.
+ */
+struct NoRangeObserver {
+    auto prepare(KernelRange /*kind*/, size_t /*ranges*/) const noexcept -> void {}
+    auto visit(KernelRange /*kind*/, size_t /*range*/) const noexcept -> void {}
+};
+
+//! Number of `per_range`-sized logical ranges covering `items`.
+inline constexpr auto logical_ranges(size_t items, size_t per_range) -> size_t {
+    return (items + per_range - 1) / per_range;
+}
+
 // Sentinel for "no index resolved yet" in the resolve slots. Deliberately equal to
 // OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();

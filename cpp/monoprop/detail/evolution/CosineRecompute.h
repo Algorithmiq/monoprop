@@ -29,15 +29,23 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
+#include "monoprop/MPGraph.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
+#include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/parallel/Options.h"
+#include "monoprop/detail/parallel/Workshare.h"
 
 namespace monoprop::detail {
+
+//! Stored mask blocks (one 64-bit word each) per scale_cos_mask range: as many words as a fold block.
+inline constexpr size_t cos_mask_range_blocks = kColumnBlockWords;
 
 // Reconstruct a layer's generator Monomial from the raw words stored on its LayerCore.
 template <size_t NumModes>
@@ -51,7 +59,7 @@ inline auto generator_from_words(const std::vector<uint64_t> &gw) -> Monomial<Nu
 //
 // Deliberately holds no pointer into the index. row_parity_ is a lazily built, mutable vector that
 // append_rows resizes and an index rebuild frees, so a pointer cached here would dangle: a
-// LazyFold lives inside a retained functional closure (build_cos_callbacks keeps one per graph
+// LazyFold lives inside a retained functional closure (make_cos_callbacks keeps one per graph
 // layer), which outlives any number of build_graph calls. Fetch it at use time instead --
 // fold_row_parity() below costs one empty() test.
 struct FoldMask {
@@ -185,6 +193,42 @@ template <size_t NumModes, typename WordOp>
                                  [](size_t, size_t) {});
 }
 
+/*
+ * A layer's cosine fold words in [wlo, whi), ascending, as for_each_fold_word() visits them (zero words skipped), for
+ * the per-call kernels. A fold of one block takes the direct word sweep: the posting choice pays only across many
+ * words, and for_each_fold_word()'s setup (cursors, a lower_bound per column, posting counts) dominated a small fold
+ * (T = 1 tiny energies took 40 % longer per call). Both give the same words. `row_parity` is fold_row_parity(),
+ * fetched by the caller; the fold block is the executing thread's own.
+ */
+template <size_t NumModes, typename WordOp>
+inline auto for_each_cos_fold_word(const InvertedIndex<NumModes> &sc,
+                                   const LazyFold<NumModes> &r,
+                                   size_t wlo,
+                                   size_t whi,
+                                   const uint64_t *row_parity,
+                                   WordOp &&on_word) -> void {
+    const std::span<const size_t> columns{r.columns.data(), r.columns.size()};
+    if (r.fold.mask_words <= kColumnBlockWords) {
+        uint64_t *const blk = column_block_scratch().data();
+        combine_columns_block<NumModes>(sc, columns, blk, wlo, whi);
+        for (size_t wi = wlo; wi < whi; ++wi) {
+            if (const uint64_t bits = apply_fold_mask(blk[wi - wlo], wi, r.fold, row_parity); bits != 0) {
+                on_word(wi, bits);
+            }
+        }
+        return;
+    }
+    for_each_fold_word<NumModes>(sc,
+                                 columns,
+                                 wlo,
+                                 whi,
+                                 r.fold.last_word,
+                                 r.fold.last_mask,
+                                 row_parity,
+                                 on_word,
+                                 [](size_t, size_t) {});
+}
+
 // Append a layer's cosine-set indices to `out`, ascending.
 template <size_t NumModes>
 auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, std::vector<TermIndex> &out)
@@ -194,17 +238,64 @@ auto cos_indices_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes
     });
 }
 
+// The number of indices cos_indices_lazy() appends: the same fold, popcounted.
+template <size_t NumModes>
+auto cos_count_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r) -> size_t {
+    size_t count = 0;
+    for_each_lazy_fold_word<NumModes>(sc, r, [&count](size_t /*wi*/, uint64_t bits) {
+        count += static_cast<size_t>(std::popcount(bits));
+    });
+    return count;
+}
+
+// The number of indices cos_indices_mask() appends.
+inline auto cos_count_mask(const CosMask &cos) -> size_t {
+    size_t count = 0;
+    for (const auto &block : cos.blocks) {
+        count += static_cast<size_t>(std::popcount(block.second));
+    }
+    return count;
+}
+
 inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) -> void {
     for (const auto &[base, bits] : cos.blocks) {
         for_each_cos_index(base, bits, [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
     }
 }
 
-template <size_t NumModes>
-auto scale_cos_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> &r, double *coeff, double cos_val)
-    -> void {
-    for_each_lazy_fold_word<NumModes>(sc, r, [&](size_t wi, uint64_t bits) {
-        for_each_cos_index(wi * 64, bits, [&](size_t i) { coeff[i] *= cos_val; });
+/*!
+ * \brief Multiply every coefficient in a layer's recomputed cosine set by `cos_val`.
+ *
+ * Each kColumnBlockWords fold block is one logical range, so the ranges touch disjoint coefficients. A range folds
+ * its own words (for_each_cos_fold_word()) with the executing thread's own scratch; no caller is inside another fold.
+ *
+ * \param sc       The inverted index the fold reads; must not change during the call.
+ * \param r        The layer's fold recipe.
+ * \param coeff    Coefficients, covering at least `r.fold.mask_words * 64` rows or the index rows.
+ * \param cos_val  The factor.
+ * \param options  Thread budget.
+ * \param observer Test seam; see NoRangeObserver.
+ */
+template <size_t NumModes, class Observer = NoRangeObserver>
+auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
+                    const LazyFold<NumModes> &r,
+                    double *coeff,
+                    double cos_val,
+                    parallel::Options options = {},
+                    const Observer &observer = {}) -> void {
+    const size_t mask_words = r.fold.mask_words;
+    // Fetched here, on the caller, for this call only: row_parity_words() builds its cache lazily, so it must
+    // never run in a worker, and the pointer moves whenever the index grows.
+    const uint64_t *const row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    const size_t ranges = logical_ranges(mask_words, kColumnBlockWords);
+    observer.prepare(KernelRange::cos_lazy, ranges);
+    parallel::for_blocks(ranges, options, [&](size_t range) {
+        observer.visit(KernelRange::cos_lazy, range);
+        const size_t bb = range * kColumnBlockWords;
+        const size_t be = std::min(bb + kColumnBlockWords, mask_words);
+        for_each_cos_fold_word<NumModes>(sc, r, bb, be, row_parity, [&](size_t wi, uint64_t bits) {
+            for_each_cos_index(wi * 64, bits, [&](size_t i) { coeff[i] *= cos_val; });
+        });
     });
 }
 
@@ -215,9 +306,11 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          double *state,
                          double *ham,
                          double cos_val,
-                         double sec_val) -> double {
+                         double sec_val,
+                         [[maybe_unused]] parallel::Options options = {}) -> double {
     double loc = 0.0;
-    for_each_lazy_fold_word<NumModes>(sc, r, [&](size_t wi, uint64_t bits) {
+    const uint64_t *const row_parity = fold_row_parity<NumModes>(sc, r.fold);
+    for_each_cos_fold_word<NumModes>(sc, r, 0, r.fold.mask_words, row_parity, [&](size_t wi, uint64_t bits) {
         for_each_cos_index(wi * 64, bits, [&](size_t i) {
             loc += state[i] * ham[i];
             ham[i] *= sec_val;
@@ -227,15 +320,42 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
     return loc;
 }
 
-inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val) -> void {
+/*!
+ * \brief Multiply every coefficient in a stored cosine mask by `cos_val`, leaving all others untouched.
+ *
+ * Each cos_mask_range_blocks run of mask blocks is one logical range. CosMask blocks are ascending with
+ * distinct word-aligned bases, so the ranges touch disjoint coefficients.
+ *
+ * \param coeff    Coefficients, covering every index in `cos`.
+ * \param cos      The mask.
+ * \param cos_val  The factor.
+ * \param options  Thread budget.
+ * \param observer Test seam; see NoRangeObserver.
+ */
+template <class Observer = NoRangeObserver>
+auto scale_cos_mask(double *coeff,
+                    const CosMask &cos,
+                    double cos_val,
+                    parallel::Options options = {},
+                    const Observer &observer = {}) -> void {
     const size_t n = cos.blocks.size();
-    for (size_t k = 0; k < n; ++k) {
-        const auto [base, bits] = cos.blocks[k];
-        for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
-    }
+    const size_t ranges = logical_ranges(n, cos_mask_range_blocks);
+    observer.prepare(KernelRange::cos_mask, ranges);
+    parallel::for_blocks(ranges, options, [&](size_t range) {
+        observer.visit(KernelRange::cos_mask, range);
+        const size_t hi = std::min(n, (range + 1) * cos_mask_range_blocks);
+        for (size_t k = range * cos_mask_range_blocks; k < hi; ++k) {
+            const auto [base, bits] = cos.blocks[k];
+            for_each_cos_index(base, bits, [&](size_t i) { coeff[i] *= cos_val; });
+        }
+    });
 }
-inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
-    -> double {
+inline auto accumulate_cos_mask(double *state,
+                                double *ham,
+                                const CosMask &cos,
+                                double cos_val,
+                                double sec_val,
+                                [[maybe_unused]] parallel::Options options = {}) -> double {
     const size_t n = cos.blocks.size();
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {
@@ -249,9 +369,11 @@ inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, 
     return loc;
 }
 
+// Fold into `c`, replacing its contents; reuses its capacity.
 template <size_t NumModes>
-inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
-    CosMask c;
+inline auto fold_to_cos_mask_into(const FoldCache<NumModes> &p, CosMask &c) -> void {
+    c.blocks.clear();
+    c.total_count = 0;
     for (size_t wi = 0; wi < p.fold.mask_words; ++wi) {
         const uint64_t b = fold_word<NumModes>(p, wi);
         if (b) {
@@ -259,6 +381,12 @@ inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
             c.total_count += static_cast<size_t>(std::popcount(b));
         }
     }
+}
+
+template <size_t NumModes>
+inline auto fold_to_cos_mask(const FoldCache<NumModes> &p) -> CosMask {
+    CosMask c;
+    fold_to_cos_mask_into<NumModes>(p, c);
     return c;
 }
 // Cos-index count without materialising the blocks; for diagnostics (graph_size).
@@ -278,6 +406,113 @@ inline auto fold_to_indices(const FoldCache<NumModes> &p) -> VecZ {
         for_each_cos_index(wi * 64, fold_word<NumModes>(p, wi), [&](size_t i) { inds.push_back(i); });
     }
     return inds;
+}
+
+/*!
+ * \brief A layer's full cosine set (see full_cos_mask()) folded into `out`, replacing its contents and reusing its
+ * capacity: a caller that folds layer after layer into one buffer allocates it once instead of once per layer.
+ */
+template <size_t NumModes>
+auto full_cos_mask_into(const InvertedIndex<NumModes> &inverted_index,
+                        const LayerTraversal &layer,
+                        Basis basis,
+                        CosMask &out) -> void {
+    const auto gen = generator_from_words<NumModes>(layer.generator_words());
+    const auto combined = make_fold_cache<NumModes>(inverted_index, gen, layer.scaled_count(), basis);
+    fold_to_cos_mask_into<NumModes>(combined, out);
+}
+
+/*!
+ * \brief A layer's full cosine set, folded from `inverted_index` and materialized as a mask; the paring input.
+ * \param inverted_index The index of the store the layer's rows belong to.
+ * \param layer          The layer; its generator words and scaled_count select the fold.
+ * \param basis          The coefficient encoding.
+ */
+template <size_t NumModes>
+auto full_cos_mask(const InvertedIndex<NumModes> &inverted_index, const LayerTraversal &layer, Basis basis) -> CosMask {
+    CosMask mask;
+    full_cos_mask_into<NumModes>(inverted_index, layer, basis, mask);
+    return mask;
+}
+
+/*!
+ * \brief Per-layer cosine callbacks replaying `graph` against `inverted_index`.
+ *
+ * A pared layer replays its stored mask (an empty stored mask replays nothing); every other layer recomputes its
+ * fold from the index. Each closure captures `options` for its kernels. The closures keep raw pointers into the index
+ * and into the layers' stored masks, so they must outlive neither the index nor the graph owning those layers. Row
+ * parity words are fetched inside each call, never cached, since they move whenever the store grows. The result is
+ * marked CosCallbacks::owner_parallel. Named apart from monoprop::build_cos_callbacks,
+ * which delegates here, so argument-dependent lookup never makes an unqualified call ambiguous: the closures touch only
+ * this index, these layers and thread-local scratch.
+ *
+ * \param inverted_index The index of the store whose rows the graph's endpoints name.
+ * \param graph          The replay window; its layers must outlive the callbacks.
+ * \param basis          The coefficient encoding (Pauli folds the generator's J image).
+ * \param options        The kernels' thread budget; serial by default.
+ */
+template <size_t NumModes>
+auto make_cos_callbacks(const InvertedIndex<NumModes> &inverted_index,
+                        const MPGraphView &graph,
+                        Basis basis = Basis::Majorana,
+                        parallel::Options options = {}) -> CosCallbacks {
+    struct LayerCos {
+        bool recomputes_cos = false;
+        LazyFold<NumModes> recipe{};       // used iff recomputes_cos
+        const CosMask *filtered = nullptr; // points into a pruned layer's stored cos
+    };
+    auto cache = std::make_shared<std::vector<LayerCos>>();
+    cache->reserve(graph.layers());
+    for (size_t i = 0; i < graph.layers(); ++i) {
+        const auto &layer = graph.get_layer(i);
+        LayerCos entry;
+        if (const CosMask *pruned = layer.pruned_cos(); pruned != nullptr) {
+            entry.recomputes_cos = false;
+            entry.filtered = pruned;
+        }
+        else {
+            entry.recomputes_cos = true;
+            const auto t = layer.traversal();
+            const auto gen = generator_from_words<NumModes>(t.generator_words());
+            entry.recipe = make_lazy_fold<NumModes>(inverted_index, gen, t.scaled_count(), basis);
+        }
+        cache->push_back(std::move(entry));
+    }
+
+    const auto *sc = &inverted_index;
+    LayerCosScale cos_scale = [cache, sc, options](size_t i, double *c, double v) {
+        const auto &e = (*cache)[i];
+        if (!e.recomputes_cos) {
+            scale_cos_mask(c, *e.filtered, v, options);
+        }
+        else {
+            scale_cos_lazy<NumModes>(*sc, e.recipe, c, v, options);
+        }
+    };
+    LayerCosAccumulate cos_acc = [cache, sc, options](size_t i, double *s, double *h, double v, double sec) {
+        const auto &e = (*cache)[i];
+        if (!e.recomputes_cos) {
+            return accumulate_cos_mask(s, h, *e.filtered, v, sec, options);
+        }
+        return accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec, options);
+    };
+    LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<TermIndex> &out) {
+        const auto &e = (*cache)[i];
+        if (!e.recomputes_cos) {
+            cos_indices_mask(*e.filtered, out);
+            return;
+        }
+        cos_indices_lazy<NumModes>(*sc, e.recipe, out);
+    };
+    LayerCosCount cos_count = [cache, sc](size_t i) -> size_t {
+        const auto &e = (*cache)[i];
+        return e.recomputes_cos ? cos_count_lazy<NumModes>(*sc, e.recipe) : cos_count_mask(*e.filtered);
+    };
+    return {.scale = std::move(cos_scale),
+            .accumulate = std::move(cos_acc),
+            .indices = std::move(cos_inds),
+            .count = std::move(cos_count),
+            .owner_parallel = true};
 }
 
 } // namespace monoprop::detail

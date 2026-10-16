@@ -25,6 +25,7 @@
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
+#include "monoprop/detail/parallel/Options.h"
 #include "monoprop/monopropExport.h"
 
 namespace monoprop {
@@ -83,17 +84,19 @@ monoprop_EXPORT auto map_params(const VecD &parameters,
 /// into it. Built at the call site and consumed there -- every member but `graph` is a non-owning
 /// reference, and `graph` is itself a view over layers the caller keeps alive.
 struct EvalRequest {
-    double e_core;                 ///< the identity term, added to the summed expectation value
-    const EvalState &state;        ///< the contraction partner; see EvalState
-    const VecD &op;                ///< un-evolved operator coefficients, one per term on this rank
-    const VecZ &parameter_mapping; ///< optimizer order: which parameter drives graph layer i
-    const VecD &gen_coeffs;        ///< optimizer order, parallel to parameter_mapping
-    MPGraphView graph;             ///< replay window; MPGraph callers pass graph.replay_view()
-    const VecD &params;            ///< the optimizer's parameter vector, indexed by parameter_mapping
+    double e_core;                           ///< the identity term, added to the summed expectation value
+    const EvalState &state;                  ///< the contraction partner; see EvalState
+    const VecD &op;                          ///< un-evolved operator coefficients, one per term on this rank
+    const VecZ &parameter_mapping;           ///< optimizer order: which parameter drives graph layer i
+    const VecD &gen_coeffs;                  ///< optimizer order, parallel to parameter_mapping
+    MPGraphView graph;                       ///< replay window; MPGraph callers pass graph.replay_view()
+    const VecD &params;                      ///< the optimizer's parameter vector, indexed by parameter_mapping
+    detail::parallel::Options parallel = {}; ///< the owning propagator's thread budget; serial by default
 };
 
 /// Expectation value of the evolved operator against `request.state` plus `request.e_core`, summed over all
 /// ranks. `cos.scale` is required if `request.params` is non-empty; `cos.accumulate` is ignored here.
+/// A rank-local failure past argument validation goes to mpi::operation_failed() before the allreduce.
 monoprop_EXPORT auto ev(const EvalRequest &request,
                         mpi::Comm comm = MPI_COMM_WORLD,
                         const detail::CosCallbacks &cos = {}) -> double;

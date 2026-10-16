@@ -1,12 +1,12 @@
 {
   lib,
+  stdenv,
   buildPythonPackage,
   python,
 
   # build tooling
   cmake,
   ninja,
-  pkg-config,
   nanobind_3,
   nanobind-backend,
   scikit-build-core,
@@ -14,7 +14,7 @@
 
   # C++ dependencies
   boost,
-  hwloc,
+  llvmPackages,
 
   # runtime dependencies
   msgpack,
@@ -63,7 +63,6 @@ buildPythonPackage {
   nativeBuildInputs = [
     cmake
     ninja
-    pkg-config
   ];
 
   build-system = [
@@ -81,10 +80,12 @@ buildPythonPackage {
   # variable is deliberately left unset -- see `env` below.
   ++ lib.optionals withMPI [ mpi4py ];
 
+  # OpenMP is required. GCC's libgomp comes with the stdenv compiler; Clang (the Darwin
+  # stdenv) needs the matching LLVM runtime.
   buildInputs = [
     boost
-    hwloc
   ]
+  ++ lib.optionals stdenv.cc.isClang [ llvmPackages.openmp ]
   ++ lib.optionals withMPI [ mpi ];
 
   dependencies = [

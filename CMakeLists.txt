@@ -65,6 +65,10 @@ find_package(
 
 find_package(Threads REQUIRED)
 
+# Required in every configuration, including MPI-off and single-thread builds: there is no
+# OpenMP-disabled variant of the library.
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+
 if(monoprop_ENABLE_MPI)
   find_package(MPI REQUIRED COMPONENTS CXX)
 endif()

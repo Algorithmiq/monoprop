@@ -57,6 +57,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     auto name = std::format("MonomialPropagator{:03d}", NumModes);
     auto cls = nb::class_<MonomialPropagator<NumModes>>(mod, name.c_str());
 
+    // No partition, thread or shard argument: T is the budget captured at construction.
     cls.def(
         "__init__",
         [](MonomialPropagator<NumModes> *t,
@@ -70,8 +71,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            const std::string &cutoff_type,
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            size_t logical_num_modes,
-           const std::string &basis,
-           size_t partitions) {
+           const std::string &basis) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  initial_state,
@@ -82,8 +82,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  cutoff_type_str_2_enum(cutoff_type),
                                                  basis_change,
                                                  logical_num_modes,
-                                                 basis_str_2_enum(basis),
-                                                 partitions);
+                                                 basis_str_2_enum(basis));
         },
         "initial_operator"_a,
         "cutoff"_a,
@@ -96,8 +95,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "basis_change"_a = std::nullopt,
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
-        "partitions"_a = 0,
-        "Instantiate the simulator.");
+        "Instantiate the simulator; its shard count is the thread budget captured from monoprop_NUM_THREADS.");
 
     cls.def("build_graph",
             &MonomialPropagator<NumModes>::build_graph,
@@ -280,8 +278,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_init_operator_entries", b.init_operator_entries}};
     });
 
-    // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P
-    // the MPI rank count never reveals.
+    // Summed over this rank's stores. The graph's slot arrays are indexed by the flat world (ranks x shards), so these
+    // grow with T as well as with the MPI rank count.
     cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.graph_memory_usage();
         return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},
