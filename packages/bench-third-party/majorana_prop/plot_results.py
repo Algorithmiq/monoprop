@@ -51,7 +51,7 @@ def plot_metric(
 def plot_runtime_figure(
     step_range: list[int], runtimes: dict[str, list[float]], out: Path
 ) -> None:
-    """Save the runtime on its own canvas, both axes linear.
+    """Save the cumulative runtime on its own canvas, both axes linear.
 
     Runtime is the quantity that gets cited on its own, so it gets its own file rather than a
     quarter of the combined grid. Both axes are linear: seconds are read as seconds, so the
@@ -60,9 +60,9 @@ def plot_runtime_figure(
     curve against the axis, which is the finding, not a defect of the axis.
     """
     fig, ax = plt.subplots(figsize=(7.4, 5.4))
-    plot_metric(ax, step_range, runtimes, "time (seconds)")
+    plot_metric(ax, step_range, runtimes, "cumulative time (seconds)")
     ax.set_ylim(bottom=0)
-    ax.set_title("1D Hubbard runtime vs circuit depth", fontsize="medium")
+    ax.set_title("1D Hubbard cumulative runtime vs circuit depth", fontsize="medium")
     # On this axis monoprop's curve lies along the bottom, where a reader cannot tell 4 s from
     # 0 s. State the band's top so the flat line reads as small rather than as absent.
     monoprop = runtimes.get("monoprop")
@@ -110,8 +110,12 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    plot_metric(axes[0, 0], step_range, data["runtime_seconds"], "time (seconds)")
-    axes[0, 0].set_title(f"Runtime vs layers (n_spin={data['n_spinful_sites']})")
+    plot_metric(
+        axes[0, 0], step_range, data["runtime_seconds"], "cumulative time (seconds)"
+    )
+    axes[0, 0].set_title(
+        f"Cumulative runtime vs layers (n_spin={data['n_spinful_sites']})"
+    )
 
     plot_metric(axes[0, 1], step_range, data["num_terms"], "number of terms")
     axes[0, 1].set_title("Number of terms vs layers")

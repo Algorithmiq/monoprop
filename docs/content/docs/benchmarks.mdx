@@ -9,10 +9,11 @@ suite for detecting regressions.
 ## Results
 
 <Figure>
-![Time per step for monoprop against other Pauli and Majorana propagation engines](/benchmarks/headline_runtime.png)
+![Pauli time per step and Majorana cumulative time for monoprop against other propagation engines](/benchmarks/headline_runtime.png)
 
 <Caption>
-  Wall-clock time per step, logarithmic. Final Pauli step, ratios to `monoprop`: 267-325× for the
+  Wall-clock time per Trotter step (Pauli) and cumulative time through each circuit layer (Majorana),
+  logarithmic. Final Pauli step, ratios to `monoprop`: 267-325× for the
   other CPU implementations, 7.8× for the GPU one. Complete Majorana evolution: 27.7× for
   `MajoranaPropagation.jl 0.4.1`.
 </Caption>
@@ -24,13 +25,16 @@ All results are from exclusive nodes on
 
 ### Pauli propagation
 
-Trotterized evolution of a 2D transverse-field Ising model, evaluating a `ZZ` correlator on a fixed
+Trotterized evolution of a 2D tilted-field Ising model, evaluating a `ZZ` correlator on a fixed
 qubit pair. One experiment varies depth, the other lattice size.
 
 #### Fixed lattice, increasing depth
 
 12×12 lattice (144 qubits), 28 Trotter points, `dt = 0.05`, coefficient threshold `1e-6`, no weight
 cutoff; ~33 million terms at the end.
+
+The x axes count actual Trotter steps, 1–28 (`t = 1.4` at the end), not the stored labels 0, 2, …, 54.
+Runtime omits the first step's warm-up measurement; memory includes it.
 
 | Engine | Final step | VS `monoprop` | Peak RSS | VS `monoprop` |
 | --- | ---: | ---: | ---: | ---: |
@@ -92,7 +96,7 @@ implementation) under a 300 s limit. That limit — not the implementations — 
 expectation value, term count and memory recorded per layer.
 
 <Figure>
-![Term count, expectation value, runtime and peak RSS versus layer, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_results.png)
+![Term count, expectation value, cumulative runtime and peak RSS versus layer, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_results.png)
 
 <Caption>
   Expectation values differ by at most 2.0e-6 at every layer. At equal truncation `monoprop` retains
@@ -102,10 +106,11 @@ expectation value, term count and memory recorded per layer.
 </Figure>
 
 <Figure>
-![Runtime versus circuit depth on linear axes, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_runtime.png)
+![Cumulative runtime versus circuit depth on linear axes, monoprop vs MajoranaPropagation.jl](/benchmarks/majorana_runtime.png)
 
 <Caption>
-  Linear scale. The annotation bounds the `monoprop` curve, which otherwise lies near the axis.
+  Cumulative wall-clock time, linear scale. The annotation bounds the `monoprop` curve, which
+  otherwise lies near the axis.
 </Caption>
 </Figure>
 
