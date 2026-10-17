@@ -18,6 +18,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "GraphBuildHarness.h"
@@ -27,6 +28,10 @@ using namespace monoprop;
 using test_utils::core_with_gate;
 using test_utils::graph_with_gates;
 using test_utils::layer_with_gate;
+
+// get_layer() is one deducing-this member, so const-ness of the reference is deduced rather than declared.
+static_assert(std::is_same_v<decltype(std::declval<MPGraph &>().get_layer(0)), Layer &>);
+static_assert(std::is_same_v<decltype(std::declval<const MPGraph &>().get_layer(0)), const Layer &>);
 
 BOOST_AUTO_TEST_CASE(mp_graph_slice_graph_heisenberg_prefix_no_contract) {
     auto graph = graph_with_gates(/*schrodinger=*/false, 5); // layers_ = [0,1,2,3,4]

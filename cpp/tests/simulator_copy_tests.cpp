@@ -32,6 +32,19 @@ static_assert(std::is_copy_constructible_v<MonomialPropagator<8>>, "simulator mu
 static_assert(std::is_move_constructible_v<MonomialPropagator<8>>, "simulator must stay movable");
 static_assert(!std::is_copy_assignable_v<MonomialPropagator<8>>, "copy assignment stays deleted");
 
+// mp_op()/indexing() are single deducing-this members. indexing() reaches its result through a
+// unique_ptr, whose operator* hands back a mutable referent regardless of the owner's const-ness, so
+// without the forward_like a const propagator would silently expose a writable index.
+// `detail` is qualified: the two using-directives above make an unqualified one ambiguous.
+static_assert(
+    std::is_same_v<decltype(std::declval<MonomialPropagator<8> &>().mp_op()), monoprop::detail::MPOperator<8> &>);
+static_assert(std::is_same_v<decltype(std::declval<const MonomialPropagator<8> &>().mp_op()),
+                             const monoprop::detail::MPOperator<8> &>);
+static_assert(
+    std::is_same_v<decltype(std::declval<MonomialPropagator<8> &>().indexing()), monoprop::detail::OperatorIndex<8> &>);
+static_assert(std::is_same_v<decltype(std::declval<const MonomialPropagator<8> &>().indexing()),
+                             const monoprop::detail::OperatorIndex<8> &>);
+
 BOOST_FIXTURE_TEST_CASE(copy_constructed_simulator_matches_energy, ExampleDataFix) {
     SimulatorConfig cfg{.comm = MPI_COMM_SELF};
     auto sim = build_simulator<n_modes>(data, cfg);
