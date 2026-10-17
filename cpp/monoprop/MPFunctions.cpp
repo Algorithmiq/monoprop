@@ -337,4 +337,22 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     return {request.e_core + expectation_value, scratch.gradient};
 }
 
+auto term_values(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> VecD {
+    VecD values;
+    request.state.scatter_into(values);
+    if (request.params.empty()) {
+        return values;
+    }
+    if (!cos.scale) {
+        throw MissingLayerCallback("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
+    }
+    // The forward kernel at −θ is the exact transpose of the layer at θ, cosine-only rows included.
+    auto &mapped_params = eval_scratch().mapped_params;
+    fill_mapped_params(mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, -1.0, true);
+    for (size_t i = request.graph.layers(); i-- > 0;) {
+        evolve_step(values, request.graph, mapped_params[i], i, comm, cos.scale);
+    }
+    return values;
+}
+
 } // namespace monoprop

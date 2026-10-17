@@ -18,14 +18,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from .conversion_utils import _local_slots_to_pauli, _pauli_to_local_slots
 from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
-    import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
@@ -235,6 +236,37 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
         )
+
+    def term_expectation_values(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each Pauli string under the truncated evolution.
+
+        As [term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values],
+        with real values, since Pauli strings are Hermitian.
+
+        Args:
+            terms: [Pauli][monoprop.pauli.Pauli] terms to read.
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
+
+        Returns:
+            A ``float64`` NumPy array, one value per term, in order. The identity reads 1.
+
+        Raises:
+            TypeError: If a term is not a [Pauli][monoprop.pauli.Pauli].
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
+                operator, or once
+                [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an
+                in-place
+                [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+                has absorbed gates into the operator. The Schrodinger picture reads an absent term
+                as 0.
+        """
+        values = super().term_expectation_values(terms, parameters)
+        return np.ascontiguousarray(values.real)
 
     def update_initial_operator(self, new_operator: PauliOperator) -> None:
         """Replace the *initial operator* (existing terms only).

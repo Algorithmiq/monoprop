@@ -612,6 +612,44 @@ class MonomialPropagator(ABC, Generic[T_op]):
             dtype=complex,
         )
 
+    def term_expectation_values(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each term under the truncated evolution.
+
+        For an initial operator ``O = sum_i c_i * P_i``, [expectation_value][] is
+        ``sum_i c_i * v_i``, and this returns the ``v_i``. The sum includes the identity, whose
+        value is 1. The values depend on ``parameters`` but not on the coefficients. All come from
+        one backward pass over the graph, at about the cost of one [expectation_value][] call.
+
+        In the Heisenberg picture, a value is the expectation value only for a term of the initial
+        operator. A term the graph created mid-circuit reads the derivative of
+        [expectation_value][] with respect to its coefficient, under a graph that did not
+        propagate it from the start.
+
+        Args:
+            terms: The operator terms to read, canonical as for [evolved_operator_coefficients][].
+            parameters: Variational parameter values (see [expectation_value][]).
+
+        Returns:
+            A complex NumPy array, one value per term, in order, such that a term's coefficient
+            times its value is its contribution. The empty term reads 1.
+
+        Raises:
+            TypeError: If an operator term is of the wrong form for the front-end.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
+                operator, or once [propagate][] or an in-place [contract_partially][] has absorbed
+                gates into the operator. The Schrodinger picture reads an absent term as 0.
+        """
+        slots = self._encode_terms(list(terms))
+        return np.asarray(
+            self._simulator.term_expectation_values(self._bind(parameters), slots),
+            dtype=complex,
+        )
+
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
         """Replace the *initial operator* (existing terms only).
