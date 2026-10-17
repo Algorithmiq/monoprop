@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tests.cases import load_problem
+from tests.reference_data import load_problem
 
 MPI = pytest.importorskip("mpi4py").MPI
 

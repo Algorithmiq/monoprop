@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -435,18 +435,6 @@ wheels = [
 ]
 
 [[package]]
-name = "decopatch"
-version = "1.4.10"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "makefun" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/90/4c/8ca1f193428cbc4d63d0f07db9b8bd96be2db8ee5deefa93e7e8a28f2812/decopatch-1.4.10.tar.gz", hash = "sha256:957f49c93f4150182c23f8fb51d13bb3213e0f17a79e09c8cca7057598b55720", size = 69538, upload-time = "2022-03-01T08:57:21.79Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/fa/8e4a51e1afda8d4bd73d784bfe4a60cfdeeced9bea419eff5c271180377e/decopatch-1.4.10-py2.py3-none-any.whl", hash = "sha256:e151f7f93de2b1b3fd3f3272dcc7cefd1a69f68ec1c2d8e288ecd9deb36dc5f7", size = 18015, upload-time = "2022-03-01T08:57:20.676Z" },
-]
-
-[[package]]
 name = "decorator"
 version = "5.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -865,15 +853,6 @@ wheels = [
 ]
 
 [[package]]
-name = "makefun"
-version = "1.16.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7b/cf/6780ab8bc3b84a1cce3e4400aed3d64b6db7d5e227a2f75b6ded5674701a/makefun-1.16.0.tar.gz", hash = "sha256:e14601831570bff1f6d7e68828bcd30d2f5856f24bad5de0ccb22921ceebc947", size = 73565, upload-time = "2025-05-09T15:00:42.313Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/c0/4bc973defd1270b89ccaae04cef0d5fa3ea85b59b108ad2c08aeea9afb76/makefun-1.16.0-py2.py3-none-any.whl", hash = "sha256:43baa4c3e7ae2b17de9ceac20b669e9a67ceeadff31581007cca20a07bbe42c4", size = 22923, upload-time = "2025-05-09T15:00:41.042Z" },
-]
-
-[[package]]
 name = "markdown-it-py"
 version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1071,7 +1050,6 @@ bench = [
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
-    { name = "pytest-cases" },
     { name = "pytest-cov" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi" },
@@ -1101,7 +1079,6 @@ interactive = [
 test = [
     { name = "psutil" },
     { name = "pytest" },
-    { name = "pytest-cases" },
     { name = "pytest-cov" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi" },
@@ -1111,7 +1088,6 @@ workspace-test = [
     { name = "monoprop-bench-tools" },
     { name = "psutil" },
     { name = "pytest" },
-    { name = "pytest-cases" },
     { name = "pytest-cov" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi" },
@@ -1134,7 +1110,6 @@ bench = [
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
     { name = "pytest-benchmark", specifier = ">=5" },
-    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
@@ -1164,7 +1139,6 @@ interactive = [
 test = [
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
-    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
@@ -1174,7 +1148,6 @@ workspace-test = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.1" },
-    { name = "pytest-cases", specifier = ">=3.8.6,<4" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
     { name = "pytest-mpi", git = "https://github.com/aragilar/pytest-mpi.git?rev=nonzero" },
@@ -1850,21 +1823,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/63/8f/83a15e40dbc34a580ee56eb56983cae5394c6e94d50cf28fe268e457be25/pytest_benchmark-5.3.0.tar.gz", hash = "sha256:358444d4e89be901ee2b6404fb043ac3d7684002ad7f3563cc153fca6339c965", size = 375410, upload-time = "2026-08-23T17:45:08.891Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/42/7e80f7cfa191e0a766d1de99b4661847415ad5db34f8209d81fd42175b59/pytest_benchmark-5.3.0-py3-none-any.whl", hash = "sha256:920ab1dfcffa718d49aa15ba144c7e357bda59216a0dc308016cc1c7236f719d", size = 48401, upload-time = "2026-08-23T17:45:07.094Z" },
-]
-
-[[package]]
-name = "pytest-cases"
-version = "3.10.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "decopatch" },
-    { name = "makefun" },
-    { name = "packaging" },
-    { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c1/a2/c7abc3b606125cf3732e8e613092b0e2549365e824b5f37972125c22806b/pytest_cases-3.10.1.tar.gz", hash = "sha256:451f9e3ecd5d2d81a4362c10c441126f5b3d1ae3a7efaf59f60b1fb930df2d69", size = 1095867, upload-time = "2026-03-02T23:05:33.824Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/f2/7a29fb0571562034b05c38dceabba48dcc622be5d6c5448db80779e55de7/pytest_cases-3.10.1-py2.py3-none-any.whl", hash = "sha256:0deb8a85b6132e44adbc1cfc57897c6a624ec23f48ab445a43c7d56a6b9315a4", size = 108870, upload-time = "2026-03-02T23:05:32.663Z" },
 ]
 
 [[package]]

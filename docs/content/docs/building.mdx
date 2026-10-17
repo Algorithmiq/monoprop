@@ -103,7 +103,10 @@ introducing a second Python, Boost, hwloc, or MPI closure:
 
 The overlay adds `monoprop`, `monoprop-mpi` and `nanobind-backend` to every Python
 package set through `pythonPackagesExtensions`, so `ps.monoprop` works for any
-interpreter in `withPackages`. Python 3.12, 3.13 and 3.14 are built in CI. The
+interpreter in `withPackages`. On Python 3.12 it also skips `mpi4py`'s test suite,
+because the binary cache has no `mpi4py` for that interpreter and its tests add
+minutes to every build. CI evaluates the packages for Python 3.12, 3.13 and 3.14
+but builds only Python 3.12, the interpreter the binary cache covers least. The
 top-level `pkgs.monoprop` and `pkgs.monoprop-mpi` are the Python 3.14 builds.
 For consumers that follow their own `nixpkgs` input, its `nanobind_3` version must
 match the nanobind pin in `pyproject.toml` (currently 3.1.0). For consumers that
