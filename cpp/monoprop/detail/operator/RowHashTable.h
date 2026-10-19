@@ -24,6 +24,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "monoprop/TypeAliases.h"
@@ -154,7 +155,13 @@ public:
     template <typename Key, typename Hash, typename PrefetchRow, typename Eq>
     auto find_batch(const Key *keys, size_t n, size_t *out, Hash &&hash, PrefetchRow &&prefetch_row, Eq &&eq) const
         -> void {
-        find_batch_at(n, out, [keys](size_t i) -> const Key & { return keys[i]; }, hash, prefetch_row, eq);
+        find_batch_at(
+            n,
+            out,
+            [keys](size_t i) -> const Key & { return keys[i]; },
+            std::forward<Hash>(hash),
+            std::forward<PrefetchRow>(prefetch_row),
+            std::forward<Eq>(eq));
     }
 
     /*!
