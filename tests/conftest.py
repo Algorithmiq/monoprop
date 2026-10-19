@@ -23,6 +23,10 @@ allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local
 
 from __future__ import annotations
 
+import getpass
+import os
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -30,8 +34,6 @@ import pytest
 from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from tests.reference_data import FermionicProblem
 
 try:
@@ -40,10 +42,33 @@ except ImportError:  # pragma: no cover - exercised in wheel-test environments
     MPI = None
 
 
-def pytest_configure(config: pytest.Config) -> None:
-    """Force pytest-mpi's ``--with-mpi`` under the VS Code adapter, which bypasses
-    wrapper-level argument injection and would otherwise skip every ``mpi``-marked test.
+def _rank_basetemp() -> Path | None:
+    """Per-rank base temporary directory under ``mpiexec``, or ``None`` when serial.
+
+    Every rank is its own pytest process, and without ``--basetemp`` they all prune the same
+    ``pytest-of-<user>`` numbered directories at exit. One rank then deletes a directory another
+    is scanning, and the resulting ``ResourceWarning`` fails the run under
+    ``filterwarnings = error``. An explicit basetemp skips that pruning altogether.
     """
+    if MPI is None or MPI.COMM_WORLD.Get_size() == 1:
+        return None
+    try:
+        user = getpass.getuser()
+    except (ImportError, OSError, KeyError):
+        user = "unknown"
+    temproot = Path(os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir())
+    return temproot / f"pytest-of-{user}" / f"mpi-rank-{MPI.COMM_WORLD.Get_rank()}"
+
+
+# tryfirst: pytest's tmpdir plugin reads --basetemp in its own pytest_configure.
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    """Give each MPI rank its own ``--basetemp``, unless one was passed explicitly, and force
+    pytest-mpi's ``--with-mpi`` under the VS Code adapter, which bypasses wrapper-level argument
+    injection and would otherwise skip every ``mpi``-marked test.
+    """
+    if config.option.basetemp is None and (basetemp := _rank_basetemp()) is not None:
+        config.option.basetemp = basetemp
     invocation_args = tuple(str(arg) for arg in config.invocation_params.args)
     is_vscode_run = config.pluginmanager.hasplugin("vscode_pytest") or any(
         "vscode_pytest" in arg for arg in invocation_args
