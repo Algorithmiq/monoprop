@@ -112,7 +112,7 @@ public:
             }
             s = (s + 1) & mask_;
         }
-        slots_[s] = Slot{static_cast<TermIndex>(value), h};
+        slots_[s] = Slot{.idx = static_cast<TermIndex>(value), .h = h};
         ++count_;
     }
 
@@ -146,7 +146,7 @@ public:
         while (slots_[s].idx != kEmptySlot) {
             s = (s + 1) & mask_;
         }
-        slots_[s] = Slot{idx, h};
+        slots_[s] = Slot{.idx = idx, .h = h};
         ++count_;
     }
 
