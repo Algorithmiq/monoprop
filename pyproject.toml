@@ -303,6 +303,7 @@ ignore = [
   "N806",    # pep8-naming: "variable in function should be lowercase"
   "PLR0913", # pylint refactor: "too many arguments to function call"
   "PLR0915", # pylint refactor: "too many statements"
+  "PLR0917", # pylint refactor: "too many positional arguments": positional parameters are part of the public API; making them keyword-only would break callers
   "PLR2004", # pylint refactor: "magic value used in comparison"
   "TRY003",  # tryceratops: "Avoid specifying long messages outside the exception class"
   "W191",    # tab-indentation: enforced by the formatter
@@ -350,6 +351,9 @@ flake8-annotations.allow-star-arg-any = true
 "packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = [
   "PLC0415",
 ]
+# tutorial notebooks: printing results is how a tutorial shows them (T201), and
+# their small plotting helpers are explained by the surrounding prose (D103).
+"docs/notebooks/**/*.ipynb" = ["D103", "T201"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
