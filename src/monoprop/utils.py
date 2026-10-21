@@ -58,7 +58,7 @@ def jordan_wigner_basis_change(n_qubits: int) -> list[list[int]]:
 
 
 def validate_basis_change(
-    basis_change: None | list[list[int]],
+    basis_change: list[list[int]] | None,
     num_modes: int,
 ) -> None:
     """Validate the basis change.
