@@ -303,6 +303,7 @@ ignore = [
   "N806",    # pep8-naming: "variable in function should be lowercase"
   "PLR0913", # pylint refactor: "too many arguments to function call"
   "PLR0915", # pylint refactor: "too many statements"
+  "PLR0917", # pylint refactor: "too many positional arguments": positional parameters are part of the public API; making them keyword-only would break callers
   "PLR2004", # pylint refactor: "magic value used in comparison"
   "TRY003",  # tryceratops: "Avoid specifying long messages outside the exception class"
   "W191",    # tab-indentation: enforced by the formatter

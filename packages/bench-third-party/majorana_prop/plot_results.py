@@ -22,7 +22,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from palette import ENGINE_COLORS as COLORS  # noqa: E402
+from palette import ENGINE_COLORS as COLORS
 
 
 def plot_metric(
