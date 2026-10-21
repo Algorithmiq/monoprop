@@ -1,0 +1,46 @@
+name: Clean up container images
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily at 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only log the image versions that would be deleted
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: Delete stale GHCR image versions
+    if: github.repository == 'Algorithmiq/monoprop'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: tools/cleanup-ghcr.py
+          sparse-checkout-cone-mode: false
+
+      # tools/cleanup-ghcr.py uses only the standard library.
+      - name: Delete stale image versions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            mode=--dry-run
+          else
+            mode=--no-dry-run
+          fi
+          python3 tools/cleanup-ghcr.py "$mode"

@@ -32,13 +32,44 @@ The token is read from ``GITHUB_TOKEN``.
 
 from __future__ import annotations
 
+import argparse
+import base64
+import datetime as dt
+import json
+import logging
+import os
 import re
+import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import datetime as dt
     from collections.abc import Collection, Mapping, Sequence
+
+logger = logging.getLogger("cleanup-ghcr")
+
+OWNER = "algorithmiq"
+REPOSITORY = "Algorithmiq/monoprop"
+PACKAGES = ("monoprop", "monoprop-base")
+
+API_URL = "https://api.github.com"
+REGISTRY_URL = "https://ghcr.io"
+INDEX_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }
+)
+MANIFEST_ACCEPT = ", ".join(
+    [
+        *sorted(INDEX_MEDIA_TYPES),
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ]
+)
+_NEXT_LINK = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 RELEASE_TAG = re.compile(r"^v?\d+\.\d+\.\d+([.+-]?[0-9A-Za-z.]+)?$")
 PR_TAG = re.compile(r"^pr-(\d+)$")
@@ -110,3 +141,224 @@ def select_deletions(
         for version in versions
         if version.digest not in kept and now - version.created_at >= min_age
     ]
+
+
+def _request(
+    url: str, *, headers: Mapping[str, str], method: str = "GET"
+) -> tuple[bytes, str]:
+    """Send one request and return its body and ``Link`` header."""
+    # The URLs are built from the fixed https bases above.
+    request = urllib.request.Request(url, headers=dict(headers), method=method)  # noqa: S310
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        return response.read(), response.headers.get("Link", "")
+
+
+def _api_headers(token: str) -> dict[str, str]:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _paginate(url: str, token: str) -> list[dict]:
+    items: list[dict] = []
+    next_url: str | None = url
+    while next_url:
+        body, link = _request(next_url, headers=_api_headers(token))
+        items.extend(json.loads(body))
+        match = _NEXT_LINK.search(link)
+        next_url = match.group(1) if match else None
+    return items
+
+
+def list_versions(package: str, token: str) -> list[Version]:
+    """List every version of one of the organisation's container packages.
+
+    Args:
+        package: Package name, e.g. ``monoprop``.
+        token: GitHub token with ``packages: read``.
+
+    Returns:
+        The package's versions.
+    """
+    url = f"{API_URL}/orgs/{OWNER}/packages/container/{package}/versions?per_page=100"
+    return [
+        Version(
+            version_id=item["id"],
+            digest=item["name"],
+            tags=tuple(item["metadata"]["container"]["tags"]),
+            created_at=dt.datetime.fromisoformat(item["created_at"]),
+        )
+        for item in _paginate(url, token)
+    ]
+
+
+def open_pull_requests(token: str) -> set[int]:
+    """Return the numbers of the repository's open pull requests.
+
+    Args:
+        token: GitHub token with ``pull-requests: read``.
+
+    Returns:
+        The open pull request numbers.
+    """
+    url = f"{API_URL}/repos/{REPOSITORY}/pulls?state=open&per_page=100"
+    return {item["number"] for item in _paginate(url, token)}
+
+
+def registry_token(package: str, token: str) -> str:
+    """Exchange a GitHub token for a GHCR pull token for one package.
+
+    Args:
+        package: Package name.
+        token: GitHub token; authenticating also covers packages that are still private.
+
+    Returns:
+        A bearer token for the registry API.
+    """
+    basic = base64.b64encode(f"token:{token}".encode()).decode()
+    url = (
+        f"{REGISTRY_URL}/token?service=ghcr.io&scope=repository:{OWNER}/{package}:pull"
+    )
+    body, _ = _request(url, headers={"Authorization": f"Basic {basic}"})
+    return json.loads(body)["token"]
+
+
+def child_digests(package: str, digest: str, pull_token: str) -> list[str]:
+    """Return the manifests an image index references, or nothing for a plain manifest.
+
+    Args:
+        package: Package name.
+        digest: Digest of the version to inspect.
+        pull_token: Registry token from ``registry_token``.
+
+    Returns:
+        The referenced platform and attestation manifest digests.
+    """
+    url = f"{REGISTRY_URL}/v2/{OWNER}/{package}/manifests/{digest}"
+    body, _ = _request(
+        url,
+        headers={"Accept": MANIFEST_ACCEPT, "Authorization": f"Bearer {pull_token}"},
+    )
+    manifest = json.loads(body)
+    if manifest.get("mediaType") not in INDEX_MEDIA_TYPES:
+        return []
+    return [entry["digest"] for entry in manifest.get("manifests", [])]
+
+
+def delete_version(package: str, version: Version, token: str) -> None:
+    """Delete one package version.
+
+    Args:
+        package: Package name.
+        version: The version to delete.
+        token: GitHub token with ``packages: write`` and admin access to the package.
+    """
+    url = f"{API_URL}/orgs/{OWNER}/packages/container/{package}/versions/{version.version_id}"
+    _request(url, headers=_api_headers(token), method="DELETE")
+
+
+def clean_package(
+    package: str,
+    token: str,
+    open_prs: Collection[int],
+    *,
+    now: dt.datetime,
+    min_age: dt.timedelta,
+    dry_run: bool,
+) -> int:
+    """Apply the retention policy to one package.
+
+    Args:
+        package: Package name.
+        token: GitHub token.
+        open_prs: Numbers of the repository's open pull requests.
+        now: The current time.
+        min_age: Versions younger than this are always kept.
+        dry_run: Only log what would be deleted.
+
+    Returns:
+        The number of deletions that failed.
+    """
+    try:
+        versions = list_versions(package, token)
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+        logger.info("%s: no such package yet, skipping", package)
+        return 0
+    pull_token = registry_token(package, token)
+    children_of = {
+        version.digest: child_digests(package, version.digest, pull_token)
+        for version in versions
+        if is_pinned(version.tags, open_prs)
+    }
+    deletions = select_deletions(
+        versions, open_prs, children_of, now=now, min_age=min_age
+    )
+    logger.info("%s: %d versions, %d to delete", package, len(versions), len(deletions))
+    failures = 0
+    for version in deletions:
+        tags = ", ".join(version.tags) or "untagged"
+        if dry_run:
+            logger.info("  would delete %s (%s)", version.digest, tags)
+            continue
+        try:
+            delete_version(package, version, token)
+        except urllib.error.HTTPError as error:
+            failures += 1
+            logger.warning(
+                "  failed to delete %s (%s): HTTP %d", version.digest, tags, error.code
+            )
+        else:
+            logger.info("  deleted %s (%s)", version.digest, tags)
+    return failures
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the cleanup from the command line."""
+    parser = argparse.ArgumentParser(
+        description="Delete stale monoprop container images from GHCR."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="only log what would be deleted (default: on)",
+    )
+    parser.add_argument(
+        "--min-age-hours",
+        type=float,
+        default=24.0,
+        help="always keep versions younger than this (default: 24)",
+    )
+    parser.add_argument(
+        "--package",
+        action="append",
+        choices=PACKAGES,
+        help="package to clean; repeatable (default: all)",
+    )
+    args = parser.parse_args(argv)
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        parser.error("GITHUB_TOKEN is not set")
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    open_prs = open_pull_requests(token)
+    logger.info(
+        "open pull requests: %s", ", ".join(map(str, sorted(open_prs))) or "none"
+    )
+    now = dt.datetime.now(dt.UTC)
+    min_age = dt.timedelta(hours=args.min_age_hours)
+    failures = sum(
+        clean_package(
+            package, token, open_prs, now=now, min_age=min_age, dry_run=args.dry_run
+        )
+        for package in args.package or PACKAGES
+    )
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

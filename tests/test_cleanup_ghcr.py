@@ -120,3 +120,110 @@ def test_base_shared_by_two_prs_is_kept_while_either_is_open():
 def test_sha_only_versions_are_deleted():
     versions = [_version(1, "sha256:commit", "sha-1a2b3c4")]
     assert _deleted(versions) == {"sha256:commit"}
+
+
+def _fake_registry(monkeypatch, versions, *, fail_on=()):
+    deleted = []
+
+    def delete_version(_package, version, _token):
+        if version.digest in fail_on:
+            raise _module.urllib.error.HTTPError(
+                "https://api.github.com", 403, "Forbidden", {}, None
+            )
+        deleted.append(version.digest)
+
+    monkeypatch.setattr(_module, "list_versions", lambda *_args: versions)
+    monkeypatch.setattr(_module, "registry_token", lambda *_args: "pull-token")
+    monkeypatch.setattr(_module, "child_digests", lambda *_args: [])
+    monkeypatch.setattr(_module, "delete_version", delete_version)
+    return deleted
+
+
+def test_dry_run_deletes_nothing(monkeypatch):
+    deleted = _fake_registry(monkeypatch, [_version(1, "sha256:stale", "sha-1a2b3c4")])
+    failures = _module.clean_package(
+        "monoprop", "token", set(), now=NOW, min_age=MIN_AGE, dry_run=True
+    )
+    assert failures == 0
+    assert deleted == []
+
+
+def test_real_run_deletes_selected_and_counts_failures(monkeypatch):
+    versions = [
+        _version(1, "sha256:stale", "sha-1a2b3c4"),
+        _version(2, "sha256:protected", "sha-5d6e7f8"),
+        _version(3, "sha256:release", "1.2.3"),
+    ]
+    deleted = _fake_registry(monkeypatch, versions, fail_on={"sha256:protected"})
+    failures = _module.clean_package(
+        "monoprop", "token", set(), now=NOW, min_age=MIN_AGE, dry_run=False
+    )
+    assert failures == 1
+    assert deleted == ["sha256:stale"]
+
+
+def test_missing_package_is_skipped(monkeypatch):
+    def list_versions(*_args):
+        raise _module.urllib.error.HTTPError(
+            "https://api.github.com", 404, "Not Found", {}, None
+        )
+
+    monkeypatch.setattr(_module, "list_versions", list_versions)
+    failures = _module.clean_package(
+        "monoprop-base", "token", set(), now=NOW, min_age=MIN_AGE, dry_run=False
+    )
+    assert failures == 0
+
+
+def test_main_requires_a_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    with pytest.raises(SystemExit) as excinfo:
+        _module.main(["--dry-run"])
+    assert excinfo.value.code == 2
+
+
+def test_paginate_follows_link_headers(monkeypatch):
+    pages = {
+        "https://api.github.com/first": (
+            b'[{"number": 7}]',
+            '<https://api.github.com/second>; rel="next", <https://api.github.com/first>; rel="last"',
+        ),
+        "https://api.github.com/second": (b'[{"number": 9}]', ""),
+    }
+    requested = []
+
+    def request(url, **_options):
+        requested.append(url)
+        return pages[url]
+
+    monkeypatch.setattr(_module, "_request", request)
+    assert _module._paginate("https://api.github.com/first", "token") == [
+        {"number": 7},
+        {"number": 9},
+    ]
+    assert requested == [
+        "https://api.github.com/first",
+        "https://api.github.com/second",
+    ]
+
+
+def test_child_digests_lists_index_members_only(monkeypatch):
+    bodies = {
+        "sha256:index": (
+            b'{"mediaType": "application/vnd.oci.image.index.v1+json", '
+            b'"manifests": [{"digest": "sha256:amd64"}, {"digest": "sha256:attestation"}]}'
+        ),
+        "sha256:plain": (
+            b'{"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}'
+        ),
+    }
+
+    def request(url, **_options):
+        return bodies[url.rsplit("/", 1)[1]], ""
+
+    monkeypatch.setattr(_module, "_request", request)
+    assert _module.child_digests("monoprop", "sha256:index", "pull-token") == [
+        "sha256:amd64",
+        "sha256:attestation",
+    ]
+    assert _module.child_digests("monoprop", "sha256:plain", "pull-token") == []
