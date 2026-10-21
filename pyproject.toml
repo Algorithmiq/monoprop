@@ -351,6 +351,9 @@ flake8-annotations.allow-star-arg-any = true
 "packages/monoprop-bench-tools/src/monoprop_bench_tools/memory/gpu.py" = [
   "PLC0415",
 ]
+# tutorial notebooks: printing results is how a tutorial shows them (T201), and
+# their small plotting helpers are explained by the surrounding prose (D103).
+"docs/notebooks/**/*.ipynb" = ["D103", "T201"]
 
 [tool.ruff.lint.pycodestyle]
 # maximum line length to allow for line-length violations within documentation,
