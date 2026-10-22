@@ -86,8 +86,9 @@ srun \
     --ntasks="$(( SLURM_NTASKS_PER_NODE * SLURM_NNODES))" \
     --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
     --threads-per-core=1 \
-    --cpu-bind="verbose,cores" \
-    --distribution=cyclic \
+    --cpu-bind="verbose,threads" \
+    --hint nomultithread \
+    --distribution=block:block \
     bash -c 'echo -n "task $SLURM_PROCID (node name: $(hostname), node id: $SLURM_NODEID): "; taskset -cp $$' | sort -n
 
 # An MPI rank keeps a single partition unless monoprop_NUM_THREADS is set.
@@ -104,8 +105,9 @@ srun \
     --ntasks="$(( SLURM_NTASKS_PER_NODE * SLURM_NNODES))" \
     --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
     --threads-per-core=1 \
-    --cpu-bind="verbose,cores" \
-    --distribution=cyclic \
+    --cpu-bind="verbose,threads" \
+    --hint nomultithread \
+    --distribution=block:block \
     --kill-on-bad-exit=1 \
     singularity exec monoprop_<tag>.sif \
     python3 -u run.py  # <-- CHANGE ME
