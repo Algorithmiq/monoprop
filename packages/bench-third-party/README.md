@@ -32,7 +32,7 @@ For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.
 
 | file | role |
 | ---- | ---- |
-| `model.py` | the tilted-field Ising model — lattice, Trotter step, observable. Imports no propagation library. |
+| `model.py` | the TFIM — lattice, Trotter step, observable. Imports no propagation library. |
 | `backends.py` | one function per backend, each importing its own dependencies *inside* the function, so a missing GPU or extension only affects that backend. |
 | `run_model.py` | fixed size, all Python backends in one process, per-step curves → `results.json`. |
 | `run_model.jl` | adds the `PauliPropagation.jl` column to an existing `results.json`. |
