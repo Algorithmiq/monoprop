@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(heisenberg_after_inplace_contraction_throws) {
 }
 
 // An out-of-range index throws rather than writing past the monomial, since keys are user input.
-BOOST_AUTO_TEST_CASE(out_of_range_slot_index_throws) {
+BOOST_AUTO_TEST_CASE(term_expectation_values_out_of_range_slot_index_throws) {
     const auto data = load_case_data<kNumModes>(kCase);
     auto sim = built_sim(data, kTruncatedCutoff);
     BOOST_CHECK_THROW(sim.term_expectation_values(data.parameters, {VecZ{2 * kNumModes}}), AlgebraIndexOutOfRange);
