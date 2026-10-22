@@ -4,7 +4,7 @@ Standalone benchmark scripts comparing [monoprop](https://github.com/Algorithmiq
 other Pauli-propagation implementations — [QuEra's `ppvm`](https://github.com/QuEraComputing/ppvm),
 Qiskit's `pauli-prop`, NVIDIA's `cuPauliProp` (GPU, via `cuquantum`), and
 [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) — on the same workload:
-Trotterized time evolution of a 2D tilted-field Ising model, tracking the runtime,
+Trotterized time evolution of a 2D transverse-field Ising model (TFIM), tracking the runtime,
 expectation value, and operator size at each Trotter step.
 
 This directory is a self-contained `uv` project, completely isolated from the main monoprop
