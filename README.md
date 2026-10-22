@@ -46,6 +46,10 @@ pip install monoprop      # or: uv add monoprop
 The prebuilt PyPI wheels are single-process (built **without** MPI). For multi-rank
 runs, or to build the C++ library and executables, build from source (see below).
 
+For HPC systems without outbound network, an MPI-enabled container image is published to
+`ghcr.io/algorithmiq/monoprop`; see the
+[HPC clusters documentation](https://docs.monoprop.algorithmiq.tech/clusters).
+
 ## Quick example
 
 Back-propagate a Majorana observable through a one-gate circuit:

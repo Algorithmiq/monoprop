@@ -1,0 +1,137 @@
+---
+title: MareNostrum5
+description: Running the monoprop container image on MareNostrum5 with Singularity and Slurm.
+---
+
+[MareNostrum5](https://www.bsc.es/supportkc/docs/MareNostrum5/intro) (MN5) at BSC has no
+outbound network on its login nodes, so run monoprop from the
+[container image](/clusters): pull it on a machine with internet access, copy it over, and
+launch it with Singularity under Slurm. The image targets the Sapphire Rapids CPUs of both
+the general-purpose (GPP) and accelerated (ACC) partitions.
+
+## Get the image
+
+The image is public, so no registry login is needed. On a machine with internet access
+and Singularity (or Apptainer) installed:
+
+```bash
+singularity pull monoprop_<tag>.sif docker://ghcr.io/algorithmiq/monoprop:<tag>
+```
+
+Copy the `.sif` file (the image is about 1.3 GB unpacked; the `.sif` is compressed and
+smaller) to your project directory on MN5 with `scp` or `rsync` through a login or
+data-transfer node, for example:
+
+```bash
+rsync -P monoprop_<tag>.sif <user>@<mn5-host>:<project-dir>/
+```
+
+## Check the image
+
+From an allocation on a compute node, check that monoprop imports and sees MPI on two
+ranks:
+
+```bash
+module load singularity
+srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif \
+    python3 -c 'import monoprop; print(monoprop.__version__, monoprop.has_mpi)'
+```
+
+Both ranks should print the image's version and `True`. This is the check CI cannot run:
+the CI machines may lack the Sapphire Rapids instructions the image is compiled for.
+
+## Run a job
+
+Adapt this script and submit it with `sbatch`. The account and QoS can also be given on
+the command line.
+
+```bash
+#!/usr/bin/env bash
+#SBATCH --job-name=monoprop
+#SBATCH --chdir=.
+#SBATCH --nodes=2
+#SBATCH --exclusive
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=56
+#SBATCH --threads-per-core=1
+#SBATCH --time=02:00:00
+#SBATCH --output=%x-%j.out
+#SBATCH --error=%x-%j.err
+##SBATCH --account=<account>
+##SBATCH --qos=<qos>
+
+module purge
+module load singularity
+
+image=monoprop_<tag>.sif
+
+# srun does not inherit --cpus-per-task from sbatch.
+export SRUN_CPUS_PER_TASK="$SLURM_CPUS_PER_TASK"
+# An MPI rank keeps a single partition unless monoprop_NUM_THREADS is set.
+export monoprop_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+# Directories the container may read and write besides $HOME and the working directory.
+export SINGULARITY_BIND="/gpfs/projects,/gpfs/scratch"
+
+srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
+    singularity exec "$image" python3 -u run.py
+```
+
+- `--exclusive`: MN5 only honours CPU affinity on full nodes.
+- `--ntasks-per-node` × `--cpus-per-task` should fill the node's 112 cores (2 sockets of
+  56), with each rank inside one socket. `--distribution=block:block` hands each rank
+  consecutive cores.
+- `--cpu-bind=cores` binds each rank to its cores. monoprop pins one partition per core
+  inside the mask it is given, so the binding and `monoprop_NUM_THREADS` together decide
+  how many partitions each rank runs; see [Parallelism and distribution](/features/parallelism).
+- Check `module avail singularity` for the installed versions.
+
+### Check the placement
+
+Every rank prints a `COMMPLACE` line to stderr when it builds a propagator. With the script
+above it reads `masks=private cpus=56`: the ranks on a node have disjoint masks of 56 CPUs.
+To check the binding before running monoprop:
+
+```bash
+srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
+    grep Cpus_allowed_list /proc/self/status
+```
+
+### Use `bsc_affinity`
+
+BSC provides `bsc_affinity`, a wrapper that binds each rank to cores (and, on ACC, to the
+nearest GPU and network device). It replaces Slurm's binding, and it runs on the host,
+before `singularity exec`, so the container inherits its binding and the variables it sets:
+
+```bash
+module load bsc
+export SLURM_CPU_BIND=none
+srun --mpi=pmix bsc_affinity singularity exec "$image" python3 -u run.py
+```
+
+BSC documents it for GPU jobs; check the `COMMPLACE` line when using it on GPP.
+
+### Tune UCX
+
+The container brings its own UCX, so `module load ucx` on the host has no effect; set UCX
+through environment variables, which Singularity passes into the container. With many
+ranks per node, select the dynamically connected transport, since `rc_mlx5` can run out
+of network-device memory at scale:
+
+```bash
+export UCX_TLS=self,sm,dc_mlx5
+```
+
+To list the transports UCX sees on a compute node:
+
+```bash
+srun -n 1 singularity exec "$image" ucx_info -d | grep Transport -A2
+```
+
+Launch with `srun` as above rather than `mpirun`; `mpirun` inside an allocation also needs
+`SLURM_CPU_BIND=none`.
+
+## Further reading
+
+- [Best practices: getting your code working in the large scale](https://eurohpcsupport.eu/best-practice/best-practices-getting-your-code-working-in-the-large-scale/)
+  (EuroHPC), on affinity, UCX and MPI tuning on MN5.
+- [MareNostrum5 performance guide](https://www.bsc.es/supportkc/docs/MareNostrum5/performance) (BSC).
