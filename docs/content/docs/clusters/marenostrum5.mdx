@@ -47,44 +47,106 @@ the command line.
 
 ```bash
 #!/usr/bin/env bash
-#SBATCH --job-name=monoprop
+
+#SBATCH --job-name=monoprop  # <-- CHANGE ME
 #SBATCH --chdir=.
-#SBATCH --nodes=2
 #SBATCH --exclusive
-#SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=56
+#SBATCH --ntasks-per-node=8
+#SBATCH --cpus-per-task=14
 #SBATCH --threads-per-core=1
-#SBATCH --time=02:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
+
+# GIVEN THROUGH THE COMMAND LINE
+##SBATCH --partition=gpp
 ##SBATCH --account=<account>
+##SBATCH --nodes=2
+##SBATCH --time=06:00:00
 ##SBATCH --qos=<qos>
 
 module purge
-module load singularity
+module load singularity/4.1.5
+module list
 
-image=monoprop_<tag>.sif
+#----
+# Printing the status of the given allocation
+echo -e "\n\n#------------------------#"
+echo "Printing from scontrol:"
+scontrol show job "${SLURM_JOBID}"
 
-# srun does not inherit --cpus-per-task from sbatch.
-export SRUN_CPUS_PER_TASK="$SLURM_CPUS_PER_TASK"
+export SRUN_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK
+
+echo -e "\n\n#------------------------#"
+echo "Diagnostic for task distribution (with task and taskset):"
+srun \
+    --label \
+    --verbose \
+    --mpi=pmix \
+    --nodes="$SLURM_NNODES" \
+    --ntasks="$(( SLURM_NTASKS_PER_NODE * SLURM_NNODES))" \
+    --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
+    --threads-per-core=1 \
+    --cpu-bind="verbose,cores" \
+    --distribution=cyclic \
+    bash -c 'echo -n "task $SLURM_PROCID (node name: $(hostname), node id: $SLURM_NODEID): "; taskset -cp $$' | sort -n
+
 # An MPI rank keeps a single partition unless monoprop_NUM_THREADS is set.
 export monoprop_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 # Directories the container may read and write besides $HOME and the working directory.
-export SINGULARITY_BIND="/gpfs/projects,/gpfs/scratch"
+export SINGULARITY_BIND="/gpfs/projects,/gpfs/scratch,$TMPDIR"
 
-srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
-    singularity exec "$image" python3 -u run.py
+####### HERE we actually run monoprop #######
+srun \
+    --label \
+    --verbose \
+    --mpi=pmix \
+    --nodes="$SLURM_NNODES" \
+    --ntasks="$(( SLURM_NTASKS_PER_NODE * SLURM_NNODES))" \
+    --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
+    --threads-per-core=1 \
+    --cpu-bind="verbose,cores" \
+    --distribution=cyclic \
+    --kill-on-bad-exit=1 \
+    singularity exec monoprop_<tag>.sif \
+    python3 -u run.py  # <-- CHANGE ME
+###########################################
+
+#----
+# Printing information of finished job steps:
+echo -e "\n\n#------------------------#"
+echo "Task and CPU usage stats:"
+sacct --format=JobID,JobName,NCPUS,NNodes,NTasks,AveCPU,MinCPU,MinCPUNode,MinCPUTask,Elapsed,ExitCode --jobs="$SLURM_JOBID"
+
+echo "Memory usage stats:"
+sacct --format=JobID,JobName,AveRSS%-50,MaxRSS%-50,MaxRSSNode,MaxRSSTask,AvePages,MaxPages,MaxPagesNode,MaxPagesTask --units=M --jobs="$SLURM_JOBID"
+
+echo "Disk usage stats:"
+sacct --format=JobID,JobName,AveDiskRead,MaxDiskRead,MaxDiskReadNode,MaxDiskReadTask,AveDiskWrite,MaxDiskWrite,MaxDiskWriteNode,MaxDiskWriteTask --units=G --jobs="$SLURM_JOBID"
+
+echo "Trackable resources usage stats:"
+sacct --format=JobID,JobName,AllocNodes,AllocCPUS,AllocTRES%-100 --units=G --jobs="$SLURM_JOBID"
+
+echo "Trackable resources (ingress) usage stats:"
+# ingress resources are disk reads and network incoming transfers
+sacct --format=JobID,JobName,TRESUsageInTot%-70,TRESUsageInAve%-70,TRESUsageInMax%-70,TRESUsageInMaxNode%-70,TRESUsageInMaxTask%-70 --units=G --jobs="$SLURM_JOBID"
+
+echo "Trackable resources (egress)  usage stats:"
+# egress resources are disk writes and network outgoing transfers
+sacct --format=JobID,JobName,TRESUsageOutTot%-70,TRESUsageOutAve%-70,TRESUsageOutMax%-70,TRESUsageOutMaxNode%-70,TRESUsageOutMaxTask%-70 --units=G --jobs="$SLURM_JOBID"
+
+#----
+# Done
+echo -e "\n\n#------------------------#"
+echo "Done
 ```
 
 - `--exclusive`: MN5 only honours CPU affinity on full nodes.
 - `--ntasks-per-node` × `--cpus-per-task` should fill a GPP node's 112 cores (2 sockets of
-  56), with each rank inside one socket. On ACC nodes (2 sockets of 40) use
-  `--cpus-per-task=40`. `--distribution=block:block` hands each rank
+  56), with each rank inside one socket. `--distribution=block:block` hands each rank
   consecutive cores.
 - `--cpu-bind=cores` binds each rank to its cores. monoprop pins one partition per core
   inside the mask it is given, so the binding and `monoprop_NUM_THREADS` together decide
   how many partitions each rank runs; see [Parallelism and distribution](/features/parallelism).
-- Check `module avail singularity` for the installed versions.
 
 ### Check the placement
 
@@ -96,7 +158,6 @@ To check the binding before running monoprop:
 srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
     grep Cpus_allowed_list /proc/self/status
 ```
-
 
 ### Tune UCX
 
