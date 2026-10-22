@@ -20,7 +20,7 @@ jobs:
   cleanup:
     name: Delete stale GHCR image versions
     if: github.repository == 'Algorithmiq/monoprop'
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     permissions:
       contents: read
       packages: write
@@ -32,7 +32,8 @@ jobs:
           sparse-checkout: tools/cleanup-ghcr.py
           sparse-checkout-cone-mode: false
 
-      # tools/cleanup-ghcr.py uses only the standard library.
+      # tools/cleanup-ghcr.py needs only the standard library of Python >= 3.11, which
+      # ubuntu-slim's system python3 provides.
       - name: Delete stale image versions
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
