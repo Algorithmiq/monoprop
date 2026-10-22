@@ -425,8 +425,13 @@ doctest-docs:
     {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials --ignore=docs/content/docs/api
     {{ docs_uv }} python -m pytest --markdown-docs README.md
 
+# Regenerate the benchmark figures from their committed results and compare them, as images,
+# with the ones under `docs/public/benchmarks`.
+check-figures:
+    {{ docs_uv }} python -m pytest --no-cov tests/test_benchmark_plots.py
+
 # Build the static documentation site into `docs/out`.
-build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
+build-docs: docs-install gen-api doctest-py doctest-docs check-figures gen-notebooks
     cd {{ site }} && npm run build
 
 # Check exported HTML links (including external URLs).

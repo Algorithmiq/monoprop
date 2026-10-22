@@ -24,6 +24,11 @@ Pauli plots count actual Trotter steps (1–28 for the committed data), not the 
 (0, 2, …, 54), and align the warm-up-trimmed runtime with steps 2–28. Majorana runtime axes
 show cumulative wall-clock time, as recorded by the benchmark drivers.
 
+The docs site serves copies of `headline_runtime.png`, `pauli_results.png`,
+`majorana_results.png` and `majorana_runtime.png` from `docs/public/benchmarks`. `just
+check-figures`, part of the docs build, regenerates them from the committed results and fails if
+they no longer match: after changing a plot script or its results, copy the new figures there.
+
 For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.tech/benchmarks).
 
 ## Layout of the Pauli benchmarks
