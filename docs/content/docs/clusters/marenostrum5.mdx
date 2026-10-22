@@ -97,19 +97,6 @@ srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
     grep Cpus_allowed_list /proc/self/status
 ```
 
-### Use `bsc_affinity`
-
-BSC provides `bsc_affinity`, a wrapper that binds each rank to cores (and, on ACC, to the
-nearest GPU and network device). It replaces Slurm's binding, and it runs on the host,
-before `singularity exec`, so the container inherits its binding and the variables it sets:
-
-```bash
-module load bsc
-export SLURM_CPU_BIND=none
-srun --mpi=pmix bsc_affinity singularity exec "$image" python3 -u run.py
-```
-
-BSC documents it for GPU jobs; check the `COMMPLACE` line when using it on GPP.
 
 ### Tune UCX
 
