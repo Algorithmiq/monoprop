@@ -28,10 +28,11 @@ rsync -P monoprop_<tag>.sif <user>@<mn5-host>:<project-dir>/
 
 ## Check the image
 
-From an allocation on a compute node, check that monoprop imports and sees MPI on two
-ranks:
+Get an interactive allocation on a compute node, then check that monoprop imports and sees
+MPI on two ranks:
 
 ```bash
+salloc --nodes=1 --account=<account> -q gp_debug --exclusive --time=00:10:00
 module load singularity
 srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif \
     python3 -c 'import monoprop; print(monoprop.__version__, monoprop.has_mpi)'
@@ -39,6 +40,10 @@ srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif \
 
 Both ranks should print the image's version and `True`. This is the check CI cannot run:
 the CI machines may lack the Sapphire Rapids instructions the image is compiled for.
+
+MN5's Slurm offers munge authentication to PMIx, which the container's PMIx is built
+without. The image sets `PMIX_MCA_psec=native`, so the ranks use PMIx's native
+authentication directly instead of warning that the `munge` component is missing.
 
 ## Run a job
 
@@ -87,7 +92,6 @@ srun \
     --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
     --threads-per-core=1 \
     --cpu-bind="verbose,threads" \
-    --hint nomultithread \
     --distribution=block:block \
     bash -c 'echo -n "task $SLURM_PROCID (node name: $(hostname), node id: $SLURM_NODEID): "; taskset -cp $$' | sort -n
 
@@ -106,11 +110,11 @@ srun \
     --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
     --threads-per-core=1 \
     --cpu-bind="verbose,threads" \
-    --hint nomultithread \
     --distribution=block:block \
     --kill-on-bad-exit=1 \
     singularity exec monoprop_<tag>.sif \
     python3 -u run.py  # <-- CHANGE ME
+status=$?
 ###########################################
 
 #----
@@ -139,27 +143,43 @@ sacct --format=JobID,JobName,TRESUsageOutTot%-70,TRESUsageOutAve%-70,TRESUsageOu
 #----
 # Done
 echo -e "\n\n#------------------------#"
-echo "Done
+echo "Done"
+exit "$status"
 ```
 
 - `--exclusive`: MN5 only honours CPU affinity on full nodes.
 - `--ntasks-per-node` × `--cpus-per-task` should fill a GPP node's 112 cores (2 sockets of
-  56), with each rank inside one socket. `--distribution=block:block` hands each rank
-  consecutive cores.
-- `--cpu-bind=cores` binds each rank to its cores. monoprop pins one partition per core
-  inside the mask it is given, so the binding and `monoprop_NUM_THREADS` together decide
-  how many partitions each rank runs; see [Parallelism and distribution](/features/parallelism).
+  56) without splitting a rank across sockets: 8 ranks × 14 cores puts ranks 0–3 on the
+  first socket and ranks 4–7 on the second. On ACC nodes (2 sockets of 40), use for
+  example 8 ranks × 10 cores.
+- `--threads-per-core=1` and `--cpu-bind=verbose,threads` bind each rank to one hardware
+  thread on each of its cores, and `--distribution=block:block` hands each rank consecutive
+  cores. monoprop pins one partition per core inside the mask it is given, so
+  `monoprop_NUM_THREADS="$SLURM_CPUS_PER_TASK"` runs one partition per core of the rank;
+  see [Parallelism and distribution](/features/parallelism).
+- `SRUN_CPUS_PER_TASK` is needed because `srun` does not inherit `--cpus-per-task` from
+  `sbatch`.
+- The first `srun` prints every rank's binding before monoprop runs. The job exits with the
+  status of the monoprop step, after the `sacct` reports.
+- The script loads `singularity/4.1.5`; check `module avail singularity` for the installed
+  versions.
 
 ### Check the placement
 
 Every rank prints a `COMMPLACE` line to stderr when it builds a propagator. With the script
-above it reads `masks=private cpus=56`: the ranks on a node have disjoint masks of 56 CPUs.
-To check the binding before running monoprop:
+above it reads `masks=private cpus=14`: the ranks on a node have disjoint masks of 14 CPUs.
+To check the binding before running monoprop, from an allocation with the job's geometry:
 
 ```bash
-srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
-    grep Cpus_allowed_list /proc/self/status
+srun --ntasks-per-node=8 --cpus-per-task=14 --threads-per-core=1 \
+    --cpu-bind=verbose,threads --distribution=block:block \
+    bash -c 'echo "rank $SLURM_PROCID: $(grep Cpus_allowed_list /proc/self/status)"'
 ```
+
+Each rank should list 14 consecutive CPUs, one per physical core: `0-13`, `14-27`, `28-41`
+and `42-55` for ranks 0–3 on the first socket, `56-69` to `98-111` for ranks 4–7 on the
+second. CPUs 112–223 are the second hardware threads of cores 0–111, so a list such as
+`0,112` means one core with both of its hardware threads, not two cores.
 
 ### Tune UCX
 
@@ -175,7 +195,7 @@ export UCX_TLS=self,sm,dc_mlx5
 To list the transports UCX sees on a compute node:
 
 ```bash
-srun -n 1 singularity exec "$image" ucx_info -d | grep Transport -A2
+srun -n 1 singularity exec monoprop_<tag>.sif ucx_info -d | grep Transport -A2
 ```
 
 Launch with `srun` as above rather than `mpirun`; `mpirun` inside an allocation also needs
