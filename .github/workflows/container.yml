@@ -35,8 +35,8 @@ env:
 jobs:
   sdist:
     name: Build source distribution
-    # Fork PRs cannot push to GHCR, and the app build pulls the base image from it.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Fork and Dependabot PRs get a read-only token and cannot push to GHCR, and the app build pulls the base image from it.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -69,7 +69,7 @@ jobs:
 
   base:
     name: Resolve or build the base image
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-26.04
     timeout-minutes: 180
     permissions:
@@ -213,13 +213,14 @@ jobs:
         with:
           images: ${{ env.APP_IMAGE_NAME }}
           flavor: |
-            latest=auto
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=ref,event=tag
             type=ref,event=branch
             type=ref,event=pr
             type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
           labels: |
             org.opencontainers.image.vendor=Algorithmiq
             org.opencontainers.image.base.name=${{ needs.base.outputs.ref }}

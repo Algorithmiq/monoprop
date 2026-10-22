@@ -362,7 +362,7 @@ The base image is tagged with the first 12 hex digits of the SHA-256 of the rend
 Dockerfile, so it is rebuilt only when the recipe's output changes, including through an
 hpccm upgrade (`HPCCM_VERSION` in the workflow). Each run also tags the base image it used
 with the run's tag (`pr-N`, `main` or the release version), and tags the monoprop image
-with it and `sha-<commit>`; releases also move `latest`.
+with it and `sha-<commit>`; non-pre-release releases also move `latest`.
 
 The workflow runs on pushes to `main`, on releases, on manual dispatch, and on pull
 requests that touch `tools/container/` or the workflow. `tools/container/smoke-test.sh`
