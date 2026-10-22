@@ -23,7 +23,7 @@ Import-only (no pytest) so the builders are reusable from scripts or notebooks:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 
@@ -45,10 +45,12 @@ from monoprop.pauli import PauliOperator
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+_T = TypeVar("_T")
+
 Built = tuple[MajoranaPropagator, Circuit]
 
 
-def barriered[T](fn: Callable[..., T], comm: Any | None) -> Callable[..., T]:
+def barriered(fn: Callable[..., _T], comm: Any | None) -> Callable[..., _T]:
     """Wrap ``fn`` in the timed *exit* barrier, making each measurement the makespan.
 
     The entry barrier lives untimed in :func:`barrier_setup`. Serial runs return ``fn``.
@@ -60,7 +62,7 @@ def barriered[T](fn: Callable[..., T], comm: Any | None) -> Callable[..., T]:
     if comm is None or comm.Get_size() == 1:
         return fn
 
-    def wrapped(*args: object, **kwargs: object) -> T:
+    def wrapped(*args: object, **kwargs: object) -> _T:
         result = fn(*args, **kwargs)
         comm.Barrier()
         return result
@@ -68,14 +70,14 @@ def barriered[T](fn: Callable[..., T], comm: Any | None) -> Callable[..., T]:
     return wrapped
 
 
-def barrier_setup[T](
-    comm: Any | None, setup: Callable[[], T] | None = None
-) -> Callable[[], T] | None:
+def barrier_setup(
+    comm: Any | None, setup: Callable[[], _T] | None = None
+) -> Callable[[], _T] | None:
     """Untimed *entry* barrier for ``pedantic(setup=...)``; serial runs return ``setup``, ``None`` included."""
     if comm is None or comm.Get_size() == 1:
         return setup
 
-    def wrapped_setup() -> T:
+    def wrapped_setup() -> _T:
         result = setup() if setup is not None else None
         comm.Barrier()
         return result  # type: ignore[return-value]

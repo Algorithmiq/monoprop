@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import numpy as np
 
@@ -57,8 +57,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
 
-class MonomialPropagator[T_op: (MajoranaOperator, PauliOperator)](ABC):
+
+class MonomialPropagator(ABC, Generic[T_op]):
     """Abstract base for the classical monomial-propagation simulators.
 
     Subclasses implement ``__init__`` -- resolve their operator family to a
