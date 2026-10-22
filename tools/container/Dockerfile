@@ -15,9 +15,11 @@ ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
 
 # monoprop_ENABLE_MPI must come from the environment: it is what activates the
 # scikit-build override that adds mpi4py to the build requirements.
+# PIP_ONLY_BINARY makes pip, including its isolated build environment, fail instead
+# of compiling mpi4py when its PyPI wheel is missing.
 RUN --mount=type=bind,source=${SDIST},target=/tmp/${SDIST} \
     python3 -m venv "${VIRTUAL_ENV}" && \
-    monoprop_ENABLE_MPI=ON pip install --no-cache-dir --verbose \
+    PIP_ONLY_BINARY=mpi4py monoprop_ENABLE_MPI=ON pip install --no-cache-dir --verbose \
         --config-settings=cmake.build-type=Release \
         --config-settings=cmake.define.monoprop_ENABLE_ARCH_FLAGS=OFF \
         --config-settings=cmake.define.monoprop_ENABLE_CXX_UNIT_TESTS=OFF \
