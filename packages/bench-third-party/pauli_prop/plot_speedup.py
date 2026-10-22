@@ -33,8 +33,8 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from plot_scaling import (  # noqa: E402
+import matplotlib.pyplot as plt
+from plot_scaling import (
     COLORS,
     layers,
     load,

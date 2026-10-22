@@ -84,8 +84,8 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         cutoff: int,
         schrodinger_cutoff: int | None = None,
         cutoff_type: str = "length",
-        lower_atol: None | float = None,
-        upper_atol: None | float = None,
+        lower_atol: float | None = None,
+        upper_atol: float | None = None,
         comm: MPI.Comm | None = None,
     ) -> None:
         """Initialize the propagator.
