@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Coverage for ``term_expectation_values``.
+"""Tests for ``term_expectation_values``.
 
-Oracles: the expectation value the values must reassemble, a re-weight to a single term, and
-the Schrodinger evolved state, which is the adjoint the Heisenberg replay computes.
+The values are checked against the expectation value they reassemble, the expectation value
+with each term alone, and the Schrodinger evolved state, which holds the same values when
+untruncated.
 """
 
 from __future__ import annotations
@@ -100,7 +101,7 @@ def test_pauli_values_reassemble_the_expectation_value(
 def test_each_value_matches_a_single_term_reweight(
     cutoff, parameters, serial_comm
 ) -> None:
-    """A value is the expectation value once the initial operator is that term alone."""
+    """Each value matches the expectation value once the initial operator is that term alone."""
     prop = _heisenberg(cutoff, serial_comm)
     values = prop.term_expectation_values(OBSERVABLES, parameters)
 
@@ -125,7 +126,7 @@ def test_values_match_a_schrodinger_read(parameters, serial_comm) -> None:
     schrodinger.build_graph(_circuit())
     state = schrodinger.evolved_operator_coefficients(OBSERVABLES, parameters)
     np.testing.assert_allclose(heisenberg, state.real, atol=1e-11)
-    # The Schrodinger picture reads its own state's adjoint, which is the same vector.
+    # Schrodinger's own values are its evolved-state coefficients (real for Pauli strings).
     np.testing.assert_allclose(
         schrodinger.term_expectation_values(OBSERVABLES, parameters),
         state.real,
@@ -142,8 +143,8 @@ def test_terms_follow_query_order(parameters, serial_comm) -> None:
     np.testing.assert_array_equal(queried, values[order])
 
 
-def test_identity_reads_one(parameters, serial_comm) -> None:
-    """The identity is the core term, whose derivative is 1 in either picture."""
+def test_identity_returns_one(parameters, serial_comm) -> None:
+    """The identity returns 1, and its coefficient still counts when reassembling the expectation value."""
     prop = PauliPropagator(
         PauliOperator({Pauli("", ()): 0.5, OBSERVABLES[0]: 1.0}, N_QUBITS),
         initial_state=[],
@@ -159,7 +160,7 @@ def test_identity_reads_one(parameters, serial_comm) -> None:
 
 
 def test_heisenberg_absent_term_raises(parameters, serial_comm) -> None:
-    """Heisenberg has no value for a term outside its operator."""
+    """Heisenberg raises for a term absent from the evolved operator."""
     prop = _heisenberg(2, serial_comm)
     terms = [Pauli("XXXXX", (0, 1, 2, 3, 4))]
     with pytest.raises(RuntimeError, match="not found"):
@@ -167,7 +168,10 @@ def test_heisenberg_absent_term_raises(parameters, serial_comm) -> None:
 
 
 def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
-    """Values replay only the stored graph, so gates absorbed into the operator would be lost."""
+    """Heisenberg raises after an in-place contract_partially or propagate.
+
+    The values would miss the absorbed gates.
+    """
     contracted = _heisenberg(2, serial_comm)
     contracted.contract_partially(parameters, inplace=True)
     with pytest.raises(RuntimeError, match="absorbed gates"):
@@ -185,8 +189,8 @@ def test_heisenberg_rejects_absorbed_gates(parameters, serial_comm) -> None:
         propagated.term_expectation_values(OBSERVABLES)
 
 
-def test_schrodinger_absent_term_reads_zero(parameters, serial_comm) -> None:
-    """The truncated Schrodinger state carries no weight past its cutoff."""
+def test_schrodinger_absent_term_returns_zero(parameters, serial_comm) -> None:
+    """Schrodinger returns 0 for a term past the state's cutoff, which the truncated state lacks."""
     prop = PauliPropagator(
         PauliOperator({OBSERVABLES[0]: 1.0}, N_QUBITS),
         initial_state=[],
@@ -200,7 +204,7 @@ def test_schrodinger_absent_term_reads_zero(parameters, serial_comm) -> None:
 
 
 def test_majorana_values_reassemble_the_expectation_value(serial_comm) -> None:
-    """Complex Majorana values decompose the expectation value over the decoded coefficients."""
+    """Majorana values are complex, and coefficients times values sum to the expectation value."""
     problem = load_problem(DATA / "random_exact.msgpack")
     prop = MajoranaPropagator(
         problem.operator,

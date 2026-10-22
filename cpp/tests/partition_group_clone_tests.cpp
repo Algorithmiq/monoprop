@@ -84,8 +84,9 @@ public:
         return std::ranges::all_of(flags, [](bool ok) { return ok; });
     }
 
-    // Partition 1 throws after a completed collective; every other partition then waits in a second
-    // collective that partition 1 never joins, so it is released only by poison.
+    // Makes partition 1 throw while the others are stuck in a collective, so they can leave only via
+    // ShmCommPoisoned. Partition 1 throws after a first, completed collective; the others then wait in a
+    // second one that partition 1 never joins.
     auto throw_with_poisoned_peers() -> void {
         (void)this->map_partitions_([](Base &p) { return static_cast<DerivedPropagator &>(p).root_or_poisoned_(); });
     }
@@ -123,8 +124,9 @@ BOOST_AUTO_TEST_CASE(partition_facade_copy_children_are_derived_type) {
     BOOST_TEST(copy.children_are_all_derived());
 }
 
-// Partition 0 holds ShmCommPoisoned and partition 1 the logic_error that caused it: the facade must report
-// the cause, not the lower-ranked consequence.
+// The facade rethrows the exception that caused a failure, not the ShmCommPoisoned it triggered elsewhere,
+// even when the poisoned partition has the lower rank. Here partition 0 gets ShmCommPoisoned and partition 1
+// the logic_error that caused it.
 BOOST_AUTO_TEST_CASE(partition_facade_rethrows_root_cause_over_poison) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     DerivedPropagator<kNumModes> sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/2);

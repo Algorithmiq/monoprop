@@ -617,32 +617,32 @@ class MonomialPropagator(ABC, Generic[T_op]):
         terms: Iterable[OperatorTerm],
         parameters: ParameterValues = None,
     ) -> np.ndarray:
-        """Return the expectation value of each term under the truncated evolution.
+        """Return the expectation value of each term, decomposing [expectation_value][] by term.
 
-        For an initial operator ``O = sum_i c_i * P_i``, [expectation_value][] is
-        ``sum_i c_i * v_i``, and this returns the ``v_i``. The sum includes the identity, whose
-        value is 1. The values depend on ``parameters`` but not on the coefficients. All come from
-        one backward pass over the graph, at about the cost of one [expectation_value][] call.
+        For an observable ``O = sum_i c_i * P_i``, pass the terms ``[P_1, ..., P_m]`` to get back
+        ``[v_1, ..., v_m]``, where ``v_i = <P_i>`` under the same truncated evolution as
+        [expectation_value][]. Then ``<O> = sum_i c_i * v_i``. All values together cost about as
+        much as one [expectation_value][] call.
 
-        In the Heisenberg picture, a value is the expectation value only for a term of the initial
-        operator. A term the graph created mid-circuit reads the derivative of
-        [expectation_value][] with respect to its coefficient, under a graph that did not
-        propagate it from the start.
+        In the Heisenberg picture, pass terms of the initial observable: any other term returns a
+        value that is not its expectation value, or raises if the evolution never created it. To
+        evaluate a term outside the observable, add it with coefficient 0 before building the
+        graph. In the Schrodinger picture, any term returns its expectation value under the
+        truncated evolved state, whether or not it is in the observable.
 
         Args:
-            terms: The operator terms to read, canonical as for [evolved_operator_coefficients][].
+            terms: The terms to evaluate, canonical as for [evolved_operator_coefficients][].
             parameters: Variational parameter values (see [expectation_value][]).
 
         Returns:
-            A complex NumPy array, one value per term, in order, such that a term's coefficient
-            times its value is its contribution. The empty term reads 1.
+            A complex NumPy array with one value per term, in the order given.
 
         Raises:
-            TypeError: If an operator term is of the wrong form for the front-end.
+            TypeError: If a term is of the wrong form for the front-end.
             ValueError: If a term is not a canonical monomial.
             RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
                 operator, or once [propagate][] or an in-place [contract_partially][] has absorbed
-                gates into the operator. The Schrodinger picture reads an absent term as 0.
+                gates into the operator.
         """
         slots = self._encode_terms(list(terms))
         return np.asarray(

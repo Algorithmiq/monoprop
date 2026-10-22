@@ -289,12 +289,17 @@ public:
     auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
-    /// The expectation value of each of `terms` under the truncated evolution, in query order; the empty
-    /// term reads 1. In Heisenberg this holds only for initial-operator terms: a row created mid-circuit
-    /// reads the derivative of expectation_value() with respect to its coefficient. Keys must be
-    /// canonical. A term absent from the evolved operator throws OperatorTermNotFound in Heisenberg and
-    /// reads 0 in Schrodinger. Throws GraphStateConflict in Heisenberg once propagate() or an in-place
-    /// contract_partially() has absorbed gates into the operator.
+    /// The expectation value of each of `terms` under the truncated evolution, in query order. If `terms`
+    /// are the initial operator's terms, expectation_value() is the sum of their coefficients times these
+    /// values. All values come from one adjoint replay of the graph. Keys must be canonical.
+    ///
+    /// In Heisenberg, only initial-operator terms give their true expectation value: a row created
+    /// mid-circuit gives the derivative of expectation_value() with respect to its coefficient, and a term
+    /// absent from the evolved operator throws OperatorTermNotFound. Throws GraphStateConflict once
+    /// propagate() or an in-place contract_partially() has absorbed gates into the operator.
+    ///
+    /// In Schrodinger, any term gives its expectation value under the truncated evolved state, and an
+    /// absent term reads 0.
     auto term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
@@ -380,9 +385,9 @@ private:
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
 
-    // Set once a Heisenberg operator has absorbed gates in place (propagate(), or an in-place
-    // contract_partially()). Sticky: the adjoint of the absorbed gates is gone, so no re-weight brings
-    // back initial-term values, and term_expectation_values() rejects the call.
+    // Whether term_expectation_values() must refuse: set once a Heisenberg operator has absorbed gates in
+    // place (propagate(), or an in-place contract_partially()). The values need those gates' adjoint, which
+    // is not kept, so the flag is never cleared, not even by update_initial_operator().
     bool heisenberg_gates_absorbed_{false};
 
     bool routing_coverage_reported_{false}; // report_routing_coverage_ warns once per propagator

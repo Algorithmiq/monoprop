@@ -162,39 +162,51 @@ This does **not** make the evolution faster. The graph contraction is identical
 and still the dominant cost; what disappears is the decode and dictionary build
 over every surviving term.
 
-## Expectation value of every initial term
+## Per-term expectation values
 
-For an initial operator $O = \sum_i c_i P_i$, the expectation value is linear in the
-coefficients: $E = \sum_i c_i v_i$, where $v_i$ is the value of $P_i$ under the truncated
-evolution. The sum includes the identity, whose value is 1.
 [term_expectation_values][monoprop.monomial_propagator.MonomialPropagator.term_expectation_values]
-returns the $v_i$ of the terms you pass, in their order, from one adjoint replay of the graph, at about the cost of one
-[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]:
+decomposes an observable's expectation value into the contributions of its terms. For an observable
+$O = \sum_{i=1}^m c_i P_i$:
+
+1. Pass the list of terms $[P_1, \dots, P_m]$.
+2. Get back the list of their expectation values $[v_1, \dots, v_m]$, where $v_i = \langle P_i \rangle$
+   under the same truncated evolution as
+   [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value].
+3. If needed, reconstruct $\langle O \rangle = \sum_i c_i v_i$.
+
+All $m$ values together cost about as much as one
+[expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] call.
 
 ```python
 import numpy as np
 from monoprop import Circuit, ExpGate, Pauli, PauliOperator, PauliPropagator
 
-observables = [Pauli("ZZ", (0, 1)), Pauli("XY", (1, 2)), Pauli("Z", (3,))]
-sim = PauliPropagator(PauliOperator(dict.fromkeys(observables, 1.0), 4), [], cutoff=2)
+observable = PauliOperator(
+    {Pauli("ZZ", (0, 1)): 0.5, Pauli("XY", (1, 2)): -0.3, Pauli("Z", (3,)): 1.2}, 4
+)
+sim = PauliPropagator(observable, [], cutoff=2)
 gates = [ExpGate(PauliOperator({Pauli(p, q): 1.0}, 4))
          for p, q in [("X", (0,)), ("YY", (0, 1)), ("ZX", (1, 2)), ("XZ", (2, 3))]]
 sim.build_graph(Circuit(gates, 4))
 parameters = [0.1, 0.2, 0.3, 0.4]
 
-values = sim.term_expectation_values(observables, parameters)  # one per observable
-assert np.isclose(values.sum(), sim.expectation_value(parameters))
+terms = list(observable.terms)
+coefficients = np.array(list(observable.terms.values()))
+values = sim.term_expectation_values(terms, parameters)  # [v_1, ..., v_m]
+assert np.isclose(coefficients @ values, sim.expectation_value(parameters))
 ```
 
-The values do not depend on the coefficients, so re-weighting the operator does not change them.
-Pass a subset of the initial terms to read only those, or a Schrödinger propagator's observable terms; there an absent
-term reads 0, while Heisenberg raises for a term absent from the evolved operator. In Heisenberg,
-a value is $\langle P \rangle$ only for a term of the initial operator: a term the graph created
-mid-circuit reads the derivative with respect to its coefficient, under a graph that did not
-propagate it from the start. Heisenberg also raises once
-[propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an in-place
-[contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] has absorbed
-gates into the operator, since the values would miss those gates; query before contracting. Re-weighting with
-[update_initial_operator][monoprop.monomial_propagator.MonomialPropagator.update_initial_operator]
-by $w_i = \partial L / \partial v_i$ makes the
-[gradient][monoprop.monomial_propagator.MonomialPropagator.gradient] that of a loss $L$ of the values.
+The values come back in the order of the terms you pass.
+
+Edge cases:
+
+- In the Heisenberg picture, pass terms of $O$. Any other term returns a value that is not
+  $\langle P \rangle$, or raises if the evolution never created it. To evaluate a term outside $O$,
+  add it to $O$ with coefficient 0 before building the graph.
+- In the Schrödinger picture, any term returns $\langle P \rangle$ under the truncated evolved
+  state, whether or not it is in $O$.
+- In the Heisenberg picture, the call raises once
+  [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an in-place
+  [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially] has
+  absorbed gates into the operator, because the values would miss those gates. Query before
+  contracting.

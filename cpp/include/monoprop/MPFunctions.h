@@ -104,12 +104,13 @@ monoprop_EXPORT auto ev_and_grad(const EvalRequest &request,
                                  mpi::Comm comm = MPI_COMM_WORLD,
                                  const detail::CosCallbacks &cos = {}) -> std::pair<double, VecD>;
 
-/// Per local operator row j, the derivative of ev() with respect to `request.op[j]`, from one adjoint
-/// sweep. ev() is linear in `request.op`, so it is not read. `cos.scale` is required if
-/// `request.params` is non-empty.
-monoprop_EXPORT auto term_values(const EvalRequest &request,
-                                 mpi::Comm comm = MPI_COMM_WORLD,
-                                 const detail::CosCallbacks &cos = {}) -> VecD;
+/// The gradient of ev() with respect to the operator coefficients `request.op`, for this rank's rows: entry j
+/// is how much ev() changes per unit of `request.op[j]`. ev() is linear in `request.op`, so entry j is also
+/// row j's contribution per unit coefficient, which for an initial-operator term is its expectation value.
+/// Computed in one sweep over the graph. Requires `cos.scale` when `request.params` is non-empty.
+monoprop_EXPORT auto ev_op_gradient(const EvalRequest &request,
+                                    mpi::Comm comm = MPI_COMM_WORLD,
+                                    const detail::CosCallbacks &cos = {}) -> VecD;
 
 /// Prune `graph` to the subgraph reaching `nonzero_inds`; `full_cos_of_layer(i)` supplies layer i's full cosine set.
 monoprop_EXPORT auto pare_graph(const MPGraph &graph,

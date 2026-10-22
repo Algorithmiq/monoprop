@@ -1301,19 +1301,19 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
     -> std::vector<std::complex<double>> {
-    // The replay starts from the current operator, so absorbed gates would be silently missing from every
-    // value. Checked before the fan-out: the facade's own flag is never set, and the partitions agree.
+    // Absorbed gates are no longer in the graph, so the replay would silently leave them out of every value.
+    // The facade never sets its own flag, so check a partition's (they all agree) before fanning out.
     if (partition_group_ ? first_partition_().heisenberg_gates_absorbed_ : heisenberg_gates_absorbed_) {
         throw GraphStateConflict("term_expectation_values() is unavailable once propagate() or an in-place "
-                                 "contract_partially() has absorbed gates into a Heisenberg operator: the "
-                                 "values need the absorbed gates' adjoint, which is not kept. Build the graph "
-                                 "with build_graph() and query before contracting in place.");
+                                 "contract_partially() has absorbed gates into a Heisenberg operator, because "
+                                 "the values would miss those gates. Call it after build_graph() and before "
+                                 "contracting in place.");
     }
     if (partition_group_) {
         // Each partition allreduces internally, so every partition returns the global values.
         return map_partitions_([&](MonomialPropagator &s) { return s.term_expectation_values(parameters, terms); })[0];
     }
-    // Checked for the same reason as evolved_operator_coefficients().
+    // Checked: these are user-supplied indices (see evolved_operator_coefficients()).
     const auto keys = terms | std::views::transform([this](const VecZ &term) {
                           return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
                       })
@@ -1321,12 +1321,13 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
     std::vector<size_t> rows(keys.size());
     mp_op_.store->find_batch(keys.data(), keys.size(), rows.data());
 
-    const auto term_values_fn = [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
-        return term_values(request, comm, cos);
+    const auto ev_op_gradient_fn = [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+        return ev_op_gradient(request, comm, cos);
     };
-    const VecD values = make_functional_(term_values_fn, std::nullopt)(parameters);
+    const VecD values = make_functional_(ev_op_gradient_fn, std::nullopt)(parameters);
 
-    // Values, then found flags: only the owning rank finds a key, so one allreduce gathers both.
+    // Each key lives on one rank, so one allreduce gathers each key's value and a found flag: values
+    // first, then flags.
     const size_t count = keys.size();
     VecD gathered(2 * count, 0.0);
     for (size_t q = 0; q < count; ++q) {
@@ -1346,11 +1347,14 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
         if (gathered[count + q] == 0.0) {
             if (!schrodinger_) {
                 throw detail::OperatorTermNotFound(
-                    std::format("Operator term [{}] not found in the operator.", join_with_separator(terms[q], ", ")));
+                    std::format("Operator term [{}] not found in the evolved operator. To evaluate a term outside "
+                                "the initial operator, add it with coefficient 0 before building the graph.",
+                                join_with_separator(terms[q], ", ")));
             }
             continue;
         }
-        // Per unit of the decoded coefficient: the phase is a unit, so dividing by it conjugates the decode.
+        // The engine stores row M as the Hermitian h·M, with h = 1 or i, so gathered[q] is ⟨h·M⟩.
+        // To recover ⟨M⟩ we divide by h, which is equivalent to conjugation.
         out[q] = std::conj(algebra_decode_coeff<NumModes>(basis_, gathered[q], keys[q]));
     }
     return out;
