@@ -20,8 +20,8 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from plot_scaling import COLORS as colors  # noqa: E402
+import matplotlib.pyplot as plt
+from plot_scaling import COLORS as colors
 
 # The early steps are too noisy to plot.
 min_step = 5
