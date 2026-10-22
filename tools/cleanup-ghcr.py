@@ -22,9 +22,9 @@ keeps what someone may still pull and deletes the rest. A version is kept when i
 
 - tagged with a release (``1.2.3``, ``v1.2.3``, pre-releases), ``latest`` or ``main``;
 - tagged ``pr-N`` while pull request ``N`` is open;
+- younger than ``--min-age-hours``, so a push in progress is never cut short;
 - a platform or attestation manifest of a version kept above. GHCR lists those as
-  separate untagged versions, and deleting one breaks the image that references it;
-- younger than ``--min-age-hours``, so a push in progress is never cut short.
+  separate untagged versions, and deleting one breaks the image that references it.
 
 Only the standard library is used, so the workflow runs it with a bare ``python3``.
 The token is read from ``GITHUB_TOKEN``.
@@ -110,6 +110,27 @@ def is_pinned(tags: Collection[str], open_prs: Collection[int]) -> bool:
     return False
 
 
+def is_retained(
+    version: Version,
+    open_prs: Collection[int],
+    *,
+    now: dt.datetime,
+    min_age: dt.timedelta,
+) -> bool:
+    """Return whether a version is kept for its own sake, by its tags or its age.
+
+    Args:
+        version: The version to classify.
+        open_prs: Numbers of the repository's open pull requests.
+        now: The current time.
+        min_age: Versions younger than this are always kept.
+
+    Returns:
+        True if the version is pinned or younger than ``min_age``.
+    """
+    return is_pinned(version.tags, open_prs) or now - version.created_at < min_age
+
+
 def select_deletions(
     versions: Sequence[Version],
     open_prs: Collection[int],
@@ -123,7 +144,7 @@ def select_deletions(
     Args:
         versions: Every version of the package.
         open_prs: Numbers of the repository's open pull requests.
-        children_of: For each pinned image index, the digests of the platform and
+        children_of: For each retained image index, the digests of the platform and
             attestation manifests it references.
         now: The current time.
         min_age: Versions younger than this are always kept.
@@ -133,14 +154,11 @@ def select_deletions(
     """
     kept: set[str] = set()
     for version in versions:
-        if is_pinned(version.tags, open_prs):
+        if is_retained(version, open_prs, now=now, min_age=min_age):
             kept.add(version.digest)
+            # A child can be older than its index, e.g. after a registry-side retag.
             kept.update(children_of.get(version.digest, ()))
-    return [
-        version
-        for version in versions
-        if version.digest not in kept and now - version.created_at >= min_age
-    ]
+    return [version for version in versions if version.digest not in kept]
 
 
 def _request(
@@ -290,13 +308,15 @@ def clean_package(
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
+        # An unclosed HTTPError leaks its response file (ResourceWarning on 3.14).
+        error.close()
         logger.info("%s: no such package yet, skipping", package)
         return 0
     pull_token = registry_token(package, token)
     children_of = {
         version.digest: child_digests(package, version.digest, pull_token)
         for version in versions
-        if is_pinned(version.tags, open_prs)
+        if is_retained(version, open_prs, now=now, min_age=min_age)
     }
     deletions = select_deletions(
         versions, open_prs, children_of, now=now, min_age=min_age
@@ -311,6 +331,7 @@ def clean_package(
         try:
             delete_version(package, version, token)
         except urllib.error.HTTPError as error:
+            error.close()
             failures += 1
             logger.warning(
                 "  failed to delete %s (%s): HTTP %d", version.digest, tags, error.code
@@ -344,6 +365,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="package to clean; repeatable (default: all)",
     )
     args = parser.parse_args(argv)
+    if args.min_age_hours < 0:
+        parser.error("--min-age-hours must not be negative")
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         parser.error("GITHUB_TOKEN is not set")

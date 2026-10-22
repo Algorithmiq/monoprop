@@ -111,6 +111,31 @@ def test_young_versions_are_kept():
     assert _deleted(versions) == {"sha256:stale"}
 
 
+def test_young_index_keeps_its_older_children():
+    # A retag can point a new index at platform manifests pushed long before it.
+    versions = [
+        _version(1, "sha256:young-index", age=dt.timedelta(hours=1)),
+        _version(2, "sha256:old-amd64"),
+    ]
+    children = {"sha256:young-index": ["sha256:old-amd64"]}
+    assert _deleted(versions, children_of=children) == set()
+
+
+def test_children_are_fetched_for_young_indexes(monkeypatch):
+    versions = [_version(1, "sha256:young-index", age=dt.timedelta(hours=1))]
+    _fake_registry(monkeypatch, versions)
+    fetched = []
+    monkeypatch.setattr(
+        _module,
+        "child_digests",
+        lambda _package, digest, _token: fetched.append(digest) or [],
+    )
+    _module.clean_package(
+        "monoprop", "token", set(), now=NOW, min_age=MIN_AGE, dry_run=True
+    )
+    assert fetched == ["sha256:young-index"]
+
+
 def test_base_shared_by_two_prs_is_kept_while_either_is_open():
     versions = [_version(1, "sha256:base", "3f9c0a1b2d4e", "pr-7", "pr-9")]
     assert _deleted(versions, open_prs={9}) == set()
@@ -179,6 +204,18 @@ def test_main_requires_a_token(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     with pytest.raises(SystemExit) as excinfo:
         _module.main(["--dry-run"])
+    assert excinfo.value.code == 2
+
+
+def test_main_rejects_a_negative_minimum_age(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(
+        _module,
+        "open_pull_requests",
+        lambda _token: pytest.fail("must not reach the API"),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        _module.main(["--dry-run", "--min-age-hours", "-1"])
     assert excinfo.value.code == 2
 
 
