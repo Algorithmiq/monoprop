@@ -29,7 +29,7 @@ Ranks are launched by Slurm with ``srun --mpi=pmix``, so no PMI2 library is buil
 from __future__ import annotations
 
 from hpccm.building_blocks import gnu, openmpi, packages, pmix, python, ucx
-from hpccm.primitives import baseimage, comment, label, shell
+from hpccm.primitives import baseimage, comment, environment, label, shell
 
 UBUNTU_IMAGE = "ubuntu:26.04"
 DOCA_OFED_VERSION = "3.5.0"
@@ -99,6 +99,9 @@ Stage0 += ucx(
     toolchain=compiler.toolchain,
 )
 Stage0 += pmix(version=PMIX_VERSION, prefix=PMIX_PREFIX, toolchain=compiler.toolchain)
+# Slurm may offer munge authentication to the PMIx client, which is built without it; the
+# client then warns before falling back to native. Ask for native directly.
+Stage0 += environment(variables={"PMIX_MCA_psec": "native"})
 Stage0 += openmpi(
     version=OPENMPI_VERSION,
     pmix=PMIX_PREFIX,
