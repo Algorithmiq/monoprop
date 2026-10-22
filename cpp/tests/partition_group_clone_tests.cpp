@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
@@ -83,8 +84,24 @@ public:
         return std::ranges::all_of(flags, [](bool ok) { return ok; });
     }
 
+    // Makes partition 1 throw while the others are stuck in a collective, so they can leave only via
+    // ShmCommPoisoned. Partition 1 throws after a first, completed collective; the others then wait in a
+    // second one that partition 1 never joins.
+    auto throw_with_poisoned_peers() -> void {
+        (void)this->map_partitions_([](Base &p) { return static_cast<DerivedPropagator &>(p).root_or_poisoned_(); });
+    }
+
 protected:
     auto clone_() const -> std::unique_ptr<Base> override { return std::make_unique<DerivedPropagator>(*this); }
+
+private:
+    auto root_or_poisoned_() -> int {
+        (void)mpi::allreduce_sum(1, this->comm_);
+        if (mpi::rank(this->comm_) == 1) {
+            throw std::logic_error("root cause");
+        }
+        return mpi::allreduce_sum(1, this->comm_);
+    }
 };
 
 } // namespace
@@ -105,4 +122,14 @@ BOOST_AUTO_TEST_CASE(partition_facade_copy_children_are_derived_type) {
     DerivedPropagator<kNumModes> copy(sim); // exercises PartitionGroup's copy ctor -> clone_()
     BOOST_TEST(copy.is_facade());
     BOOST_TEST(copy.children_are_all_derived());
+}
+
+// The facade rethrows the exception that caused a failure, not the ShmCommPoisoned it triggered elsewhere,
+// even when the poisoned partition has the lower rank. Here partition 0 gets ShmCommPoisoned and partition 1
+// the logic_error that caused it.
+BOOST_AUTO_TEST_CASE(partition_facade_rethrows_root_cause_over_poison) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    DerivedPropagator<kNumModes> sim(data.hamiltonian, kCutoff, data.initial_state, MPI_COMM_SELF, /*partitions=*/2);
+
+    BOOST_CHECK_THROW(sim.throw_with_poisoned_peers(), std::logic_error);
 }

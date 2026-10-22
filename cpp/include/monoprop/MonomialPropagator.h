@@ -289,6 +289,20 @@ public:
     auto evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
         -> std::vector<std::complex<double>>;
 
+    /// The expectation value of each of `terms` under the truncated evolution, in query order. If `terms`
+    /// are the initial operator's terms, expectation_value() is the sum of their coefficients times these
+    /// values. All values come from one adjoint replay of the graph. Keys must be canonical.
+    ///
+    /// In Heisenberg, only initial-operator terms give their true expectation value: a row created
+    /// mid-circuit gives the derivative of expectation_value() with respect to its coefficient, and a term
+    /// absent from the evolved operator throws OperatorTermNotFound. Throws GraphStateConflict once
+    /// propagate() or an in-place contract_partially() has absorbed gates into the operator.
+    ///
+    /// In Schrodinger, any term gives its expectation value under the truncated evolved state, and an
+    /// absent term reads 0.
+    auto term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
+        -> std::vector<std::complex<double>>;
+
     virtual auto update_initial_operator(const OperatorDict &op_dict) -> void { apply_initial_operator_(op_dict); }
 
 protected:
@@ -370,6 +384,11 @@ private:
     // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
     // it captures this and rejects a later call once it moves, as it does for a rebuilt graph.
     size_t initial_operator_epoch_{0};
+
+    // Whether term_expectation_values() must refuse: set once a Heisenberg operator has absorbed gates in
+    // place (propagate(), or an in-place contract_partially()). The values need those gates' adjoint, which
+    // is not kept, so the flag is never cleared, not even by update_initial_operator().
+    bool heisenberg_gates_absorbed_{false};
 
     bool routing_coverage_reported_{false}; // report_routing_coverage_ warns once per propagator
 
