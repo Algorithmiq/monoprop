@@ -109,8 +109,12 @@ public:
     auto partition(int s) -> MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
     auto partition(int s) const -> const MonomialPropagator<NumModes> & { return *partitions_[static_cast<size_t>(s)]; }
 
-    // Run `body(partition_rank)` on all masters, block until every one finishes, then rethrow the first
-    // exception raised (peers were released via poison, so a throw on one master never hangs the rest).
+    // Run `body(partition_rank)` on all masters, block until every one finishes, then rethrow the exception
+    // that caused the failure: the lowest-ranked one that is not ShmCommPoisoned. A throw on one master never
+    // hangs the rest, since peers are released via poison.
+    // ShmCommPoisoned only ever follows another master's throw, so it is rethrown only when nothing else was
+    // raised. It can even reach a master whose collective already completed, if a peer throws between the
+    // barrier's release and that master's post-barrier check.
     auto run_on_all(const std::function<void(int)> &body) -> void {
         {
             std::lock_guard lk(m_);
@@ -127,10 +131,22 @@ public:
             std::unique_lock lk(m_);
             cv_done_.wait(lk, [&] { return done_count_ == n_; });
         }
+        std::exception_ptr poisoned;
         for (auto &e : errs_) {
-            if (e) {
+            if (!e) {
+                continue;
+            }
+            try {
                 std::rethrow_exception(e);
             }
+            catch (const mpi::ShmCommPoisoned &) {
+                if (!poisoned) {
+                    poisoned = e;
+                }
+            }
+        }
+        if (poisoned) {
+            std::rethrow_exception(poisoned);
         }
     }
 
