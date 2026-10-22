@@ -44,7 +44,6 @@ Stage0 += baseimage(image=UBUNTU_IMAGE, _distro="ubuntu26")
 Stage0 += label(
     metadata={
         "org.opencontainers.image.source": "https://github.com/Algorithmiq/monoprop",
-        # hpccm does not quote label values, and Dockerfile needs quotes around spaces.
         "org.opencontainers.image.description": '"MPI base image (UCX, PMIx, Open MPI) for monoprop"',
     }
 )
