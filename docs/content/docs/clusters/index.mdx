@@ -4,8 +4,8 @@ description: Running monoprop on HPC systems from its MPI-enabled container imag
 ---
 
 Some HPC systems give their login nodes no outbound network, so monoprop cannot be
-installed there with `pip`. For those, every release, the `main` branch and each open
-pull request publish an MPI-enabled container image to the GitHub Container Registry:
+installed there with `pip`. For those, every release, the `main` branch and pull requests that
+change the container recipes publish an MPI-enabled container image to the GitHub Container Registry:
 
 ```text
 ghcr.io/algorithmiq/monoprop:<tag>
@@ -15,7 +15,7 @@ ghcr.io/algorithmiq/monoprop:<tag>
 | --- | --- |
 | `X.Y.Z` | A monoprop release. `latest` points at the newest one. |
 | `main` | The tip of the `main` branch. |
-| `pr-N` | The head of pull request `N`, while it is open. |
+| `pr-N` | Pull request `N`, when it changes the container recipes, while it is open. |
 
 The image holds monoprop built with MPI, with its `mpi` and `qiskit` extras, on top of an
 MPI stack built for InfiniBand clusters that launch jobs with Slurm: Open MPI 5 with PMIx

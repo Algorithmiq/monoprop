@@ -77,8 +77,9 @@ srun --mpi=pmix --cpu-bind=cores --distribution=block:block \
 ```
 
 - `--exclusive`: MN5 only honours CPU affinity on full nodes.
-- `--ntasks-per-node` × `--cpus-per-task` should fill the node's 112 cores (2 sockets of
-  56), with each rank inside one socket. `--distribution=block:block` hands each rank
+- `--ntasks-per-node` × `--cpus-per-task` should fill a GPP node's 112 cores (2 sockets of
+  56), with each rank inside one socket. On ACC nodes (2 sockets of 40) use
+  `--cpus-per-task=40`. `--distribution=block:block` hands each rank
   consecutive cores.
 - `--cpu-bind=cores` binds each rank to its cores. monoprop pins one partition per core
   inside the mask it is given, so the binding and `monoprop_NUM_THREADS` together decide
