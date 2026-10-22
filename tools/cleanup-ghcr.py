@@ -242,7 +242,11 @@ def child_digests(package: str, digest: str, pull_token: str) -> list[str]:
         headers={"Accept": MANIFEST_ACCEPT, "Authorization": f"Bearer {pull_token}"},
     )
     manifest = json.loads(body)
-    if manifest.get("mediaType") not in INDEX_MEDIA_TYPES:
+    # mediaType is optional in OCI, so a body with a manifests list is an index too.
+    if (
+        manifest.get("mediaType") not in INDEX_MEDIA_TYPES
+        and "manifests" not in manifest
+    ):
         return []
     return [entry["digest"] for entry in manifest.get("manifests", [])]
 

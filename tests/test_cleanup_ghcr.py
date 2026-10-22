@@ -227,3 +227,14 @@ def test_child_digests_lists_index_members_only(monkeypatch):
         "sha256:attestation",
     ]
     assert _module.child_digests("monoprop", "sha256:plain", "pull-token") == []
+
+
+def test_child_digests_recognises_an_index_without_a_media_type(monkeypatch):
+    body = (
+        b'{"manifests": [{"digest": "sha256:amd64"}, {"digest": "sha256:attestation"}]}'
+    )
+    monkeypatch.setattr(_module, "_request", lambda *_args, **_options: (body, ""))
+    assert _module.child_digests("monoprop", "sha256:index", "pull-token") == [
+        "sha256:amd64",
+        "sha256:attestation",
+    ]
