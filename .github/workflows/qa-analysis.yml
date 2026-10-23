@@ -17,6 +17,9 @@ env:
   COLUMNS: 120
   CPM_USE_LOCAL_PACKAGES: "TRUE"
 
+permissions:
+  contents: read
+
 jobs:
   cpp-changes:
     name: Detect C++ file changes

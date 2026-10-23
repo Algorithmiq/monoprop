@@ -20,6 +20,9 @@ env:
   COLUMNS: 120
   FORCE_COLOR: 3
 
+permissions:
+  contents: read
+
 jobs:
   check-pr-changes:
     name: Check PR changes for deploy workflow
