@@ -31,14 +31,15 @@ ctest --test-dir build/editable/Release
 ```
 
 For an MPI-enabled tree, rerun `uv sync` with `monoprop_ENABLE_MPI=ON` in the
-environment.
+environment. MPI builds go to their own tree, `build/editable/Release-mpi`, so
+the MPI variants below are registered there.
 ## Running Tests
 
 ```bash
-ctest --test-dir build/editable/Release           # everything
-ctest --test-dir build/editable/Release -L serial # serial variants only
-ctest --test-dir build/editable/Release -L mpi    # MPI variants
-ctest --test-dir build/editable/Release -L mpi-2  # only the 2-rank run
+ctest --test-dir build/editable/Release               # everything
+ctest --test-dir build/editable/Release -L serial     # serial variants only
+ctest --test-dir build/editable/Release-mpi -L mpi    # MPI variants (MPI tree)
+ctest --test-dir build/editable/Release-mpi -L mpi-2  # only the 2-rank run
 ```
 
 Or drive the binary directly:
@@ -46,7 +47,7 @@ Or drive the binary directly:
 ```bash
 build/editable/Release/bin/monoprop_unit_tests.x --list_content
 build/editable/Release/bin/monoprop_unit_tests.x --run_test=pauli_algebra_*
-mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x
+mpirun -n 2 build/editable/Release-mpi/bin/monoprop_unit_tests.x
 ```
 
 Because CTest discovery treats each `--list_content` line as a top-level test
@@ -137,7 +138,7 @@ runner indefinitely. For exhaustive
 rank coverage, run `just test-mpi '1;2;4'` or configure
 `-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under MPI while
 debugging, invoke the binary directly:
-`mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
+`mpirun -n 2 build/editable/Release-mpi/bin/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests
 

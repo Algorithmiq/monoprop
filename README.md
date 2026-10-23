@@ -110,7 +110,9 @@ plus the `-mpi` lists), which is what CI and the devcontainer install.
 `just build [uv sync args…]` performs the build CI performs — the same recipe
 GitHub Actions calls, so a lane can be reproduced locally.
 
-Full instructions — prerequisites, MPI options, and running the example
+Build options (MPI, sanitizers, C++ tests) can be set through environment
+variables or config-settings such as `-C monoprop.mpi=ON`.
+Full instructions — prerequisites, build options, and running the example
 executable — are in the [building guide](https://docs.monoprop.algorithmiq.tech/building).
 In particular, from-source builds require `hwloc` and `pkg-config` so CMake can
 locate `hwloc`.
@@ -129,7 +131,8 @@ for the with/without-MPI details and the rank matrix. CI has explicit MPI-enable
 lanes on Linux x86-64, Linux ARM64, and macOS; installing the `mpi` extra alone
 does not enable the C++ MPI build. CI requires a registered MPI CTest variant,
 and each whole-suite MPI run has a 600-second deadlock timeout. Source builds
-select the MPI variant with `monoprop_ENABLE_MPI=ON` in the environment.
+select the MPI variant with `monoprop_ENABLE_MPI=ON` in the environment (or
+`-C monoprop.mpi=ON`).
 Standalone MPI-enabled C++ programs must initialize MPI before constructing a
 propagator and finalize it only after all propagators have been destroyed. The
 exported CMake target preserves the package's MPI setting independently of any
