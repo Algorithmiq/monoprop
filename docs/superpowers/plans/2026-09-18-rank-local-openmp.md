@@ -983,10 +983,14 @@ import sys
 
 
 def test_comparison_does_not_hide_one_regression(tmp_path):
-    script = Path(__file__).resolve().parents[1] / "tools/benchmark-rank-local-openmp.py"
+    script = (
+        Path(__file__).resolve().parents[1] / "tools/benchmark-rank-local-openmp.py"
+    )
 
     def encoded(value):
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
 
     def digest(value):
         return hashlib.sha256(encoded(value)).hexdigest()
@@ -996,24 +1000,57 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
         path.write_bytes(encoded(value))
         return str(path)
 
-    config = {"gen_length": 4, "obs_terms": 16, "num_generators": 8, "num_modes": 8,
-              "cutoff": 6, "seed": 0, "lower_atol": None}
+    config = {
+        "gen_length": 4,
+        "obs_terms": 16,
+        "num_generators": 8,
+        "num_modes": 8,
+        "cutoff": 6,
+        "seed": 0,
+        "lower_atol": None,
+    }
     parameters = [0.0] * 8
-    identity = {"has_mpi": False, "ranks": 1, "threads": 2, "index_bits": 32, "cpu_allocation": "test-cpus",
-                "compiler_flags": "test", "config": config,
-                "routing": {"mode": "linear", "bits": 0, "seed": 0}}
+    identity = {
+        "has_mpi": False,
+        "ranks": 1,
+        "threads": 2,
+        "index_bits": 32,
+        "cpu_allocation": "test-cpus",
+        "compiler_flags": "test",
+        "config": config,
+        "routing": {"mode": "linear", "bits": 0, "seed": 0},
+    }
     expected, entries = [], {}
     for name in ("build", "replay"):
         node = f"energy-fixture-{name}"
-        entries[node] = {"operation": "energy", "measurement_kind": "pytest", "basis": "majorana",
-                         "picture": "heisenberg", "config": config, "parameters": parameters,
-                         "pare_threshold": None}
-        expected.append({"id": name, "profile": "tiny", "node_id": node, "operation": "energy",
-                         "measurement_kind": "pytest", "identity": identity,
-                         "config_digest": digest(identity["config"]), "parameters_digest": digest(parameters)})
+        entries[node] = {
+            "operation": "energy",
+            "measurement_kind": "pytest",
+            "basis": "majorana",
+            "picture": "heisenberg",
+            "config": config,
+            "parameters": parameters,
+            "pare_threshold": None,
+        }
+        expected.append(
+            {
+                "id": name,
+                "profile": "tiny",
+                "node_id": node,
+                "operation": "energy",
+                "measurement_kind": "pytest",
+                "identity": identity,
+                "config_digest": digest(identity["config"]),
+                "parameters_digest": digest(parameters),
+            }
+        )
     workloads = {"schema_version": 1, "profiles": {"tiny": entries}}
-    campaign = {"schema_version": 1, "workloads_path": save("workloads.json", workloads),
-                "workloads_sha256": digest(workloads), "cells": expected}
+    campaign = {
+        "schema_version": 1,
+        "workloads_path": save("workloads.json", workloads),
+        "workloads_sha256": digest(workloads),
+        "cells": expected,
+    }
     campaign_path = save("campaign.json", campaign)
     cells = []
     for target, candidate_time in zip(expected, (10.1, 5.0), strict=True):
@@ -1022,49 +1059,126 @@ def test_comparison_does_not_hide_one_regression(tmp_path):
         for arm, elapsed in (("baseline", 10.0), ("candidate", candidate_time)):
             shape = "partitions" if arm == "baseline" else "openmp"
             binary_hash = ("b" if arm == "baseline" else "c") * 64
-            settings = {"monoprop_NUM_THREADS": "2", "OMP_NUM_THREADS": "2", "OMP_DYNAMIC": "FALSE"}
+            settings = {
+                "monoprop_NUM_THREADS": "2",
+                "OMP_NUM_THREADS": "2",
+                "OMP_DYNAMIC": "FALSE",
+            }
             if arm == "baseline":
                 settings.update(monoprop_PARTITIONS="2")
-            placement = {"schema_version": 1, "artifact_kind": "placement", "arm": arm,
-                         "cell_id": name, "binary_hash": binary_hash, "identity": identity,
-                         "runtime_shape": shape,
-                         "declared": {"ranks": 1, "threads": 2, "cpu_allocation": "test-cpus",
-                                      "settings": settings},
-                         "observed": {"has_mpi": False, "ranks": 1, "threads_per_rank": [2],
-                                      "cpu_allocation": "test-cpus"}}
+            placement = {
+                "schema_version": 1,
+                "artifact_kind": "placement",
+                "arm": arm,
+                "cell_id": name,
+                "binary_hash": binary_hash,
+                "identity": identity,
+                "runtime_shape": shape,
+                "declared": {
+                    "ranks": 1,
+                    "threads": 2,
+                    "cpu_allocation": "test-cpus",
+                    "settings": settings,
+                },
+                "observed": {
+                    "has_mpi": False,
+                    "ranks": 1,
+                    "threads_per_rank": [2],
+                    "cpu_allocation": "test-cpus",
+                },
+            }
             placement_path = save(f"{name}-{arm}-placement.json", placement)
-            common = {"schema_version": 1, "campaign_sha256": digest(campaign), "arm": arm, "has_mpi": False,
-                      "cell_id": name, "profile": target["profile"], "node_id": target["node_id"],
-                      "operation": "energy", "binary_hash": binary_hash, "identity": identity,
-                      "config_digest": target["config_digest"], "parameters_digest": target["parameters_digest"],
-                      "placement_path": placement_path, "placement_sha256": digest(placement)}
-            validation = {**common, "artifact_kind": "validation", "run_id": f"{name}-{arm}-validation",
-                          "basis": "majorana", "picture": "heisenberg", "energy": 0.0,
-                          "global_term_count": 0, "graph_layers": 0, "term_files": []}
+            common = {
+                "schema_version": 1,
+                "campaign_sha256": digest(campaign),
+                "arm": arm,
+                "has_mpi": False,
+                "cell_id": name,
+                "profile": target["profile"],
+                "node_id": target["node_id"],
+                "operation": "energy",
+                "binary_hash": binary_hash,
+                "identity": identity,
+                "config_digest": target["config_digest"],
+                "parameters_digest": target["parameters_digest"],
+                "placement_path": placement_path,
+                "placement_sha256": digest(placement),
+            }
+            validation = {
+                **common,
+                "artifact_kind": "validation",
+                "run_id": f"{name}-{arm}-validation",
+                "basis": "majorana",
+                "picture": "heisenberg",
+                "energy": 0.0,
+                "global_term_count": 0,
+                "graph_layers": 0,
+                "term_files": [],
+            }
             validation_path = save(f"{name}-{arm}-validation.json", validation)
             cell[arm] = []
             for i in range(5):
                 sample_id = f"{name}-{arm}-{i}"
-                timed = {**common, "artifact_kind": "timed", "sample_id": sample_id,
-                         "run_id": f"{sample_id}-timed", "runtime_seconds": elapsed,
-                         "peak_sum_bytes": 1000, "peak_max_bytes": 1000, "op_exact": True,
-                         "outer_peak_sum_bytes": 1200, "outer_peak_max_bytes": 1200, "outer_exact": True,
-                         "operation_floor_sum_bytes": 800, "operation_floor_max_bytes": 800,
-                         "operation_delta_sum_bytes": 200, "operation_delta_max_bytes": 200}
-                construction = {**common, "artifact_kind": "construction", "sample_id": sample_id,
-                                "run_id": f"{sample_id}-construction", "construction_exact": True,
-                                "construction_peak_sum_bytes": 1200, "construction_peak_max_bytes": 1200,
-                                "construction_floor_sum_bytes": 800, "construction_floor_max_bytes": 800,
-                                "construction_delta_sum_bytes": 400, "construction_delta_max_bytes": 400}
-                cell[arm].append({"sample_id": sample_id,
-                                  "timed_path": save(f"{sample_id}-timed.json", timed),
-                                  "construction_path": save(f"{sample_id}-construction.json", construction),
-                                  "validation_path": validation_path})
+                timed = {
+                    **common,
+                    "artifact_kind": "timed",
+                    "sample_id": sample_id,
+                    "run_id": f"{sample_id}-timed",
+                    "runtime_seconds": elapsed,
+                    "peak_sum_bytes": 1000,
+                    "peak_max_bytes": 1000,
+                    "op_exact": True,
+                    "outer_peak_sum_bytes": 1200,
+                    "outer_peak_max_bytes": 1200,
+                    "outer_exact": True,
+                    "operation_floor_sum_bytes": 800,
+                    "operation_floor_max_bytes": 800,
+                    "operation_delta_sum_bytes": 200,
+                    "operation_delta_max_bytes": 200,
+                }
+                construction = {
+                    **common,
+                    "artifact_kind": "construction",
+                    "sample_id": sample_id,
+                    "run_id": f"{sample_id}-construction",
+                    "construction_exact": True,
+                    "construction_peak_sum_bytes": 1200,
+                    "construction_peak_max_bytes": 1200,
+                    "construction_floor_sum_bytes": 800,
+                    "construction_floor_max_bytes": 800,
+                    "construction_delta_sum_bytes": 400,
+                    "construction_delta_max_bytes": 400,
+                }
+                cell[arm].append(
+                    {
+                        "sample_id": sample_id,
+                        "timed_path": save(f"{sample_id}-timed.json", timed),
+                        "construction_path": save(
+                            f"{sample_id}-construction.json", construction
+                        ),
+                        "validation_path": validation_path,
+                    }
+                )
         cells.append(cell)
-    manifest = save("manifest.json", {"schema_version": 1, "campaign_sha256": digest(campaign), "cells": cells})
+    manifest = save(
+        "manifest.json",
+        {"schema_version": 1, "campaign_sha256": digest(campaign), "cells": cells},
+    )
     output = tmp_path / "comparison.json"
-    result = subprocess.run([sys.executable, str(script), "compare", "--campaign", campaign_path,
-                             "--manifest", manifest, "--output", str(output)], check=False)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "compare",
+            "--campaign",
+            campaign_path,
+            "--manifest",
+            manifest,
+            "--output",
+            str(output),
+        ],
+        check=False,
+    )
     assert result.returncode == 1
     assert json.loads(output.read_text())["failed_cells"] == ["build"]
 ```

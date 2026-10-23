@@ -283,4 +283,26 @@ auto ev_and_grad(const EvalRequest &request, mpi::Comm comm, const detail::CosCa
     return {request.e_core + expectation_value, scratch.gradient};
 }
 
+auto ev_op_gradient(const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> VecD {
+    // ev() pushes `request.op` forward through the graph's layers, then dots the result with the state.
+    // Its gradient with respect to `request.op` is that chain read backwards: the state pushed back
+    // through the layers in reverse order, each transposed.
+    VecD gradient;
+    request.state.scatter_into(gradient);
+    if (request.params.empty()) {
+        return gradient;
+    }
+    if (!cos.scale) {
+        throw MissingLayerCallback("Evaluating at non-empty parameters requires a cos_scale (forward) callback.");
+    }
+    // The forward kernel at −θ is exactly a layer's transpose, cosine-only rows included, so the sweep
+    // never divides by cos θ as an inverse would.
+    auto &mapped_params = eval_scratch().mapped_params;
+    fill_mapped_params(mapped_params, request.params, request.parameter_mapping, request.gen_coeffs, -1.0, true);
+    for (size_t i = request.graph.layers(); i-- > 0;) {
+        evolve_step(gradient, request.graph, mapped_params[i], i, comm, cos.scale);
+    }
+    return gradient;
+}
+
 } // namespace monoprop

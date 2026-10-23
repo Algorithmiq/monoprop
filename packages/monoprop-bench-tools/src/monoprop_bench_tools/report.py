@@ -265,8 +265,10 @@ def _model_config_section(labels: list[str], results: dict[str, dict]) -> list[s
     lines = [
         "## Model configuration",
         "",
-        "Resolved configuration of each fixed model "
-        "(override any field with `--<model>-<field>`).",
+        (
+            "Resolved configuration of each fixed model "
+            "(override any field with `--<model>-<field>`)."
+        ),
         "",
     ]
     for model in models:
@@ -379,16 +381,18 @@ def build_report(results_dir: Path) -> str:
     lines = [
         "# monoprop benchmark report",
         "",
-        f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
-        "memory is the kernel's exact peak resident footprint (`VmHWM`) during each "
-        "operation, measured from a window reset and settled per operation. Under MPI "
-        "the summed figure counts ranks peaking at different moments together (an "
-        "upper bound on the job total); the max figure is the single worst rank. The "
-        "delta figure is what the timed call added above its own floor, which is the one "
-        "to compare between operations -- the peaks include whatever an earlier "
-        "operation left resident. A memory cell marked non-exact fell back to a lower "
-        "bound because the kernel window could not be reset; one marked exactness "
-        "unknown comes from an artifact that predates the per-window flags.",
+        (
+            f"Run labels: **{', '.join(labels)}**. Times are the mean over rounds; "
+            "memory is the kernel's exact peak resident footprint (`VmHWM`) during each "
+            "operation, measured from a window reset and settled per operation. Under MPI "
+            "the summed figure counts ranks peaking at different moments together (an "
+            "upper bound on the job total); the max figure is the single worst rank. The "
+            "delta figure is what the timed call added above its own floor, which is the one "
+            "to compare between operations -- the peaks include whatever an earlier "
+            "operation left resident. A memory cell marked non-exact fell back to a lower "
+            "bound because the kernel window could not be reset; one marked exactness "
+            "unknown comes from an artifact that predates the per-window flags."
+        ),
         "",
         *_config_table(labels, results),
         *_section(

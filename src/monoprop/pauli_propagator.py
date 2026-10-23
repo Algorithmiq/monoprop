@@ -18,14 +18,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from .conversion_utils import _local_slots_to_pauli, _pauli_to_local_slots
 from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
-    import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
@@ -235,6 +236,44 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
         )
+
+    def term_expectation_values(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each Pauli string, decomposing the expectation value by term.
+
+        For an observable ``O = sum_i c_i * P_i``, pass the Pauli strings ``[P_1, ..., P_m]`` to get
+        back ``[v_1, ..., v_m]``, where ``v_i = <P_i>`` under the same truncated evolution as
+        [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]. Then
+        ``<O> = sum_i c_i * v_i``. All values together cost about as much as one
+        [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] call.
+
+        In the Heisenberg picture, pass terms of the initial observable: any other term returns a
+        value that is not its expectation value, or raises if the evolution never created it. To
+        evaluate a term outside the observable, add it with coefficient 0 before building the graph.
+        In the Schrodinger picture, any term returns its expectation value under the truncated
+        evolved state, whether or not it is in the observable.
+
+        Args:
+            terms: [Pauli][monoprop.pauli.Pauli] strings to evaluate.
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
+
+        Returns:
+            A ``float64`` NumPy array with one value per term, in the order given.
+
+        Raises:
+            TypeError: If a term is not a [Pauli][monoprop.pauli.Pauli].
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved operator,
+                or once [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an
+                in-place
+                [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+                has absorbed gates into the operator.
+        """
+        values = super().term_expectation_values(terms, parameters)
+        return np.ascontiguousarray(values.real)
 
     def update_initial_operator(self, new_operator: PauliOperator) -> None:
         """Replace the *initial operator* (existing terms only).

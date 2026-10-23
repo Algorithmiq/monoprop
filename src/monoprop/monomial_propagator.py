@@ -622,6 +622,44 @@ class MonomialPropagator(ABC, Generic[T_op]):
             dtype=complex,
         )
 
+    def term_expectation_values(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each term, decomposing [expectation_value][] by term.
+
+        For an observable ``O = sum_i c_i * P_i``, pass the terms ``[P_1, ..., P_m]`` to get back
+        ``[v_1, ..., v_m]``, where ``v_i = <P_i>`` under the same truncated evolution as
+        [expectation_value][]. Then ``<O> = sum_i c_i * v_i``. All values together cost about as
+        much as one [expectation_value][] call.
+
+        In the Heisenberg picture, pass terms of the initial observable: any other term returns a
+        value that is not its expectation value, or raises if the evolution never created it. To
+        evaluate a term outside the observable, add it with coefficient 0 before building the
+        graph. In the Schrodinger picture, any term returns its expectation value under the
+        truncated evolved state, whether or not it is in the observable.
+
+        Args:
+            terms: The terms to evaluate, canonical as for [evolved_operator_coefficients][].
+            parameters: Variational parameter values (see [expectation_value][]).
+
+        Returns:
+            A complex NumPy array with one value per term, in the order given.
+
+        Raises:
+            TypeError: If a term is of the wrong form for the front-end.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
+                operator, or once [propagate][] or an in-place [contract_partially][] has absorbed
+                gates into the operator.
+        """
+        slots = self._encode_terms(list(terms))
+        return np.asarray(
+            self._simulator.term_expectation_values(self._bind(parameters), slots),
+            dtype=complex,
+        )
+
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:
         """Replace the *initial operator* (existing terms only).

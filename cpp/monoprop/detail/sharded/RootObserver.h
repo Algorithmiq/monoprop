@@ -41,8 +41,9 @@ enum class RootWork : std::uint8_t {
     initial_operator, //!< Owner phase: apply this shard's share of an initial-operator update.
     remap,            //!< Owner phase: relabel this shard's layers for a new parameter mapping.
     picture,          //!< Owner phase: copy this shard's current picture (contraction at empty parameters).
-    export_block,     //!< Caller: decode this shard's evolved block for evolved_operator_terms().
+    export_block,     //!< Caller: decode this shard's evolved block (evolved_operator_terms() and friends).
     combine,          //!< Caller, after the evaluation team joined: fold and reduce the shards' results.
+    adjoint_seed,     //!< Owner phase: scatter this shard's state for term_expectation_values()' adjoint sweep.
 };
 
 /*!

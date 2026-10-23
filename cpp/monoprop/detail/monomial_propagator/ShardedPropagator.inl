@@ -205,6 +205,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
+      heisenberg_gates_absorbed_(other.heisenberg_gates_absorbed_),
       routing_coverage_reported_(other.routing_coverage_reported_),
       logical_num_modes_(other.logical_num_modes_),
       cutoff_type_(other.cutoff_type_),
@@ -490,6 +491,9 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                                                   circuit,
                                                                   detail::sharded::RootConstructionObserver{observer_}),
                              mutation_started);
+        if (!schrodinger_) {
+            heisenberg_gates_absorbed_ = true;
+        }
     });
 }
 
@@ -795,6 +799,9 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
             auto &op = shards_[shard]->op;
             (schrodinger_ ? op.state_coeffs : op.op_coeffs) = std::move(outcome.coeffs[shard]);
         }
+        if (!schrodinger_) {
+            heisenberg_gates_absorbed_ = true;
+        }
         return {};
     }
     return std::move(outcome.coeffs);
@@ -880,6 +887,139 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
                     out[q] = {core, 0.0};
                 }
             }
+        }
+        return out;
+    });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    return run_operation_(true, [&](bool &mutation_started) -> std::vector<std::complex<double>> {
+        // Absorbed gates are no longer in the graph, so the replay would silently leave them out of every value.
+        if (heisenberg_gates_absorbed_) {
+            throw GraphStateConflict("term_expectation_values() is unavailable once propagate() or an in-place "
+                                     "contract_partially() has absorbed gates into a Heisenberg operator, because "
+                                     "the values would miss those gates. Call it after build_graph() and before "
+                                     "contracting in place.");
+        }
+        // Checked: these are user-supplied indices (see evolved_operator_coefficients()).
+        const auto keys = terms | std::views::transform([this](const VecZ &term) {
+                              return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                          })
+                          | std::ranges::to<std::vector<Monomial<NumModes>>>();
+        const auto [parameter_mapping, gen_coeffs] = graph_gate_arrays_();
+        validate_functional_call(parameters, expected_num_params(parameter_mapping));
+
+        // Each key lives on at most one shard of one rank. The lookup only reads the frozen stores, and the flag
+        // reduction is collective over replicated arguments, so a Heisenberg miss is rejected before any mutation.
+        // A rank-local failure ahead of the reduction would strand the peers in it, hence the guard.
+        const size_t count = keys.size();
+        const size_t threads = shards_.size();
+        std::vector<std::vector<size_t>> rows;
+        VecD found;
+        mpi::guard_distributed(comm_, [&] {
+            rows.assign(threads, std::vector<size_t>(count));
+            found.assign(count, 0.0);
+            for (size_t shard = 0; shard < threads; ++shard) {
+                const auto &op = shards_[shard]->op;
+                op.store->find_batch(keys.data(), count, rows[shard].data());
+                for (size_t q = 0; q < count; ++q) {
+                    if (rows[shard][q] < op.size()) { // kNotFound is size_t max, so this covers a miss too
+                        found[q] = 1.0;
+                    }
+                }
+            }
+        });
+        mpi::allreduce_sum_inplace(found, comm_);
+        if (!schrodinger_) {
+            for (size_t q = 0; q < count; ++q) {
+                // The core term is the rank-level identity, never a row.
+                if (!terms[q].empty() && found[q] == 0.0) {
+                    throw detail::OperatorTermNotFound(
+                        std::format("Operator term [{}] not found in the evolved operator. To evaluate a term "
+                                    "outside the initial operator, add it with coefficient 0 before building the "
+                                    "graph.",
+                                    join_with_separator(terms[q], ", ")));
+                }
+            }
+        }
+
+        /*
+         * The values are the gradient of expectation_value() with respect to the un-evolved operator coefficients
+         * (ev_op_gradient() is the one-store form): each shard's state, swept back through its layers newest first at
+         * the negated angles. The forward kernel at -theta is exactly a layer's transpose, so the sweep never divides
+         * by cos theta as an inverse would. Scoring the state warms a lazy cache, hence mutation.
+         */
+        mutation_started = true;
+        std::vector<VecD> seeds(threads);
+        const auto seed_error = run_owner_phase_(detail::sharded::RootWork::adjoint_seed, [&](size_t shard) {
+            auto &op = shards_[shard]->op;
+            if (schrodinger_) {
+                seeds[shard] = op.dense_state();
+                return;
+            }
+            const auto sparse = op.sparse_state();
+            EvalState::sparse(op.size(), sparse.rows, sparse.values).scatter_into(seeds[shard]);
+        });
+        if (seed_error) {
+            std::rethrow_exception(seed_error);
+        }
+        std::vector<VecD> values;
+        if (parameters.empty()) {
+            values = std::move(seeds);
+        }
+        else {
+            const VecD mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
+            std::vector<detail::sharded::ReplayRequest> requests;
+            std::vector<detail::CosCallbacks> callbacks;
+            requests.reserve(threads);
+            callbacks.reserve(threads);
+            for (size_t shard = 0; shard < threads; ++shard) {
+                const auto &state = *shards_[shard];
+                const MPGraphView view = state.graph.reverse_replay_view();
+                requests.push_back(detail::sharded::ReplayRequest{.coeffs = seeds[shard], .graph = view});
+                callbacks.push_back(detail::make_cos_callbacks<NumModes>(state.op.inverted_index(),
+                                                                         view,
+                                                                         basis_,
+                                                                         detail::parallel::Options{}));
+            }
+            auto outcome = detail::sharded::replay_shards(requests,
+                                                          mapped_params,
+                                                          callbacks,
+                                                          parallel_,
+                                                          observer_,
+                                                          world_,
+                                                          rounds_.get());
+            if (outcome.error) {
+                std::rethrow_exception(outcome.error);
+            }
+            values = std::move(outcome.coeffs);
+        }
+
+        VecD gathered(count, 0.0);
+        for (size_t shard = 0; shard < threads; ++shard) {
+            detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
+            for (size_t q = 0; q < count; ++q) {
+                if (rows[shard][q] < values[shard].size()) {
+                    gathered[q] = values[shard][rows[shard][q]];
+                }
+            }
+        }
+        mpi::allreduce_sum_inplace(gathered, comm_);
+
+        std::vector<std::complex<double>> out(count);
+        for (size_t q = 0; q < count; ++q) {
+            if (terms[q].empty()) { // the core term is a fixed identity, which every state reads as 1
+                out[q] = 1.0;
+                continue;
+            }
+            if (found[q] == 0.0) { // Schrödinger only: an absent term reads 0
+                continue;
+            }
+            // The engine stores row M as the Hermitian h·M, with h = 1 or i, so gathered[q] is ⟨h·M⟩. To recover
+            // ⟨M⟩ we divide by h, which is equivalent to conjugation.
+            out[q] = std::conj(algebra_decode_coeff<NumModes>(basis_, gathered[q], keys[q]));
         }
         return out;
     });

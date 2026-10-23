@@ -766,7 +766,9 @@ def test_sharded_propagation_matches_graph() -> None:
     circuit = problem.monomial_circuit.to_circuit()
     graph_sim, direct_sim = [
         MajoranaPropagator(
-            problem.operator, problem.monomial_circuit.initial_state, cutoff=2 * problem.n_modes
+            problem.operator,
+            problem.monomial_circuit.initial_state,
+            cutoff=2 * problem.n_modes,
         )
         for _ in range(2)
     ]
