@@ -198,6 +198,41 @@ set_target_properties(
 
 install(TARGETS _core LIBRARY DESTINATION ${PROJECT_NAME})
 
+# monoprop/_mpi_abis.py records the shipped MPI ABI families for monoprop._backend.
+set(monoprop_MPI_ABIS_PY "")
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  string(APPEND monoprop_MPI_ABIS_PY "\"${_abi}\", ")
+endforeach()
+set(monoprop_MPI_MIN_VERSIONS_PY "")
+monoprop_mpi_min_versions(_floors)
+foreach(_entry IN LISTS _floors)
+  string(
+    REGEX MATCH "^(.+)=(.+)$"
+    _match
+    "${_entry}"
+  )
+  string(
+    REPLACE "."
+    ", "
+    _floor
+    "${CMAKE_MATCH_2}"
+  )
+  string(
+    APPEND monoprop_MPI_MIN_VERSIONS_PY
+    "\"${CMAKE_MATCH_1}\": (${_floor}), "
+  )
+endforeach()
+configure_file(
+  ${PROJECT_SOURCE_DIR}/cmake/_mpi_abis.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/_mpi_abis.py
+  @ONLY
+)
+install(
+  FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/_mpi_abis.py
+  DESTINATION ${PROJECT_NAME}
+)
+
 # generation of Python typing stubs
 # NOTE must come after installing the _core target
 #
