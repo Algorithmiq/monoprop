@@ -14,7 +14,7 @@
 
 """Pytest configuration for monoprop tests.
 
-MPI selection is handled by ``pytest-mpi`` (``--with-mpi``, ``@pytest.mark.mpi``).
+MPI selection is handled here (``--with-mpi``, ``@pytest.mark.mpi``).
 
 ``comm`` is parametrized over COMM_SELF and COMM_WORLD: use it for energies and gradients, which
 allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
@@ -40,16 +40,45 @@ except ImportError:  # pragma: no cover - exercised in wheel-test environments
     MPI = None
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the opt-in for tests launched under MPI."""
+    parser.getgroup("mpi").addoption(
+        "--with-mpi",
+        action="store_true",
+        default=False,
+        help="Run MPI tests; launch pytest with mpiexec.",
+    )
+
+
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Force pytest-mpi's ``--with-mpi`` under the VS Code adapter, which bypasses
+    """Enable ``--with-mpi`` under the VS Code adapter, which bypasses
     wrapper-level argument injection and would otherwise skip every ``mpi``-marked test.
     """
     invocation_args = tuple(str(arg) for arg in config.invocation_params.args)
     is_vscode_run = config.pluginmanager.hasplugin("vscode_pytest") or any(
         "vscode_pytest" in arg for arg in invocation_args
     )
-    if is_vscode_run and hasattr(config.option, "with_mpi"):
+    if is_vscode_run:
         config.option.with_mpi = True
+
+    if config.option.with_mpi and MPI is not None and MPI.COMM_WORLD.rank != 0:
+        reporter = config.pluginmanager.getplugin("terminalreporter")
+        if reporter is not None:
+            config.pluginmanager.unregister(reporter)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Enforce MPI opt-in and rank requirements before setting up fixtures."""
+    for marker in item.iter_markers("mpi"):
+        if not item.config.getoption("--with-mpi"):
+            pytest.skip("need --with-mpi option to run")
+        if MPI is None:
+            pytest.fail("MPI tests require mpi4py")
+        min_size = marker.kwargs.get("min_size", 1)
+        if MPI.COMM_WORLD.size < min_size:
+            pytest.skip(f"Test requires {min_size} MPI processes")
 
 
 _COMM_PARAMS = (
