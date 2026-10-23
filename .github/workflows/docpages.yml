@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-26.04
 
     env:
-      SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+      monoprop_ENABLE_CXX_UNIT_TESTS: "OFF"
 
     steps:
       - name: Checkout
