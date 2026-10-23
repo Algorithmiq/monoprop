@@ -44,7 +44,7 @@ target_link_libraries(
   monoprop_unit_tests.x
   PRIVATE
     monoprop-sanitizers
-    monoprop-objs
+    ${monoprop_CPP_TEST_OBJS}
     Boost::unit_test_framework
     msgpack-cxx
     PkgConfig::HWLOC

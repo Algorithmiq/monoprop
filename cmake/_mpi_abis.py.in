@@ -20,3 +20,5 @@ ABIS: tuple[str, ...] = (@monoprop_MPI_ABIS_PY@)
 
 # Version floors per MPI implementation, from cmake/custom/monopropMPIABI.cmake.
 MIN_VERSIONS: dict[str, tuple[int, ...]] = {@monoprop_MPI_MIN_VERSIONS_PY@}
+
+MODULE_FILES: dict[str, str] = {@monoprop_MPI_MODULE_FILES_PY@}

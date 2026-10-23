@@ -191,6 +191,11 @@ option, and, through the `[[tool.scikit-build.overrides]]` block in
 `pyproject.toml`, it adds `mpi4py` to the build requirements and moves the build
 to its own tree, `build/editable/Release-mpi`.
 
+An MPI build compiles the core twice: the serial `_core`, and
+`_core_mpi.<abi>` for the MPI ABI family of the MPI CMake finds (`openmpi` or `mpich`; see
+[Parallelism and distribution](/features/parallelism)). Expect about twice the build time of a
+serial build.
+
 mpi4py is a build-time input — the bindings need its headers to hand an MPI
 communicator across the nanobind boundary — but only for MPI builds, so it is
 injected per-build through PEP 517's `get_requires_for_build_wheel` rather than
@@ -221,7 +226,7 @@ uv run python your_script.py
 ```
 
 For a multi-rank run, launch the same script under `mpiexec` (requires an MPI
-build) and pass `comm=MPI.COMM_WORLD` to the simulator:
+build) and pass `comm=MPI.COMM_WORLD` to the simulator. Without `comm`, every rank runs its own serial propagation:
 
 ```bash
 mpiexec -n 8 uv run python your_script.py

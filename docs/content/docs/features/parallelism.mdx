@@ -107,6 +107,21 @@ over XOR, so a gate's queries still reach several ranks rather than one.
 Both variables, and the partition count, must match on every rank. A mismatch would deadlock the
 exchange, so it is checked collectively at startup and raised.
 
+### Serial or MPI backend
+
+monoprop picks the backend per propagator. `comm=None` runs serially, whatever the installation;
+an mpi4py communicator runs on the MPI backend, which monoprop loads the first time it is needed.
+Importing monoprop never imports mpi4py or initializes MPI. Under `mpiexec`, a propagator built
+without `comm` therefore runs serially on every rank: pass `comm=MPI.COMM_WORLD` to distribute it.
+
+[MPI_ABIS][monoprop.MPI_ABIS] lists the MPI ABI families the installation can drive; it is empty
+without MPI support. The MPI backend matches the family of the MPI library mpi4py uses. Passing a
+communicator to an installation without MPI support raises
+[MPIUnavailableError][monoprop.exceptions.MPIUnavailableError]; a family the installation was not
+built for raises [MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError], and an MPI
+library older than the supported versions (see [Enabling MPI](#enabling-mpi)) raises
+[MPIVersionError][monoprop.exceptions.MPIVersionError].
+
 ### Single-node (`MPI.COMM_SELF`)
 
 ```python notest

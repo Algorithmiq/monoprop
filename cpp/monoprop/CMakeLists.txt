@@ -79,18 +79,10 @@ target_sources(
         "${PROJECT_SOURCE_DIR}/cpp/monoprop/Validation.h"
 )
 
-target_compile_definitions(
-  monoprop
-  INTERFACE
-    $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
-)
-
 target_compile_features(monoprop INTERFACE cxx_std_23)
 
 target_link_libraries(
   monoprop
-  PUBLIC
-    $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
   INTERFACE
     Boost::boost
     Threads::Threads
@@ -105,10 +97,17 @@ add_subdirectory(core)
 add_subdirectory(detail)
 
 # Every subdirectory has registered its sources by now.
-if(monoprop_ENABLE_MPI)
-  monoprop_add_core_objects(monoprop-objs MPI MPI::MPI_CXX)
+monoprop_add_core_objects(monoprop-objs)
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  monoprop_add_core_objects(monoprop-objs-${_abi} MPI monoprop::mpi_${_abi})
+endforeach()
+
+# The C++ unit tests exercise MPI whenever the build has it.
+if(monoprop_MPI_ABI_NAMES)
+  list(GET monoprop_MPI_ABI_NAMES 0 _test_abi)
+  set(monoprop_CPP_TEST_OBJS monoprop-objs-${_test_abi} PARENT_SCOPE)
 else()
-  monoprop_add_core_objects(monoprop-objs)
+  set(monoprop_CPP_TEST_OBJS monoprop-objs PARENT_SCOPE)
 endif()
 
 target_sources(monoprop PRIVATE $<TARGET_OBJECTS:monoprop-objs>)

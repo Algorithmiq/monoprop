@@ -75,7 +75,7 @@ auto basis_enum_2_str(Basis basis) -> std::string {
 }
 } // namespace monoprop::bindings::detail
 
-NB_MODULE(_core, m) {
+NB_MODULE(monoprop_PY_MODULE_NAME, m) {
     m.doc() = "Monomial Propagator";
 
     monoprop::bindings::detail::init_comm_bridge();

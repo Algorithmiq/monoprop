@@ -74,6 +74,7 @@ interactive = [
 # members: cibuildwheel installs this group to exercise a *built wheel*, and a
 # workspace member would drag monoprop back in from source.
 test = [
+  "nanobind==3.1.0",
   "psutil>=7.2",
   "pytest-cov>=7.1.0",
   "pytest-datadir",

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from tests.mpi_support import HAS_MPI_BACKEND, MPI, SERIAL_COMM
 from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
@@ -34,10 +35,17 @@ if TYPE_CHECKING:
 
     from tests.reference_data import FermionicProblem
 
-try:
-    from mpi4py import MPI
-except ImportError:  # pragma: no cover - exercised in wheel-test environments
-    MPI = None
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip ``mpi``-marked tests when monoprop has no MPI backend, even under ``--with-mpi``."""
+    if HAS_MPI_BACKEND:
+        return
+    skip = pytest.mark.skip(
+        reason="this monoprop installation has no MPI backend (MPI_ABIS is empty)"
+    )
+    for item in items:
+        if item.get_closest_marker("mpi") is not None:
+            item.add_marker(skip)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -83,7 +91,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 _COMM_PARAMS = (
     [pytest.param(None, id="comm_none")]
-    if MPI is None
+    if not HAS_MPI_BACKEND
     else [
         pytest.param(MPI.COMM_SELF, id="comm_self"),
         pytest.param(MPI.COMM_WORLD, id="comm_world"),
@@ -93,14 +101,14 @@ _COMM_PARAMS = (
 
 @pytest.fixture(params=_COMM_PARAMS)
 def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
-    """Parametrized communicator; ``None`` when ``mpi4py`` is unavailable (the non-MPI wheel)."""
+    """Parametrized communicator; ``None`` when mpi4py is unavailable or monoprop has no MPI backend."""
     return request.param
 
 
 @pytest.fixture
 def serial_comm() -> Any:  # noqa: ANN401
     """Single-rank communicator for tests that inspect rank-local operator state."""
-    return None if MPI is None else MPI.COMM_SELF
+    return SERIAL_COMM
 
 
 @pytest.fixture(
