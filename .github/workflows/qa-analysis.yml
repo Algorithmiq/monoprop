@@ -60,6 +60,8 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
+          # coverage.py traces through sys.monitoring from 3.14, much faster than settrace.
+          python-version: "3.14"
           cache-suffix: coverage-mpi-${{ matrix.mpi }}
           mpi: ${{ matrix.mpi }}
 
