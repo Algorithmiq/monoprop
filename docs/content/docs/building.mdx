@@ -259,16 +259,31 @@ ctest --test-dir build/editable/Release
 This uses the scikit-build-core Release tree at `build/editable/Release` and
 runs `bin/monoprop_unit_tests.x` there, along with `bin/monoprop_link_export_probe.x` — a
 link-time check that the installed shared `monoprop` library exports every `detail/**` free
-function reachable from the public template chain. The installed CMake target records whether
-monoprop itself was built with MPI; a serial package does not acquire MPI compile definitions or
-link dependencies merely because the consuming project already has an `MPI::MPI_CXX` target.
+function reachable from the public template chain. In an MPI build the same probe also runs
+against every `monoprop_mpi_<abi>` library.
+
+`monoprop::monoprop` is always serial: a serial target never acquires MPI compile definitions or
+link dependencies, even if the consuming project has an `MPI::MPI_CXX` target. MPI consumers
+request the `MPI` component, which picks the libmonoprop variant for the MPI ABI family of the MPI
+CMake finds for the consuming project:
+
+```cmake
+find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
+target_link_libraries(my_target PRIVATE monoprop::monoprop_mpi)
+```
+
+Configuration fails, naming both, when the installation was built without that family;
+`monoprop_MPI_ABIS` lists the families it ships. Projects that linked `monoprop::monoprop` from an
+MPI build before must switch to the `MPI` component.
 
 `just test-find-package` goes one step further out: it builds
 `cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
 package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that
 exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
 usage requirement the package fails to export. It compiles the same source as the in-tree
-probe, so the two cannot drift.
+probe, so the two cannot drift. With an MPI installation it also builds the
+consumer through the `MPI` component, runs it under `mpiexec -n 2`, and checks that a package
+lacking the consumer's MPI ABI fails at configure time.
 
 ### Debug tree
 

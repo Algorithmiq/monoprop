@@ -112,6 +112,43 @@ endif()
 
 target_sources(monoprop PRIVATE $<TARGET_OBJECTS:monoprop-objs>)
 
+# One MPI-enabled libmonoprop per ABI family. Headers are shared with libmonoprop; MPI is switched on
+# by the compile definition these targets hand to consumers.
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  set(_lib monoprop_mpi_${_abi})
+  add_library(${_lib} SHARED $<TARGET_OBJECTS:monoprop-objs-${_abi}>)
+  target_compile_definitions(${_lib} INTERFACE monoprop_ENABLE_MPI)
+  target_compile_features(${_lib} INTERFACE cxx_std_23)
+  target_include_directories(
+    ${_lib}
+    INTERFACE
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
+      $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
+      $<INSTALL_INTERFACE:${PROJECT_NAME}/${CMAKE_INSTALL_INCLUDEDIR}>
+  )
+  target_link_libraries(
+    ${_lib}
+    PUBLIC
+      # consumers bring their own MPI; monopropConfig.cmake links it
+      $<BUILD_INTERFACE:monoprop::mpi_${_abi}>
+    INTERFACE
+      Boost::boost
+      Threads::Threads
+    PRIVATE
+      $<BUILD_INTERFACE:monoprop-sanitizers>
+      PkgConfig::HWLOC
+  )
+  install(
+    TARGETS
+      ${_lib}
+    EXPORT monopropTargets
+    LIBRARY
+      DESTINATION ${PROJECT_NAME}/${CMAKE_INSTALL_LIBDIR}
+      COMPONENT lib
+  )
+endforeach()
+
 install(
   TARGETS
     monoprop

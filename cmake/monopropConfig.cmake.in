@@ -13,11 +13,18 @@
 #    find_package(monoprop CONFIG REQUIRED)
 #    target_link_libraries(my_target PRIVATE monoprop::monoprop)
 #
+#    # MPI: the libmonoprop variant for the MPI ABI family of the MPI CMake finds for my_target
+#    find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
+#    target_link_libraries(my_target PRIVATE monoprop::monoprop_mpi)
+#
 # Available imported targets
 # --------------------------
 #
 # ``monoprop::monoprop``
 #   Shared library target for the monoprop C++ core API.
+# ``monoprop::monoprop_mpi``
+#   With the ``MPI`` component: MPI-enabled libmonoprop matching the consumer's MPI ABI family,
+#   plus ``MPI::MPI_CXX``. ``monoprop_MPI_ABIS`` lists the families this installation ships.
 
 include(CMakeFindDependencyMacro)
 
@@ -32,8 +39,57 @@ find_dependency(
   REQUIRED
 )
 
+set(monoprop_MPI_ABIS "@monoprop_MPI_ABI_NAMES@")
+
+# Checked before the targets are imported, so a mismatch names the ABI rather than a missing file.
+if("MPI" IN_LIST monoprop_FIND_COMPONENTS)
+  set(monoprop_MPI_FOUND FALSE)
+  if(NOT monoprop_MPI_ABIS)
+    set(
+      monoprop_NOT_FOUND_MESSAGE
+      "this monoprop installation was built without MPI (monoprop_MPI_ABIS is empty)"
+    )
+  else()
+    # monoprop uses the MPI C API only; leave a consumer's explicit choice alone.
+    if(NOT DEFINED MPI_CXX_SKIP_MPICXX)
+      set(MPI_CXX_SKIP_MPICXX ON)
+    endif()
+    find_dependency(
+      MPI
+      COMPONENTS
+      CXX
+    )
+    include("${CMAKE_CURRENT_LIST_DIR}/monopropMPIABI.cmake")
+    monoprop_inspect_mpi(
+      _monoprop_consumer_mpi_abi _monoprop_consumer_mpi_problem
+      INCLUDE_DIRS ${MPI_CXX_INCLUDE_DIRS}
+      DEFINITIONS ${MPI_CXX_COMPILE_DEFINITIONS}
+    )
+    if(_monoprop_consumer_mpi_problem)
+      set(monoprop_NOT_FOUND_MESSAGE "${_monoprop_consumer_mpi_problem}")
+    elseif(_monoprop_consumer_mpi_abi IN_LIST monoprop_MPI_ABIS)
+      set(monoprop_MPI_FOUND TRUE)
+    else()
+      set(
+        monoprop_NOT_FOUND_MESSAGE
+        "the MPI found for this project uses the '${_monoprop_consumer_mpi_abi}' ABI, but this monoprop installation supports: ${monoprop_MPI_ABIS}"
+      )
+    endif()
+  endif()
+endif()
+
 if(NOT TARGET monoprop::monoprop)
   include("${CMAKE_CURRENT_LIST_DIR}/monopropTargets.cmake")
+endif()
+
+if(monoprop_MPI_FOUND AND NOT TARGET monoprop::monoprop_mpi)
+  add_library(monoprop::monoprop_mpi INTERFACE IMPORTED)
+  target_link_libraries(
+    monoprop::monoprop_mpi
+    INTERFACE
+      monoprop::monoprop_mpi_${_monoprop_consumer_mpi_abi}
+      MPI::MPI_CXX
+  )
 endif()
 
 check_required_components(monoprop)
