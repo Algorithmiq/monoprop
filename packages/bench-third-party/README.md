@@ -20,6 +20,14 @@ The end-to-end workflow is:
 
 `plot_headline.py`, at the top level here, draws the docs site's two-panel headline figure from
 both benchmarks' committed results at once: Pauli on the left, Majorana on the right.
+Pauli plots count actual Trotter steps (1–28 for the committed data), not the stored labels
+(0, 2, …, 54), and align the warm-up-trimmed runtime with steps 2–28. Majorana runtime axes
+show cumulative wall-clock time, as recorded by the benchmark drivers.
+
+The docs site serves copies of `headline_runtime.png`, `pauli_results.png`,
+`majorana_results.png` and `majorana_runtime.png` from `docs/public/benchmarks`. `just
+check-figures`, part of the docs build, regenerates them from the committed results and fails if
+they no longer match: after changing a plot script or its results, copy the new figures there.
 
 For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.tech/benchmarks).
 
@@ -29,7 +37,7 @@ For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.
 
 | file | role |
 | ---- | ---- |
-| `model.py` | the TFIM model — lattice, Trotter step, observable. Imports no propagation library. |
+| `model.py` | the TFIM — lattice, Trotter step, observable. Imports no propagation library. |
 | `backends.py` | one function per backend, each importing its own dependencies *inside* the function, so a missing GPU or extension only affects that backend. |
 | `run_model.py` | fixed size, all Python backends in one process, per-step curves → `results.json`. |
 | `run_model.jl` | adds the `PauliPropagation.jl` column to an existing `results.json`. |
