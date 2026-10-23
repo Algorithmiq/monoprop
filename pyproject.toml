@@ -76,8 +76,6 @@ test = [
   "psutil>=7.2",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
-  # depend on branch which only outputs from rank zero
-  "pytest-mpi @ git+https://github.com/aragilar/pytest-mpi.git@nonzero",
   "pytest>=8.2.2,<9.2",
   "tabulate>=0.9",
 ]
@@ -246,10 +244,10 @@ python_files = ["test_*.py", "bench_*.py"]
 pythonpath = ["."]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
-  "mpi: mark test as requiring --with-mpi (pytest-mpi)",
+  "mpi(min_size=1): mark test as requiring --with-mpi and a minimum MPI rank count",
   "qiskit: mark test as requiring qiskit (optional dependency)",
 ]
-required_plugins = ["pytest-datadir", "pytest-mpi"]
+required_plugins = ["pytest-datadir"]
 
 
 [tool.coverage.run]
