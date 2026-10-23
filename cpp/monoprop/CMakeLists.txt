@@ -8,65 +8,50 @@ message(
   "Using hwloc: ${HWLOC_LINK_LIBRARIES} (version ${HWLOC_VERSION})"
 )
 
-target_sources(
-  monoprop-objs
-  PRIVATE
-    Evolution.cpp
-    MPFunctions.cpp
-    MPGraph.cpp
-    Validation.cpp
-)
+include(${PROJECT_SOURCE_DIR}/cmake/custom/monopropCore.cmake)
 
-target_compile_definitions(
-  monoprop-objs
-  PUBLIC
-    $<$<BOOL:${monoprop_ENABLE_MPI}>:monoprop_ENABLE_MPI>
-)
+# Usage requirements every core variant compiles with and hands on to its consumers.
+add_library(monoprop-core-usage INTERFACE)
 
 # flags to prepend
 target_compile_options(
-  monoprop-objs
+  monoprop-core-usage
   BEFORE
-  PUBLIC
+  INTERFACE
     "${monoprop_CXX_FLAGS}"
     "${ARCH_FLAG}"
 )
 
 # flags to append
-target_compile_options(monoprop-objs PUBLIC "${EXTRA_CXXFLAGS}")
+target_compile_options(monoprop-core-usage INTERFACE "${EXTRA_CXXFLAGS}")
 
 target_include_directories(
-  monoprop-objs
-  PUBLIC
+  monoprop-core-usage
+  INTERFACE
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp/include>
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
 )
 
 target_link_libraries(
-  monoprop-objs
-  PUBLIC
+  monoprop-core-usage
+  INTERFACE
     monoprop-sanitizers
     Boost::boost
     Threads::Threads
-    $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
-  PRIVATE
-    PkgConfig::HWLOC
 )
 
-set_target_properties(
-  monoprop-objs
-  PROPERTIES
-    CXX_VISIBILITY_PRESET
-      hidden
-    VISIBILITY_INLINES_HIDDEN
-      YES
+monoprop_add_core_sources(
+  Evolution.cpp
+  MPFunctions.cpp
+  MPGraph.cpp
+  Validation.cpp
 )
 
 include(GenerateExportHeader)
 
 generate_export_header(
-  monoprop-objs
+  monoprop
   BASE_NAME "${PROJECT_NAME}"
   EXPORT_FILE_NAME
     "${PROJECT_BINARY_DIR}/include/${PROJECT_NAME}/${PROJECT_NAME}Export.h"
@@ -118,6 +103,15 @@ target_link_libraries(
 add_subdirectory(algebra)
 add_subdirectory(core)
 add_subdirectory(detail)
+
+# Every subdirectory has registered its sources by now.
+if(monoprop_ENABLE_MPI)
+  monoprop_add_core_objects(monoprop-objs MPI MPI::MPI_CXX)
+else()
+  monoprop_add_core_objects(monoprop-objs)
+endif()
+
+target_sources(monoprop PRIVATE $<TARGET_OBJECTS:monoprop-objs>)
 
 install(
   TARGETS
