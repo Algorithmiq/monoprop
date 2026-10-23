@@ -44,6 +44,8 @@ namespace monoprop::bindings::detail {
 /** @brief Converts the Python `comm` argument to the handle this module's core takes.
  *
  * Defined in comm_serial.cpp or comm_mpi.cpp; every extension module compiles exactly one.
+ * The serial module accepts only None and MPI modules only an mpi4py communicator; both throw
+ * nb::type_error otherwise.
  */
 auto get_mpi_comm(nb::object obj) -> MPI_Comm;
 

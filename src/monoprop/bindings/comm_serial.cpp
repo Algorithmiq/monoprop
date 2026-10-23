@@ -15,7 +15,11 @@
 #include "binder.h"
 
 namespace monoprop::bindings::detail {
-auto get_mpi_comm(nb::object /*obj*/) -> MPI_Comm {
+auto get_mpi_comm(nb::object obj) -> MPI_Comm {
+    if (obj.is_valid() && !obj.is_none()) {
+        throw nb::type_error("monoprop._core is the serial backend and takes comm=None; communicators "
+                             "are served by monoprop._core_mpi");
+    }
     // Comm.h's fallback handle; the serial core never communicates
     return MPI_COMM_WORLD;
 }

@@ -19,3 +19,15 @@ from __future__ import annotations
 
 class NumberOfModesInvalidError(ValueError):
     """Raised when the number of Fermionic modes is invalid."""
+
+
+class MPIUnavailableError(RuntimeError):
+    """Raised when a communicator is passed to a monoprop installation built without MPI."""
+
+
+class MPIAbiMismatchError(RuntimeError):
+    """Raised when mpi4py uses an MPI ABI family this monoprop installation was not built for."""
+
+
+class MPIVersionError(RuntimeError):
+    """Raised when the MPI library mpi4py uses is older than monoprop supports."""

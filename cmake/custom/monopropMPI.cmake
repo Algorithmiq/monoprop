@@ -27,4 +27,10 @@ if(monoprop_ENABLE_MPI)
     )
   endif()
   set(monoprop_MPI_ABI_NAMES ${_monoprop_mpi_abi})
+  add_library(monoprop::mpi_${_monoprop_mpi_abi} INTERFACE IMPORTED)
+  target_link_libraries(
+    monoprop::mpi_${_monoprop_mpi_abi}
+    INTERFACE
+      MPI::MPI_CXX
+  )
 endif()

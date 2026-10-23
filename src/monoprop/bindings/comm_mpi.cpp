@@ -19,7 +19,8 @@
 namespace monoprop::bindings::detail {
 auto get_mpi_comm(nb::object obj) -> MPI_Comm {
     if (!obj || obj.is_none()) {
-        return MPI_COMM_WORLD;
+        throw nb::type_error("monoprop._core_mpi needs an mpi4py communicator; comm=None selects the "
+                             "serial backend");
     }
     auto *comm_ptr = PyMPIComm_Get(obj.ptr());
     if (comm_ptr == nullptr) {

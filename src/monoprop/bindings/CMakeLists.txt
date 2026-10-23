@@ -119,38 +119,103 @@ configure_file(
   @ONLY
 )
 
-if(monoprop_ENABLE_MPI)
-  set(_comm_bridge comm_mpi.cpp)
+if(APPLE)
+  set(_rpath "@loader_path/${CMAKE_INSTALL_LIBDIR}")
 else()
-  set(_comm_bridge comm_serial.cpp)
+  set(_rpath "\$ORIGIN/${CMAKE_INSTALL_LIBDIR}")
 endif()
 
-nanobind_add_module(_core
-  NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
-  NOMINSIZE  # don’t perform optimizations to minimize binary size
-  LTO  # perform link-time optimization
-  BACKEND_MODULE nanobind_backend
-  ${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp
-  ${_bind_cpps}  # List of generated binders
-  ${CMAKE_CURRENT_SOURCE_DIR}/${_comm_bridge}
-)
+#[=[
+monoprop_add_python_core(<target> OBJS <objects> MODULE_NAME <name> OUTPUT_NAME <stem> [MPI])
 
-target_include_directories(
-  _core
-  SYSTEM
-  PRIVATE
-    $<IF:$<BOOL:${mpi4py_FOUND}>,${mpi4py_INCLUDE_DIRS},>
-  PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
+One nanobind extension over a core variant. Every MPI module is named _core_mpi and lives in the
+nanobind domain monoprop_mpi, so one of them can share a process with the serial _core.
+#]=]
+function(monoprop_add_python_core target)
+  cmake_parse_arguments(
+    PARSE_ARGV 1
+    _arg
+    "MPI"
+    "OBJS;MODULE_NAME;OUTPUT_NAME"
+    ""
+  )
+  if(_arg_MPI)
+    set(_bridge comm_mpi.cpp)
+    set(
+      _domain
+      NB_DOMAIN
+      monoprop_mpi
+    )
+  else()
+    set(_bridge comm_serial.cpp)
+    set(_domain "")
+  endif()
 
-target_link_libraries(
-  _core
-  PRIVATE
-    monoprop-objs
-    monoprop-sanitizers
-)
+  nanobind_add_module(${target}
+    NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
+    NOMINSIZE  # don’t perform optimizations to minimize binary size
+    LTO  # perform link-time optimization
+    BACKEND_MODULE nanobind_backend
+    ${_domain}
+    ${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp
+    ${_bind_cpps}  # List of generated binders
+    ${CMAKE_CURRENT_SOURCE_DIR}/${_bridge}
+  )
+  target_compile_definitions(
+    ${target}
+    PRIVATE
+      monoprop_PY_MODULE_NAME=${_arg_MODULE_NAME}
+  )
+  target_include_directories(
+    ${target}
+    PRIVATE
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  if(_arg_MPI)
+    target_include_directories(${target} SYSTEM PRIVATE ${mpi4py_INCLUDE_DIRS})
+  endif()
+  target_link_libraries(
+    ${target}
+    PRIVATE
+      ${_arg_OBJS}
+      monoprop-sanitizers
+  )
+  set_target_properties(
+    ${target}
+    PROPERTIES
+      OUTPUT_NAME
+        "${_arg_OUTPUT_NAME}"
+      MACOSX_RPATH
+        ON
+      SKIP_BUILD_RPATH
+        OFF
+      BUILD_WITH_INSTALL_RPATH
+        OFF
+      INSTALL_RPATH
+        "${_rpath}"
+      INSTALL_RPATH_USE_LINK_PATH
+        ON
+  )
+  install(TARGETS ${target} LIBRARY DESTINATION ${PROJECT_NAME})
+endfunction()
+
+monoprop_add_python_core(_core OBJS monoprop-objs MODULE_NAME _core OUTPUT_NAME _core)
+
+set(monoprop_MPI_MODULE_FILES_PY "")
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  monoprop_add_python_core(
+    _core_mpi_${_abi}
+    OBJS monoprop-objs-${_abi}
+    MODULE_NAME _core_mpi
+    OUTPUT_NAME _core_mpi.${_abi}
+    MPI
+  )
+  string(
+    APPEND monoprop_MPI_MODULE_FILES_PY
+    "\"${_abi}\": \"_core_mpi.${_abi}\", "
+  )
+endforeach()
 
 if(monoprop_SANITIZER STREQUAL "asan-ubsan")
   # GCC bounds-strict misdiagnoses nanobind's valid access to a tuple's trailing allocation.
@@ -174,29 +239,6 @@ WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/..
 COMMAND_ERROR_IS_FATAL ANY
 )"
 )
-
-if(APPLE)
-  set(_rpath "@loader_path/${CMAKE_INSTALL_LIBDIR}")
-else()
-  set(_rpath "\$ORIGIN/${CMAKE_INSTALL_LIBDIR}")
-endif()
-
-set_target_properties(
-  _core
-  PROPERTIES
-    MACOSX_RPATH
-      ON
-    SKIP_BUILD_RPATH
-      OFF
-    BUILD_WITH_INSTALL_RPATH
-      OFF
-    INSTALL_RPATH
-      "${_rpath}"
-    INSTALL_RPATH_USE_LINK_PATH
-      ON
-)
-
-install(TARGETS _core LIBRARY DESTINATION ${PROJECT_NAME})
 
 # monoprop/_mpi_abis.py records the shipped MPI ABI families for monoprop._backend.
 set(monoprop_MPI_ABIS_PY "")

@@ -122,7 +122,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._initial_state = list(initial_state)
         # dispatch() returns the concrete adapter class for this mode count;
         # call it with keyword args matching the public constructor.
-        self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
+        self._simulator = dispatch(num_modes, comm)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
             initial_state=list(initial_state),
