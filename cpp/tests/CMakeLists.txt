@@ -85,3 +85,16 @@ discover_tests(
 )
 
 add_subdirectory(link_export_probe)
+
+add_test(
+  NAME monoprop_mpi_inspection
+  COMMAND
+    ${CMAKE_COMMAND} -P
+    ${CMAKE_CURRENT_LIST_DIR}/cmake/test_mpi_inspection.cmake
+)
+set_tests_properties(
+  monoprop_mpi_inspection
+  PROPERTIES
+    LABELS
+      "unit"
+)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 
+from ._backend import MPI_ABIS
 from ._core import (
     MAX_NUM_MODES,
     __build_type__,
@@ -25,7 +26,6 @@ from ._core import (
     __nanobind_version__,
     __variant__,
     antihermitian_generator_correction,
-    has_mpi,
     is_antihermitian,
 )
 from ._version import version as __version__
@@ -46,6 +46,7 @@ from .utils import jordan_wigner_basis_change
 
 __all__ = [
     "MAX_NUM_MODES",
+    "MPI_ABIS",
     "Circuit",
     "ExpGate",
     "FermiOperator",
@@ -64,7 +65,6 @@ __all__ = [
     "__version__",
     "antihermitian_generator_correction",
     "expand_monomials",
-    "has_mpi",
     "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",

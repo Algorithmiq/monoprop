@@ -65,7 +65,7 @@ diff-baseline AGAINST='golden':
 # Report what the installed extension was actually built as.
 
 info:
-    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI": mp.has_mpi})'
+    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI ABIs": mp.MPI_ABIS})'
 
 test: build test-py test-cpp
 
@@ -123,6 +123,12 @@ test-find-package BUILD_DIR='build/find-package-smoke':
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
     "$build_dir/smoke"
+
+# Run configure's MPI inspection on an installed MPI: ABI family and version floor.
+
+inspect-mpi INCLUDE_DIR ABI:
+    cmake -DMPI_INCLUDE_DIR={{ quote(INCLUDE_DIR) }} -DEXPECTED_ABI={{ quote(ABI) }} \
+      -P cpp/tests/cmake/inspect_mpi.cmake
 
 # The sanitizer legs run against a tree built with monoprop_SANITIZER=asan-ubsan (or tsan)
 # exported, which also points build_dir at it.
@@ -382,7 +388,7 @@ bench LABEL *ARGS:
 
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
-    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.has_mpi else 'monoprop was built without MPI; run just bench-build-mpi first')"
+    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.MPI_ABIS else 'monoprop was built without MPI; run just bench-build-mpi first')"
     @mkdir -p "{{ bench_results }}"
     label="$1"; ranks="$2"; shift 2; \
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \

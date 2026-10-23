@@ -65,9 +65,7 @@ find_package(
 
 find_package(Threads REQUIRED)
 
-if(monoprop_ENABLE_MPI)
-  find_package(MPI REQUIRED COMPONENTS CXX)
-endif()
+include(${PROJECT_SOURCE_DIR}/cmake/custom/monopropMPI.cmake)
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/Sanitizers.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
@@ -95,6 +93,7 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   MPI ABI families       : ${monoprop_MPI_ABI_NAMES}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
