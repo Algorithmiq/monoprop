@@ -135,6 +135,7 @@ as a PEP 517 config-setting or through an environment variable:
 | `monoprop.cxx-unit-tests` | `monoprop_ENABLE_CXX_UNIT_TESTS` | bool (default on) | build the C++ unit test suite |
 | `monoprop.arch-flags` | `monoprop_ENABLE_ARCH_FLAGS` | bool (default on, forced off for Debug and sanitizer builds) | architecture-specific compiler flags |
 | `monoprop.mpi-test-procs` | `monoprop_MPI_TEST_PROCS` | `;`-separated rank counts | rank counts the C++ MPI tests are registered for |
+| `monoprop.mpi-abis` | `monoprop_MPI_ABIS` | `;`-separated `<abi>=<prefix>` | build one MPI variant per entry from an MPI installed under `<prefix>` instead of the MPI CMake finds (release wheels; needs `monoprop.mpi`) |
 
 Booleans accept `ON`/`OFF`, `true`/`false`, `1`/`0` and similar. These two
 commands are equivalent:
@@ -210,6 +211,21 @@ Setting the CMake option directly (`cmake.define.monoprop_ENABLE_MPI=ON` or
 `SKBUILD_CMAKE_DEFINE`) bypasses that override, so mpi4py is not provisioned
 and the build fails at configure time with a message telling you as much. Use
 `monoprop.mpi` instead.
+
+### Release wheels
+
+The published wheels contain one MPI variant per ABI family, built against MPI installations
+under fixed prefixes rather than the MPI CMake would find. To reproduce one locally, install
+`mpich` and `openmpi` from PyPI with `pip install --target`, then:
+
+```bash
+CIBUILDWHEEL=1 monoprop_ENABLE_MPI=ON \
+  monoprop_MPI_ABIS="mpich=$PWD/mpi/mpich;openmpi=$PWD/mpi/openmpi" \
+  uv build --wheel
+```
+
+`CIBUILDWHEEL=1` is what cibuildwheel exports; it keeps the build machine's library directories
+out of the RPATHs.
 
 ### Verify the install
 

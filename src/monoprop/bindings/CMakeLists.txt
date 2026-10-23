@@ -181,6 +181,15 @@ function(monoprop_add_python_core target)
       ${_arg_OBJS}
       monoprop-sanitizers
   )
+  if(monoprop_WHEEL_BUILD)
+    set(_use_link_path OFF)
+  else()
+    set(_use_link_path ON)
+  endif()
+  set(_module_rpath "${_rpath}")
+  if(APPLE AND monoprop_WHEEL_BUILD AND _arg_MPI)
+    list(APPEND _module_rpath ${monoprop_MACOS_MPI_RPATHS})
+  endif()
   set_target_properties(
     ${target}
     PROPERTIES
@@ -193,9 +202,9 @@ function(monoprop_add_python_core target)
       BUILD_WITH_INSTALL_RPATH
         OFF
       INSTALL_RPATH
-        "${_rpath}"
+        "${_module_rpath}"
       INSTALL_RPATH_USE_LINK_PATH
-        ON
+        ${_use_link_path}
   )
   install(TARGETS ${target} LIBRARY DESTINATION ${PROJECT_NAME})
 endfunction()
