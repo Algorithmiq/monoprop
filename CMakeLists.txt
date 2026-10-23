@@ -50,6 +50,22 @@ set(
 )
 option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
 
+# cibuildwheel exports CIBUILDWHEEL=1. Wheels must not carry build-machine library paths, which could
+# shadow the MPI library mpi4py selects; source installs keep them to find Spack or conda libraries.
+# Read on every configure, not cached: a build tree may be reused outside cibuildwheel.
+if("$ENV{CIBUILDWHEEL}" STREQUAL "1")
+  set(monoprop_WHEEL_BUILD ON)
+else()
+  set(monoprop_WHEEL_BUILD OFF)
+endif()
+# Where macOS MPI installations live (Homebrew, MacPorts, /usr/local), as mpi4py's wheels assume.
+set(
+  monoprop_MACOS_MPI_RPATHS
+  /usr/local/lib
+  /opt/homebrew/lib
+  /opt/local/lib
+)
+
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 set(Python_FIND_VIRTUALENV FIRST)
@@ -94,6 +110,7 @@ message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
 message(STATUS "   MPI ABI families       : ${monoprop_MPI_ABI_NAMES}")
+message(STATUS "   cibuildwheel build     : ${monoprop_WHEEL_BUILD}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 

@@ -139,6 +139,14 @@ foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
       $<BUILD_INTERFACE:monoprop-sanitizers>
       PkgConfig::HWLOC
   )
+  if(APPLE AND monoprop_WHEEL_BUILD)
+    set_target_properties(
+      ${_lib}
+      PROPERTIES
+        INSTALL_RPATH
+          "${monoprop_MACOS_MPI_RPATHS}"
+    )
+  endif()
   install(
     TARGETS
       ${_lib}
