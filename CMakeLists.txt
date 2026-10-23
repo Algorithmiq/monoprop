@@ -103,8 +103,8 @@ include(GNUInstallDirs)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 
-add_library(monoprop-objs OBJECT "")
-add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
+# Its objects are attached in cpp/monoprop once every subdirectory has registered its sources.
+add_library(monoprop SHARED)
 
 # must run before add_subdirectory(cpp): CTest's enabled-ness does not propagate
 # back up to a parent directory that has already been added as a subdirectory.

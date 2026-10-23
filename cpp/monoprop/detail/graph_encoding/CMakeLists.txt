@@ -8,4 +8,4 @@ target_sources(
         "MPGraphEncodingTypes.h"
 )
 
-target_sources(monoprop-objs PRIVATE MPGraphEncoding.cpp)
+monoprop_add_core_sources(MPGraphEncoding.cpp)
