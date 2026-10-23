@@ -3,7 +3,19 @@ project(monoprop_find_package_smoke LANGUAGES CXX)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(monoprop CONFIG REQUIRED)
+option(
+  monoprop_SMOKE_MPI
+  "Consume the MPI component (monoprop::monoprop_mpi)"
+  OFF
+)
+
+if(monoprop_SMOKE_MPI)
+  find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
+  set(_monoprop_target monoprop::monoprop_mpi)
+else()
+  find_package(monoprop CONFIG REQUIRED)
+  set(_monoprop_target monoprop::monoprop)
+endif()
 
 add_executable(smoke ../link_export_probe/link_export_probe.cpp)
-target_link_libraries(smoke PRIVATE monoprop::monoprop)
+target_link_libraries(smoke PRIVATE ${_monoprop_target})

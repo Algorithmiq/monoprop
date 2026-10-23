@@ -31,3 +31,27 @@ set_tests_properties(
     LABELS
       "unit"
 )
+
+# The same probe against every MPI-enabled libmonoprop, in singleton MPI (no mpiexec).
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  set(_probe monoprop_mpi_${_abi}_link_export_probe)
+  add_executable(${_probe}.x link_export_probe.cpp)
+  target_link_libraries(
+    ${_probe}.x
+    PRIVATE
+      monoprop-sanitizers
+      monoprop_mpi_${_abi}
+  )
+  if(NOT APPLE)
+    target_link_options(${_probe}.x PRIVATE "-Wl,--no-undefined")
+  endif()
+  add_test(NAME ${_probe} COMMAND ${_probe}.x)
+  set_tests_properties(
+    ${_probe}
+    PROPERTIES
+      LABELS
+        "unit"
+      ENVIRONMENT
+        "${_monoprop_serial_env_entries}"
+  )
+endforeach()

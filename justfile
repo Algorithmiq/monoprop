@@ -112,17 +112,45 @@ test-mpi RANKS='': && (test-py-mpi RANKS) (test-cpp '' mpi_build_dir) test-cpp-m
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="$ranks" {{ uv_sync }} --group workspace-test
 
-# Build and run a consumer project against the installed package.
+# Build and run a consumer project against the installed package: serially, then, when the
+# installation ships MPI ABIs, through the MPI component under mpiexec, and finally against a
+# package that lacks the consumer's MPI ABI, which must fail at configure time.
 
-test-find-package BUILD_DIR='build/find-package-smoke':
+test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     #!/usr/bin/env bash
     set -euo pipefail
     build_dir={{ quote(BUILD_DIR) }}
-    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    python=({{ if PYTHON == '' { 'uv run --no-sync python' } else { quote(PYTHON) } }})
+    site_packages="$("${python[@]}" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
     cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
     "$build_dir/smoke"
+    abis="$("${python[@]}" -c 'import monoprop; print(" ".join(monoprop.MPI_ABIS))')"
+    if [[ -z "$abis" ]]; then
+      exit 0
+    fi
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir-mpi" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON
+    cmake --build "$build_dir-mpi"
+    mpiexec -n 2 "$build_dir-mpi/smoke"
+    # The targets file locates the libraries relative to the config directory, so the altered
+    # copy sits in a mirror of the installation tree whose other entries link to the real ones.
+    mismatch="$(mktemp -d)"
+    mkdir "$mismatch/monoprop"
+    for entry in "$site_packages/monoprop"/*; do
+      if [[ "$(basename "$entry")" != cmake ]]; then
+        ln -s "$entry" "$mismatch/monoprop/"
+      fi
+    done
+    cp -R "$site_packages/monoprop/cmake" "$mismatch/monoprop/cmake"
+    sed -i.orig 's/^set(monoprop_MPI_ABIS .*/set(monoprop_MPI_ABIS "none")/' "$mismatch/monoprop/cmake/monopropConfig.cmake"
+    if cmake -S cpp/tests/find_package_smoke -B "$mismatch/build" \
+        -Dmonoprop_DIR="$mismatch/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON > "$mismatch/log" 2>&1; then
+      echo "a package without the consumer's MPI ABI was accepted" >&2
+      exit 1
+    fi
+    grep -q "supports: none" "$mismatch/log"
 
 # Run configure's MPI inspection on an installed MPI: ABI family and version floor.
 
