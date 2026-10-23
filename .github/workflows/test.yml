@@ -17,6 +17,9 @@ env:
   COLUMNS: 120
   CPM_USE_LOCAL_PACKAGES: "TRUE"
 
+permissions:
+  contents: read
+
 jobs:
   package-tests:
     name: Test [mpi:${{ matrix.mpi }}] ${{ matrix.runner }} py${{ matrix.python-version }} ${{ matrix.compiler }}
