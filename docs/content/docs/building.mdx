@@ -21,11 +21,28 @@ without MPI, so a from-source build is required for multi-rank runs.
 
 ## Prerequisites
 
-- a C++23-compliant compiler; on Linux the minimum supported versions are **GCC 14** and **Clang 18**
+- a C++23-compliant compiler; on Linux the minimum supported versions are **GCC 14** and **Clang 18**.
+  GCC builds pass `-ffp-contract=on`, so GCC, like Clang by default, fuses a multiply and an add only within one
+  expression; the test suite's bitwise comparisons between code paths rely on it. A project that compiles the
+  installed headers itself uses its own contraction setting.
 - CMake and Ninja
 - Python 3.11 or newer and the `uv` package manager (for the bindings)
 - an MPI implementation such as Open MPI (only for MPI builds)
-- `hwloc` (version 2.9+) and `pkg-config` (required so CMake can locate `hwloc`)
+- OpenMP for C++, in every build — with or without MPI, and even when you only
+  run one thread; there is no OpenMP-disabled build. Use the runtime that matches
+  your compiler:
+  - **GCC** ships its own `libgomp`; nothing extra is needed;
+  - **Clang on Linux** needs the `libomp` of the same LLVM version, e.g.
+    `libomp-18-dev` for `clang++-18` on Debian/Ubuntu;
+  - **Apple Clang** needs Homebrew's `libomp`. It is keg-only, so point CMake at
+    it with `export OpenMP_ROOT="$(brew --prefix libomp)"` before building, and
+    before configuring a project that consumes the installed package.
+
+  The library calls the OpenMP runtime itself, so both `libmonoprop` and the Python
+  extension link it. The runtime therefore starts when monoprop loads. If you set
+  `OMP_PLACES` and leave binding enabled, it binds the importing thread to the first
+  place at that point. That is OpenMP applying your placement request, not monoprop:
+  monoprop never changes affinity. Set `OMP_PROC_BIND=false` if you want no binding.
 
 The repository ships a [DevContainer](https://containers.dev/) with all of the
 above pre-configured; opening the folder in VS Code and rebuilding the container is
@@ -45,6 +62,10 @@ Flake outputs support x86_64 Linux, aarch64 Linux, and aarch64 macOS. The
 | `nix build .#monoprop-mpi` | the same package with `monoprop_ENABLE_MPI=ON` |
 | `nix build .#monoprop-py313` | the package for a specific interpreter: `py312`, `py313` or `py314`, with a `-mpi` suffix for the MPI build |
 | `nix run` | a Python interpreter with `monoprop` importable |
+
+The packages and the shell take OpenMP from the compiler: GCC's `libgomp` on Linux,
+and `llvmPackages.openmp` wherever the standard environment's compiler is Clang
+(macOS).
 
 The unsuffixed packages, `nix run` and `nix develop` use Python 3.14, the
 interpreter nixpkgs builds and caches; older interpreters are compiled locally.
@@ -70,7 +91,7 @@ The packaged build deviates from the `uv` build in three places, all in
 
 Use the exported overlay when monoprop must share a downstream project's Python
 and native dependency package set. Following the downstream `nixpkgs` input avoids
-introducing a second Python, Boost, hwloc, or MPI closure:
+introducing a second Python, Boost, OpenMP, or MPI closure:
 
 ```nix
 {
@@ -207,8 +228,8 @@ build) and pass `comm=MPI.COMM_WORLD` to the simulator:
 mpiexec -n 8 uv run python your_script.py
 ```
 
-See [Parallelism and distribution](/features/parallelism) for the communicator options and the
-operator-partitioning controls.
+See [Parallelism and distribution](/features/parallelism) for the communicator options, the thread budget and
+the launch configuration.
 
 ## Building the C++ unit tests
 
@@ -237,7 +258,34 @@ link dependencies merely because the consuming project already has an `MPI::MPI_
 package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that
 exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
 usage requirement the package fails to export. It compiles the same source as the in-tree
-probe, so the two cannot drift.
+probe, so the two cannot drift. The probe drives both the Majorana and the Pauli basis and
+instantiates the internal OpenMP worksharing template in its own translation unit, so the
+consumer only builds if the imported `monoprop::monoprop` target carries OpenMP's compile
+and link flags — the consumer project adds none of its own. Its constructor calls reach the library's out-of-line
+thread-budget and MPI thread checks, so an unexported helper fails the consumer's link. The consumer also checks
+that it inherited the build's MPI setting and no runtime selector: pass `-DSMOKE_EXPECT_MPI=ON|OFF` to make a
+mismatched package fail to compile. It checks the constructor's shape at compile time, runs every public operation
+family, an ordinary derived class through the base interface and the raw-access rule (at one and at two threads),
+and, when launched on several ranks with `monoprop_TEST_EXPECT_RANKS` set, compares the root on `MPI_COMM_WORLD`
+with one process's. It also runs the
+header-only fixed-team phase primitive (`detail/sharded/Team.h`), whose barriers must compile through
+the same imported OpenMP flags, and the owner-initialized shard state (`detail/sharded/State.h`) and the
+direct-buffer construction engine (`detail/sharded/Construction.h`), each from a separate translation unit that
+includes only that header, so the installed headers must be self-contained. A further translation unit starts with
+the sharded evaluation header (`detail/sharded/Evaluation.h`) and calls the exported `ev_sharded` and
+`ev_and_grad_sharded` at run time, after a coefficient-informed build whose seed replay crosses the shared-library
+boundary.
+
+The exported low-level entry points (`evolve_step`, `evolve_operator` and
+`state_operator_derivative_local`) take a trailing thread budget with a serial default. Removing the
+partition runtime changed the `MonomialPropagator` constructor and layout, `mpi::Comm`, and the installed
+headers (the partition, topology and in-process communicator headers are gone; see
+[Parallelism and distribution](/features/parallelism)). Rebuild C++ consumers, `libmonoprop` and the Python
+bindings together, from the same monoprop build, and install into a fresh prefix: an old prefix keeps the
+deleted headers.
+
+monoprop links no topology library: the package config's dependencies are Boost, Threads, OpenMP and, in an
+MPI build, MPI. An MPI or OpenMP implementation may itself use hwloc; that is its own dependency.
 
 ### Debug tree
 
@@ -321,8 +369,31 @@ uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-ca
 just test-cpp-tsan
 ```
 
-TSan is scoped to the concurrency surface — the partition and `ShmComm` tests —
-which is where its reports are worth the runtime cost.
+`just test-cpp-tsan` is scoped to the concurrency surface, which is where its reports are worth the runtime cost:
+the sharded runtime's team, state, construction, evaluation, exchange and root tests (`sharded_`), the fused-record
+launches (`fused_env_t*`), every `openmp_*` test (the workshare primitive, the threaded kernels, scan and resolve
+phases, and the budget launches), the multi-shard coefficient launches (`evolved_coefficients_env_t*`) and the threaded
+lazy-fold checks (`combined_threaded_*`). The OpenMP caveat below applies to all of them,
+and CI runs this leg with Clang, libomp and Archer for that reason.
+
+The OpenMP kernels (`openmp_*` tests) need an OpenMP runtime that TSan understands. GCC's libgomp is
+not instrumented, so TSan reports false races even on correct parallel loops; do not read its
+output as evidence either way. Clang with LLVM's libomp and its Archer tool works, with the runtime's
+own internal locking suppressed:
+
+```bash
+CXX=clang++ CC=clang SKBUILD_CMAKE_BUILD_TYPE=Tsan \
+SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=tsan;monoprop_ENABLE_MPI=OFF" \
+uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
+
+OMP_TOOL_LIBRARIES="$(clang++ -print-resource-dir)/../../libarcher.so" \
+TSAN_OPTIONS="suppressions=$PWD/.github/tsan-libomp.supp" \
+  just test-cpp-tsan
+```
+
+Check a new toolchain first with a small known-racy and known-safe OpenMP program: the safe one must
+stay silent and the racy one must be reported in your own frames. The Archer path varies by
+distribution (on Debian and Ubuntu, `/usr/lib/llvm-<version>/lib/libarcher.so`).
 
 There is no ThreadSanitizer equivalent of the ASan Python leg. TSan does not
 support `dlopen` of instrumented libraries, so loading an instrumented `_core`
@@ -344,6 +415,27 @@ Python API under TSan would require a TSan-instrumented CPython.
   build. `.github/actions/setup` and `.devcontainer/Dockerfile` both install from
   those files, so there is one list per platform to keep current.
 
+
+## The runtime a build contains
+
+There is one runtime and no build option that selects another: a default build is the sharded OpenMP runtime
+([Parallelism and distribution](/features/parallelism)). Its extension carries a read-only identity, the attribute
+`_core.__runtime_identity__` and the same NUL-terminated literal in the extension file:
+
+```bash
+uv run --no-sync python -c 'from monoprop import _core; print(_core.__runtime_identity__)'
+# monoprop-runtime=sharded-openmp
+just check-runtime   # attribute, literal, MPI setting, and no stale selector in the C++ tree
+```
+
+The parity driver and the benchmark preflight read both, so evidence names the binary it came from. Builds from
+before the partition runtime was removed carried `monoprop-runtime=sharded-openmp-prototype` (the development
+selector `monoprop_SHARDED_OPENMP_PROTOTYPE=ON`) or `monoprop-runtime=legacy-partitions`, and the preserved
+partition baseline carries none; the tools still read those for archived evidence. A build tree configured before
+the removal keeps a `monoprop_SHARDED_OPENMP_PROTOTYPE` cache entry that no longer does anything: delete the tree.
+
+Linux x86_64 with GCC/libgomp, Clang/libomp, ASan/UBSan and Clang TSan with Archer, with and without MPI, has been
+run. macOS, Linux aarch64, wheels from CI, Nix and the minimum compiler versions are pending their own runs.
 
 ## See also
 

@@ -1,13 +1,6 @@
 find_package(Boost 1.85 CONFIG REQUIRED)
 message(STATUS "Using Boost: ${Boost_DIR} (version ${Boost_VERSION})")
 
-find_package(PkgConfig REQUIRED QUIET)
-pkg_check_modules(HWLOC REQUIRED QUIET IMPORTED_TARGET GLOBAL "hwloc>=2.9")
-message(
-  STATUS
-  "Using hwloc: ${HWLOC_LINK_LIBRARIES} (version ${HWLOC_VERSION})"
-)
-
 target_sources(
   monoprop-objs
   PRIVATE
@@ -17,6 +10,8 @@ target_sources(
     Validation.cpp
 )
 
+# PUBLIC/INTERFACE, never private: the macro changes template definitions and class layout, so the bindings, the tests
+# and installed consumers must see exactly the library's value.
 target_compile_definitions(
   monoprop-objs
   PUBLIC
@@ -43,15 +38,16 @@ target_include_directories(
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/cpp>
 )
 
+# OpenMP is linked on both targets: the shared library is assembled from TARGET_OBJECTS and does not
+# inherit monoprop-objs' link requirements, so it needs its own link against the runtime.
 target_link_libraries(
   monoprop-objs
   PUBLIC
     monoprop-sanitizers
     Boost::boost
     Threads::Threads
+    OpenMP::OpenMP_CXX
     $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
-  PRIVATE
-    PkgConfig::HWLOC
 )
 
 set_target_properties(
@@ -105,6 +101,7 @@ target_compile_features(monoprop INTERFACE cxx_std_23)
 target_link_libraries(
   monoprop
   PUBLIC
+    OpenMP::OpenMP_CXX
     $<$<BOOL:${monoprop_ENABLE_MPI}>:MPI::MPI_CXX>
   INTERFACE
     Boost::boost
@@ -112,7 +109,6 @@ target_link_libraries(
   PRIVATE
     # Keep the non-exported sanitizer target out of monopropTargets.
     $<BUILD_INTERFACE:monoprop-sanitizers>
-    PkgConfig::HWLOC
 )
 
 add_subdirectory(algebra)

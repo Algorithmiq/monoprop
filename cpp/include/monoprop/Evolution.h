@@ -17,6 +17,7 @@
 #include "monoprop/TypeAliases.h"
 #include "monoprop/detail/evolution/CosineRecomputeCallbacks.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/parallel/Options.h"
 #include "monoprop/monopropExport.h"
 
 namespace monoprop {
@@ -29,12 +30,17 @@ struct LayerAngle {
     double param = 0.0;     ///< the optimizer parameter driving this layer
 };
 
+// Each entry below takes a trailing thread budget, `options`, for its local kernels; the default is serial.
+// A rank-local failure after the entry has started communicating goes to mpi::operation_failed(): it aborts
+// a multi-rank ordinary MPI communicator and rethrows the original exception otherwise.
+
 /// Forward-evolve `op` through one layer; each rank owns its local coefficients, cross-rank cycles are communicated.
 monoprop_EXPORT auto evolve_step(VecD &op,
                                  const Layer &layer,
                                  double param,
                                  mpi::Comm comm,
-                                 const detail::LayerCosScale &cos_scale) -> void;
+                                 const detail::LayerCosScale &cos_scale,
+                                 detail::parallel::Options options = {}) -> void;
 
 /// Forward-evolve `op` through one layer of `graph`; `layer_idx` also selects the layer's cosine set.
 monoprop_EXPORT auto evolve_step(VecD &op,
@@ -42,14 +48,16 @@ monoprop_EXPORT auto evolve_step(VecD &op,
                                  double param,
                                  size_t layer_idx,
                                  mpi::Comm comm,
-                                 const detail::LayerCosScale &cos_scale) -> void;
+                                 const detail::LayerCosScale &cos_scale,
+                                 detail::parallel::Options options = {}) -> void;
 
 /// Forward-evolve `coeffs` through every layer of `graph`, returning this rank's evolved coefficients.
 monoprop_EXPORT auto evolve_operator(VecD &&coeffs,
                                      const MPGraphView &graph,
                                      const VecD &params,
                                      mpi::Comm comm,
-                                     const detail::LayerCosScale &cos_scale) -> VecD;
+                                     const detail::LayerCosScale &cos_scale,
+                                     detail::parallel::Options options = {}) -> VecD;
 
 /// Reverse-mode derivative of one layer: inverse-rotates (state, op) in place and returns the gradient term.
 /// `record` must be the pre-layer coefficients the forward pass kept for this same `layer_idx`.
@@ -60,5 +68,6 @@ monoprop_EXPORT auto state_operator_derivative_local(VecD &state,
                                                      LayerAngle angle,
                                                      mpi::Comm comm,
                                                      const detail::LayerCosAccumulate &cos_acc,
-                                                     const detail::CosRecordView &record = {}) -> double;
+                                                     const detail::CosRecordView &record = {},
+                                                     detail::parallel::Options options = {}) -> double;
 } // namespace monoprop

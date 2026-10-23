@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
+#include "ScanTestSupport.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/algebra/PauliAlgebra.h"
@@ -451,4 +452,57 @@ BOOST_AUTO_TEST_CASE(pauli_build_layer_replay_fold_consumers) {
     BOOST_TEST(e_prop == e_graph, boost::test_tools::tolerance(1e-9));
     BOOST_TEST(e_contract == e_graph, boost::test_tools::tolerance(1e-9));
     BOOST_TEST(e_jw == e_graph, boost::test_tools::tolerance(1e-9));
+}
+
+// Pauli scans fold J(G) = pair_swap(G) but split on the untransformed G's lowest bit. Threaded ranges at
+// budgets 2-4 must reproduce budget 1 exactly, including a J(G) that lands on empty columns while the
+// pivot does not, and dense/sparse splitmix and linear windows.
+BOOST_AUTO_TEST_CASE(openmp_scan_pauli_ranges_match_serial) {
+    using scan_test::Expect;
+    using scan_test::Scenario;
+    const auto pauli = Basis::Pauli;
+    // {1, 20}: J(G) = {0, 21}, so the fold reads empty column 0 while the pivot is bit 1 (also empty).
+    // {12, 3}: pivot 3 is empty but J(G) = {13, 2} reads dense column 13 -- the pivot is not a fold column.
+    const std::vector<std::pair<Scenario, Expect>> single{
+        {{.label = "dense J(G)", .basis = pauli, .gen = scan_test::mono_of_bits({14, 21, 33, 46})}, Expect::output},
+        {{.label = "odd-weight G", .basis = pauli, .gen = scan_test::mono_of_bits({13, 28, 51})}, Expect::output},
+        {{.label = "sparse pivot", .basis = pauli, .gen = scan_test::mono_of_bits({6, 40})}, Expect::output},
+        {{.label = "J(G) on an empty column", .basis = pauli, .gen = scan_test::mono_of_bits({1, 20})}, Expect::output},
+        {{.label = "pivot outside J(G)", .basis = pauli, .gen = scan_test::mono_of_bits({3, 12})}, Expect::output},
+        {{.label = "empty fold columns", .basis = pauli, .gen = scan_test::mono_of_bits({0, 1})}, Expect::not_scanned},
+        {{.label = "capture, cap 5",
+          .basis = pauli,
+          .gen = scan_test::mono_of_bits({14, 21}),
+          .cap = 5,
+          .capture = true},
+         Expect::output},
+        {{.label = "fused cos sweep",
+          .basis = pauli,
+          .gen = scan_test::mono_of_bits({13, 28, 51}),
+          .capture = true,
+          .fused_scale = true},
+         Expect::output},
+        {{.label = "support cutoff, lower atol",
+          .basis = pauli,
+          .gen = scan_test::mono_of_bits({14, 21, 33, 46}),
+          .cutoff = detail::SupportCutoff<32>{4},
+          .atol = scan_test::Atol::lower_equal},
+         Expect::output},
+    };
+    const scan_test::Geometry solo{"one rank", 1, 1, false, 0};
+    for (const auto &[s, e] : single) {
+        scan_test::check_threaded_matches_serial(solo, s, e);
+    }
+    for (const scan_test::Geometry g :
+         {scan_test::Geometry{"linear R=4", 4, 1, true, 1}, scan_test::Geometry{"splitmix R=3", 3, 1, false, 2}}) {
+        const auto router = scan_test::router_of(g);
+        const auto gen = g.linear ? scan_test::find_generator(router, 12, 30, 3, false, 99) : single[1].first.gen;
+        scan_test::check_threaded_matches_serial(g,
+                                                 {.label = "odd-weight G", .basis = pauli, .gen = gen},
+                                                 Expect::output);
+        scan_test::check_threaded_matches_serial(
+            g,
+            {.label = "fused cos sweep", .basis = pauli, .gen = gen, .capture = true, .fused_scale = true},
+            Expect::output);
+    }
 }

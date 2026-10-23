@@ -14,9 +14,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -24,6 +26,7 @@
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
+#include "monoprop/detail/parallel/Options.h"
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -221,4 +224,96 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
     for (size_t i = 0; i < keys.size(); ++i) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
+}
+
+// Shared invariant 14, pinned: bulk insertion does not deduplicate. Two rows holding the same key are both
+// indexed, and a lookup returns the first one inserted (it sits earlier on the probe chain). Production never
+// relies on this -- query keys are distinct by construction -- but a replacement index must either keep it or
+// change it as an explicit, reviewed contract change. The options overload is the Task 11 publication seam;
+// the packed index ignores it and publishes serially, identically.
+BOOST_AUTO_TEST_CASE(bulk_insert_duplicate_keys_are_both_indexed) {
+    const auto dup = bs({2, 7, 9});
+    const auto other = bs({1, 4});
+    const std::array<MSet, 3> keys{dup, other, dup};
+    for (const int threads : {1, 4}) {
+        for (const bool hashed : {false, true}) {
+            Store s;
+            const size_t base = s.grow_rows_geometric(keys.size());
+            for (size_t k = 0; k < keys.size(); ++k) {
+                s.set(base + k, keys[k]);
+            }
+            if (hashed) {
+                s.bulk_insert_hashed(
+                    keys.size(),
+                    base,
+                    [&](size_t k) {
+                        std::vector<Store::PosT> pos;
+                        s.for_each_position(base + k, [&](size_t b) { pos.push_back(static_cast<Store::PosT>(b)); });
+                        return Store::fold_hash_positions(pos);
+                    },
+                    parallel::Options{.threads = threads});
+            }
+            else {
+                s.bulk_insert(keys.size(), base, [&](size_t k) -> const MSet & { return keys[k]; });
+            }
+            BOOST_TEST_CONTEXT("threads=" << threads << " hashed=" << hashed) {
+                BOOST_TEST(s.size() == 3u);
+                size_t indexed = 0;
+                std::vector<size_t> rows_for_dup;
+                s.for_each([&](const MSet &key, size_t row) {
+                    ++indexed;
+                    if (key == dup) {
+                        rows_for_dup.push_back(row);
+                    }
+                });
+                BOOST_TEST(indexed == 3u);
+                std::ranges::sort(rows_for_dup);
+                BOOST_TEST((rows_for_dup == std::vector<size_t>{0, 2}));
+                BOOST_REQUIRE(s.find(dup).has_value());
+                BOOST_TEST(*s.find(dup) == 0u);
+                BOOST_TEST(*s.find(other) == 1u);
+            }
+        }
+    }
+}
+
+// The frozen probe slices one shared position buffer into blocks: absolute offsets, sliced counts and outputs.
+// A sliced call must give exactly what the whole call gives for the same queries, hashes included.
+BOOST_AUTO_TEST_CASE(find_batch_positions_on_sliced_spans_matches_the_whole_call) {
+    Store s;
+    for (size_t i = 0; i < 120; ++i) {
+        const auto key = bs({i / 60, 4 + (i % 60)});
+        s.push_back(key);
+        s.emplace(key, i);
+    }
+    std::vector<Store::PosT> flat{63, 63, 63}; // unreferenced prefix: offsets are absolute
+    std::vector<size_t> off;
+    std::vector<uint32_t> k_of;
+    for (size_t i = 0; i < 200; ++i) {
+        const auto key = (i % 3 == 0) ? bs({0, 1, 2 + (i % 20)}) : bs({(i / 60) % 2, 4 + (i % 60)});
+        off.push_back(flat.size());
+        uint32_t k = 0;
+        for (size_t b = key.find_first(); b < key.size(); b = key.find_next(b)) {
+            flat.push_back(static_cast<Store::PosT>(b));
+            ++k;
+        }
+        k_of.push_back(k);
+    }
+    std::vector<size_t> whole(off.size());
+    std::vector<uint32_t> whole_hash(off.size());
+    s.find_batch_positions(flat, off, k_of, whole, whole_hash);
+    std::vector<size_t> sliced(off.size(), 7);
+    std::vector<uint32_t> sliced_hash(off.size(), 7);
+    for (size_t lo = 0; lo < off.size(); lo += 37) {
+        const size_t m = std::min<size_t>(37, off.size() - lo);
+        s.find_batch_positions(flat,
+                               std::span<const size_t>(off).subspan(lo, m),
+                               std::span<const uint32_t>(k_of).subspan(lo, m),
+                               std::span<size_t>(sliced).subspan(lo, m),
+                               std::span<uint32_t>(sliced_hash).subspan(lo, m));
+    }
+    BOOST_TEST(sliced == whole, boost::test_tools::per_element());
+    BOOST_TEST(sliced_hash == whole_hash, boost::test_tools::per_element());
+    BOOST_TEST(std::ranges::count(whole, Store::kNotFound) > 0);
+    BOOST_TEST(std::ranges::count_if(whole, [](size_t v) { return v != Store::kNotFound; }) > 0);
 }

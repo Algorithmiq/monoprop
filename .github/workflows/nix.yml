@@ -16,6 +16,10 @@ on:
       - VERSION
       - pyproject.toml
       - CMakeLists.txt
+      - cmake/**
+      - cpp/**/CMakeLists.txt
+      - cpp/tests/find_package_smoke/**
+      - cpp/tests/link_export_probe/**
       - src/monoprop/bindings/CMakeLists.txt
 
 concurrency:
@@ -67,8 +71,16 @@ jobs:
             ninja --version
             uv --version
             just --version
-            pkg-config --modversion hwloc
             mpicc --version
+          '
+
+      # Configures, links and runs the installed-package consumer, which instantiates the
+      # OpenMP worksharing template, with the shell's compiler and OpenMP runtime.
+      - name: Check the OpenMP consumer from the dev shell
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            monoprop_ENABLE_MPI=OFF just build --group workspace-test
+            just test-find-package
           '
 
   flake-result:

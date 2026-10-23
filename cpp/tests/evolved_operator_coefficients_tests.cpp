@@ -27,8 +27,9 @@
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
-// evolved_operator_coefficients() probes the operator index with caller-supplied keys instead of
-// enumerating it. Oracle throughout: evolved_operator_terms(params, 0.0), which enumerates.
+// evolved_operator_coefficients() probes every shard's operator index with caller-supplied keys instead of
+// enumerating it. Oracle throughout: evolved_operator_terms(params, 0.0), which enumerates, at the same shard count.
+// Every case runs at the launch's T; cpp/tests/CMakeLists.txt also reruns the suite at T = 2 and 4.
 
 namespace {
 
@@ -38,7 +39,7 @@ using namespace test_utils;
 constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 8;
 
-auto majorana_sim(const CaseData &data, size_t partitions = 1) -> MonomialPropagator<kNumModes> {
+auto majorana_sim(const CaseData &data) -> MonomialPropagator<kNumModes> {
     return MonomialPropagator<kNumModes>(data.hamiltonian,
                                          kCutoff,
                                          data.initial_state,
@@ -49,20 +50,19 @@ auto majorana_sim(const CaseData &data, size_t partitions = 1) -> MonomialPropag
                                          CutoffType::Length,
                                          std::nullopt,
                                          kNumModes,
-                                         Basis::Majorana,
-                                         partitions);
+                                         Basis::Majorana);
 }
 
 // A propagator whose graph is built and ready to contract.
-auto built_sim(const CaseData &data, size_t partitions = 1) -> MonomialPropagator<kNumModes> {
-    auto sim = majorana_sim(data, partitions);
+auto built_sim(const CaseData &data) -> MonomialPropagator<kNumModes> {
+    auto sim = majorana_sim(data);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     return sim;
 }
 
 // A Schrodinger-picture propagator: the state's identity amplitude is an ordinary index row there,
 // so the empty key resolves through the probe rather than through core_term().
-auto built_schrodinger_sim(const CaseData &data, size_t partitions = 1) -> MonomialPropagator<kNumModes> {
+auto built_schrodinger_sim(const CaseData &data) -> MonomialPropagator<kNumModes> {
     auto sim = MonomialPropagator<kNumModes>(data.hamiltonian,
                                              kCutoff,
                                              data.initial_state,
@@ -73,8 +73,7 @@ auto built_schrodinger_sim(const CaseData &data, size_t partitions = 1) -> Monom
                                              CutoffType::Length,
                                              std::nullopt,
                                              kNumModes,
-                                             Basis::Majorana,
-                                             partitions);
+                                             Basis::Majorana);
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     return sim;
 }
@@ -92,7 +91,7 @@ auto keys_of(const std::vector<std::pair<VecZ, std::complex<double>>> &terms) ->
 
 // Querying every enumerated term must reproduce the enumerated coefficients exactly: same
 // contraction, same decode, only the index access differs.
-BOOST_AUTO_TEST_CASE(coefficients_match_enumerated_terms) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_coefficients_match_enumerated_terms) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = built_sim(data);
 
@@ -110,7 +109,7 @@ BOOST_AUTO_TEST_CASE(coefficients_match_enumerated_terms) {
 }
 
 // A monomial the operator does not carry reads back as exactly 0, not as noise and not as a throw.
-BOOST_AUTO_TEST_CASE(absent_term_reads_back_zero) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_absent_term_reads_back_zero) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = built_sim(data);
 
@@ -138,7 +137,7 @@ BOOST_AUTO_TEST_CASE(absent_term_reads_back_zero) {
 }
 
 // The result is positional: out[q] belongs to keys[q] whatever order the keys arrive in.
-BOOST_AUTO_TEST_CASE(query_order_is_preserved) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_query_order_is_preserved) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = built_sim(data);
 
@@ -166,33 +165,9 @@ BOOST_AUTO_TEST_CASE(query_order_is_preserved) {
     }
 }
 
-// Partitions hash-split the operator, so a key resolves in exactly one of them. The probe must
-// still see the whole operator, matching the single-partition run term for term.
-BOOST_AUTO_TEST_CASE(partitioned_probe_matches_single_partition) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    auto ref = built_sim(data);
-
-    const auto terms = ref.evolved_operator_terms(data.parameters, 0.0);
-    BOOST_REQUIRE(!terms.empty());
-    const auto keys = keys_of(terms);
-    const auto expected = ref.evolved_operator_coefficients(data.parameters, keys);
-
-    for (const size_t partitions : {size_t{2}, size_t{4}}) {
-        auto sim = built_sim(data, partitions);
-        const auto coeffs = sim.evolved_operator_coefficients(data.parameters, keys);
-        BOOST_REQUIRE_EQUAL(coeffs.size(), expected.size());
-        for (size_t q = 0; q < expected.size(); ++q) {
-            BOOST_TEST_CONTEXT("partitions=" << partitions << " query " << q) {
-                BOOST_TEST(near(coeffs[q].real(), expected[q].real()));
-                BOOST_TEST(near(coeffs[q].imag(), expected[q].imag()));
-            }
-        }
-    }
-}
-
 // The keys are user input, so the checked encode is mandatory: an out-of-range slot must throw
 // rather than write past the monomial (indices_to_bitset is noexcept and would corrupt memory).
-BOOST_AUTO_TEST_CASE(out_of_range_slot_index_throws) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_out_of_range_slot_index_throws) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = built_sim(data);
 
@@ -201,7 +176,7 @@ BOOST_AUTO_TEST_CASE(out_of_range_slot_index_throws) {
 }
 
 // An empty query list is a no-op, not a degenerate probe.
-BOOST_AUTO_TEST_CASE(empty_query_list_returns_empty) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_empty_query_list_returns_empty) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = built_sim(data);
 
@@ -213,7 +188,7 @@ BOOST_AUTO_TEST_CASE(empty_query_list_returns_empty) {
 // the empty query has to resolve to core_term() for the two APIs to agree term for term. The
 // fixture Hamiltonian has no identity term, so inject one -- otherwise core_term() is 0 and the
 // check cannot tell the core term apart from the absent-term answer.
-BOOST_AUTO_TEST_CASE(empty_term_resolves_to_core_term) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_empty_term_resolves_to_core_term) {
     auto data = load_case_data<kNumModes>("random_exact.msgpack");
     data.hamiltonian[VecZ{}] = std::complex{0.75, 0.0};
     auto sim = built_sim(data);
@@ -233,7 +208,7 @@ BOOST_AUTO_TEST_CASE(empty_term_resolves_to_core_term) {
 // The Schrodinger picture is the motivating case: reading a handful of amplitudes out of an evolved
 // state. There is no core term to divert the identity there -- it is an ordinary index row carrying
 // the state's identity amplitude -- so the empty query resolves through the probe like any other.
-BOOST_AUTO_TEST_CASE(schrodinger_coefficients_match_enumerated_terms) {
+BOOST_AUTO_TEST_CASE(evolved_coefficients_schrodinger_coefficients_match_enumerated_terms) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
     auto sim = built_schrodinger_sim(data);
 
@@ -258,66 +233,18 @@ BOOST_AUTO_TEST_CASE(schrodinger_coefficients_match_enumerated_terms) {
     BOOST_TEST(probed.at(0).imag() == identity->second.imag());
 }
 
-// The two axes above cross: this is the only configuration where the identity is a hash-partitioned
-// index row, so it exercises the empty key against the concurrent per-partition probe and merge.
-BOOST_AUTO_TEST_CASE(partitioned_schrodinger_probe_matches_single_partition) {
+// The query is a list, not a set: a repeated key is answered once per occurrence. Worth pinning because the probe
+// visits every shard, so a key counted twice would show up here first.
+BOOST_AUTO_TEST_CASE(evolved_coefficients_repeated_key_is_answered_once_per_occurrence) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    auto ref = built_schrodinger_sim(data);
-
-    const auto terms = ref.evolved_operator_terms(data.parameters, 0.0);
-    BOOST_REQUIRE(!terms.empty());
-    const auto keys = keys_of(terms);
-    BOOST_REQUIRE(std::any_of(keys.begin(), keys.end(), [](const auto &key) { return key.empty(); }));
-    const auto expected = ref.evolved_operator_coefficients(data.parameters, keys);
-
-    for (const size_t partitions : {size_t{2}, size_t{4}}) {
-        auto sim = built_schrodinger_sim(data, partitions);
-        const auto coeffs = sim.evolved_operator_coefficients(data.parameters, keys);
-        BOOST_REQUIRE_EQUAL(coeffs.size(), expected.size());
-        for (size_t q = 0; q < expected.size(); ++q) {
-            BOOST_TEST_CONTEXT("partitions=" << partitions << " query " << q) {
-                BOOST_TEST(near(coeffs[q].real(), expected[q].real()));
-                BOOST_TEST(near(coeffs[q].imag(), expected[q].imag()));
-            }
-        }
-    }
-}
-
-// core_term_ is replicated on every partition, so the empty key must be assigned from core_term()
-// -- routed through partition 0 -- and not summed over the partitions the way an index row is.
-BOOST_AUTO_TEST_CASE(partitioned_empty_term_resolves_to_core_term) {
-    auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    data.hamiltonian[VecZ{}] = std::complex{0.75, 0.0};
-
-    for (const size_t partitions : {size_t{1}, size_t{2}, size_t{4}}) {
-        auto sim = built_sim(data, partitions);
-        const auto coeffs = sim.evolved_operator_coefficients(data.parameters, {VecZ{}});
-        BOOST_TEST_CONTEXT("partitions=" << partitions) {
-            BOOST_REQUIRE_EQUAL(coeffs.size(), 1u);
-            BOOST_TEST(coeffs[0].real() == 0.75);
-            BOOST_TEST(coeffs[0].imag() == 0.0);
-        }
-    }
-}
-
-// The query is a list, not a set: a repeated key is answered once per occurrence. Worth pinning
-// because the partitioned merge accumulates, so a key counted twice would show up here first.
-BOOST_AUTO_TEST_CASE(repeated_key_is_answered_once_per_occurrence) {
-    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-
-    const auto terms = built_sim(data).evolved_operator_terms(data.parameters, 0.0);
+    auto sim = built_sim(data);
+    const auto terms = sim.evolved_operator_terms(data.parameters, 0.0);
     BOOST_REQUIRE(!terms.empty());
     const auto &key = terms.front().first;
     const auto expected = terms.front().second;
-
-    for (const size_t partitions : {size_t{1}, size_t{2}}) {
-        auto sim = built_sim(data, partitions);
-        const auto coeffs = sim.evolved_operator_coefficients(data.parameters, {key, VecZ{}, key});
-        BOOST_TEST_CONTEXT("partitions=" << partitions) {
-            BOOST_REQUIRE_EQUAL(coeffs.size(), 3u);
-            BOOST_TEST(near(coeffs[0].real(), expected.real()));
-            BOOST_TEST(near(coeffs[0].imag(), expected.imag()));
-            BOOST_TEST(coeffs[2] == coeffs[0]);
-        }
-    }
+    const auto coeffs = sim.evolved_operator_coefficients(data.parameters, {key, VecZ{}, key});
+    BOOST_REQUIRE_EQUAL(coeffs.size(), 3u);
+    BOOST_TEST(coeffs[0].real() == expected.real());
+    BOOST_TEST(coeffs[0].imag() == expected.imag());
+    BOOST_TEST(coeffs[2] == coeffs[0]);
 }
