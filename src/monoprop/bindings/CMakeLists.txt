@@ -119,6 +119,12 @@ configure_file(
   @ONLY
 )
 
+if(monoprop_ENABLE_MPI)
+  set(_comm_bridge comm_mpi.cpp)
+else()
+  set(_comm_bridge comm_serial.cpp)
+endif()
+
 nanobind_add_module(_core
   NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
   NOMINSIZE  # don’t perform optimizations to minimize binary size
@@ -126,6 +132,7 @@ nanobind_add_module(_core
   BACKEND_MODULE nanobind_backend
   ${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp
   ${_bind_cpps}  # List of generated binders
+  ${CMAKE_CURRENT_SOURCE_DIR}/${_comm_bridge}
 )
 
 target_include_directories(
