@@ -144,8 +144,9 @@ select the MPI variant with `monoprop_ENABLE_MPI=ON` in the environment (or
 `-C monoprop.mpi=ON`).
 Standalone MPI-enabled C++ programs must initialize MPI before constructing a
 propagator and finalize it only after all propagators have been destroyed. The
-exported CMake target preserves the package's MPI setting independently of any
-`MPI::MPI_CXX` target already present in the consuming project. QA coverage
+exported `monoprop::monoprop` CMake target is always serial; MPI consumers request the `MPI`
+component (`find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)`) and link
+`monoprop::monoprop_mpi`. QA coverage
 merges separate serial and MPI-instrumented builds, including two-rank Python
 and C++ MPI runs, so both compatibility paths contribute to the reports. Run
 `just code-coverage` for the same combined report locally; it builds both

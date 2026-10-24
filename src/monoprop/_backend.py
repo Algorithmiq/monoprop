@@ -41,14 +41,8 @@ from monoprop.exceptions import (
 if TYPE_CHECKING:
     from types import ModuleType
 
+# Re-exported as the documented `monoprop.MPI_ABIS`; read here (not there) so tests can monkeypatch it.
 MPI_ABIS: tuple[str, ...] = _BUILT_MPI_ABIS
-"""MPI ABI families this installation can drive, for example ``("mpich", "openmpi")``.
-
-``"mpich"`` covers MPICH, Intel MPI, MVAPICH and Cray MPICH; ``"openmpi"`` covers Open MPI 4 and
-5; ``"mpiabi"`` is the MPI-5 standard ABI. The tuple is empty for an installation built without
-MPI. It states what was built, not that a usable MPI library is present: that depends on the MPI
-library mpi4py loads at runtime.
-"""
 
 _MPI_MODULE_NAME = "monoprop._core_mpi"
 # mpi4py wheels ship one extension per ABI family, e.g. MPI.mpich.abi3.so

@@ -61,6 +61,27 @@ is empty, and the `comm`/`serial_comm` fixtures fall back to `None` there. Accor
 explicit cache-free MPI build lanes on Linux x86-64, Linux ARM64, and macOS;
 only those lanes run the suite under `mpiexec`.
 
+### Testing release wheels
+
+Release wheels carry one MPI backend per ABI family, so CI tests them against real MPI libraries
+rather than the editable build. To do the same locally, point `just test-wheel` at a built wheel
+(or a directory of them); it installs the wheel and mpi4py into a fresh venv, checks that the MPI
+backend loads, and runs the MPI-marked tests under `mpiexec` and then `tests/test_mpi_backend.py`:
+
+```bash
+just test-wheel dist/ wheel            # mpi4py binary wheel against the MPI on this machine
+just test-wheel dist/ source           # mpi4py built against the local mpicc
+just test-wheel dist/ wheel impi-rt    # extra requirements, e.g. Intel MPI from PyPI
+```
+
+`just inspect-mpi <include dir> <abi>` runs the configure-time MPI inspection on an installed MPI
+and checks that it reports the expected ABI family (`mpich`, `openmpi` or `mpiabi`) and meets the
+version floor.
+
+The CI setup action (`.github/actions/setup`) takes two inputs for these jobs: `build-deps: "false"`
+skips the build dependencies when a job only tests a built wheel, and `mpi: mpich` installs MPICH
+instead of Open MPI (`mpi: "on"`).
+
 ### C++ unit tests
 
 The C++ tests run through CTest. The build tree is produced by `uv sync` (via
