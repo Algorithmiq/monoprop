@@ -11,6 +11,10 @@ on:
       - VERSION
       - pyproject.toml
       - packages/monoprop-bench-tools/pyproject.toml
+      - tools/cibw/**
+      - tools/packages/**
+      - cmake/custom/monopropMPI*.cmake
+      - .github/actions/setup/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -53,6 +57,15 @@ jobs:
         uses: tj-actions/changed-files@v47.0.6
         with:
           files: packages/monoprop-bench-tools/pyproject.toml
+      - id: changed-wheel-support
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: tj-actions/changed-files@v47.0.6
+        with:
+          files: |
+            tools/cibw/**
+            tools/packages/**
+            cmake/custom/monopropMPI*.cmake
+            .github/actions/setup/**
       - id: check
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -62,6 +75,7 @@ jobs:
           VERSION_CHANGED: ${{ steps.changed-version.outputs.any_changed }}
           PYPROJECT_CHANGED: ${{ steps.changed-pyproject.outputs.any_changed }}
           BENCH_TOOLS_PYPROJECT_CHANGED: ${{ steps.changed-bench-tools-pyproject.outputs.any_changed }}
+          WHEEL_SUPPORT_CHANGED: ${{ steps.changed-wheel-support.outputs.any_changed }}
         run: |
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "should-run=true" >> "$GITHUB_OUTPUT"
@@ -79,8 +93,14 @@ jobs:
           version_changed = os.environ["VERSION_CHANGED"] == "true"
           pyproject_changed = os.environ["PYPROJECT_CHANGED"] == "true"
           bench_tools_changed = os.environ["BENCH_TOOLS_PYPROJECT_CHANGED"] == "true"
+          wheel_support_changed = os.environ["WHEEL_SUPPORT_CHANGED"] == "true"
 
-          if deploy_workflow_changed or version_changed or bench_tools_changed:
+          if (
+              deploy_workflow_changed
+              or version_changed
+              or bench_tools_changed
+              or wheel_support_changed
+          ):
               should_run = True
           elif not pyproject_changed:
               should_run = False

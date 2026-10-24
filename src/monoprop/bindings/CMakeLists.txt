@@ -270,7 +270,7 @@ foreach(_entry IN LISTS _floors)
   )
   string(
     APPEND monoprop_MPI_MIN_VERSIONS_PY
-    "\"${CMAKE_MATCH_1}\": (${_floor}), "
+    "\"${CMAKE_MATCH_1}\": (${_floor},), "
   )
 endforeach()
 configure_file(
