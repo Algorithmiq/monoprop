@@ -16,8 +16,9 @@ mechanism differs by build:
 | --- | --- |
 | Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `monoprop_ENABLE_MPI=ON` in the environment, or the `monoprop.mpi=ON` config-setting |
 
-The prebuilt wheels published to PyPI (`pip install monoprop`) are also built
-without MPI, so a from-source build is required for multi-rank runs.
+The prebuilt wheels published to PyPI (`pip install monoprop`) already include an MPI
+backend for the MPICH family and Open MPI, so a from-source build is only needed for another MPI
+implementation or for the C++ library; see [Parallelism](/features/parallelism#enabling-mpi).
 
 ## Prerequisites
 

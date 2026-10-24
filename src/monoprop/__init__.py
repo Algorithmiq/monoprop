@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 
-from ._backend import MPI_ABIS
+from . import _backend
 from ._core import (
     MAX_NUM_MODES,
     __build_type__,
@@ -43,6 +43,15 @@ from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 from .pauli_propagator import PauliPropagator
 from .utils import jordan_wigner_basis_change
+
+MPI_ABIS: tuple[str, ...] = _backend.MPI_ABIS
+"""MPI ABI families this installation can drive, for example `("mpich", "openmpi")`.
+
+`"mpich"` covers MPICH, Intel MPI, MVAPICH and Cray MPICH; `"openmpi"` covers Open MPI 4 and 5;
+`"mpiabi"` is the MPI-5 standard ABI. The tuple is empty for an installation built without MPI. It
+states what was built, not that a usable MPI library is present: that depends on the MPI library
+mpi4py loads at runtime.
+"""
 
 __all__ = [
     "MAX_NUM_MODES",
