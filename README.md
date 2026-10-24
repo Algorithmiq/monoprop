@@ -43,8 +43,17 @@ with [Bencher](https://bencher.dev/) to catch performance regressions.
 pip install monoprop      # or: uv add monoprop
 ```
 
-The prebuilt PyPI wheels are single-process (built **without** MPI). For multi-rank
-runs, or to build the C++ library and executables, build from source (see below).
+The PyPI wheels support MPI: install mpi4py with the `mpi` extra and pass a communicator to a
+propagator. They use the MPI library already on your machine, from the MPICH family (MPICH, Intel
+MPI, MVAPICH, Cray MPICH) or Open MPI; the minimum versions are listed in the
+[parallelism docs](https://docs.monoprop.algorithmiq.tech/features/parallelism). Without one, add it
+from PyPI:
+
+```bash
+pip install "monoprop[mpi]" mpich     # or openmpi
+```
+
+To build the C++ library and executables, build from source (see below).
 
 ## Quick example
 

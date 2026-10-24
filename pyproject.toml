@@ -465,14 +465,23 @@ build = "cp3??-*"
 build-frontend = "uv"
 build-verbosity = 1
 skip = ["*-musllinux_*"]
-test-command = "python -m pytest {package}/tests"
+repair-wheel-command = "bash {project}/tools/cibw/repair-wheel.sh {dest_dir} {wheel}"
+test-command = "bash {project}/tools/cibw/run-tests.sh {project} {wheel}"
 test-groups = ["test"]
 test-extras = ["qiskit"]
 
+# One MPI variant per ABI family, built against the PyPI MPI packages that install-mpi.sh places
+# under these prefixes; repair-wheel.sh reads the same variable.
 [tool.cibuildwheel.linux]
-before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
-environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+before-all = [
+  "./tools/install-deps.sh --skip-boost-test --skip-msgpack",
+  "bash tools/cibw/install-mpi.sh /opt/mpi",
+]
+environment = { monoprop_ENABLE_MPI = "ON", monoprop_MPI_ABIS = "mpich=/opt/mpi/mpich;openmpi=/opt/mpi/openmpi", monoprop_ENABLE_ARCH_FLAGS = "OFF", monoprop_ENABLE_CXX_UNIT_TESTS = "OFF" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost hwloc"
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+before-all = [
+  "brew install boost hwloc",
+  "bash tools/cibw/install-mpi.sh /tmp/monoprop-cibw-mpi",
+]
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", monoprop_ENABLE_MPI = "ON", monoprop_MPI_ABIS = "mpich=/tmp/monoprop-cibw-mpi/mpich;openmpi=/tmp/monoprop-cibw-mpi/openmpi", monoprop_ENABLE_ARCH_FLAGS = "OFF", monoprop_ENABLE_CXX_UNIT_TESTS = "OFF" }
