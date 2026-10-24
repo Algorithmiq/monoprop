@@ -29,7 +29,7 @@ if [[ "$mpi4py_mode" == source ]]; then
   mpi4py_args=(--no-binary mpi4py)
 fi
 # "monoprop" is already satisfied, so this only adds its dependencies; the suite imports qiskit.
-"$python" -m pip install --quiet "${mpi4py_args[@]}" "monoprop[qiskit]" "mpi4py==4.1.*" "$@" \
+"$python" -m pip install --quiet ${mpi4py_args[@]+"${mpi4py_args[@]}"} "monoprop[qiskit]" "mpi4py==4.1.*" "$@" \
   --group "$project/pyproject.toml:test"
 "$python" -m pip list
 
