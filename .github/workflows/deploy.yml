@@ -167,6 +167,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     name: Build Python wheels for ${{ matrix.os }}
     runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
     strategy:
       matrix:
         os: [ linux-intel, linux-arm, macos-arm ]
