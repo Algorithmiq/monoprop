@@ -46,18 +46,16 @@ Use `@pytest.mark.mpi(min_size=2)` when a test needs at least two ranks.
 Under `--with-mpi`, only rank zero reports pytest output.
 
 To do it by hand, build with MPI on, then run under `mpiexec` with `--no-sync`
-so each rank reuses that build. `--reinstall-package` and `--no-cache` force a
-genuine rebuild, since uv does not key its build cache on the environment:
+so each rank reuses that build. uv rebuilds on its own when the MPI setting
+changes, since the build options are part of its cache key:
 
 ```bash
-monoprop_ENABLE_MPI=ON \
-    uv sync --all-extras --reinstall-package monoprop --no-cache
+monoprop_ENABLE_MPI=ON uv sync --all-extras
 mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-mpi
 ```
 
-`monoprop_ENABLE_MPI` also provisions mpi4py as a build input; see
-[Building from source](/building#with-mpi) for why, and for the
-config-settings equivalent. Installing the `mpi` extra alone only provides
+`monoprop_ENABLE_MPI` (or the `monoprop.mpi` config-setting) also provisions
+mpi4py as a build input; see [Building from source](/building#with-mpi) for why. Installing the `mpi` extra alone only provides
 mpi4py and does not enable C++ MPI support. Accordingly, the CI matrix has
 explicit cache-free MPI build lanes on Linux x86-64, Linux ARM64, and macOS;
 only those lanes run the suite under `mpiexec`.
@@ -75,12 +73,12 @@ ctest --test-dir build/editable/Release --output-on-failure
 ```
 
 With MPI, reuse the MPI-enabled `uv sync` from the Python MPI section above,
-then run CTest against the same tree:
+then run CTest against its tree. MPI builds use their own tree, `Release-mpi`,
+so switching between the variants rebuilds incrementally:
 
 ```bash
-monoprop_ENABLE_MPI=ON \
-    uv sync --all-extras --reinstall-package monoprop --no-cache
-ctest --test-dir build/editable/Release --output-on-failure
+monoprop_ENABLE_MPI=ON uv sync --all-extras
+ctest --test-dir build/editable/Release-mpi --output-on-failure
 ```
 
 Or simply `just test-mpi`.
@@ -91,8 +89,9 @@ The full MPI rank matrix (several rank counts) is driven by a helper script:
 ctest -S tools/ctest-mpi-matrix.cmake -VV
 ```
 
-CI gives every compiler and MPI combination a distinct setup-uv cache suffix,
-because uv's cache key does not include build environment variables.
+CI gives every compiler and MPI combination a distinct setup-uv cache suffix. uv's
+cache key covers the [build options](/building#build-options), but not the compiler
+selection (`CXX`).
 
 A matrix job reports one check per combination, so its check names change whenever a
 lane is added or removed. Each matrix workflow therefore ends with a small aggregation
