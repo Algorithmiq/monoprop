@@ -345,9 +345,64 @@ Python API under TSan would require a TSan-instrumented CPython.
   those files, so there is one list per platform to keep current.
 
 
+## Container images
+
+`.github/workflows/container.yml` publishes two images to GHCR for
+[HPC clusters](/clusters) without outbound network:
+
+- `ghcr.io/algorithmiq/monoprop-base`: the MPI stack. `tools/container/base.py` is an
+  [HPCCM](https://github.com/NVIDIA/hpc-container-maker) recipe: Ubuntu 26.04 (compilers,
+  Python, Boost and hwloc from the distribution), DOCA-OFED's InfiniBand user space, and
+  UCX, PMIx and Open MPI built from source. The versions are pinned at the top of the recipe.
+- `ghcr.io/algorithmiq/monoprop`: `tools/container/Dockerfile` installs the sdist on top,
+  with MPI and the `mpi` and `qiskit` extras, compiled with `-march=$MARCH` (default
+  `sapphirerapids`).
+
+The base image is tagged with the first 12 hex digits of the SHA-256 of the rendered
+Dockerfile, so it is rebuilt only when the recipe's output changes, including through an
+hpccm upgrade (`HPCCM_VERSION` in the workflow). Each run also tags the base image it used
+with the run's tag (`pr-N`, `main` or the release version), and tags the monoprop image
+with it and `sha-<commit>`; non-pre-release releases also move `latest`.
+
+The workflow runs on pushes to `main`, on releases, on manual dispatch, and on pull
+requests that touch `tools/container/` or the workflow. `tools/container/smoke-test.sh`
+checks the monoprop image before it is pushed. It never imports monoprop, because the CI
+machine's CPU may lack the instructions `-march` enables, so check a new image on the
+target machine as well (see [MareNostrum5](/clusters/marenostrum5#check-the-image)).
+
+To reproduce the build locally:
+
+```bash
+mkdir -p build/container/base build/container/app
+uvx hpccm==26.5.0 --recipe tools/container/base.py --format docker > build/container/base/Dockerfile
+docker build -t monoprop-base:local build/container/base
+uv tool run --from build pyproject-build --sdist --installer uv --outdir build/container/app
+sdist="$(basename build/container/app/monoprop-*.tar.gz)"
+docker build -f tools/container/Dockerfile \
+  --build-arg BASE_IMAGE=monoprop-base:local --build-arg SDIST="$sdist" \
+  -t monoprop:local build/container/app
+version="${sdist#monoprop-}"; version="${version%.tar.gz}"
+docker run --rm --shm-size=1g -v "$PWD/tools/container/smoke-test.sh:/smoke-test.sh:ro" \
+  monoprop:local bash /smoke-test.sh "$version"
+```
+
+### Image cleanup
+
+`.github/workflows/cleanup-images.yml` runs `tools/cleanup-ghcr.py` daily. It keeps the
+versions tagged with a release, `latest`, `main` or the `pr-N` of an open pull request,
+the platform and attestation manifests those reference, and anything less than 24 hours
+old, and deletes the rest of both packages. A manual dispatch is a dry run by default,
+which only logs what would be deleted. The script authenticates with the workflow's
+`GITHUB_TOKEN`, which can manage the packages this repository published.
+
+A package created by a workflow can start out private on GHCR. If so, an organisation
+owner makes it public once, in the package settings, so that cluster users can pull
+without credentials.
+
 ## See also
 
 - [Getting Started](/getting-started) — installing a prebuilt release from PyPI.
+- [HPC clusters](/clusters) — running the published container image on HPC systems.
 - [Parallelism and distribution](/features/parallelism) — running across MPI ranks and shared-memory threads.
 - [Testing](/testing) — the full Python and C++ test workflow.
 - [How to Contribute](/how-to-contribute) — contributor workflow and documentation checks.

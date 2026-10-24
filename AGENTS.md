@@ -33,7 +33,8 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
 
 Public headers `cpp/include/monoprop/`, implementation `cpp/monoprop/`, Python API
 `src/monoprop/`, binding template `src/monoprop/bindings/binder.h`, generators
-`tools/generate-*.py`, sibling distributions `packages/*`. The repository root is the `uv`
+`tools/generate-*.py`, container recipes `tools/container/` (see `building.mdx`), sibling
+distributions `packages/*`. The repository root is the `uv`
 workspace's `monoprop` package.
 
 `bindings.cpp` and `_dispatch.py` are generated -- never edit them. To change the C++ API: edit

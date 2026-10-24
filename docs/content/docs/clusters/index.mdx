@@ -1,0 +1,27 @@
+---
+title: HPC clusters
+description: Running monoprop on HPC systems from its MPI-enabled container image.
+---
+
+Some HPC systems give their login nodes no outbound network, so monoprop cannot be
+installed there with `pip`. For those, every release, the `main` branch and pull requests that
+change the container recipes publish an MPI-enabled container image to the GitHub Container Registry:
+
+```text
+ghcr.io/algorithmiq/monoprop:<tag>
+```
+
+| Tag | Contents |
+| --- | --- |
+| `X.Y.Z` | A monoprop release. `latest` points at the newest one. |
+| `main` | The tip of the `main` branch. |
+| `pr-N` | Pull request `N`, when it changes the container recipes, while it is open. |
+
+The image holds monoprop built with MPI, with its `mpi` and `qiskit` extras, on top of an
+MPI stack built for InfiniBand clusters that launch jobs with Slurm: Open MPI 5 with PMIx
+and UCX, and NVIDIA's DOCA-OFED user-space drivers. It is compiled for Intel Sapphire
+Rapids and does not run on CPUs without that instruction set. To build it yourself, see
+[Container images](/building#container-images).
+
+- [MareNostrum5](/clusters/marenostrum5) — pulling the image, running it with
+  Singularity under Slurm, and checking the CPU placement.
