@@ -14,9 +14,16 @@ inputs:
       restored cache carries a wheel built for another one.
     required: true
   mpi:
-    description: Install an MPI implementation ("on" or "off").
+    description: >-
+      Install an MPI implementation: "on" (Open MPI), "mpich", or "off".
     required: false
     default: "off"
+  build-deps:
+    description: >-
+      Install the packages needed to build monoprop (tools/packages/<manager>.txt). Jobs that only
+      test a built wheel skip them; Ubuntu 22.04 lacks some of them.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -35,12 +42,17 @@ runs:
       shell: bash
       env:
         MPI: ${{ inputs.mpi }}
+        BUILD_DEPS: ${{ inputs.build-deps }}
       run: |
         set -euo pipefail
 
         # macOS runners still ship bash 3.2, so no mapfile and no ${var,,}.
         packages=()
         add_list() {
+          if [[ ! -f "$1" ]]; then
+            echo "no package list $1 for mpi=$MPI on $RUNNER_OS" >&2
+            exit 2
+          fi
           while IFS= read -r package; do
             packages+=("$package")
           done < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true)
@@ -52,9 +64,14 @@ runs:
           prefix=tools/packages/apt
         fi
 
-        add_list "$prefix.txt"
-        if [[ "$(printf '%s' "$MPI" | tr '[:upper:]' '[:lower:]')" =~ ^(on|true|yes|1)$ ]]; then
+        if [[ "$BUILD_DEPS" == "true" ]]; then
+          add_list "$prefix.txt"
+        fi
+        mpi="$(printf '%s' "$MPI" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$mpi" =~ ^(on|true|yes|1)$ ]]; then
           add_list "$prefix-mpi.txt"
+        elif [[ "$mpi" == mpich ]]; then
+          add_list "$prefix-mpich.txt"
         fi
 
         # Derive the package from CXX, so a matrix lane needs no list of its own.
@@ -69,9 +86,11 @@ runs:
           esac
         fi
 
-        if [[ "$RUNNER_OS" == "macOS" ]]; then
-          brew install "${packages[@]}"
-        else
-          sudo apt-get update
-          sudo apt-get install -y "${packages[@]}"
+        if (( ${#packages[@]} > 0 )); then
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew install "${packages[@]}"
+          else
+            sudo apt-get update
+            sudo apt-get install -y "${packages[@]}"
+          fi
         fi

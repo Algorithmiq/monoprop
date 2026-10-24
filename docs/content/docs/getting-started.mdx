@@ -20,9 +20,10 @@ If you use [uv](https://docs.astral.sh/uv/) as package manager:
 uv add monoprop
 ```
 
-These prebuilt wheels run on a single process — they are published *without*
-MPI. For a multi-rank / MPI-enabled build, or to build the C++ library and
-executables, build from source as described in [Building from source](/building).
+These prebuilt wheels include an MPI backend for the MPICH family and Open MPI. To run across
+ranks, install mpi4py with the `mpi` extra and pass a communicator to a propagator, as described in
+[Parallelism](/features/parallelism#enabling-mpi). To build the C++ library and executables,
+build from source as described in [Building from source](/building).
 
 ## Introduction
 

@@ -47,6 +47,7 @@ install(
   FILES
     ${PROJECT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
     ${PROJECT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
+    ${PROJECT_SOURCE_DIR}/cmake/custom/monopropMPIABI.cmake
   DESTINATION ${monoprop_INSTALL_CMAKEDIR}
 )
 

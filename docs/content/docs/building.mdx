@@ -16,8 +16,9 @@ mechanism differs by build:
 | --- | --- |
 | Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `monoprop_ENABLE_MPI=ON` in the environment, or the `monoprop.mpi=ON` config-setting |
 
-The prebuilt wheels published to PyPI (`pip install monoprop`) are also built
-without MPI, so a from-source build is required for multi-rank runs.
+The prebuilt wheels published to PyPI (`pip install monoprop`) already include an MPI
+backend for the MPICH family and Open MPI, so a from-source build is only needed for another MPI
+implementation or for the C++ library; see [Parallelism](/features/parallelism#enabling-mpi).
 
 ## Prerequisites
 
@@ -135,6 +136,7 @@ as a PEP 517 config-setting or through an environment variable:
 | `monoprop.cxx-unit-tests` | `monoprop_ENABLE_CXX_UNIT_TESTS` | bool (default on) | build the C++ unit test suite |
 | `monoprop.arch-flags` | `monoprop_ENABLE_ARCH_FLAGS` | bool (default on, forced off for Debug and sanitizer builds) | architecture-specific compiler flags |
 | `monoprop.mpi-test-procs` | `monoprop_MPI_TEST_PROCS` | `;`-separated rank counts | rank counts the C++ MPI tests are registered for |
+| `monoprop.mpi-abis` | `monoprop_MPI_ABIS` | `;`-separated `<abi>=<prefix>` | build one MPI variant per entry from an MPI installed under `<prefix>` instead of the MPI CMake finds (release wheels; needs `monoprop.mpi`) |
 
 Booleans accept `ON`/`OFF`, `true`/`false`, `1`/`0` and similar. These two
 commands are equivalent:
@@ -191,6 +193,11 @@ option, and, through the `[[tool.scikit-build.overrides]]` block in
 `pyproject.toml`, it adds `mpi4py` to the build requirements and moves the build
 to its own tree, `build/editable/Release-mpi`.
 
+An MPI build compiles the core twice: the serial `_core`, and
+`_core_mpi.<abi>` for the MPI ABI family of the MPI CMake finds (`openmpi` or `mpich`; see
+[Parallelism and distribution](/features/parallelism)). Expect about twice the build time of a
+serial build.
+
 mpi4py is a build-time input — the bindings need its headers to hand an MPI
 communicator across the nanobind boundary — but only for MPI builds, so it is
 injected per-build through PEP 517's `get_requires_for_build_wheel` rather than
@@ -205,6 +212,21 @@ Setting the CMake option directly (`cmake.define.monoprop_ENABLE_MPI=ON` or
 `SKBUILD_CMAKE_DEFINE`) bypasses that override, so mpi4py is not provisioned
 and the build fails at configure time with a message telling you as much. Use
 `monoprop.mpi` instead.
+
+### Release wheels
+
+The published wheels contain one MPI variant per ABI family, built against MPI installations
+under fixed prefixes rather than the MPI CMake would find. To reproduce one locally, install
+`mpich` and `openmpi` from PyPI with `pip install --target`, then:
+
+```bash
+CIBUILDWHEEL=1 monoprop_ENABLE_MPI=ON \
+  monoprop_MPI_ABIS="mpich=$PWD/mpi/mpich;openmpi=$PWD/mpi/openmpi" \
+  uv build --wheel
+```
+
+`CIBUILDWHEEL=1` is what cibuildwheel exports; it keeps the build machine's library directories
+out of the RPATHs.
 
 ### Verify the install
 
@@ -221,7 +243,7 @@ uv run python your_script.py
 ```
 
 For a multi-rank run, launch the same script under `mpiexec` (requires an MPI
-build) and pass `comm=MPI.COMM_WORLD` to the simulator:
+build) and pass `comm=MPI.COMM_WORLD` to the simulator. Without `comm`, every rank runs its own serial propagation:
 
 ```bash
 mpiexec -n 8 uv run python your_script.py
@@ -248,16 +270,31 @@ ctest --test-dir build/editable/Release
 This uses the scikit-build-core Release tree at `build/editable/Release` and
 runs `bin/monoprop_unit_tests.x` there, along with `bin/monoprop_link_export_probe.x` — a
 link-time check that the installed shared `monoprop` library exports every `detail/**` free
-function reachable from the public template chain. The installed CMake target records whether
-monoprop itself was built with MPI; a serial package does not acquire MPI compile definitions or
-link dependencies merely because the consuming project already has an `MPI::MPI_CXX` target.
+function reachable from the public template chain. In an MPI build the same probe also runs
+against every `monoprop_mpi_<abi>` library.
+
+`monoprop::monoprop` is always serial: a serial target never acquires MPI compile definitions or
+link dependencies, even if the consuming project has an `MPI::MPI_CXX` target. MPI consumers
+request the `MPI` component, which picks the libmonoprop variant for the MPI ABI family of the MPI
+CMake finds for the consuming project:
+
+```cmake
+find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
+target_link_libraries(my_target PRIVATE monoprop::monoprop_mpi)
+```
+
+Configuration fails, naming both, when the installation was built without that family;
+`monoprop_MPI_ABIS` lists the families it ships. Projects that linked `monoprop::monoprop` from an
+MPI build before must switch to the `MPI` component.
 
 `just test-find-package` goes one step further out: it builds
 `cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
 package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that
 exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
 usage requirement the package fails to export. It compiles the same source as the in-tree
-probe, so the two cannot drift.
+probe, so the two cannot drift. With an MPI installation it also builds the
+consumer through the `MPI` component, runs it under `mpiexec -n 2`, and checks that a package
+lacking the consumer's MPI ABI fails at configure time.
 
 ### Debug tree
 

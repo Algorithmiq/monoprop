@@ -107,6 +107,21 @@ over XOR, so a gate's queries still reach several ranks rather than one.
 Both variables, and the partition count, must match on every rank. A mismatch would deadlock the
 exchange, so it is checked collectively at startup and raised.
 
+### Serial or MPI backend
+
+monoprop picks the backend per propagator. `comm=None` runs serially, whatever the installation;
+an mpi4py communicator runs on the MPI backend, which monoprop loads the first time it is needed.
+Importing monoprop never imports mpi4py or initializes MPI. Under `mpiexec`, a propagator built
+without `comm` therefore runs serially on every rank: pass `comm=MPI.COMM_WORLD` to distribute it.
+
+[MPI_ABIS][monoprop.MPI_ABIS] lists the MPI ABI families the installation can drive; it is empty
+without MPI support. The MPI backend matches the family of the MPI library mpi4py uses. Passing a
+communicator to an installation without MPI support raises
+[MPIUnavailableError][monoprop.exceptions.MPIUnavailableError]; a family the installation was not
+built for raises [MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError], and an MPI
+library older than the supported versions (see [Enabling MPI](#enabling-mpi)) raises
+[MPIVersionError][monoprop.exceptions.MPIVersionError].
+
 ### Single-node (`MPI.COMM_SELF`)
 
 ```python notest
@@ -133,6 +148,28 @@ one partition per rank.
 
 ### Enabling MPI
 
-MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the
-communicators above only distribute work after a from-source build with MPI
-enabled. See [Building from source](/building) for the full build instructions.
+The PyPI wheels ship an MPI backend for the MPICH family (MPICH, Intel MPI, MVAPICH, Cray MPICH)
+and for Open MPI, and use the MPI library mpi4py finds on the machine. Install mpi4py with the
+`mpi` extra; on a machine without MPI, add an implementation from PyPI as well:
+
+```bash
+pip install "monoprop[mpi]" mpich     # or openmpi
+```
+
+Supported MPI versions, from the version below up to the latest release:
+
+| Implementation | ABI family | Minimum |
+| --- | --- | --- |
+| Open MPI | `openmpi` | 4.1 |
+| MPICH | `mpich` | 4.0 |
+| Intel MPI | `mpich` | 2021.0 |
+| MVAPICH | `mpich` | 3.0 |
+| Cray MPICH | `mpich` | 8.1 |
+
+An older version is rejected when the MPI backend loads
+([MPIVersionError][monoprop.exceptions.MPIVersionError]) and when CMake configures a from-source
+build or a C++ consumer; an implementation not in the table runs with a warning. Open MPI 4.1,
+MPICH 4.0 and Intel MPI 2021.1 are tested in CI at those versions; MVAPICH and Cray MPICH are not.
+
+On Cray systems, load `cray-mpich-abi` so that `libmpi.so.12` is available, as mpi4py requires.
+From-source builds enable MPI with the `monoprop.mpi` option; see [Building from source](/building).

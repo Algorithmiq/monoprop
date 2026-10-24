@@ -33,18 +33,12 @@ from monoprop import (
 )
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
+from tests.mpi_support import SERIAL_COMM
 from tests.reference_data import load_problem
-
-try:
-    from mpi4py import MPI
-except ImportError:  # pragma: no cover - exercised in wheel-test environments
-    MPI = None
 
 DATA = Path(__file__).parent / "data"
 
 N_QUBITS = 6
-
-SERIAL_COMM = None if MPI is None else MPI.COMM_SELF
 
 
 @pytest.fixture(scope="module")

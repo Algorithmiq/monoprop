@@ -65,7 +65,7 @@ diff-baseline AGAINST='golden':
 # Report what the installed extension was actually built as.
 
 info:
-    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI": mp.has_mpi})'
+    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI ABIs": mp.MPI_ABIS})'
 
 test: build test-py test-cpp
 
@@ -112,17 +112,59 @@ test-mpi RANKS='': && (test-py-mpi RANKS) (test-cpp '' mpi_build_dir) test-cpp-m
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
     monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="$ranks" {{ uv_sync }} --group workspace-test
 
-# Build and run a consumer project against the installed package.
+# Build and run a consumer project against the installed package: serially, then, when the
+# installation ships MPI ABIs, through the MPI component under mpiexec, and finally against a
+# package that lacks the consumer's MPI ABI, which must fail at configure time.
 
-test-find-package BUILD_DIR='build/find-package-smoke':
+test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     #!/usr/bin/env bash
     set -euo pipefail
     build_dir={{ quote(BUILD_DIR) }}
-    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    python=({{ if PYTHON == '' { 'uv run --no-sync python' } else { quote(PYTHON) } }})
+    site_packages="$("${python[@]}" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
     cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
     "$build_dir/smoke"
+    abis="$("${python[@]}" -c 'import monoprop; print(" ".join(monoprop.MPI_ABIS))')"
+    if [[ -z "$abis" ]]; then
+      exit 0
+    fi
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir-mpi" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON
+    cmake --build "$build_dir-mpi"
+    mpiexec -n 2 "$build_dir-mpi/smoke"
+    # The targets file locates the libraries relative to the config directory, so the altered
+    # copy sits in a mirror of the installation tree whose other entries link to the real ones.
+    mismatch="$(mktemp -d)"
+    mkdir "$mismatch/monoprop"
+    for entry in "$site_packages/monoprop"/*; do
+      if [[ "$(basename "$entry")" != cmake ]]; then
+        ln -s "$entry" "$mismatch/monoprop/"
+      fi
+    done
+    cp -R "$site_packages/monoprop/cmake" "$mismatch/monoprop/cmake"
+    sed -i.orig 's/^set(monoprop_MPI_ABIS .*/set(monoprop_MPI_ABIS "none")/' "$mismatch/monoprop/cmake/monopropConfig.cmake"
+    if cmake -S cpp/tests/find_package_smoke -B "$mismatch/build" \
+        -Dmonoprop_DIR="$mismatch/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON > "$mismatch/log" 2>&1; then
+      echo "a package without the consumer's MPI ABI was accepted" >&2
+      exit 1
+    fi
+    grep -q "supports: none" "$mismatch/log"
+
+# Test built wheels (a file or a directory) against the MPI already on this machine. MPI4PY is
+# "wheel" (the PyPI binary; its file name names the ABI) or "source" (built against the local
+# mpicc; the ABI is read from the library). PACKAGES are extra requirements, e.g. impi-rt.
+# MONOPROP_TEST_VENV keeps the venv at a known path for a follow-up `just test-find-package`.
+
+test-wheel WHEELS MPI4PY='wheel' *PACKAGES:
+    bash tools/cibw/test-wheel-mpi.sh "{{ project_source_dir }}" {{ quote(WHEELS) }} {{ quote(MPI4PY) }} {{ PACKAGES }}
+
+# Run configure's MPI inspection on an installed MPI: ABI family and version floor.
+
+inspect-mpi INCLUDE_DIR ABI:
+    cmake -DMPI_INCLUDE_DIR={{ quote(INCLUDE_DIR) }} -DEXPECTED_ABI={{ quote(ABI) }} \
+      -P cpp/tests/cmake/inspect_mpi.cmake
 
 # The sanitizer legs run against a tree built with monoprop_SANITIZER=asan-ubsan (or tsan)
 # exported, which also points build_dir at it.
@@ -382,7 +424,7 @@ bench LABEL *ARGS:
 
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
-    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.has_mpi else 'monoprop was built without MPI; run just bench-build-mpi first')"
+    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.MPI_ABIS else 'monoprop was built without MPI; run just bench-build-mpi first')"
     @mkdir -p "{{ bench_results }}"
     label="$1"; ranks="$2"; shift 2; \
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \

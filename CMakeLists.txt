@@ -50,6 +50,22 @@ set(
 )
 option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
 
+# cibuildwheel exports CIBUILDWHEEL=1. Wheels must not carry build-machine library paths, which could
+# shadow the MPI library mpi4py selects; source installs keep them to find Spack or conda libraries.
+# Read on every configure, not cached: a build tree may be reused outside cibuildwheel.
+if("$ENV{CIBUILDWHEEL}" STREQUAL "1")
+  set(monoprop_WHEEL_BUILD ON)
+else()
+  set(monoprop_WHEEL_BUILD OFF)
+endif()
+# Where macOS MPI installations live (Homebrew, MacPorts, /usr/local), as mpi4py's wheels assume.
+set(
+  monoprop_MACOS_MPI_RPATHS
+  /usr/local/lib
+  /opt/homebrew/lib
+  /opt/local/lib
+)
+
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
 set(Python_FIND_VIRTUALENV FIRST)
@@ -65,9 +81,7 @@ find_package(
 
 find_package(Threads REQUIRED)
 
-if(monoprop_ENABLE_MPI)
-  find_package(MPI REQUIRED COMPONENTS CXX)
-endif()
+include(${PROJECT_SOURCE_DIR}/cmake/custom/monopropMPI.cmake)
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/Sanitizers.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/CXXFlags.cmake)
@@ -95,6 +109,8 @@ message(STATUS "   User-appended          : ${EXTRA_CXXFLAGS}")
 message(STATUS "   Sanitizer profile      : ${monoprop_SANITIZER}")
 
 message(STATUS "   MPI parallelization    : ${monoprop_ENABLE_MPI}")
+message(STATUS "   MPI ABI families       : ${monoprop_MPI_ABI_NAMES}")
+message(STATUS "   cibuildwheel build     : ${monoprop_WHEEL_BUILD}")
 message(STATUS "   Max simulable modes    : ${monoprop_MAX_NUM_MODES}")
 message(STATUS "   C++ unit tests         : ${monoprop_ENABLE_CXX_UNIT_TESTS}")
 
@@ -103,8 +119,8 @@ include(GNUInstallDirs)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 
-add_library(monoprop-objs OBJECT "")
-add_library(monoprop SHARED $<TARGET_OBJECTS:monoprop-objs>)
+# Its objects are attached in cpp/monoprop once every subdirectory has registered its sources.
+add_library(monoprop SHARED)
 
 # must run before add_subdirectory(cpp): CTest's enabled-ness does not propagate
 # back up to a parent directory that has already been added as a subdirectory.
