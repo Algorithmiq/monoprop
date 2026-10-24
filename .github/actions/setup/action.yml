@@ -49,6 +49,10 @@ runs:
         # macOS runners still ship bash 3.2, so no mapfile and no ${var,,}.
         packages=()
         add_list() {
+          if [[ ! -f "$1" ]]; then
+            echo "no package list $1 for mpi=$MPI on $RUNNER_OS" >&2
+            exit 2
+          fi
           while IFS= read -r package; do
             packages+=("$package")
           done < <(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$1" | grep -v '^$' || true)

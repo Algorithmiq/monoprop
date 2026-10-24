@@ -29,7 +29,7 @@ if [[ "$mpi4py_mode" == source ]]; then
   mpi4py_args=(--no-binary mpi4py)
 fi
 # "monoprop" is already satisfied, so this only adds its dependencies; the suite imports qiskit.
-"$python" -m pip install --quiet ${mpi4py_args[@]+"${mpi4py_args[@]}"} "monoprop[qiskit]" "mpi4py==4.1.*" "$@" \
+"$python" -m pip install --quiet ${mpi4py_args[@]+"${mpi4py_args[@]}"} "monoprop[qiskit]" "mpi4py==4.1.*" ${@+"$@"} \
   --group "$project/pyproject.toml:test"
 "$python" -m pip list
 
@@ -44,6 +44,13 @@ export OMPI_MCA_rmaps_base_oversubscribe=1 PRTE_MCA_rmaps_default_mapping_policy
 export PMIX_MCA_gds=hash
 
 cd "$project"
-"$python" -c "import monoprop; print('MPI_ABIS', monoprop.MPI_ABIS)"
+# The MPI tests skip when mpi4py cannot load a library, so prove the backend loads before relying on them.
+"$python" -c "
+from mpi4py import MPI
+import monoprop
+assert monoprop.MPI_ABIS, 'monoprop reports no MPI ABIs'
+from monoprop._backend import core_module
+print('MPI_ABIS', monoprop.MPI_ABIS, core_module(MPI.COMM_SELF).__file__)
+"
 "$mpiexec" -n 2 "$python" -m pytest tests --with-mpi -m mpi -p no:cacheprovider
 "$python" -m pytest tests/test_mpi_backend.py -p no:cacheprovider
