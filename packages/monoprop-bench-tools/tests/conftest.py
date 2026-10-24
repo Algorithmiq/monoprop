@@ -20,6 +20,8 @@ from typing import Any
 
 import pytest
 
+import monoprop
+
 try:
     from mpi4py import MPI
 except ImportError:
@@ -28,5 +30,8 @@ except ImportError:
 
 @pytest.fixture
 def serial_comm() -> Any:
-    """Single-rank communicator for builders whose state is rank-local."""
-    return None if MPI is None else MPI.COMM_SELF
+    """Single-rank communicator for builders whose state is rank-local.
+
+    ``None`` unless mpi4py imports and this monoprop build has an MPI backend.
+    """
+    return None if MPI is None or not monoprop.MPI_ABIS else MPI.COMM_SELF
