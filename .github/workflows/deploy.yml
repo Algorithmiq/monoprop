@@ -200,11 +200,69 @@ jobs:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: wheelhouse/*.whl
 
+  test-wheels:
+    name: Test wheel with ${{ matrix.mpi }} (${{ matrix.mpi4py }} mpi4py) on ${{ matrix.runner }}
+    needs: build-wheels
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Version floors: Ubuntu 22.04 ships Open MPI 4.1.2 and MPICH 4.0; impi-rt 2021.1.1 is the
+          # oldest Intel MPI on PyPI. Its Boost (1.74) is below monoprop's 1.85, so the C++
+          # consumer runs only on macOS here (and in test.yml); inspect-mpi still checks the headers.
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: openmpi-4.1, setup-mpi: "on", build-deps: "false", mpi4py: source, packages: "", abi: openmpi, mpi-include: /usr/lib/x86_64-linux-gnu/openmpi/include, cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: openmpi-4.1, setup-mpi: "on", build-deps: "false", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: mpich-4.0, setup-mpi: mpich, build-deps: "false", mpi4py: source, packages: "", abi: mpich, mpi-include: /usr/include/x86_64-linux-gnu/mpich, cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: mpich-4.0, setup-mpi: mpich, build-deps: "false", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: intel-2021.1, setup-mpi: "off", build-deps: "false", mpi4py: wheel, packages: "impi-rt==2021.1.1", abi: "", mpi-include: "", cpp: false }
+          # Latest Intel MPI, and Homebrew Open MPI (the macOS rpath allowlist)
+          - { runner: ubuntu-26.04, artifact: linux-intel, mpi: intel-latest, setup-mpi: "off", build-deps: "false", mpi4py: wheel, packages: impi-rt, abi: "", mpi-include: "", cpp: false }
+          - { runner: macos-15, artifact: macos-arm, mpi: homebrew-openmpi, setup-mpi: "on", build-deps: "true", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: true }
+    env:
+      MONOPROP_TEST_VENV: ${{ github.workspace }}/.wheel-test-venv
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # test-wheel-mpi.sh creates its venv from $PYTHON; pin the interpreter instead of relying on
+      # the runner image's python3 and its venv module.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cibw-wheels-${{ matrix.artifact }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.12"
+          cache-suffix: wheel-test-${{ matrix.mpi }}-${{ matrix.mpi4py }}
+          mpi: ${{ matrix.setup-mpi }}
+          build-deps: ${{ matrix.build-deps }}
+
+      - name: Check configure's MPI inspection on the system headers
+        if: matrix.mpi-include != ''
+        run: just inspect-mpi "${{ matrix.mpi-include }}" ${{ matrix.abi }}
+
+      - name: Test the wheel under MPI
+        run: just test-wheel dist ${{ matrix.mpi4py }} ${{ matrix.packages }}
+
+      - name: Build a C++ consumer against the installed wheel
+        if: matrix.cpp
+        run: just test-find-package build/find-package-smoke "$MONOPROP_TEST_VENV/bin/python"
+
   upload_pypi:
     name: Upload to PyPI
     needs:
       - build-sdist
       - build-wheels
+      - test-wheels
     if: github.event_name == 'release' && github.event.action == 'published'
 
     runs-on: ubuntu-26.04
@@ -263,6 +321,7 @@ jobs:
     needs:
       - build-sdist
       - build-wheels
+      - test-wheels
       - build-bench-tools
     if: github.event_name == 'release' && github.event.action == 'published'
 

@@ -152,6 +152,14 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     fi
     grep -q "supports: none" "$mismatch/log"
 
+# Test built wheels (a file or a directory) against the MPI already on this machine. MPI4PY is
+# "wheel" (the PyPI binary; its file name names the ABI) or "source" (built against the local
+# mpicc; the ABI is read from the library). PACKAGES are extra requirements, e.g. impi-rt.
+# MONOPROP_TEST_VENV keeps the venv at a known path for a follow-up `just test-find-package`.
+
+test-wheel WHEELS MPI4PY='wheel' *PACKAGES:
+    bash tools/cibw/test-wheel-mpi.sh "{{ project_source_dir }}" {{ quote(WHEELS) }} {{ quote(MPI4PY) }} {{ PACKAGES }}
+
 # Run configure's MPI inspection on an installed MPI: ABI family and version floor.
 
 inspect-mpi INCLUDE_DIR ABI:
