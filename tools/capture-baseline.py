@@ -67,6 +67,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import monoprop
 from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.pauli import PauliOperator
 
@@ -113,8 +114,8 @@ def _load_reference_data_module() -> Any:  # noqa: ANN401
 
 
 def _comm() -> Any:  # noqa: ANN401
-    """COMM_WORLD if run under mpiexec with mpi4py available, else None (serial)."""
-    return None if MPI is None else MPI.COMM_WORLD
+    """COMM_WORLD if mpi4py imports and monoprop has an MPI backend, else None (serial)."""
+    return None if MPI is None or not monoprop.MPI_ABIS else MPI.COMM_WORLD
 
 
 def _cutoffs_for(num_modes: int, case_name: str) -> list[int]:
