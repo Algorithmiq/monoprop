@@ -134,7 +134,7 @@ as a PEP 517 config-setting or through an environment variable:
 | `monoprop.sanitizer` | `monoprop_SANITIZER` | `none` (default), `asan-ubsan`, `tsan` | sanitizer profile; also selects the build type (`AsanUbsan`, `Tsan`) and thus the build tree |
 | `monoprop.cxx-unit-tests` | `monoprop_ENABLE_CXX_UNIT_TESTS` | bool (default on) | build the C++ unit test suite |
 | `monoprop.arch-flags` | `monoprop_ENABLE_ARCH_FLAGS` | bool (default on, forced off for Debug and sanitizer builds) | architecture-specific compiler flags |
-| `monoprop.mpi-test-procs` | `monoprop_MPI_TEST_PROCS` | `;`-separated rank counts | rank counts the C++ MPI tests are registered for |
+| `monoprop.mpi-test-procs` | `monoprop_MPI_TEST_PROCS` | `;`-separated rank counts (default `2;4`) | rank counts the C++ MPI tests are registered for |
 
 Booleans accept `ON`/`OFF`, `true`/`false`, `1`/`0` and similar. These two
 commands are equivalent:
@@ -155,10 +155,16 @@ rejected with a suggestion.
   `monoprop.mpi=ON`.
 </Callout>
 
+The build tree persists between syncs, and so does its CMake cache. The
+`cxx-unit-tests`, `arch-flags` and `mpi-test-procs` options therefore always pass
+their default, so unsetting one restores it rather than keeping the last value.
+A CMake variable passed through `cmake.define` has no such default: once set, it
+keeps its cached value until you set it again or delete the build tree.
+
 uv rebuilds monoprop whenever an option changes, by either route: config-settings
 are part of its build cache key, and `[tool.uv] cache-keys` in `pyproject.toml`
 adds the environment variables above, along with `SKBUILD_BUILD_DIR`,
-`SKBUILD_CMAKE_BUILD_TYPE` and `SKBUILD_CMAKE_DEFINE`. Switching variants
+`SKBUILD_CMAKE_ARGS`, `SKBUILD_CMAKE_BUILD_TYPE` and `SKBUILD_CMAKE_DEFINE`. Switching variants
 therefore needs no `--reinstall-package` or `--no-cache`. Any other CMake cache
 variable can still be passed as `cmake.define.<NAME>=...` or through
 `SKBUILD_CMAKE_DEFINE`.

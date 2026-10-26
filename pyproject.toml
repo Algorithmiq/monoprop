@@ -108,6 +108,7 @@ cache-keys = [
   { env = "monoprop_ENABLE_ARCH_FLAGS" },
   { env = "monoprop_MPI_TEST_PROCS" },
   { env = "SKBUILD_BUILD_DIR" },
+  { env = "SKBUILD_CMAKE_ARGS" },
   { env = "SKBUILD_CMAKE_BUILD_TYPE" },
   { env = "SKBUILD_CMAKE_DEFINE" },
 ]
@@ -168,8 +169,11 @@ build.verbose = true
 build.tool-args = ["-j2"]
 
 # Package build options: pass as `-C monoprop.<name>=...` or through the bound
-# environment variable, which takes precedence. Settings without a default drop
-# their CMake define when unset, leaving CMake's own default in charge.
+# environment variable, which takes precedence. An unset setting drops its CMake
+# define, but the persistent build tree keeps the last cached value, so CMake's
+# default only applies to a fresh tree. Settings whose build tree is shared
+# between values therefore mirror the CMake default here, so that unsetting them
+# restores it. The mpi and sanitizer settings select their own build tree.
 [tool.scikit-build.config-setting."monoprop.mpi"]
 help = "Build with MPI parallelization; also adds mpi4py to the build requirements"
 type = "bool"
@@ -180,17 +184,21 @@ help = "Sanitizer profile: none, asan-ubsan, or tsan; also selects the build typ
 env = "monoprop_SANITIZER"
 
 [tool.scikit-build.config-setting."monoprop.cxx-unit-tests"]
-help = "Build the C++ unit test suite (CMake default: ON)"
+help = "Build the C++ unit test suite"
 type = "bool"
+default = true
 env = "monoprop_ENABLE_CXX_UNIT_TESTS"
 
 [tool.scikit-build.config-setting."monoprop.arch-flags"]
-help = "Enable architecture-specific compiler flags (CMake default: ON outside Debug and sanitizer builds)"
+help = "Enable architecture-specific compiler flags; forced off in Debug and sanitizer builds"
 type = "bool"
+# cmake_dependent_option forces it off where unsupported, whatever this passes
+default = true
 env = "monoprop_ENABLE_ARCH_FLAGS"
 
 [tool.scikit-build.config-setting."monoprop.mpi-test-procs"]
 help = "Semicolon-separated MPI rank counts the C++ MPI tests run with"
+default = "2;4"
 env = "monoprop_MPI_TEST_PROCS"
 
 [tool.scikit-build.cmake.define]
