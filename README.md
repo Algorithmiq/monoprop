@@ -45,13 +45,14 @@ pip install monoprop      # or: uv add monoprop
 
 The PyPI wheels support MPI: install mpi4py with the `mpi` extra and pass a communicator to a
 propagator. They use the MPI library already on your machine, from the MPICH family (MPICH, Intel
-MPI, MVAPICH, Cray MPICH) or Open MPI; the minimum versions are listed in the
-[parallelism docs](https://docs.monoprop.algorithmiq.tech/features/parallelism). Without one, add it
-from PyPI:
+MPI, MVAPICH, Cray MPICH) or Open MPI, as provided by your cluster, package manager or own build:
 
 ```bash
-pip install "monoprop[mpi]" mpich     # or openmpi
+pip install "monoprop[mpi]"
 ```
+
+The [parallelism docs](https://docs.monoprop.algorithmiq.tech/features/parallelism) list the
+minimum versions and how to get an MPI onto a machine that has none.
 
 To build the C++ library and executables, build from source (see below).
 

@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pick the extension module that serves a propagator.
+"""Select the extension module that runs a propagator.
 
-``comm=None`` is served by the serial ``monoprop._core``. A communicator is served by
-``monoprop._core_mpi``, loaded on first use from the file built for the MPI ABI family mpi4py uses:
-mpi4py hands over ``MPI_Comm`` handles whose type depends on that family.
+Propagators without a communicator run on the serial ``monoprop._core``. Propagators given an
+mpi4py communicator run on ``monoprop._core_mpi``, which is built once per MPI ABI family. The
+first such propagator loads the build that matches the MPI library mpi4py uses, because that
+library determines the type of the ``MPI_Comm`` handle mpi4py passes in.
 """
 
 from __future__ import annotations

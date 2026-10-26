@@ -148,13 +148,26 @@ one partition per rank.
 
 ### Enabling MPI
 
-The PyPI wheels ship an MPI backend for the MPICH family (MPICH, Intel MPI, MVAPICH, Cray MPICH)
-and for Open MPI, and use the MPI library mpi4py finds on the machine. Install mpi4py with the
-`mpi` extra; on a machine without MPI, add an implementation from PyPI as well:
+The PyPI wheels ship an MPI backend for the ABIs of the MPICH family (MPICH, Intel MPI, MVAPICH,
+Cray MPICH) and of Open MPI, and use the MPI library mpi4py finds on the machine. Install mpi4py
+with the `mpi` extra:
 
 ```bash
-pip install "monoprop[mpi]" mpich     # or openmpi
+pip install "monoprop[mpi]"
 ```
+
+Use the MPI your system provides: a module on a cluster (`module load ...`), your distribution's
+package manager, or your own build. mpi4py's
+[installation guide](https://mpi4py.readthedocs.io/en/stable/install.html) covers the details for
+each platform, such as setting `LD_LIBRARY_PATH` so the MPI library is found at run time. On a
+machine without MPI, for a first try, mpi4py's MPICH and Open MPI wheels (`mpich`, `openmpi`) and
+Intel's `impi-rt` install from PyPI; mpi4py recommends a system-provided or custom-built MPI for
+production runs, because these wheels may lack features such as GPU awareness.
+
+On Ubuntu 22.04 and older, the MPICH package names its library `libmpich.so.12` instead of the
+`libmpi.so.12` that the MPICH ABI requires; mpi4py's
+[guide](https://mpi4py.readthedocs.io/en/stable/install.html#debian-ubuntu) gives the symbolic link
+that fixes it.
 
 Supported MPI versions, from the version below up to the latest release:
 
@@ -171,5 +184,8 @@ An older version is rejected when the MPI backend loads
 build or a C++ consumer; an implementation not in the table runs with a warning. Open MPI 4.1,
 MPICH 4.0 and Intel MPI 2021.1 are tested in CI at those versions; MVAPICH and Cray MPICH are not.
 
-On Cray systems, load `cray-mpich-abi` so that `libmpi.so.12` is available, as mpi4py requires.
+On HPE Cray systems, load the `cray-mpich-abi` module, as mpi4py's
+[installation guide](https://mpi4py.readthedocs.io/en/stable/install.html#hpe-cray-os) requires;
+see HPE's [`intro_mpi`](https://cpe.ext.hpe.com/docs/latest/mpt/mpich/intro_mpi.html#using-mpich-abi-compatibility)
+for details.
 From-source builds enable MPI with the `monoprop.mpi` option; see [Building from source](/building).
