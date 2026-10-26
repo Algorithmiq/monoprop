@@ -130,7 +130,7 @@ jobs:
           fi
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.1
 
       - name: Build SDist
         run: |
@@ -152,7 +152,7 @@ jobs:
           fetch-depth: 0  # such that hatch-vcs can read the tags
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.1
 
       - name: Build sdist and wheel
         run: uv build --package monoprop-bench-tools --out-dir bench-tools-dist
@@ -185,7 +185,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pypa/cibuildwheel@v4.3.1
+      - uses: pypa/cibuildwheel@v4.3.3
         with:
           extras: "uv"
         env:
@@ -227,7 +227,7 @@ jobs:
           subject-path: "dist/*"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@v1.14.3
 
   upload_pypi_bench_tools:
     # Separate from `upload_pypi` because it is a separate PyPI project, with its own
@@ -255,7 +255,7 @@ jobs:
           subject-path: "dist/*"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@v1.14.3
 
   upload_release_assets:
     name: Attach wheels and sdist to GitHub release
