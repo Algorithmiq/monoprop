@@ -89,7 +89,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  size_t partitions,
                                                  PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
-      comm_{comm},
+      comm_owner_{mpi::duplicate_user_comm(comm)},
+      comm_{comm_owner_ ? mpi::Comm{comm_owner_->handle()} : comm},
       mp_op_{},
       graph_(schrodinger_cutoff.has_value()),
       cutoff_{cutoff},
@@ -114,11 +115,11 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                 lower_atol.value()));
     }
 
-    const size_t n_partitions = resolve_partition_count_(partitions, comm);
+    const size_t n_partitions = resolve_partition_count_(partitions, comm_);
     // The R ranks x S partitions form one flat P = R*S SPMD world, so a mismatch across ranks would
     // deadlock at the first hybrid collective.
-    if (comm.kind == mpi::Comm::Kind::Mpi && mpi::size(comm) > 1
-        && mpi::allreduce_sum<size_t>(n_partitions, comm) != n_partitions * static_cast<size_t>(mpi::size(comm))) {
+    if (comm_.kind == mpi::Comm::Kind::Mpi && mpi::size(comm_) > 1
+        && mpi::allreduce_sum<size_t>(n_partitions, comm_) != n_partitions * static_cast<size_t>(mpi::size(comm_))) {
         throw PartitionCountMismatch(
             "Partition count differs across MPI ranks — every rank must resolve the same "
             "partitions= / monoprop_PARTITIONS / monoprop_NUM_THREADS so R*S is a consistent world.");
@@ -134,7 +135,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
         const size_t global_terms = paired_op_size(max_pairs, logical_num_modes_);
         // paired_op_size saturates rather than wrapping, so this is "too large to count", not a size.
         const bool uncountable = global_terms == std::numeric_limits<size_t>::max();
-        const size_t world_slots = n_partitions * static_cast<size_t>(mpi::size(comm));
+        const size_t world_slots = n_partitions * static_cast<size_t>(mpi::size(comm_));
         const size_t share = global_terms / std::max<size_t>(1, world_slots);
         if (uncountable || share >= detail::OperatorIndex<NumModes>::kIndexCeiling) {
             const auto how_many = uncountable ? std::string("more than 2^64") : std::format("{}", global_terms);
@@ -170,7 +171,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
             }};
         partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
                                                                                          factory,
-                                                                                         comm);
+                                                                                         comm_);
         return;
     }
 
@@ -240,6 +241,7 @@ MonomialPropagator<NumModes>::~MonomialPropagator() = default;
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other)
     : schrodinger_(other.schrodinger_),
+      comm_owner_(other.comm_owner_),
       comm_(other.comm_),
       cutoff_fn_(other.cutoff_fn_),
       mp_op_(other.mp_op_),
@@ -1082,7 +1084,8 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
             expected_epoch,
             expected_layers,
             cos = std::move(cos),
-            comm](const VecD &params) -> R {
+            comm,
+            comm_owner = comm_owner_](const VecD &params) -> R { // owner: `comm` must stay valid whenever called
         validate_expected_initial_operator(*epoch, expected_epoch);
         validate_functional_call(params, num_params);
         validate_expected_graph_layers(graph->layers(), expected_layers);

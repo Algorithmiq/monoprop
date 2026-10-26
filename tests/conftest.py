@@ -20,6 +20,12 @@ MPI selection is handled here (``--with-mpi``, ``@pytest.mark.mpi``).
 allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
 ``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``.
 
+Both hand out session-wide duplicates of those communicators, never the predefined handles
+themselves, so the suite's traffic stays off the predefined communicators that conftest and
+mpi4py use.
+Each duplicate is created on first use and freed at session teardown: ``Dup`` is collective, and
+doing it per test would add a collective to every one of them for no extra isolation.
+
 Under more than one rank each rank gets its own ``--basetemp``; see ``_rank_basetemp``.
 """
 
@@ -33,10 +39,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from tests.mpi_support import HAS_MPI_BACKEND, MPI, SERIAL_COMM
+from tests.mpi_support import HAS_MPI_BACKEND, MPI
 from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tests.reference_data import FermionicProblem
 
 
@@ -124,26 +132,53 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
             pytest.skip(f"Test requires {min_size} MPI processes")
 
 
+@pytest.fixture(scope="session")
+def comm_self_duplicate() -> Iterator[Any]:
+    """Session-wide duplicate of COMM_SELF; ``None`` when monoprop has no MPI backend."""
+    if not HAS_MPI_BACKEND:
+        yield None
+        return
+    duplicate = MPI.COMM_SELF.Dup()
+    yield duplicate
+    duplicate.Free()
+
+
+@pytest.fixture(scope="session")
+def comm_world_duplicate() -> Iterator[Any]:
+    """Session-wide duplicate of COMM_WORLD; ``None`` when monoprop has no MPI backend."""
+    if not HAS_MPI_BACKEND:
+        yield None
+        return
+    duplicate = MPI.COMM_WORLD.Dup()
+    yield duplicate
+    duplicate.Free()
+
+
 _COMM_PARAMS = (
     [pytest.param(None, id="comm_none")]
     if not HAS_MPI_BACKEND
     else [
-        pytest.param(MPI.COMM_SELF, id="comm_self"),
-        pytest.param(MPI.COMM_WORLD, id="comm_world"),
+        pytest.param("comm_self_duplicate", id="comm_self"),
+        pytest.param("comm_world_duplicate", id="comm_world"),
     ]
 )
 
 
 @pytest.fixture(params=_COMM_PARAMS)
 def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
-    """Parametrized communicator; ``None`` when mpi4py is unavailable or monoprop has no MPI backend."""
-    return request.param
+    """Parametrized communicator; ``None`` when mpi4py is unavailable or monoprop has no MPI backend.
+
+    Resolved through the session-scoped duplicates, so parametrizing does not reorder the run.
+    """
+    if request.param is None:
+        return None
+    return request.getfixturevalue(request.param)
 
 
 @pytest.fixture
-def serial_comm() -> Any:  # noqa: ANN401
+def serial_comm(comm_self_duplicate: Any) -> Any:  # noqa: ANN401
     """Single-rank communicator for tests that inspect rank-local operator state."""
-    return SERIAL_COMM
+    return comm_self_duplicate
 
 
 @pytest.fixture(

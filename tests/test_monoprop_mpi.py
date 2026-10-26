@@ -19,6 +19,8 @@ Run with: mpirun -np <num_ranks> uv run pytest tests/test_monoprop_mpi.py --with
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -45,6 +47,11 @@ def _make_mp(problem, comm, *, schrodinger=False):
     )
     circuit = problem.monomial_circuit.to_circuit()
     return mp, circuit
+
+
+# The point-to-point tags monoprop's exchanges use (cpp/monoprop/detail/mpi/Pairwise.h).
+_INTERNAL_TAGS = tuple(range(0x6D70, 0x6D75))
+_RECEIVE_TIMEOUT_SECONDS = 30
 
 
 def _assert_expval(expval, expected, atol=1e-9):
@@ -191,3 +198,42 @@ class TestMPISimulator:
             lih_fermionic_spin_exact.monomial_circuit.parameters
         )
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
+
+    @pytest.mark.mpi(min_size=2)
+    def test_user_messages_on_internal_tags_survive_propagation(
+        self, lih_fermionic_spin_exact
+    ):
+        world = MPI.COMM_WORLD
+        partner = world.Get_rank() ^ 1
+        has_partner = partner < world.Get_size()
+        outgoing = {
+            tag: np.array([1000 * world.Get_rank() + tag], dtype=np.int64)
+            for tag in _INTERNAL_TAGS
+        }
+        sends = (
+            [
+                world.Isend([payload, MPI.INT64_T], dest=partner, tag=tag)
+                for tag, payload in outgoing.items()
+            ]
+            if has_partner
+            else []
+        )
+
+        mp, circuit = _make_mp(lih_fermionic_spin_exact, world)
+        mp.build_graph(circuit)
+        expval = mp.expval_functional(pare_threshold=1e-10)(
+            lih_fermionic_spin_exact.monomial_circuit.parameters
+        )
+        _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
+
+        # Polled against a deadline so a consumed message fails the test instead of hanging it.
+        deadline = time.monotonic() + _RECEIVE_TIMEOUT_SECONDS
+        for tag in _INTERNAL_TAGS if has_partner else ():
+            incoming = np.zeros(1, dtype=np.int64)
+            receive = world.Irecv([incoming, MPI.INT64_T], source=partner, tag=tag)
+            arrived = receive.Test()
+            while not arrived and time.monotonic() < deadline:
+                arrived = receive.Test()
+            assert arrived, f"the user's message with tag {tag} was consumed"
+            assert incoming[0] == 1000 * partner + tag
+        MPI.Request.Waitall(sends)

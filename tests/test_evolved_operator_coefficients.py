@@ -33,7 +33,6 @@ from monoprop import (
 )
 from monoprop.majorana import Majorana, MajoranaOperator
 from monoprop.pauli import Pauli, PauliOperator
-from tests.mpi_support import SERIAL_COMM
 from tests.reference_data import load_problem
 
 DATA = Path(__file__).parent / "data"
@@ -48,7 +47,7 @@ def problem():
 
 
 @pytest.fixture(scope="module")
-def prop_and_params(problem):
+def prop_and_params(problem, comm_self_duplicate):
     """A built propagator over ``problem`` and its parameters, shared across the module.
 
     ``evolved_operator`` and ``evolved_operator_coefficients`` leave simulator state alone, so one
@@ -58,7 +57,7 @@ def prop_and_params(problem):
         problem.operator,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=SERIAL_COMM,
+        comm=comm_self_duplicate,
     )
     prop.build_graph(problem.monomial_circuit.to_circuit())
     return prop, problem.monomial_circuit.parameters

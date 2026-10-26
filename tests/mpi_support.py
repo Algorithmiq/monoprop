@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import monoprop
 
 try:
@@ -27,6 +25,3 @@ except ImportError:  # pragma: no cover - exercised in wheel-test environments
 
 HAS_MPI_BACKEND: bool = MPI is not None and bool(monoprop.MPI_ABIS)
 """True when mpi4py is importable and this monoprop installation ships an MPI backend."""
-
-SERIAL_COMM: Any = MPI.COMM_SELF if HAS_MPI_BACKEND else None
-"""Single-rank communicator for rank-local checks; ``None`` selects the serial backend."""

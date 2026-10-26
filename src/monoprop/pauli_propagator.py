@@ -70,7 +70,9 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 so a value approaching ``num_qubits`` is rejected with a ``RuntimeError`` rather than started.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of weight.
-            comm: Optional MPI communicator (must outlive the propagator).
+            comm: Optional MPI communicator. Construction is collective over it. The propagator
+                runs on a private duplicate, so its messages never mix with the caller's on
+                ``comm``; the duplicate is freed with the propagator.
         """
         # The engine takes the Schrodinger cutoff in slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
