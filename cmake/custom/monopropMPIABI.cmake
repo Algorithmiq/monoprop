@@ -4,8 +4,9 @@
 # Names the MPI ABI family of an mpi.h ("mpiabi": the MPI-5 standard ABI; "openmpi": Open MPI's
 # libmpi.so.40; "mpich": the MPICH ABI of MPICH, Intel MPI, MVAPICH and Cray MPICH), identifies the
 # implementation, and checks it against monoprop's version floors. Used by monoprop's build and by
-# monopropConfig.cmake. Everything except monoprop_mpi_macros() works on text, so it runs in script
-# mode (cpp/tests/cmake/test_mpi_inspection.cmake).
+# monopropConfig.cmake. Everything except monoprop_mpi_macros() and monoprop_inspect_mpi(), which
+# compile a probe, works on text, so it runs in script mode
+# (cpp/tests/cmake/test_mpi_inspection.cmake).
 
 include_guard(GLOBAL)
 
@@ -15,6 +16,10 @@ monoprop_mpi_min_versions(<out-var>)
 Sets <out-var> to monoprop's version floors as <vendor>=<floor> entries, keyed by implementation as
 mpi4py.MPI.get_vendor() names it. monoprop supports each from its floor to the latest release;
 configure time and the Python loader (through the generated monoprop/_mpi_abis.py) enforce them.
+
+A function rather than a variable because of include_guard(GLOBAL): monopropConfig.cmake includes
+this file in the consumer's scope, so a second find_package(monoprop) from a sibling directory skips
+the include and would not see a variable, while function definitions are global.
 #]=]
 function(monoprop_mpi_min_versions out_var)
   set(
@@ -31,22 +36,43 @@ endfunction()
 #[=[
 monoprop_mpi_macros(<out-var> INCLUDE_DIRS <dir>... [DEFINITIONS <definition>...])
 
-Sets <out-var> to the macros defined after including mpi.h, from the C++ compiler's preprocessor
-(-E -dM), so macros from headers that mpi.h includes count too. DEFINITIONS are given without -D,
-as in MPI_CXX_COMPILE_DEFINITIONS; MPICH's standard-ABI mode needs MPI_ABI among them.
+Sets <out-var> to "#define <name> <value>" lines for the macros the functions below read, with the
+values the compiler sees after including mpi.h, so macros from headers that mpi.h includes count
+too. As FindMPI and CMake's compiler identification do, a probe is compiled with try_compile, never
+linked or run, and the values are read back from it with file(STRINGS). DEFINITIONS are given
+without -D, as in MPI_CXX_COMPILE_DEFINITIONS; MPICH's standard-ABI mode needs MPI_ABI among them.
 #]=]
 function(monoprop_mpi_macros out_var)
   cmake_parse_arguments(PARSE_ARGV 1 _arg "" "" "INCLUDE_DIRS;DEFINITIONS")
-  set(_source "${CMAKE_BINARY_DIR}/CMakeFiles/monoprop_mpi_macros.cpp")
-  file(WRITE "${_source}" "#include <mpi.h>\n")
   set(
-    _args
-    -E
-    -dM
+    _names
+    MPI_ABI_VERSION
+    OPEN_MPI
+    OMPI_MAJOR_VERSION
+    OMPI_MINOR_VERSION
+    OMPI_RELEASE_VERSION
+    MPICH_VERSION
+    MVAPICH_VERSION
+    MVAPICH2_VERSION
+    CRAY_MPICH_VERSION
+    I_MPI_NUMVERSION
   )
-  foreach(_dir IN LISTS _arg_INCLUDE_DIRS)
-    list(APPEND _args "-I${_dir}")
+  set(
+    _source
+    "#include <mpi.h>\n#define MONOPROP_STR_(x) #x\n#define MONOPROP_STR(x) MONOPROP_STR_(x)\n"
+  )
+  foreach(_name IN LISTS _names)
+    # extern: a namespace-scope const array has internal linkage and could be dropped
+    string(
+      APPEND _source
+      "#ifdef ${_name}\n"
+      "extern char const monoprop_${_name}[];\n"
+      "char const monoprop_${_name}[] =\n"
+      "  \"INFO:monoprop-mpi[${_name}=\" MONOPROP_STR(${_name}) \"]\";\n"
+      "#endif\n"
+    )
   endforeach()
+  set(_definitions "")
   foreach(
     _definition
     IN
@@ -56,21 +82,44 @@ function(monoprop_mpi_macros out_var)
       MPICH_SKIP_MPICXX
       OMPI_SKIP_MPICXX
   )
-    list(APPEND _args "-D${_definition}")
+    list(APPEND _definitions "-D${_definition}")
   endforeach()
-  execute_process(
-    COMMAND
-      "${CMAKE_CXX_COMPILER}" ${_args} "${_source}"
-    OUTPUT_VARIABLE _macros
-    ERROR_VARIABLE _error
-    RESULT_VARIABLE _result
+  # A static library is never linked, so the probe needs no MPI library.
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+  set(
+    _probe
+    "${CMAKE_BINARY_DIR}/CMakeFiles/monoprop_mpi_probe${CMAKE_STATIC_LIBRARY_SUFFIX}"
   )
-  if(NOT _result EQUAL 0)
+  try_compile(
+    _compiled
+    SOURCE_FROM_CONTENT
+      monoprop_mpi_probe.cpp
+      "${_source}"
+    CMAKE_FLAGS
+      "-DINCLUDE_DIRECTORIES=${_arg_INCLUDE_DIRS}"
+    COMPILE_DEFINITIONS
+      ${_definitions}
+    NO_CACHE
+    COPY_FILE "${_probe}"
+    OUTPUT_VARIABLE _output
+  )
+  if(NOT _compiled)
     message(
       FATAL_ERROR
-      "monoprop: cannot preprocess mpi.h with include dirs '${_arg_INCLUDE_DIRS}':\n${_error}"
+      "monoprop: cannot compile mpi.h with include dirs '${_arg_INCLUDE_DIRS}':\n${_output}"
     )
   endif()
+  file(
+    STRINGS "${_probe}"
+    _entries
+    REGEX "INFO:monoprop-mpi\\[[A-Z0-9_]+=[^]]*\\]"
+  )
+  set(_macros "")
+  foreach(_entry IN LISTS _entries)
+    if(_entry MATCHES "INFO:monoprop-mpi\\[([A-Z0-9_]+)=([^]]*)\\]")
+      string(APPEND _macros "#define ${CMAKE_MATCH_1} ${CMAKE_MATCH_2}\n")
+    endif()
+  endforeach()
   set(${out_var} "${_macros}" PARENT_SCOPE)
 endfunction()
 

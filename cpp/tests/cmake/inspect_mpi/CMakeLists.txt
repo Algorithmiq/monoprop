@@ -1,15 +1,13 @@
 # Inspect an installed MPI the way configure does:
-#   cmake -DMPI_INCLUDE_DIR=<dir> -DEXPECTED_ABI=<abi> [-DCMAKE_CXX_COMPILER=<c++>] -P inspect_mpi.cmake
+#   cmake --fresh -S cpp/tests/cmake/inspect_mpi -B build/inspect-mpi \
+#     -DMPI_INCLUDE_DIR=<dir> -DEXPECTED_ABI=<abi>
 # Fails unless the mpi.h there has ABI family EXPECTED_ABI and meets monoprop's version floor.
+# A project rather than a script: the inspection compiles a probe with try_compile.
 
-include(${CMAKE_CURRENT_LIST_DIR}/../../../cmake/custom/monopropMPIABI.cmake)
+cmake_minimum_required(VERSION 3.28...4.0)
+project(monoprop_inspect_mpi LANGUAGES CXX)
 
-if(NOT CMAKE_CXX_COMPILER)
-  set(CMAKE_CXX_COMPILER c++)
-endif()
-# monoprop_mpi_macros() writes its probe source under CMAKE_BINARY_DIR
-set(CMAKE_BINARY_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../build/inspect-mpi")
-file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/CMakeFiles")
+include(${CMAKE_CURRENT_LIST_DIR}/../../../../cmake/custom/monopropMPIABI.cmake)
 
 monoprop_mpi_macros(_macros INCLUDE_DIRS "${MPI_INCLUDE_DIR}")
 monoprop_mpi_vendor_from_macros(_name _version "${_macros}")

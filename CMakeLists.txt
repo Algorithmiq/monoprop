@@ -58,13 +58,6 @@ if("$ENV{CIBUILDWHEEL}" STREQUAL "1")
 else()
   set(monoprop_WHEEL_BUILD OFF)
 endif()
-# Where macOS MPI installations live (Homebrew, MacPorts, /usr/local), as mpi4py's wheels assume.
-set(
-  monoprop_MACOS_MPI_RPATHS
-  /usr/local/lib
-  /opt/homebrew/lib
-  /opt/local/lib
-)
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 

@@ -2,7 +2,7 @@
 # =========
 #
 # Included from the top-level CMakeLists.txt. Sets monoprop_MPI_ABI_NAMES: the MPI ABI families
-# this build compiles MPI variants for (empty without MPI).
+# this build compiles MPI variants for (empty without MPI), and monoprop_MACOS_MPI_RPATHS.
 
 include_guard(GLOBAL)
 
@@ -16,6 +16,15 @@ set(
 )
 
 set(monoprop_MPI_ABI_NAMES "")
+
+# Where macOS MPI installations live (Homebrew, MacPorts, /usr/local), as mpi4py's wheels assume.
+# Wheel builds add them to the RPATHs of the MPI binaries only.
+set(
+  monoprop_MACOS_MPI_RPATHS
+  /usr/local/lib
+  /opt/homebrew/lib
+  /opt/local/lib
+)
 
 #[=[
 _monoprop_add_prefix_mpi_target(<abi>=<prefix>)
@@ -104,11 +113,17 @@ if(monoprop_MPI_ABIS AND NOT monoprop_ENABLE_MPI)
   )
 endif()
 
-if(monoprop_ENABLE_MPI AND monoprop_MPI_ABIS)
+if(NOT monoprop_ENABLE_MPI)
+  return()
+endif()
+
+if(monoprop_MPI_ABIS)
+  # Wheel builds: one variant per <abi>=<prefix> entry, each against the MPI under its prefix
   foreach(_entry IN LISTS monoprop_MPI_ABIS)
     _monoprop_add_prefix_mpi_target("${_entry}")
   endforeach()
-elseif(monoprop_ENABLE_MPI)
+else()
+  # Source builds: one variant, for the ABI family of the MPI that FindMPI finds.
   # The MPI-2 C++ bindings would add libmpicxx/libmpi_cxx, outside the soname contract the wheels
   # rely on; monoprop only uses the C API.
   set(MPI_CXX_SKIP_MPICXX ON)

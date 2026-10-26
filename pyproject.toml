@@ -109,7 +109,6 @@ cache-keys = [
   { env = "monoprop_ENABLE_ARCH_FLAGS" },
   { env = "monoprop_MPI_TEST_PROCS" },
   { env = "monoprop_MPI_ABIS" },
-  { env = "CIBUILDWHEEL" },
   { env = "SKBUILD_BUILD_DIR" },
   { env = "SKBUILD_CMAKE_ARGS" },
   { env = "SKBUILD_CMAKE_BUILD_TYPE" },

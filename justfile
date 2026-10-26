@@ -163,8 +163,8 @@ test-wheel WHEELS MPI4PY='wheel' *PACKAGES:
 # Run configure's MPI inspection on an installed MPI: ABI family and version floor.
 
 inspect-mpi INCLUDE_DIR ABI:
-    cmake -DMPI_INCLUDE_DIR={{ quote(INCLUDE_DIR) }} -DEXPECTED_ABI={{ quote(ABI) }} \
-      -P cpp/tests/cmake/inspect_mpi.cmake
+    cmake --fresh -S cpp/tests/cmake/inspect_mpi -B build/inspect-mpi \
+      -DMPI_INCLUDE_DIR={{ quote(INCLUDE_DIR) }} -DEXPECTED_ABI={{ quote(ABI) }}
 
 # The sanitizer legs run against a tree built with monoprop_SANITIZER=asan-ubsan (or tsan)
 # exported, which also points build_dir at it.
