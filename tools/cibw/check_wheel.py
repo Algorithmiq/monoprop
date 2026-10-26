@@ -18,7 +18,8 @@
 
 Each MPI extension and MPI libmonoprop must depend on exactly its ABI family's MPI soname, left
 unresolved for the user's MPI; nothing else may depend on MPI; no binary may carry an absolute
-RPATH, except the macOS MPI search directories on MPI binaries; no MPI library may be bundled.
+RPATH, except the macOS MPI search directories on MPI binaries; no MPI library may be bundled;
+the type stub and ``py.typed`` must be present.
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ _MPI_BINARY = re.compile(
     r"^(?:_core_mpi\.|libmonoprop_mpi_)(?P<abi>mpich|openmpi|mpiabi)[._]"
 )
 _RELATIVE_RPATH = ("$ORIGIN", "@loader_path")
+REQUIRED_FILES = ("monoprop/_core.pyi", "monoprop/py.typed")
 
 
 class Binary(NamedTuple):
@@ -139,6 +141,19 @@ def audit_bundled(paths: list[str]) -> list[str]:
     ]
 
 
+def audit_required_files(paths: list[str]) -> list[str]:
+    """Return one message per required file missing from the wheel.
+
+    Stub generation at install time is non-fatal, so a failure there only shows up as a missing
+    ``_core.pyi``.
+    """
+    return [
+        f"{required}: missing from the wheel"
+        for required in REQUIRED_FILES
+        if required not in paths
+    ]
+
+
 def _literal(source: str, name: str) -> object:
     for node in ast.parse(source).body:
         if (
@@ -213,6 +228,7 @@ def main() -> int:
             )
         ]
         errors += audit_bundled(paths)
+        errors += audit_required_files(paths)
         errors += audit_abi_table(
             paths, (root / "monoprop" / "_mpi_abis.py").read_text(), expected
         )

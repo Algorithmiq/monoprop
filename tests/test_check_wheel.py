@@ -164,3 +164,18 @@ def test_abi_table_with_a_missing_module_fails() -> None:
 
 def test_abi_table_with_unexpected_abis_fails() -> None:
     assert check_wheel.audit_abi_table(SHIPPED, TABLE, ("mpich",))
+
+
+def test_audit_required_files_passes_when_stub_and_marker_present() -> None:
+    paths = ["monoprop/__init__.py", "monoprop/_core.pyi", "monoprop/py.typed"]
+    assert check_wheel.audit_required_files(paths) == []
+
+
+def test_audit_required_files_reports_each_missing_file() -> None:
+    errors = check_wheel.audit_required_files(["monoprop/__init__.py"])
+    assert len(errors) == 2
+    assert any("monoprop/_core.pyi" in error for error in errors)
+    assert any("monoprop/py.typed" in error for error in errors)
+    errors = check_wheel.audit_required_files(["monoprop/py.typed"])
+    assert len(errors) == 1
+    assert "monoprop/_core.pyi" in errors[0]

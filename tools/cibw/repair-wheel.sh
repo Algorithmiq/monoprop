@@ -14,7 +14,10 @@ case "$(uname)" in
       -w "$dest_dir" "$wheel"
     ;;
   Darwin)
-    delocate-wheel -v --require-archs "$(uname -m)" \
+    # delocate resolves @rpath names only through each binary's own LC_RPATHs and fails on the MPI
+    # libraries (they live in per-ABI prefixes, not on those rpaths) before --exclude applies.
+    # check_wheel.py verifies each MPI binary's MPI dependency afterwards.
+    delocate-wheel -v --require-archs "$(uname -m)" --ignore-missing-dependencies \
       --exclude libmpi.12.dylib --exclude libpmpi.12.dylib \
       --exclude libmpi.40.dylib --exclude libmpi_abi.1.dylib \
       -w "$dest_dir" "$wheel"

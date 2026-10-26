@@ -475,6 +475,9 @@ test-extras = ["qiskit"]
 [tool.cibuildwheel.linux]
 before-all = [
   "./tools/install-deps.sh --skip-boost-test --skip-msgpack",
+  # Install-time stub generation imports _core without build RPATHs, so hwloc in /usr/local/lib
+  # must be in the loader cache.
+  "ldconfig",
   "bash tools/cibw/install-mpi.sh /opt/mpi",
 ]
 environment = { monoprop_ENABLE_MPI = "ON", monoprop_MPI_ABIS = "mpich=/opt/mpi/mpich;openmpi=/opt/mpi/openmpi", monoprop_ENABLE_ARCH_FLAGS = "OFF", monoprop_ENABLE_CXX_UNIT_TESTS = "OFF" }
