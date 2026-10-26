@@ -17,7 +17,7 @@ description = "Quantum circuit simulation with monomial propagation. Both Pauli 
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.11,<3.16"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -30,6 +30,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Scientific/Engineering :: Chemistry",
   "Topic :: Scientific/Engineering :: Physics",
   "Topic :: Scientific/Engineering",
@@ -76,8 +77,6 @@ test = [
   "psutil>=7.2",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
-  # depend on branch which only outputs from rank zero
-  "pytest-mpi @ git+https://github.com/aragilar/pytest-mpi.git@nonzero",
   "pytest>=8.2.2,<9.2",
   "tabulate>=0.9",
 ]
@@ -193,10 +192,10 @@ python_files = ["test_*.py", "bench_*.py"]
 pythonpath = ["."]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
-  "mpi: mark test as requiring --with-mpi (pytest-mpi)",
+  "mpi(min_size=1): mark test as requiring --with-mpi and a minimum MPI rank count",
   "qiskit: mark test as requiring qiskit (optional dependency)",
 ]
-required_plugins = ["pytest-datadir", "pytest-mpi"]
+required_plugins = ["pytest-datadir"]
 
 
 [tool.coverage.run]
