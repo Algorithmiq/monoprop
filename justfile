@@ -425,8 +425,28 @@ doctest-docs:
     {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials --ignore=docs/content/docs/api
     {{ docs_uv }} python -m pytest --markdown-docs README.md
 
+# Regenerate the benchmark figures from their committed results and compare them, as images,
+# with the ones under `docs/public/benchmarks`.
+check-figures:
+    {{ docs_uv }} python -m pytest --no-cov tests/test_benchmark_plots.py
+
+# Regenerate the benchmark figures under `docs/public/benchmarks` from their committed results, in
+# the docs environment that `check-figures` compares them in.
+update-figures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bench=packages/bench-third-party
+    out=docs/public/benchmarks
+    # A personal matplotlibrc must not restyle the committed figures.
+    MPLCONFIGDIR=$(mktemp -d)
+    export MPLCONFIGDIR
+    trap 'rm -rf "$MPLCONFIGDIR"' EXIT
+    {{ docs_uv }} python $bench/plot_headline.py --output $out/headline_runtime.png
+    {{ docs_uv }} python $bench/pauli_prop/plot_results.py --output-dir $out
+    {{ docs_uv }} python $bench/majorana_prop/plot_results.py --output-dir $out
+
 # Build the static documentation site into `docs/out`.
-build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
+build-docs: docs-install gen-api doctest-py doctest-docs check-figures gen-notebooks
     cd {{ site }} && npm run build
 
 # Check exported HTML links (including external URLs).
