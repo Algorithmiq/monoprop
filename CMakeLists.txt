@@ -52,12 +52,9 @@ option(monoprop_ENABLE_MPI "Enable MPI parallelization" OFF)
 
 # cibuildwheel exports CIBUILDWHEEL=1. Wheels must not carry build-machine library paths, which could
 # shadow the MPI library mpi4py selects; source installs keep them to find Spack or conda libraries.
-# Read on every configure, not cached: a build tree may be reused outside cibuildwheel.
-if("$ENV{CIBUILDWHEEL}" STREQUAL "1")
-  set(monoprop_WHEEL_BUILD ON)
-else()
-  set(monoprop_WHEEL_BUILD OFF)
-endif()
+# Read on every configure, not cached: a build tree may be reused outside cibuildwheel. Used as a
+# boolean, so unset or empty is false.
+set(monoprop_WHEEL_BUILD "$ENV{CIBUILDWHEEL}")
 
 option(monoprop_ENABLE_CXX_UNIT_TESTS "Enable C++ unit test suite" ON)
 
