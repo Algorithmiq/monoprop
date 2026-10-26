@@ -71,7 +71,7 @@ def main() -> None:
         left,
         "Trotter step",
         "time per step [s]",
-        "Pauli: 144-qubit 2D transverse-field Ising",
+        "Pauli: 144-qubit 2D tilted-field Ising",
     )
 
     layers = majorana["step_range"]

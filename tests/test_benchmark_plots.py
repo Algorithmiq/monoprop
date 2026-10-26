@@ -44,8 +44,9 @@ FIGURES = {
     "majorana_prop/plot_results.py": ["majorana_results.png", "majorana_runtime.png"],
 }
 
-# RMS over 0-255 pixel values. The docs environment and the benchmark package lock the same
-# matplotlib and pillow, so the figures reproduce exactly; this only absorbs anti-aliasing noise.
+# RMS over 0-255 pixel values. `just update-figures` draws the committed figures in the docs
+# environment that checks them, so they reproduce exactly whatever matplotlib and pillow the
+# benchmark package locks; this only absorbs anti-aliasing noise.
 TOLERANCE = 0.5
 
 
@@ -88,7 +89,7 @@ def test_figures_match_committed(plot_script, tmp_path, script):
         )
         assert failure is None, (
             f"{name} no longer matches the committed figure; regenerate it with "
-            f"{script} and copy it to docs/public/benchmarks.\n{failure}"
+            f"`just update-figures`.\n{failure}"
         )
 
 

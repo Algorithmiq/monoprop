@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -25,6 +26,17 @@ from plot_scaling import COLORS as colors
 
 # The early steps are too noisy to plot.
 min_step = 5
+
+parser = argparse.ArgumentParser(
+    description="Plot the Pauli benchmark's per-step runtime and memory."
+)
+parser.add_argument(
+    "--output-dir",
+    type=Path,
+    default=Path(__file__).parent,
+    help="Directory to save pauli_results.png into.",
+)
+args = parser.parse_args()
 
 with open(Path(__file__).parent / "results.json") as file:
     data = json.load(file)
@@ -69,4 +81,4 @@ for label, memory in memory_dict.items():
 _style_axes(ax2, "Memory per step [MB]")
 
 fig.tight_layout()
-fig.savefig(Path(__file__).parent / "pauli_results.png", dpi=150, bbox_inches="tight")
+fig.savefig(args.output_dir / "pauli_results.png", dpi=150, bbox_inches="tight")

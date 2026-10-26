@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The benchmark model: a Trotterized 2D transverse-field Ising model (TFIM).
+"""The benchmark model: a Trotterized 2D tilted-field Ising model (TFIM).
 
 Every backend in `backends.py` propagates *this* circuit and observable, so the
 definition lives here once. Nothing in this module imports a propagation library.

@@ -4,7 +4,7 @@ Standalone benchmark scripts comparing [monoprop](https://github.com/Algorithmiq
 other Pauli-propagation implementations — [QuEra's `ppvm`](https://github.com/QuEraComputing/ppvm),
 Qiskit's `pauli-prop`, NVIDIA's `cuPauliProp` (GPU, via `cuquantum`), and
 [`PauliPropagation.jl`](https://github.com/SparqleSim/PauliPropagation.jl) — on the same workload:
-Trotterized time evolution of a 2D transverse-field Ising model (TFIM), tracking the runtime,
+Trotterized time evolution of a 2D tilted-field Ising model (TFIM), tracking the runtime,
 expectation value, and operator size at each Trotter step.
 
 This directory is a self-contained `uv` project, completely isolated from the main monoprop
@@ -27,7 +27,9 @@ show cumulative wall-clock time, as recorded by the benchmark drivers.
 The docs site serves copies of `headline_runtime.png`, `pauli_results.png`,
 `majorana_results.png` and `majorana_runtime.png` from `docs/public/benchmarks`. `just
 check-figures`, part of the docs build, regenerates them from the committed results and fails if
-they no longer match: after changing a plot script or its results, copy the new figures there.
+they no longer match. After changing a plot script or its results, run `just update-figures` from
+the repository root: it writes the figures from the docs environment that checks them, so this
+package's own matplotlib and pillow versions never affect the committed images.
 
 For more details, check the [benchmark guide](https://docs.monoprop.algorithmiq.tech/benchmarks).
 

@@ -25,7 +25,7 @@ All results are from exclusive nodes on
 
 ### Pauli propagation
 
-Trotterized evolution of a 2D transverse-field Ising model, evaluating a `ZZ` correlator on a fixed
+Trotterized evolution of a 2D tilted-field Ising model, evaluating a `ZZ` correlator on a fixed
 qubit pair. One experiment varies depth, the other lattice size.
 
 #### Fixed lattice, increasing depth
@@ -191,6 +191,9 @@ monoprop_NUM_THREADS=24 JULIA_NUM_THREADS=24 bash run_benchmarks.sh
 
 # Two-panel headline figure from both committed result sets
 cd .. && uv run python plot_headline.py
+
+# Refresh the figures served by these docs, from the repository root
+just update-figures
 ```
 
 Model parameters:
