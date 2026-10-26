@@ -94,3 +94,10 @@ runs:
             sudo apt-get install -y "${packages[@]}"
           fi
         fi
+
+        # Ubuntu 22.04 and older name MPICH's library libmpich.so.12, not the libmpi.so.12 the MPICH
+        # ABI requires; this is the system-wide fix mpi4py's installation guide gives.
+        libdir="/usr/lib/$(uname -m)-linux-gnu"
+        if [[ "$mpi" == mpich && -e "$libdir/libmpich.so.12" && ! -e "$libdir/libmpi.so.12" ]]; then
+          sudo ln -sr "$libdir/libmpich.so.12" "$libdir/libmpi.so.12"
+        fi

@@ -17,6 +17,9 @@ accept = [200, 403, 429]
 
 # False positives:
 # - localhost:3000: development server URL used as an example in the docs.
+# - cpe.ext.hpe.com: HPE's documentation server sends an incomplete certificate chain, which
+#   browsers repair and lychee rejects as an unknown issuer.
 exclude = [
   "^http://localhost",
+  "^https://cpe\\.ext\\.hpe\\.com/",
 ]

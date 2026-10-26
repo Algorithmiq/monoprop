@@ -114,13 +114,28 @@ def test_empty_rpath_entry_fails() -> None:
     ]
 
 
-def test_macos_mpi_module_may_search_homebrew() -> None:
+def test_macos_mpi_module_searches_the_mpi_prefixes() -> None:
     binary = Binary(
         "monoprop/_core_mpi.openmpi.abi3.so",
         ("@rpath/libmpi.40.dylib",),
-        ("@loader_path/lib", "/opt/homebrew/lib"),
+        ("@loader_path/lib", *check_wheel.MACOS_MPI_RPATHS),
     )
     assert check_wheel.audit_binary(binary, macos=True) == []
+
+
+def test_macos_mpi_module_missing_an_mpi_prefix_fails() -> None:
+    # delocate strips absolute RPATHs by default, which left MPI unloadable from Homebrew
+    binary = Binary(
+        "monoprop/_core_mpi.openmpi.abi3.so",
+        ("@rpath/libmpi.40.dylib",),
+        ("@loader_path/lib", "/usr/local/lib"),
+    )
+    assert check_wheel.audit_binary(binary, macos=True) == [
+        (
+            "monoprop/_core_mpi.openmpi.abi3.so: RPATH lacks the MPI search directories "
+            "['/opt/homebrew/lib', '/opt/local/lib']"
+        )
+    ]
 
 
 def test_macos_serial_module_may_not_search_homebrew() -> None:

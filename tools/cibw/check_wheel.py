@@ -120,6 +120,11 @@ def audit_binary(binary: Binary, *, macos: bool) -> list[str]:
                 f"{binary.path}: MPI must be loaded through @rpath: {mpi_deps}"
             )
     allowed = MACOS_MPI_RPATHS if macos and abi else ()
+    missing = [rpath for rpath in allowed if rpath not in binary.rpaths]
+    if missing:
+        errors.append(
+            f"{binary.path}: RPATH lacks the MPI search directories {missing}"
+        )
     for rpath in binary.rpaths:
         if rpath == "":
             errors.append(

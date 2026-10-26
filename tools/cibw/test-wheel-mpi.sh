@@ -42,6 +42,12 @@ export OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 export OMPI_MCA_rmaps_base_oversubscribe=1 PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
 # Open MPI's shared-memory PMIx store cannot attach at its base address in some containers.
 export PMIX_MCA_gds=hash
+# Older impi-rt wheels keep libfabric in lib/libfabric and give libmpi.so.12 no RUNPATH, leaving
+# the loader path to Intel's vars script; newer ones set a RUNPATH and have no such directory.
+if [[ -d "$venv/lib/libfabric" ]]; then
+  export LD_LIBRARY_PATH="$venv/lib:$venv/lib/libfabric${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export FI_PROVIDER_PATH="$venv/lib/libfabric/prov"
+fi
 
 cd "$project"
 # The MPI tests skip when mpi4py cannot load a library, so prove the backend loads before relying on them.
