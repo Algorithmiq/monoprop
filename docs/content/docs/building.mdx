@@ -355,14 +355,16 @@ Python API under TSan would require a TSan-instrumented CPython.
   Python, Boost and hwloc from the distribution), DOCA-OFED's InfiniBand user space, and
   UCX, PMIx and Open MPI built from source. The versions are pinned at the top of the recipe.
 - `ghcr.io/algorithmiq/monoprop`: `tools/container/Dockerfile` installs the sdist on top,
-  with MPI and the `mpi` and `qiskit` extras, compiled with `-march=$MARCH` (default
-  `sapphirerapids`).
+  with MPI and the `mpi` and `qiskit` extras, compiled with `-march=$MARCH`. The workflow
+  sets `MARCH` (currently `sapphirerapids`, also the Dockerfile's default).
 
 The base image is tagged with the first 12 hex digits of the SHA-256 of the rendered
 Dockerfile, so it is rebuilt only when the recipe's output changes, including through an
 hpccm upgrade (`HPCCM_VERSION` in the workflow). Each run also tags the base image it used
-with the run's tag (`pr-N`, `main` or the release version), and tags the monoprop image
-with it and `sha-<commit>`; non-pre-release releases also move `latest`.
+with the run's tag (`pr-N`, `main` or the release version). The base image is built without
+`-march`, so its tags carry no CPU target. The monoprop image gets the same tag and
+`sha-<commit>`, each followed by `-$MARCH` (e.g. `main-sapphirerapids`), because it runs only
+on that CPU; non-pre-release releases also move `latest-$MARCH`.
 
 The workflow runs on pushes to `main`, on releases, on manual dispatch, and on pull
 requests that touch `tools/container/` or the workflow. `tools/container/smoke-test.sh`
@@ -390,7 +392,8 @@ docker run --rm --shm-size=1g -v "$PWD/tools/container/smoke-test.sh:/smoke-test
 
 `.github/workflows/cleanup-images.yml` runs `tools/cleanup-ghcr.py` daily. It keeps the
 versions tagged with a release, `latest`, `main` or the `pr-N` of an open pull request,
-the platform and attestation manifests those reference, and anything less than 24 hours
+with or without a CPU-target suffix listed in the script's `CPU_TARGETS` (building for a
+new `MARCH` means adding it there), the platform and attestation manifests those reference, and anything less than 24 hours
 old, and deletes the rest of both packages. A manual dispatch is a dry run by default,
 which only logs what would be deleted. The script authenticates with the workflow's
 `GITHUB_TOKEN`, which can manage the packages this repository published.

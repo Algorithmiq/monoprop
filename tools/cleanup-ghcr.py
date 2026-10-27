@@ -22,6 +22,7 @@ keeps what someone may still pull and deletes the rest. A version is kept when i
 
 - tagged with a release (``1.2.3``, ``v1.2.3``, pre-releases), ``latest`` or ``main``;
 - tagged ``pr-N`` while pull request ``N`` is open;
+- tagged as above with a CPU-target suffix, e.g. ``main-sapphirerapids``;
 - younger than ``--min-age-hours``, so a push in progress is never cut short;
 - a platform or attestation manifest of a version kept above. GHCR lists those as
   separate untagged versions, and deleting one breaks the image that references it.
@@ -74,6 +75,9 @@ _NEXT_LINK = re.compile(r'<([^>]+)>;\s*rel="next"')
 RELEASE_TAG = re.compile(r"^v?\d+\.\d+\.\d+([.+-]?[0-9A-Za-z.]+)?$")
 PR_TAG = re.compile(r"^pr-(\d+)$")
 BRANCH_TAGS = frozenset({"latest", "main"})
+# container.yml suffixes every monoprop tag with the image's -march target (its MARCH);
+# list each target it builds, or its suffixed tags lose their pins.
+CPU_TARGETS = frozenset({"sapphirerapids"})
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,13 @@ class Version:
     """Creation time, timezone-aware."""
 
 
+def _strip_cpu_target(tag: str) -> str:
+    for target in CPU_TARGETS:
+        if tag.endswith(f"-{target}"):
+            return tag.removesuffix(f"-{target}")
+    return tag
+
+
 def is_pinned(tags: Collection[str], open_prs: Collection[int]) -> bool:
     """Return whether a version must be kept because of its own tags.
 
@@ -99,9 +110,10 @@ def is_pinned(tags: Collection[str], open_prs: Collection[int]) -> bool:
 
     Returns:
         True for a release, ``latest`` or ``main`` tag, or the ``pr-N`` tag of an open
-        pull request.
+        pull request, with or without a ``-<target>`` suffix from ``CPU_TARGETS``.
     """
-    for tag in tags:
+    for suffixed in tags:
+        tag = _strip_cpu_target(suffixed)
         if tag in BRANCH_TAGS or RELEASE_TAG.match(tag):
             return True
         pr = PR_TAG.match(tag)

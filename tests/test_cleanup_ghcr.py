@@ -71,6 +71,38 @@ def test_open_pr_tag_is_pinned():
     assert is_pinned(("pr-7",), {7})
 
 
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "1.2.3-sapphirerapids",
+        "v0.5.0-rc.1-sapphirerapids",
+        "latest-sapphirerapids",
+        "main-sapphirerapids",
+    ],
+)
+def test_cpu_target_suffix_keeps_release_and_branch_tags_pinned(tag):
+    assert is_pinned((tag,), set())
+
+
+def test_cpu_target_suffix_keeps_open_pr_tags_pinned():
+    assert is_pinned(("pr-7-sapphirerapids",), {7})
+    assert not is_pinned(("pr-7-sapphirerapids",), set())
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "sha-1a2b3c4-sapphirerapids",
+        # a dispatch on a branch named main-feature
+        "main-feature-sapphirerapids",
+        # an unknown suffix is not a CPU target
+        "main-feature",
+    ],
+)
+def test_other_suffixed_tags_are_not_pinned(tag):
+    assert not is_pinned((tag,), set())
+
+
 def test_release_keeps_its_platform_and_attestation_manifests():
     versions = [
         _version(1, "sha256:index", "1.2.3"),

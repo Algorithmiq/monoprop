@@ -18,6 +18,8 @@ and Singularity (or Apptainer) installed:
 singularity pull monoprop_<tag>.sif docker://ghcr.io/algorithmiq/monoprop:<tag>
 ```
 
+`<tag>` is one of the [published tags](/clusters), for example `main-sapphirerapids`.
+
 Copy the `.sif` file (the image is about 1.3 GB unpacked; the `.sif` is compressed and
 smaller) to your project directory on MN5 with `scp` or `rsync` through a login or
 data-transfer node, for example:

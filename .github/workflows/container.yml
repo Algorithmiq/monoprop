@@ -28,6 +28,9 @@ env:
   COLUMNS: 120
   FORCE_COLOR: 3
   HPCCM_VERSION: "26.5.0"
+  # -march target of the monoprop image, also the suffix of its tags; list it in
+  # CPU_TARGETS in tools/cleanup-ghcr.py so the suffixed tags stay pinned.
+  MARCH: sapphirerapids
   REGISTRY: ghcr.io
   BASE_IMAGE_NAME: ghcr.io/algorithmiq/monoprop-base
   APP_IMAGE_NAME: ghcr.io/algorithmiq/monoprop
@@ -214,13 +217,14 @@ jobs:
           images: ${{ env.APP_IMAGE_NAME }}
           flavor: |
             latest=false
+          # The image runs only on MARCH CPUs, so every tag names it.
           tags: |
-            type=semver,pattern={{version}}
-            type=ref,event=tag
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=semver,pattern={{version}},suffix=-${{ env.MARCH }}
+            type=ref,event=tag,suffix=-${{ env.MARCH }}
+            type=ref,event=branch,suffix=-${{ env.MARCH }}
+            type=ref,event=pr,suffix=-${{ env.MARCH }}
+            type=sha,prefix=sha-,format=short,suffix=-${{ env.MARCH }}
+            type=raw,value=latest,suffix=-${{ env.MARCH }},enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
           labels: |
             org.opencontainers.image.vendor=Algorithmiq
             org.opencontainers.image.base.name=${{ needs.base.outputs.ref }}
@@ -233,6 +237,7 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ needs.base.outputs.ref }}
             SDIST=${{ needs.sdist.outputs.file }}
+            MARCH=${{ env.MARCH }}
           no-cache: true
           load: true
           push: false
@@ -257,6 +262,7 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ needs.base.outputs.ref }}
             SDIST=${{ needs.sdist.outputs.file }}
+            MARCH=${{ env.MARCH }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
