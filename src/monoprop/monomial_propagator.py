@@ -104,9 +104,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
             lower_atol: Coefficient-truncation threshold, or ``None``.
             upper_atol: Coefficient-retention threshold, or ``None``.
             basis_change: Internal per-Majorana basis change (``2 * num_modes`` entries).
-            comm: Optional MPI communicator. Construction is collective over it. The propagator
-                runs on a private duplicate, so its messages never mix with the caller's on
-                ``comm``; the duplicate is freed with the propagator.
+            comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate,
+                such as ``MPI.COMM_WORLD.Dup()``, not a communicator your own code sends
+                point-to-point messages on: monoprop uses fixed tags that could match them.
             basis: Engine basis -- ``"majorana"`` (default) or ``"pauli"``.
         """
         num_modes = majorana_operator.num_modes

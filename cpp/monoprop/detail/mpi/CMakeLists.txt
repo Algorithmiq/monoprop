@@ -7,7 +7,6 @@ target_sources(
         "CheckedCount.h"
         "Comm.h"
         "CpuRelax.h"
-        "DuplicatedComm.h"
         "Exchange.h"
         "HybridComm.h"
         "MPICompat.h"

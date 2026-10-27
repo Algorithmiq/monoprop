@@ -22,7 +22,6 @@
 #include <format>
 #include <functional>
 #include <map>
-#include <memory>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -43,7 +42,6 @@
 #include "monoprop/algebra/PauliAlgebra.h"
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
-#include "monoprop/detail/mpi/DuplicatedComm.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -76,13 +74,6 @@ class MonomialPropagator {
 public:
     using PartitionChildFactory = std::function<std::unique_ptr<MonomialPropagator<NumModes>>(mpi::Comm)>;
 
-    /// Builds the propagator over `comm`.
-    ///
-    /// When `comm` is an MPI communicator, construction is collective over it: every rank must call with
-    /// the same arguments, in the same order relative to its other collectives on `comm`. It duplicates
-    /// `comm` once and runs all internal traffic on the duplicate, so monoprop's messages cannot match the
-    /// caller's own on `comm`. The duplicate is freed when the propagator is destroyed, or once the last
-    /// copy of it is.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,
                        const VecZ &initial_state,
@@ -102,8 +93,6 @@ public:
 
     /// Deep copy: clones the operator store, shares the immutable graph cores, and clones the whole
     /// partition group on a facade. The virtual destructor suppresses implicit moves, so a "move" deep-copies.
-    /// The copy shares this propagator's communicator duplicate instead of making another, so copying stays
-    /// non-collective on a single-partition propagator.
     MonomialPropagator(const MonomialPropagator &other);
     auto operator=(const MonomialPropagator &) -> MonomialPropagator & = delete;
 
@@ -246,8 +235,7 @@ public:
 
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
 
-    /// The private duplicate of the communicator passed at construction: MPI_CONGRUENT with it, never
-    /// MPI_IDENT. MPI_COMM_SELF on a partition, which trades over an in-process comm instead.
+    /// MPI_COMM_SELF on a partition, which trades over an in-process comm instead.
     auto comm() const -> MPI_Comm { return comm_.mpi; }
 
     /// Build the propagation graph, one layer per generator, recording each layer's gate info
@@ -336,10 +324,7 @@ protected:
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
 
     bool schrodinger_;
-    // Keeps the duplicate behind comm_ alive; declared first so it is freed last, after partition_group_ and
-    // every other user of comm_. Null for a partition (in-process comm) and in builds without MPI.
-    std::shared_ptr<mpi::DuplicatedComm> comm_owner_;
-    mpi::Comm comm_; // the duplicate across nodes, or an in-process comm across partitions
+    mpi::Comm comm_; // real MPI across nodes, or an in-process comm across partitions
     CutoffFn<NumModes> cutoff_fn_;
     detail::MPOperator<NumModes> mp_op_;
     MPGraph graph_;

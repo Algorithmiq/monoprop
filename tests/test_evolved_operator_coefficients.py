@@ -47,7 +47,7 @@ def problem():
 
 
 @pytest.fixture(scope="module")
-def prop_and_params(problem, comm_self_duplicate):
+def prop_and_params(problem, comm_self):
     """A built propagator over ``problem`` and its parameters, shared across the module.
 
     ``evolved_operator`` and ``evolved_operator_coefficients`` leave simulator state alone, so one
@@ -57,7 +57,7 @@ def prop_and_params(problem, comm_self_duplicate):
         problem.operator,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=comm_self_duplicate,
+        comm=comm_self,
     )
     prop.build_graph(problem.monomial_circuit.to_circuit())
     return prop, problem.monomial_circuit.parameters

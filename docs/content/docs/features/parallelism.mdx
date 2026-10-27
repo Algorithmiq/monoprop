@@ -122,18 +122,6 @@ built for raises [MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError],
 library older than the supported versions (see [Enabling MPI](#enabling-mpi)) raises
 [MPIVersionError][monoprop.exceptions.MPIVersionError].
 
-### Communicator ownership
-
-monoprop never trades messages on the communicator you pass. Building a propagator is collective over
-`comm`: every rank must construct it, in the same order relative to its other collectives on `comm`. It
-duplicates `comm` once, runs all of its traffic on the duplicate, and frees the duplicate when the
-propagator is destroyed. monoprop's point-to-point messages therefore cannot match yours, even on a
-shared tag, and you keep ownership of `comm` itself.
-
-A deep copy of a propagator shares the original's duplicate instead of making another, so
-copying stays non-collective. The duplicate is released when the last copy goes. A propagator that
-outlives `MPI_Finalize`, such as one still referenced at interpreter exit, skips the free.
-
 ### Single-node (`MPI.COMM_SELF`)
 
 ```python notest
@@ -143,12 +131,19 @@ sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
 
 ### Multi-node (`MPI.COMM_WORLD`)
 
-Replace the communicator and launch with `mpiexec`:
+Pass a duplicate of `MPI.COMM_WORLD` and launch with `mpiexec`:
 
 ```python notest
 from mpi4py import MPI
-sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
+comm = MPI.COMM_WORLD.Dup()
+sim = MajoranaPropagator(..., comm=comm)
+...
+comm.Free()  # once sim is no longer used
 ```
+
+monoprop sends point-to-point messages on fixed tags over `comm`, so they could match messages your own
+code has in flight on the same communicator. A duplicate keeps the two apart. It must outlive the
+propagator.
 
 ```bash
 mpiexec -n 8 uv run python your_script.py

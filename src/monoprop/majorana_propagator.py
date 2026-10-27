@@ -111,9 +111,9 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 exception applies on top of either.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of complexity.
-            comm: Optional MPI communicator. Construction is collective over it. The simulator
-                runs on a private duplicate, so its messages never mix with the caller's on
-                ``comm``; the duplicate is freed with the simulator.
+            comm: Optional MPI communicator (must outlive the simulator). Pass a duplicate,
+                such as ``MPI.COMM_WORLD.Dup()``, not a communicator your own code sends
+                point-to-point messages on: monoprop uses fixed tags that could match them.
         """
         majorana_operator: MajoranaOperator = (
             initial_operator
