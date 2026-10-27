@@ -54,26 +54,36 @@ if("MPI" IN_LIST monoprop_FIND_COMPONENTS)
     if(NOT DEFINED MPI_CXX_SKIP_MPICXX)
       set(MPI_CXX_SKIP_MPICXX ON)
     endif()
-    find_dependency(
-      MPI
-      COMPONENTS
-      CXX
-    )
-    include("${CMAKE_CURRENT_LIST_DIR}/monopropMPIABI.cmake")
-    monoprop_inspect_mpi(
-      _monoprop_consumer_mpi_abi _monoprop_consumer_mpi_problem
-      INCLUDE_DIRS ${MPI_CXX_INCLUDE_DIRS}
-      DEFINITIONS ${MPI_CXX_COMPILE_DEFINITIONS}
-    )
-    if(_monoprop_consumer_mpi_problem)
-      set(monoprop_NOT_FOUND_MESSAGE "${_monoprop_consumer_mpi_problem}")
-    elseif(_monoprop_consumer_mpi_abi IN_LIST monoprop_MPI_ABIS)
-      set(monoprop_MPI_FOUND TRUE)
-    else()
-      set(
-        monoprop_NOT_FOUND_MESSAGE
-        "the MPI found for this project uses the '${_monoprop_consumer_mpi_abi}' ABI, but this monoprop installation supports: ${monoprop_MPI_ABIS}"
+    if(monoprop_FIND_REQUIRED_MPI)
+      find_dependency(
+        MPI
+        COMPONENTS
+        CXX
       )
+    else()
+      # find_dependency forwards the consumer's REQUIRED, so a missing MPI would fail the whole
+      # package; an optional component only leaves monoprop_MPI_FOUND false.
+      find_package(MPI QUIET COMPONENTS CXX)
+    endif()
+    if(NOT MPI_CXX_FOUND)
+      set(monoprop_NOT_FOUND_MESSAGE "no MPI was found for the MPI component")
+    else()
+      include("${CMAKE_CURRENT_LIST_DIR}/monopropMPIABI.cmake")
+      monoprop_inspect_mpi(
+        _monoprop_consumer_mpi_abi _monoprop_consumer_mpi_problem
+        INCLUDE_DIRS ${MPI_CXX_INCLUDE_DIRS}
+        DEFINITIONS ${MPI_CXX_COMPILE_DEFINITIONS}
+      )
+      if(_monoprop_consumer_mpi_problem)
+        set(monoprop_NOT_FOUND_MESSAGE "${_monoprop_consumer_mpi_problem}")
+      elseif(_monoprop_consumer_mpi_abi IN_LIST monoprop_MPI_ABIS)
+        set(monoprop_MPI_FOUND TRUE)
+      else()
+        set(
+          monoprop_NOT_FOUND_MESSAGE
+          "the MPI found for this project uses the '${_monoprop_consumer_mpi_abi}' ABI, but this monoprop installation supports: ${monoprop_MPI_ABIS}"
+        )
+      endif()
     endif()
   endif()
 endif()

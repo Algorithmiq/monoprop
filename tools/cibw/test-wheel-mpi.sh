@@ -12,7 +12,14 @@ wheels="${2:?}"
 mpi4py_mode="${3:?}"
 shift 3
 
-venv="${MONOPROP_TEST_VENV:-$(mktemp -d)/venv}"
+if [[ -n "${MONOPROP_TEST_VENV:-}" ]]; then
+  # Kept: the caller reuses it, e.g. for `just test-find-package`.
+  venv="$MONOPROP_TEST_VENV"
+else
+  scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  venv="$scratch/venv"
+fi
 "${PYTHON:-python3}" -m venv --clear "$venv"
 python="$venv/bin/python"
 "$python" -m pip install --quiet --upgrade pip

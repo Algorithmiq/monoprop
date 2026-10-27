@@ -292,7 +292,9 @@ target_link_libraries(my_target PRIVATE monoprop::monoprop_mpi)
 
 Configuration fails, naming both, when the installation was built without that family;
 `monoprop_MPI_ABIS` lists the families it ships. Projects that linked `monoprop::monoprop` from an
-MPI build before must switch to the `MPI` component.
+MPI build before must switch to the `MPI` component. A project that can run either way requests
+the component with `OPTIONAL_COMPONENTS MPI` instead: when no MPI or no matching family is found,
+`monoprop_MPI_FOUND` is false and `monoprop::monoprop` is still available.
 
 `just test-find-package` goes one step further out: it builds
 `cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
@@ -300,8 +302,9 @@ package through `find_package(monoprop CONFIG)` — and runs it. That is the onl
 exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependency` or a
 usage requirement the package fails to export. It compiles the same source as the in-tree
 probe, so the two cannot drift. With an MPI installation it also builds the
-consumer through the `MPI` component, runs it under `mpiexec -n 2`, and checks that a package
-lacking the consumer's MPI ABI fails at configure time.
+consumer through the `MPI` component, runs it under `mpiexec -n 2`, checks that an optional `MPI`
+component still yields the serial package when no MPI is found, and checks that a package lacking
+the consumer's MPI ABI fails at configure time.
 
 ### Debug tree
 

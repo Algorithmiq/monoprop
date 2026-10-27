@@ -134,6 +134,12 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
       -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON
     cmake --build "$build_dir-mpi"
     mpiexec -n 2 "$build_dir-mpi/smoke"
+    # An optional MPI component must leave the serial package usable when no MPI is found.
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir-optional-mpi" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_OPTIONAL_MPI=ON \
+      -DCMAKE_DISABLE_FIND_PACKAGE_MPI=ON
+    cmake --build "$build_dir-optional-mpi"
+    "$build_dir-optional-mpi/smoke"
     # The targets file locates the libraries relative to the config directory, so the altered
     # copy sits in a mirror of the installation tree whose other entries link to the real ones.
     mismatch="$(mktemp -d)"

@@ -9,9 +9,18 @@ option(
   OFF
 )
 
+option(
+  monoprop_SMOKE_OPTIONAL_MPI
+  "Request the MPI component as optional and consume the serial target"
+  OFF
+)
+
 if(monoprop_SMOKE_MPI)
   find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
   set(_monoprop_target monoprop::monoprop_mpi)
+elseif(monoprop_SMOKE_OPTIONAL_MPI)
+  find_package(monoprop CONFIG REQUIRED OPTIONAL_COMPONENTS MPI)
+  set(_monoprop_target monoprop::monoprop)
 else()
   find_package(monoprop CONFIG REQUIRED)
   set(_monoprop_target monoprop::monoprop)
