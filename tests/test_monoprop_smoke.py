@@ -157,8 +157,11 @@ _GRAPH_DIAGNOSTIC_KEYS = (
 )
 
 
-def test_graph_memory_breakdown_keys_and_totals(lih_problem):
+@pytest.mark.parametrize("partitions", [1, 2])
+def test_graph_memory_breakdown_keys_and_totals(lih_problem, partitions, monkeypatch):
     """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
+    # Read when the propagator is built: the run's flat world is P = partitions.
+    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
     monomial_circuit = lih_problem.monomial_circuit
     core = _make_bound_core(lih_problem, schrodinger=False)
     _evolve_bound_core(core, monomial_circuit)
@@ -182,11 +185,9 @@ def test_graph_memory_breakdown_keys_and_totals(lih_problem):
     # deleted so an A/B against a build that retained them shows the drop instead of losing the row.
     assert breakdown["exchange_layout_bytes"] == 0
 
-    # The slot array is indexed by the flat world, so slot_records / layer_cores recovers P. Stated as
-    # divisibility, not `== 1`, because the MPI gate also runs this at 16 partitions per rank.
+    # The slot array is indexed by the flat world, so slot_records / layer_cores is P.
     assert breakdown["d_layer_cores"] > 0
-    assert breakdown["d_slot_records"] % breakdown["d_layer_cores"] == 0
-    assert breakdown["d_slot_records"] // breakdown["d_layer_cores"] >= 1
+    assert breakdown["d_slot_records"] == partitions * breakdown["d_layer_cores"]
 
     # An occupied slot holds at least one endpoint, so the endpoint count is the P-independent ceiling.
     assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]
