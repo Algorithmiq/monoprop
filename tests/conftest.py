@@ -19,10 +19,16 @@ MPI selection is handled here (``--with-mpi``, ``@pytest.mark.mpi``).
 ``comm`` is parametrized over COMM_SELF and COMM_WORLD: use it for energies and gradients, which
 allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
 ``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``.
+
+Under more than one rank each rank gets its own ``--basetemp``; see ``_rank_basetemp``.
 """
 
 from __future__ import annotations
 
+import getpass
+import os
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -31,9 +37,36 @@ from tests.mpi_support import HAS_MPI_BACKEND, MPI, SERIAL_COMM
 from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from tests.reference_data import FermionicProblem
+
+
+def _rank_basetemp() -> Path | None:
+    """Per-rank base temporary directory under ``mpiexec``, or ``None`` on a single rank.
+
+    Every rank is its own pytest process, and without ``--basetemp`` they all prune the same
+    ``pytest-of-<user>`` numbered directories at exit. One rank then deletes a directory another
+    is scanning, and the resulting ``ResourceWarning`` fails the run under
+    ``filterwarnings = error``. An explicit basetemp skips that pruning altogether.
+    """
+    if MPI is None or MPI.COMM_WORLD.size == 1:
+        return None
+    try:
+        user = getpass.getuser()
+    except (ImportError, OSError, KeyError):
+        user = "unknown"
+    temproot = Path(os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir())
+    return temproot / f"pytest-of-{user}" / f"mpi-rank-{MPI.COMM_WORLD.rank}"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> None:
+    """Give each MPI rank its own ``--basetemp`` unless one was passed explicitly.
+
+    Not in ``pytest_configure``: the tmpdir plugin reads the basetemp in its own
+    ``pytest_configure``, and that hook here must run last to unregister the terminal reporter.
+    """
+    if config.option.basetemp is None and (basetemp := _rank_basetemp()) is not None:
+        config.option.basetemp = basetemp
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
