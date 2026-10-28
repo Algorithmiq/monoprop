@@ -36,6 +36,7 @@ from __future__ import annotations
 import getpass
 import os
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -128,6 +129,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+class _RankFailureReporter:
+    """Writes a muted rank's failures to stderr, tagged with the rank.
+
+    Only rank 0 keeps the terminal reporter, so without this a failure on another rank shows only
+    as mpiexec's non-zero exit.
+    """
+
+    def __init__(self, rank: int) -> None:
+        self._rank = rank
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        """Print a failed phase's report."""
+        if report.failed:
+            sys.stderr.write(
+                f"[rank {self._rank}] FAILED {report.nodeid} ({report.when})\n"
+                f"{report.longreprtext}\n"
+            )
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Enable ``--with-mpi`` under the VS Code adapter, which bypasses
@@ -144,6 +164,9 @@ def pytest_configure(config: pytest.Config) -> None:
         reporter = config.pluginmanager.getplugin("terminalreporter")
         if reporter is not None:
             config.pluginmanager.unregister(reporter)
+        config.pluginmanager.register(
+            _RankFailureReporter(MPI.COMM_WORLD.rank), "monoprop-rank-failures"
+        )
 
 
 @pytest.hookimpl(tryfirst=True)
