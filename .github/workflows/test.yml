@@ -55,7 +55,6 @@ jobs:
             mpi: "on"
 
     runs-on: ${{ matrix.runner}}
-    # A lane takes about 15 minutes; the per-test timeouts catch a hang first, this only bounds it.
     timeout-minutes: 60
 
     env:
