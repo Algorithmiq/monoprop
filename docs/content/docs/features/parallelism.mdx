@@ -112,7 +112,7 @@ exchange, so it is checked collectively at startup and raised.
 monoprop picks the backend per propagator. `comm=None` runs serially, whatever the installation;
 an mpi4py communicator runs on the MPI backend, which monoprop loads the first time it is needed.
 Importing monoprop never imports mpi4py or initializes MPI. Under `mpiexec`, a propagator built
-without `comm` therefore runs serially on every rank: pass `comm=MPI.COMM_WORLD` to distribute it.
+without `comm` therefore runs serially on every rank: pass a duplicate of `MPI.COMM_WORLD` to distribute it.
 
 [MPI_ABIS][monoprop.MPI_ABIS] lists the MPI ABI families the installation can drive; it is empty
 without MPI support. The MPI backend matches the family of the MPI library mpi4py uses. Passing a
@@ -122,11 +122,14 @@ built for raises [MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError],
 library older than the supported versions (see [Enabling MPI](#enabling-mpi)) raises
 [MPIVersionError][monoprop.exceptions.MPIVersionError].
 
-### Single-node (`MPI.COMM_SELF`)
+### Single process (`comm=None`)
+
+Leave `comm` out, or pass `None`, to run in one process. That uses the serial backend, which
+needs neither mpi4py nor an MPI library, and still partitions the operator across the cores (see
+[Operator partitioning](#operator-partitioning-single-node)).
 
 ```python notest
-from mpi4py import MPI
-sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
+sim = MajoranaPropagator(...)  # comm=None
 ```
 
 ### Multi-node (`MPI.COMM_WORLD`)
