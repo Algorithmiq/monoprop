@@ -46,9 +46,11 @@ Use `@pytest.mark.mpi(min_size=2)` when a test needs at least two ranks.
 Under `--with-mpi`, only rank zero reports pytest output.
 
 Under more than one rank, `tests/conftest.py` gives each rank its own pytest `--basetemp`,
-`pytest-of-<user>/mpi-rank-<n>` in the system temporary directory, so concurrent ranks never prune
-each other's temporary directories. Each run clears its rank's directory first. An explicit
-`--basetemp` overrides this and is shared by every rank.
+`pytest-of-<user>/mpi-rank-<n>` under `$PYTEST_DEBUG_TEMPROOT` when set, else the system temporary
+directory, so concurrent ranks never prune each other's temporary directories. Each run clears its
+rank's directory first, and every run by the same user reuses `mpi-rank-<n>`: run one MPI test run
+at a time per user, or pass distinct `--basetemp` values. An explicit `--basetemp` overrides this
+and is shared by every rank.
 
 To do it by hand, build with MPI on, then run under `mpiexec` with `--no-sync`
 so each rank reuses that build. uv rebuilds on its own when the MPI setting

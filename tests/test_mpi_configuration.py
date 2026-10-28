@@ -149,3 +149,13 @@ def test_basetemp_needs_mpi4py(monkeypatch):
     config.option.basetemp = None
     conftest.pytest_cmdline_main(config)
     assert config.option.basetemp is None
+
+
+def test_basetemp_parent_is_created(monkeypatch, tmp_path):
+    temproot = tmp_path / "fresh-temproot"
+    monkeypatch.setattr(conftest, "MPI", Mock(COMM_WORLD=Mock(size=3, rank=2)))
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(temproot))
+    config = Mock()
+    config.option.basetemp = None
+    conftest.pytest_cmdline_main(config)
+    assert Path(config.option.basetemp).parent.is_dir()

@@ -66,6 +66,8 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
     ``pytest_configure``, and that hook here must run last to unregister the terminal reporter.
     """
     if config.option.basetemp is None and (basetemp := _rank_basetemp()) is not None:
+        # pytest creates only the basetemp itself when one is given, not its parent.
+        basetemp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         config.option.basetemp = basetemp
 
 
