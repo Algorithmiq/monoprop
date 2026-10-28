@@ -55,6 +55,8 @@ jobs:
             mpi: "on"
 
     runs-on: ${{ matrix.runner}}
+    # A lane takes about 15 minutes; the per-test timeouts catch a hang first, this only bounds it.
+    timeout-minutes: 60
 
     env:
       monoprop_ENABLE_MPI: "${{ matrix.mpi }}"
@@ -114,11 +116,7 @@ jobs:
 
       - name: Run Python tests under MPI
         if: matrix.mpi == 'on'
-        run: just test-py-mpi 2
-
-      - name: Run Python MPI marker rank matrix
-        if: matrix.mpi == 'on'
-        run: just test-py-mpi "1;2;4" -m mpi
+        run: just test-py-mpi "${{ steps.test-group-label.outputs.label }}"
 
       - name: Upload serial test results to Codecov
         uses: codecov/codecov-action@v7.1.1
@@ -129,12 +127,18 @@ jobs:
           disable_search: true
           fail_ci_if_error: true
 
-      - name: Upload MPI C++ test results to Codecov
+      - name: Upload MPI test results to Codecov
         if: matrix.mpi == 'on'
         uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ctest-mpi-${{ steps.test-group-label.outputs.label }}.xml
+          files: >-
+            ctest-mpi-${{ steps.test-group-label.outputs.label }}.xml,
+            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks1.xml,
+            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks2.xml,
+            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks4.xml,
+            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks3-splitmix.xml,
+            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks2-partitions2.xml
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true
