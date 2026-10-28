@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
+#include "RankPreconditions.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -61,11 +62,7 @@ auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
     return fn(inputs.data.parameters);
 }
 
-BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping cross-rank-count case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance, *test_utils::min_ranks(2)) {
     const auto inputs = load_inputs();
     const double e_serial = run_energy(inputs, MPI_COMM_SELF);
     const double e_world = run_energy(inputs, MPI_COMM_WORLD);
@@ -73,11 +70,7 @@ BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance) {
     BOOST_TEST(near(e_serial, e_world));
 }
 
-BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping gradient cross-rank-count case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance, *test_utils::min_ranks(2)) {
     const auto& inputs = load_inputs();
 
     auto run_gradient = [&](MPI_Comm comm) -> VecD {
@@ -149,11 +142,7 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
     return sim.expectation_value({});
 }
 
-BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Pauli cross-rank-count case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance, *test_utils::min_ranks(2)) {
     const double e_serial = run_pauli_energy(MPI_COMM_SELF);
     const double e_world = run_pauli_energy(MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("pauli serial=" << e_serial << " world=" << e_world);
@@ -184,11 +173,7 @@ auto run_energy_partitioned(const TestInputs& inputs, MPI_Comm comm, size_t part
     return {e, sim.size()};
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping hybrid case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_mpi_partition_energy_and_size_equivalence, *test_utils::min_ranks(2)) {
     const auto inputs = load_inputs();
     const auto [e_serial, n_serial] = run_energy_partitioned(inputs, MPI_COMM_SELF, 1);
     const auto [e_hybrid, n_local] = run_energy_partitioned(inputs, MPI_COMM_WORLD, 2);

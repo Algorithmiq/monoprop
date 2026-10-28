@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
+#include "RankPreconditions.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -54,11 +55,9 @@ auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
     return energy_fn(VecD{});
 }
 
-BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv, ExampleDataFix) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Schrödinger Majorana fresh-insert equivalence (world size = 1).");
-        return;
-    }
+BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv,
+                        ExampleDataFix,
+                        *test_utils::min_ranks(2)) {
     const double e_serial = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_SELF);
     const double e_world = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("schrodinger majorana serial=" << e_serial << " world=" << e_world);
@@ -107,11 +106,7 @@ auto run_schrodinger_pauli(MPI_Comm comm) -> double {
     return sim.expectation_value({});
 }
 
-BOOST_AUTO_TEST_CASE(mpi_fresh_insert_schrodinger_pauli_serial_world_equiv) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Schrödinger Pauli fresh-insert equivalence (world size = 1).");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(mpi_fresh_insert_schrodinger_pauli_serial_world_equiv, *test_utils::min_ranks(2)) {
     const double e_serial = run_schrodinger_pauli(MPI_COMM_SELF);
     const double e_world = run_schrodinger_pauli(MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("schrodinger pauli serial=" << e_serial << " world=" << e_world);
