@@ -89,28 +89,45 @@ test-cpp-mpi LABEL='':
     ctest --test-dir {{ mpi_build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
         {{ if LABEL == '' { '' } else { '--output-junit ctest-mpi-' + LABEL + '.xml' } }}
 
-# RANKS is a single integer or a semicolon-separated list (e.g. "1;2;4"); the suite runs
-# once per entry. Extra arguments go to pytest, e.g. `just test-py-mpi "1;2;4" -m mpi`.
+# The Python MPI legs: every test that runs on a world communicator (`-m mpi`), under mpiexec, in
+# each configuration CI covers. Linear routing refuses 3 ranks, so 3 runs with splitmix; 2 ranks of 2
+# partitions each make the hybrid ranks x partitions world. A hung collective fails its test after
+# 300 s. LABEL, when given, names the JUnit reports, which rank 0 alone writes.
 
-test-py-mpi RANKS='' *PYTEST_ARGS:
+test-py-mpi LABEL='':
     #!/usr/bin/env bash
     set -euo pipefail
-    shift 1
-    requested_ranks={{ quote(RANKS) }}
-    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"
-    for r in ${ranks//;/ }; do
-      echo "Running the Python test suite with ${r} MPI rank(s)"
-      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
-    done
+    label={{ quote(LABEL) }}
+    leg() {
+      local name="$1" ranks="$2"
+      shift 2
+      local report=""
+      if [[ -n "$label" ]]; then
+        report="pytest-mpi-$label-$name.xml"
+      fi
+      echo "Python MPI leg $name: $ranks rank(s)${*:+, $*}"
+      # OMPI_COMM_WORLD_RANK is Open MPI's rank variable, PMI_RANK the MPICH family's.
+      env "$@" {{ mpiexec }} -n "$ranks" bash -c '
+        report="$1"
+        shift
+        rank="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}"
+        if [[ -n "$report" && "$rank" == 0 ]]; then
+          set -- --junit-xml="$report" -o junit_family=legacy "$@"
+        fi
+        exec uv run --no-sync pytest "$@"
+      ' bash "$report" tests --with-mpi -m mpi -v --timeout=300 --timeout-method=thread
+    }
+    leg ranks1 1
+    leg ranks2 2
+    leg ranks4 4
+    leg ranks3-splitmix 3 monoprop_ROUTING=splitmix
+    leg ranks2-partitions2 2 monoprop_PARTITIONS=2
 
-# Build MPI-enabled, then run every leg. The C++
-# rank matrix is a build-time setting. The MPI switch is local to the build line, so the
-# C++ legs are pointed at the MPI tree explicitly.
+# Build MPI-enabled, then run every MPI leg CI runs. The C++ rank counts are passed because an MPI
+# build tree caches them, and an older version of this recipe cached `2` alone.
 
-test-mpi RANKS='': && (test-py-mpi RANKS) (test-cpp '' mpi_build_dir) test-cpp-mpi
-    requested_ranks={{ quote(RANKS) }}; \
-    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
-    monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="$ranks" {{ uv_sync }} --group workspace-test
+test-mpi: && test-py-mpi (test-cpp '' mpi_build_dir) test-cpp-mpi
+    monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="2;4" {{ uv_sync }} --group workspace-test
 
 # Build and run a consumer project against the installed package: serially, then, when the
 # installation ships MPI ABIs, through the MPI component under mpiexec, and finally against a
@@ -266,7 +283,8 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
       export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
       {{ mpiexec }} -n 2 \
         uv run --no-sync coverage run --parallel-mode \
-          -m pytest tests --with-mpi -m mpi
+          -m pytest tests --with-mpi -m mpi \
+          --timeout=300 --timeout-method=thread
     fi
 
     gcovr_args=(
