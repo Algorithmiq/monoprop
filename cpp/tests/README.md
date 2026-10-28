@@ -13,7 +13,8 @@ discovers every Boost.Test case and registers it twice:
   `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2;4`,
   also labelled `mpi-linear`), plus splitmix-routing entries for each rank in
   `monoprop_MPI_SPLITMIX_TEST_PROCS` (default `2;3;4`, also labelled
-  `mpi-splitmix`), registered when an MPI launcher is detected.
+  `mpi-splitmix`; a CMake cache variable only, set through `SKBUILD_CMAKE_DEFINE`),
+  registered when an MPI launcher is detected.
 
 Cases that need a particular world declare it with a precondition from
 `RankPreconditions.h`; Boost reports them as skipped elsewhere, and CTest marks
