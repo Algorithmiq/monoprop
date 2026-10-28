@@ -155,9 +155,10 @@ on the counts in `monoprop_MPI_TEST_PROCS` (default `2;4`, labels `mpi`, `mpi-<n
 (default `2;3;4`, labels `mpi`, `mpi-<n>`, `mpi-splitmix`). Each runs one `mpiexec` because
 the ranks have to reach the same collectives, allows oversubscription, and times out after
 600 seconds. Only `monoprop_MPI_TEST_PROCS` has a config-setting and an environment
-variable; `monoprop_MPI_SPLITMIX_TEST_PROCS` is a CMake cache variable, set through
-`SKBUILD_CMAKE_DEFINE="monoprop_MPI_SPLITMIX_TEST_PROCS=3" monoprop_ENABLE_MPI=ON uv sync --all-extras`
-(quote a `;`-separated list).
+variable; `monoprop_MPI_SPLITMIX_TEST_PROCS` is a CMake cache variable. Set a single rank count
+with `SKBUILD_CMAKE_DEFINE="monoprop_MPI_SPLITMIX_TEST_PROCS=3" monoprop_ENABLE_MPI=ON uv sync --all-extras`.
+`SKBUILD_CMAKE_DEFINE` splits on `;`, so set a list on the configured tree instead:
+`cmake -D monoprop_MPI_SPLITMIX_TEST_PROCS="2;3" build/editable/Release-mpi`.
 
 CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
 lane fails if its MPI variant was not registered. Standalone MPI-enabled C++

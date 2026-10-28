@@ -17,7 +17,7 @@
 Every test carries the ``mpi`` marker and runs on ``comm_world``, the session's duplicate of
 COMM_WORLD. ``just test-py-mpi`` runs them in each configuration CI covers; by hand:
 
-    mpiexec -n 4 uv run --no-sync pytest tests/test_monoprop_mpi.py --with-mpi -m mpi
+    mpiexec --map-by :OVERSUBSCRIBE -n 4 uv run --no-sync pytest tests/test_monoprop_mpi.py --with-mpi -m mpi
 """
 
 from __future__ import annotations

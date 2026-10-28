@@ -119,8 +119,8 @@ test-py-mpi LABEL='':
     }
     leg ranks1 1
     leg ranks2 2
-    # 4 is also the only linear count that runs the 3-rank refusal
-    # (mpi_routing_geometry_tests.cpp, test_monoprop_mpi.py).
+    # Of these legs only ranks4 runs the three-rank refusal in test_monoprop_mpi.py, which needs
+    # at least 3 ranks under linear routing.
     leg ranks4 4
     leg ranks3-splitmix 3 monoprop_ROUTING=splitmix
     leg ranks2-partitions2 2 monoprop_PARTITIONS=2

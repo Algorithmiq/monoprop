@@ -1,8 +1,8 @@
 # 4 as well as 2: at R = 2 the only shifts are 0 and 1, so a non-zero shift always pairs a rank with
 # its single neighbour and no case distinguishes the shift from the rank index. R = 4 gives shifts
 # 0..3 and a dense pairwise round of 2 * (R - 1) posts, which R = 2 cannot tell from a single leg.
-# 4 is also the only linear rank count that runs the 3-rank refusal
-# (mpi_routing_geometry_tests.cpp, test_monoprop_mpi.py): it needs at least 3 ranks.
+# Of these defaults only 4 runs mpi_routing_geometry_tests.cpp, which needs at least 3 ranks
+# under linear routing.
 set(
   monoprop_MPI_TEST_PROCS
   "2;4"
