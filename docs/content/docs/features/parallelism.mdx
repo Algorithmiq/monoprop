@@ -138,12 +138,12 @@ from mpi4py import MPI
 comm = MPI.COMM_WORLD.Dup()
 sim = MajoranaPropagator(..., comm=comm)
 ...
-comm.Free()  # once sim is no longer used
+comm.Free()  # once sim and its functionals are no longer used
 ```
 
 monoprop sends point-to-point messages on fixed tags over `comm`, so they could match messages your own
 code has in flight on the same communicator. A duplicate keeps the two apart. It must outlive the
-propagator.
+propagator and every functional obtained from it.
 
 ```bash
 mpiexec -n 8 uv run python your_script.py
