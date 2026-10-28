@@ -141,7 +141,7 @@ class TestMPISimulator:
         problem = lih_fermionic_spin_exact
         parameters = problem.monomial_circuit.parameters
 
-        serial, serial_circuit = _make_mp(problem, MPI.COMM_SELF)
+        serial, serial_circuit = _make_mp(problem, None)
         serial.build_graph(serial_circuit)
         # Sorted so every rank queries the same terms in the same order.
         terms = sorted(
@@ -185,7 +185,7 @@ class TestMPISimulator:
         _assert_expval(expval, lih_fermionic_spin_exact.exact_expval)
 
     def test_mpi_comm_self(self, lih_fermionic_spin_exact):
-        mp, circuit = _make_mp(lih_fermionic_spin_exact, MPI.COMM_SELF)
+        mp, circuit = _make_mp(lih_fermionic_spin_exact, None)
         mp.build_graph(circuit)
         expval = mp.expval_functional(pare_threshold=1e-10)(
             lih_fermionic_spin_exact.monomial_circuit.parameters

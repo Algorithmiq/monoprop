@@ -19,22 +19,22 @@ import pytest
 from monoprop import MajoranaPropagator, jordan_wigner_basis_change
 
 
-def _bound_simulator_type(problem, serial_comm):
+def _bound_simulator_type(problem):
     wrapper = MajoranaPropagator(
         problem.operator,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=serial_comm,
+        comm=None,
     )
     return type(wrapper._simulator)
 
 
-def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool):
+def _make_bound_simulator(bound_type, problem, *, schrodinger: bool):
     return bound_type(
         initial_operator=problem.operator.terms,
         cutoff=2 * problem.n_modes,
         initial_state=problem.monomial_circuit.initial_state,
-        comm=serial_comm,
+        comm=None,
         schrodinger_cutoff=2 * problem.n_modes if schrodinger else None,
         lower_atol=None,
         upper_atol=None,
@@ -43,12 +43,11 @@ def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool
     )
 
 
-def _make_bound_core(problem, serial_comm, *, schrodinger: bool):
-    bound_type = _bound_simulator_type(problem, serial_comm)
+def _make_bound_core(problem, *, schrodinger: bool):
+    bound_type = _bound_simulator_type(problem)
     return _make_bound_simulator(
         bound_type,
         problem,
-        serial_comm,
         schrodinger=schrodinger,
     )
 
@@ -69,10 +68,8 @@ def _evolve_bound_core(core, monomial_circuit):
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_constructor_accepts_declared_arguments(
-    lih_problem, serial_comm, schrodinger
-):
-    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
+def test_bound_constructor_accepts_declared_arguments(lih_problem, schrodinger):
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
 
     assert core.num_modes == lih_problem.n_modes
     assert core.schrodinger is schrodinger
@@ -81,10 +78,8 @@ def test_bound_constructor_accepts_declared_arguments(
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_mutators_accept_declared_arguments(
-    lih_problem, serial_comm, schrodinger
-):
-    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
+def test_bound_mutators_accept_declared_arguments(lih_problem, schrodinger):
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
 
     core.lower_atol = 1e-12
     core.lower_atol = None
@@ -104,10 +99,10 @@ def test_bound_mutators_accept_declared_arguments(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
 def test_bound_expectation_value_methods_accept_declared_arguments(
-    lih_problem, serial_comm, schrodinger
+    lih_problem, schrodinger
 ):
     monomial_circuit = lih_problem.monomial_circuit
-    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
     parameters, coeffs = _evolve_bound_core(core, monomial_circuit)
 
     expectation_value_fn = core.expectation_value_functional(pare_threshold=None)
@@ -127,11 +122,9 @@ def test_bound_expectation_value_methods_accept_declared_arguments(
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_graph_methods_accept_declared_arguments(
-    lih_problem, serial_comm, schrodinger
-):
+def test_bound_graph_methods_accept_declared_arguments(lih_problem, schrodinger):
     monomial_circuit = lih_problem.monomial_circuit
-    core = _make_bound_core(lih_problem, serial_comm, schrodinger=schrodinger)
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
     parameters, _ = _evolve_bound_core(core, monomial_circuit)
 
     evolved_operator = core.evolved_operator(parameters, 1e-12)
@@ -164,10 +157,10 @@ _GRAPH_DIAGNOSTIC_KEYS = (
 )
 
 
-def test_graph_memory_breakdown_keys_and_totals(lih_problem, serial_comm):
+def test_graph_memory_breakdown_keys_and_totals(lih_problem):
     """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
     monomial_circuit = lih_problem.monomial_circuit
-    core = _make_bound_core(lih_problem, serial_comm, schrodinger=False)
+    core = _make_bound_core(lih_problem, schrodinger=False)
     _evolve_bound_core(core, monomial_circuit)
 
     breakdown = core.graph_memory_breakdown()

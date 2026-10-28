@@ -118,6 +118,19 @@ def test_mpi_configuration_without_terminal_reporter(mpi_config, monkeypatch):
     mpi_config.pluginmanager.unregister.assert_not_called()
 
 
+def test_comm_runs_serially_and_on_the_world_only_under_mpi():
+    """``comm`` is ``None`` first; its world case exists only with an MPI backend and is ``mpi``-marked."""
+    serial, *world = conftest._COMM_PARAMS
+    assert serial.values == (None,)
+    assert not serial.marks
+    if conftest.HAS_MPI_BACKEND:
+        (param,) = world
+        assert param.values == ("comm_world",)
+        assert [mark.name for mark in param.marks] == ["mpi"]
+    else:
+        assert world == []
+
+
 @pytest.mark.parametrize(
     ("size", "given", "expected"),
     [
