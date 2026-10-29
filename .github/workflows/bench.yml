@@ -53,7 +53,7 @@ jobs:
 
       - name: Install package
         env:
-          SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+          monoprop_ENABLE_CXX_UNIT_TESTS: "OFF"
           monoprop_ENABLE_MPI: "ON"
         run: just build --group bench
 

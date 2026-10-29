@@ -2,7 +2,7 @@
 requires = [
   "nanobind-backend>=1.0.0",
   "nanobind==3.1.0",
-  "scikit-build-core>=1.0.3,<2",
+  "scikit-build-core>=1.1.0,<2",
   "setuptools-scm>=8",
 ]
 build-backend = "scikit_build_core.build"
@@ -101,6 +101,16 @@ cache-keys = [
   { file = "src/monoprop/bindings/binder.h" },
   { file = "src/monoprop/bindings/bindings.cpp.in" },
   { file = "tools/*.py" },
+  # uv does not hash the environment by default; these select the build variant
+  { env = "monoprop_ENABLE_MPI" },
+  { env = "monoprop_SANITIZER" },
+  { env = "monoprop_ENABLE_CXX_UNIT_TESTS" },
+  { env = "monoprop_ENABLE_ARCH_FLAGS" },
+  { env = "monoprop_MPI_TEST_PROCS" },
+  { env = "SKBUILD_BUILD_DIR" },
+  { env = "SKBUILD_CMAKE_ARGS" },
+  { env = "SKBUILD_CMAKE_BUILD_TYPE" },
+  { env = "SKBUILD_CMAKE_DEFINE" },
 ]
 
 
@@ -157,13 +167,64 @@ sdist.include = [
 ]
 build.verbose = true
 build.tool-args = ["-j2"]
-# monoprop_ENABLE_MPI is the source-build switch. Overrides can only match
-# environment variables, never config-settings, so setting an equivalent CMake
-# define directly does not activate any associated build requirements.
+
+# Package build options: pass as `-C monoprop.<name>=...` or through the bound
+# environment variable, which takes precedence. An unset setting drops its CMake
+# define, but the persistent build tree keeps the last cached value, so CMake's
+# default only applies to a fresh tree. Settings whose build tree is shared
+# between values therefore mirror the CMake default here, so that unsetting them
+# restores it. The mpi and sanitizer settings select their own build tree.
+[tool.scikit-build.config-setting."monoprop.mpi"]
+help = "Build with MPI parallelization; also adds mpi4py to the build requirements"
+type = "bool"
+env = "monoprop_ENABLE_MPI"
+
+[tool.scikit-build.config-setting."monoprop.sanitizer"]
+help = "Sanitizer profile: none, asan-ubsan, or tsan; also selects the build type (CMake default: none)"
+env = "monoprop_SANITIZER"
+
+[tool.scikit-build.config-setting."monoprop.cxx-unit-tests"]
+help = "Build the C++ unit test suite"
+type = "bool"
+default = true
+env = "monoprop_ENABLE_CXX_UNIT_TESTS"
+
+[tool.scikit-build.config-setting."monoprop.arch-flags"]
+help = "Enable architecture-specific compiler flags; forced off in Debug and sanitizer builds"
+type = "bool"
+# cmake_dependent_option forces it off where unsupported, whatever this passes
+default = true
+env = "monoprop_ENABLE_ARCH_FLAGS"
+
+[tool.scikit-build.config-setting."monoprop.mpi-test-procs"]
+help = "Semicolon-separated MPI rank counts the C++ MPI tests run with"
+default = "2;4"
+env = "monoprop_MPI_TEST_PROCS"
+
+[tool.scikit-build.cmake.define]
+monoprop_ENABLE_MPI = { config-setting = "monoprop.mpi" }
+monoprop_SANITIZER = { config-setting = "monoprop.sanitizer" }
+monoprop_ENABLE_CXX_UNIT_TESTS = { config-setting = "monoprop.cxx-unit-tests" }
+monoprop_ENABLE_ARCH_FLAGS = { config-setting = "monoprop.arch-flags" }
+monoprop_MPI_TEST_PROCS = { config-setting = "monoprop.mpi-test-procs" }
+
+# mpi4py is a build input only for MPI builds, so it is requested per build
+# rather than listed in build-system.requires. MPI builds get their own tree so
+# that switching variants rebuilds incrementally instead of reconfiguring one
+# shared tree; a suffix rather than a build type keeps the Release flags.
 [[tool.scikit-build.overrides]]
-if.env.monoprop_ENABLE_MPI = true
+if.config-setting."monoprop.mpi" = true
 build.requires = ["mpi4py>=4.1.0"]
-cmake.define.monoprop_ENABLE_MPI = "ON"
+build-dir = "build/{state}/{build_type}-mpi"
+
+# Each sanitizer profile gets its own build type, hence its own build tree.
+[[tool.scikit-build.overrides]]
+if.config-setting."monoprop.sanitizer" = "^asan-ubsan$"
+cmake.build-type = "AsanUbsan"
+
+[[tool.scikit-build.overrides]]
+if.config-setting."monoprop.sanitizer" = "^tsan$"
+cmake.build-type = "Tsan"
 
 
 [tool.setuptools_scm]

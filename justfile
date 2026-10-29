@@ -25,7 +25,12 @@ no_mpi_extra := "--no-extra mpi"
 mpi_enabled := lowercase(env('monoprop_ENABLE_MPI', 'off'))
 mpi_extra := if mpi_enabled =~ '^(on|true|yes|1)$' { "" } else { no_mpi_extra }
 
-build_dir := "build/editable" / env('SKBUILD_CMAKE_BUILD_TYPE', 'Release')
+# Mirrors the sanitizer and MPI overrides in pyproject.toml, which pick the build tree.
+
+sanitizer := env('monoprop_SANITIZER', 'none')
+build_type := env('SKBUILD_CMAKE_BUILD_TYPE', if sanitizer == 'asan-ubsan' { 'AsanUbsan' } else if sanitizer == 'tsan' { 'Tsan' } else { 'Release' })
+mpi_build_dir := "build/editable" / build_type + "-mpi"
+build_dir := if mpi_extra == "" { mpi_build_dir } else { "build/editable" / build_type }
 mpiexec := "mpiexec --map-by :OVERSUBSCRIBE"
 
 # Keep both OpenMPI 4 (ORTE) and 5 (PRRTE) spell oversubscription env-vars.
@@ -72,15 +77,16 @@ test-py LABEL='':
     uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
         {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
 
-test-cpp LABEL='':
-    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-exclude mpi \
+test-cpp LABEL='' BUILD_DIR=build_dir:
+    ctest --test-dir {{ BUILD_DIR }} --output-on-failure --no-tests=error --label-exclude mpi \
         {{ if LABEL == '' { '' } else { '--output-junit ctest-serial-' + LABEL + '.xml' } }}
 
 # --no-tests=error: the MPI tests are registered only by an MPI-enabled build, so an
-# empty set here means the build was misconfigured.
+# empty set here means the build was misconfigured. Only MPI builds have them, so this
+# always reads the MPI tree.
 
 test-cpp-mpi LABEL='':
-    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
+    ctest --test-dir {{ mpi_build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
         {{ if LABEL == '' { '' } else { '--output-junit ctest-mpi-' + LABEL + '.xml' } }}
 
 # RANKS is a single integer or a semicolon-separated list (e.g. "1;2;4"); the suite runs
@@ -98,14 +104,13 @@ test-py-mpi RANKS='' *PYTEST_ARGS:
     done
 
 # Build MPI-enabled, then run every leg. The C++
-# rank matrix is a build-time setting.
+# rank matrix is a build-time setting. The MPI switch is local to the build line, so the
+# C++ legs are pointed at the MPI tree explicitly.
 
-test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
+test-mpi RANKS='': && (test-py-mpi RANKS) (test-cpp '' mpi_build_dir) test-cpp-mpi
     requested_ranks={{ quote(RANKS) }}; \
     ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
-    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group workspace-test \
-        --reinstall-package monoprop --no-cache \
-        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
+    monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="$ranks" {{ uv_sync }} --group workspace-test
 
 # Build and run a consumer project against the installed package.
 
@@ -119,8 +124,8 @@ test-find-package BUILD_DIR='build/find-package-smoke':
     cmake --build "$build_dir"
     "$build_dir/smoke"
 
-# The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
-# Tsan) and the matching monoprop_SANITIZER define.
+# The sanitizer legs run against a tree built with monoprop_SANITIZER=asan-ubsan (or tsan)
+# exported, which also points build_dir at it.
 #
 # Only the C++ binary is fully instrumented, so the option sets differ per leg and cannot
 # be hoisted to the environment.
@@ -394,7 +399,7 @@ bench-mpi LABEL RANKS *MPIARGS:
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench-mpi`.
 bench-build-mpi:
-    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group bench --reinstall-package monoprop --no-cache
+    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group bench
 
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:
