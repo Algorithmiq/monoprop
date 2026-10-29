@@ -65,10 +65,18 @@ jobs:
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Pin the image's runtime dependencies to the versions CI tests against.
+      - name: Export the locked dependencies
+        run: |
+          uv export --frozen --no-dev --extra mpi --extra qiskit --no-emit-project \
+            --no-hashes --output-file dist/constraints.txt
+
       - uses: actions/upload-artifact@v7
         with:
           name: container-sdist
-          path: dist/monoprop-*.tar.gz
+          path: |
+            dist/monoprop-*.tar.gz
+            dist/constraints.txt
 
   base:
     name: Resolve or build the base image
