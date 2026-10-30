@@ -26,9 +26,11 @@
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Exchange.h"
 #include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/PartitionBarrier.h"
 #include "monoprop/detail/mpi/ShmComm.h"
 
 using monoprop::mpi::Comm;
+using monoprop::mpi::PartitionBarrier;
 using monoprop::mpi::ShmComm;
 using monoprop::mpi::ShmCommPoisoned;
 
@@ -346,6 +348,37 @@ BOOST_AUTO_TEST_CASE(shm_comm_poison_releases_waiters) {
         for (int r = 1; r < S; ++r) {
             BOOST_REQUIRE(errs[static_cast<size_t>(r)] != nullptr);
             BOOST_CHECK_THROW(std::rethrow_exception(errs[static_cast<size_t>(r)]), ShmCommPoisoned);
+        }
+    }
+}
+
+// A round every participant reached has completed, so it returns normally even when poison is already set:
+// the poison reports a later failure, which the next round surfaces. The last arriver completes the round.
+BOOST_AUTO_TEST_CASE(partition_barrier_completed_round_ignores_later_poison) {
+    PartitionBarrier barrier(1);
+    barrier.poison();
+    BOOST_CHECK_NO_THROW(barrier.sync());
+}
+
+// Every partition finishes a collective, then partition 1 fails and poisons, as a PartitionGroup worker
+// does when its job throws. Its siblings completed the collective and must not see ShmCommPoisoned: under
+// the MPI hybrid, partition 0 turns that throw into MPI_Abort. The race needs a sibling still between the
+// final barrier's release and its return when the poison lands, hence the repetitions.
+BOOST_AUTO_TEST_CASE(shm_comm_poison_after_completed_collective_spares_siblings) {
+    constexpr int kRepetitions = 2000;
+    for (const int S : {2, 4}) {
+        for (int rep = 0; rep < kRepetitions; ++rep) {
+            auto errs = run_shm(S, [&](ShmComm &sh, int r) {
+                (void)sh.allreduce_sum<int>(r, 1);
+                if (r == 1) {
+                    sh.poison();
+                }
+            });
+            for (int r = 0; r < S; ++r) {
+                BOOST_REQUIRE_MESSAGE(
+                    errs[static_cast<size_t>(r)] == nullptr,
+                    "S=" << S << " repetition " << rep << ": partition " << r << " failed a collective it completed");
+            }
         }
     }
 }

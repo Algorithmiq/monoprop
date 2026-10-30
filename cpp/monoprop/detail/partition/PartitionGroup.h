@@ -113,8 +113,7 @@ public:
     // that caused the failure: the lowest-ranked one that is not ShmCommPoisoned. A throw on one master never
     // hangs the rest, since peers are released via poison.
     // ShmCommPoisoned only ever follows another master's throw, so it is rethrown only when nothing else was
-    // raised. It can even reach a master whose collective already completed, if a peer throws between the
-    // barrier's release and that master's post-barrier check.
+    // raised. A master whose collective already completed never sees it (see PartitionBarrier::sync()).
     auto run_on_all(const std::function<void(int)> &body) -> void {
         {
             std::lock_guard lk(m_);
