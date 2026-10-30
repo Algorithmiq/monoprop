@@ -158,13 +158,22 @@ the ranks have to reach the same collectives, allows oversubscription, and times
 variable; `monoprop_MPI_SPLITMIX_TEST_PROCS` is a CMake cache variable. Set a single rank count
 with `SKBUILD_CMAKE_DEFINE="monoprop_MPI_SPLITMIX_TEST_PROCS=3" monoprop_ENABLE_MPI=ON uv sync --all-extras`.
 `SKBUILD_CMAKE_DEFINE` splits on `;`, so set a list on the configured tree instead:
-`cmake -D monoprop_MPI_SPLITMIX_TEST_PROCS="2;3" build/editable/Release-mpi`.
+`cmake -D monoprop_MPI_SPLITMIX_TEST_PROCS="2;3" build/editable/Release-mpi`. Rebuild afterwards,
+since CTest registers the variants when the test binary is built, not at configure time, and check
+the result:
+
+```bash
+cmake --build build/editable/Release-mpi
+ctest --test-dir build/editable/Release-mpi -N -L mpi-splitmix
+```
 
 CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
 lane fails if its MPI variant was not registered. Standalone MPI-enabled C++
 test executables initialize MPI before constructing propagators and destroy the
 propagators before finalizing MPI. Select the groups locally with
-`just test-cpp` and `just test-cpp-mpi`, which are the same commands CI runs.
+`just test-cpp` and `just test-cpp-mpi`, which are the same commands CI runs. `just test-cpp` picks
+the build tree from `monoprop_ENABLE_MPI`, so run the serial group of an MPI build with
+`monoprop_ENABLE_MPI=ON just test-cpp`, as CI's MPI jobs do.
 `just test-mpi` runs both C++ groups and the Python MPI legs.
 
 Run `just code-coverage` to collect coverage in separate serial and MPI-enabled
@@ -245,7 +254,9 @@ Each invocation loads a fresh problem from `tests/data/` using `load_problem()`
 in `tests/reference_data.py`. Its explicit case IDs make failures easy to identify.
 `conftest.py` also provides `comm`: `None` (serial) and, under `--with-mpi` with an MPI build,
 a duplicate of `COMM_WORLD`. Use it for results every rank agrees on, such as energies and
-gradients; test rank-local state such as `evolved_operator` serially, with `comm=None`.
+gradients; test rank-local state such as
+[evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator] serially,
+with `comm=None`.
 
 ```python notest
 from monoprop import MajoranaPropagator

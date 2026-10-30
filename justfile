@@ -106,8 +106,9 @@ test-py-mpi LABEL='':
         report="pytest-mpi-$label-$name.xml"
       fi
       echo "Python MPI leg $name: $ranks rank(s)${*:+, $*}"
-      # OMPI_COMM_WORLD_RANK is Open MPI's rank variable, PMI_RANK the MPICH family's.
-      env "$@" {{ mpiexec }} -n "$ranks" bash -c '
+      # OMPI_COMM_WORLD_RANK is Open MPI's rank variable, PMI_RANK the MPICH family's. A leg runs
+      # exactly the configuration it names: settings inherited from the shell are dropped first.
+      env -u monoprop_ROUTING -u monoprop_PARTITIONS "$@" {{ mpiexec }} -n "$ranks" bash -c '
         report="$1"
         shift
         rank="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}"
@@ -121,7 +122,7 @@ test-py-mpi LABEL='':
     leg ranks2 2
     # Of these legs only ranks4 runs the three-rank refusal in test_monoprop_mpi.py, which needs
     # at least 3 ranks under linear routing.
-    leg ranks4 4
+    leg ranks4 4 monoprop_ROUTING=linear
     leg ranks3-splitmix 3 monoprop_ROUTING=splitmix
     leg ranks2-partitions2 2 monoprop_PARTITIONS=2
 
