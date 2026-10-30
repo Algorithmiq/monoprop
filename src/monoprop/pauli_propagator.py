@@ -70,9 +70,10 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 so a value approaching ``num_qubits`` is rejected with a ``RuntimeError`` rather than started.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of weight.
-            comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate,
-                such as ``MPI.COMM_WORLD.Dup()``, not a communicator your own code sends
-                point-to-point messages on: monoprop uses fixed tags that could match them.
+            comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate
+                reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
+                point-to-point messages on fixed tags, which your own sends and receives on the
+                same communicator, including ``MPI.ANY_TAG`` receives, could match.
         """
         # The engine takes the Schrodinger cutoff in slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
