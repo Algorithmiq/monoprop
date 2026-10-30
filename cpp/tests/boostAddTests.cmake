@@ -269,10 +269,15 @@ function(register_mpi_variant RANKS ROUTING)
   endif()
 
   set(_name "${TEST_TARGET}_mpi_${RANKS}")
-  set(_env ${_mpi_env})
+  # Set for linear too: an inherited monoprop_ROUTING=splitmix would otherwise run splitmix under
+  # the mpi-linear label and leave linear routing untested.
+  set(
+    _env
+    ${_mpi_env}
+    "monoprop_ROUTING=${ROUTING}"
+  )
   if(ROUTING STREQUAL "splitmix")
     string(APPEND _name "_splitmix")
-    list(APPEND _env "monoprop_ROUTING=splitmix")
   endif()
   register_variant("${_name}"
     COMMAND
