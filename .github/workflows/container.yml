@@ -65,17 +65,21 @@ jobs:
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      # Pin the image's runtime dependencies to the versions CI tests against.
+      # Pin the image's runtime dependencies to the versions CI tests against: the
+      # hashed export is what the image installs, the unhashed one constrains pip's
+      # isolated build environment, where hashes would demand them of every package.
       - name: Export the locked dependencies
         run: |
-          uv export --frozen --no-dev --extra mpi --extra qiskit --no-emit-project \
-            --no-hashes --output-file dist/constraints.txt
+          export_args=(--frozen --no-dev --extra mpi --extra qiskit --no-emit-project)
+          uv export "${export_args[@]}" --output-file dist/requirements.txt
+          uv export "${export_args[@]}" --no-hashes --output-file dist/constraints.txt
 
       - uses: actions/upload-artifact@v7
         with:
           name: container-sdist
           path: |
             dist/monoprop-*.tar.gz
+            dist/requirements.txt
             dist/constraints.txt
 
   base:

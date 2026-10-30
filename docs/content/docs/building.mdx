@@ -381,8 +381,10 @@ Python API under TSan would require a TSan-instrumented CPython.
 - `ghcr.io/algorithmiq/monoprop`: `tools/container/Dockerfile` installs the sdist on top,
   with MPI and the `mpi` and `qiskit` extras, compiled with `-march=$MARCH`. The workflow
   sets `MARCH` (currently `sapphirerapids`, also the Dockerfile's default). The runtime
-  dependencies are pinned to `uv.lock` through a `constraints.txt` that the workflow
-  exports next to the sdist, so the image ships the versions CI tests against.
+  dependencies are exactly the locked set from `uv.lock`, the versions CI tests against,
+  installed from a hash-checked `requirements.txt` that the workflow exports next to the
+  sdist; monoprop itself installs with `--no-deps`. An unhashed `constraints.txt` export
+  pins mpi4py in pip's isolated build environment.
 
 The base image is tagged with the first 12 hex digits of the SHA-256 of the rendered
 Dockerfile, so it is rebuilt only when the recipe's output changes, including through an
@@ -405,8 +407,9 @@ mkdir -p build/container/base build/container/app
 uvx hpccm==26.5.0 --recipe tools/container/base.py --format docker > build/container/base/Dockerfile
 docker build -t monoprop-base:local build/container/base
 uv tool run --from build pyproject-build --sdist --installer uv --outdir build/container/app
-uv export --frozen --no-dev --extra mpi --extra qiskit --no-emit-project --no-hashes \
-  --output-file build/container/app/constraints.txt
+export_args=(--frozen --no-dev --extra mpi --extra qiskit --no-emit-project)
+uv export "${export_args[@]}" --output-file build/container/app/requirements.txt
+uv export "${export_args[@]}" --no-hashes --output-file build/container/app/constraints.txt
 sdist="$(basename build/container/app/monoprop-*.tar.gz)"
 docker build -f tools/container/Dockerfile \
   --build-arg BASE_IMAGE=monoprop-base:local --build-arg SDIST="$sdist" \
