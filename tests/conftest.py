@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -68,6 +69,28 @@ def _rank_basetemp() -> Path | None:
     return temproot / f"pytest-of-{user}" / f"mpi-rank-{MPI.COMM_WORLD.rank}"
 
 
+def _make_private_dir(path: Path) -> None:
+    """Create ``path`` if needed and make sure only the current user can use it.
+
+    The checks pytest applies to its own ``pytest-of-<user>``, which an explicit ``--basetemp``
+    skips: on a shared temporary root another user could create the predictable name first.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Not following symlinks: a swapped-in link would otherwise pass every check below.
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise OSError(
+            f"The temporary directory {path} is a symbolic link. Fix this and try again."
+        )
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise OSError(
+            f"The temporary directory {path} is not owned by the current user. "
+            "Fix this and try again."
+        )
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_cmdline_main(config: pytest.Config) -> None:
     """Give each MPI rank its own ``--basetemp`` unless one was passed explicitly.
@@ -77,7 +100,7 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
     """
     if config.option.basetemp is None and (basetemp := _rank_basetemp()) is not None:
         # pytest creates only the basetemp itself when one is given, not its parent.
-        basetemp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _make_private_dir(basetemp.parent)
         config.option.basetemp = basetemp
 
 

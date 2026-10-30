@@ -159,3 +159,38 @@ def test_basetemp_parent_is_created(monkeypatch, tmp_path):
     config.option.basetemp = None
     conftest.pytest_cmdline_main(config)
     assert Path(config.option.basetemp).parent.is_dir()
+
+
+def _basetemp_for_rank(monkeypatch, temproot: Path) -> Path:
+    monkeypatch.setattr(conftest, "MPI", Mock(COMM_WORLD=Mock(size=3, rank=2)))
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(temproot))
+    config = Mock()
+    config.option.basetemp = None
+    conftest.pytest_cmdline_main(config)
+    return Path(config.option.basetemp)
+
+
+def test_basetemp_parent_owned_by_another_user_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(conftest.os, "getuid", lambda: tmp_path.stat().st_uid + 1)
+    with pytest.raises(OSError, match="not owned by the current user"):
+        _basetemp_for_rank(monkeypatch, tmp_path)
+
+
+def test_basetemp_parent_symlink_is_refused(monkeypatch, tmp_path):
+    temproot = tmp_path / "temproot"
+    temproot.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    monkeypatch.setattr(conftest.getpass, "getuser", lambda: "someone")
+    (temproot / "pytest-of-someone").symlink_to(elsewhere)
+    with pytest.raises(OSError, match="symbolic link"):
+        _basetemp_for_rank(monkeypatch, temproot)
+
+
+def test_basetemp_parent_is_made_private(monkeypatch, tmp_path):
+    monkeypatch.setattr(conftest.getpass, "getuser", lambda: "someone")
+    parent = tmp_path / "pytest-of-someone"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    assert _basetemp_for_rank(monkeypatch, tmp_path).parent == parent
+    assert parent.stat().st_mode & 0o777 == 0o700
