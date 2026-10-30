@@ -442,7 +442,8 @@ machine's CPU may lack the instructions `-march` enables, so check a new image o
 target machine as well (see [MareNostrum5](/clusters/marenostrum5#check-the-image)).
 Being a source build, the image has a single MPI backend, for the ABI family of the base
 image's Open MPI; the smoke test checks that mpi4py loads that same family, without which
-propagators given a communicator raise `MPIAbiMismatchError`.
+propagators given a communicator raise
+[MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError].
 
 To reproduce the build locally:
 

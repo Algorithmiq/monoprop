@@ -3,8 +3,9 @@ title: HPC clusters
 description: Running monoprop on HPC systems from its MPI-enabled container image.
 ---
 
-Where `pip` works, the PyPI wheels already run on the cluster's own MPI; see
-[Enabling MPI](/features/parallelism#enabling-mpi). Some HPC systems, however, give their login
+Where `pip` works, `pip install "monoprop[mpi]"` installs wheels that run on the cluster's own
+MPI, if it is from the MPICH family (MPICH, Intel MPI, MVAPICH, Cray MPICH) or Open MPI and
+not older than the versions listed in [Enabling MPI](/features/parallelism#enabling-mpi). Some HPC systems, however, give their login
 nodes no outbound network, so monoprop cannot be installed there with `pip`. For those, every release, the `main` branch and pull requests that
 change the container recipes publish an MPI-enabled container image to the GitHub Container Registry:
 
