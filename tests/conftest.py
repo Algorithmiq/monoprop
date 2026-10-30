@@ -16,15 +16,17 @@
 
 MPI selection is handled here (``--with-mpi``, ``@pytest.mark.mpi``).
 
-``comm`` is parametrized over COMM_SELF and COMM_WORLD: use it for energies and gradients, which
-allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
-``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``.
+``comm`` is parametrized over ``None``, the serial run, and, with an MPI backend, ``comm_world``.
+The world case carries the ``mpi`` marker, so it runs only under ``--with-mpi`` and is what
+``-m mpi`` selects. Use ``comm`` for results every rank agrees on: energies, gradients,
+``term_expectation_values``. Test rank-local state (``evolved_operator``, ``contract_partially``,
+``size()``, ``graph_size()``) serially, with ``comm=None``.
 
-Both hand out session-wide duplicates of those communicators, never the predefined handles
-themselves, as the parallelism docs tell users to do: monoprop's point-to-point traffic then
-cannot match messages that conftest or mpi4py exchange on the predefined communicators.
-Each duplicate is created on first use and freed at session teardown: ``Dup`` is collective, and
-doing it per test would add a collective to every one of them for no extra isolation.
+``comm_world`` is a session-wide duplicate of COMM_WORLD, never the predefined handle itself, as
+the parallelism docs tell users to do: monoprop's point-to-point traffic then cannot match
+messages that conftest or mpi4py exchange on COMM_WORLD. It is created on first use and freed at
+session teardown: ``Dup`` is collective, and doing it per test would add a collective to every
+one of them for no extra isolation.
 
 Under more than one rank each rank gets its own ``--basetemp``; see ``_rank_basetemp``.
 """
@@ -34,6 +36,7 @@ from __future__ import annotations
 import getpass
 import os
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -126,6 +129,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+class _RankFailureReporter:
+    """Writes a muted rank's failures to stderr, tagged with the rank.
+
+    Only rank 0 keeps the terminal reporter, so without this a failure on another rank shows only
+    as mpiexec's non-zero exit.
+    """
+
+    def __init__(self, rank: int) -> None:
+        self._rank = rank
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        """Print a failed phase's report."""
+        if report.failed:
+            sys.stderr.write(
+                f"[rank {self._rank}] FAILED {report.nodeid} ({report.when})\n"
+                f"{report.longreprtext}\n"
+            )
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Enable ``--with-mpi`` under the VS Code adapter, which bypasses
@@ -142,6 +164,9 @@ def pytest_configure(config: pytest.Config) -> None:
         reporter = config.pluginmanager.getplugin("terminalreporter")
         if reporter is not None:
             config.pluginmanager.unregister(reporter)
+        config.pluginmanager.register(
+            _RankFailureReporter(MPI.COMM_WORLD.rank), "monoprop-rank-failures"
+        )
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -158,17 +183,6 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 
 @pytest.fixture(scope="session")
-def comm_self() -> Iterator[Intracomm | None]:
-    """Session-wide duplicate of COMM_SELF; ``None`` when monoprop has no MPI backend."""
-    if not HAS_MPI_BACKEND:
-        yield None
-        return
-    duplicate = MPI.COMM_SELF.Dup()
-    yield duplicate
-    duplicate.Free()
-
-
-@pytest.fixture(scope="session")
 def comm_world() -> Iterator[Intracomm | None]:
     """Session-wide duplicate of COMM_WORLD; ``None`` when monoprop has no MPI backend."""
     if not HAS_MPI_BACKEND:
@@ -179,31 +193,19 @@ def comm_world() -> Iterator[Intracomm | None]:
     duplicate.Free()
 
 
-_COMM_PARAMS = (
-    [pytest.param(None, id="comm_none")]
-    if not HAS_MPI_BACKEND
-    else [
-        pytest.param("comm_self", id="comm_self"),
-        pytest.param("comm_world", id="comm_world"),
-    ]
-)
+_COMM_PARAMS = [pytest.param(None, id="comm_none")]
+if HAS_MPI_BACKEND:
+    _COMM_PARAMS.append(
+        pytest.param("comm_world", id="comm_world", marks=pytest.mark.mpi)
+    )
 
 
 @pytest.fixture(params=_COMM_PARAMS)
 def comm(request: pytest.FixtureRequest) -> Intracomm | None:
-    """Parametrized communicator; ``None`` when mpi4py is unavailable or monoprop has no MPI backend.
-
-    Resolved through the session-scoped duplicates, so parametrizing does not reorder the run.
-    """
+    """``None`` (serial), or ``comm_world`` under ``--with-mpi`` when monoprop has an MPI backend."""
     if request.param is None:
         return None
     return request.getfixturevalue(request.param)
-
-
-@pytest.fixture
-def serial_comm(comm_self: Intracomm | None) -> Intracomm | None:
-    """Single-rank communicator for tests that inspect rank-local operator state."""
-    return comm_self
 
 
 @pytest.fixture(

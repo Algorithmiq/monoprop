@@ -36,14 +36,25 @@ produce. The `just` recipes build an MPI-enabled extension and launch the suite
 under `mpiexec`:
 
 ```bash
-just test-mpi                  # build with MPI, then run every leg
-just test-py-mpi "1;2;4" -m mpi # MPI-marked tests across a rank matrix
+just test-mpi                  # build with MPI, then every MPI leg CI runs
+just test-py-mpi               # the Python MPI legs only, against the installed build
+```
+
+`just test-py-mpi` runs the tests that use a world communicator (`-m mpi`) five times: on 1, 2
+and 4 ranks; on 3 ranks with `monoprop_ROUTING=splitmix`, since linear routing refuses a rank
+count that is not a power of two; and on 2 ranks with `monoprop_PARTITIONS=2`. Each test times
+out after 300 seconds, so a hung collective fails instead of stalling the run. To run one file
+by hand:
+
+```bash
+mpiexec --map-by :OVERSUBSCRIBE -n 4 uv run --no-sync pytest tests/test_monoprop_mpi.py --with-mpi -m mpi
 ```
 
 The suite's `tests/conftest.py` provides `--with-mpi`; no MPI pytest plugin is
 needed. Tests marked with `@pytest.mark.mpi` are skipped without that option.
-Use `@pytest.mark.mpi(min_size=2)` when a test needs at least two ranks.
-Under `--with-mpi`, only rank zero reports pytest output.
+Use `@pytest.mark.mpi(min_size=2)` when a test needs at least two ranks. Under
+`--with-mpi`, only rank zero reports pytest output; the other ranks print their failures to
+stderr, tagged `[rank <r>]`.
 
 Under more than one rank, `tests/conftest.py` gives each rank its own pytest `--basetemp`,
 `pytest-of-<user>/mpi-rank-<n>` under `$PYTEST_DEBUG_TEMPROOT` when set, else the system temporary
@@ -64,7 +75,7 @@ mpiexec --allow-run-as-root -n 2 uv run --no-sync python -m pytest tests --with-
 `monoprop_ENABLE_MPI` (or the `monoprop.mpi` config-setting) also provisions
 mpi4py as a build input; see [Building from source](/building#with-mpi) for why. Installing the `mpi` extra alone only provides
 mpi4py and does not enable C++ MPI support. Tests marked `mpi` are skipped whenever `monoprop.MPI_ABIS`
-is empty, and the `comm`/`serial_comm` fixtures fall back to `None` there. Accordingly, the CI matrix has
+is empty, and the `comm` fixture then has only its `None` case. Accordingly, the CI matrix has
 explicit cache-free MPI build lanes on Linux x86-64, Linux ARM64, and macOS;
 only those lanes run the suite under `mpiexec`.
 
@@ -135,20 +146,35 @@ fabric device per case, whether or not the test sends anything. `monoprop_TEST_E
 keep the full component set, since they exchange real messages. Turn it off by adding
 `SKBUILD_CMAKE_DEFINE="monoprop_TEST_EXCLUDE_MPI_FABRIC=OFF"` to the MPI build above.
 
-CTest registers every Boost case individually as a `serial` variant. When the
-build has MPI enabled and a launcher is found, it also registers the whole suite
-once per rank count in `monoprop_MPI_TEST_PROCS`, labelled `mpi` and `mpi-<n>` —
-one entry per rank count rather than per case, because the ranks have to reach
-the same collectives. Each MPI entry times out after 600 seconds, preventing a
-collective deadlock from occupying the runner indefinitely.
+CTest registers every Boost case individually as a `serial` variant. A case that needs
+several ranks declares it with a precondition (`cpp/tests/RankPreconditions.h`); in a serial
+entry Boost skips it and CTest reports it as skipped. When the build has MPI enabled and a
+launcher is found, CTest also registers the whole suite once per rank count: linear routing
+on the counts in `monoprop_MPI_TEST_PROCS` (default `2;4`, labels `mpi`, `mpi-<n>`,
+`mpi-linear`) and `monoprop_ROUTING=splitmix` on `monoprop_MPI_SPLITMIX_TEST_PROCS`
+(default `2;3;4`, labels `mpi`, `mpi-<n>`, `mpi-splitmix`). Each runs one `mpiexec` because
+the ranks have to reach the same collectives, allows oversubscription, and times out after
+600 seconds. Only `monoprop_MPI_TEST_PROCS` has a config-setting and an environment
+variable; `monoprop_MPI_SPLITMIX_TEST_PROCS` is a CMake cache variable. Set a single rank count
+with `SKBUILD_CMAKE_DEFINE="monoprop_MPI_SPLITMIX_TEST_PROCS=3" monoprop_ENABLE_MPI=ON uv sync --all-extras`.
+`SKBUILD_CMAKE_DEFINE` splits on `;`, so set a list on the configured tree instead:
+`cmake -D monoprop_MPI_SPLITMIX_TEST_PROCS="2;3" build/editable/Release-mpi`. Rebuild afterwards,
+since CTest registers the variants when the test binary is built, not at configure time, and check
+the result:
+
+```bash
+cmake --build build/editable/Release-mpi
+ctest --test-dir build/editable/Release-mpi -N -L mpi-splitmix
+```
 
 CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
 lane fails if its MPI variant was not registered. Standalone MPI-enabled C++
 test executables initialize MPI before constructing propagators and destroy the
 propagators before finalizing MPI. Select the groups locally with
-`just test-cpp` and `just test-cpp-mpi`, which are the same commands CI runs. The
-`just test-mpi '1;2;4'` recipe configures and runs the corresponding C++ CTest
-rank entries as well as the Python rank matrix.
+`just test-cpp` and `just test-cpp-mpi`, which are the same commands CI runs. `just test-cpp` picks
+the build tree from `monoprop_ENABLE_MPI`, so run the serial group of an MPI build with
+`monoprop_ENABLE_MPI=ON just test-cpp`, as CI's MPI jobs do.
+`just test-mpi` runs both C++ groups and the Python MPI legs.
 
 Run `just code-coverage` to collect coverage in separate serial and MPI-enabled
 `Coverage` builds and render `monoprop-coverage/index.html`. The MPI collection
@@ -226,7 +252,11 @@ The `problem` fixture in `tests/conftest.py` is parametrized over the three
 general reference problems: LiH, RX/RZ/RY/RZ rotations, and a random circuit.
 Each invocation loads a fresh problem from `tests/data/` using `load_problem()`
 in `tests/reference_data.py`. Its explicit case IDs make failures easy to identify.
-The `serial_comm` and `comm` fixtures are also provided by `conftest.py`.
+`conftest.py` also provides `comm`: `None` (serial) and, under `--with-mpi` with an MPI build,
+a duplicate of `COMM_WORLD`. Use it for results every rank agrees on, such as energies and
+gradients; test rank-local state such as
+[evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator] serially,
+with `comm=None`.
 
 ```python notest
 from monoprop import MajoranaPropagator
@@ -249,7 +279,7 @@ request `lih_problem`. For orbital-rotation checks using the S0 molecule, reques
 `orbital_rotation_problem`.
 
 ```python notest
-def test_lih_reference(lih_problem, serial_comm): ...
+def test_lih_reference(lih_problem): ...
 ```
 
 Use `@pytest.mark.parametrize` with `pytest.param(..., id="...")` for small

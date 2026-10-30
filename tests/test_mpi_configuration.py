@@ -106,8 +106,12 @@ def test_only_rank_zero_reports_under_mpi(
         mpi_config.pluginmanager.unregister.assert_called_once_with(
             mpi_config.pluginmanager.getplugin.return_value
         )
+        (plugin, name), _ = mpi_config.pluginmanager.register.call_args
+        assert isinstance(plugin, conftest._RankFailureReporter)
+        assert name == "monoprop-rank-failures"
     else:
         mpi_config.pluginmanager.unregister.assert_not_called()
+        mpi_config.pluginmanager.register.assert_not_called()
 
 
 def test_mpi_configuration_without_terminal_reporter(mpi_config, monkeypatch):
@@ -116,6 +120,39 @@ def test_mpi_configuration_without_terminal_reporter(mpi_config, monkeypatch):
     mpi_config.pluginmanager.getplugin.return_value = None
     conftest.pytest_configure(mpi_config)
     mpi_config.pluginmanager.unregister.assert_not_called()
+    mpi_config.pluginmanager.register.assert_called_once()
+
+
+def test_muted_rank_reports_its_failures_on_stderr(capsys):
+    reporter = conftest._RankFailureReporter(rank=3)
+    report = Mock(
+        failed=True,
+        nodeid="tests/test_x.py::test_y",
+        when="call",
+        longreprtext="AssertionError: boom",
+    )
+    reporter.pytest_runtest_logreport(report)
+    err = capsys.readouterr().err
+    assert "[rank 3] FAILED tests/test_x.py::test_y (call)" in err
+    assert "AssertionError: boom" in err
+
+
+def test_muted_rank_is_quiet_on_success(capsys):
+    conftest._RankFailureReporter(rank=1).pytest_runtest_logreport(Mock(failed=False))
+    assert capsys.readouterr().err == ""
+
+
+def test_comm_runs_serially_and_on_the_world_only_under_mpi():
+    """``comm`` is ``None`` first; its world case exists only with an MPI backend and is ``mpi``-marked."""
+    serial, *world = conftest._COMM_PARAMS
+    assert serial.values == (None,)
+    assert not serial.marks
+    if conftest.HAS_MPI_BACKEND:
+        (param,) = world
+        assert param.values == ("comm_world",)
+        assert [mark.name for mark in param.marks] == ["mpi"]
+    else:
+        assert world == []
 
 
 @pytest.mark.parametrize(

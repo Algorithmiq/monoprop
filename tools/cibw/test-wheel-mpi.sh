@@ -65,5 +65,5 @@ assert monoprop.MPI_ABIS, 'monoprop reports no MPI ABIs'
 from monoprop._backend import core_module
 print('MPI_ABIS', monoprop.MPI_ABIS, core_module(MPI.COMM_SELF).__file__)
 "
-"$mpiexec" -n 2 "$python" -m pytest tests --with-mpi -m mpi -p no:cacheprovider
+"$mpiexec" -n 2 "$python" -m pytest tests --with-mpi -m mpi -p no:cacheprovider --timeout=300 --timeout-method=thread
 "$python" -m pytest tests/test_mpi_backend.py -p no:cacheprovider

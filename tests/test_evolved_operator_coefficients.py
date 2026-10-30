@@ -15,7 +15,7 @@
 """Coverage for ``evolved_operator_coefficients``, the term-probing companion to ``evolved_operator``.
 
 Oracle throughout: ``evolved_operator(atol=0.0)``, which enumerates the whole index. Both are
-rank-local, so every propagator here is built on ``serial_comm`` (see the note in ``test_basis.py``).
+rank-local, so every propagator here runs serially (see the note in ``test_basis.py``).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def problem():
 
 
 @pytest.fixture(scope="module")
-def prop_and_params(problem, comm_self):
+def prop_and_params(problem):
     """A built propagator over ``problem`` and its parameters, shared across the module.
 
     ``evolved_operator`` and ``evolved_operator_coefficients`` leave simulator state alone, so one
@@ -57,20 +57,18 @@ def prop_and_params(problem, comm_self):
         problem.operator,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=comm_self,
     )
     prop.build_graph(problem.monomial_circuit.to_circuit())
     return prop, problem.monomial_circuit.parameters
 
 
-def _pauli_propagator(serial_comm, schrodinger_cutoff=None):
+def _pauli_propagator(schrodinger_cutoff=None):
     """A Pauli propagator with a graph whose evolution spreads the operator over many terms."""
     prop = PauliPropagator(
         PauliOperator({Pauli("ZZ", (0, 1)): 1.0, Pauli("XY", (2, 3)): 0.5}, N_QUBITS),
         initial_state=[],
         cutoff=N_QUBITS,
         schrodinger_cutoff=schrodinger_cutoff,
-        comm=serial_comm,
     )
     circuit = Circuit(
         tuple(
@@ -89,9 +87,9 @@ def _pauli_propagator(serial_comm, schrodinger_cutoff=None):
     return prop, np.linspace(0.1, 0.9, prop.n_parameters)
 
 
-def test_pauli_coefficients_match_evolved_operator(serial_comm) -> None:
+def test_pauli_coefficients_match_evolved_operator() -> None:
     """Every term the evolved Pauli operator carries reads back with the same coefficient."""
-    prop, parameters = _pauli_propagator(serial_comm)
+    prop, parameters = _pauli_propagator()
 
     evolved = prop.evolved_operator(parameters, atol=0.0)
     terms = list(evolved.terms)
@@ -166,13 +164,12 @@ def test_non_canonical_term_in_a_long_query_names_the_offender(prop_and_params) 
         prop.evolved_operator_coefficients(terms, parameters)
 
 
-def test_absent_term_reads_back_zero(serial_comm) -> None:
+def test_absent_term_reads_back_zero() -> None:
     """A term the evolved operator does not carry is 0, not a raise and not noise."""
     prop = PauliPropagator(
         PauliOperator({Pauli("Z", (0,)): 1.0}, N_QUBITS),
         initial_state=[],
         cutoff=N_QUBITS,
-        comm=serial_comm,
     )
 
     absent = Pauli("X", (5,))
@@ -184,9 +181,9 @@ def test_absent_term_reads_back_zero(serial_comm) -> None:
     assert coefficients[0] == 0
 
 
-def test_schrodinger_coefficients_match_evolved_state(serial_comm) -> None:
+def test_schrodinger_coefficients_match_evolved_state() -> None:
     """The motivating case: reading a few amplitudes out of an evolved state."""
-    prop, parameters = _pauli_propagator(serial_comm, schrodinger_cutoff=4)
+    prop, parameters = _pauli_propagator(schrodinger_cutoff=4)
 
     evolved = prop.evolved_operator(parameters, atol=0.0)
     terms = list(evolved.terms)
@@ -221,7 +218,7 @@ def test_query_order_is_preserved(prop_and_params) -> None:
     )
 
 
-def test_identity_term_is_the_core_term(problem, serial_comm) -> None:
+def test_identity_term_is_the_core_term(problem) -> None:
     """In the Heisenberg picture the empty term is the core term ``evolved_operator`` re-adds.
 
     The fixture Hamiltonian carries no identity term, so one is injected: with a zero core term the
@@ -234,7 +231,6 @@ def test_identity_term_is_the_core_term(problem, serial_comm) -> None:
         with_identity,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=serial_comm,
     )
     prop.build_graph(problem.monomial_circuit.to_circuit())
     parameters = problem.monomial_circuit.parameters
@@ -247,9 +243,9 @@ def test_identity_term_is_the_core_term(problem, serial_comm) -> None:
     assert coefficients[0] == pytest.approx(evolved.terms[()])
 
 
-def test_schrodinger_identity_is_a_state_amplitude(serial_comm) -> None:
+def test_schrodinger_identity_is_a_state_amplitude() -> None:
     """In the Schrodinger picture the identity is an ordinary term, not a core term."""
-    prop, parameters = _pauli_propagator(serial_comm, schrodinger_cutoff=4)
+    prop, parameters = _pauli_propagator(schrodinger_cutoff=4)
 
     evolved = prop.evolved_operator(parameters, atol=0.0)
     identity = Pauli("", ())
@@ -354,17 +350,17 @@ def test_majorana_front_end_rejects_a_pauli_term(prop_and_params) -> None:
         prop.evolved_operator_coefficients(paulis, parameters)
 
 
-def test_pauli_front_end_rejects_a_raw_slot_tuple(serial_comm) -> None:
+def test_pauli_front_end_rejects_a_raw_slot_tuple() -> None:
     """Symplectic slots are an engine-internal encoding, so the Pauli front-end takes Pauli only."""
-    prop, parameters = _pauli_propagator(serial_comm)
+    prop, parameters = _pauli_propagator()
 
     with pytest.raises(TypeError, match="Pauli objects"):
         prop.evolved_operator_coefficients([(0, 1)], parameters)
 
 
-def test_repeated_term_is_answered_once_per_occurrence(serial_comm) -> None:
+def test_repeated_term_is_answered_once_per_occurrence() -> None:
     """The query is a list, not a set: each occurrence gets its own slot with the same value."""
-    prop, parameters = _pauli_propagator(serial_comm)
+    prop, parameters = _pauli_propagator()
 
     evolved = prop.evolved_operator(parameters, atol=0.0)
     term = next(iter(evolved.terms))

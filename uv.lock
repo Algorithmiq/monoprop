@@ -1305,6 +1305,7 @@ bench = [
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
     { name = "pytest-datadir" },
+    { name = "pytest-timeout" },
     { name = "tabulate" },
 ]
 dev = [
@@ -1334,6 +1335,7 @@ test = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-datadir" },
+    { name = "pytest-timeout" },
     { name = "tabulate" },
 ]
 workspace-test = [
@@ -1343,6 +1345,7 @@ workspace-test = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-datadir" },
+    { name = "pytest-timeout" },
     { name = "tabulate" },
 ]
 
@@ -1365,6 +1368,7 @@ bench = [
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 dev = [
@@ -1394,6 +1398,7 @@ test = [
     { name = "pytest", specifier = ">=8.2.2,<9.2" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 workspace-test = [
@@ -1403,6 +1408,7 @@ workspace-test = [
     { name = "pytest", specifier = ">=8.2.2,<9.2" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-datadir" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "tabulate", specifier = ">=0.9" },
 ]
 
@@ -2210,6 +2216,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/59/c7/6953e9e25d90d038600e65b05265693aef7ae2a2b67e0f170d65f4f16c24/pytest_markdown_docs-0.9.2.tar.gz", hash = "sha256:bf7510fdeec90d3e98ac924561c01de8dbaf4c3ad34f2418ed2b0b12e5a3f4f5", size = 10929, upload-time = "2026-03-23T12:35:04.804Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0c/b9/c3df11997d29e69b3f8edae1e903bf44eaf4774ccf4c5b6ddcebde88931c/pytest_markdown_docs-0.9.2-py3-none-any.whl", hash = "sha256:9c05a5bee48214cb36583d4a5131d3a23b327a8d82c92ae860106053fd7d1f9e", size = 13536, upload-time = "2026-03-23T12:35:03.862Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]

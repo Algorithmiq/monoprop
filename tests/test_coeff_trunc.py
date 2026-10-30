@@ -30,7 +30,6 @@ def _create_mp(
     *,
     op,
     initial_state,
-    comm,
     upper_atol=None,
     lower_atol=None,
     cutoff=4,
@@ -43,7 +42,6 @@ def _create_mp(
         upper_atol=upper_atol,
         lower_atol=lower_atol,
         schrodinger_cutoff=schrodinger_cutoff,
-        comm=comm,
     )
 
 
@@ -60,7 +58,7 @@ def _check_dicts(d1, d2):
         )
 
 
-def test_coeff_trunc(serial_comm):
+def test_coeff_trunc():
     n_modes = 5
     op = MajoranaOperator({(0, 1): 1.0j}, num_modes=n_modes)
 
@@ -82,7 +80,6 @@ def test_coeff_trunc(serial_comm):
         mp = _create_mp(
             op=op,
             initial_state=sequence.initial_state,
-            comm=serial_comm,
             upper_atol=upper_atol,
             lower_atol=lower_atol,
             cutoff=cutoff,
@@ -114,7 +111,6 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     upper_atol,
     lower_atol,
     cutoff,
-    serial_comm,
 ):
     """Check that build graph with coeffs and inplace version match."""
     n_modes = lih_problem.n_modes
@@ -127,7 +123,6 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     mp_inplace = _create_mp(
         op=fermionic_operator,
         initial_state=monomial_circuit.initial_state,
-        comm=serial_comm,
         upper_atol=upper_atol,
         lower_atol=lower_atol,
         cutoff=cutoff,
@@ -139,7 +134,6 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     mp_build = _create_mp(
         op=fermionic_operator,
         initial_state=monomial_circuit.initial_state,
-        comm=serial_comm,
         upper_atol=upper_atol,
         lower_atol=lower_atol,
         cutoff=cutoff,
@@ -153,7 +147,7 @@ def test_coeff_trunc_build_graph_and_inplace_equiv(
     assert np.isclose(expval_inplace, expval_build, atol=1e-12)
 
 
-def test_evolution_coeff_trunc_no_atols(serial_comm):
+def test_evolution_coeff_trunc_no_atols():
     n_modes = 2
     p = np.pi / 16
 
@@ -180,7 +174,6 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
         sequence.initial_state,
         cutoff=cutoff,
         schrodinger_cutoff=None,
-        comm=serial_comm,
     )
     mp.build_graph(circuit)
     assert mp.graph_size()[1] == 1
@@ -192,7 +185,7 @@ def test_evolution_coeff_trunc_no_atols(serial_comm):
     _check_dicts(test_op, final_operator)
 
 
-def test_evolution_coeff_trunc_small_coeffs(serial_comm):
+def test_evolution_coeff_trunc_small_coeffs():
     n_modes = 2
     p = 1e-5
     init_op = {(0, 1): 1.0j, (0, 2): 1e-7j}
@@ -229,7 +222,6 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         mp = _create_mp(
             op=op,
             initial_state=sequence.initial_state,
-            comm=serial_comm,
             upper_atol=upper_atol,
             lower_atol=lower_atol,
             cutoff=cutoff,
@@ -245,7 +237,7 @@ def test_evolution_coeff_trunc_small_coeffs(serial_comm):
         _check_dicts(test_op, final_operator)
 
 
-def test_graph_size_counts_real_cosine_indices(serial_comm):
+def test_graph_size_counts_real_cosine_indices():
     """``graph_size()[0]`` is the real cosine-only count, not a structural zero.
 
     Cutoff 4 truncates the weight-6 sine partners of these weight-4 terms, leaving their sources
@@ -263,7 +255,7 @@ def test_graph_size_counts_real_cosine_indices(serial_comm):
     )
 
     def sized(cutoff: int) -> tuple[int, int]:
-        mp = MajoranaPropagator(operator, [], cutoff=cutoff, comm=serial_comm)
+        mp = MajoranaPropagator(operator, [], cutoff=cutoff)
         mp.build_graph(circuit)
         return mp.graph_size()
 

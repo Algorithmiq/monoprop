@@ -78,6 +78,7 @@ test = [
   "psutil>=7.2",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
+  "pytest-timeout>=2.3",
   "pytest>=8.2.2,<9.2",
   "tabulate>=0.9",
 ]
