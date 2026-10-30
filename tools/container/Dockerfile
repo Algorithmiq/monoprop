@@ -16,14 +16,16 @@ ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
 
 # monoprop.mpi also adds mpi4py to the build requirements.
 # constraints.txt is exported from uv.lock, so the runtime dependencies are the
-# versions CI tests against. Both PIP_* variables also reach pip's isolated build
-# environment: mpi4py is built against the locked version, and pip fails instead of
-# compiling it when its PyPI wheel is missing.
+# versions CI tests against. PIP_CONSTRAINT is an environment variable because pip
+# forwards no constraint option to its isolated build environment, where it makes
+# mpi4py the locked version too. pip does forward --only-binary there, so a missing
+# mpi4py wheel fails the build instead of compiling mpi4py.
 RUN --mount=type=bind,source=${SDIST},target=/tmp/${SDIST} \
     --mount=type=bind,source=constraints.txt,target=/tmp/constraints.txt \
     python3 -m venv "${VIRTUAL_ENV}" && \
-    PIP_CONSTRAINT=/tmp/constraints.txt PIP_ONLY_BINARY=mpi4py \
+    PIP_CONSTRAINT=/tmp/constraints.txt \
     pip install --no-cache-dir --verbose \
+        --only-binary=mpi4py \
         --config-settings=cmake.build-type=Release \
         --config-settings=monoprop.mpi=ON \
         --config-settings=monoprop.arch-flags=OFF \
