@@ -20,6 +20,12 @@ MPI selection is handled here (``--with-mpi``, ``@pytest.mark.mpi``).
 allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
 ``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``.
 
+Both hand out session-wide duplicates of those communicators, never the predefined handles
+themselves, as the parallelism docs tell users to do: monoprop's point-to-point traffic then
+cannot match messages that conftest or mpi4py exchange on the predefined communicators.
+Each duplicate is created on first use and freed at session teardown: ``Dup`` is collective, and
+doing it per test would add a collective to every one of them for no extra isolation.
+
 Under more than one rank each rank gets its own ``--basetemp``; see ``_rank_basetemp``.
 """
 
@@ -27,16 +33,21 @@ from __future__ import annotations
 
 import getpass
 import os
+import stat
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.mpi_support import HAS_MPI_BACKEND, MPI, SERIAL_COMM
+from tests.mpi_support import HAS_MPI_BACKEND, MPI
 from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from mpi4py.MPI import Intracomm
+
     from tests.reference_data import FermionicProblem
 
 
@@ -58,6 +69,28 @@ def _rank_basetemp() -> Path | None:
     return temproot / f"pytest-of-{user}" / f"mpi-rank-{MPI.COMM_WORLD.rank}"
 
 
+def _make_private_dir(path: Path) -> None:
+    """Create ``path`` if needed and make sure only the current user can use it.
+
+    The checks pytest applies to its own ``pytest-of-<user>``, which an explicit ``--basetemp``
+    skips: on a shared temporary root another user could create the predictable name first.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Not following symlinks: a swapped-in link would otherwise pass every check below.
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise OSError(
+            f"The temporary directory {path} is a symbolic link. Fix this and try again."
+        )
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise OSError(
+            f"The temporary directory {path} is not owned by the current user. "
+            "Fix this and try again."
+        )
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_cmdline_main(config: pytest.Config) -> None:
     """Give each MPI rank its own ``--basetemp`` unless one was passed explicitly.
@@ -67,7 +100,7 @@ def pytest_cmdline_main(config: pytest.Config) -> None:
     """
     if config.option.basetemp is None and (basetemp := _rank_basetemp()) is not None:
         # pytest creates only the basetemp itself when one is given, not its parent.
-        basetemp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _make_private_dir(basetemp.parent)
         config.option.basetemp = basetemp
 
 
@@ -124,26 +157,53 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
             pytest.skip(f"Test requires {min_size} MPI processes")
 
 
+@pytest.fixture(scope="session")
+def comm_self() -> Iterator[Intracomm | None]:
+    """Session-wide duplicate of COMM_SELF; ``None`` when monoprop has no MPI backend."""
+    if not HAS_MPI_BACKEND:
+        yield None
+        return
+    duplicate = MPI.COMM_SELF.Dup()
+    yield duplicate
+    duplicate.Free()
+
+
+@pytest.fixture(scope="session")
+def comm_world() -> Iterator[Intracomm | None]:
+    """Session-wide duplicate of COMM_WORLD; ``None`` when monoprop has no MPI backend."""
+    if not HAS_MPI_BACKEND:
+        yield None
+        return
+    duplicate = MPI.COMM_WORLD.Dup()
+    yield duplicate
+    duplicate.Free()
+
+
 _COMM_PARAMS = (
     [pytest.param(None, id="comm_none")]
     if not HAS_MPI_BACKEND
     else [
-        pytest.param(MPI.COMM_SELF, id="comm_self"),
-        pytest.param(MPI.COMM_WORLD, id="comm_world"),
+        pytest.param("comm_self", id="comm_self"),
+        pytest.param("comm_world", id="comm_world"),
     ]
 )
 
 
 @pytest.fixture(params=_COMM_PARAMS)
-def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
-    """Parametrized communicator; ``None`` when mpi4py is unavailable or monoprop has no MPI backend."""
-    return request.param
+def comm(request: pytest.FixtureRequest) -> Intracomm | None:
+    """Parametrized communicator; ``None`` when mpi4py is unavailable or monoprop has no MPI backend.
+
+    Resolved through the session-scoped duplicates, so parametrizing does not reorder the run.
+    """
+    if request.param is None:
+        return None
+    return request.getfixturevalue(request.param)
 
 
 @pytest.fixture
-def serial_comm() -> Any:  # noqa: ANN401
+def serial_comm(comm_self: Intracomm | None) -> Intracomm | None:
     """Single-rank communicator for tests that inspect rank-local operator state."""
-    return SERIAL_COMM
+    return comm_self
 
 
 @pytest.fixture(

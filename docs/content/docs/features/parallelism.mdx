@@ -131,12 +131,20 @@ sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
 
 ### Multi-node (`MPI.COMM_WORLD`)
 
-Replace the communicator and launch with `mpiexec`:
+Pass a duplicate of `MPI.COMM_WORLD` and launch with `mpiexec`:
 
 ```python notest
 from mpi4py import MPI
-sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
+comm = MPI.COMM_WORLD.Dup()
+sim = MajoranaPropagator(..., comm=comm)
+...
+comm.Free()  # once sim and its functionals are no longer used
 ```
+
+monoprop exchanges point-to-point messages on fixed tags over `comm`, so your own sends and receives
+on the same communicator could match them; a receive with `MPI.ANY_TAG` could even take one of
+monoprop's messages and leave it waiting. Reserve the duplicate for monoprop, with no point-to-point
+traffic of your own on it. It must outlive the propagator and every functional obtained from it.
 
 ```bash
 mpiexec -n 8 uv run python your_script.py
