@@ -1,0 +1,305 @@
+name: Container images
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+  pull_request:
+    paths:
+      - .github/workflows/container.yml
+      - tools/container/**
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  COLUMNS: 120
+  FORCE_COLOR: 3
+  HPCCM_VERSION: "26.5.0"
+  # -march target of the monoprop image, also the suffix of its tags; list it in
+  # CPU_TARGETS in tools/cleanup-ghcr.py so the suffixed tags stay pinned.
+  MARCH: sapphirerapids
+  REGISTRY: ghcr.io
+  BASE_IMAGE_NAME: ghcr.io/algorithmiq/monoprop-base
+  APP_IMAGE_NAME: ghcr.io/algorithmiq/monoprop
+
+jobs:
+  sdist:
+    name: Build source distribution
+    # Fork and Dependabot PRs get a read-only token and cannot push to GHCR, and the app build pulls the base image from it.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      file: ${{ steps.sdist.outputs.file }}
+      version: ${{ steps.sdist.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0 # such that setuptools_scm can do its job correctly
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Build SDist
+        id: sdist
+        run: |
+          uv tool run --from build pyproject-build --verbose --sdist --installer uv
+          file="$(basename dist/monoprop-*.tar.gz)"
+          version="${file#monoprop-}"
+          version="${version%.tar.gz}"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Pin the image's runtime dependencies to the versions CI tests against: the
+      # hashed export is what the image installs, the unhashed one constrains pip's
+      # isolated build environment, where hashes would demand them of every package.
+      - name: Export the locked dependencies
+        run: |
+          export_args=(--frozen --no-dev --extra mpi --extra qiskit --no-emit-project)
+          uv export "${export_args[@]}" --output-file dist/requirements.txt
+          uv export "${export_args[@]}" --no-hashes --output-file dist/constraints.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: container-sdist
+          path: |
+            dist/monoprop-*.tar.gz
+            dist/requirements.txt
+            dist/constraints.txt
+
+  base:
+    name: Resolve or build the base image
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.hash.outputs.ref }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Render the base Dockerfile
+        run: |
+          mkdir -p build/container/base
+          uvx "hpccm==${HPCCM_VERSION}" --recipe tools/container/base.py --format docker \
+            > build/container/base/Dockerfile
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: base-dockerfile
+          path: build/container/base/Dockerfile
+
+      # The tag hashes the rendered Dockerfile, not the recipe, so an hpccm upgrade that
+      # changes the output also yields a new base image.
+      - name: Compute the content-addressed tag
+        id: hash
+        run: |
+          hash="$(sha256sum build/container/base/Dockerfile | cut -c1-12)"
+          echo "ref=${BASE_IMAGE_NAME}:${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Check whether the base image exists
+        id: exists
+        env:
+          REF: ${{ steps.hash.outputs.ref }}
+        run: |
+          if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract metadata for the base image
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.BASE_IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.vendor=Algorithmiq
+            org.opencontainers.image.description=MPI base image (UCX, PMIx, Open MPI) for monoprop
+
+      - name: Build and push the base image
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: build/container/base
+          file: build/container/base/Dockerfile
+          no-cache: true
+          push: true
+          tags: ${{ steps.hash.outputs.ref }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Cleanup keeps versions by their release, main or pr-N tags, so the base image
+      # carries the tags of every event that used it.
+      - name: Tag the base image for this event
+        env:
+          REF: ${{ steps.hash.outputs.ref }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && args+=(--tag "$tag")
+          done <<< "$TAGS"
+          if (( ${#args[@]} == 0 )); then
+            exit 0
+          fi
+          docker buildx imagetools create "${args[@]}" "$REF"
+          # A retag must not create a new manifest: the hash tag would lose its pins.
+          expected="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)"
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            actual="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$tag points at $actual, expected $expected"
+              exit 1
+            fi
+          done <<< "$TAGS"
+
+  app:
+    name: Build, check and push the monoprop image
+    needs:
+      - sdist
+      - base
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: container-sdist
+          path: build/container/app
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Extract metadata for the monoprop image
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.APP_IMAGE_NAME }}
+          flavor: |
+            latest=false
+          # The image runs only on MARCH CPUs, so every tag names it.
+          tags: |
+            type=semver,pattern={{version}},suffix=-${{ env.MARCH }}
+            type=ref,event=tag,suffix=-${{ env.MARCH }}
+            type=ref,event=branch,suffix=-${{ env.MARCH }}
+            type=ref,event=pr,suffix=-${{ env.MARCH }}
+            type=sha,prefix=sha-,format=short,suffix=-${{ env.MARCH }}
+            type=raw,value=latest,suffix=-${{ env.MARCH }},enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+          labels: |
+            org.opencontainers.image.vendor=Algorithmiq
+            org.opencontainers.image.base.name=${{ needs.base.outputs.ref }}
+
+      - name: Build the image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: build/container/app
+          file: tools/container/Dockerfile
+          build-args: |
+            BASE_IMAGE=${{ needs.base.outputs.ref }}
+            SDIST=${{ needs.sdist.outputs.file }}
+            MARCH=${{ env.MARCH }}
+          no-cache: true
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Smoke-test the image
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          VERSION: ${{ needs.sdist.outputs.version }}
+        run: |
+          docker run --rm --shm-size=1g \
+            -v "$PWD/tools/container/smoke-test.sh:/smoke-test.sh:ro" \
+            "$IMAGE" bash /smoke-test.sh "$VERSION"
+
+      # Same inputs as the build above, so Buildx serves every layer from its cache.
+      - name: Push the image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: build/container/app
+          file: tools/container/Dockerfile
+          build-args: |
+            BASE_IMAGE=${{ needs.base.outputs.ref }}
+            SDIST=${{ needs.sdist.outputs.file }}
+            MARCH=${{ env.MARCH }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Prepare pull instructions
+        if: github.event_name == 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "Container image pushed to GHCR. Pull it with Docker or Singularity:"
+            echo
+            while IFS= read -r tag; do
+              [[ -z "$tag" ]] && continue
+              echo '```bash'
+              echo "docker pull $tag"
+              echo "singularity pull monoprop_${tag##*:}.sif docker://$tag"
+              echo '```'
+              echo
+            done <<< "$TAGS"
+          } > pull-instructions.md
+
+      - name: Post pull instructions
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v3.0.5
+        with:
+          header: container-pull-instructions
+          path: pull-instructions.md
