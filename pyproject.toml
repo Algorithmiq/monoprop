@@ -74,6 +74,7 @@ interactive = [
 # members: cibuildwheel installs this group to exercise a *built wheel*, and a
 # workspace member would drag monoprop back in from source.
 test = [
+  "nanobind==3.1.0",
   "psutil>=7.2",
   "pytest-cov>=7.1.0",
   "pytest-datadir",
@@ -107,6 +108,7 @@ cache-keys = [
   { env = "monoprop_ENABLE_CXX_UNIT_TESTS" },
   { env = "monoprop_ENABLE_ARCH_FLAGS" },
   { env = "monoprop_MPI_TEST_PROCS" },
+  { env = "monoprop_MPI_ABIS" },
   { env = "SKBUILD_BUILD_DIR" },
   { env = "SKBUILD_CMAKE_ARGS" },
   { env = "SKBUILD_CMAKE_BUILD_TYPE" },
@@ -201,12 +203,17 @@ help = "Semicolon-separated MPI rank counts the C++ MPI tests run with"
 default = "2;4"
 env = "monoprop_MPI_TEST_PROCS"
 
+[tool.scikit-build.config-setting."monoprop.mpi-abis"]
+help = "MPI ABI variants to build from install prefixes, as ';'-separated <abi>=<prefix> entries with <abi> one of mpich, openmpi, mpiabi (wheel builds; needs monoprop.mpi)"
+env = "monoprop_MPI_ABIS"
+
 [tool.scikit-build.cmake.define]
 monoprop_ENABLE_MPI = { config-setting = "monoprop.mpi" }
 monoprop_SANITIZER = { config-setting = "monoprop.sanitizer" }
 monoprop_ENABLE_CXX_UNIT_TESTS = { config-setting = "monoprop.cxx-unit-tests" }
 monoprop_ENABLE_ARCH_FLAGS = { config-setting = "monoprop.arch-flags" }
 monoprop_MPI_TEST_PROCS = { config-setting = "monoprop.mpi-test-procs" }
+monoprop_MPI_ABIS = { config-setting = "monoprop.mpi-abis" }
 
 # mpi4py is a build input only for MPI builds, so it is requested per build
 # rather than listed in build-system.requires. MPI builds get their own tree so
@@ -457,14 +464,26 @@ build = "cp3??-*"
 build-frontend = "uv"
 build-verbosity = 1
 skip = ["*-musllinux_*"]
-test-command = "python -m pytest {package}/tests"
+repair-wheel-command = "bash {project}/tools/cibw/repair-wheel.sh {dest_dir} {wheel}"
+test-command = "bash {project}/tools/cibw/run-tests.sh {project} {wheel}"
 test-groups = ["test"]
 test-extras = ["qiskit"]
 
+# One MPI variant per ABI family, built against the PyPI MPI packages that install-mpi.sh places
+# under these prefixes; repair-wheel.sh reads the same variable.
 [tool.cibuildwheel.linux]
-before-all = ["./tools/install-deps.sh --skip-boost-test --skip-msgpack"]
-environment = { SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+before-all = [
+  "./tools/install-deps.sh --skip-boost-test --skip-msgpack",
+  # Install-time stub generation imports _core without build RPATHs, so hwloc in /usr/local/lib
+  # must be in the loader cache.
+  "ldconfig",
+  "bash tools/cibw/install-mpi.sh /opt/mpi",
+]
+environment = { monoprop_ENABLE_MPI = "ON", monoprop_MPI_ABIS = "mpich=/opt/mpi/mpich;openmpi=/opt/mpi/openmpi", monoprop_ENABLE_ARCH_FLAGS = "OFF", monoprop_ENABLE_CXX_UNIT_TESTS = "OFF" }
 
 [tool.cibuildwheel.macos]
-before-all = "brew install boost hwloc"
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", SKBUILD_CMAKE_ARGS = "-Dmonoprop_ENABLE_ARCH_FLAGS=OFF;-Dmonoprop_ENABLE_CXX_UNIT_TESTS=OFF;-Dmonoprop_ENABLE_MPI=OFF" }
+before-all = [
+  "brew install boost hwloc",
+  "bash tools/cibw/install-mpi.sh /tmp/monoprop-cibw-mpi",
+]
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0", monoprop_ENABLE_MPI = "ON", monoprop_MPI_ABIS = "mpich=/tmp/monoprop-cibw-mpi/mpich;openmpi=/tmp/monoprop-cibw-mpi/openmpi", monoprop_ENABLE_ARCH_FLAGS = "OFF", monoprop_ENABLE_CXX_UNIT_TESTS = "OFF" }

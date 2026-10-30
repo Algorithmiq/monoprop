@@ -1299,6 +1299,7 @@ qiskit = [
 [package.dev-dependencies]
 bench = [
     { name = "monoprop-bench-tools" },
+    { name = "nanobind" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
@@ -1328,6 +1329,7 @@ interactive = [
     { name = "qiskit" },
 ]
 test = [
+    { name = "nanobind" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1336,6 +1338,7 @@ test = [
 ]
 workspace-test = [
     { name = "monoprop-bench-tools" },
+    { name = "nanobind" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1356,6 +1359,7 @@ provides-extras = ["mpi", "qiskit"]
 [package.metadata.requires-dev]
 bench = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "nanobind", specifier = "==3.1.0" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.2" },
     { name = "pytest-benchmark", specifier = ">=5" },
@@ -1385,6 +1389,7 @@ interactive = [
     { name = "qiskit", specifier = ">=2.0.0" },
 ]
 test = [
+    { name = "nanobind", specifier = "==3.1.0" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.2" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -1393,6 +1398,7 @@ test = [
 ]
 workspace-test = [
     { name = "monoprop-bench-tools", editable = "packages/monoprop-bench-tools" },
+    { name = "nanobind", specifier = "==3.1.0" },
     { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=8.2.2,<9.2" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -1567,6 +1573,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/69/1c821d8386fae5cecc5fcaacf3de3947ff0a23f16bb481b5532b5868372a/msgpack-1.2.3-cp315-cp315t-win32.whl", hash = "sha256:3d4c807ed050fe3ddbea5ba7e9f63d7136871ce42861be1f50ff739f0e91047a", size = 75820, upload-time = "2026-09-29T02:33:47.596Z" },
     { url = "https://files.pythonhosted.org/packages/68/9e/41e2f7343a3764a9c1fb10c79f9a6a05db9df93dedd76401d1b511f5a685/msgpack-1.2.3-cp315-cp315t-win_amd64.whl", hash = "sha256:5f304123b90e8b2e49867981b7f6061612c39f50cca51ee88de007c084cf68d3", size = 83345, upload-time = "2026-09-29T02:33:49.325Z" },
     { url = "https://files.pythonhosted.org/packages/80/cd/0c3aa439bc7a7bf24684fef3a0ad776cba170e18ed94445e723bce42fce7/msgpack-1.2.3-cp315-cp315t-win_arm64.whl", hash = "sha256:f41ca154b7737b11893cdce3c78c61d703398a1cd54d4297bdad908392338a8e", size = 77572, upload-time = "2026-09-29T02:33:50.729Z" },
+]
+
+[[package]]
+name = "nanobind"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/1f/e28fae715401e8f57400e72aeaff4fde12046d31828164f34f61f0816da8/nanobind-3.1.0.tar.gz", hash = "sha256:6661e3dc1434d78781ccf7913442d90361dab395c3424efadb63bbb6ddea7ea3", size = 1145390, upload-time = "2026-09-18T15:59:42.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/36/c1/6fd56f7a02a478d54a1a3e6000eccd34b446b1c45cbf0d002fe5d2937126/nanobind-3.1.0-py3-none-any.whl", hash = "sha256:96984dbe8154ffb86e653b1b60aaeed6985c710c5e75ad0279eb87943c66292d", size = 316917, upload-time = "2026-09-18T15:59:37.796Z" },
 ]
 
 [[package]]

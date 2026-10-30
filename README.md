@@ -43,8 +43,18 @@ with [Bencher](https://bencher.dev/) to catch performance regressions.
 pip install monoprop      # or: uv add monoprop
 ```
 
-The prebuilt PyPI wheels are single-process (built **without** MPI). For multi-rank
-runs, or to build the C++ library and executables, build from source (see below).
+The PyPI wheels support MPI: install mpi4py with the `mpi` extra and pass a communicator to a
+propagator. They use the MPI library already on your machine, from the MPICH family (MPICH, Intel
+MPI, MVAPICH, Cray MPICH) or Open MPI, as provided by your cluster, package manager or own build:
+
+```bash
+pip install "monoprop[mpi]"
+```
+
+The [parallelism docs](https://docs.monoprop.algorithmiq.tech/features/parallelism) list the
+minimum versions and how to get an MPI onto a machine that has none.
+
+To build the C++ library and executables, build from source (see below).
 
 ## Quick example
 
@@ -135,8 +145,9 @@ select the MPI variant with `monoprop_ENABLE_MPI=ON` in the environment (or
 `-C monoprop.mpi=ON`).
 Standalone MPI-enabled C++ programs must initialize MPI before constructing a
 propagator and finalize it only after all propagators have been destroyed. The
-exported CMake target preserves the package's MPI setting independently of any
-`MPI::MPI_CXX` target already present in the consuming project. QA coverage
+exported `monoprop::monoprop` CMake target is always serial; MPI consumers request the `MPI`
+component (`find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)`) and link
+`monoprop::monoprop_mpi`. QA coverage
 merges separate serial and MPI-instrumented builds, including two-rank Python
 and C++ MPI runs, so both compatibility paths contribute to the reports. Run
 `just code-coverage` for the same combined report locally; it builds both

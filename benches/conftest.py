@@ -303,8 +303,8 @@ def pytest_sessionfinish() -> None:
 
 @pytest.fixture(scope="session")
 def bench_comm() -> Any:
-    """Return the benchmark communicator (``MPI.COMM_WORLD`` or ``None``)."""
-    return None if MPI is None else MPI.COMM_WORLD
+    """Return the benchmark communicator (``MPI.COMM_WORLD``, or ``None`` without an MPI backend)."""
+    return None if MPI is None or not monoprop.MPI_ABIS else MPI.COMM_WORLD
 
 
 @pytest.fixture(scope="session")

@@ -14,6 +14,7 @@
 
 """Regression tests for the suite's MPI selection and reporting hooks."""
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -115,3 +116,46 @@ def test_mpi_configuration_without_terminal_reporter(mpi_config, monkeypatch):
     mpi_config.pluginmanager.getplugin.return_value = None
     conftest.pytest_configure(mpi_config)
     mpi_config.pluginmanager.unregister.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("size", "given", "expected"),
+    [
+        pytest.param(1, None, None, id="serial"),
+        pytest.param(3, None, "mpi-rank-2", id="ranks"),
+        pytest.param(3, "/explicit", "/explicit", id="explicit"),
+    ],
+)
+def test_each_rank_gets_its_own_basetemp(monkeypatch, tmp_path, size, given, expected):
+    monkeypatch.setattr(conftest, "MPI", Mock(COMM_WORLD=Mock(size=size, rank=2)))
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(tmp_path))
+    config = Mock()
+    config.option.basetemp = given
+    assert conftest.pytest_cmdline_main(config) is None
+    if expected is None:
+        assert config.option.basetemp is None
+    elif expected == "/explicit":
+        assert config.option.basetemp == "/explicit"
+    else:
+        basetemp = Path(config.option.basetemp)
+        assert basetemp.name == expected
+        assert basetemp.parent.parent == tmp_path
+        assert basetemp.parent.name.startswith("pytest-of-")
+
+
+def test_basetemp_needs_mpi4py(monkeypatch):
+    monkeypatch.setattr(conftest, "MPI", None)
+    config = Mock()
+    config.option.basetemp = None
+    conftest.pytest_cmdline_main(config)
+    assert config.option.basetemp is None
+
+
+def test_basetemp_parent_is_created(monkeypatch, tmp_path):
+    temproot = tmp_path / "fresh-temproot"
+    monkeypatch.setattr(conftest, "MPI", Mock(COMM_WORLD=Mock(size=3, rank=2)))
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(temproot))
+    config = Mock()
+    config.option.basetemp = None
+    conftest.pytest_cmdline_main(config)
+    assert Path(config.option.basetemp).parent.is_dir()

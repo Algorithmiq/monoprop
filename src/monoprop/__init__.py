@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 
+from . import _backend
 from ._core import (
     MAX_NUM_MODES,
     __build_type__,
@@ -25,7 +26,6 @@ from ._core import (
     __nanobind_version__,
     __variant__,
     antihermitian_generator_correction,
-    has_mpi,
     is_antihermitian,
 )
 from ._version import version as __version__
@@ -44,8 +44,18 @@ from .pauli import Pauli, PauliOperator
 from .pauli_propagator import PauliPropagator
 from .utils import jordan_wigner_basis_change
 
+MPI_ABIS: tuple[str, ...] = _backend.MPI_ABIS
+"""MPI ABI families this installation can drive, for example `("mpich", "openmpi")`.
+
+`"mpich"` covers MPICH, Intel MPI, MVAPICH and Cray MPICH; `"openmpi"` covers Open MPI 4 and 5;
+`"mpiabi"` is the MPI-5 standard ABI. The tuple is empty for an installation built without MPI. It
+states what was built, not that a usable MPI library is present: that depends on the MPI library
+mpi4py loads at runtime.
+"""
+
 __all__ = [
     "MAX_NUM_MODES",
+    "MPI_ABIS",
     "Circuit",
     "ExpGate",
     "FermiOperator",
@@ -64,7 +74,6 @@ __all__ = [
     "__version__",
     "antihermitian_generator_correction",
     "expand_monomials",
-    "has_mpi",
     "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",
