@@ -10,11 +10,15 @@ discovers every Boost.Test case and registers it twice:
 
 - **`serial`**: the case run in-process with `MPI_COMM_SELF`.
 - **`mpi`** (+ rank-specific `mpi-<n>`): the whole suite wrapped in
-  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2;4`),
+  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2;4`,
+  also labelled `mpi-linear`), plus splitmix-routing entries for each rank in
+  `monoprop_MPI_SPLITMIX_TEST_PROCS` (default `2;3;4`, also labelled
+  `mpi-splitmix`; a CMake cache variable only, set through `SKBUILD_CMAKE_DEFINE`),
   registered when an MPI launcher is detected.
 
-Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
-skip (with a message) when run with too few.
+Cases that need a particular world declare it with a precondition from
+`RankPreconditions.h`; Boost reports them as skipped elsewhere, and CTest marks
+those serial entries as skipped.
 
 The custom `main()` in `unit_tests.cpp` initializes MPI and forces
 `monoprop_PARTITIONS=off`, so white-box tests observe the single-partition engine.
@@ -77,6 +81,8 @@ name and cannot address suite-nested cases, tests use flat
 - **`dense_query_reference.h`**: the retired dense query record, frozen as the
   independent oracle for `sparse_query_tests.cpp`. Test-only, and not kept in
   sync with the wire format.
+- **`RankPreconditions.h`**: Boost preconditions `min_ranks`, `power_of_two_ranks`,
+  `even_ranks`, `linear_routing`, `default_routing`.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -117,7 +123,9 @@ name and cannot address suite-nested cases, tests use flat
   (MPI-only), `partition_equivalence_tests.cpp`,
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
   (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
-  Majorana + native Pauli; self-skips at world size 1).
+  Majorana + native Pauli; self-skips at world size 1),
+  `mpi_routing_geometry_tests.cpp` (linear routing refuses a 3-rank
+  communicator).
 - **Simulator / operator lifecycle**: `simulator_copy_tests.cpp`,
   `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard
   rails + MPGraph bounds).
@@ -134,9 +142,7 @@ CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
 `monoprop_MPI_TEST_PROCS` (default `2;4`) — one CTest entry per rank count, not
 per case, because the ranks have to reach the same collectives. Each entry has
 a 600-second timeout, so a collective deadlock fails instead of occupying the
-runner indefinitely. For exhaustive
-rank coverage, run `just test-mpi '1;2;4'` or configure
-`-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under MPI while
+runner indefinitely. `just test-mpi` runs the same entries CI does. To run a single case under MPI while
 debugging, invoke the binary directly:
 `mpirun -n 2 build/editable/Release-mpi/bin/monoprop_unit_tests.x --run_test=<case>`.
 
@@ -144,6 +150,7 @@ debugging, invoke the binary directly:
 
 1. Add a `*.cpp` with flat `BOOST_AUTO_TEST_CASE`s (shared name prefix).
 2. Reuse the shared helpers above rather than copying oracle/harness code.
-3. For MPI-required scenarios, check `monoprop::mpi::size(MPI_COMM_WORLD)` and
-   skip if `< 2`.
+3. For a case that needs several ranks, add a precondition:
+   `BOOST_AUTO_TEST_CASE(name, *test_utils::min_ranks(2))`. Never `return` early:
+   that passes without checking anything.
 4. Rebuild to register the new cases with CTest.

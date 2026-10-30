@@ -36,15 +36,15 @@ def test_random_default_sizes_are_meaningful() -> None:
     assert defaults["seed"] is None
 
 
-def test_built_graph_is_populated(serial_comm) -> None:
+def test_built_graph_is_populated() -> None:
     # gen_length=4: a length-4 Majorana monomial is Hermitian with real coefficients, while a
     # length-2 one is anti-Hermitian and would be rejected.
-    # serial_comm because graph_size() is rank-local: on COMM_WORLD a problem this small leaves
+    # Serial: graph_size() is rank-local, and on COMM_WORLD a problem this small leaves
     # some ranks with no local cycles.
     problem = make_random_problem(
         gen_length=4, obs_terms=3, num_generators=5, num_modes=6, cutoff=3, seed=0
     )
-    propagator, circuit = build_random_propagator(problem, comm=serial_comm)
+    propagator, circuit = build_random_propagator(problem)
     propagator.build_graph(circuit)
     _n_cos_indices, n_cycles = propagator.graph_size()
     assert n_cycles > 0

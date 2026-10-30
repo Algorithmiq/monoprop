@@ -18,6 +18,7 @@
 #include <optional>
 #include <vector>
 
+#include "RankPreconditions.h"
 #include "TestUtilities.h"
 
 // upper_atol rescue: a structural cutoff of 0 rejects every non-identity partner, and upper_atol = 0
@@ -31,8 +32,6 @@ using namespace test_utils;
 using namespace monoprop;
 
 constexpr double kEnergyAtol = 1e-9;
-
-enum class CommMode { Self, World };
 
 // build_simulator cannot express this: it hardcodes cutoff = 2*NumModes.
 template <size_t NumModes>
@@ -58,22 +57,22 @@ auto evaluate_zero_cutoff_full_rescue_energy(MonomialPropagator<NumModes>& simul
 } // namespace
 
 // One test per (fixture, comm) so a failure pinpoints the configuration.
-#define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, CommToken)                                            \
-    BOOST_FIXTURE_TEST_CASE(NAME##_##CommToken, FixtureType) {                                                \
-        MPI_Comm comm = (CommMode::CommToken == CommMode::Self) ? MPI_COMM_SELF : MPI_COMM_WORLD;             \
-        if (CommMode::CommToken == CommMode::World && mpi::size(comm) == 1) {                                 \
-            BOOST_TEST_MESSAGE("Skipping multi-rank scenario for " #NAME " (world size=1)");                  \
-            return;                                                                                           \
-        }                                                                                                     \
-        auto simulator = build_zero_cutoff_full_rescue<FixtureType::n_modes>(data, comm);                     \
+#define MAKE_ZERO_CUTOFF_RESCUE_TEST(NAME, FixtureType, COMM, ...)                                            \
+    BOOST_FIXTURE_TEST_CASE(NAME, FixtureType __VA_OPT__(, ) __VA_ARGS__) {                                   \
+        auto simulator = build_zero_cutoff_full_rescue<FixtureType::n_modes>(data, COMM);                     \
         const double energy = evaluate_zero_cutoff_full_rescue_energy<FixtureType::n_modes>(simulator, data); \
         BOOST_CHECK_SMALL(std::abs(energy - data.actual_expval), kEnergyAtol);                                \
     }
 
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, ExampleDataFix, Self)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact, ExampleDataFix, World)
-
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, Self)
-MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih, LihFixture, World)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_Self, ExampleDataFix, MPI_COMM_SELF)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_World,
+                             ExampleDataFix,
+                             MPI_COMM_WORLD,
+                             *test_utils::min_ranks(2))
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih_Self, LihFixture, MPI_COMM_SELF)
+MAKE_ZERO_CUTOFF_RESCUE_TEST(zero_cutoff_upper_atol_zero_is_exact_lih_World,
+                             LihFixture,
+                             MPI_COMM_WORLD,
+                             *test_utils::min_ranks(2))
 
 #undef MAKE_ZERO_CUTOFF_RESCUE_TEST

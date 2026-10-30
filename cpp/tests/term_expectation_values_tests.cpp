@@ -185,7 +185,8 @@ BOOST_AUTO_TEST_CASE(schrodinger_values_are_the_evolved_state_and_match_heisenbe
 
 // Heisenberg throws for a term absent from the evolved operator. The term is past the cutoff and not fully
 // paired (fully-paired terms are exempt from truncation), so it cannot be present. With partitions, every
-// partition throws right after a collective; this case exposed the poison race fixed in run_on_all().
+// partition throws right after a collective, which must not fail a sibling's completed collective
+// (shm_comm_poison_after_completed_collective_spares_siblings covers that race directly).
 BOOST_AUTO_TEST_CASE(heisenberg_absent_term_throws) {
     const auto data = load_case_data<kNumModes>(kCase);
     const VecZ absent{0, 2, 4, 6, 8, 10, 12, 14};

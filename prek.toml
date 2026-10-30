@@ -30,7 +30,7 @@ hooks = [
     { id = "debug-statements" },
     { id = "name-tests-test", args = [
         "--pytest-test-first",
-    ], exclude = "^tests/(cases|reference_data)\\.py$|.*\\.json$" },
+    ], exclude = "^tests/(cases|reference_data|mpi_support)\\.py$|.*\\.json$" },
     { id = "forbid-submodules" },
 ]
 
