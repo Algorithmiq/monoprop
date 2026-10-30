@@ -53,6 +53,36 @@ echo "$mpi4py_library"
 [[ "$mpi4py_library" == *"Open MPI v${ompi_version}"* ]] \
     || fail "mpi4py did not load the image's Open MPI v$ompi_version"
 
+echo "== MPI ABI of monoprop's backend"
+# monoprop loads its MPI extension for the ABI family mpi4py uses, and raises if it was not
+# built for that family. Both sides are read from files, so monoprop is still not imported.
+abi_check="$(python3 - "$package_dir" <<'PY'
+import ast
+import pathlib
+import re
+import sys
+
+import mpi4py
+
+mpi4py.rc.initialize = False
+from mpi4py import MPI
+
+source = (pathlib.Path(sys.argv[1]) / "_mpi_abis.py").read_text()
+built = next(
+    ast.literal_eval(node.value)
+    for node in ast.parse(source).body
+    if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "ABIS"
+)
+variant = re.match(r"MPI\.(mpich|openmpi|mpiabi)\.", pathlib.Path(MPI.__spec__.origin).name)
+print(" ".join(built), variant[1] if variant else "unknown", sep="|")
+PY
+)"
+built_abis="${abi_check%|*}"
+mpi4py_abi="${abi_check#*|}"
+echo "built for: ${built_abis:-none}; mpi4py uses: $mpi4py_abi"
+[[ " $built_abis " == *" $mpi4py_abi "* ]] \
+    || fail "mpi4py uses the $mpi4py_abi MPI ABI, but monoprop was built for: ${built_abis:-none}"
+
 echo "== Open MPI build"
 grep -q 'MCA pml: ucx' <<< "$ompi_details" || fail "Open MPI was built without the UCX PML"
 # The base image builds PMIx into /usr/local/pmix; srun --mpi=pmix talks to it.
