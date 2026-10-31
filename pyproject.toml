@@ -52,7 +52,7 @@ mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
 
 [dependency-groups]
-dev = ["prek>=0.4", "ruff==0.17.1"]
+dev = ["prek>=0.4", "ruff==0.17.3"]
 # The documentation site is built with Fumadocs (Next.js); see `docs/`.
 # Python's only roles are converting the tutorial notebooks to Markdown
 # (`nbconvert`) and dumping the API surface from docstrings (`griffe`, driven by
@@ -79,7 +79,7 @@ test = [
   "pytest-cov>=7.1.0",
   "pytest-datadir",
   "pytest-timeout>=2.3",
-  "pytest>=8.2.2,<9.2",
+  "pytest>=8.2.2,<9.3",
   "tabulate>=0.9",
 ]
 # What `uv run pytest` needs at the repository root, which also collects the
