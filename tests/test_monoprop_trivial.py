@@ -40,7 +40,7 @@ from monoprop.fermi import MajoranaOperator
     ],
 )
 def test_trivial_evolved_operator_cases(
-    initial_op, cutoff, schrodinger_cutoff, expected, serial_comm
+    initial_op, cutoff, schrodinger_cutoff, expected
 ):
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = Circuit(
@@ -50,21 +50,18 @@ def test_trivial_evolved_operator_cases(
         initial_op,
         quantum_circuit.initial_state,
         cutoff=cutoff,
-        comm=serial_comm,
         **kwargs,
     )
     result = mp.evolved_operator()
     assert result.terms == expected.terms
 
 
-def test_trivial_evolved_operator(serial_comm):
+def test_trivial_evolved_operator():
     initial_op = MajoranaOperator({(0, 1, 2, 4): 1}, 8)
     quantum_circuit = Circuit(
         initial_state=[], system_size=initial_op.num_modes, gates=[]
     )
-    mp = MajoranaPropagator(
-        initial_op, quantum_circuit.initial_state, cutoff=16, comm=serial_comm
-    )
+    mp = MajoranaPropagator(initial_op, quantum_circuit.initial_state, cutoff=16)
     op = mp.contract_partially(inplace=False)
     assert op == np.array([-1.0])
 
@@ -79,7 +76,7 @@ def test_trivial_evolved_operator(serial_comm):
         "expval_check",
     ),
     [
-        # Regular picture: checks contract_partially (rank-local) → serial_comm
+        # Regular picture: checks contract_partially (rank-local), so serial
         (
             MajoranaOperator({(0, 1, 2, 4): 1}, 8),
             MajoranaOperator({(0, 1, 2, 4): 2.0 + 0j}, 8),
@@ -106,7 +103,6 @@ def test_update_initial_operator(
     schrodinger_cutoff,
     expected_new,
     expval_check,
-    serial_comm,
 ):
     kwargs = {"schrodinger_cutoff": schrodinger_cutoff} if schrodinger_cutoff else {}
     quantum_circuit = Circuit(initial_state=[], system_size=init_op.num_modes, gates=[])
@@ -114,7 +110,6 @@ def test_update_initial_operator(
         init_op,
         quantum_circuit.initial_state,
         cutoff=cutoff,
-        comm=serial_comm,
         **kwargs,
     )
 

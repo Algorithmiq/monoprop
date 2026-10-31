@@ -1,0 +1,217 @@
+---
+title: MareNostrum5
+description: Running the monoprop container image on MareNostrum5 with Singularity and Slurm.
+---
+
+[MareNostrum5](https://www.bsc.es/supportkc/docs/MareNostrum5/intro) (MN5) at BSC has no
+outbound network on its login nodes, so run monoprop from the
+[container image](/clusters): pull it on a machine with internet access, copy it over, and
+launch it with Singularity under Slurm. The image targets the Sapphire Rapids CPUs of both
+the general-purpose (GPP) and accelerated (ACC) partitions.
+
+## Get the image
+
+The image is public, so no registry login is needed. On a machine with internet access
+and Singularity (or Apptainer) installed:
+
+```bash
+singularity pull monoprop_<tag>.sif docker://ghcr.io/algorithmiq/monoprop:<tag>
+```
+
+`<tag>` is one of the [published tags](/clusters), for example `main-sapphirerapids`.
+
+Copy the `.sif` file (the image is about 1.3 GB unpacked; the `.sif` is compressed and
+smaller) to your project directory on MN5 with `scp` or `rsync` through a login or
+data-transfer node, for example:
+
+```bash
+rsync -P monoprop_<tag>.sif <user>@<mn5-host>:<project-dir>/
+```
+
+## Check the image
+
+Get an interactive allocation on a compute node, then check that monoprop imports and sees
+MPI on two ranks:
+
+```bash
+salloc --nodes=1 --account=<account> -q gp_debug --exclusive --time=00:10:00
+module load singularity
+srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif \
+    python3 -c 'import monoprop; print(monoprop.__version__, monoprop.MPI_ABIS)'
+```
+
+Both ranks should print the image's version and `('openmpi',)`. This is the check CI cannot run:
+the CI machines may lack the Sapphire Rapids instructions the image is compiled for.
+
+MN5's Slurm offers munge authentication to PMIx, which the container's PMIx is built
+without. The image sets `PMIX_MCA_psec=native`, so the ranks use PMIx's native
+authentication directly instead of warning that the `munge` component is missing.
+
+## Run a job
+
+Adapt this script and submit it with `sbatch`. The account and QoS can also be given on
+the command line.
+
+```bash
+#!/usr/bin/env bash
+
+#SBATCH --job-name=monoprop  # <-- CHANGE ME
+#SBATCH --chdir=.
+#SBATCH --exclusive
+#SBATCH --ntasks-per-node=8
+#SBATCH --cpus-per-task=14
+#SBATCH --threads-per-core=1
+#SBATCH --output=%x-%j.out
+#SBATCH --error=%x-%j.err
+
+# GIVEN THROUGH THE COMMAND LINE
+##SBATCH --partition=gpp
+##SBATCH --account=<account>
+##SBATCH --nodes=2
+##SBATCH --time=06:00:00
+##SBATCH --qos=<qos>
+
+module purge
+module load singularity/4.1.5
+module list
+
+#----
+# Printing the status of the given allocation
+echo -e "\n\n#------------------------#"
+echo "Printing from scontrol:"
+scontrol show job "${SLURM_JOBID}"
+
+export SRUN_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK
+
+echo -e "\n\n#------------------------#"
+echo "Diagnostic for task distribution (with task and taskset):"
+srun \
+    --label \
+    --verbose \
+    --mpi=pmix \
+    --nodes="$SLURM_NNODES" \
+    --ntasks="$(( SLURM_NTASKS_PER_NODE * SLURM_NNODES))" \
+    --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
+    --threads-per-core=1 \
+    --cpu-bind="verbose,threads" \
+    --distribution=block:block \
+    bash -c 'echo -n "task $SLURM_PROCID (node name: $(hostname), node id: $SLURM_NODEID): "; taskset -cp $$' | sort -n
+
+# One OpenMP thread, and one shard, per core of the rank, fixed for the whole run.
+export monoprop_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export OMP_DYNAMIC=FALSE
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+# Directories the container may read and write besides $HOME and the working directory.
+export SINGULARITY_BIND="/gpfs/projects,/gpfs/scratch,$TMPDIR"
+
+####### HERE we actually run monoprop #######
+srun \
+    --label \
+    --verbose \
+    --mpi=pmix \
+    --nodes="$SLURM_NNODES" \
+    --ntasks="$(( SLURM_NTASKS_PER_NODE * SLURM_NNODES))" \
+    --ntasks-per-node="$SLURM_NTASKS_PER_NODE" \
+    --threads-per-core=1 \
+    --cpu-bind="verbose,threads" \
+    --distribution=block:block \
+    --kill-on-bad-exit=1 \
+    singularity exec monoprop_<tag>.sif \
+    python3 -u run.py  # <-- CHANGE ME
+status=$?
+###########################################
+
+#----
+# Printing information of finished job steps:
+echo -e "\n\n#------------------------#"
+echo "Task and CPU usage stats:"
+sacct --format=JobID,JobName,NCPUS,NNodes,NTasks,AveCPU,MinCPU,MinCPUNode,MinCPUTask,Elapsed,ExitCode --jobs="$SLURM_JOBID"
+
+echo "Memory usage stats:"
+sacct --format=JobID,JobName,AveRSS%-50,MaxRSS%-50,MaxRSSNode,MaxRSSTask,AvePages,MaxPages,MaxPagesNode,MaxPagesTask --units=M --jobs="$SLURM_JOBID"
+
+echo "Disk usage stats:"
+sacct --format=JobID,JobName,AveDiskRead,MaxDiskRead,MaxDiskReadNode,MaxDiskReadTask,AveDiskWrite,MaxDiskWrite,MaxDiskWriteNode,MaxDiskWriteTask --units=G --jobs="$SLURM_JOBID"
+
+echo "Trackable resources usage stats:"
+sacct --format=JobID,JobName,AllocNodes,AllocCPUS,AllocTRES%-100 --units=G --jobs="$SLURM_JOBID"
+
+echo "Trackable resources (ingress) usage stats:"
+# ingress resources are disk reads and network incoming transfers
+sacct --format=JobID,JobName,TRESUsageInTot%-70,TRESUsageInAve%-70,TRESUsageInMax%-70,TRESUsageInMaxNode%-70,TRESUsageInMaxTask%-70 --units=G --jobs="$SLURM_JOBID"
+
+echo "Trackable resources (egress)  usage stats:"
+# egress resources are disk writes and network outgoing transfers
+sacct --format=JobID,JobName,TRESUsageOutTot%-70,TRESUsageOutAve%-70,TRESUsageOutMax%-70,TRESUsageOutMaxNode%-70,TRESUsageOutMaxTask%-70 --units=G --jobs="$SLURM_JOBID"
+
+#----
+# Done
+echo -e "\n\n#------------------------#"
+echo "Done"
+exit "$status"
+```
+
+- `--exclusive`: MN5 only honours CPU affinity on full nodes.
+- `--ntasks-per-node` × `--cpus-per-task` should fill a GPP node's 112 cores (2 sockets of
+  56) without splitting a rank across sockets: 8 ranks × 14 cores puts ranks 0–3 on the
+  first socket and ranks 4–7 on the second. On ACC nodes (2 sockets of 40), use for
+  example 8 ranks × 10 cores.
+- `--threads-per-core=1` and `--cpu-bind=verbose,threads` bind each rank to one hardware
+  thread on each of its cores, and `--distribution=block:block` hands each rank consecutive
+  cores. monoprop does not pin threads: `OMP_PLACES=cores` and `OMP_PROC_BIND=close` place
+  the rank's OpenMP team one thread per core inside that mask, so `monoprop_NUM_THREADS` and
+  `OMP_NUM_THREADS` set to `$SLURM_CPUS_PER_TASK` run one thread, and one shard, per core of
+  the rank. `OMP_DYNAMIC=FALSE` keeps every team at exactly that size; see
+  [Parallelism and distribution](/features/parallelism).
+- `SRUN_CPUS_PER_TASK` is needed because `srun` does not inherit `--cpus-per-task` from
+  `sbatch`.
+- The first `srun` prints every rank's binding before monoprop runs. The job exits with the
+  status of the monoprop step, after the `sacct` reports.
+- The script loads `singularity/4.1.5`; check `module avail singularity` for the installed
+  versions.
+
+### Check the placement
+
+monoprop prints no placement report. Setting `OMP_DISPLAY_AFFINITY=TRUE` has the OpenMP
+runtime print each thread's binding when a rank's first team forms; with the script above,
+every thread of a rank is bound to a different one of the rank's 14 cores. To check the
+ranks' binding before running monoprop, from an allocation with the job's geometry:
+
+```bash
+srun --ntasks-per-node=8 --cpus-per-task=14 --threads-per-core=1 \
+    --cpu-bind=verbose,threads --distribution=block:block \
+    bash -c 'echo "rank $SLURM_PROCID: $(grep Cpus_allowed_list /proc/self/status)"'
+```
+
+Each rank should list 14 consecutive CPUs, one per physical core: `0-13`, `14-27`, `28-41`
+and `42-55` for ranks 0–3 on the first socket, `56-69` to `98-111` for ranks 4–7 on the
+second. CPUs 112–223 are the second hardware threads of cores 0–111, so a list such as
+`0,112` means one core with both of its hardware threads, not two cores.
+
+### Tune UCX
+
+The container brings its own UCX, so `module load ucx` on the host has no effect; set UCX
+through environment variables, which Singularity passes into the container. With many
+ranks per node, select the dynamically connected transport, since `rc_mlx5` can run out
+of network-device memory at scale:
+
+```bash
+export UCX_TLS=self,sm,dc_mlx5
+```
+
+To list the transports UCX sees on a compute node:
+
+```bash
+srun -n 1 singularity exec monoprop_<tag>.sif ucx_info -d | grep Transport -A2
+```
+
+Launch with `srun` as above rather than `mpirun`; `mpirun` inside an allocation also needs
+`SLURM_CPU_BIND=none`.
+
+## Further reading
+
+- [Best practices: getting your code working in the large scale](https://eurohpcsupport.eu/best-practice/best-practices-getting-your-code-working-in-the-large-scale/)
+  (EuroHPC), on affinity, UCX and MPI tuning on MN5.
+- [MareNostrum5 performance guide](https://www.bsc.es/supportkc/docs/MareNostrum5/performance) (BSC).

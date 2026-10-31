@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <optional>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "PauliTestOracle.h"
+#include "RankPreconditions.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -36,7 +38,8 @@ using namespace test_utils;
 using pauli_oracle::slots_of_string;
 
 constexpr size_t kNumModes = 8;
-constexpr unsigned int kCutoff = 4;
+// random_exact's observable has only terms of length >= 10, so a lower cutoff leaves the energy 0.
+constexpr unsigned int kCutoff = 10;
 
 struct TestInputs {
     CaseData data;
@@ -44,6 +47,12 @@ struct TestInputs {
 
 auto load_inputs() -> TestInputs {
     return {load_case_data<kNumModes>("random_exact.msgpack")};
+}
+
+// A reference that truncation zeroes out, or leaves exact, matches a broken exchange too.
+auto require_truncated_reference(double serial, double exact) -> void {
+    BOOST_REQUIRE_MESSAGE(std::abs(serial) > 1e-6, "serial reference is trivially zero: " << serial);
+    BOOST_REQUIRE_MESSAGE(!near(serial, exact, 1e-6), "serial reference is not truncated: " << serial);
 }
 
 auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
@@ -61,23 +70,16 @@ auto run_energy(const TestInputs& inputs, MPI_Comm comm) -> double {
     return fn(inputs.data.parameters);
 }
 
-BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping cross-rank-count case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(rank_count_energy_within_fp_tolerance, *test_utils::min_ranks(2)) {
     const auto inputs = load_inputs();
     const double e_serial = run_energy(inputs, MPI_COMM_SELF);
+    require_truncated_reference(e_serial, inputs.data.actual_expval);
     const double e_world = run_energy(inputs, MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("serial=" << e_serial << " world=" << e_world << " diff=" << (e_world - e_serial));
     BOOST_TEST(near(e_serial, e_world));
 }
 
-BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping gradient cross-rank-count case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance, *test_utils::min_ranks(2)) {
     const auto& inputs = load_inputs();
 
     auto run_gradient = [&](MPI_Comm comm) -> VecD {
@@ -96,6 +98,8 @@ BOOST_AUTO_TEST_CASE(gradient_rank_count_within_fp_tolerance) {
     };
 
     const auto g_serial = run_gradient(MPI_COMM_SELF);
+    BOOST_REQUIRE_MESSAGE(std::ranges::any_of(g_serial, [](double g) { return std::abs(g) > 1e-6; }),
+                          "serial gradient is trivially zero");
     const auto g_world = run_gradient(MPI_COMM_WORLD);
 
     BOOST_REQUIRE_EQUAL(g_serial.size(), g_world.size());
@@ -149,11 +153,7 @@ auto run_pauli_energy(MPI_Comm comm) -> double {
     return sim.expectation_value({});
 }
 
-BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Pauli cross-rank-count case: requires at least 2 ranks.");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(pauli_rank_count_energy_within_fp_tolerance, *test_utils::min_ranks(2)) {
     const double e_serial = run_pauli_energy(MPI_COMM_SELF);
     const double e_world = run_pauli_energy(MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("pauli serial=" << e_serial << " world=" << e_world);

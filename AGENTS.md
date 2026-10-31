@@ -33,7 +33,8 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
 
 Public headers `cpp/include/monoprop/`, implementation `cpp/monoprop/`, Python API
 `src/monoprop/`, binding template `src/monoprop/bindings/binder.h`, generators
-`tools/generate-*.py`, sibling distributions `packages/*`. The repository root is the `uv`
+`tools/generate-*.py`, container recipes `tools/container/` (see `building.mdx`), sibling
+distributions `packages/*`. The repository root is the `uv`
 workspace's `monoprop` package.
 
 `bindings.cpp` and `_dispatch.py` are generated -- never edit them. To change the C++ API: edit
@@ -59,7 +60,7 @@ just build-docs
 - Benchmark evidence: `pytest benches --runtime-shape=... --build-mode=...` refuses contradictory
   runs. `tools/benchmark-rank-local-openmp.py` has exactly three modes, `observe`, `validate` and
   `compare` (see `docs/content/docs/benchmarks.mdx`). Launch MPI-off runs directly: `mpi4py` is
-  never imported when `monoprop.has_mpi` is false.
+  never imported when `monoprop.MPI_ABIS` is empty.
 - `uv sync` does not relink `bin/monoprop_unit_tests.x` -- compare mtimes and use the standalone
   recipe in `docs/content/docs/building.mdx`.
 - OpenMP is a required build dependency in every configuration (`OpenMP::OpenMP_CXX`, linked PUBLIC on

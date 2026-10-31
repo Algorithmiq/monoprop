@@ -1,0 +1,31 @@
+# Copyright 2026 Algorithmiq
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Whether this test run can exercise monoprop's MPI backend."""
+
+from __future__ import annotations
+
+import monoprop
+
+# An installation without MPI never initializes MPI, even where mpi4py happens to be installed:
+# importing mpi4py.MPI would initialize it as a side effect of collecting the suite.
+MPI = None
+if monoprop.MPI_ABIS:
+    try:
+        from mpi4py import MPI
+    except ImportError:  # pragma: no cover - exercised in wheel-test environments
+        MPI = None
+
+HAS_MPI_BACKEND: bool = MPI is not None and bool(monoprop.MPI_ABIS)
+"""True when mpi4py is importable and this monoprop installation ships an MPI backend."""

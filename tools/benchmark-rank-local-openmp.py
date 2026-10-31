@@ -701,8 +701,10 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
     """
     from monoprop_bench_tools.preflight import (  # noqa: PLC0415
         PreflightError,
+        build_has_mpi,
         declared_shape,
         import_mpi,
+        measured_extension,
         require_arm_shape,
         require_shape_runtime,
         runtime_identity,
@@ -720,7 +722,7 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
         require_arm_shape(args.arm, args.runtime_shape)
     except PreflightError as exc:
         raise EvidenceError(str(exc)) from exc
-    has_mpi = getattr(monoprop, "has_mpi", None)
+    has_mpi = build_has_mpi(monoprop)
     # Gated before any mpi4py import: an MPI-off process must never initialize MPI.
     mpi = import_mpi(has_mpi=bool(has_mpi))
     comm = mpi.COMM_WORLD if mpi is not None else None
@@ -742,10 +744,12 @@ def open_context(args: argparse.Namespace, cell: dict[str, Any]) -> Context:
         msg = f"routing environment {_routing_from_env(size)} differs from {identity['routing']}"
         raise EvidenceError(msg)
 
-    binary = Path(monoprop._core.__file__)
+    # The module the cell's propagators run on: the MPI variant once a communicator is passed.
+    extension = measured_extension(monoprop, comm)
+    binary = Path(extension.__file__)
     try:
         identity_of_binary = runtime_identity(
-            binary, getattr(monoprop._core, "__runtime_identity__", None)
+            binary, getattr(extension, "__runtime_identity__", None)
         )
         require_shape_runtime(args.runtime_shape, identity_of_binary)
     except PreflightError as exc:

@@ -14,10 +14,11 @@ mechanism differs by build:
 
 | Build | Enable MPI with |
 | --- | --- |
-| Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `monoprop_ENABLE_MPI=ON` in the environment |
+| Python bindings and C++ tests (scikit-build / `uv` / `pip`) | `monoprop_ENABLE_MPI=ON` in the environment, or the `monoprop.mpi=ON` config-setting |
 
-The prebuilt wheels published to PyPI (`pip install monoprop`) are also built
-without MPI, so a from-source build is required for multi-rank runs.
+The prebuilt wheels published to PyPI (`pip install monoprop`) already include an MPI
+backend for the MPICH family and Open MPI, so a from-source build is only needed for another MPI
+implementation that offers a different ABI or for the C++ library; see [Parallelism](/features/parallelism#enabling-mpi).
 
 ## Prerequisites
 
@@ -26,7 +27,7 @@ without MPI, so a from-source build is required for multi-rank runs.
   expression; the test suite's bitwise comparisons between code paths rely on it. A project that compiles the
   installed headers itself uses its own contraction setting.
 - CMake and Ninja
-- Python 3.11 or newer and the `uv` package manager (for the bindings)
+- Python 3.11 to 3.15 and the `uv` package manager (for the bindings)
 - an MPI implementation such as Open MPI (only for MPI builds)
 - OpenMP for C++, in every build — with or without MPI, and even when you only
   run one thread; there is no OpenMP-disabled build. Use the runtime that matches
@@ -59,7 +60,7 @@ Flake outputs support x86_64 Linux, aarch64 Linux, and aarch64 macOS. The
 | --- | --- |
 | `nix develop` | a shell with every prerequisite above, plus `uv`, `just` and Node.js |
 | `nix build .#monoprop` | the Python package, built without MPI |
-| `nix build .#monoprop-mpi` | the same package with `monoprop_ENABLE_MPI=ON` |
+| `nix build .#monoprop-mpi` | the same package with MPI enabled |
 | `nix build .#monoprop-py313` | the package for a specific interpreter: `py312`, `py313` or `py314`, with a `-mpi` suffix for the MPI build |
 | `nix run` | a Python interpreter with `monoprop` importable |
 
@@ -143,6 +144,53 @@ from the Python source distribution.
 compiles the nanobind extension in editable mode. Re-run the sync command whenever
 the dependency graph or the C++ sources change.
 
+### Build options
+
+The build is configured through a few package options, declared in
+`[tool.scikit-build.config-setting]` in `pyproject.toml`. Each one can be set
+as a PEP 517 config-setting or through an environment variable:
+
+| Config-setting | Environment variable | Values | Effect |
+| --- | --- | --- | --- |
+| `monoprop.mpi` | `monoprop_ENABLE_MPI` | bool (default off) | MPI parallelization; also adds mpi4py to the build requirements and appends `-mpi` to the build tree |
+| `monoprop.sanitizer` | `monoprop_SANITIZER` | `none` (default), `asan-ubsan`, `tsan` | sanitizer profile; also selects the build type (`AsanUbsan`, `Tsan`) and thus the build tree |
+| `monoprop.cxx-unit-tests` | `monoprop_ENABLE_CXX_UNIT_TESTS` | bool (default on) | build the C++ unit test suite |
+| `monoprop.arch-flags` | `monoprop_ENABLE_ARCH_FLAGS` | bool (default on, forced off for Debug and sanitizer builds) | architecture-specific compiler flags |
+| `monoprop.mpi-test-procs` | `monoprop_MPI_TEST_PROCS` | `;`-separated rank counts (default `2;4`) | rank counts the C++ MPI tests are registered for |
+| `monoprop.mpi-abis` | `monoprop_MPI_ABIS` | `;`-separated `<abi>=<prefix>` | build one MPI variant per entry from an MPI installed under `<prefix>` instead of the MPI CMake finds (release wheels; needs `monoprop.mpi`) |
+
+Booleans accept `ON`/`OFF`, `true`/`false`, `1`/`0` and similar. These two
+commands are equivalent:
+
+```bash
+monoprop_ENABLE_MPI=ON uv sync --all-extras -v
+uv sync --all-extras -v --config-settings-package="monoprop:monoprop.mpi=ON"
+```
+
+In the `uv` workspace, prefer `--config-settings-package="monoprop:..."` over
+`--config-settings`, so the setting does not reach the sibling distributions in
+`packages/`. With `pip`, pass `-C monoprop.mpi=ON`. A misspelled option is
+rejected with a suggestion.
+
+<Callout type="warn">
+  The environment variable takes precedence over the config-setting. A stale
+  `monoprop_ENABLE_MPI=OFF` in your shell silently overrides
+  `monoprop.mpi=ON`.
+</Callout>
+
+The build tree persists between syncs, and so does its CMake cache. The
+`cxx-unit-tests`, `arch-flags` and `mpi-test-procs` options therefore always pass
+their default, so unsetting one restores it rather than keeping the last value.
+A CMake variable passed through `cmake.define` has no such default: once set, it
+keeps its cached value until you set it again or delete the build tree.
+
+uv rebuilds monoprop whenever an option changes, by either route: config-settings
+are part of its build cache key, and `[tool.uv] cache-keys` in `pyproject.toml`
+adds the environment variables above, along with `SKBUILD_BUILD_DIR`,
+`SKBUILD_CMAKE_ARGS`, `SKBUILD_CMAKE_BUILD_TYPE` and `SKBUILD_CMAKE_DEFINE`. Switching variants
+therefore needs no `--reinstall-package` or `--no-cache`. Any other CMake cache
+variable can still be passed as `cmake.define.<NAME>=...` or through
+`SKBUILD_CMAKE_DEFINE`.
 
 ### Without MPI (default)
 
@@ -154,7 +202,8 @@ This produces a single-process build with no MPI dependency.
 
 ### With MPI
 
-Set `monoprop_ENABLE_MPI=ON` in the environment:
+Turn on the `monoprop.mpi` [build option](#build-options), for example through
+the environment:
 
 ```bash
 monoprop_ENABLE_MPI=ON uv sync --all-extras -v
@@ -163,49 +212,49 @@ monoprop_ENABLE_MPI=ON uv sync --all-extras -v
 It works the same with `pip` when installing from a checkout:
 
 ```bash
-monoprop_ENABLE_MPI=ON pip install .
+pip install . -C monoprop.mpi=ON
 ```
 
-That one variable does two things, matched by the
-`[[tool.scikit-build.overrides]]` block in `pyproject.toml`: it sets the
-`monoprop_ENABLE_MPI` CMake option, and it adds `mpi4py` to the build
-requirements. mpi4py is a build-time input — the bindings need its headers to
-hand an MPI communicator across the nanobind boundary — but only for MPI
-builds, so it is injected per-build through PEP 517's
-`get_requires_for_build_wheel` rather than sitting in `build-system.requires`
-where every build would pay for it.
+That one option does three things. It sets the `monoprop_ENABLE_MPI` CMake
+option, and, through the `[[tool.scikit-build.overrides]]` block in
+`pyproject.toml`, it adds `mpi4py` to the build requirements and moves the build
+to its own tree, `build/editable/Release-mpi`.
 
-<Callout type="warn">
-  Because it is an environment variable, it does not participate in uv's build
-  cache key. Add `--reinstall-package monoprop --no-cache` when flipping MPI on
-  or off in an existing environment, or uv may reuse the previous build.
+<Callout title="MPI builds compile the core twice" type="info">
+  An MPI build compiles the serial `_core`, and `_core_mpi.<abi>` for the MPI ABI family of the
+  MPI CMake finds (`openmpi` or `mpich`; see [Parallelism and distribution](/features/parallelism)).
+  Expect about twice the build time of a serial build.
 </Callout>
 
-#### Driving it with config-settings instead
+mpi4py is a build-time input — the bindings need its headers to hand an MPI
+communicator across the nanobind boundary — but only for MPI builds, so it is
+injected per-build through PEP 517's `get_requires_for_build_wheel` rather than
+sitting in `build-system.requires` where every build would pay for it.
 
-A scikit-build-core override can only match environment variables, never
-config-settings, so `cmake.define` alone will not pull in mpi4py — the build
-would fail at configure time with a message telling you as much. Pass both
-settings to use this route:
+The separate tree means switching between the serial and MPI variants rebuilds
+incrementally instead of reconfiguring a shared tree from scratch. It is a
+directory suffix rather than a build type, so the build keeps CMake's Release
+flags.
+
+Setting the CMake option directly (`cmake.define.monoprop_ENABLE_MPI=ON` or
+`SKBUILD_CMAKE_DEFINE`) bypasses that override, so mpi4py is not provisioned
+and the build fails at configure time with a message telling you as much. Use
+`monoprop.mpi` instead.
+
+### Release wheels
+
+The published wheels contain one MPI variant per ABI family, built against MPI installations
+under fixed prefixes rather than the MPI CMake would find. To reproduce one locally, install
+`mpich` and `openmpi` from PyPI with `pip install --target`, then:
 
 ```bash
-uv sync --all-extras -v \
-    --config-settings=cmake.define.monoprop_ENABLE_MPI=ON \
-    --config-settings=build.requires=mpi4py>=4.1.0
+CIBUILDWHEEL=1 monoprop_ENABLE_MPI=ON \
+  monoprop_MPI_ABIS="mpich=$PWD/mpi/mpich;openmpi=$PWD/mpi/openmpi" \
+  uv build --wheel
 ```
 
-In a workspace, prefer the per-package form so the settings do not reach the
-sibling distributions in `packages/`:
-
-```bash
-uv sync --all-extras -v \
-    --config-settings-package="monoprop:cmake.define.monoprop_ENABLE_MPI=ON" \
-    --config-settings-package="monoprop:build.requires=mpi4py>=4.1.0"
-```
-
-The cost of this route is that the mpi4py pin is repeated on the command line
-instead of living once in `pyproject.toml`; the environment switch is preferred
-for that reason.
+`CIBUILDWHEEL=1` is what cibuildwheel exports; it keeps the build machine's library directories
+out of the RPATHs.
 
 ### Verify the install
 
@@ -222,7 +271,7 @@ uv run python your_script.py
 ```
 
 For a multi-rank run, launch the same script under `mpiexec` (requires an MPI
-build) and pass `comm=MPI.COMM_WORLD` to the simulator:
+build) and pass `comm=MPI.COMM_WORLD` to the simulator. Without `comm`, every rank runs its own serial propagation:
 
 ```bash
 mpiexec -n 8 uv run python your_script.py
@@ -249,9 +298,24 @@ ctest --test-dir build/editable/Release
 This uses the scikit-build-core Release tree at `build/editable/Release` and
 runs `bin/monoprop_unit_tests.x` there, along with `bin/monoprop_link_export_probe.x` — a
 link-time check that the installed shared `monoprop` library exports every `detail/**` free
-function reachable from the public template chain. The installed CMake target records whether
-monoprop itself was built with MPI; a serial package does not acquire MPI compile definitions or
-link dependencies merely because the consuming project already has an `MPI::MPI_CXX` target.
+function reachable from the public template chain. In an MPI build the same probe also runs
+against every `monoprop_mpi_<abi>` library.
+
+`monoprop::monoprop` is always serial: a serial target never acquires MPI compile definitions or
+link dependencies, even if the consuming project has an `MPI::MPI_CXX` target. MPI consumers
+request the `MPI` component, which picks the libmonoprop variant for the MPI ABI family of the MPI
+CMake finds for the consuming project:
+
+```cmake
+find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
+target_link_libraries(my_target PRIVATE monoprop::monoprop_mpi)
+```
+
+Configuration fails, naming both, when the installation was built without that family;
+`monoprop_MPI_ABIS` lists the families it ships. Projects that linked `monoprop::monoprop` from an
+MPI build before must switch to the `MPI` component. A project that can run either way requests
+the component with `OPTIONAL_COMPONENTS MPI` instead: when no MPI or no matching family is found,
+`monoprop_MPI_FOUND` is false and `monoprop::monoprop` is still available.
 
 `just test-find-package` goes one step further out: it builds
 `cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
@@ -260,21 +324,23 @@ exercises `monopropConfig.cmake`, so it is what catches a missing `find_dependen
 usage requirement the package fails to export. It compiles the same source as the in-tree
 probe, so the two cannot drift. The probe drives both the Majorana and the Pauli basis and
 instantiates the internal OpenMP worksharing template in its own translation unit, so the
-consumer only builds if the imported `monoprop::monoprop` target carries OpenMP's compile
+consumer only builds if the imported target carries OpenMP's compile
 and link flags — the consumer project adds none of its own. Its constructor calls reach the library's out-of-line
 thread-budget and MPI thread checks, so an unexported helper fails the consumer's link. The consumer also checks
-that it inherited the build's MPI setting and no runtime selector: pass `-DSMOKE_EXPECT_MPI=ON|OFF` to make a
-mismatched package fail to compile. It checks the constructor's shape at compile time, runs every public operation
-family, an ordinary derived class through the base interface and the raw-access rule (at one and at two threads),
-and, when launched on several ranks with `monoprop_TEST_EXPECT_RANKS` set, compares the root on `MPI_COMM_WORLD`
-with one process's. It also runs the
+that it inherited no runtime selector and exactly its target's MPI setting: `monoprop::monoprop` must not carry
+`monoprop_ENABLE_MPI`, `monoprop::monoprop_mpi` must. It checks the constructor's shape at compile time, runs every
+public operation family, an ordinary derived class through the base interface and the raw-access rule (at one and at
+two threads), and, when launched on several ranks with `monoprop_TEST_EXPECT_RANKS` set, compares the root on
+`MPI_COMM_WORLD` with one process's. It also runs the
 header-only fixed-team phase primitive (`detail/sharded/Team.h`), whose barriers must compile through
 the same imported OpenMP flags, and the owner-initialized shard state (`detail/sharded/State.h`) and the
 direct-buffer construction engine (`detail/sharded/Construction.h`), each from a separate translation unit that
 includes only that header, so the installed headers must be self-contained. A further translation unit starts with
 the sharded evaluation header (`detail/sharded/Evaluation.h`) and calls the exported `ev_sharded` and
 `ev_and_grad_sharded` at run time, after a coefficient-informed build whose seed replay crosses the shared-library
-boundary.
+boundary. With an MPI installation it also builds the consumer through the `MPI` component and runs it under
+`mpiexec -n 2` at one and at two threads, checks that an optional `MPI` component still yields the serial package
+when no MPI is found, and checks that a package lacking the consumer's MPI ABI fails at configure time.
 
 The exported low-level entry points (`evolve_step`, `evolve_operator` and
 `state_operator_derivative_local`) take a trailing thread budget with a serial default. Removing the
@@ -284,8 +350,8 @@ headers (the partition, topology and in-process communicator headers are gone; s
 bindings together, from the same monoprop build, and install into a fresh prefix: an old prefix keeps the
 deleted headers.
 
-monoprop links no topology library: the package config's dependencies are Boost, Threads, OpenMP and, in an
-MPI build, MPI. An MPI or OpenMP implementation may itself use hwloc; that is its own dependency.
+monoprop links no topology library: the package config's dependencies are Boost, Threads, OpenMP and, with the
+`MPI` component, MPI. An MPI or OpenMP implementation may itself use hwloc; that is its own dependency.
 
 ### Debug tree
 
@@ -296,9 +362,16 @@ ctest --test-dir build/editable/Debug
 
 ### Sanitizer trees
 
-The QA workflow builds two sanitizer profiles, selected with `monoprop_SANITIZER`
-(`none`, `asan-ubsan`, or `tsan`). Both require Linux and either GCC or Clang;
-CI uses the default system GCC, which is what builds the released wheels.
+The QA workflow builds two sanitizer profiles, selected with the
+`monoprop.sanitizer` [build option](#build-options) (`none`, `asan-ubsan`, or
+`tsan`). Each profile has its own build type, `AsanUbsan` or `Tsan`, so it
+builds into its own tree next to `build/editable/Release` (with an `-mpi`
+suffix for an MPI build). Both require Linux and
+either GCC or Clang; CI uses the default system GCC, which is what builds the
+released wheels.
+
+Export `monoprop_SANITIZER` rather than setting it for the build command alone:
+the `just` test recipes read it too, to find the tree.
 
 Sanitizer trees intentionally skip the `_core.pyi` typing stubs — generating them
 means importing the instrumented extension, which is not worth arranging for a
@@ -307,18 +380,9 @@ tree that is never packaged.
 #### ASan + LSan + UBSan
 
 ```bash
-SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan \
-SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=asan-ubsan" \
-uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
+export monoprop_SANITIZER=asan-ubsan
+just build --group workspace-test
 ```
-
-`--reinstall-package monoprop --no-cache` matters locally. uv decides whether to
-rebuild from the `cache-keys` in `pyproject.toml`, which hash *source files* — not
-environment variables. So if you already have an editable install, switching only
-the build type leaves the sources unchanged, `uv sync` does nothing, and
-`build/editable/AsanUbsan` is never created (the `ctest` below then fails with
-"No such file or directory"). CI omits these flags because each job starts on a
-clean runner with nothing installed.
 
 The C++ test binary is fully instrumented, so every check applies to it,
 including leak detection:
@@ -362,9 +426,8 @@ The QA workflow runs that recipe on failure.
 #### ThreadSanitizer
 
 ```bash
-SKBUILD_CMAKE_BUILD_TYPE=Tsan \
-SKBUILD_CMAKE_DEFINE="monoprop_SANITIZER=tsan" \
-uv sync --group workspace-test --all-extras --reinstall-package monoprop --no-cache -v
+export monoprop_SANITIZER=tsan
+just build --group workspace-test
 
 just test-cpp-tsan
 ```
@@ -404,12 +467,13 @@ Python API under TSan would require a TSan-instrumented CPython.
 
 - Use `just code-coverage` for the coverage build.
 - Use `just test-cpp` and `just test-cpp-mpi` for the two C++ legs, or
-  `ctest --test-dir build/editable/Release -L mpi-2` (or `-L mpi-4`) to filter further.
+  `ctest --test-dir build/editable/Release-mpi -L mpi-2` (or `-L mpi-4`) to filter further.
 - Use `just build [uv sync args…]` when you want the build CI performs. It adds
   `--all-extras` and, for a serial build, drops the `mpi` extra — importing
   `mpi4py.MPI` without an MPI runtime raises. `monoprop_ENABLE_MPI` drives all of
   it, so `monoprop_ENABLE_MPI=ON just build --group workspace-test` is the MPI
-  build and a bare `just build` is the serial one.
+  build and a bare `just build` is the serial one. The recipes read the
+  environment variables, not config-settings, so select variants that way here.
 - The platform packages the build needs are listed in `tools/packages/`, one per
   line: `apt.txt` / `brew.txt`, plus `apt-mpi.txt` / `brew-mpi.txt` for an MPI
   build. `.github/actions/setup` and `.devcontainer/Dockerfile` both install from
@@ -419,13 +483,14 @@ Python API under TSan would require a TSan-instrumented CPython.
 ## The runtime a build contains
 
 There is one runtime and no build option that selects another: a default build is the sharded OpenMP runtime
-([Parallelism and distribution](/features/parallelism)). Its extension carries a read-only identity, the attribute
-`_core.__runtime_identity__` and the same NUL-terminated literal in the extension file:
+([Parallelism and distribution](/features/parallelism)). Its extensions carry a read-only identity: the serial
+`_core` as the attribute `_core.__runtime_identity__`, and every extension, `_core_mpi` included, as the same
+NUL-terminated literal in its file:
 
 ```bash
 uv run --no-sync python -c 'from monoprop import _core; print(_core.__runtime_identity__)'
 # monoprop-runtime=sharded-openmp
-just check-runtime   # attribute, literal, MPI setting, and no stale selector in the C++ tree
+just check-runtime   # attribute, literals, MPI ABIs, and no stale selector in the C++ tree
 ```
 
 The parity driver and the benchmark preflight read both, so evidence names the binary it came from. Builds from
@@ -437,9 +502,74 @@ the removal keeps a `monoprop_SHARDED_OPENMP_PROTOTYPE` cache entry that no long
 Linux x86_64 with GCC/libgomp, Clang/libomp, ASan/UBSan and Clang TSan with Archer, with and without MPI, has been
 run. macOS, Linux aarch64, wheels from CI, Nix and the minimum compiler versions are pending their own runs.
 
+## Container images
+
+`.github/workflows/container.yml` publishes two images to GHCR for
+[HPC clusters](/clusters) without outbound network:
+
+- `ghcr.io/algorithmiq/monoprop-base`: the MPI stack. `tools/container/base.py` is an
+  [HPCCM](https://github.com/NVIDIA/hpc-container-maker) recipe: Ubuntu 26.04 (compilers,
+  Python, Boost, and hwloc for PMIx and Open MPI, from the distribution), DOCA-OFED's InfiniBand user space, and
+  UCX, PMIx and Open MPI built from source. The versions are pinned at the top of the recipe.
+- `ghcr.io/algorithmiq/monoprop`: `tools/container/Dockerfile` installs the sdist on top,
+  with MPI and the `mpi` and `qiskit` extras, compiled with `-march=$MARCH`. The workflow
+  sets `MARCH` (currently `sapphirerapids`, also the Dockerfile's default). The runtime
+  dependencies are exactly the locked set from `uv.lock`, the versions CI tests against,
+  installed from a hash-checked `requirements.txt` that the workflow exports next to the
+  sdist; monoprop itself installs with `--no-deps`. An unhashed `constraints.txt` export
+  pins mpi4py in pip's isolated build environment.
+
+The base image is tagged with the first 12 hex digits of the SHA-256 of the rendered
+Dockerfile, so it is rebuilt only when the recipe's output changes, including through an
+hpccm upgrade (`HPCCM_VERSION` in the workflow). Each run also tags the base image it used
+with the run's tag (`pr-N`, `main` or the release version). The base image is built without
+`-march`, so its tags carry no CPU target. The monoprop image gets the same tag and
+`sha-<commit>`, each followed by `-$MARCH` (e.g. `main-sapphirerapids`), because it runs only
+on that CPU; non-pre-release releases also move `latest-$MARCH`.
+
+The workflow runs on pushes to `main`, on releases, on manual dispatch, and on pull
+requests that touch `tools/container/` or the workflow. `tools/container/smoke-test.sh`
+checks the monoprop image before it is pushed. It never imports monoprop, because the CI
+machine's CPU may lack the instructions `-march` enables, so check a new image on the
+target machine as well (see [MareNostrum5](/clusters/marenostrum5#check-the-image)).
+
+To reproduce the build locally:
+
+```bash
+mkdir -p build/container/base build/container/app
+uvx hpccm==26.5.0 --recipe tools/container/base.py --format docker > build/container/base/Dockerfile
+docker build -t monoprop-base:local build/container/base
+uv tool run --from build pyproject-build --sdist --installer uv --outdir build/container/app
+export_args=(--frozen --no-dev --extra mpi --extra qiskit --no-emit-project)
+uv export "${export_args[@]}" --output-file build/container/app/requirements.txt
+uv export "${export_args[@]}" --no-hashes --output-file build/container/app/constraints.txt
+sdist="$(basename build/container/app/monoprop-*.tar.gz)"
+docker build -f tools/container/Dockerfile \
+  --build-arg BASE_IMAGE=monoprop-base:local --build-arg SDIST="$sdist" \
+  -t monoprop:local build/container/app
+version="${sdist#monoprop-}"; version="${version%.tar.gz}"
+docker run --rm --shm-size=1g -v "$PWD/tools/container/smoke-test.sh:/smoke-test.sh:ro" \
+  monoprop:local bash /smoke-test.sh "$version"
+```
+
+### Image cleanup
+
+`.github/workflows/cleanup-images.yml` runs `tools/cleanup-ghcr.py` daily. It keeps the
+versions tagged with a release, `latest`, `main` or the `pr-N` of an open pull request,
+with or without a CPU-target suffix listed in the script's `CPU_TARGETS` (building for a
+new `MARCH` means adding it there), the platform and attestation manifests those reference, and anything less than 24 hours
+old, and deletes the rest of both packages. A manual dispatch is a dry run by default,
+which only logs what would be deleted. The script authenticates with the workflow's
+`GITHUB_TOKEN`, which can manage the packages this repository published.
+
+A package created by a workflow can start out private on GHCR. If so, an organisation
+owner makes it public once, in the package settings, so that cluster users can pull
+without credentials.
+
 ## See also
 
 - [Getting Started](/getting-started) — installing a prebuilt release from PyPI.
+- [HPC clusters](/clusters) — running the published container image on HPC systems.
 - [Parallelism and distribution](/features/parallelism) — running across MPI ranks and shared-memory threads.
 - [Testing](/testing) — the full Python and C++ test workflow.
 - [How to Contribute](/how-to-contribute) — contributor workflow and documentation checks.

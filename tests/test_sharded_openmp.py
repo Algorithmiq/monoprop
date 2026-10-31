@@ -46,6 +46,7 @@ from typing import Any
 
 import pytest
 
+import monoprop
 from monoprop import _core
 
 _PROBE = Path(__file__).resolve().parent / "sharded_openmp_probe.py"
@@ -446,7 +447,7 @@ def _launcher() -> str | None:
 
 
 needs_mpi_launch = pytest.mark.skipif(
-    not _core.has_mpi or _launcher() is None,
+    not monoprop.MPI_ABIS or _launcher() is None,
     reason="needs an MPI build and an MPI launcher on PATH",
 )
 

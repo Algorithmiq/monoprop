@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
+    from types import ModuleType
 
 #: The two process layouts a measurement may declare.
 RUNTIME_SHAPES = ("partitions", "openmp")
@@ -167,8 +168,8 @@ def declared_shape(
         runtime_shape: ``"partitions"`` or ``"openmp"``.
         env: The launch environment of this process.
         ranks: The observed number of ranks in the measurement communicator.
-        has_mpi: ``monoprop.has_mpi`` of the extension actually imported; ``None`` when it could
-            not be read.
+        has_mpi: The build mode of the installation actually imported (:func:`build_has_mpi`);
+            ``None`` when it could not be read.
         expected_has_mpi: The build mode the measurement requires, if declared.
         expected_ranks: The rank count the measurement requires, if declared.
         expected_threads: The per-rank thread count the measurement requires, if declared.
@@ -309,6 +310,44 @@ def require_shape_runtime(runtime_shape: str, identity: Mapping[str, Any]) -> No
         raise PreflightError(msg)
 
 
+def build_has_mpi(monoprop: ModuleType) -> bool | None:
+    """Return whether an imported ``monoprop`` installation ships an MPI backend.
+
+    Current builds report it as a non-empty ``monoprop.MPI_ABIS``; builds from before the MPI ABI
+    variants (the preserved partition baseline among them) as ``monoprop.has_mpi``.
+
+    Args:
+        monoprop: The imported ``monoprop`` package.
+
+    Returns:
+        The build mode, or ``None`` when the package reports neither.
+    """
+    abis = getattr(monoprop, "MPI_ABIS", None)
+    if abis is not None:
+        return bool(abis)
+    legacy = getattr(monoprop, "has_mpi", None)
+    return legacy if isinstance(legacy, bool) else None
+
+
+def measured_extension(monoprop: ModuleType, comm: Any) -> ModuleType:
+    """Return the extension module that runs propagators built on ``comm``.
+
+    Current builds serve ``comm=None`` from the serial ``_core`` and a communicator from the MPI
+    ABI variant ``_core_mpi``; builds from before the variants run everything on ``_core``.
+
+    Args:
+        monoprop: The imported ``monoprop`` package.
+        comm: The measurement's mpi4py communicator, or ``None``.
+
+    Returns:
+        The module whose file a measurement must hash and whose runtime identity it records.
+    """
+    backend = getattr(monoprop, "_backend", None)
+    if backend is None:
+        return monoprop._core
+    return backend.core_module(comm)
+
+
 def import_mpi(*, has_mpi: bool) -> Any:
     """Return ``mpi4py.MPI`` for an MPI build, without touching mpi4py otherwise.
 
@@ -317,7 +356,7 @@ def import_mpi(*, has_mpi: bool) -> Any:
     serially, as before.
 
     Args:
-        has_mpi: ``monoprop.has_mpi`` of the imported extension.
+        has_mpi: The build mode of the imported installation (:func:`build_has_mpi`).
     """
     if not has_mpi:
         return None

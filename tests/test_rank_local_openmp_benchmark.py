@@ -71,6 +71,11 @@ _legacy_build = pytest.mark.skipif(
     SHARDED_BUILD, reason="needs a legacy (partition) build"
 )
 _sharded_build = pytest.mark.skipif(not SHARDED_BUILD, reason="needs a sharded build")
+# The imported installation's build mode, legacy builds included (preflight.build_has_mpi, which this module may not be
+# able to import).
+HAS_MPI = bool(
+    getattr(monoprop, "MPI_ABIS", None) or getattr(monoprop, "has_mpi", False)
+)
 
 # These tests launch their own processes (pytest, the driver, mpiexec). Inside a multi-rank MPI test
 # job every rank would repeat those launches nested in the parent job, so they run outside one.
@@ -151,7 +156,7 @@ def test_suite_records_independent_exactness_for_all_four_families(
         assert data["opmemexact"][node] is True, node
         assert data["memhwmexact"][node] is True, node
         assert data["memhwm"][node] >= data["opmempeak"][node]["max"] > 0, node
-    assert data["meta"]["has_mpi"] is monoprop.has_mpi
+    assert data["meta"]["has_mpi"] is HAS_MPI
     assert len(data["meta"]["monoprop_core_sha256"]) == 64
 
 
@@ -168,7 +173,7 @@ def _mpi4py_trap(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @_launches
-@pytest.mark.skipif(monoprop.has_mpi, reason="needs an MPI-off extension")
+@pytest.mark.skipif(HAS_MPI, reason="needs an MPI-off extension")
 def test_mpi_off_suite_never_imports_mpi4py(tmp_path: Path) -> None:
     _needs_bench_tools()
     trap, marker = _mpi4py_trap(tmp_path)
@@ -180,7 +185,7 @@ def test_mpi_off_suite_never_imports_mpi4py(tmp_path: Path) -> None:
 
 
 @_launches
-@pytest.mark.skipif(monoprop.has_mpi, reason="needs an MPI-off extension")
+@pytest.mark.skipif(HAS_MPI, reason="needs an MPI-off extension")
 @pytest.mark.parametrize(
     ("args", "env", "message"),
     [
@@ -210,7 +215,7 @@ def test_suite_rejects_contradictory_declarations(
 
 
 @_launches
-@pytest.mark.skipif(monoprop.has_mpi, reason="needs an MPI-off extension")
+@pytest.mark.skipif(HAS_MPI, reason="needs an MPI-off extension")
 @pytest.mark.parametrize(
     ("args", "env"),
     [
@@ -257,7 +262,7 @@ def test_suite_rejects_a_shape_its_binary_cannot_serve() -> None:
 
 @_launches
 @pytest.mark.skipif(
-    not monoprop.has_mpi or shutil.which("mpiexec") is None,
+    not HAS_MPI or shutil.which("mpiexec") is None,
     reason="needs an MPI extension and mpiexec",
 )
 @pytest.mark.parametrize(
@@ -2151,7 +2156,7 @@ def _e2e_campaign(root: Path, *, has_mpi: bool = False) -> tuple[str, dict]:
 
 def _serial_comm():
     """Return COMM_SELF for an MPI extension, ``None`` otherwise (never imports mpi4py MPI-off)."""
-    if not monoprop.has_mpi:
+    if not HAS_MPI:
         return None
     from mpi4py import MPI  # noqa: PLC0415 - gated on the build mode
 
@@ -2205,7 +2210,7 @@ def _observe_args(
 
 
 @_launches
-@pytest.mark.skipif(monoprop.has_mpi, reason="MPI-off end-to-end run")
+@pytest.mark.skipif(HAS_MPI, reason="MPI-off end-to-end run")
 def test_observe_and_validate_write_complete_joined_artifacts(tmp_path: Path) -> None:
     _needs_bench_tools()
     driver = _driver()
@@ -2285,7 +2290,7 @@ def test_observe_and_validate_write_complete_joined_artifacts(tmp_path: Path) ->
 
 
 @_launches
-@pytest.mark.skipif(monoprop.has_mpi, reason="MPI-off end-to-end run")
+@pytest.mark.skipif(HAS_MPI, reason="MPI-off end-to-end run")
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -2340,7 +2345,7 @@ def test_observe_rejects_contradictory_evidence(
 
 @_launches
 @pytest.mark.skipif(
-    not monoprop.has_mpi or shutil.which("mpiexec") is None,
+    not HAS_MPI or shutil.which("mpiexec") is None,
     reason="needs an MPI extension and mpiexec",
 )
 def test_two_rank_observe_and_validate_merge_the_replicated_identity(

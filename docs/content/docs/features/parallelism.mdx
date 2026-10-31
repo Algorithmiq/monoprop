@@ -154,21 +154,47 @@ over XOR, so a gate's queries still reach several ranks rather than one.
 Both variables must match on every rank. A mismatch would deadlock the exchange, so it is checked collectively at
 startup and raised. There is no such check for T, which the launch must keep uniform.
 
-### Single-node (`MPI.COMM_SELF`)
+### Serial or MPI backend
+
+monoprop picks the backend per propagator. `comm=None` runs serially, whatever the installation;
+an mpi4py communicator runs on the MPI backend, which monoprop loads the first time it is needed.
+Importing monoprop never imports mpi4py or initializes MPI. Under `mpiexec`, a propagator built
+without `comm` therefore runs serially on every rank: pass a duplicate of `MPI.COMM_WORLD` to distribute it.
+
+[MPI_ABIS][monoprop.MPI_ABIS] lists the MPI ABI families the installation can drive; it is empty
+without MPI support. The MPI backend matches the family of the MPI library mpi4py uses. Passing a
+communicator to an installation without MPI support raises
+[MPIUnavailableError][monoprop.exceptions.MPIUnavailableError]; a family the installation was not
+built for raises [MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError], and an MPI
+library older than the supported versions (see [Enabling MPI](#enabling-mpi)) raises
+[MPIVersionError][monoprop.exceptions.MPIVersionError].
+
+### Single process (`comm=None`)
+
+Leave `comm` out, or pass `None`, to run in one process. That uses the serial backend, which
+needs neither mpi4py nor an MPI library, and still partitions the operator across the cores (see
+[Operator partitioning](#operator-partitioning-single-node)).
 
 ```python notest
-from mpi4py import MPI
-sim = MajoranaPropagator(..., comm=MPI.COMM_SELF)
+sim = MajoranaPropagator(...)  # comm=None
 ```
 
 ### Multi-node (`MPI.COMM_WORLD`)
 
-Replace the communicator and launch with `mpiexec`:
+Pass a duplicate of `MPI.COMM_WORLD` and launch with `mpiexec`:
 
 ```python notest
 from mpi4py import MPI
-sim = MajoranaPropagator(..., comm=MPI.COMM_WORLD)
+comm = MPI.COMM_WORLD.Dup()
+sim = MajoranaPropagator(..., comm=comm)
+...
+comm.Free()  # once sim and its functionals are no longer used
 ```
+
+monoprop exchanges point-to-point messages on fixed tags over `comm`, so your own sends and receives
+on the same communicator could match them; a receive with `MPI.ANY_TAG` could even take one of
+monoprop's messages and leave it waiting. Reserve the duplicate for monoprop, with no point-to-point
+traffic of your own on it. It must outlive the propagator and every functional obtained from it.
 
 ```bash
 mpiexec -n 8 uv run python your_script.py
@@ -180,6 +206,44 @@ core it can see: give each rank its own cores (`--map-by slot:PE=T --bind-to cor
 
 ### Enabling MPI
 
-MPI is **off by default**, so the prebuilt PyPI wheels run single-rank and the
-communicators above only distribute work after a from-source build with MPI
-enabled. See [Building from source](/building) for the full build instructions.
+The PyPI wheels ship an MPI backend for the ABIs of the MPICH family (MPICH, Intel MPI, MVAPICH,
+Cray MPICH) and of Open MPI, and use the MPI library mpi4py finds on the machine. Install mpi4py
+with the `mpi` extra:
+
+```bash
+pip install "monoprop[mpi]"
+```
+
+Use the MPI your system provides: a module on a cluster (`module load ...`), your distribution's
+package manager, or your own build. mpi4py's
+[installation guide](https://mpi4py.readthedocs.io/en/stable/install.html) covers the details for
+each platform, such as setting `LD_LIBRARY_PATH` so the MPI library is found at run time. On a
+machine without MPI, for a first try, mpi4py's MPICH and Open MPI wheels (`mpich`, `openmpi`) and
+Intel's `impi-rt` install from PyPI; mpi4py recommends a system-provided or custom-built MPI for
+production runs, because these wheels may lack features such as GPU awareness.
+
+On Ubuntu 22.04 and older, the MPICH package names its library `libmpich.so.12` instead of the
+`libmpi.so.12` that the MPICH ABI requires; mpi4py's
+[guide](https://mpi4py.readthedocs.io/en/stable/install.html#debian-ubuntu) gives the symbolic link
+that fixes it.
+
+Supported MPI versions, from the version below up to the latest release:
+
+| Implementation | ABI family | Minimum |
+| --- | --- | --- |
+| Open MPI | `openmpi` | 4.1 |
+| MPICH | `mpich` | 4.0 |
+| Intel MPI | `mpich` | 2021.0 |
+| MVAPICH | `mpich` | 3.0 |
+| Cray MPICH | `mpich` | 8.1 |
+
+An older version is rejected when the MPI backend loads
+([MPIVersionError][monoprop.exceptions.MPIVersionError]) and when CMake configures a from-source
+build or a C++ consumer; an implementation not in the table runs with a warning. Open MPI 4.1,
+MPICH 4.0 and Intel MPI 2021.1 are tested in CI at those versions; MVAPICH and Cray MPICH are not.
+
+On HPE Cray systems, load the `cray-mpich-abi` module, as mpi4py's
+[installation guide](https://mpi4py.readthedocs.io/en/stable/install.html#hpe-cray-os) requires;
+see HPE's [`intro_mpi`](https://cpe.ext.hpe.com/docs/latest/mpt/mpich/intro_mpi.html#using-mpich-abi-compatibility)
+for details.
+From-source builds enable MPI with the `monoprop.mpi` option; see [Building from source](/building).

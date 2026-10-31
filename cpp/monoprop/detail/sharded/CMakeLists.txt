@@ -12,9 +12,7 @@ target_sources(
         "Team.h"
 )
 
-target_sources(
-  monoprop-objs
-  PRIVATE
-    Evaluation.cpp
-    Exchange.cpp
+monoprop_add_core_sources(
+  Evaluation.cpp
+  Exchange.cpp
 )

@@ -6,7 +6,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "monoprop",
     "monoprop-bench-tools",
-    "qiskit==2.5.2",
+    "qiskit==2.6.0",
     "tqdm==4.70.1",
     "ppvm==0.1.0",
     "pauli-prop==0.2.1",

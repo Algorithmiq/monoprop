@@ -45,7 +45,7 @@ def visible_physical_cores(cpus):
 
 
 def main() -> str | None:
-    if not monoprop.has_mpi:
+    if not monoprop.MPI_ABIS:
         return "monoprop was built without MPI; every rung shares this binary"
 
     # PHYSICAL cores, and only the ones this process may run on. Physical, because the rungs size

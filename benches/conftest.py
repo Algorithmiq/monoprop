@@ -63,8 +63,10 @@ from monoprop_bench_tools.models import (
 )
 from monoprop_bench_tools.preflight import (
     PreflightError,
+    build_has_mpi,
     declared_shape,
     import_mpi,
+    measured_extension,
     require_shape_runtime,
     runtime_identity,
 )
@@ -78,8 +80,8 @@ if TYPE_CHECKING:
 
     from monoprop import MajoranaPropagator
 
-# The build mode of the extension actually imported; ``None`` if it cannot be read.
-_HAS_MPI: bool | None = getattr(monoprop, "has_mpi", None)
+# The build mode of the installation actually imported; ``None`` if it cannot be read.
+_HAS_MPI: bool | None = build_has_mpi(monoprop)
 
 # Gated on the build mode before mpi4py is touched: an MPI-off run must not initialize MPI even
 # when mpi4py is installed. For an MPI build, mpi4py may still be absent, or (the ABI wheel)
@@ -213,7 +215,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--build-mode",
         choices=("mpi", "mpi-off"),
         default=None,
-        help="Required build mode, checked against the imported extension's has_mpi.",
+        help="Required build mode, checked against whether the imported installation ships an MPI backend.",
     )
 
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
@@ -227,23 +229,33 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             )
 
 
+def _bench_comm() -> Any:
+    """Return the benchmark communicator (``MPI.COMM_WORLD``, or ``None`` without an MPI backend)."""
+    return None if MPI is None or not _HAS_MPI else MPI.COMM_WORLD
+
+
+def _measured_core() -> Any:
+    """Return the extension module the benchmarks run on: ``_core_mpi`` under ``bench_comm``."""
+    return measured_extension(monoprop, _bench_comm())
+
+
 def _core_sha256() -> str:
-    """Return the SHA-256 of the extension module this run imported (see :func:`_core_md5`)."""
+    """Return the SHA-256 of the extension module this run measures (see :func:`_core_md5`)."""
     try:
-        path = Path(monoprop._core.__file__)
+        path = Path(_measured_core().__file__)
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except (AttributeError, OSError, TypeError):
         return "unavailable"
 
 
 def _core_md5() -> str:
-    """Return the md5 of the extension module this run imported.
+    """Return the md5 of the extension module this run measures.
 
     The install-time version stamp is not rewritten by a later ``cmake --build`` and
-    site-packages holds its own copies, so hash what ``_core`` actually resolved to.
+    site-packages holds its own copies, so hash what the module actually resolved to.
     """
     try:
-        path = Path(monoprop._core.__file__)
+        path = Path(_measured_core().__file__)
         return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
     except (AttributeError, OSError, TypeError):
         return "unavailable"
@@ -268,9 +280,9 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         "monoprop_version": monoprop.__version__,
         "monoprop_core_md5": _core_md5(),
         "monoprop_core_sha256": _core_sha256(),
-        "monoprop_core_path": str(getattr(monoprop._core, "__file__", "unavailable")),
+        "monoprop_core_path": str(getattr(_measured_core(), "__file__", "unavailable")),
         "monoprop_runtime_identity": getattr(
-            monoprop._core, "__runtime_identity__", None
+            _measured_core(), "__runtime_identity__", None
         ),
         "has_mpi": _HAS_MPI,
         "monoprop_variant": monoprop.__variant__,
@@ -329,9 +341,10 @@ def _require_shape(config: pytest.Config) -> dict[str, Any] | None:
                 expected_has_mpi=expected_has_mpi,
             )
             # The declared shape must be one the imported binary's own runtime serves.
+            measured = _measured_core()
             identity = runtime_identity(
-                Path(monoprop._core.__file__),
-                getattr(monoprop._core, "__runtime_identity__", None),
+                Path(measured.__file__),
+                getattr(measured, "__runtime_identity__", None),
             )
             require_shape_runtime(runtime_shape, identity)
         except PreflightError as exc:
@@ -389,8 +402,8 @@ def pytest_sessionfinish() -> None:
 
 @pytest.fixture(scope="session")
 def bench_comm() -> Any:
-    """Return the benchmark communicator (``MPI.COMM_WORLD`` or ``None``)."""
-    return None if MPI is None else MPI.COMM_WORLD
+    """Return the benchmark communicator (``MPI.COMM_WORLD``, or ``None`` without an MPI backend)."""
+    return _bench_comm()
 
 
 @pytest.fixture(scope="session")

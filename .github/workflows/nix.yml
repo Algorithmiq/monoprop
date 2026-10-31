@@ -26,6 +26,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   flake:
     name: Flake on ${{ matrix.runner }} (Python ${{ matrix.python }})
@@ -48,7 +51,7 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31.11.2
+        uses: cachix/install-nix-action@v31.11.3
 
       # Evaluates every output, the `nix run` app and the other interpreters'
       # packages included, without building; the checks are the per-interpreter

@@ -110,7 +110,7 @@ def _write() -> None:
         print(text, flush=True)  # noqa: T201
 
 
-doc["has_mpi"] = monoprop.has_mpi
+doc["has_mpi"] = bool(monoprop.MPI_ABIS)
 if mode not in ("operations", "construct", "wrong-thread"):
     raise SystemExit(f"unknown mode {mode!r}")
 try:

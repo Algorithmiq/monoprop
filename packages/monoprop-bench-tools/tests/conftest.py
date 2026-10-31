@@ -15,18 +15,3 @@
 """Pytest configuration for the monoprop-bench-tools test suite."""
 
 from __future__ import annotations
-
-from typing import Any
-
-import pytest
-
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI = None
-
-
-@pytest.fixture
-def serial_comm() -> Any:
-    """Single-rank communicator for builders whose state is rank-local."""
-    return None if MPI is None else MPI.COMM_SELF

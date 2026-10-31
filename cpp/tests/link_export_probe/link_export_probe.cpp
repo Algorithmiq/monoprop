@@ -45,8 +45,8 @@
 //      is that header: a coefficient-informed extension replaying its seed in-team, a retained functional, and runtime
 //      calls to the exported ev_sharded() and ev_and_grad_sharded() through the imported target.
 //  (j) the inherited configuration: no runtime selector reaches the consumer, and it sees monoprop_ENABLE_MPI exactly
-//      when it expected an MPI package (monoprop_EXPECT_MPI, when set). The root runs every public operation family
-//      and its exports and aggregates.
+//      when it linked an MPI-enabled libmonoprop (monoprop_EXPECT_MPI, when set). The root runs every public
+//      operation family and its exports and aggregates.
 //  (k) an ordinary derived class -- virtual clone_() and update_initial_operator() overrides, the protected
 //      apply_initial_operator_() -- used through the base interface.
 //  (l) MPI builds launched on several ranks: the root on MPI_COMM_WORLD against the same root on MPI_COMM_SELF --
@@ -75,9 +75,9 @@
 
 #if defined(monoprop_EXPECT_MPI)
 #if monoprop_EXPECT_MPI && !defined(monoprop_ENABLE_MPI)
-#error "expected an MPI package, but monoprop::monoprop did not carry monoprop_ENABLE_MPI"
+#error "expected an MPI-enabled libmonoprop, but the imported target did not carry monoprop_ENABLE_MPI"
 #elif !monoprop_EXPECT_MPI && defined(monoprop_ENABLE_MPI)
-#error "expected an MPI-off package, but monoprop::monoprop carries monoprop_ENABLE_MPI"
+#error "expected the serial libmonoprop, but the imported target carries monoprop_ENABLE_MPI"
 #endif
 #endif
 

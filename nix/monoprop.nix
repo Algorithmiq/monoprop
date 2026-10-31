@@ -75,7 +75,8 @@ buildPythonPackage {
     setuptools-scm
   ]
   # Upstream provisions mpi4py through a scikit-build-core override keyed on the
-  # `monoprop_ENABLE_MPI` environment variable, which would resolve it from PyPI.
+  # `monoprop.mpi` setting (environment variable `monoprop_ENABLE_MPI`), which would
+  # resolve it from PyPI.
   # The sandbox has no network, so the store copy is supplied here instead and the
   # variable is deliberately left unset -- see `env` below.
   ++ lib.optionals withMPI [ mpi4py ];
@@ -108,7 +109,7 @@ buildPythonPackage {
         "nanobind_DIR=${nanobind_3}/${python.sitePackages}/nanobind/cmake"
       ]
       # The CMake option is set directly rather than through upstream's
-      # `monoprop_ENABLE_MPI` environment switch: that switch also appends mpi4py to
+      # `monoprop.mpi` setting: that setting also appends mpi4py to
       # `build.requires`, i.e. a PyPI resolution the sandbox denies.
       ++ lib.optionals withMPI [ "monoprop_ENABLE_MPI=ON" ]
     );

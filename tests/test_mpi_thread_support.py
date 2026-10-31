@@ -35,7 +35,7 @@ from typing import Any
 
 import pytest
 
-from monoprop import _core
+import monoprop
 
 _PROBE = Path(__file__).resolve().parent / "mpi_thread_support_probe.py"
 # Environment a launcher gives its ranks: a child that inherits it would try to join the parent's job.
@@ -53,7 +53,7 @@ def _launcher() -> str | None:
 
 
 pytestmark = [
-    pytest.mark.skipif(not _core.has_mpi, reason="needs an MPI build"),
+    pytest.mark.skipif(not monoprop.MPI_ABIS, reason="needs an MPI build"),
     pytest.mark.skipif(
         _inside_multirank_job(),
         reason="launches fresh interpreters, which cannot run inside a multi-rank job",

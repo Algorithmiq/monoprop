@@ -14,4 +14,4 @@ target_sources(
         "Routing.h"
 )
 
-target_sources(monoprop-objs PRIVATE MPICompat.cpp)
+monoprop_add_core_sources(MPICompat.cpp)

@@ -55,14 +55,14 @@
           };
           monoprop = pyfinal.callPackage ./nix/monoprop.nix {
             inherit nanobind_3;
-            # monoprop's `[build-system] requires` wants >= 1.0.3, newer than
+            # monoprop's `[build-system] requires` wants >= 1.1.0, newer than
             # nixpkgs ships.
             scikit-build-core = scikit-build-core.overridePythonAttrs (_: rec {
-              version = "1.0.3";
+              version = "1.1.0";
               src = pyfinal.fetchPypi {
                 pname = "scikit_build_core";
                 inherit version;
-                hash = "sha256-pNegWXjuN5dcN3Q1EMiZHi3rzn74OvsKB8DFdv1PFug=";
+                hash = "sha256-1CH4N6D2ReUbmfwNiwDJdpF4RdlU1gnOawaxGyyUYhs=";
               };
               # The nixpkgs test setup targets the version nixpkgs ships.
               doCheck = false;

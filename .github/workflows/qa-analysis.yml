@@ -17,6 +17,9 @@ env:
   COLUMNS: 120
   CPM_USE_LOCAL_PACKAGES: "TRUE"
 
+permissions:
+  contents: read
+
 jobs:
   cpp-changes:
     name: Detect C++ file changes
@@ -57,6 +60,8 @@ jobs:
       - name: Set up the build environment
         uses: ./.github/actions/setup
         with:
+          # coverage.py traces through sys.monitoring from 3.14, much faster than settrace.
+          python-version: "3.14"
           cache-suffix: coverage-mpi-${{ matrix.mpi }}-sharded
           mpi: ${{ matrix.mpi }}
 
@@ -129,10 +134,9 @@ jobs:
     runs-on: ubuntu-26.04
     permissions:
       contents: read
-    # The build type also selects the tree the test recipes run against.
+    # The profile also selects the build type, hence the tree the test recipes run against.
     env:
-      SKBUILD_CMAKE_BUILD_TYPE: "AsanUbsan"
-      SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=asan-ubsan"
+      monoprop_SANITIZER: "asan-ubsan"
 
     steps:
       - uses: actions/checkout@v7.0.1
@@ -169,8 +173,7 @@ jobs:
     env:
       CXX: clang++-18
       CC: clang-18
-      SKBUILD_CMAKE_BUILD_TYPE: "Tsan"
-      SKBUILD_CMAKE_DEFINE: "monoprop_SANITIZER=tsan"
+      monoprop_SANITIZER: "tsan"
       OMP_TOOL_LIBRARIES: /usr/lib/llvm-18/lib/libarcher.so
       # libomp's own internal locking is not instrumented.
       TSAN_OPTIONS: "suppressions=${{ github.workspace }}/.github/tsan-libomp.supp"
@@ -209,7 +212,7 @@ jobs:
 
       - name: Install package
         env:
-          SKBUILD_CMAKE_DEFINE: "monoprop_ENABLE_CXX_UNIT_TESTS=OFF"
+          monoprop_ENABLE_CXX_UNIT_TESTS: "OFF"
           monoprop_ENABLE_MPI: "ON"
         run: just build
 
@@ -219,12 +222,12 @@ jobs:
           name: coverage-reports
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v8.3.0
+        uses: SonarSource/sonarqube-scan-action@v8.4.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.cfamily.compile-commands=build/editable/Release/compile_commands.json
+            -Dsonar.cfamily.compile-commands=build/editable/Release-mpi/compile_commands.json
 
   clang-tidy:
     needs: [cpp-changes]
@@ -255,7 +258,8 @@ jobs:
 
       - name: Build (generates compile_commands.json)
         env:
-          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++;monoprop_ENABLE_CXX_UNIT_TESTS=OFF"
+          SKBUILD_CMAKE_DEFINE: "CMAKE_CXX_COMPILER=clang++"
+          monoprop_ENABLE_CXX_UNIT_TESTS: "OFF"
           monoprop_ENABLE_MPI: "ON"
         run: just build
 
@@ -278,7 +282,7 @@ jobs:
             mapfile -t clang_tidy_inputs < <(
               jq -r --arg source_root "$GITHUB_WORKSPACE/cpp/monoprop/" \
                 '.[].file | select(startswith($source_root)) | select(endswith(".cpp"))' \
-                build/editable/Release/compile_commands.json
+                build/editable/Release-mpi/compile_commands.json
             )
           else
             clang_tidy_inputs=("${changed_cpp_files[@]}")
@@ -290,7 +294,7 @@ jobs:
             '$files | map({name: ($workspace + .), lines: [[1, 2147483647]]})')
 
           run-clang-tidy \
-            -p build/editable/Release \
+            -p build/editable/Release-mpi \
             -source-filter='^${{ github.workspace }}/cpp/monoprop/.*$' \
             -header-filter='^(.*/)?cpp/(include/)?monoprop/.*$' \
             -exclude-header-filter='^.*/src/monoprop/bindings/.*$' \

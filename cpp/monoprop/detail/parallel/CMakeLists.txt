@@ -9,4 +9,4 @@ target_sources(
         "Workshare.h"
 )
 
-target_sources(monoprop-objs PRIVATE ThreadBudget.cpp)
+monoprop_add_core_sources(ThreadBudget.cpp)

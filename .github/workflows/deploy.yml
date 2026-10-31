@@ -11,6 +11,10 @@ on:
       - VERSION
       - pyproject.toml
       - packages/monoprop-bench-tools/pyproject.toml
+      - tools/cibw/**
+      - tools/packages/**
+      - cmake/custom/monopropMPI*.cmake
+      - .github/actions/setup/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,6 +23,9 @@ concurrency:
 env:
   COLUMNS: 120
   FORCE_COLOR: 3
+
+permissions:
+  contents: read
 
 jobs:
   check-pr-changes:
@@ -50,6 +57,15 @@ jobs:
         uses: tj-actions/changed-files@v47.0.6
         with:
           files: packages/monoprop-bench-tools/pyproject.toml
+      - id: changed-wheel-support
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: tj-actions/changed-files@v47.0.6
+        with:
+          files: |
+            tools/cibw/**
+            tools/packages/**
+            cmake/custom/monopropMPI*.cmake
+            .github/actions/setup/**
       - id: check
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -59,6 +75,7 @@ jobs:
           VERSION_CHANGED: ${{ steps.changed-version.outputs.any_changed }}
           PYPROJECT_CHANGED: ${{ steps.changed-pyproject.outputs.any_changed }}
           BENCH_TOOLS_PYPROJECT_CHANGED: ${{ steps.changed-bench-tools-pyproject.outputs.any_changed }}
+          WHEEL_SUPPORT_CHANGED: ${{ steps.changed-wheel-support.outputs.any_changed }}
         run: |
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "should-run=true" >> "$GITHUB_OUTPUT"
@@ -76,8 +93,14 @@ jobs:
           version_changed = os.environ["VERSION_CHANGED"] == "true"
           pyproject_changed = os.environ["PYPROJECT_CHANGED"] == "true"
           bench_tools_changed = os.environ["BENCH_TOOLS_PYPROJECT_CHANGED"] == "true"
+          wheel_support_changed = os.environ["WHEEL_SUPPORT_CHANGED"] == "true"
 
-          if deploy_workflow_changed or version_changed or bench_tools_changed:
+          if (
+              deploy_workflow_changed
+              or version_changed
+              or bench_tools_changed
+              or wheel_support_changed
+          ):
               should_run = True
           elif not pyproject_changed:
               should_run = False
@@ -127,7 +150,7 @@ jobs:
           fi
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Build SDist
         run: |
@@ -149,7 +172,7 @@ jobs:
           fetch-depth: 0  # such that hatch-vcs can read the tags
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Build sdist and wheel
         run: uv build --package monoprop-bench-tools --out-dir bench-tools-dist
@@ -164,6 +187,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     name: Build Python wheels for ${{ matrix.os }}
     runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
     strategy:
       matrix:
         os: [ linux-intel, linux-arm, macos-arm ]
@@ -182,7 +206,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pypa/cibuildwheel@v4.3.1
+      - uses: pypa/cibuildwheel@v4.3.5
         with:
           extras: "uv"
         env:
@@ -196,11 +220,69 @@ jobs:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: wheelhouse/*.whl
 
+  test-wheels:
+    name: Test wheel with ${{ matrix.mpi }} (${{ matrix.mpi4py }} mpi4py) on ${{ matrix.runner }}
+    needs: build-wheels
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Version floors: Ubuntu 22.04 ships Open MPI 4.1.2 and MPICH 4.0; impi-rt 2021.1.1 is the
+          # oldest Intel MPI on PyPI. Its Boost (1.74) is below monoprop's 1.85, so the C++
+          # consumer runs only on macOS here (and in test.yml); inspect-mpi still checks the headers.
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: openmpi-4.1, setup-mpi: "on", build-deps: "false", mpi4py: source, packages: "", abi: openmpi, mpi-include: /usr/lib/x86_64-linux-gnu/openmpi/include, cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: openmpi-4.1, setup-mpi: "on", build-deps: "false", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: mpich-4.0, setup-mpi: mpich, build-deps: "false", mpi4py: source, packages: "", abi: mpich, mpi-include: /usr/include/x86_64-linux-gnu/mpich, cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: mpich-4.0, setup-mpi: mpich, build-deps: "false", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: false }
+          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: intel-2021.1, setup-mpi: "off", build-deps: "false", mpi4py: wheel, packages: "impi-rt==2021.1.1", abi: "", mpi-include: "", cpp: false }
+          # Latest Intel MPI, and Homebrew Open MPI (the macOS rpath allowlist)
+          - { runner: ubuntu-26.04, artifact: linux-intel, mpi: intel-latest, setup-mpi: "off", build-deps: "false", mpi4py: wheel, packages: impi-rt, abi: "", mpi-include: "", cpp: false }
+          - { runner: macos-15, artifact: macos-arm, mpi: homebrew-openmpi, setup-mpi: "on", build-deps: "true", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: true }
+    env:
+      MONOPROP_TEST_VENV: ${{ github.workspace }}/.wheel-test-venv
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # test-wheel-mpi.sh creates its venv from $PYTHON; pin the interpreter instead of relying on
+      # the runner image's python3 and its venv module.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cibw-wheels-${{ matrix.artifact }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.12"
+          cache-suffix: wheel-test-${{ matrix.mpi }}-${{ matrix.mpi4py }}
+          mpi: ${{ matrix.setup-mpi }}
+          build-deps: ${{ matrix.build-deps }}
+
+      - name: Check configure's MPI inspection on the system headers
+        if: matrix.mpi-include != ''
+        run: just inspect-mpi "${{ matrix.mpi-include }}" ${{ matrix.abi }}
+
+      - name: Test the wheel under MPI
+        run: just test-wheel dist ${{ matrix.mpi4py }} ${{ matrix.packages }}
+
+      - name: Build a C++ consumer against the installed wheel
+        if: matrix.cpp
+        run: just test-find-package build/find-package-smoke "$MONOPROP_TEST_VENV/bin/python"
+
   upload_pypi:
     name: Upload to PyPI
     needs:
       - build-sdist
       - build-wheels
+      - test-wheels
     if: github.event_name == 'release' && github.event.action == 'published'
 
     runs-on: ubuntu-26.04
@@ -224,7 +306,7 @@ jobs:
           subject-path: "dist/*"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@v1.14.3
 
   upload_pypi_bench_tools:
     # Separate from `upload_pypi` because it is a separate PyPI project, with its own
@@ -252,13 +334,14 @@ jobs:
           subject-path: "dist/*"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@v1.14.3
 
   upload_release_assets:
     name: Attach wheels and sdist to GitHub release
     needs:
       - build-sdist
       - build-wheels
+      - test-wheels
       - build-bench-tools
     if: github.event_name == 'release' && github.event.action == 'published'
 

@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <complex>
 #include <cstring>
 #include <optional>
@@ -32,6 +33,7 @@
 #include "KernelTestSupport.h"
 #include "PauliTestOracle.h"
 #include "PropagatorTestAccess.h"
+#include "RankPreconditions.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
@@ -45,12 +47,14 @@ using pauli_oracle::slots_of_string;
 
 // schrodinger_cutoff engages the picture; a low structural cutoff plus the upper_atol = 0 rescue
 // forces most partners to be fresh inserts, so the miss arm runs on nearly every partner.
+// Schrödinger 10, not lower: random_exact's observable terms all have length >= 10, and a lower
+// state cutoff reads them all as 0.
 template <size_t NumModes>
 auto run_schrodinger_majorana(const CaseData &data, MPI_Comm comm) -> double {
     MonomialPropagator<NumModes> sim(data.hamiltonian,
                                      /*cutoff=*/2U,
                                      data.initial_state,
-                                     /*schrodinger_cutoff=*/std::optional<unsigned int>{4U},
+                                     /*schrodinger_cutoff=*/std::optional<unsigned int>{10U},
                                      comm,
                                      /*lower_atol=*/std::nullopt,
                                      /*upper_atol=*/std::optional<double>{0.0},
@@ -61,12 +65,11 @@ auto run_schrodinger_majorana(const CaseData &data, MPI_Comm comm) -> double {
     return energy_fn(VecD{});
 }
 
-BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv, ExampleDataFix) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Schrödinger Majorana fresh-insert equivalence (world size = 1).");
-        return;
-    }
+BOOST_FIXTURE_TEST_CASE(mpi_fresh_insert_schrodinger_majorana_serial_world_equiv,
+                        ExampleDataFix,
+                        *test_utils::min_ranks(2)) {
     const double e_serial = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_SELF);
+    BOOST_REQUIRE_MESSAGE(std::abs(e_serial) > 1e-6, "serial reference is trivially zero: " << e_serial);
     const double e_world = run_schrodinger_majorana<ExampleDataFix::n_modes>(data, MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("schrodinger majorana serial=" << e_serial << " world=" << e_world);
     BOOST_TEST(near(e_serial, e_world));
@@ -114,11 +117,7 @@ auto run_schrodinger_pauli(MPI_Comm comm) -> double {
     return sim.expectation_value({});
 }
 
-BOOST_AUTO_TEST_CASE(mpi_fresh_insert_schrodinger_pauli_serial_world_equiv) {
-    if (mpi::size(MPI_COMM_WORLD) < 2) {
-        BOOST_TEST_MESSAGE("Skipping Schrödinger Pauli fresh-insert equivalence (world size = 1).");
-        return;
-    }
+BOOST_AUTO_TEST_CASE(mpi_fresh_insert_schrodinger_pauli_serial_world_equiv, *test_utils::min_ranks(2)) {
     const double e_serial = run_schrodinger_pauli(MPI_COMM_SELF);
     const double e_world = run_schrodinger_pauli(MPI_COMM_WORLD);
     BOOST_TEST_MESSAGE("schrodinger pauli serial=" << e_serial << " world=" << e_world);

@@ -54,7 +54,7 @@ jobs:
 
       - name: Install package
         env:
-          SKBUILD_CMAKE_DEFINE: monoprop_ENABLE_CXX_UNIT_TESTS=OFF
+          monoprop_ENABLE_CXX_UNIT_TESTS: "OFF"
           monoprop_ENABLE_MPI: "ON"
         run: just build --group bench
 
@@ -165,7 +165,7 @@ jobs:
             benches/results/*.json
           if-no-files-found: warn
 
-      - uses: bencherdev/bencher@v0.6.13
+      - uses: bencherdev/bencher@v0.6.14
 
       # The project slug and API key go through the environment: `bencher` reads
       # BENCHER_PROJECT / BENCHER_API_KEY natively, and it keeps a maintainer-set

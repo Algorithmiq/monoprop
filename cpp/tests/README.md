@@ -10,11 +10,15 @@ discovers every Boost.Test case and registers it twice:
 
 - **`serial`**: the case run in-process with `MPI_COMM_SELF`.
 - **`mpi`** (+ rank-specific `mpi-<n>`): the whole suite wrapped in
-  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2;4`),
+  `mpiexec -n <n>` for each rank in `monoprop_MPI_TEST_PROCS` (default `2;4`,
+  also labelled `mpi-linear`), plus splitmix-routing entries for each rank in
+  `monoprop_MPI_SPLITMIX_TEST_PROCS` (default `2;3;4`, also labelled
+  `mpi-splitmix`; a CMake cache variable only, set through `SKBUILD_CMAKE_DEFINE`),
   registered when an MPI launcher is detected.
 
-Cases that need multiple ranks check `monoprop::mpi::size(MPI_COMM_WORLD)` and
-skip (with a message) when run with too few.
+Cases that need a particular world declare it with a precondition from
+`RankPreconditions.h`; Boost reports them as skipped elsewhere, and CTest marks
+those serial entries as skipped.
 
 The launch-time thread policy belongs to the CTest registration, not to the runner:
 every discovered case (per case, and in the whole-suite MPI variants) runs with
@@ -36,14 +40,15 @@ ctest --test-dir build/editable/Release
 ```
 
 For an MPI-enabled tree, rerun `uv sync` with `monoprop_ENABLE_MPI=ON` in the
-environment.
+environment. MPI builds go to their own tree, `build/editable/Release-mpi`, so
+the MPI variants below are registered there.
 ## Running Tests
 
 ```bash
-ctest --test-dir build/editable/Release           # everything
-ctest --test-dir build/editable/Release -L serial # serial variants only
-ctest --test-dir build/editable/Release -L mpi    # MPI variants
-ctest --test-dir build/editable/Release -L mpi-2  # only the 2-rank run
+ctest --test-dir build/editable/Release               # everything
+ctest --test-dir build/editable/Release -L serial     # serial variants only
+ctest --test-dir build/editable/Release-mpi -L mpi    # MPI variants (MPI tree)
+ctest --test-dir build/editable/Release-mpi -L mpi-2  # only the 2-rank run
 ```
 
 Or drive the binary directly:
@@ -51,7 +56,7 @@ Or drive the binary directly:
 ```bash
 build/editable/Release/bin/monoprop_unit_tests.x --list_content
 build/editable/Release/bin/monoprop_unit_tests.x --run_test=pauli_algebra_*
-mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x
+mpirun -n 2 build/editable/Release-mpi/bin/monoprop_unit_tests.x
 ```
 
 Because CTest discovery treats each `--list_content` line as a top-level test
@@ -84,6 +89,8 @@ name and cannot address suite-nested cases, tests use flat
   shards, router and physical rounds, to attach the test-only `RootObserver`, and to run one layer
   of the low-level one-owner-per-rank engine on the sole shard of a T = 1 root
   (`sole_shard_layer_observed`, for the failure driver); it adds no public shard interface.
+- **`RankPreconditions.h`**: Boost preconditions `min_ranks`, `power_of_two_ranks`,
+  `even_ranks`, `linear_routing`, `default_routing`.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -130,7 +137,9 @@ name and cannot address suite-nested cases, tests use flat
   MPI variants), `flat_exchange_tests.cpp` (`post_flat_alltoallv`/`Ticket`),
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
   (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
-  Majorana + native Pauli; self-skips at world size 1).
+  Majorana + native Pauli; self-skips at world size 1),
+  `mpi_routing_geometry_tests.cpp` (linear routing refuses a 3-rank
+  communicator).
 - **Simulator / operator lifecycle**: `simulator_copy_tests.cpp`,
   `update_initial_operator.cpp`, `ctor_validation_tests.cpp` (constructor guard
   rails + MPGraph bounds).
@@ -330,16 +339,15 @@ CMake wraps the whole suite in `mpiexec -n <rank>` for each rank in
 `monoprop_MPI_TEST_PROCS` (default `2;4`) — one CTest entry per rank count, not
 per case, because the ranks have to reach the same collectives. Each entry has
 a 600-second timeout, so a collective deadlock fails instead of occupying the
-runner indefinitely. For exhaustive
-rank coverage, run `just test-mpi '1;2;4'` or configure
-`-Dmonoprop_MPI_TEST_PROCS='1;2;4'`. To run a single case under MPI while
+runner indefinitely. `just test-mpi` runs the same entries CI does. To run a single case under MPI while
 debugging, invoke the binary directly:
-`mpirun -n 2 build/editable/Release/bin/monoprop_unit_tests.x --run_test=<case>`.
+`mpirun -n 2 build/editable/Release-mpi/bin/monoprop_unit_tests.x --run_test=<case>`.
 
 ## Adding New Tests
 
 1. Add a `*.cpp` with flat `BOOST_AUTO_TEST_CASE`s (shared name prefix).
 2. Reuse the shared helpers above rather than copying oracle/harness code.
-3. For MPI-required scenarios, check `monoprop::mpi::size(MPI_COMM_WORLD)` and
-   skip if `< 2`.
+3. For a case that needs several ranks, add a precondition:
+   `BOOST_AUTO_TEST_CASE(name, *test_utils::min_ranks(2))`. Never `return` early:
+   that passes without checking anything.
 4. Rebuild to register the new cases with CTest.

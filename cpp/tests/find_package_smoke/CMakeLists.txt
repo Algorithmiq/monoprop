@@ -3,7 +3,28 @@ project(monoprop_find_package_smoke LANGUAGES CXX)
 
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(monoprop CONFIG REQUIRED)
+option(
+  monoprop_SMOKE_MPI
+  "Consume the MPI component (monoprop::monoprop_mpi)"
+  OFF
+)
+
+option(
+  monoprop_SMOKE_OPTIONAL_MPI
+  "Request the MPI component as optional and consume the serial target"
+  OFF
+)
+
+if(monoprop_SMOKE_MPI)
+  find_package(monoprop CONFIG REQUIRED COMPONENTS MPI)
+  set(_monoprop_target monoprop::monoprop_mpi)
+elseif(monoprop_SMOKE_OPTIONAL_MPI)
+  find_package(monoprop CONFIG REQUIRED OPTIONAL_COMPONENTS MPI)
+  set(_monoprop_target monoprop::monoprop)
+else()
+  find_package(monoprop CONFIG REQUIRED)
+  set(_monoprop_target monoprop::monoprop)
+endif()
 
 add_executable(
   smoke
@@ -12,15 +33,11 @@ add_executable(
   ../link_export_probe/sharded_construction_chain.cpp
   ../link_export_probe/sharded_evaluation_chain.cpp
 )
-target_link_libraries(smoke PRIVATE monoprop::monoprop)
+target_link_libraries(smoke PRIVATE ${_monoprop_target})
 
-# The MPI setting the caller expects of this package; defaults to what the package reports. Pass
-# -DSMOKE_EXPECT_MPI=ON/OFF to check an installed package independently.
-if(NOT DEFINED SMOKE_EXPECT_MPI)
-  set(SMOKE_EXPECT_MPI "${monoprop_ENABLE_MPI}")
-endif()
+# Only the MPI component's target carries monoprop_ENABLE_MPI; the serial one never does.
 target_compile_definitions(
   smoke
   PRIVATE
-    monoprop_EXPECT_MPI=$<BOOL:${SMOKE_EXPECT_MPI}>
+    monoprop_EXPECT_MPI=$<BOOL:${monoprop_SMOKE_MPI}>
 )

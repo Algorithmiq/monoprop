@@ -35,19 +35,19 @@ from monoprop import (
 N_MODES = 6
 
 
-def _propagator(comm=None) -> MajoranaPropagator:
+def _propagator() -> MajoranaPropagator:
     return MajoranaPropagator(
-        MajoranaOperator({(0,): 1.0}, N_MODES), [], cutoff=N_MODES // 2, comm=comm
+        MajoranaOperator({(0,): 1.0}, N_MODES), [], cutoff=N_MODES // 2
     )
 
 
-def test_basis_change(serial_comm) -> None:
+def test_basis_change() -> None:
     """A Jordan-Wigner cutoff basis reproduces the exact single-rotation result.
 
-    serial_comm because evolved_operator() is rank-local: on COMM_WORLD the single term lives on
+    Serial: evolved_operator() is rank-local, and on COMM_WORLD the single term lives on
     whichever rank owns its hash partition.
     """
-    propagator = _propagator(serial_comm)
+    propagator = _propagator()
     propagator._simulator.basis_change = jordan_wigner_basis_change(N_MODES)
     propagator.propagate(
         Circuit.from_dense_arrays(

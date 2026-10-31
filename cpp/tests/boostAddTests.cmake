@@ -18,23 +18,29 @@ if(TEST_ENABLE_MPI_VARIANTS AND NOT MPIEXEC_NUMPROC_FLAG)
   )
 endif()
 
+# Positive integers, deduplicated; an empty list is legal and registers nothing.
+function(validated_ranks OUT LIST_NAME)
+  set(_ranks ${${LIST_NAME}})
+  foreach(_rank IN LISTS _ranks)
+    if(NOT _rank MATCHES "^[1-9][0-9]*$")
+      message(
+        FATAL_ERROR
+        "Invalid MPI rank '${_rank}' in ${LIST_NAME}='${${LIST_NAME}}'. Use positive integers."
+      )
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _ranks)
+  set(${OUT} ${_ranks} PARENT_SCOPE)
+endfunction()
+
 set(_mpi_ranks)
+set(_mpi_splitmix_ranks)
 if(TEST_ENABLE_MPI_VARIANTS)
   if("${TEST_MPI_NUMPROCS}" STREQUAL "")
     set(TEST_MPI_NUMPROCS 2)
   endif()
-
-  foreach(_rank IN LISTS TEST_MPI_NUMPROCS)
-    if(NOT _rank MATCHES "^[1-9][0-9]*$")
-      message(
-        FATAL_ERROR
-        "Invalid MPI rank '${_rank}' in TEST_MPI_NUMPROCS='${TEST_MPI_NUMPROCS}'. Use positive integers."
-      )
-    endif()
-  endforeach()
-
-  set(_mpi_ranks ${TEST_MPI_NUMPROCS})
-  list(REMOVE_DUPLICATES _mpi_ranks)
+  validated_ranks(_mpi_ranks TEST_MPI_NUMPROCS)
+  validated_ranks(_mpi_splitmix_ranks TEST_MPI_SPLITMIX_NUMPROCS)
 endif()
 
 set(extra_args ${TEST_EXTRA_ARGS})
@@ -195,73 +201,110 @@ string(
   "${output}"
 )
 
-# process each line
 foreach(LINE ${LINES})
-  # Remove trailing asterisk
+  # A data-driven case lists its children (_0, _1, ...) indented beneath it, and running the parent
+  # runs them all. Matching the name instead would also drop a case like `..._32_bit`.
+  if(LINE MATCHES "^[ \t]")
+    continue()
+  endif()
   string(
     REGEX REPLACE "\\*$"
     ""
-    CLEANED_LINE
+    test
     "${LINE}"
   )
-
-  # Trim whitespace
-  string(STRIP "${CLEANED_LINE}" test)
-
-  # Check if the line doesn't contain _0, _1, etc. and is not empty
-  if(NOT test MATCHES "_[0-9]+" AND NOT "${test}" STREQUAL "")
-    register_variant("${test}"
-      COMMAND
-        "${TEST_EXECUTABLE}"
-        "--run_test=${test}"
-        "--report_level=detailed"
-        "--catch_system_errors=yes"
-        ${extra_args}
-      LABELS
-        serial
-      ENVIRONMENT
-        ${serial_env}
-    )
+  string(STRIP "${test}" test)
+  if(test STREQUAL "")
+    continue()
   endif()
-endforeach()
-
-# The MPI variants wrap the WHOLE suite in one mpiexec per rank count: the ranks must reach the
-# same collectives, which per-case launches cannot guarantee.
-if(TEST_ENABLE_MPI_VARIANTS AND MPIEXEC_EXECUTABLE)
-  foreach(_mpi_rank IN LISTS _mpi_ranks)
-    set(mpi_cmd "${MPIEXEC_EXECUTABLE}")
-    list(
-      APPEND mpi_cmd
-      "${MPIEXEC_NUMPROC_FLAG}"
-      "${_mpi_rank}"
-    )
-    if(MPIEXEC_PREFLAGS)
-      list(APPEND mpi_cmd ${MPIEXEC_PREFLAGS})
-    endif()
-    list(
-      APPEND mpi_cmd
+  # Boost reports a case whose precondition failed (e.g. too few ranks) as skipped with exit 0;
+  # without this CTest would count it as a pass.
+  register_variant("${test}"
+    COMMAND
       "${TEST_EXECUTABLE}"
+      "--run_test=${test}"
       "--report_level=detailed"
       "--catch_system_errors=yes"
       ${extra_args}
-    )
-    if(MPIEXEC_POSTFLAGS)
-      list(APPEND mpi_cmd ${MPIEXEC_POSTFLAGS})
-    endif()
+    LABELS
+      serial
+    ENVIRONMENT
+      ${serial_env}
+    PROPERTIES
+      SKIP_REGULAR_EXPRESSION
+      "Test case \"[^\"]+\" was skipped"
+  )
+endforeach()
 
-    register_variant("${TEST_TARGET}_mpi_${_mpi_rank}"
-      COMMAND
-        ${mpi_cmd}
-      LABELS
-        mpi
-        "mpi-${_mpi_rank}"
-      ENVIRONMENT
-        "OMPI_ALLOW_RUN_AS_ROOT=1"
-        "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
-      PROPERTIES
-        TIMEOUT
-        600
-    )
+# The MPI variants wrap the WHOLE suite in one mpiexec per rank count: the ranks must reach the
+# same collectives, which per-case launches cannot guarantee. No skip regex here: a case may skip at
+# one rank count (e.g. it needs 4) while the rest of the suite runs.
+#
+# Open MPI refuses more ranks than slots, and 4 ranks exceed a 3-core runner; both spellings
+# cover ORTE (4.x) and PRRTE (5.x), and other MPIs ignore them.
+set(
+  _mpi_env
+  "OMPI_ALLOW_RUN_AS_ROOT=1"
+  "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"
+  "OMPI_MCA_rmaps_base_oversubscribe=1"
+  "PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe"
+)
+
+function(register_mpi_variant RANKS ROUTING)
+  set(
+    mpi_cmd
+    "${MPIEXEC_EXECUTABLE}"
+    "${MPIEXEC_NUMPROC_FLAG}"
+    "${RANKS}"
+  )
+  if(MPIEXEC_PREFLAGS)
+    list(APPEND mpi_cmd ${MPIEXEC_PREFLAGS})
+  endif()
+  list(
+    APPEND mpi_cmd
+    "${TEST_EXECUTABLE}"
+    "--report_level=detailed"
+    "--catch_system_errors=yes"
+    ${extra_args}
+  )
+  if(MPIEXEC_POSTFLAGS)
+    list(APPEND mpi_cmd ${MPIEXEC_POSTFLAGS})
+  endif()
+
+  set(_name "${TEST_TARGET}_mpi_${RANKS}")
+  # Set for linear too: an inherited monoprop_ROUTING=splitmix would otherwise run splitmix under
+  # the mpi-linear label and leave linear routing untested.
+  set(
+    _env
+    ${_mpi_env}
+    "monoprop_ROUTING=${ROUTING}"
+  )
+  if(ROUTING STREQUAL "splitmix")
+    string(APPEND _name "_splitmix")
+  endif()
+  register_variant("${_name}"
+    COMMAND
+      ${mpi_cmd}
+    LABELS
+      mpi
+      "mpi-${RANKS}"
+      "mpi-${ROUTING}"
+    ENVIRONMENT
+      ${_env}
+    PROPERTIES
+      TIMEOUT
+      600
+  )
+  set(script "${script}" PARENT_SCOPE)
+  set(tests ${tests} PARENT_SCOPE)
+endfunction()
+
+if(TEST_ENABLE_MPI_VARIANTS AND MPIEXEC_EXECUTABLE)
+  foreach(_mpi_rank IN LISTS _mpi_ranks)
+    register_mpi_variant("${_mpi_rank}" linear)
+  endforeach()
+  foreach(_mpi_rank IN LISTS _mpi_splitmix_ranks)
+    register_mpi_variant("${_mpi_rank}" splitmix)
   endforeach()
 endif()
 

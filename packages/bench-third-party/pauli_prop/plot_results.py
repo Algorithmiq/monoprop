@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -26,9 +27,21 @@ from plot_scaling import COLORS as colors
 # The early steps are too noisy to plot.
 min_step = 5
 
+parser = argparse.ArgumentParser(
+    description="Plot the Pauli benchmark's per-step runtime and memory."
+)
+parser.add_argument(
+    "--output-dir",
+    type=Path,
+    default=Path(__file__).parent,
+    help="Directory to save pauli_results.png into.",
+)
+args = parser.parse_args()
+
 with open(Path(__file__).parent / "results.json") as file:
     data = json.load(file)
-step_range = data["step_range"]
+# Each recorded iteration applies one Trotter step, regardless of its stored label.
+step_range = list(range(1, len(data["step_range"]) + 1))
 runtime_dict = data["runtime"]
 memory_dict = data["memory"]
 expvals_dict = data["expvals"]
@@ -58,7 +71,7 @@ def _style_axes(ax: plt.Axes, ylabel: str) -> None:
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
 for label, runtime in runtime_dict.items():
-    steps, values = _filter_from_min_step(step_range, runtime)
+    steps, values = _filter_from_min_step(step_range[1:], runtime)
     ax1.plot(steps, values, color=colors[label], label=label, marker="o", markersize=4)
 _style_axes(ax1, "Time per step [s]")
 
@@ -68,4 +81,4 @@ for label, memory in memory_dict.items():
 _style_axes(ax2, "Memory per step [MB]")
 
 fig.tight_layout()
-fig.savefig(Path(__file__).parent / "pauli_results.png", dpi=150, bbox_inches="tight")
+fig.savefig(args.output_dir / "pauli_results.png", dpi=150, bbox_inches="tight")

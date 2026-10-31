@@ -14,70 +14,198 @@
 
 """Pytest configuration for monoprop tests.
 
-MPI selection is handled by ``pytest-mpi`` (``--with-mpi``, ``@pytest.mark.mpi``).
+MPI selection is handled here (``--with-mpi``, ``@pytest.mark.mpi``).
 
-``comm`` is parametrized over COMM_SELF and COMM_WORLD: use it for energies and gradients, which
-allreduce internally. ``serial_comm`` is always COMM_SELF: use it for rank-local state such as
-``evolved_operator``, ``contract_partially``, ``size()``, or ``graph_size()``. In an MPI-off build
-``mpi4py`` is never imported here, so both fixtures are ``None``.
+``comm`` is parametrized over ``None``, the serial run, and, with an MPI backend, ``comm_world``.
+The world case carries the ``mpi`` marker, so it runs only under ``--with-mpi`` and is what
+``-m mpi`` selects. Use ``comm`` for results every rank agrees on: energies, gradients,
+``term_expectation_values``. Test rank-local state (``evolved_operator``, ``contract_partially``,
+``size()``, ``graph_size()``) serially, with ``comm=None``.
+
+``comm_world`` is a session-wide duplicate of COMM_WORLD, never the predefined handle itself, as
+the parallelism docs tell users to do: monoprop's point-to-point traffic then cannot match
+messages that conftest or mpi4py exchange on COMM_WORLD. It is created on first use and freed at
+session teardown: ``Dup`` is collective, and doing it per test would add a collective to every
+one of them for no extra isolation.
+
+Under more than one rank each rank gets its own ``--basetemp``; see ``_rank_basetemp``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import getpass
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-import monoprop
+from tests.mpi_support import HAS_MPI_BACKEND, MPI
 from tests.reference_data import load_problem
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Iterator
+
+    from mpi4py.MPI import Intracomm
 
     from tests.reference_data import FermionicProblem
 
-# An MPI-off build never initializes MPI, even where mpi4py happens to be installed: importing mpi4py.MPI would
-# initialize it as a side effect of collecting the suite.
-MPI: Any = None
-if monoprop.has_mpi:
+
+def _rank_basetemp() -> Path | None:
+    """Per-rank base temporary directory under ``mpiexec``, or ``None`` on a single rank.
+
+    Every rank is its own pytest process, and without ``--basetemp`` they all prune the same
+    ``pytest-of-<user>`` numbered directories at exit. One rank then deletes a directory another
+    is scanning, and the resulting ``ResourceWarning`` fails the run under
+    ``filterwarnings = error``. An explicit basetemp skips that pruning altogether.
+    """
+    if MPI is None or MPI.COMM_WORLD.size == 1:
+        return None
     try:
-        from mpi4py import MPI
-    except ImportError:  # pragma: no cover - exercised in wheel-test environments
-        MPI = None
+        user = getpass.getuser()
+    except (ImportError, OSError, KeyError):
+        user = "unknown"
+    temproot = Path(os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir())
+    return temproot / f"pytest-of-{user}" / f"mpi-rank-{MPI.COMM_WORLD.rank}"
 
 
+def _make_private_dir(path: Path) -> None:
+    """Create ``path`` if needed and make sure only the current user can use it.
+
+    The checks pytest applies to its own ``pytest-of-<user>``, which an explicit ``--basetemp``
+    skips: on a shared temporary root another user could create the predictable name first.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Not following symlinks: a swapped-in link would otherwise pass every check below.
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise OSError(
+            f"The temporary directory {path} is a symbolic link. Fix this and try again."
+        )
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise OSError(
+            f"The temporary directory {path} is not owned by the current user. "
+            "Fix this and try again."
+        )
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> None:
+    """Give each MPI rank its own ``--basetemp`` unless one was passed explicitly.
+
+    Not in ``pytest_configure``: the tmpdir plugin reads the basetemp in its own
+    ``pytest_configure``, and that hook here must run last to unregister the terminal reporter.
+    """
+    if config.option.basetemp is None and (basetemp := _rank_basetemp()) is not None:
+        # pytest creates only the basetemp itself when one is given, not its parent.
+        _make_private_dir(basetemp.parent)
+        config.option.basetemp = basetemp
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip ``mpi``-marked tests when monoprop has no MPI backend, even under ``--with-mpi``."""
+    if HAS_MPI_BACKEND:
+        return
+    skip = pytest.mark.skip(
+        reason="this monoprop installation has no MPI backend (MPI_ABIS is empty)"
+    )
+    for item in items:
+        if item.get_closest_marker("mpi") is not None:
+            item.add_marker(skip)
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the opt-in for tests launched under MPI."""
+    parser.getgroup("mpi").addoption(
+        "--with-mpi",
+        action="store_true",
+        default=False,
+        help="Run MPI tests; launch pytest with mpiexec.",
+    )
+
+
+class _RankFailureReporter:
+    """Writes a muted rank's failures to stderr, tagged with the rank.
+
+    Only rank 0 keeps the terminal reporter, so without this a failure on another rank shows only
+    as mpiexec's non-zero exit.
+    """
+
+    def __init__(self, rank: int) -> None:
+        self._rank = rank
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        """Print a failed phase's report."""
+        if report.failed:
+            sys.stderr.write(
+                f"[rank {self._rank}] FAILED {report.nodeid} ({report.when})\n"
+                f"{report.longreprtext}\n"
+            )
+
+
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Force pytest-mpi's ``--with-mpi`` under the VS Code adapter, which bypasses
+    """Enable ``--with-mpi`` under the VS Code adapter, which bypasses
     wrapper-level argument injection and would otherwise skip every ``mpi``-marked test.
     """
     invocation_args = tuple(str(arg) for arg in config.invocation_params.args)
     is_vscode_run = config.pluginmanager.hasplugin("vscode_pytest") or any(
         "vscode_pytest" in arg for arg in invocation_args
     )
-    if is_vscode_run and hasattr(config.option, "with_mpi"):
+    if is_vscode_run:
         config.option.with_mpi = True
 
+    if config.option.with_mpi and MPI is not None and MPI.COMM_WORLD.rank != 0:
+        reporter = config.pluginmanager.getplugin("terminalreporter")
+        if reporter is not None:
+            config.pluginmanager.unregister(reporter)
+        config.pluginmanager.register(
+            _RankFailureReporter(MPI.COMM_WORLD.rank), "monoprop-rank-failures"
+        )
 
-_COMM_PARAMS = (
-    [pytest.param(None, id="comm_none")]
-    if MPI is None
-    else [
-        pytest.param(MPI.COMM_SELF, id="comm_self"),
-        pytest.param(MPI.COMM_WORLD, id="comm_world"),
-    ]
-)
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Enforce MPI opt-in and rank requirements before setting up fixtures."""
+    for marker in item.iter_markers("mpi"):
+        if not item.config.getoption("--with-mpi"):
+            pytest.skip("need --with-mpi option to run")
+        if MPI is None:
+            pytest.fail("MPI tests require mpi4py")
+        min_size = marker.kwargs.get("min_size", 1)
+        if MPI.COMM_WORLD.size < min_size:
+            pytest.skip(f"Test requires {min_size} MPI processes")
+
+
+@pytest.fixture(scope="session")
+def comm_world() -> Iterator[Intracomm | None]:
+    """Session-wide duplicate of COMM_WORLD; ``None`` when monoprop has no MPI backend."""
+    if not HAS_MPI_BACKEND:
+        yield None
+        return
+    duplicate = MPI.COMM_WORLD.Dup()
+    yield duplicate
+    duplicate.Free()
+
+
+_COMM_PARAMS = [pytest.param(None, id="comm_none")]
+if HAS_MPI_BACKEND:
+    _COMM_PARAMS.append(
+        pytest.param("comm_world", id="comm_world", marks=pytest.mark.mpi)
+    )
 
 
 @pytest.fixture(params=_COMM_PARAMS)
-def comm(request: pytest.FixtureRequest) -> Any:  # noqa: ANN401
-    """Parametrized communicator; ``None`` when ``mpi4py`` is unavailable (the non-MPI wheel)."""
-    return request.param
-
-
-@pytest.fixture
-def serial_comm() -> Any:  # noqa: ANN401
-    """Single-rank communicator for tests that inspect rank-local operator state."""
-    return None if MPI is None else MPI.COMM_SELF
+def comm(request: pytest.FixtureRequest) -> Intracomm | None:
+    """``None`` (serial), or ``comm_world`` under ``--with-mpi`` when monoprop has an MPI backend."""
+    if request.param is None:
+        return None
+    return request.getfixturevalue(request.param)
 
 
 @pytest.fixture(

@@ -15,11 +15,12 @@
 """Fresh-process probe for ``tests/test_sharded_openmp.py``.
 
 Run as ``python sharded_openmp_probe.py '<json spec>'`` in a process whose thread configuration was set before
-``monoprop`` is imported. It drives only the public API (plus the low-level ``_core`` constructor for configuration
+``monoprop`` is imported. It drives only the public API (plus the extension's low-level constructor for configuration
 controls) and prints one JSON document on its last stdout line. Floats are emitted as ``float.hex`` so
 the parent can compare bits; the parent decides what has to agree.
 
-Under an MPI launcher every rank runs the same calls on the world communicator (the propagators' default). When the
+In an MPI build every rank runs the same calls on the world communicator, passed explicitly: the legacy runtime took
+it as the propagators' default, a current build runs ``comm=None`` serially on ``_core``. When the
 spec names an ``out`` directory, each rank writes its own document to ``<out>/rank<r>.json`` instead of stdout, so
 interleaved launcher output cannot split one; exports, contraction blocks and aggregates are rank-local, energies and
 gradients global.
@@ -54,6 +55,18 @@ from monoprop import (  # noqa: E402
 )
 from monoprop.circuit import expand_monomials  # noqa: E402
 from tests.reference_data import load_problem  # noqa: E402
+
+
+def _has_mpi() -> bool:
+    # A current build reports MPI_ABIS; the legacy environment this probe also runs in reports has_mpi.
+    abis = getattr(monoprop, "MPI_ABIS", None)
+    return bool(abis) if abis is not None else bool(getattr(monoprop, "has_mpi", False))
+
+
+# Set by main() before any scenario runs: MPI.COMM_WORLD in an MPI build, None otherwise, and the extension module
+# that serves it (a current MPI build serves a communicator from _core_mpi).
+_COMM: Any = None
+_CORE: Any = _core
 
 
 def _hex(value: float) -> str:
@@ -162,7 +175,7 @@ class _Problem:
     def make(self, **overrides: Any) -> Any:  # noqa: ANN401
         kwargs = {**self.kwargs, **overrides}
         cls = PauliPropagator if self.basis == "pauli" else MajoranaPropagator
-        return cls(self.operator, self.state, **kwargs)
+        return cls(self.operator, self.state, comm=_COMM, **kwargs)
 
     def scaled_operator(self, factor: float) -> Any:  # noqa: ANN401
         terms = {k: v * factor for k, v in self.operator.terms.items()}
@@ -316,8 +329,8 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
     terms = {(0, 1): 1j, (2, 3): 0.5j, (1, 2): 0.25j}
 
     def construct(**kwargs: Any) -> Any:  # noqa: ANN401
-        return _core.MonomialPropagator032(
-            initial_operator=terms, cutoff=4, initial_state=[0, 1], **kwargs
+        return _CORE.MonomialPropagator032(
+            initial_operator=terms, cutoff=4, initial_state=[0, 1], comm=_COMM, **kwargs
         )
 
     out: dict[str, Any] = {}
@@ -328,17 +341,19 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
     out["logical_modes_too_large"] = _attempt(lambda: construct(logical_num_modes=33))
     # A logical width below capacity: indices at or above 2 * logical_num_modes are rejected.
     out["logical_modes_index"] = _attempt(
-        lambda: _core.MonomialPropagator032(
+        lambda: _CORE.MonomialPropagator032(
             initial_operator={(0, 9): 1j},
             cutoff=4,
             initial_state=[0],
+            comm=_COMM,
             logical_num_modes=4,
         )
     )
-    narrow = _core.MonomialPropagator032(
+    narrow = _CORE.MonomialPropagator032(
         initial_operator={(0, 1): 1j, (2, 3): 0.5j},
         cutoff=4,
         initial_state=[0],
+        comm=_COMM,
         logical_num_modes=4,
     )
     out["logical_generator_index"] = _attempt(
@@ -348,7 +363,9 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
     out["logical_energy"] = _hex(narrow.expectation_value([0.3, 0.2]))
 
     # Empty circuits, empty operators and identity generators.
-    empty = _core.MonomialPropagator032(initial_operator={}, cutoff=4, initial_state=[])
+    empty = _CORE.MonomialPropagator032(
+        initial_operator={}, cutoff=4, initial_state=[], comm=_COMM
+    )
     empty.build_graph([], [], [])
     out["empty_operator"] = {
         "size": empty.size(),
@@ -364,8 +381,8 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
         "energy": _hex(identity.expectation_value([0.7])),
         "gradient": _hexes(identity.expectation_value_and_gradient([0.7])[1]),
     }
-    core_only = _core.MonomialPropagator032(
-        initial_operator={(): 2.5}, cutoff=4, initial_state=[]
+    core_only = _CORE.MonomialPropagator032(
+        initial_operator={(): 2.5}, cutoff=4, initial_state=[], comm=_COMM
     )
     core_only.build_graph([[0, 1]], [0], [1.0])
     out["core_only"] = {
@@ -393,11 +410,20 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
+    global _COMM, _CORE  # noqa: PLW0603 - fixed once, before any propagator exists
     spec = json.loads(sys.argv[1])
+    has_mpi = _has_mpi()
+    if has_mpi:
+        from mpi4py import MPI  # noqa: PLC0415 - MPI-off runs never import mpi4py
+
+        _COMM = MPI.COMM_WORLD
+    backend = getattr(monoprop, "_backend", None)
+    if backend is not None:
+        _CORE = backend.core_module(_COMM)
     result: dict[str, Any] = {
-        "runtime": getattr(_core, "__runtime_identity__", None),
-        "has_mpi": monoprop.has_mpi,
-        "core_file": _core.__file__,
+        "runtime": getattr(_CORE, "__runtime_identity__", None),
+        "has_mpi": has_mpi,
+        "core_file": _CORE.__file__,
     }
     scenario = spec["scenario"]
     if scenario == "identity":
@@ -414,10 +440,8 @@ def main() -> None:
         sys.stdout.write(json.dumps(result) + "\n")
         return
     rank, ranks = 0, 1
-    if monoprop.has_mpi:
-        from mpi4py import MPI  # noqa: PLC0415 - MPI-off runs never import mpi4py
-
-        rank, ranks = MPI.COMM_WORLD.Get_rank(), MPI.COMM_WORLD.Get_size()
+    if _COMM is not None:
+        rank, ranks = _COMM.Get_rank(), _COMM.Get_size()
     result["rank"], result["ranks"] = rank, ranks
     Path(out, f"rank{rank}.json").write_text(json.dumps(result))
 
