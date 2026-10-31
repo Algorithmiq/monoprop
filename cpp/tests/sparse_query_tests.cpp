@@ -17,13 +17,19 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
+#include <numeric>
+#include <optional>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "monoprop/detail/evolution/layer_build/Common.h"
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
+#include "monoprop/detail/evolution/layer_build/Scan.h"
 
 #include "dense_query_reference.h"
 
@@ -569,5 +575,339 @@ BOOST_AUTO_TEST_CASE(sparse_record_round_trips_every_reachable_k_and_gap_width) 
         const auto pos = gap_shaped(k, 0, QW::kBits);
         BOOST_REQUIRE_EQUAL(pos.size(), k);
         BOOST_TEST(differential<128>(pos, 1) == 1U);
+    }
+}
+
+// --- ordered merge of per-range scan results ------------------------------------------------------------------
+
+namespace {
+
+constexpr size_t kMergeModes = 32;
+using MergeResult = FusedScanResult<kMergeModes>;
+
+auto reset_streams(MergeResult &r, mpi::SlotWindow w, bool capture) -> void {
+    r.leader_queries.reset(w);
+    r.leader_src.reset(w);
+    r.follower_queries.reset(w);
+    r.follower_src.reset(w);
+    if (capture) {
+        r.leader_val.reset(w);
+        r.follower_val.reset(w);
+    }
+}
+
+auto same_stage(const SelfQueryStage<kMergeModes> &a, const SelfQueryStage<kMergeModes> &b) -> bool {
+    if (a.size() != b.size() || a.positions() != b.positions()) {
+        return false;
+    }
+    for (size_t q = 0; q < a.size(); ++q) {
+        if (a.pos_off[q] != b.pos_off[q] || a.k_of[q] != b.k_of[q] || a.phase_of[q] != b.phase_of[q]) {
+            return false;
+        }
+    }
+    return std::equal(a.pos_flat.begin(),
+                      a.pos_flat.begin() + static_cast<std::ptrdiff_t>(a.positions()),
+                      b.pos_flat.begin());
+}
+
+auto bits_equal(const std::vector<double> &a, const std::vector<double> &b) -> bool {
+    return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
+}
+
+} // namespace
+
+// Hand-built per-range pieces with variable-length wire records (escaped k included), a window at a
+// non-zero base, self-owned queries on both stages, an empty middle piece and value capture on and off.
+// The merge must reproduce the single stream a serial scan would have produced: each destination's
+// records, sources and values in range order, each self stage rebased in range order, cosine sets in
+// range order, and every piece's buffers released afterwards.
+BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stages) {
+    using QW = QueryWire<kMergeModes>;
+    const mpi::SlotWindow window{.base = 2, .count = 3};
+    const size_t me = 3;
+    for (const bool capture : {false, true}) {
+        std::mt19937_64 rng(0x3E26EULL);
+        std::vector<MergeResult> pieces(4);
+        MergeResult expect;
+        reset_streams(expect, window, capture);
+        size_t src = 0;
+        for (size_t p = 0; p < pieces.size(); ++p) {
+            auto &piece = pieces[p];
+            reset_streams(piece, window, capture);
+            CosineWordBuilder cos;
+            if (p == 1) {
+                piece.cos_blocks.push_back(cos.finish()); // an empty range still reports its (empty) set
+                continue;
+            }
+            for (size_t q = 0; q < 40 + (p * 7); ++q) {
+                const size_t dest = window.slot(mpi::WindowIndex{rng() % window.count});
+                const bool follower = (rng() & 1U) != 0;
+                const std::array<size_t, 6> widths{0, 1, 5, 31, 40, 64};
+                const size_t k = widths[rng() % widths.size()];
+                std::vector<uint16_t> pos(64);
+                std::iota(pos.begin(), pos.end(), uint16_t{0});
+                std::shuffle(pos.begin(), pos.end(), rng);
+                pos.resize(k);
+                std::ranges::sort(pos);
+                const int phase = static_cast<int>(rng() % 3) - 1;
+                const double v = std::ldexp(static_cast<double>(rng() % 1000) - 500.0, -7);
+                for (auto *r : {&piece, &expect}) {
+                    if (dest == me) {
+                        (follower ? r->follower_self : r->leader_self).push(pos, phase);
+                    }
+                    else {
+                        QW::push((follower ? r->follower_queries : r->leader_queries).at_slot(dest), pos, phase);
+                    }
+                    (follower ? r->follower_src : r->leader_src).at_slot(dest).push_back(src);
+                    if (capture) {
+                        (follower ? r->follower_val : r->leader_val).at_slot(dest).push_back(v);
+                    }
+                }
+                cos.push_index((p * 1024 * 64) + (q * 3));
+                ++src;
+            }
+            piece.cos_blocks.push_back(cos.finish());
+        }
+        std::vector<CosMask> expect_cos;
+        for (const auto &piece : pieces) {
+            expect_cos.push_back(piece.cos_blocks.front());
+        }
+
+        const auto merged = merge_scan_ranges<kMergeModes>(pieces, window, me, capture);
+
+        BOOST_TEST_CONTEXT("capture=" << capture) {
+            BOOST_TEST((merged.leader_queries.window() == window));
+            BOOST_TEST((merged.follower_src.window() == window));
+            BOOST_TEST(merged.leader_val.size() == (capture ? window.count : 0U));
+            BOOST_TEST(merged.follower_val.size() == (capture ? window.count : 0U));
+            for (const auto wi : window.indices()) {
+                BOOST_TEST((merged.leader_queries[wi] == expect.leader_queries[wi]));
+                BOOST_TEST((merged.follower_queries[wi] == expect.follower_queries[wi]));
+                BOOST_TEST((merged.leader_src[wi] == expect.leader_src[wi]));
+                BOOST_TEST((merged.follower_src[wi] == expect.follower_src[wi]));
+                if (capture) {
+                    BOOST_TEST(bits_equal(merged.leader_val[wi], expect.leader_val[wi]));
+                    BOOST_TEST(bits_equal(merged.follower_val[wi], expect.follower_val[wi]));
+                }
+            }
+            // Self wire stays empty; the stages carry the self slot's queries in order.
+            BOOST_TEST(merged.leader_queries.at_slot(me).empty());
+            BOOST_TEST(merged.follower_queries.at_slot(me).empty());
+            BOOST_TEST(expect.leader_self.size() > 0U);
+            BOOST_TEST(expect.follower_self.size() > 0U);
+            BOOST_TEST(same_stage(merged.leader_self, expect.leader_self));
+            BOOST_TEST(same_stage(merged.follower_self, expect.follower_self));
+            BOOST_TEST(merged.leader_self.size() == merged.leader_src.at_slot(me).size());
+            BOOST_TEST(merged.follower_self.size() == merged.follower_src.at_slot(me).size());
+            BOOST_TEST_REQUIRE(merged.cos_blocks.size() == expect_cos.size());
+            for (size_t p = 0; p < expect_cos.size(); ++p) {
+                BOOST_TEST((merged.cos_blocks[p].blocks == expect_cos[p].blocks));
+                BOOST_TEST(merged.cos_blocks[p].total_count == expect_cos[p].total_count);
+            }
+            // Drained pieces hold no allocation: clear() alone would have kept their capacity.
+            size_t retained = 0;
+            for (const auto &piece : pieces) {
+                for (const auto wi : window.indices()) {
+                    retained += piece.leader_queries[wi].capacity() + piece.follower_queries[wi].capacity();
+                    retained += piece.leader_src[wi].capacity() + piece.follower_src[wi].capacity();
+                    if (capture) {
+                        retained += piece.leader_val[wi].capacity() + piece.follower_val[wi].capacity();
+                    }
+                }
+                for (const auto *stage : {&piece.leader_self, &piece.follower_self}) {
+                    retained += stage->pos_flat.capacity() + stage->pos_off.capacity() + stage->k_of.capacity()
+                                + stage->phase_of.capacity();
+                }
+                retained += piece.cos_blocks.capacity();
+            }
+            BOOST_TEST(retained == 0U);
+        }
+    }
+}
+
+// The merge moves a buffer instead of copying it when one piece holds a whole stream, or when the first
+// nonempty piece already has room for the total; otherwise it reserves the exact total once.
+BOOST_AUTO_TEST_CASE(openmp_scan_merge_moves_the_first_useful_buffer) {
+    const mpi::SlotWindow window{.base = 0, .count = 2};
+    const size_t me = 0;
+    std::vector<MergeResult> pieces(3);
+    for (auto &piece : pieces) {
+        reset_streams(piece, window, false);
+    }
+    // Slot 0 sources: only piece 1 has any, so the merged stream is that very buffer.
+    auto &only = pieces[1].leader_src.at_slot(0);
+    only.reserve(100);
+    only.assign({4, 5, 6});
+    const auto *only_data = only.data();
+    // Slot 1 sources: piece 0 has room for all of them, so its buffer is kept and piece 2 appended.
+    auto &roomy = pieces[0].follower_src.at_slot(1);
+    roomy.reserve(64);
+    roomy.assign({1, 2});
+    const auto *roomy_data = roomy.data();
+    pieces[2].follower_src.at_slot(1).assign({9});
+    // Slot 1 leader sources: no piece has room, so the result is one exact reservation.
+    pieces[0].leader_src.at_slot(1).assign({1, 2});
+    pieces[0].leader_src.at_slot(1).shrink_to_fit();
+    pieces[2].leader_src.at_slot(1).assign({8, 9, 10});
+    // Self stage, aligned with slot 0's sources: only piece 1 has queries, so its stage is moved whole.
+    const std::vector<uint16_t> pos{3, 9};
+    for (int q = 0; q < 3; ++q) {
+        pieces[1].leader_self.push(pos, 1);
+    }
+    pieces[0].leader_self.reserve(8, 4); // capacity without content is not a query
+    const auto *stage_data = pieces[1].leader_self.pos_flat.data();
+
+    auto merged = merge_scan_ranges<kMergeModes>(pieces, window, me, false);
+    BOOST_TEST(merged.leader_src.at_slot(0).data() == only_data);
+    BOOST_TEST(merged.follower_src.at_slot(1).data() == roomy_data);
+    BOOST_TEST((merged.follower_src.at_slot(1) == std::vector<size_t>{1, 2, 9}));
+    BOOST_TEST((merged.leader_src.at_slot(1) == std::vector<size_t>{1, 2, 8, 9, 10}));
+    BOOST_TEST(merged.leader_src.at_slot(1).capacity() == 5U);
+    BOOST_TEST(merged.leader_self.size() == 3U);
+    BOOST_TEST(merged.leader_self.pos_flat.data() == stage_data);
+}
+
+// --- checked record boundaries and decoded-position validation (resolver input is untrusted) ---------------
+
+namespace {
+
+// A single hand-packed header word: phase field, k field (and the wide-k field when escaped), gw field.
+template <size_t N>
+auto header_word(uint64_t phase_field, uint64_t k_field, std::optional<uint64_t> long_k, uint64_t gw) -> size_t {
+    using QW = QueryWire<N>;
+    uint64_t w = phase_field | (k_field << QW::kPhaseBits);
+    size_t at = QW::kPhaseBits + QW::kKBits;
+    if (long_k) {
+        w |= *long_k << at;
+        at += QW::kLongKBits;
+    }
+    w |= gw << at;
+    return static_cast<size_t>(w);
+}
+
+template <size_t N>
+auto expect_malformed(const VecZ &buf, QueryForm form, size_t off, const char *label) -> void {
+    BOOST_TEST_CONTEXT(label) {
+        BOOST_CHECK_THROW((void)QueryWire<N>::checked_extent(buf, form, off), MalformedQueryStream);
+    }
+}
+
+} // namespace
+
+// Every record push() can produce passes the check, which reports exactly the words the decoder consumes, plus
+// the fused value word. Covers the whole (k, gw) surface at 128 modes, the escape boundary and full width.
+BOOST_AUTO_TEST_CASE(sparse_record_checked_extent_accepts_every_canonical_record) {
+    const auto check = []<size_t N>(std::integral_constant<size_t, N>, const std::vector<uint16_t> &pos, int phase) {
+        using QW = QueryWire<N>;
+        for (const auto form : {QueryForm::Plain, QueryForm::Fused}) {
+            VecZ buf;
+            const size_t words = QW::push(buf, pos, phase);
+            if (form == QueryForm::Fused) {
+                QW::push_value(buf, -0.25);
+            }
+            const auto ext = QW::checked_extent(buf, form, 0);
+            BOOST_TEST(ext.k == pos.size());
+            BOOST_TEST(ext.words == buf.size());
+            BOOST_TEST(ext.words == words + (form == QueryForm::Fused ? 1U : 0U));
+            std::vector<uint16_t> out(pos.size());
+            const auto d = QW::read_query(buf, form, 0, out);
+            BOOST_TEST(d.next == ext.words);
+            BOOST_TEST(out == pos, boost::test_tools::per_element());
+        }
+    };
+    size_t cells = 0;
+    for (size_t k = 0; k <= 40U; ++k) {
+        for (size_t gw = 0; gw <= QueryWire<128>::kPosBits; ++gw) {
+            const auto pos = gap_shaped(k, gw, QueryWire<128>::kBits);
+            if (pos.size() != k || (k < 2U && gw > 0U)) {
+                continue;
+            }
+            check(std::integral_constant<size_t, 128>{}, pos, static_cast<int>(k % 3U) - 1);
+            ++cells;
+        }
+    }
+    BOOST_TEST(cells == 353U);
+    for (const size_t k : {size_t{30}, size_t{31}, size_t{32}, size_t{200}, size_t{2048}}) {
+        check(std::integral_constant<size_t, 1024>{}, strided(k, 0, k == 2048 ? 1 : 3, 2048), 1);
+    }
+    check(std::integral_constant<size_t, 250>{}, std::vector<uint16_t>{0, 257, 499}, -1);
+}
+
+// The plan's fixture: one Plain word at 128 modes with phase +1, an escaped k = 6, gw = 8 and no payload. The
+// decoder would consume 20 header bits + 8 + 5*8 = 68 bits (two words), but the canonical k = 6 header is 11
+// bits, so the unchecked size calculation claims 59 bits, one word, and the decode would read past the buffer.
+BOOST_AUTO_TEST_CASE(sparse_record_checked_extent_rejects_the_noncanonical_escape) {
+    using QW = QueryWire<128>;
+    const VecZ buf{size_t{0x8037e}};
+    const auto h = QW::header_at(buf, 0);
+    BOOST_TEST(h.phase == 1);
+    BOOST_TEST(h.k == 6U);
+    BOOST_TEST(h.gw == 8U);
+    BOOST_TEST(h.bits == 20U);
+    BOOST_TEST(QW::header_bits_for(h.k) == 11U);
+    BOOST_TEST(QW::words_at(buf, 0) == 1U); // the undercount the check exists to catch
+    expect_malformed<128>(buf, QueryForm::Plain, 0, "0x8037e alone");
+    // Padding that makes the decoder's read fit does not make the header canonical.
+    expect_malformed<128>(VecZ{size_t{0x8037e}, 0, 0}, QueryForm::Plain, 0, "0x8037e padded");
+    expect_malformed<128>(VecZ{size_t{0x8037e}, 0}, QueryForm::Fused, 0, "0x8037e fused");
+}
+
+BOOST_AUTO_TEST_CASE(sparse_record_checked_extent_rejects_malformed_headers_and_boundaries) {
+    using QW8 = QueryWire<8>; // kBits 16, kPosBits 4, kLongKBits 5
+    expect_malformed<8>(VecZ{}, QueryForm::Plain, 0, "offset at the end");
+    expect_malformed<8>(VecZ{header_word<8>(3, 0, std::nullopt, 0)}, QueryForm::Plain, 0, "phase field 3");
+    expect_malformed<8>(VecZ{header_word<8>(1, 31, 20, 0)}, QueryForm::Plain, 0, "escaped k above kMaxPositions");
+    expect_malformed<8>(VecZ{header_word<8>(1, 31, 3, 0)}, QueryForm::Plain, 0, "escaped k below kKEscape");
+    expect_malformed<8>(VecZ{header_word<8>(1, 2, std::nullopt, QW8::kPosBits + 1)}, QueryForm::Plain, 0, "gw");
+    // A fused record without its value word, and a two-word record cut to one.
+    VecZ fused;
+    QW8::push(fused, std::vector<uint16_t>{1, 4}, 1);
+    expect_malformed<8>(fused, QueryForm::Fused, 0, "fused value word missing");
+    using QW = QueryWire<1024>;
+    VecZ wide;
+    const size_t words = QW::push(wide, strided(40, 0, 50, 2048), -1);
+    BOOST_REQUIRE(words >= 2U);
+    wide.pop_back();
+    expect_malformed<1024>(wide, QueryForm::Plain, 0, "truncated multiword record");
+    // A valid record followed by a lone partial word: the second record's header claims more than remains.
+    VecZ tail;
+    QW::push(tail, std::vector<uint16_t>{3}, 1);
+    const auto first = QW::checked_extent(tail, QueryForm::Plain, 0);
+    tail.push_back(wide[0]);
+    expect_malformed<1024>(tail, QueryForm::Plain, first.words, "trailing partial record");
+}
+
+// read_positions checks the cumulative size_t position before narrowing it to the output type: each must stay
+// below 2*NumModes, which also bounds the next addition and keeps the positions strictly ascending.
+BOOST_AUTO_TEST_CASE(sparse_record_decode_rejects_positions_outside_the_width) {
+    // 250 modes: a 9-bit first position reaches 511 although only 0..499 exist.
+    {
+        using QW = QueryWire<250>;
+        VecZ buf;
+        QW::push(buf, std::vector<uint16_t>{505}, 1);
+        std::vector<uint16_t> out(1);
+        BOOST_CHECK_THROW((void)QW::read_positions(buf, 0, out), MalformedQueryStream);
+        VecZ ok;
+        QW::push(ok, std::vector<uint16_t>{499}, 1);
+        BOOST_CHECK_NO_THROW((void)QW::read_positions(ok, 0, out));
+    }
+    // 32 modes: a gap walks past position 63.
+    {
+        using QW = QueryWire<32>;
+        VecZ buf;
+        QW::push(buf, std::vector<uint16_t>{10, 70}, -1);
+        std::vector<uint8_t> out(QW::kBits); // room for any k the header could claim
+        BOOST_CHECK_THROW((void)QW::read_positions(buf, 0, out), MalformedQueryStream);
+    }
+    // 128 modes into the store's uint8: 257 would narrow to 1, and 300 to 44, both "valid" after narrowing.
+    {
+        using QW = QueryWire<128>;
+        for (const auto &pos : {std::vector<uint16_t>{1, 257}, std::vector<uint16_t>{100, 200, 300}}) {
+            VecZ buf;
+            QW::push(buf, pos, 1);
+            BOOST_REQUIRE_NO_THROW((void)QW::checked_extent(buf, QueryForm::Plain, 0));
+            std::vector<uint8_t> out(QW::kBits);
+            BOOST_CHECK_THROW((void)QW::read_query(buf, QueryForm::Plain, 0, out), MalformedQueryStream);
+        }
     }
 }

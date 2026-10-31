@@ -24,6 +24,17 @@
 using namespace monoprop;
 using namespace nanobind::literals;
 
+namespace {
+/*
+ * Read-only provenance, never a selector: the runtime this extension contains. Measurement tools read the attribute and
+ * also search the extension file for this NUL-terminated literal, binding the identity to that file's hash. The array
+ * is kept (`used`), so the literal sits in the file contiguously, whatever the compiler does with the string built
+ * from it. The pre-removal builds carried "monoprop-runtime=sharded-openmp-prototype" or
+ * "monoprop-runtime=legacy-partitions"; an older binary carries none.
+ */
+[[gnu::used]] constexpr char runtime_identity[] = "monoprop-runtime=sharded-openmp";
+} // namespace
+
 namespace monoprop::bindings::detail {
 auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType {
     if (cutoff_type == "length") {
@@ -87,6 +98,7 @@ NB_MODULE(monoprop_PY_MODULE_NAME, m) {
     m.attr("__compiler_flags__") = compiler_flags();
     m.attr("__nanobind_version__") = std::string("@nanobind_VERSION@");
     m.attr("__variant__") = std::string(variant());
+    m.attr("__runtime_identity__") = std::string(runtime_identity);
 
     m.def("is_antihermitian",
           &monoprop::is_antihermitian,

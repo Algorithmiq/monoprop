@@ -6,4 +6,5 @@ target_sources(
       FILES
         "MonomialPropagatorCommon.h"
         "MonomialPropagator.inl"
+        "ShardedPropagator.inl"
 )

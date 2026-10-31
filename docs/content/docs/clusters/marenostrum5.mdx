@@ -37,10 +37,10 @@ MPI on two ranks:
 salloc --nodes=1 --account=<account> -q gp_debug --exclusive --time=00:10:00
 module load singularity
 srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif \
-    python3 -c 'import monoprop; print(monoprop.__version__, monoprop.has_mpi)'
+    python3 -c 'import monoprop; print(monoprop.__version__, monoprop.MPI_ABIS)'
 ```
 
-Both ranks should print the image's version and `True`. This is the check CI cannot run:
+Both ranks should print the image's version and `('openmpi',)`. This is the check CI cannot run:
 the CI machines may lack the Sapphire Rapids instructions the image is compiled for.
 
 MN5's Slurm offers munge authentication to PMIx, which the container's PMIx is built
@@ -97,8 +97,12 @@ srun \
     --distribution=block:block \
     bash -c 'echo -n "task $SLURM_PROCID (node name: $(hostname), node id: $SLURM_NODEID): "; taskset -cp $$' | sort -n
 
-# An MPI rank keeps a single partition unless monoprop_NUM_THREADS is set.
+# One OpenMP thread, and one shard, per core of the rank, fixed for the whole run.
 export monoprop_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export OMP_DYNAMIC=FALSE
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
 # Directories the container may read and write besides $HOME and the working directory.
 export SINGULARITY_BIND="/gpfs/projects,/gpfs/scratch,$TMPDIR"
 
@@ -156,9 +160,11 @@ exit "$status"
   example 8 ranks × 10 cores.
 - `--threads-per-core=1` and `--cpu-bind=verbose,threads` bind each rank to one hardware
   thread on each of its cores, and `--distribution=block:block` hands each rank consecutive
-  cores. monoprop pins one partition per core inside the mask it is given, so
-  `monoprop_NUM_THREADS="$SLURM_CPUS_PER_TASK"` runs one partition per core of the rank;
-  see [Parallelism and distribution](/features/parallelism).
+  cores. monoprop does not pin threads: `OMP_PLACES=cores` and `OMP_PROC_BIND=close` place
+  the rank's OpenMP team one thread per core inside that mask, so `monoprop_NUM_THREADS` and
+  `OMP_NUM_THREADS` set to `$SLURM_CPUS_PER_TASK` run one thread, and one shard, per core of
+  the rank. `OMP_DYNAMIC=FALSE` keeps every team at exactly that size; see
+  [Parallelism and distribution](/features/parallelism).
 - `SRUN_CPUS_PER_TASK` is needed because `srun` does not inherit `--cpus-per-task` from
   `sbatch`.
 - The first `srun` prints every rank's binding before monoprop runs. The job exits with the
@@ -168,9 +174,10 @@ exit "$status"
 
 ### Check the placement
 
-Every rank prints a `COMMPLACE` line to stderr when it builds a propagator. With the script
-above it reads `masks=private cpus=14`: the ranks on a node have disjoint masks of 14 CPUs.
-To check the binding before running monoprop, from an allocation with the job's geometry:
+monoprop prints no placement report. Setting `OMP_DISPLAY_AFFINITY=TRUE` has the OpenMP
+runtime print each thread's binding when a rank's first team forms; with the script above,
+every thread of a rank is bound to a different one of the rank's 14 cores. To check the
+ranks' binding before running monoprop, from an allocation with the job's geometry:
 
 ```bash
 srun --ntasks-per-node=8 --cpus-per-task=14 --threads-per-core=1 \

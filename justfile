@@ -72,9 +72,15 @@ test: build test-py test-cpp
 # The test legs below run against whatever is installed (--no-sync, so that a run cannot
 # silently rebuild a differently configured wheel). LABEL, when given, names the JUnit
 # report CI uploads.
+#
+# Test launch policy: the ordinary suites run at exactly one thread per rank (T = 1), set on
+# the test command only, so it never leaks into library use or the benchmark recipes. The
+# sharded tests that need other teams launch their own fresh processes.
+
+test_launch := "monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE"
 
 test-py LABEL='':
-    uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
+    {{ test_launch }} uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
         {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
 
 test-cpp LABEL='' BUILD_DIR=build_dir:
@@ -90,9 +96,10 @@ test-cpp-mpi LABEL='':
         {{ if LABEL == '' { '' } else { '--output-junit ctest-mpi-' + LABEL + '.xml' } }}
 
 # The Python MPI legs: every test that runs on a world communicator (`-m mpi`), under mpiexec, in
-# each configuration CI covers. Linear routing refuses 3 ranks, so 3 runs with splitmix; 2 ranks of 2
-# partitions each make the hybrid ranks x partitions world. A hung collective fails its test after
-# 300 s. LABEL, when given, names the JUnit reports, which rank 0 alone writes.
+# each configuration CI covers, at the test launch policy's one thread per rank unless a leg says
+# otherwise. Linear routing refuses 3 ranks, so 3 runs with splitmix; 2 ranks of 2 shards each make
+# the ranks x shards world. A hung collective fails its test after 300 s. LABEL, when given, names
+# the JUnit reports, which rank 0 alone writes.
 
 test-py-mpi LABEL='':
     #!/usr/bin/env bash
@@ -107,8 +114,9 @@ test-py-mpi LABEL='':
       fi
       echo "Python MPI leg $name: $ranks rank(s)${*:+, $*}"
       # OMPI_COMM_WORLD_RANK is Open MPI's rank variable, PMI_RANK the MPICH family's. A leg runs
-      # exactly the configuration it names: settings inherited from the shell are dropped first.
-      env -u monoprop_ROUTING -u monoprop_PARTITIONS "$@" {{ mpiexec }} -n "$ranks" bash -c '
+      # exactly the configuration it names: settings inherited from the shell are dropped first, and
+      # the leg's own settings override the test launch policy.
+      env -u monoprop_ROUTING {{ test_launch }} "$@" {{ mpiexec }} -n "$ranks" bash -c '
         report="$1"
         shift
         rank="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}"
@@ -124,7 +132,7 @@ test-py-mpi LABEL='':
     # at least 3 ranks under linear routing.
     leg ranks4 4 monoprop_ROUTING=linear
     leg ranks3-splitmix 3 monoprop_ROUTING=splitmix
-    leg ranks2-partitions2 2 monoprop_PARTITIONS=2
+    leg ranks2-threads2 2 monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2
 
 # Build MPI-enabled, then run every MPI leg CI runs. The C++ rank counts are passed because an MPI
 # build tree caches them, and an older version of this recipe cached `2` alone.
@@ -132,9 +140,10 @@ test-py-mpi LABEL='':
 test-mpi: && test-py-mpi (test-cpp '' mpi_build_dir) test-cpp-mpi
     monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="2;4" {{ uv_sync }} --group workspace-test
 
-# Build and run a consumer project against the installed package: serially, then, when the
-# installation ships MPI ABIs, through the MPI component under mpiexec, and finally against a
-# package that lacks the consumer's MPI ABI, which must fail at configure time.
+# Build and run a consumer project against the installed package: serially at one thread and at a
+# fixed team of two, then, when the installation ships MPI ABIs, through the MPI component on two
+# ranks at both team sizes, and finally against a package that lacks the consumer's MPI ABI, which
+# must fail at configure time.
 
 test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     #!/usr/bin/env bash
@@ -145,7 +154,8 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
-    "$build_dir/smoke"
+    monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE "$build_dir/smoke"
+    monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE "$build_dir/smoke"
     abis="$("${python[@]}" -c 'import monoprop; print(" ".join(monoprop.MPI_ABIS))')"
     if [[ -z "$abis" ]]; then
       exit 0
@@ -153,13 +163,16 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     cmake -S cpp/tests/find_package_smoke -B "$build_dir-mpi" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON
     cmake --build "$build_dir-mpi"
-    mpiexec -n 2 "$build_dir-mpi/smoke"
+    for threads in 1 2; do
+      monoprop_NUM_THREADS=$threads OMP_NUM_THREADS=$threads OMP_DYNAMIC=FALSE monoprop_TEST_EXPECT_RANKS=2 \
+        {{ mpiexec }} -n 2 "$build_dir-mpi/smoke"
+    done
     # An optional MPI component must leave the serial package usable when no MPI is found.
     cmake -S cpp/tests/find_package_smoke -B "$build_dir-optional-mpi" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_OPTIONAL_MPI=ON \
       -DCMAKE_DISABLE_FIND_PACKAGE_MPI=ON
     cmake --build "$build_dir-optional-mpi"
-    "$build_dir-optional-mpi/smoke"
+    monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE "$build_dir-optional-mpi/smoke"
     # The targets file locates the libraries relative to the config directory, so the altered
     # copy sits in a mirror of the installation tree whose other entries link to the real ones.
     mismatch="$(mktemp -d)"
@@ -177,6 +190,46 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
       exit 1
     fi
     grep -q "supports: none" "$mismatch/log"
+
+# Fail unless every installed extension (the serial _core and each MPI ABI's _core_mpi) carries the sharded
+# runtime's NUL-terminated identity literal and neither pre-removal marker, _core also as its attribute, the
+# installation ships MPI ABIs exactly when monoprop_ENABLE_MPI asks for them, and the C++ build tree holds no stale
+# runtime selector. The MPI extensions are read from disk, not imported, so no MPI library is loaded.
+
+check-runtime:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want_mpi={{ if mpi_enabled =~ '^(on|true|yes|1)$' { "True" } else { "False" } }}
+    uv run --no-sync python - "$want_mpi" <<'PY'
+    import sys
+    from pathlib import Path
+
+    import monoprop
+    from monoprop import _core
+
+    identity = "monoprop-runtime=sharded-openmp"
+    stale_markers = (b"monoprop-runtime=sharded-openmp-prototype", b"monoprop-runtime=legacy-partitions")
+    want_mpi = sys.argv[1] == "True"
+    found = getattr(_core, "__runtime_identity__", None)
+    core = Path(_core.__file__)
+    extensions = [core, *sorted(core.parent.glob("_core_mpi.*"))]
+    failed = found != identity or bool(monoprop.MPI_ABIS) != want_mpi
+    failed = failed or len(extensions) - 1 != len(monoprop.MPI_ABIS)
+    print(f"runtime={found} MPI_ABIS={monoprop.MPI_ABIS}")
+    for extension in extensions:
+        data = extension.read_bytes()
+        embedded = identity.encode() + b"\0" in data
+        stale = [m for m in stale_markers if m in data]
+        print(f"  {extension.name}: embedded={embedded} stale={stale}")
+        failed = failed or not embedded or bool(stale)
+    if failed:
+        raise SystemExit(f"expected {identity} in every extension, with MPI ABIs={want_mpi}")
+    PY
+    if grep -q '^monoprop_SHARDED_OPENMP_PROTOTYPE:' "{{ build_dir }}/CMakeCache.txt"; then
+      echo "{{ build_dir }} holds a stale monoprop_SHARDED_OPENMP_PROTOTYPE cache entry; rebuild it from scratch" >&2
+      exit 1
+    fi
+    echo "C++ tree {{ build_dir }}: no runtime selector"
 
 # Test built wheels (a file or a directory) against the MPI already on this machine. MPI4PY is
 # "wheel" (the PyPI binary; its file name names the ABI) or "source" (built against the local
@@ -217,7 +270,7 @@ test-py-asan:
     LD_PRELOAD="$(g++ -print-file-name=libasan.so):$(g++ -print-file-name=libstdc++.so.6)" \
     ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1:log_path={{ sanitizer_log }}" \
     UBSAN_OPTIONS="{{ ubsan_options }}:log_path={{ sanitizer_log }}" \
-      uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
+      {{ test_launch }} uv run --no-sync pytest tests -r aR --durations=50 --durations-min=5.0
 
 # Print what test-py-asan sent to the log files. Silent when the tests themselves failed.
 
@@ -237,11 +290,19 @@ sanitizer-reports:
     done
 
 # TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
-# restricted to the concurrent partition and shared-memory paths.
+# restricted to the concurrency surface: the sharded runtime's team, state, construction,
+# evaluation, exchange and root suites and the fused-record launches (their fixed-T launches
+# included), every `openmp_` case (the workshare primitive, kernels, scan, resolve and budget
+# checks, and their fixed-T launches), the multi-shard coefficient launches and the threaded
+# lazy-fold checks. Only Clang with LLVM's libomp and its Archer
+# tool gives evidence; GCC's libgomp is not TSan-aware (docs/content/docs/building.mdx).
 
 test-cpp-tsan:
-    TSAN_OPTIONS="halt_on_error=1:history_size=4" \
-      ctest --test-dir {{ build_dir }} --output-on-failure -R "(partition_|shm_comm_)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    selection='^(sharded_(team|state|construction|evaluation|exchange|root)_|fused_env_t|openmp_|evolved_coefficients_env_t|combined_threaded_)'
+    TSAN_OPTIONS="halt_on_error=1:history_size=4${TSAN_OPTIONS:+:$TSAN_OPTIONS}" \
+      ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error -R "$selection"
 
 # Collect one instrumented build. MPI must be "on" or "off"; each variant needs its own build
 # and output directories because the preprocessor selects different compatibility paths.
@@ -279,6 +340,8 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     find "$build_dir" -type f -name '*.gcda' -delete
     uv run --no-sync coverage erase
 
+    # The test launch policy (test_launch above), for this recipe's test commands only.
+    export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE
     uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
     if [[ "$mpi" == "on" ]]; then
       # The coverage lane runs in a container as root.
@@ -444,10 +507,10 @@ bench LABEL *ARGS:
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 
 # Needs an MPI build (`just bench-build-mpi`) -- a non-MPI build is rejected by the
-# preflight. `monoprop_PARTITIONS` is mandatory above one rank (benches/conftest.py refuses
-# the run without it). Extra args are passed to mpiexec for pinning (and, as root, add
-# `--allow-run-as-root`), e.g.
-#   monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+# preflight. The run declares the sharded runtime's shape (`--runtime-shape=openmp`): set
+# monoprop_NUM_THREADS=T (and OMP_NUM_THREADS=T OMP_DYNAMIC=FALSE) for T threads per rank.
+# Extra args are passed to mpiexec for placement (and, as root, add `--allow-run-as-root`), e.g.
+#   monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
@@ -457,9 +520,9 @@ bench-mpi LABEL RANKS *MPIARGS:
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
         uv run --no-sync mpiexec -n "$ranks" \
         -x monoprop_BENCH_LABEL -x monoprop_BENCH_RESULTS \
-        ${monoprop_PARTITIONS+-x monoprop_PARTITIONS} \
-        ${monoprop_NUM_THREADS+-x monoprop_NUM_THREADS} "$@" \
-        python -m pytest benches -o filterwarnings=default \
+        ${monoprop_NUM_THREADS+-x monoprop_NUM_THREADS} \
+        ${OMP_NUM_THREADS+-x OMP_NUM_THREADS} ${OMP_DYNAMIC+-x OMP_DYNAMIC} "$@" \
+        python -m pytest benches -o filterwarnings=default --runtime-shape=openmp \
         --benchmark-json="{{ bench_results }}/time-$label.json"
     uv run --no-sync monoprop-bench-report "{{ bench_results }}"
 

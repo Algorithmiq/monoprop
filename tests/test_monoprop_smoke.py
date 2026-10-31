@@ -157,11 +157,11 @@ _GRAPH_DIAGNOSTIC_KEYS = (
 )
 
 
-@pytest.mark.parametrize("partitions", [1, 2])
-def test_graph_memory_breakdown_keys_and_totals(lih_problem, partitions, monkeypatch):
+@pytest.mark.parametrize("threads", [1, 2])
+def test_graph_memory_breakdown_keys_and_totals(lih_problem, threads, monkeypatch):
     """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
-    # Read when the propagator is built: the run's flat world is P = partitions.
-    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
+    # Captured when the propagator is built: the serial run's flat world is P = T shards.
+    monkeypatch.setenv("monoprop_NUM_THREADS", str(threads))
     monomial_circuit = lih_problem.monomial_circuit
     core = _make_bound_core(lih_problem, schrodinger=False)
     _evolve_bound_core(core, monomial_circuit)
@@ -187,7 +187,7 @@ def test_graph_memory_breakdown_keys_and_totals(lih_problem, partitions, monkeyp
 
     # The slot array is indexed by the flat world, so slot_records / layer_cores is P.
     assert breakdown["d_layer_cores"] > 0
-    assert breakdown["d_slot_records"] == partitions * breakdown["d_layer_cores"]
+    assert breakdown["d_slot_records"] == threads * breakdown["d_layer_cores"]
 
     # An occupied slot holds at least one endpoint, so the endpoint count is the P-independent ceiling.
     assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]

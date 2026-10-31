@@ -1,0 +1,4 @@
+# ThreadSanitizer suppressions for LLVM's OpenMP runtime: its internal locking is not instrumented, so races
+# reported from inside libomp itself are not evidence (docs/content/docs/building.mdx). Archer
+# (OMP_TOOL_LIBRARIES=.../libarcher.so) supplies the OpenMP synchronization TSan needs for monoprop's own frames.
+called_from_lib:libomp.so.5

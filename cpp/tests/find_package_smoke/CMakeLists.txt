@@ -26,5 +26,18 @@ else()
   set(_monoprop_target monoprop::monoprop)
 endif()
 
-add_executable(smoke ../link_export_probe/link_export_probe.cpp)
+add_executable(
+  smoke
+  ../link_export_probe/link_export_probe.cpp
+  ../link_export_probe/sharded_state_chain.cpp
+  ../link_export_probe/sharded_construction_chain.cpp
+  ../link_export_probe/sharded_evaluation_chain.cpp
+)
 target_link_libraries(smoke PRIVATE ${_monoprop_target})
+
+# Only the MPI component's target carries monoprop_ENABLE_MPI; the serial one never does.
+target_compile_definitions(
+  smoke
+  PRIVATE
+    monoprop_EXPECT_MPI=$<BOOL:${monoprop_SMOKE_MPI}>
+)
