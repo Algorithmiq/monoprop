@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31.11.2
+        uses: cachix/install-nix-action@v31.11.3
 
       # Evaluates every output, the `nix run` app and the other interpreters'
       # packages included, without building; the checks are the per-interpreter
