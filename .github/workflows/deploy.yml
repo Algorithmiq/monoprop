@@ -150,7 +150,7 @@ jobs:
           fi
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.1
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Build SDist
         run: |
@@ -172,7 +172,7 @@ jobs:
           fetch-depth: 0  # such that hatch-vcs can read the tags
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.1
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Build sdist and wheel
         run: uv build --package monoprop-bench-tools --out-dir bench-tools-dist
@@ -206,7 +206,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pypa/cibuildwheel@v4.3.3
+      - uses: pypa/cibuildwheel@v4.3.5
         with:
           extras: "uv"
         env:
