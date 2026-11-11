@@ -238,7 +238,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 evolved operator even if they anticommute. Length is counted in the engine's
                 slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
                 costs two, so ``k`` ranges up to ``2 * num_qubits``.
-            truncation_blocks: Blockwise truncation (Heisenberg only). ``None`` (default)
+            truncation_blocks: Blockwise truncation. ``None`` (default)
                 applies the structural cutoff after every generator term. ``"gate"`` makes each
                 gate one block, so a multi-term gate is truncated once, independently of the order
                 of its commuting terms. A sequence gives one block label per entry of
@@ -248,8 +248,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
 
         Raises:
-            ValueError: If ``truncation_blocks`` is malformed, or given in the Schrodinger
-                picture.
+            ValueError: If ``truncation_blocks`` is malformed.
         """
         super().build_graph(
             circuit,

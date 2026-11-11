@@ -248,11 +248,12 @@ public:
     /// `parameter_mapping` is taken as given: renumbering an extension onto the equivalent circuit's axis
     /// (as the Python layer does) is the caller's job.
     ///
-    /// `block_ids` (Heisenberg only) selects blockwise truncation: one id per monomial, contiguous runs
-    /// from 0 like `gate_indices`, each run one truncation block. Inside a block the structural cutoff is
-    /// suspended; once the block's first monomial (in circuit order) has been applied, every row the block
-    /// created that is unpaired, fails the cutoff and, in a seeded build, has |coeff| < upper_atol is
-    /// retired. The initial operator's rows are never retired, and every call closes its last block.
+    /// `block_ids` selects blockwise truncation: one id per monomial, contiguous runs from 0 like
+    /// `gate_indices`, each run one truncation block. Inside a block the structural cutoff is suspended;
+    /// once the block's last monomial in processing order (its first in circuit order in Heisenberg, its
+    /// last in Schrodinger) has been applied, every row the block created that is unpaired, fails the
+    /// cutoff and, in a seeded build, has |coeff| < upper_atol is retired. The initial rows are never
+    /// retired, and every call closes its last block.
     /// nullopt is standard truncation; one block per monomial is identical to it.
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -109,7 +110,11 @@ struct MPOperator {
     /*! @brief Retires `rows`: marks them in the mask and erases them from the lookup.
      *
      *  Callers pass live, unpaired rows only. A paired row scores against the reference state, so
-     *  retiring one would leave its last value in every later expectation value.
+     *  retiring one would leave its last value in every later expectation value. A retired row must
+     *  also carry no observable weight, which holds for rows the current build created: Heisenberg only
+     *  weighs rows that predate the build, and Schrödinger, which contracts the observable against
+     *  unpaired rows too, resolves its terms (get_operator()) only once the build's gate loop is done --
+     *  by lookup, so onto the regenerated row, or none.
      */
     auto retire_rows(std::span<const TermIndex> rows) -> void {
         if (rows.empty()) {
@@ -117,6 +122,7 @@ struct MPOperator {
         }
         retired_words_.resize((size() + 63) / 64, 0);
         for (const TermIndex r : rows) {
+            assert(r >= op_coeffs.size() || op_coeffs[r] == 0.0);
             retired_words_[r / 64] |= uint64_t{1} << (r % 64);
             store->erase_row(r);
         }

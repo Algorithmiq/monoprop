@@ -214,16 +214,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
         """Canonical per-gate block ids (contiguous runs numbered from 0), or ``None``.
 
         Raises:
-            ValueError: If the labels do not match ``circuit.gates`` one to one, a label recurs
-                after a different one, or blocks are requested in the Schrodinger picture.
+            ValueError: If the labels do not match ``circuit.gates`` one to one, or a label
+                recurs after a different one.
         """
         if truncation_blocks is None:
             return None
-        if self.schrodinger:
-            raise ValueError(
-                "truncation_blocks is supported in the Heisenberg picture only; this propagator "
-                "was constructed with schrodinger_cutoff."
-            )
         n_gates = len(circuit.gates)
         if isinstance(truncation_blocks, str):
             if truncation_blocks != "gate":
@@ -284,7 +279,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             only_rotate_len_k: If given, apply gates to monomials of length <= k even where they
                 anticommute -- useful ahead of expectation-value estimation in the Schrodinger
                 picture with many free-fermionic (length-2 Majorana) generators.
-            truncation_blocks: Blockwise truncation (Heisenberg only). ``None`` (default) applies
+            truncation_blocks: Blockwise truncation. ``None`` (default) applies
                 the structural cutoff after every generator term. ``"gate"`` makes each gate one
                 block, so a multi-term gate is truncated once, independently of the order of its
                 commuting terms. A sequence gives one block label per entry of ``circuit.gates``;
@@ -294,8 +289,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
 
         Raises:
-            ValueError: If ``truncation_blocks`` is malformed, or given in the Schrodinger
-                picture.
+            ValueError: If ``truncation_blocks`` is malformed.
         """
         self._check_initial_state(circuit)
         self._check_circuit_width(circuit)

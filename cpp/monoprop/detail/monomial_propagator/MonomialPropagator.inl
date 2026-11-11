@@ -74,12 +74,6 @@ public:
     using std::invalid_argument::invalid_argument;
 };
 
-// build_graph() block_ids were combined with a picture that has no blockwise truncation (Schrödinger).
-class TruncationBlocksUnsupported : public std::invalid_argument {
-public:
-    using std::invalid_argument::invalid_argument;
-};
-
 namespace detail {
 // Passes every monomial: the cutoff a layer inside a truncation block builds with. A LengthCutoff, so
 // CutoffEvaluator still takes its built-in fast path (popcount <= cutoff is always true).
@@ -712,10 +706,6 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                std::optional<VecZ> block_ids) -> void {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
     // Before the fan-out, so a partitioned propagator throws once rather than from every partition.
-    if (block_ids.has_value() && schrodinger_) {
-        throw TruncationBlocksUnsupported("Blockwise truncation (block_ids) is implemented for the Heisenberg "
-                                          "picture only; this propagator is in the Schrödinger picture.");
-    }
     if (block_ids.has_value()) {
         validate_block_ids(*block_ids, majoranas.size());
     }
@@ -880,20 +870,24 @@ auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &major
         }
     }
     else {
-        /* Blockwise truncation, Heisenberg only (build_graph rejects Schrödinger): processing runs from the
-         * last monomial back, so a block ends at its first monomial in circuit order. That last processed
+        /* Blockwise truncation. A block ends at its last processed monomial: the first in circuit order in
+         * Heisenberg, which runs back from the last monomial, and the last in Schrödinger. That last processed
          * layer keeps the normal emit-time cutoff, so a partner it would only create to retire is never
          * stored, and only rows from the block's earlier layers, [block_start, layer_start), need the sweep.
-         * That differs from cutting only at the boundary in one case: a row that predates the block and fails
-         * the cutoff (an initial term, an upper_atol rescue) does not rotate with a partner that also fails
-         * it, exactly as under standard truncation. A pair with either side passing rotates in full.
+         * That differs from cutting only at the boundary in one case: two present rows that both fail the
+         * cutoff exchange weight in that layer only if a sine term reaches upper_atol, exactly as under
+         * standard truncation. Without upper_atol such a pair matters only when one row predates the block
+         * (a Heisenberg initial term, say); with it, also when the sweep keeps a row the block created. A pair
+         * with either side passing rotates in full.
          * Rows are local to their owner, so the sweep needs no communication; every rank and partition
          * shares the replicated block_ids and closes each block at the same step. */
-        assert(!schrodinger_);
+        const auto &ids = *block_ids;
+        const size_t n = majoranas.size();
         size_t block_start = mp_op_.size();
-        for (size_t i = 0; i < majoranas.size(); ++i) {
-            const auto idx = majoranas.size() - 1 - i;
-            const bool block_end = idx == 0 || (*block_ids)[idx - 1] != (*block_ids)[idx];
+        for (size_t i = 0; i < n; ++i) {
+            const auto idx = schrodinger_ ? i : n - 1 - i;
+            const bool block_end =
+                schrodinger_ ? idx + 1 == n || ids[idx + 1] != ids[idx] : idx == 0 || ids[idx - 1] != ids[idx];
             const size_t layer_start = mp_op_.size();
             evolution_func(majoranas[idx], only_rotate_len_k, i, /*apply_cutoff=*/block_end);
             if (block_end) {

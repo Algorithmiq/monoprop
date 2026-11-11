@@ -312,7 +312,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 free-fermionic gates (generators that are length-2 Majorana monomials) are
                 applied before expectation-value estimation in Schrodinger-picture
                 simulations.
-            truncation_blocks: Blockwise truncation (Heisenberg only). ``None`` (default)
+            truncation_blocks: Blockwise truncation. ``None`` (default)
                 applies the structural cutoff after every generator term. ``"gate"`` makes each
                 gate one block, so a multi-term gate is truncated once, independently of the order
                 of its commuting terms. A sequence gives one block label per entry of
@@ -322,8 +322,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
 
         Raises:
-            ValueError: If ``truncation_blocks`` is malformed, or given in the Schrodinger
-                picture.
+            ValueError: If ``truncation_blocks`` is malformed.
         """
         super().build_graph(
             circuit,

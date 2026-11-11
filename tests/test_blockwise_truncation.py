@@ -426,28 +426,86 @@ def test_term_expectations_and_reweighting_after_retirement():
     assert mp.expval_functional()(theta) == pytest.approx(2 * energy, abs=1e-12)
 
 
-def test_upper_atol_keeps_large_long_terms_at_block_ends():
-    rng = np.random.default_rng(23)
+@pytest.mark.parametrize("schrodinger_cutoff", [None, 4])
+@pytest.mark.parametrize("seed", range(4))
+def test_upper_atol_keeps_large_long_terms_at_block_ends(seed, schrodinger_cutoff):
+    """Seeded rescue at block ends, against the oracle's model of the engine's last layer.
+
+    A rescued term is unpaired and over the cutoff, so in a later block's last layer it meets the
+    emit-time cut (see ``engine_block_end``); the literal rule differs there.
+    """
+    rng = np.random.default_rng(23 + seed)
     hamiltonian = _random_hamiltonian(rng, 2)
     gates = _excitation_gates(rng, 7)
     theta = rng.uniform(0, 2 * np.pi, len(gates))
     circuit = Circuit(gates, N_MODES)
-    upper_atol = 0.05
+    kwargs = {"cutoff": 2, "blocks": "gate", "schrodinger_cutoff": schrodinger_cutoff}
     energy, _, _ = _energy_and_grad(
-        hamiltonian, gates, theta, 2, "gate", seeded=True, upper_atol=upper_atol
+        hamiltonian,
+        gates,
+        theta,
+        2,
+        "gate",
+        seeded=True,
+        upper_atol=0.05,
+        schrodinger_cutoff=schrodinger_cutoff,
     )
     expected = oracle.energy(
         hamiltonian,
         circuit,
         theta,
         STATE,
-        cutoff=2,
-        blocks="gate",
-        upper_atol=upper_atol,
+        upper_atol=0.05,
+        engine_block_end=True,
+        **kwargs,
     )
     assert energy == pytest.approx(expected, abs=1e-12)
-    without = oracle.energy(hamiltonian, circuit, theta, STATE, cutoff=2, blocks="gate")
+    without = oracle.energy(hamiltonian, circuit, theta, STATE, **kwargs)
     assert abs(expected - without) > 1e-6  # the rescue changed the outcome
+
+
+@pytest.mark.parametrize("schrodinger_cutoff", [None, 4])
+@pytest.mark.parametrize("blocks_kind", [None, "gate", "runs"])
+@pytest.mark.parametrize("seed", range(3))
+def test_block_end_corner_case_matches_engine_model(
+    seed, blocks_kind, schrodinger_cutoff
+):
+    """Unpaired observable terms over the cutoff (and rescues) at a block's last layer.
+
+    Two present terms both over the cutoff exchange weight there only if a sine term reaches
+    upper_atol, as under standard truncation. The oracle's ``engine_block_end`` mode models
+    that; the literal rule would let them rotate.
+    """
+    rng = np.random.default_rng(400 + seed)
+    hamiltonian = _random_hamiltonian(
+        rng
+    )  # unpaired terms up to length 4, over the cutoff
+    gates = _excitation_gates(rng, 5) + [_random_commuting_gate(rng) for _ in range(3)]
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    blocks = _random_runs(rng, len(gates)) if blocks_kind == "runs" else blocks_kind
+    circuit = Circuit(gates, N_MODES)
+    for upper_atol in [None, 0.01]:
+        extra = {} if upper_atol is None else {"upper_atol": upper_atol}
+        energy, _, _ = _energy_and_grad(
+            hamiltonian,
+            gates,
+            theta,
+            2,
+            blocks,
+            seeded=True,
+            schrodinger_cutoff=schrodinger_cutoff,
+            **extra,
+        )
+        kwargs = {
+            "cutoff": 2,
+            "blocks": blocks,
+            "schrodinger_cutoff": schrodinger_cutoff,
+            "engine_block_end": True,
+            **extra,
+        }
+        assert energy == pytest.approx(
+            oracle.energy(hamiltonian, circuit, theta, STATE, **kwargs), abs=1e-12
+        )
 
 
 @pytest.mark.parametrize("seeded", [False, True])
@@ -552,7 +610,7 @@ def _pauli_problem():
     return n, hamiltonian, generators
 
 
-def _pauli_energy(cutoff, blocks, *, reverse_terms=False):
+def _pauli_energy(cutoff, blocks, *, reverse_terms=False, schrodinger_cutoff=None):
     n, hamiltonian, generators = _pauli_problem()
     gates = []
     for terms in generators:
@@ -563,18 +621,28 @@ def _pauli_energy(cutoff, blocks, *, reverse_terms=False):
     circuit = Circuit(gates, n, initial_state=(0, 2))
     if blocks == "all":
         blocks = [0] * len(gates)
-    mp = PauliPropagator(hamiltonian, (0, 2), cutoff=cutoff)
+    mp = PauliPropagator(
+        hamiltonian, (0, 2), cutoff=cutoff, schrodinger_cutoff=schrodinger_cutoff
+    )
     mp.build_graph(circuit, truncation_blocks=blocks)
     return mp.expval_and_grad(np.linspace(0.3, 1.7, len(gates)))[0]
 
 
-def test_pauli_propagator_blocks():
-    """Invariant B and per-gate order independence on the Pauli basis (support = Pauli weight)."""
+@pytest.mark.parametrize("schrodinger_cutoff", [None, 4])
+def test_pauli_propagator_blocks(schrodinger_cutoff):
+    """Invariant B and per-gate order independence on the Pauli basis (support = Pauli weight).
+
+    In the Schrodinger picture the final cut drops state terms over weight 2, which the observable,
+    of weight <= 2 off its Z-only terms, never reads.
+    """
     exact = _pauli_energy(4, None)
-    assert _pauli_energy(2, "all") == pytest.approx(exact, abs=1e-12)
-    per_gate = _pauli_energy(2, "gate")
+    sc = schrodinger_cutoff
+    assert _pauli_energy(2, "all", schrodinger_cutoff=sc) == pytest.approx(
+        exact, abs=1e-12
+    )
+    per_gate = _pauli_energy(2, "gate", schrodinger_cutoff=sc)
     assert per_gate == pytest.approx(
-        _pauli_energy(2, "gate", reverse_terms=True), abs=1e-12
+        _pauli_energy(2, "gate", reverse_terms=True, schrodinger_cutoff=sc), abs=1e-12
     )
     assert abs(per_gate - exact) > 1e-6  # the blocks did truncate
 
@@ -593,19 +661,314 @@ def test_rejects_malformed_blocks():
     assert mp.graph_layers == 0
 
 
-def test_rejects_blocks_in_schrodinger_picture():
-    rng = np.random.default_rng(0)
-    mp = _propagator(_random_hamiltonian(rng), 4, schrodinger_cutoff=4)
-    circuit = Circuit(_excitation_gates(rng, 2), N_MODES, initial_state=STATE)
-    with pytest.raises(ValueError, match="Heisenberg picture only"):
-        mp.build_graph(circuit, truncation_blocks="gate")
+# Schrodinger picture: the state is evolved first gate first, so a block ends at its last gate, and
+# the observable is contracted against unpaired rows too. The oracle's Schrodinger path models the
+# engine's lazily materialized paired reference terms, so every unpaired term may be long here.
+SCHRODINGER_CUTOFFS = [(2, 2), (3, 4), (4, 4), (4, 6)]
 
 
-def test_engine_rejects_blocks_in_schrodinger_picture():
-    rng = np.random.default_rng(0)
-    mp = _propagator(_random_hamiltonian(rng), 4, schrodinger_cutoff=4)
-    with pytest.raises(ValueError, match="Heisenberg picture only"):
-        mp._simulator.build_graph([(0, 1)], [0], [1.0], block_ids=[0])
+@pytest.mark.parametrize(("cutoff", "schrodinger_cutoff"), SCHRODINGER_CUTOFFS)
+def test_schrodinger_oracle_matches_standard_truncation(cutoff, schrodinger_cutoff):
+    """Oracle self-check in the Schrodinger picture, including the exact limit."""
+    rng = np.random.default_rng(cutoff * 10 + schrodinger_cutoff)
+    hamiltonian = _random_hamiltonian(rng)
+    gates = _excitation_gates(rng, 6) + [_random_commuting_gate(rng) for _ in range(3)]
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    circuit = Circuit(gates, N_MODES)
+    energy, _, _ = _energy_and_grad(
+        hamiltonian, gates, theta, cutoff, None, schrodinger_cutoff=schrodinger_cutoff
+    )
+    expected = oracle.energy(
+        hamiltonian,
+        circuit,
+        theta,
+        STATE,
+        cutoff=cutoff,
+        schrodinger_cutoff=schrodinger_cutoff,
+    )
+    assert energy == pytest.approx(expected, abs=1e-12)
+    exact = oracle.energy(hamiltonian, circuit, theta, STATE, cutoff=2 * N_MODES)
+    assert oracle.energy(
+        hamiltonian,
+        circuit,
+        theta,
+        STATE,
+        cutoff=2 * N_MODES,
+        schrodinger_cutoff=2 * N_MODES,
+    ) == pytest.approx(exact, abs=1e-12)
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+@pytest.mark.parametrize("cutoff_type", ["length", "support"])
+@pytest.mark.parametrize(("cutoff", "schrodinger_cutoff"), SCHRODINGER_CUTOFFS)
+def test_schrodinger_gate_blocks_match_oracle(
+    cutoff, schrodinger_cutoff, cutoff_type, seeded, comm
+):
+    rng = np.random.default_rng(100 + cutoff * 10 + schrodinger_cutoff)
+    hamiltonian = _random_hamiltonian(rng)
+    gates = _excitation_gates(rng, 7)
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    energy, grad, _ = _energy_and_grad(
+        hamiltonian,
+        gates,
+        theta,
+        cutoff,
+        "gate",
+        cutoff_type=cutoff_type,
+        comm=comm,
+        seeded=seeded,
+        schrodinger_cutoff=schrodinger_cutoff,
+    )
+    circuit = Circuit(gates, N_MODES)
+    kwargs = {
+        "cutoff": cutoff,
+        "cutoff_type": cutoff_type,
+        "blocks": "gate",
+        "schrodinger_cutoff": schrodinger_cutoff,
+    }
+    assert energy == pytest.approx(
+        oracle.energy(hamiltonian, circuit, theta, STATE, **kwargs), abs=1e-12
+    )
+    fd = oracle.central_difference_gradient(
+        hamiltonian, circuit, theta, STATE, **kwargs
+    )
+    np.testing.assert_allclose(grad, fd, atol=1e-7)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_schrodinger_multi_gate_blocks_match_oracle(seed):
+    rng = np.random.default_rng(200 + seed)
+    hamiltonian = _random_hamiltonian(rng)
+    gates = [_random_commuting_gate(rng) for _ in range(9)]
+    labels = _random_runs(rng, len(gates))
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    energy, grad, mp = _energy_and_grad(
+        hamiltonian, gates, theta, 2, labels, schrodinger_cutoff=4
+    )
+    assert _retired_rows(mp) > 0
+    circuit = Circuit(gates, N_MODES)
+    kwargs = {"cutoff": 2, "blocks": labels, "schrodinger_cutoff": 4}
+    assert energy == pytest.approx(
+        oracle.energy(hamiltonian, circuit, theta, STATE, **kwargs), abs=1e-12
+    )
+    fd = oracle.central_difference_gradient(
+        hamiltonian, circuit, theta, STATE, **kwargs
+    )
+    np.testing.assert_allclose(grad, fd, atol=1e-7)
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+def test_schrodinger_one_block_per_layer_is_standard_truncation(seeded):
+    """Invariant A in the Schrodinger picture, bit for bit."""
+    rng = np.random.default_rng(301)
+    hamiltonian = _random_hamiltonian(rng)
+    circuit = Circuit(
+        [_random_commuting_gate(rng) for _ in range(8)], N_MODES, initial_state=STATE
+    )
+    theta = rng.uniform(0, 2 * np.pi, circuit.n_parameters)
+    results = []
+    for gates, blocks in [
+        (circuit.gates, None),
+        (_split_into_layers(circuit).gates, "gate"),
+    ]:
+        mp = _propagator(hamiltonian, 3, schrodinger_cutoff=4)
+        build_circuit = Circuit(
+            gates, N_MODES, parameters=theta if seeded else (), initial_state=STATE
+        )
+        mp.build_graph(build_circuit, truncation_blocks=blocks)
+        energy, grad = mp.expval_and_grad(theta)
+        results.append((energy, list(grad)))
+    assert results[0] == results[1]
+
+
+def test_schrodinger_one_block_over_the_whole_circuit_is_exact():
+    """Invariant B: every observable term is within the cutoff, so the final cut loses nothing."""
+    rng = np.random.default_rng(302)
+    hamiltonian = _random_hamiltonian(rng)  # terms of length <= 4
+    gates = _excitation_gates(rng, 8)
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    energy, _, mp = _energy_and_grad(
+        hamiltonian,
+        gates,
+        theta,
+        4,
+        [0] * len(gates),
+        schrodinger_cutoff=2 * N_MODES,
+    )
+    assert _retired_rows(mp) > 0
+    exact = oracle.energy(
+        hamiltonian, Circuit(gates, N_MODES), theta, STATE, cutoff=2 * N_MODES
+    )
+    assert energy == pytest.approx(exact, abs=1e-12)
+
+
+def test_schrodinger_permuting_terms_inside_a_gate_only_matters_without_blocks():
+    """As in Heisenberg, given the full initial paired basis.
+
+    A ``schrodinger_cutoff`` below it leaves paired terms to enter only when a rotation first
+    reaches them, which depends on the term order whatever the blocks.
+    """
+    rng = np.random.default_rng(303)
+    for _ in range(20):
+        hamiltonian = _random_hamiltonian(rng)
+        gates = _excitation_gates(rng, 6)
+        theta = rng.uniform(0, 2 * np.pi, len(gates))
+        blocked, standard = [], []
+        for perm_seed in range(4):
+            permuted = (
+                gates
+                if perm_seed == 0
+                else _permute_terms(gates, np.random.default_rng(perm_seed))
+            )
+            for blocks, out in [("gate", blocked), (None, standard)]:
+                out.append(
+                    _energy_and_grad(
+                        hamiltonian,
+                        permuted,
+                        theta,
+                        4,
+                        blocks,
+                        schrodinger_cutoff=2 * N_MODES,
+                    )[0]
+                )
+        np.testing.assert_allclose(blocked, blocked[0], atol=1e-12)
+        if np.ptp(standard) > 1e-6:
+            return
+    pytest.fail("standard truncation never depended on the term order")
+
+
+def test_schrodinger_retired_monomial_regenerated_in_a_later_block():
+    """A retired monomial produced again later restarts from zero and carries its observable term."""
+    for seed in range(60):
+        rng = np.random.default_rng(2000 + seed)
+        hamiltonian = _random_hamiltonian(rng)
+        gates = _excitation_gates(rng, 8)
+        theta = rng.uniform(0, 2 * np.pi, len(gates))
+        circuit = Circuit(gates, N_MODES)
+        stats: dict[str, int] = {}
+        kwargs = {"cutoff": 2, "blocks": "gate", "schrodinger_cutoff": 4}
+        correct = oracle.energy(
+            hamiltonian, circuit, theta, STATE, stats=stats, **kwargs
+        )
+        naive = oracle.energy(
+            hamiltonian, circuit, theta, STATE, naive_regeneration=True, **kwargs
+        )
+        if stats["regenerated"] > 0 and abs(correct - naive) > 1e-6:
+            break
+    else:
+        pytest.fail("no seed produced a regeneration that changes the energy")
+
+    energy, grad, _ = _energy_and_grad(
+        hamiltonian, gates, theta, 2, "gate", schrodinger_cutoff=4
+    )
+    assert energy == pytest.approx(correct, abs=1e-12)
+    fd = oracle.central_difference_gradient(
+        hamiltonian, circuit, theta, STATE, **kwargs
+    )
+    np.testing.assert_allclose(grad, fd, atol=1e-7)
+
+
+def test_schrodinger_term_expectations_after_retirement():
+    rng = np.random.default_rng(304)
+    hamiltonian = _random_hamiltonian(rng)
+    gates = _excitation_gates(rng, 7)
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    energy, _, mp = _energy_and_grad(
+        hamiltonian, gates, theta, 2, "gate", schrodinger_cutoff=4
+    )
+    assert _retired_rows(mp) > 0
+    terms = [t for t in hamiltonian.terms if t]
+    per_term = mp.term_expectation_values(terms, theta)
+    contributions = sum(
+        complex(hamiltonian.terms[t]) * v for t, v in zip(terms, per_term, strict=True)
+    )
+    assert hamiltonian.terms[()] + contributions.real == pytest.approx(
+        energy, abs=1e-12
+    )
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+def test_schrodinger_extension_across_build_graph_calls(seeded):
+    """Schrodinger runs front to back: build_graph(a); build_graph(b) is the build of a + b."""
+    rng = np.random.default_rng(305)
+    hamiltonian = _random_hamiltonian(rng)
+    gates_a = _excitation_gates(rng, 4)
+    gates_b = _excitation_gates(rng, 3)
+    theta_a = rng.uniform(0, 2 * np.pi, len(gates_a))
+    theta_b = rng.uniform(0, 2 * np.pi, len(gates_b))
+    theta = np.concatenate([theta_a, theta_b])
+    labels_a = _random_runs(rng, len(gates_a))
+    labels_b = _random_runs(rng, len(gates_b))
+
+    def circuit_of(gates, params):
+        return Circuit(
+            gates, N_MODES, parameters=params if seeded else (), initial_state=STATE
+        )
+
+    split = _propagator(hamiltonian, 2, schrodinger_cutoff=4)
+    split.build_graph(circuit_of(gates_a, theta_a), truncation_blocks=labels_a)
+    split.build_graph(
+        circuit_of(gates_b, theta_b),
+        truncation_blocks=labels_b,
+        seed_parameters=theta if seeded else None,
+    )
+    labels = [*labels_a, *(f"b{x}" for x in labels_b)]
+    expected = oracle.energy(
+        hamiltonian,
+        Circuit(gates_a + gates_b, N_MODES),
+        theta,
+        STATE,
+        cutoff=2,
+        blocks=labels,
+        schrodinger_cutoff=4,
+    )
+    assert split.expval_functional()(theta) == pytest.approx(expected, abs=1e-12)
+
+
+def test_schrodinger_pared_functional_matches_exact_graph():
+    rng = np.random.default_rng(306)
+    hamiltonian = _random_hamiltonian(rng)
+    gates = [_random_commuting_gate(rng) for _ in range(8)]
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    energy, grad, mp = _energy_and_grad(
+        hamiltonian,
+        gates,
+        theta,
+        2,
+        _random_runs(rng, len(gates)),
+        schrodinger_cutoff=4,
+    )
+    assert _retired_rows(mp) > 0
+    pared_energy, pared_grad = mp.expval_and_grad_functional(pare_threshold=1e-12)(
+        theta
+    )
+    assert pared_energy == pytest.approx(energy, abs=1e-10)
+    np.testing.assert_allclose(pared_grad, grad, atol=1e-10)
+
+
+@pytest.mark.parametrize("partitions", [1, 3])
+def test_schrodinger_partition_count_does_not_change_blockwise_results(
+    partitions, monkeypatch
+):
+    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
+    rng = np.random.default_rng(307)
+    hamiltonian = _random_hamiltonian(rng)
+    gates = [_random_commuting_gate(rng) for _ in range(8)]
+    labels = _random_runs(rng, len(gates))
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    energy, grad, mp = _energy_and_grad(
+        hamiltonian, gates, theta, 2, labels, seeded=True, schrodinger_cutoff=4
+    )
+    assert _retired_rows(mp) > 0
+    circuit = Circuit(gates, N_MODES)
+    kwargs = {"cutoff": 2, "blocks": labels, "schrodinger_cutoff": 4}
+    assert energy == pytest.approx(
+        oracle.energy(hamiltonian, circuit, theta, STATE, **kwargs), abs=1e-12
+    )
+    fd = oracle.central_difference_gradient(
+        hamiltonian, circuit, theta, STATE, **kwargs
+    )
+    np.testing.assert_allclose(grad, fd, atol=1e-7)
 
 
 def test_engine_rejects_non_contiguous_block_ids():

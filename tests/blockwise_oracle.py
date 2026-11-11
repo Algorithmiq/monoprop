@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dict-based Heisenberg reference for standard and blockwise Majorana truncation.
+"""Dict-based reference for standard and blockwise Majorana truncation, in both pictures.
 
 Independent of the engine: it works on the Hermitian operator algebra (complex coefficients on
 sorted Majorana strings) rather than the engine's encoded real coefficients, and implements the
@@ -24,15 +24,23 @@ Conventions, as monoprop documents them: a gate applies ``exp(+i theta H)`` for 
 generator ``H`` (one layer per generator term, in ``generator.terms`` order), the Heisenberg sweep
 conjugates the observable by the last gate first, ``a_j = (gamma_{2j} + i gamma_{2j+1}) / 2`` so
 ``gamma_{2j} gamma_{2j+1} = i (1 - 2 n_j)``, and ``initial_state`` lists the occupied modes.
+
+The Schrodinger picture evolves the reference state, scaled like the engine's state vector to
+``2^N rho = prod_j (1 - i s_j gamma_{2j} gamma_{2j+1})`` (``s_j = 1 - 2 n_j``, so every paired
+coefficient has magnitude 1 and ``upper_atol`` compares alike), forward, first gate first, and
+contracts it with the observable by the trace. ``U rho U^dag`` is the Heisenberg conjugation at the negated angle. As in
+the engine, the state starts with its paired terms of up to ``ceil(schrodinger_cutoff / 2)`` pairs,
+and a paired term a rotation first reaches enters with its reference value rather than 0.
 """
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable, Sequence
+    from collections.abc import Callable, Hashable, Sequence
 
     from monoprop import Circuit, MajoranaOperator
 
@@ -84,14 +92,28 @@ def _layers(
 
 
 def _rotate(
-    op: dict[Term, complex], string: Term, coeff: complex, theta: float
+    op: dict[Term, complex],
+    string: Term,
+    coeff: complex,
+    theta: float,
+    fresh_paired: Callable[[Term], complex] | None = None,
+    frozen_pair: Callable[[Term, complex, Term, complex], bool] | None = None,
 ) -> dict[Term, complex]:
     """Conjugate ``op`` by ``exp(i theta h)`` with ``h = coeff * gamma_string`` Hermitian.
 
     For a term anticommuting with ``h``, ``U^dag O U = O U^2`` with
     ``U^2 = cos(2 theta |c|) + i sin(2 theta |c|) h / |c|``. Every partner is emitted; the caller
-    filters what it keeps.
+    filters what it keeps. With ``fresh_paired``, an absent paired partner first enters with that
+    value, so it rotates as if it had been present all along. ``frozen_pair(term, value, partner,
+    partner_value)``, for two present terms, withholds their exchange (both are only cos-scaled).
     """
+    if fresh_paired is not None:
+        op = dict(op)
+        for term in list(op):
+            if _anticommute(term, string):
+                partner, _ = _product(term, string)
+                if partner not in op and is_paired(partner):
+                    op[partner] = fresh_paired(partner)
     magnitude = abs(coeff)
     cos_v = math.cos(2.0 * theta * magnitude)
     sin_unit = 1j * math.sin(2.0 * theta * magnitude) * coeff / magnitude
@@ -102,12 +124,38 @@ def _rotate(
             continue
         out[term] = out.get(term, 0.0) + value * cos_v
         partner, sign = _product(term, string)
+        if (
+            frozen_pair is not None
+            and partner in op
+            and frozen_pair(term, value, partner, op[partner])
+        ):
+            continue
         out[partner] = out.get(partner, 0.0) + value * sin_unit * sign
     return out
 
 
+def _emit_cut(
+    abs_sin: float, cutoff: int, cutoff_type: str, upper_atol: float | None
+) -> Callable[[Term, complex, Term, complex], bool]:
+    """The engine's emit-time cut on a pair of present terms in a layer that applies the cutoff.
+
+    Each term emits its partner unless the partner fails the cutoff and the sine term
+    ``|sin| * |value|`` stays below ``upper_atol``; one emission records the full exchange.
+    """
+
+    def frozen(
+        term: Term, value: complex, partner: Term, partner_value: complex
+    ) -> bool:
+        if passes(term, cutoff, cutoff_type) or passes(partner, cutoff, cutoff_type):
+            return False
+        largest = max(abs(value), abs(partner_value))
+        return upper_atol is None or abs_sin * largest < upper_atol
+
+    return frozen
+
+
 def evolve(
-    operator: MajoranaOperator,
+    operator: MajoranaOperator | dict[Term, complex],
     circuit: Circuit,
     parameters: Sequence[float],
     *,
@@ -118,11 +166,15 @@ def evolve(
     upper_atol: float | None = None,
     naive_regeneration: bool = False,
     stats: dict[str, int] | None = None,
+    schrodinger: bool = False,
+    fresh_paired: Callable[[Term], complex] | None = None,
+    engine_block_end: bool = False,
 ) -> dict[Term, complex]:
-    """Heisenberg-evolve ``operator`` through ``circuit`` with standard or blockwise truncation.
+    """Evolve ``operator`` through ``circuit`` with standard or blockwise truncation.
 
     Args:
-        operator: Initial observable; its terms are never truncated.
+        operator: Initial observable (Heisenberg) or state (Schrodinger, see
+            [initial_state_terms][]); its terms are never truncated.
         circuit: Majorana-family circuit.
         parameters: Angle values, indexed by the circuit's mapping.
         cutoff: Structural cutoff w*.
@@ -135,6 +187,14 @@ def evolve(
             stays dead, so any later contribution to it is lost instead of starting a fresh term.
         stats: If given, receives ``dropped`` (terms dropped at block ends) and ``regenerated``
             (dropped monomials that a later layer produced again).
+        schrodinger: Apply ``U . U^dag`` first gate first, so a block ends at its last layer,
+            instead of the Heisenberg ``U^dag . U`` last gate first.
+        fresh_paired: Value an absent paired term enters with when a rotation first reaches it
+            (the Schrodinger state's lazily materialized reference terms); ``None`` means 0.
+        engine_block_end: Model the engine's emit-time cut in a block's last layer instead of the
+            literal rule: two present terms both over the cutoff exchange weight there only if one
+            of their sine terms reaches ``upper_atol``. Without ``upper_atol``, this differs from
+            the literal rule only for unpaired over-cutoff terms present before the block.
 
     Returns:
         The evolved operator as ``{sorted Majorana tuple: complex coefficient}``.
@@ -154,17 +214,27 @@ def evolve(
             return True
         return upper_atol is not None and abs(value) >= upper_atol
 
-    op = {tuple(term): complex(value) for term, value in operator.terms.items()}
+    terms = operator if isinstance(operator, dict) else operator.terms
+    op = {tuple(term): complex(value) for term, value in terms.items()}
     present_at_block_start = set(op)
     dropped: set[Term] = set()
     regenerated: set[Term] = set()
-    for k in range(len(layers) - 1, -1, -1):
+    n = len(layers)
+    for k in range(n) if schrodinger else range(n - 1, -1, -1):
         _, string, coeff, theta = layers[k]
-        op = _rotate(op, string, coeff, theta)
+        angle = -theta if schrodinger else theta
+        neighbour = k + 1 if schrodinger else k - 1
+        block_end = not 0 <= neighbour < n or labels[neighbour] != labels[k]
+        frozen_pair = None
+        if engine_block_end and block_end:
+            frozen_pair = _emit_cut(
+                abs(math.sin(2.0 * angle * abs(coeff))), cutoff, cutoff_type, upper_atol
+            )
+        op = _rotate(op, string, coeff, angle, fresh_paired, frozen_pair)
         regenerated |= dropped & set(op)
         if naive_regeneration:
             op = {term: value for term, value in op.items() if term not in dropped}
-        if k == 0 or labels[k - 1] != labels[k]:
+        if block_end:
             survivors = {
                 term: value
                 for term, value in op.items()
@@ -193,15 +263,70 @@ def expectation(op: dict[Term, complex], initial_state: Sequence[int]) -> float:
     return total.real
 
 
+def reference_coefficient(term: Term, initial_state: Sequence[int]) -> complex:
+    """Coefficient of the paired ``term`` in the expansion of ``2^N rho``."""
+    occupied = set(initial_state)
+    value = 1.0 + 0.0j
+    for j in {i // 2 for i in term}:
+        value *= -1j * (-1.0 if j in occupied else 1.0)
+    return value
+
+
+def initial_state_terms(
+    num_modes: int, initial_state: Sequence[int], schrodinger_cutoff: int
+) -> dict[Term, complex]:
+    """``2^N rho``'s Majorana expansion, cut to ``ceil(schrodinger_cutoff / 2)`` pairs."""
+    capped = min(schrodinger_cutoff, 2 * num_modes)
+    max_pairs = capped // 2 + capped % 2
+    out: dict[Term, complex] = {}
+    for pairs in range(max_pairs + 1):
+        for modes in itertools.combinations(range(num_modes), pairs):
+            term = tuple(i for j in modes for i in (2 * j, 2 * j + 1))
+            out[term] = reference_coefficient(term, initial_state)
+    return out
+
+
+def trace_contraction(state: dict[Term, complex], operator: MajoranaOperator) -> float:
+    """``Tr[rho operator]`` for ``state = 2^N rho``, as ``Tr[gamma_t gamma_t] = 2^N (-1)^(k(k-1)/2)``."""
+    total = 0.0j
+    for term, value in operator.terms.items():
+        key = tuple(term)
+        if key in state:
+            k = len(key)
+            total += (
+                state[key] * complex(value) * (-1.0 if (k * (k - 1) // 2) % 2 else 1.0)
+            )
+    return total.real
+
+
 def energy(
     operator: MajoranaOperator,
     circuit: Circuit,
     parameters: Sequence[float],
     initial_state: Sequence[int],
+    *,
+    schrodinger_cutoff: int | None = None,
     **kwargs: Any,
 ) -> float:
-    """Expectation value of the truncated evolved operator; ``kwargs`` go to [evolve][]."""
-    return expectation(evolve(operator, circuit, parameters, **kwargs), initial_state)
+    """Expectation value under truncated evolution; ``kwargs`` go to [evolve][].
+
+    With ``schrodinger_cutoff`` the state is evolved (Schrodinger picture), otherwise the operator.
+    """
+    if schrodinger_cutoff is None:
+        return expectation(
+            evolve(operator, circuit, parameters, **kwargs), initial_state
+        )
+    num_modes = operator.num_modes
+    state = initial_state_terms(num_modes, initial_state, schrodinger_cutoff)
+    evolved = evolve(
+        state,
+        circuit,
+        parameters,
+        schrodinger=True,
+        fresh_paired=lambda term: reference_coefficient(term, initial_state),
+        **kwargs,
+    )
+    return trace_contraction(evolved, operator)
 
 
 def central_difference_gradient(
