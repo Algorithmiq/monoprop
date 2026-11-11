@@ -17,7 +17,9 @@
 // Recompute a layer's cosine index set from the persistent inverted index instead of a stored per-layer
 // bitmap. A layer's cos = the terms anticommuting with its generator G = the per-word XOR-fold of G's
 // inverted-index columns, with the odd-|G| row_parity(|M|) correction, truncated to the first
-// `scaled_count` indices (the term count before that layer's own inserts).
+// `scaled_count` indices (the term count after that layer's own inserts, which anticommute with G too).
+// Rows retired by blockwise truncation stay in the index and so in the fold: they are cos-scaled with no
+// effect, as nothing reads them again.
 
 #include <algorithm>
 #include <array>

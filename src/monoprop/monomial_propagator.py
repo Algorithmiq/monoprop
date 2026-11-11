@@ -43,8 +43,8 @@ from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
-    from typing import Self
+    from collections.abc import Callable, Hashable, Iterable, Sequence
+    from typing import Literal, Self
 
     from mpi4py import MPI
 
@@ -52,6 +52,8 @@ if TYPE_CHECKING:
     from .pauli import Pauli
 
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
+    # build_graph's blockwise truncation: None, "gate", or one hashable block label per gate.
+    TruncationBlocks = Literal["gate"] | Sequence[Hashable] | None
     # A single operator term: a Pauli, a Majorana, or the raw index sequence either engine keys its terms by.
     OperatorTerm = Majorana | Pauli | Sequence[int] | np.ndarray
 
@@ -206,12 +208,60 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 f"only_rotate_len_k={only_rotate_len_k} is out of range; must be 0 < k <= 2*num_qubits "
             )
 
+    def _gate_block_ids(
+        self, circuit: Circuit, truncation_blocks: TruncationBlocks
+    ) -> list[int] | None:
+        """Canonical per-gate block ids (contiguous runs numbered from 0), or ``None``.
+
+        Raises:
+            ValueError: If the labels do not match ``circuit.gates`` one to one, a label recurs
+                after a different one, or blocks are requested in the Schrodinger picture.
+        """
+        if truncation_blocks is None:
+            return None
+        if self.schrodinger:
+            raise ValueError(
+                "truncation_blocks is supported in the Heisenberg picture only; this propagator "
+                "was constructed with schrodinger_cutoff."
+            )
+        n_gates = len(circuit.gates)
+        if isinstance(truncation_blocks, str):
+            if truncation_blocks != "gate":
+                raise ValueError(
+                    f'truncation_blocks must be None, "gate" or one label per gate; got '
+                    f"{truncation_blocks!r}."
+                )
+            return list(range(n_gates))
+        labels = list(truncation_blocks)
+        if len(labels) != n_gates:
+            raise ValueError(
+                f"truncation_blocks has {len(labels)} labels but the circuit has {n_gates} "
+                "gates (identity gates are dropped when the circuit is built; label "
+                "circuit.gates)."
+            )
+        ids: list[int] = []
+        closed: set[Hashable] = set()
+        for position, label in enumerate(labels):
+            if position > 0 and label == labels[position - 1]:
+                ids.append(ids[-1])
+                continue
+            if label in closed:
+                raise ValueError(
+                    f"truncation_blocks label {label!r} recurs at gate {position} after a "
+                    "different label; each block must be one contiguous run of gates."
+                )
+            if position > 0:
+                closed.add(labels[position - 1])
+            ids.append(len(closed))
+        return ids
+
     def build_graph(
         self,
         circuit: Circuit,
         *,
         seed_parameters: ParameterValues = None,
         only_rotate_len_k: int | None = None,
+        truncation_blocks: TruncationBlocks = None,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -234,10 +284,23 @@ class MonomialPropagator(ABC, Generic[T_op]):
             only_rotate_len_k: If given, apply gates to monomials of length <= k even where they
                 anticommute -- useful ahead of expectation-value estimation in the Schrodinger
                 picture with many free-fermionic (length-2 Majorana) generators.
+            truncation_blocks: Blockwise truncation (Heisenberg only). ``None`` (default) applies
+                the structural cutoff after every generator term. ``"gate"`` makes each gate one
+                block, so a multi-term gate is truncated once, independently of the order of its
+                commuting terms. A sequence gives one block label per entry of ``circuit.gates``;
+                each label must form one contiguous run of gates. Inside a block no structural
+                cutoff applies; at the block's end every term the block created that is unpaired
+                and over the cutoff is dropped. See
+                [Blockwise truncation](/features/cutoff#blockwise-truncation).
+
+        Raises:
+            ValueError: If ``truncation_blocks`` is malformed, or given in the Schrodinger
+                picture.
         """
         self._check_initial_state(circuit)
         self._check_circuit_width(circuit)
         self._validate_only_rotate_len_k(only_rotate_len_k)
+        gate_blocks = self._gate_block_ids(circuit, truncation_blocks)
 
         num_new = circuit.n_parameters
         # Adjust seed order in heisenberg case
@@ -261,6 +324,9 @@ class MonomialPropagator(ABC, Generic[T_op]):
         # `seed` may be a NumPy array (an accepted ParameterValues type), so resolve to a list
         # first and treat an empty vector as "no seed" -- `if seed` would raise on an ndarray.
         bound = self._bind(seed) or None
+        block_ids = (
+            None if gate_blocks is None else [gate_blocks[g] for g in gate_indices]
+        )
         self._simulator.build_graph(
             majoranas,
             per_monomial,
@@ -268,6 +334,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             gate_indices,
             bound,
             only_rotate_len_k,
+            block_ids=block_ids,
         )
         # Advance the axis only once the graph owns the layers: expand_monomials, _bind and the C++
         # validation all raise, and a retry after such a failure must reuse the same indices.

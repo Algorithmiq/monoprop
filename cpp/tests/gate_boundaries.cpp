@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <complex>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 
@@ -182,4 +183,124 @@ BOOST_AUTO_TEST_CASE(contract_partially_replays_existing_graph_and_supports_inpl
     const auto consumed = sim.contract_partially(VecD{0.5, 0.25, 0.1}, true);
     BOOST_TEST(consumed.size() == peeked.size());
     BOOST_TEST(sim.graph_layers() == 0u);
+}
+
+namespace {
+
+constexpr size_t kBlockModes = 3;
+
+// Every unpaired observable term is within cutoff 2, the regime where blockwise truncation is the
+// literal Eq. 4 rule.
+auto make_block_sim(unsigned int cutoff,
+                    size_t partitions = 1,
+                    std::optional<unsigned int> schrodinger_cutoff = std::nullopt) -> MonomialPropagator<kBlockModes> {
+    OperatorDict ham;
+    ham[VecZ{0, 1}] = std::complex<double>{0.0, 0.7};
+    ham[VecZ{2, 3}] = std::complex<double>{0.0, -0.4};
+    ham[VecZ{0, 2}] = std::complex<double>{0.0, 0.3};
+    ham[VecZ{1, 4}] = std::complex<double>{0.0, 0.5};
+    return MonomialPropagator<kBlockModes>(ham,
+                                           cutoff,
+                                           VecZ{0},
+                                           schrodinger_cutoff,
+                                           MPI_COMM_SELF,
+                                           std::nullopt,
+                                           std::nullopt,
+                                           CutoffType::Length,
+                                           std::nullopt,
+                                           kBlockModes,
+                                           Basis::Majorana,
+                                           partitions);
+}
+
+// Two-term "excitation-like" gates and one four-index gate, each gate its own parameter.
+const std::vector<VecZ> kBlockMonos{{0, 3}, {1, 2}, {2, 5}, {3, 4}, {0, 1, 2, 5}, {1, 4}, {0, 5}};
+const VecZ kBlockMapping{0, 0, 1, 1, 2, 3, 3};
+const VecD kBlockCoeffs{0.9, -0.9, 0.6, -0.6, 0.4, 1.1, -1.1};
+const VecD kBlockParams{0.37, 1.21, -0.83, 2.4};
+const VecZ kGateBlocks{0, 0, 1, 1, 2, 3, 3};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(build_graph_rejects_malformed_block_ids) {
+    auto sim = make_block_sim(2);
+    BOOST_CHECK_THROW(
+        sim.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs, std::nullopt, std::nullopt, std::nullopt, VecZ{0, 2}),
+        std::runtime_error);
+    BOOST_CHECK_THROW(sim.build_graph(kBlockMonos,
+                                      kBlockMapping,
+                                      kBlockCoeffs,
+                                      std::nullopt,
+                                      std::nullopt,
+                                      std::nullopt,
+                                      VecZ{0, 0, 1, 1, 2, 3, 2}),
+                      std::runtime_error);
+    BOOST_TEST(sim.graph_layers() == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(build_graph_rejects_block_ids_in_schrodinger) {
+    auto sim = make_block_sim(2, 1, 2);
+    BOOST_CHECK_THROW(sim.build_graph(kBlockMonos,
+                                      kBlockMapping,
+                                      kBlockCoeffs,
+                                      std::nullopt,
+                                      std::nullopt,
+                                      std::nullopt,
+                                      kGateBlocks),
+                      std::invalid_argument);
+}
+
+// Invariant A: a block per monomial is standard truncation, bit for bit, with nothing retired.
+BOOST_AUTO_TEST_CASE(one_block_per_monomial_is_standard_truncation) {
+    auto standard = make_block_sim(2);
+    standard.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
+    auto per_layer = make_block_sim(2);
+    VecZ ids(kBlockMonos.size());
+    std::iota(ids.begin(), ids.end(), size_t{0});
+    per_layer.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs, std::nullopt, std::nullopt, std::nullopt, ids);
+    BOOST_TEST(per_layer.size() == standard.size());
+    BOOST_TEST(per_layer.operator_memory_usage().retired_rows == 0u);
+    BOOST_TEST(per_layer.expectation_value(kBlockParams) == standard.expectation_value(kBlockParams));
+}
+
+// Invariant B: one block over the whole circuit cuts only at the end, where unpaired terms do not
+// contribute, so it is exact (here: the untruncated cutoff 2 * modes).
+BOOST_AUTO_TEST_CASE(one_block_over_everything_is_exact) {
+    auto exact = make_block_sim(2 * kBlockModes);
+    exact.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
+    auto blocked = make_block_sim(2);
+    blocked.build_graph(kBlockMonos,
+                        kBlockMapping,
+                        kBlockCoeffs,
+                        std::nullopt,
+                        std::nullopt,
+                        std::nullopt,
+                        VecZ(kBlockMonos.size(), 0));
+    BOOST_TEST(blocked.operator_memory_usage().retired_rows > 0u);
+    BOOST_TEST(blocked.expectation_value(kBlockParams) == exact.expectation_value(kBlockParams),
+               boost::test_tools::tolerance(1e-12));
+}
+
+// Retirement is partition-local; the partition count must not change the result.
+BOOST_AUTO_TEST_CASE(blockwise_truncation_is_partition_count_invariant) {
+    const auto run = [](size_t partitions, bool seeded) {
+        auto sim = make_block_sim(2, partitions);
+        sim.build_graph(kBlockMonos,
+                        kBlockMapping,
+                        kBlockCoeffs,
+                        std::nullopt,
+                        seeded ? std::optional<VecD>{kBlockParams} : std::nullopt,
+                        std::nullopt,
+                        kGateBlocks);
+        return sim.expectation_value_and_gradient(kBlockParams);
+    };
+    for (const bool seeded : {false, true}) {
+        const auto [e1, g1] = run(1, seeded);
+        const auto [e3, g3] = run(3, seeded);
+        BOOST_TEST(e1 == e3, boost::test_tools::tolerance(1e-12));
+        BOOST_TEST_REQUIRE(g1.size() == g3.size());
+        for (size_t i = 0; i < g1.size(); ++i) {
+            BOOST_TEST(g1[i] == g3[i], boost::test_tools::tolerance(1e-12));
+        }
+    }
 }

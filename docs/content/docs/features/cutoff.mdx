@@ -50,6 +50,61 @@ $M_\nu = m_1 m_2 m_5$ touches only mode 1 (both $m_1$ and $m_2$) and mode 3
 term by its **Pauli weight** — the number of qubits it touches. This is the only
 structural measure: `cutoff` bounds the Pauli weight.
 
+## Blockwise truncation
+
+By default the structural cutoff is applied after every **rotation**, and a gate
+whose generator has several commuting terms is applied as one rotation per term.
+A fermionic single or double excitation, for example, expands into 2 or 8
+commuting Majorana strings, so the result depends on the order of the strings
+inside one physical gate.
+
+`truncation_blocks` on
+[build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] groups
+consecutive gates into **blocks**. Inside a block no structural cutoff applies, so
+every branch is kept. At the end of the block, every monomial the block created
+that is unpaired and over the cutoff is dropped. A monomial may therefore pass
+through a long intermediate inside a block; the short monomials it branched into
+survive.
+
+- `truncation_blocks="gate"` makes every gate its own block, so each gate is
+  truncated once, independently of the order of its commuting terms. This is the
+  common case.
+- A sequence gives one block label per entry of `circuit.gates`, for blocks that
+  span several gates (for example one c-tUPS tile). Each label must form one
+  contiguous run of gates.
+- `None` (the default) is standard truncation. A circuit of single-term gates
+  built with `"gate"` gives exactly the same result.
+
+```python notest
+sim.build_graph(circuit, truncation_blocks="gate")
+sim.build_graph(circuit, truncation_blocks=["tile0", "tile0", "tile0", "tile1", "tile1", "tile1"])
+```
+
+The Heisenberg sweep consumes gates from last to first, so a block's truncation
+point comes after its *first* gate in circuit order. Blocks keep more monomials
+than per-rotation truncation at the same cutoff, so expect a larger graph. A
+dropped monomial also stays in memory: `size()` counts it, but nothing reads it
+again, and a later gate that produces the same monomial starts it afresh.
+
+Blockwise truncation works with every coefficient tolerance, partitioning and MPI.
+`lower_atol` still applies to every rotation. With `upper_atol`, a seeded build
+also keeps an unpaired monomial over the cutoff at a block end when its coefficient
+there is at least `upper_atol`. An unseeded build has no coefficients, so
+`upper_atol` plays no part, just as in standard truncation.
+
+Restrictions and differences:
+
+- Blocks are available in the Heisenberg picture only; a Schrödinger-picture
+  propagator raises `ValueError`. [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate]
+  takes no blocks.
+- A block cannot span two `build_graph` calls: every call closes its last block.
+- The initial observable is never truncated, so only monomials created inside a
+  block are dropped. Its unpaired terms over the cutoff, and terms kept by
+  `upper_atol`, follow standard truncation in a block's last rotation: there such
+  a term exchanges no weight with a partner that is also over the cutoff. When every unpaired term of the observable
+  is within the cutoff (molecular Hamiltonians at a length cutoff of 4 or more)
+  and `upper_atol` is unset, blockwise truncation is exactly the rule above.
+
 ## Gate-application length cap
 
 [MonomialPropagator.build_graph][monomial_propagator.MonomialPropagator.build_graph]

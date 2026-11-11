@@ -29,7 +29,11 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import OperatorTerm, ParameterValues
+    from .monomial_propagator import (
+        OperatorTerm,
+        ParameterValues,
+        TruncationBlocks,
+    )
     from .quantum_data import IQuantumOperator
 
 
@@ -280,6 +284,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         *,
         seed_parameters: ParameterValues = None,
         only_rotate_len_k: int | None = None,
+        truncation_blocks: TruncationBlocks = None,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -307,11 +312,24 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 free-fermionic gates (generators that are length-2 Majorana monomials) are
                 applied before expectation-value estimation in Schrodinger-picture
                 simulations.
+            truncation_blocks: Blockwise truncation (Heisenberg only). ``None`` (default)
+                applies the structural cutoff after every generator term. ``"gate"`` makes each
+                gate one block, so a multi-term gate is truncated once, independently of the order
+                of its commuting terms. A sequence gives one block label per entry of
+                ``circuit.gates``, each label one contiguous run of gates. Inside a block no
+                structural cutoff applies; at the block's end the Majorana monomials the block created
+                that are unpaired (not a product of whole mode pairs) and over the cutoff are dropped. See
+                [Blockwise truncation](/features/cutoff#blockwise-truncation).
+
+        Raises:
+            ValueError: If ``truncation_blocks`` is malformed, or given in the Schrodinger
+                picture.
         """
         super().build_graph(
             circuit,
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
+            truncation_blocks=truncation_blocks,
         )
 
     def size(self) -> int:
