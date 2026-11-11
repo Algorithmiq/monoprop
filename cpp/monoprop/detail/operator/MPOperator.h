@@ -15,15 +15,23 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <format>
 #include <print>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/Utilities.h"
@@ -58,6 +66,54 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+//! Vectors at least this large give their spare capacity back in place; smaller ones are copied down to their size.
+inline constexpr size_t spare_release_bytes = size_t{256} << 10;
+
+//! Whether release_spare_capacity() keeps a block of `capacity_bytes` in place (Linux only) rather than copying it.
+[[nodiscard]] constexpr auto releases_in_place(size_t capacity_bytes) noexcept -> bool {
+#ifdef __linux__
+    return capacity_bytes >= spare_release_bytes;
+#else
+    static_cast<void>(capacity_bytes);
+    return false;
+#endif
+}
+
+/*!
+ * \brief Give `v`'s spare capacity back to the system.
+ *
+ * A block for which releases_in_place() holds stays where it is, with its capacity, and the pages wholly inside its
+ * spare capacity are discarded (`MADV_DONTNEED`): no copy, so no transient second block, and no freed block left in
+ * the calling thread's malloc arena. Spare capacity holds no objects, and a later growth into it reads fresh zero
+ * pages. Any other vector is copied down to its size (`shrink_to_fit`).
+ */
+template <typename T>
+auto release_spare_capacity(std::vector<T> &v) -> void {
+    static_assert(std::is_trivially_copyable_v<T>, "discarded spare pages must hold no objects");
+#ifdef __linux__
+    if (releases_in_place(v.capacity() * sizeof(T))) {
+        const auto page = static_cast<std::uintptr_t>(sysconf(_SC_PAGESIZE));
+        const auto first = (reinterpret_cast<std::uintptr_t>(v.data() + v.size()) + page - 1) & ~(page - 1);
+        const auto last = reinterpret_cast<std::uintptr_t>(v.data() + v.capacity()) & ~(page - 1);
+        if (first < last) {
+            // Advisory: a refusal leaves the pages resident, which is the unreleased state, not an error.
+            (void)madvise(reinterpret_cast<void *>(first), last - first, MADV_DONTNEED);
+        }
+        return;
+    }
+#endif
+    v.shrink_to_fit();
+}
+
+/*!
+ * \brief The bytes `v` is accounted for: its entries when its block is released in place (its spare capacity is then
+ * not resident at rest; growth writes only the entries it adds), its capacity otherwise, which at rest is its size.
+ */
+template <typename T>
+[[nodiscard]] auto accounted_bytes(const std::vector<T> &v) noexcept -> size_t {
+    return (releases_in_place(v.capacity() * sizeof(T)) ? v.size() : v.capacity()) * sizeof(T);
+}
+
 template <size_t NumModes>
 struct MPOperator {
     // The store is non-copyable/non-movable, so it is heap-owned by unique_ptr (keeping MPOperator
@@ -79,7 +135,8 @@ struct MPOperator {
     Basis basis{Basis::Majorana};
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_{std::nullopt};
 
-    MPOperator() noexcept = default;
+    // Not noexcept: the store's member initializer allocates, and an allocation failure must reach the caller.
+    MPOperator() = default;
     MPOperator(MPOperator &&) noexcept = default;
     MPOperator &operator=(MPOperator &&) noexcept = default;
 
@@ -177,18 +234,92 @@ struct MPOperator {
         return state_coeffs;
     }
 
-    auto shrink_state_to_fit() -> void {
-        state_rows_.shrink_to_fit();
-        state_vals_.shrink_to_fit();
-        state_coeffs.shrink_to_fit();
+    // The picture's live coefficients: the operator with its pending initial entries placed (Heisenberg), or the
+    // dense state with its new rows scored (Schrödinger). Both extend to the store size.
+    auto current_picture(bool schrodinger) -> const VecD & { return schrodinger ? dense_state() : get_operator(); }
+
+    // Grow `coeffs` to the store size after a layer's inserts: the current picture's values for rows it lacks, then
+    // zeros. When `coeffs` is the picture's own live vector, bringing the picture up to date is the whole extension
+    // (a fresh Heisenberg row picks up a pending initial entry; a fresh Schrödinger row is scored).
+    auto extend_from_current_picture(VecD &coeffs, bool schrodinger) -> void {
+        if (coeffs.size() >= size()) {
+            return;
+        }
+        const auto &current = current_picture(schrodinger);
+        if (&coeffs == &current) {
+            return;
+        }
+        if (coeffs.size() < current.size()) {
+            coeffs.insert(coeffs.end(), current.begin() + static_cast<std::ptrdiff_t>(coeffs.size()), current.end());
+        }
+        coeffs.resize(size(), 0.0);
     }
 
-    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.
-    // Heisenberg rejects a term absent from both (new monomials may have no graph paths); Schrödinger
-    // admits them freely (the state was already evolved). Returns the supplied terms with their encoded
-    // coefficients, in order.
+    auto shrink_state_to_fit() -> void {
+        release_spare_capacity(state_rows_);
+        release_spare_capacity(state_vals_);
+        release_spare_capacity(state_coeffs);
+    }
+
+    // Materialize the caches every operation expects after construction or a gate loop: pending initial entries
+    // placed onto their rows, the picture's state, then the inverted index. Heisenberg warms the sparse state only;
+    // densifying it here would defeat it. Schrödinger's dense vector IS the live evolved vector.
+    auto initialize_caches(bool schrodinger) -> void {
+        warm_caches(schrodinger);
+        release_slack();
+    }
+
+    // The first half of initialize_caches(): every cache materialized, no capacity released.
+    auto warm_caches(bool schrodinger) -> void {
+        (void)get_operator();
+        if (schrodinger) {
+            (void)dense_state();
+        }
+        else {
+            (void)sparse_state();
+        }
+        (void)inverted_index();
+    }
+
+    // The second half: the coefficient and state vectors' spare capacity given back (release_spare_capacity()). Large
+    // vectors keep their blocks; a small one is copied down, holding its old and new block at once.
+    auto release_slack() -> void {
+        release_spare_capacity(op_coeffs);
+        shrink_state_to_fit();
+    }
+
+    // The bytes release_slack() copies: every vector with spare capacity not released in place is copied whole.
+    [[nodiscard]] auto slack_copy_bytes() const noexcept -> size_t {
+        const auto copied = [](const auto &v) {
+            const bool copies = v.capacity() > v.size() && !releases_in_place(v.capacity() * sizeof(v[0]));
+            return copies ? v.size() * sizeof(v[0]) : 0uz;
+        };
+        return copied(op_coeffs) + copied(state_rows_) + copied(state_vals_) + copied(state_coeffs);
+    }
+
+    // Throws OperatorTermNotFound for the first term update_initial_operator() would reject, changing nothing:
+    // Heisenberg rejects a term that is neither pending nor an evolved-operator row (new monomials may have no graph
+    // paths); Schrödinger admits every term (the state was already evolved).
+    auto require_updatable_terms(const OperatorDict &op_dict, bool schrodinger) const -> void {
+        if (schrodinger) {
+            return;
+        }
+        for (const auto &k : op_dict | std::views::keys) {
+            // Unchecked by design: the only caller bounds-checks against its logical_num_modes_.
+            const auto mono = indices_to_bitset<NumModes>(k);
+            if (!init_op_map.contains(mono) && !store->find(mono)) {
+                const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
+                throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
+            }
+        }
+    }
+
+    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized; the terms
+    // are checked with require_updatable_terms() first. Returns the supplied terms with their encoded coefficients, in
+    // order.
     auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
         -> std::pair<MonomialList<NumModes>, VecD> {
+        require_updatable_terms(op_dict, schrodinger);
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
@@ -204,12 +335,8 @@ struct MPOperator {
                 if (rank_init_op != init_op_map.end()) {
                     new_op_map[mono] = coeff;
                 }
-                else if (rank_evolved_op) {
-                    new_op_coeffs[*rank_evolved_op] = coeff;
-                }
                 else {
-                    const auto term_repr = std::format("[{}]", join_with_separator(k, ", "));
-                    throw OperatorTermNotFound(std::format("Operator term {} not found in the operator.", term_repr));
+                    new_op_coeffs[*rank_evolved_op] = coeff;
                 }
             }
             else {
@@ -327,11 +454,10 @@ template <size_t NumModes>
 inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorMemoryBreakdown<NumModes> {
     MPOperatorMemoryBreakdown<NumModes> breakdown;
     breakdown.operator_terms_bytes = op.store->memory_bytes();
-    breakdown.op_coeffs_bytes = op.op_coeffs.capacity() * sizeof(double);
+    breakdown.op_coeffs_bytes = accounted_bytes(op.op_coeffs);
     // Every representation of the state at once: the sparse scored set plus the dense vector.
-    breakdown.state_coeffs_bytes = op.state_coeffs.capacity() * sizeof(double)
-                                   + op.state_rows_.capacity() * sizeof(TermIndex)
-                                   + op.state_vals_.capacity() * sizeof(double);
+    breakdown.state_coeffs_bytes =
+        accounted_bytes(op.state_coeffs) + accounted_bytes(op.state_rows_) + accounted_bytes(op.state_vals_);
     breakdown.indexing_bytes = op.store->index_estimated_memory_bytes();
     breakdown.init_operator_bytes = unordered_flat_map_storage_bytes(op.init_op_map);
     breakdown.init_operator_entries = op.init_op_map.size();

@@ -74,7 +74,7 @@ def test_latency_lower_bound_floors_at_zero(tmp_path: Path) -> None:
 
 
 def test_memory_joins_the_benchmark_of_the_same_operation(tmp_path: Path) -> None:
-    _write(tmp_path, memhwm={_ENERGY: 1024})
+    _write(tmp_path, memhwm={_ENERGY: 1024}, memhwmexact={_ENERGY: True})
 
     # conftest keys memhwm by the same node id pytest-benchmark reports, so both
     # measures must land on one benchmark rather than splitting into two.
@@ -88,7 +88,9 @@ def test_operation_memory_reads_the_rank_sum_of_the_spread(tmp_path: Path) -> No
     _write(
         tmp_path,
         memhwm={_ENERGY: 4096},
+        memhwmexact={_ENERGY: True},
         opmemdelta={_ENERGY: {"sum": 1024, "max": 512}},
+        opmemexact={_ENERGY: True},
     )
 
     # The footprint and the operation's own cost are separate measures on one benchmark:
@@ -101,11 +103,87 @@ def test_operation_memory_reads_the_rank_sum_of_the_spread(tmp_path: Path) -> No
 
 
 def test_operation_memory_is_absent_where_no_window_was_opened(tmp_path: Path) -> None:
-    _write(tmp_path, memhwm={_ENERGY: 4096})
+    _write(tmp_path, memhwm={_ENERGY: 4096}, memhwmexact={_ENERGY: True})
 
     # ``record_memory`` is autouse, ``op_memory`` is not, so a row can have a peak and no
     # delta. Uploading a zero there would read as an operation that allocated nothing.
     assert "operation-memory" not in bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]
+
+
+# Each window's metric is certified only by its own exactness flag: ``memhwmexact`` for the
+# outer ``memhwm`` peak, ``opmemexact`` for the operation window's ``opmemdelta``.
+_LATENCY = {"value": 0.5e9, "lower_value": 0.49e9, "upper_value": 0.51e9}
+
+
+@pytest.mark.parametrize(
+    ("outer_flag", "op_flag", "expected"),
+    [
+        (True, True, {"peak-memory", "operation-memory"}),
+        (True, False, {"peak-memory"}),
+        (False, True, {"operation-memory"}),
+        (False, False, set()),
+        (None, True, {"operation-memory"}),
+        (True, None, {"peak-memory"}),
+        (None, None, set()),
+    ],
+)
+def test_each_memory_metric_is_gated_on_its_own_window(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    outer_flag: bool | None,  # noqa: FBT001 - parametrized
+    op_flag: bool | None,  # noqa: FBT001
+    expected: set[str],
+) -> None:
+    sections: dict[str, object] = {
+        "memhwm": {_ENERGY: 4096},
+        "opmemdelta": {_ENERGY: {"sum": 1024, "max": 512}},
+    }
+    if outer_flag is not None:
+        sections["memhwmexact"] = {_ENERGY: outer_flag}
+    if op_flag is not None:
+        sections["opmemexact"] = {_ENERGY: op_flag}
+    _write(tmp_path, **sections)
+
+    result = bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]
+
+    assert set(result) - {"latency"} == expected
+    # Timing is never withheld because a memory window was not exact.
+    assert result["latency"] == _LATENCY
+    warnings = capsys.readouterr().err
+    for flag, metric in ((outer_flag, "peak-memory"), (op_flag, "operation-memory")):
+        if flag is False:
+            assert f"{metric} for {_ENERGY} is not exact" in warnings
+        elif flag is None:
+            assert f"{metric} for {_ENERGY} has unknown exactness" in warnings
+
+
+def test_operation_exactness_never_certifies_the_outer_peak(tmp_path: Path) -> None:
+    # An exact operation window says nothing about the setup-spanning outer window.
+    _write(
+        tmp_path,
+        memhwm={_ENERGY: 4096},
+        opmemdelta={_ENERGY: {"sum": 1024, "max": 512}},
+        opmemexact={_ENERGY: True},
+        memhwmexact={_ENERGY: False},
+    )
+
+    assert "peak-memory" not in bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]
+
+
+def test_exactness_is_per_node(tmp_path: Path) -> None:
+    other = "bench_random.py::test_random_gradient[heisenberg]"
+    _write(
+        tmp_path,
+        memhwm={_ENERGY: 4096, other: 8192},
+        memhwmexact={_ENERGY: True, other: False},
+        opsize={_ENERGY: {"terms": 34}},
+    )
+    result = bmf.build_bmf(tmp_path, "ci")
+
+    assert result[_ENERGY_NAME]["peak-memory"] == {"value": 4096.0}
+    assert "peak-memory" not in result.get("random/gradient[heisenberg]", {})
+    # Term counts are not memory evidence and survive regardless of any flag.
+    assert result[_ENERGY_NAME]["terms"] == {"value": 34.0}
 
 
 def test_operator_metrics_are_grouped_per_picture_and_model(tmp_path: Path) -> None:

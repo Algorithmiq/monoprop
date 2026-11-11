@@ -33,9 +33,7 @@ namespace monoprop::mpi {
 // in flight matching a payload receive. Engine.h's two rounds may share kFlatPayloadTag: MPI does not
 // overtake within (src, dst, tag, comm), round 1 completes before round 2 posts, and both ends skip a
 // zero-count leg on the same (transposed) value.
-inline constexpr int kHybridCountTag = 0x6D70; // 'mp'
-inline constexpr int kHybridPayloadTag = 0x6D71;
-inline constexpr int kFlatPayloadTag = 0x6D72;
+inline constexpr int kFlatPayloadTag = 0x6D72; // 'mr'
 inline constexpr int kFlatCountTag = 0x6D73;
 // Graph replay payload (Exchange.h), distinct from the build path's rounds on the same communicator.
 inline constexpr int kFlatReplayTag = 0x6D74;
@@ -124,14 +122,9 @@ struct SparsePairwiseArgs {
 // Allreduce {v, ~v} under MPI_MAX, giving max and min at once: max == min == mine is exact agreement.
 // Ranks that disagree would hang, so every rank throws together instead.
 inline auto agree_routes_pairwise(MPI_Comm comm, int ranks, const routing::Config &mine) -> bool {
-    const std::array<uint64_t, 6> probe{mine.linear,
-                                        ~mine.linear,
-                                        mine.partitions,
-                                        ~mine.partitions,
-                                        mine.seed,
-                                        ~mine.seed};
-    std::array<uint64_t, 6> agreed{};
-    MPI_Allreduce(probe.data(), agreed.data(), 6, MPI_UINT64_T, MPI_MAX, comm);
+    const std::array<uint64_t, 4> probe{mine.linear, ~mine.linear, mine.seed, ~mine.seed};
+    std::array<uint64_t, 4> agreed{};
+    MPI_Allreduce(probe.data(), agreed.data(), static_cast<int>(probe.size()), MPI_UINT64_T, MPI_MAX, comm);
     if (agreed != probe) {
         throw routing::RoutingDisagreement(
             std::format("routing configuration differs across the {} ranks (this one: {}). "

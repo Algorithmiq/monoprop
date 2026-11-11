@@ -89,26 +89,7 @@ private:
 template <typename T>
 inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks, Comm comm, bool pairwise = false)
     -> Ticket {
-    // In-process transports take raw bytes, MPI takes typed pointers; offsets are in elements on both.
-    if (comm.kind == Comm::Kind::Shm) {
-        // Synchronous: the transfer completes here, so the Ticket's wait() is a no-op. ShmComm needs no
-        // send counts: its peers pull using the publisher's displacements.
-        const auto bytes = args.bytes();
-        comm.shm->alltoallv(comm.shm_rank,
-                            bytes.send,
-                            bytes.send_displs,
-                            bytes.recv,
-                            bytes.recv_counts,
-                            bytes.recv_displs,
-                            bytes.elem);
-        return Ticket{};
-    }
 #ifdef monoprop_ENABLE_MPI
-    if (comm.kind == Comm::Kind::Hybrid) {
-        // Narrowed inside the verb: only there is the whole rank's traffic visible.
-        comm.hyb->alltoallv(comm.shm_rank, args.bytes(), datatype<T>::get(), PeerPlan{}, pairwise);
-        return Ticket{};
-    }
     if (pairwise) {
         // Dense plan: walk every rank and post only non-empty legs, so nothing can be dropped. The layout
         // is symmetric, so both ends skip the same legs.
@@ -142,6 +123,8 @@ inline auto post_flat_alltoallv(const FlatAlltoallvArgs<T> &args, int num_ranks,
                    request.data());
     return {std::move(request), 1};
 #else
+    (void)comm;
+    (void)pairwise;
     for (int i = 0; i < num_ranks; ++i) {
         const int c = args.recv_counts[i];
         for (int j = 0; j < c; ++j) {

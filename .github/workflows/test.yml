@@ -78,7 +78,9 @@ jobs:
         uses: ./.github/actions/setup
         with:
           python-version: ${{ matrix.python-version }}
-          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
+          # The MPI-off and MPI builds are ABI-incompatible, and so is every build from before the partition runtime was
+          # removed: the `sharded` part retires the caches of the dual-runtime matrix.
+          cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}-sharded
           mpi: ${{ matrix.mpi }}
 
       - name: Install package
@@ -90,6 +92,9 @@ jobs:
 
       - name: Get monoprop information
         run: just info
+
+      - name: Verify the runtime and MPI identity of the build
+        run: just check-runtime
 
       - name: Verify that find_package(monoprop) works
         run: just test-find-package
@@ -139,7 +144,7 @@ jobs:
             pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks2.xml,
             pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks4.xml,
             pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks3-splitmix.xml,
-            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks2-partitions2.xml
+            pytest-mpi-${{ steps.test-group-label.outputs.label }}-ranks2-threads2.xml
           report_type: test_results
           disable_search: true
           fail_ci_if_error: true

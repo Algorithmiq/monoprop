@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import monoprop
 
-try:
-    from mpi4py import MPI
-except ImportError:  # pragma: no cover - exercised in wheel-test environments
-    MPI = None
+# An installation without MPI never initializes MPI, even where mpi4py happens to be installed:
+# importing mpi4py.MPI would initialize it as a side effect of collecting the suite.
+MPI = None
+if monoprop.MPI_ABIS:
+    try:
+        from mpi4py import MPI
+    except ImportError:  # pragma: no cover - exercised in wheel-test environments
+        MPI = None
 
 HAS_MPI_BACKEND: bool = MPI is not None and bool(monoprop.MPI_ABIS)
 """True when mpi4py is importable and this monoprop installation ships an MPI backend."""

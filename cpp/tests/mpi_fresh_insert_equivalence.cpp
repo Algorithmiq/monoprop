@@ -16,20 +16,27 @@
 // fresh partner is state-scored (majorana_state_phase / pauli_state_phase) rather than left at 0. The
 // Heisenberg R>1 resolve/apply paths are already covered by exact_upper_atol_rescue and
 // mpi_distributed_layer_equivalence. Only runs at world >= 2. Oracle: serial<->world equivalence --
-// the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol.
+// the deterministic base+j miss-prefix must sum the same terms at any rank count, to near()'s rtol. The same public
+// calls also drive the root at P ranks x the launch's T (sharded_world_equivalence_mpi*, cpp/tests/CMakeLists.txt).
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "PauliTestOracle.h"
+#include "PropagatorTestAccess.h"
 #include "RankPreconditions.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 namespace {
@@ -43,7 +50,7 @@ using pauli_oracle::slots_of_string;
 // Schrödinger 10, not lower: random_exact's observable terms all have length >= 10, and a lower
 // state cutoff reads them all as 0.
 template <size_t NumModes>
-auto run_schrodinger_majorana(const CaseData& data, MPI_Comm comm) -> double {
+auto run_schrodinger_majorana(const CaseData &data, MPI_Comm comm) -> double {
     MonomialPropagator<NumModes> sim(data.hamiltonian,
                                      /*cutoff=*/2U,
                                      data.initial_state,

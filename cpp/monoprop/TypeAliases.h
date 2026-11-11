@@ -35,7 +35,7 @@ using VecI = std::vector<int>;
 
 using VecZ = std::vector<size_t>;
 
-using TermIndex = std::uint32_t; // Max number of terms per partition
+using TermIndex = std::uint32_t; // Max number of terms per shard
 
 // resize() leaves new trivial elements uninitialized; see the default_init_allocator caveat.
 template <typename T>

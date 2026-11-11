@@ -55,11 +55,12 @@ auto find_rank(const Monomial<NumModes> &mono, const routing::Router &router) ->
     return router.dest<NumModes>(mono);
 }
 
-// The router for this communicator's geometry and monoprop_ROUTING, bound to this monomial width.
+// The router of the low-level one-owner-per-rank engine (detail::build_layer): one flat owner per rank of `comm`, under
+// monoprop_ROUTING, bound to this monomial width. A sharded root never uses it: it prepares its own (P, T) router from
+// the communicator's size and its captured budget.
 template <size_t NumModes>
 inline auto router_for(const mpi::Comm &comm) -> routing::Router {
-    const auto geom = mpi::geometry(comm);
-    return routing::make_router<NumModes>(static_cast<size_t>(geom.ranks), static_cast<size_t>(geom.partitions));
+    return routing::make_router<NumModes>(static_cast<size_t>(mpi::size(comm)), 1);
 }
 
 // Agree the transport now, so a misconfigured rank throws at construction instead of hanging its peers.

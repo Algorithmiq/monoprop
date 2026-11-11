@@ -28,6 +28,7 @@
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -320,3 +321,25 @@ BOOST_AUTO_TEST_CASE(mpi_utils_paired_enumeration_partitions_by_find_rank) {
         }
     }
 }
+
+#ifdef monoprop_ENABLE_MPI
+// The transport decision is agreed once per communicator and cached on it as an attribute. Warm calls
+// repeat the agreed answer, and a duplicated or freshly created communicator agrees on its own instead of
+// inheriting an entry keyed by a recycled raw handle. Every rank runs the same call sequence.
+BOOST_AUTO_TEST_CASE(mpi_utils_routes_pairwise_is_cached_per_communicator) {
+    const bool cold = mpi::routes_pairwise(MPI_COMM_WORLD);
+    BOOST_TEST(mpi::routes_pairwise(MPI_COMM_WORLD) == cold);
+    for (int round = 0; round < 2; ++round) {
+        MPI_Comm dup = MPI_COMM_NULL;
+        MPI_Comm_dup(MPI_COMM_WORLD, &dup);
+        BOOST_TEST(mpi::routes_pairwise(dup) == cold);
+        BOOST_TEST(mpi::routes_pairwise(dup) == cold);
+        MPI_Comm_free(&dup);
+    }
+    int size = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    if (size == 1) {
+        BOOST_TEST(!cold); // no peer to pair with
+    }
+}
+#endif

@@ -57,8 +57,38 @@ just build-docs
 - Python reference data lives in `tests/reference_data.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
   `test_utils::load_case()` from `cpp/tests/TestData.h`.
 - Pytest's fd capture hides C++ stderr such as `COMMPROF`; rerun with `-s`.
+- Benchmark evidence: `pytest benches --runtime-shape=... --build-mode=...` refuses contradictory
+  runs. `tools/benchmark-rank-local-openmp.py` has exactly three modes, `observe`, `validate` and
+  `compare` (see `docs/content/docs/benchmarks.mdx`). Launch MPI-off runs directly: `mpi4py` is
+  never imported when `monoprop.MPI_ABIS` is empty.
 - `uv sync` does not relink `bin/monoprop_unit_tests.x` -- compare mtimes and use the standalone
   recipe in `docs/content/docs/building.mdx`.
+- OpenMP is a required build dependency in every configuration (`OpenMP::OpenMP_CXX`, linked PUBLIC on
+  both `monoprop-objs` and `monoprop`, `find_dependency` in the package config). The worksharing
+  primitive is `detail/parallel/Workshare.h::for_blocks`. Never call `omp_set_*` from the library.
+  The library calls the runtime (`ThreadBudget.cpp`), so `import monoprop` loads it: with `OMP_PLACES`
+  set and binding on, the importing thread is bound to the first place.
+- One runtime: each rank's `MonomialPropagator` owns T shards (`detail/sharded/`), T captured once at
+  construction from `monoprop_NUM_THREADS` (strict parser; unset falls back to `omp_get_max_threads()`).
+  There is no partition runtime, selector or `monoprop_PARTITIONS` reader. Every MPI-using operation
+  enforces MPI's initializing thread; only that thread (the team's primary) calls MPI, so FUNNELED is
+  required. Every state operation separates validation from mutation (`run_operation_`): a failure after
+  mutation starts invalidates the object and aborts a multi-rank communicator (`mpi::operation_failed`).
+  Catch failures inside posted `Ticket`/`PendingAlltoallv`/physical-round lifetimes, never only at the
+  outermost level. `detail::build_layer` (with `run_exchange` and `mpi::begin_alltoallv`) is the low-level
+  one-owner-per-rank engine kept only as the tests' reference; production builds layers through
+  `detail/sharded/Construction.h`.
+- Threaded kernels (`scale_cos_*`, `apply_fused_contract`, the `fused_find_and_collect` scan, the resolve
+  phases: incoming decode, `probe_frozen_positions`, certified-sink scatter) take a defaulted test-only
+  range observer; participation tests read it (`cpp/tests/KernelTestSupport.h`, `ScanTestSupport.h`).
+  Serial and threaded runs must agree bitwise. Scan workers only traverse frozen storage and merge in range
+  order; only typed cutoffs (`CutoffEvaluator::parallel_safe`) run on them. Probes read a frozen store;
+  received query streams are validated on the caller (`QueryWire::checked_extent`) before any decode;
+  miss IDs, insertion (`bulk_insert_hashed`) and inverted-index maintenance stay single-writer. A sink's
+  `on_resolved` runs on workers only with `static constexpr bool parallel_resolve = true`. TSan evidence
+  needs Clang + libomp + Archer; GCC's libgomp gives false reports (`building.mdx`).
+- `cpp/tests/mpi_failure_driver.cpp` has its own `main()`, excluded from the unit-runner glob;
+  `ctest -L mpi_failure` runs its two-rank abort scenarios (30 s timeout; a timeout is a hang).
 - Slow CTest startup in MPI builds is `MPI_Init` fabric probing; see
   `monoprop_TEST_EXCLUDE_MPI_FABRIC` in `cpp/tests/CMakeLists.txt`.
 - Sanitizer rebuild and test:

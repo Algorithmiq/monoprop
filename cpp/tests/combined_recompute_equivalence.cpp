@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "TestUtilities.h"
 
 #include "monoprop/detail/evolution/CosineRecompute.h"
@@ -113,11 +114,15 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
 
         std::vector<double> a = baseline;
         std::vector<double> b = baseline;
+        std::vector<double> threaded = baseline;
         scale_cos_cached<kNumModes>(prepared, a.data(), cos_val);
         monoprop::detail::scale_cos_lazy<kNumModes>(inverted_index, recipe, b.data(), cos_val);
+        monoprop::detail::scale_cos_lazy<kNumModes>(inverted_index, recipe, threaded.data(), cos_val, {.threads = 3});
 
         BOOST_TEST_INFO("layer " << li);
         BOOST_TEST(std::memcmp(a.data(), b.data(), n * sizeof(double)) == 0);
+        BOOST_TEST_INFO("layer " << li << " threads 3");
+        BOOST_TEST(std::memcmp(a.data(), threaded.data(), n * sizeof(double)) == 0);
     }
     // The fixture must actually exercise the odd-|G| parity correction, or the guardrail is hollow.
     BOOST_TEST(odd_layers > 0u);
@@ -341,9 +346,155 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     auto prepared =
         monoprop::detail::make_fold_cache<kNumModes>(sim.mp_op().inverted_index(), gen, scaled_count, kBasis);
     std::vector<double> expected = baseline;
-    std::vector<double> actual = baseline;
     scale_cos_cached<kNumModes>(prepared, expected.data(), cos_val);
-    monoprop::detail::scale_cos_lazy<kNumModes>(sim.mp_op().inverted_index(), recipe, actual.data(), cos_val);
+    for (const int threads : {1, 4}) {
+        std::vector<double> actual = baseline;
+        monoprop::detail::scale_cos_lazy<kNumModes>(sim.mp_op().inverted_index(),
+                                                    recipe,
+                                                    actual.data(),
+                                                    cos_val,
+                                                    {.threads = threads});
+        BOOST_TEST_INFO("threads " << threads);
+        BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
+    }
+}
 
+// --- threaded lazy folds over several fold blocks -----------------------------------------------------------
+//
+// The real fixtures above fit in one kColumnBlockWords block, so scale_cos_lazy stays serial on them. These
+// use a synthetic InvertedIndex<8> spanning more than three blocks, with dense, sparse, dense-but-sparse and
+// empty columns (KernelTestSupport.h), and require every budget to match the materialised-fold oracle
+// bitwise.
+
+namespace {
+
+struct FoldCase {
+    const char *label;
+    Monomial<kernel_test::kIndexModes> gen;
+    Basis basis;
+};
+
+auto fold_cases() -> std::vector<FoldCase> {
+    using kernel_test::generator;
+    return {
+        {"majorana even, dense", generator({1, 4}), Basis::Majorana},
+        {"majorana even, mixed tiers", generator({0, 2, 9, 13}), Basis::Majorana},
+        {"majorana odd, dense + sparse", generator({0, 3, 7}), Basis::Majorana},
+        {"majorana odd, sparse + block edges", generator({6, 8, 14}), Basis::Majorana},
+        {"majorana even, empty columns", generator({10, 11}), Basis::Majorana},
+        {"majorana odd, one empty column (parity only)", generator({10}), Basis::Majorana},
+        {"zero generator", generator({}), Basis::Majorana},
+        {"pauli J(G), two columns", generator({0, 5}), Basis::Pauli},
+        {"pauli J(G), three columns", generator({3, 8, 15}), Basis::Pauli},
+    };
+}
+
+// Threaded first, on a cold parity cache: the kernel must build row parity on the caller before its team
+// starts. Only then are the one-thread run and the oracle (whose make_fold_cache warms the cache) computed.
+auto check_threaded_lazy_fold(const monoprop::detail::InvertedIndex<kernel_test::kIndexModes> &index,
+                              const FoldCase &fc,
+                              uint64_t scaled_count) -> void {
+    constexpr size_t kModes = kernel_test::kIndexModes;
+    const size_t n = index.rows();
+    const auto recipe = monoprop::detail::make_lazy_fold<kModes>(index, fc.gen, scaled_count, fc.basis);
+    const std::vector<double> baseline = [n] {
+        std::vector<double> v(n);
+        for (size_t i = 0; i < n; ++i) {
+            v[i] = 1.0 + static_cast<double>(i) * 1e-3;
+        }
+        return v;
+    }();
+    const double cos_val = 0.6234;
+
+    std::vector<std::vector<double>> threaded;
+    for (const int threads : {2, 3, 4}) {
+        index.row_parity_.clear();
+        threaded.push_back(baseline);
+        monoprop::detail::scale_cos_lazy<kModes>(index, recipe, threaded.back().data(), cos_val, {.threads = threads});
+    }
+    index.row_parity_.clear();
+    std::vector<double> serial = baseline;
+    monoprop::detail::scale_cos_lazy<kModes>(index, recipe, serial.data(), cos_val, {.threads = 1});
+
+    const auto prepared = monoprop::detail::make_fold_cache<kModes>(index, fc.gen, scaled_count, fc.basis);
+    std::vector<double> oracle = baseline;
+    scale_cos_cached<kModes>(prepared, oracle.data(), cos_val);
+
+    BOOST_TEST_CONTEXT(fc.label << " rows=" << n << " scaled_count=" << scaled_count) {
+        BOOST_TEST(std::memcmp(oracle.data(), serial.data(), n * sizeof(double)) == 0);
+        for (size_t t = 0; t < threaded.size(); ++t) {
+            BOOST_TEST_INFO("threads " << t + 2);
+            BOOST_TEST(std::memcmp(oracle.data(), threaded[t].data(), n * sizeof(double)) == 0);
+        }
+        // Rows at or beyond scaled_count are never scaled.
+        size_t scaled_beyond = 0;
+        for (size_t i = std::min<size_t>(scaled_count, n); i < n; ++i) {
+            scaled_beyond += static_cast<size_t>(serial[i] != baseline[i]);
+        }
+        BOOST_TEST(scaled_beyond == 0u);
+    }
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(combined_threaded_lazy_fold_matches_oracle) {
+    constexpr size_t block_rows = monoprop::detail::kColumnBlockWords * 64;
+    // More than three fold blocks, with 63-, 64- and 65-row tails past a word boundary.
+    const size_t base = 3 * block_rows + 7 * 64;
+    for (const size_t tail : {63, 64, 65}) {
+        const size_t rows = base + tail;
+        const auto index = kernel_test::make_synthetic_index(rows, 1000 + tail);
+        size_t odd_folds = 0;
+        for (const auto &fc : fold_cases()) {
+            odd_folds += static_cast<size_t>(
+                monoprop::algebra_fold_needs_odd_correction<kernel_test::kIndexModes>(fc.basis, fc.gen));
+            // Full; a partial final word; fewer blocks than the index; a single word in the second range;
+            // nothing at all.
+            for (const uint64_t scaled_count : {uint64_t{rows},
+                                                uint64_t{rows - 100},
+                                                uint64_t{2 * block_rows + 17},
+                                                uint64_t{block_rows + 1},
+                                                uint64_t{0}}) {
+                check_threaded_lazy_fold(index, fc, scaled_count);
+            }
+        }
+        // The odd-|G| parity correction and the Pauli fold are both exercised.
+        BOOST_TEST(odd_folds > 0u);
+    }
+}
+
+// A retained LazyFold across index growth, threaded: the parity words the workers read must be fetched for
+// this call, from the grown index, never retained from before the growth (see LazyFold).
+BOOST_AUTO_TEST_CASE(combined_threaded_lazy_fold_survives_index_growth) {
+    constexpr size_t kModes = kernel_test::kIndexModes;
+    constexpr size_t block_rows = monoprop::detail::kColumnBlockWords * 64;
+    const size_t old_rows = 2 * block_rows + 500;
+    auto index = kernel_test::make_synthetic_index(old_rows, 77);
+    const auto gen = kernel_test::generator({0, 6, 8});
+    const uint64_t scaled_count = old_rows - 3;
+    const auto recipe = monoprop::detail::make_lazy_fold<kModes>(index, gen, scaled_count, Basis::Majorana);
+
+    const uint64_t *before = index.row_parity_words();
+    BOOST_REQUIRE(before != nullptr);
+    // Keep the old allocation alive and poisoned, so a stale pointer would be observably wrong.
+    auto old_row_parity = std::move(index.row_parity_);
+    for (auto &word : old_row_parity) {
+        word = ~word;
+    }
+    kernel_test::grow_synthetic_index(index, 4 * block_rows + 123, 78);
+    const size_t n = index.rows();
+
+    std::vector<double> baseline(n);
+    for (size_t i = 0; i < n; ++i) {
+        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
+    }
+    const double cos_val = 0.6234;
+    std::vector<double> actual = baseline;
+    monoprop::detail::scale_cos_lazy<kModes>(index, recipe, actual.data(), cos_val, {.threads = 4});
+    BOOST_TEST(index.row_parity_words() != before);
+
+    const auto prepared = monoprop::detail::make_fold_cache<kModes>(index, gen, scaled_count, Basis::Majorana);
+    std::vector<double> expected = baseline;
+    scale_cos_cached<kModes>(prepared, expected.data(), cos_val);
     BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
 }

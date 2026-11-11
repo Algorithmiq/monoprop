@@ -6,15 +6,12 @@ target_sources(
       FILES
         "CheckedCount.h"
         "Comm.h"
-        "CpuRelax.h"
         "Exchange.h"
-        "HybridComm.h"
         "MPICompat.h"
         "MPIUtils.h"
+        "OperationFailure.h"
         "Pairwise.h"
-        "PartitionBarrier.h"
         "Routing.h"
-        "ShmComm.h"
 )
 
 monoprop_add_core_sources(MPICompat.cpp)

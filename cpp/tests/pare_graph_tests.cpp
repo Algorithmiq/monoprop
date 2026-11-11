@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <set>
 #include <variant>
 
 #include "TestUtilities.h"
@@ -26,6 +27,7 @@
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/graph/MPGraphLayers.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/pare/PareGraph.h"
 
 using namespace test_utils;
 using namespace monoprop;
@@ -140,6 +142,54 @@ BOOST_AUTO_TEST_CASE(pare_graph_emits_expected_layer_kinds) {
     // and a preserved layer stores nothing (its cos is recomputed at replay).
     BOOST_CHECK_EQUAL(pruned_count, 1u);
     BOOST_TEST(pared.get_layer(marked_layer).pruned_cos() != static_cast<const CosMask *>(nullptr));
+}
+
+// The owner sweep hands its provider one buffer for every layer, and an in-place fold replaces whatever that buffer
+// held: the reused-buffer path folds exactly what a fresh mask does, and every stored set is allocated at its size.
+BOOST_AUTO_TEST_CASE(pare_graph_owner_folds_into_one_reused_buffer) {
+    const auto data = load_case_data<kNumModes>("random_exact.msgpack");
+    SimulatorConfig cfg{.comm = MPI_COMM_SELF};
+    auto sim = build_simulator<kNumModes>(data, cfg);
+    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    const auto &graph = sim.graph();
+    const auto &inverted_index = sim.mp_op().inverted_index();
+    const size_t rows = sim.mp_op().size();
+    BOOST_REQUIRE(graph.layers() > 1);
+
+    // An in-place fold into a buffer holding another layer's blocks equals the fresh fold.
+    for (size_t i = 0; i < graph.layers(); ++i) {
+        CosMask reused{.blocks = {{0, ~uint64_t{0}}, {64, 1}}, .total_count = 65};
+        monoprop::detail::full_cos_mask_into<kNumModes>(inverted_index,
+                                                        graph.get_layer_traversal(i),
+                                                        monoprop::Basis::Majorana,
+                                                        reused);
+        const CosMask fresh = recompute_cos<kNumModes>(inverted_index, graph.get_layer_traversal(i));
+        BOOST_TEST(reused.blocks == fresh.blocks, "layer " << i);
+        BOOST_TEST(reused.total_count == fresh.total_count, "layer " << i);
+    }
+
+    // Keep only row 0, one past the index space marked in layer 0's set: the sweep prunes, so sets get stored.
+    std::set<const CosMask *> buffers;
+    const auto provider = [&](size_t i, CosMask &out) {
+        buffers.insert(&out);
+        monoprop::detail::full_cos_mask_into<kNumModes>(inverted_index,
+                                                        graph.get_layer_traversal(i),
+                                                        monoprop::Basis::Majorana,
+                                                        out);
+        out.blocks.emplace_back(((rows >> 6) + 1) << 6, uint64_t{1});
+        ++out.total_count;
+    };
+    const auto pared =
+        monoprop::detail::pare_graph_owner(graph, VecZ{0}, rows + 128, /*schrodinger=*/false, 0, provider);
+    BOOST_TEST(buffers.size() == 1U);
+    size_t stored = 0;
+    for (size_t i = 0; i < pared.layers(); ++i) {
+        if (const CosMask *pruned = pared.get_layer(i).pruned_cos(); pruned != nullptr) {
+            ++stored;
+            BOOST_TEST(pruned->blocks.capacity() == pruned->blocks.size(), "layer " << i);
+        }
+    }
+    BOOST_TEST(stored == pared.layers());
 }
 
 BOOST_AUTO_TEST_CASE(pare_graph_energy_matches_unpared) {

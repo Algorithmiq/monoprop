@@ -4,7 +4,7 @@
 set -euo pipefail
 
 
-# Both backends thread (monoprop via its partition facade, MajoranaPropagation.jl via
+# Both backends thread (monoprop via its OpenMP shards, MajoranaPropagation.jl via
 # AcceleratedKernels on VectorMajoranaSum), and neither is fastest at the same count, so
 # these are overridable per side rather than fixed.
 export JULIA_NUM_THREADS="${JULIA_NUM_THREADS:-8}"

@@ -38,6 +38,13 @@ find_dependency(
   Threads
   REQUIRED
 )
+# Always required: the exported target links OpenMP::OpenMP_CXX in every configuration.
+find_dependency(
+  OpenMP
+  REQUIRED
+  COMPONENTS
+  CXX
+)
 
 set(monoprop_MPI_ABIS "@monoprop_MPI_ABI_NAMES@")
 

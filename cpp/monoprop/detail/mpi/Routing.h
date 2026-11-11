@@ -32,7 +32,7 @@
 // The one owner function: Scan.h emits queries by it and MonomialPropagator seeds by it, so a second
 // copy would split ownership silently.
 //
-//     part = monomial_hash(M) % S     splitmix: partition fanout is free, only balance matters
+//     part = monomial_hash(M) % S     splitmix: shard fanout is free, only balance matters
 //     rank = linear_hash(M) & (R - 1) GF(2)-linear: rank(M ^ G) == rank(M) ^ rank(G), so fanout 1
 //     flat = rank * S + part
 //
@@ -146,9 +146,9 @@ public:
     // The only way to a linear router. Binds the basis for this width, keeping its static-init guard off
     // dest(). Throws unless every rank is reachable: R == 2^d with d <= the full-rank column count.
     template <size_t NumModes>
-    [[nodiscard]] static auto for_modes(size_t ranks, size_t partitions, bool linear) -> Router {
+    [[nodiscard]] static auto for_modes(size_t ranks, size_t shards_per_rank, bool linear) -> Router {
         constexpr size_t max_bits = std::min(kLinearColumns, 2 * NumModes);
-        Router r{ranks, partitions, linear};
+        Router r{ranks, shards_per_rank, linear};
         if (r.linear_bits() > max_bits) {
             throw UnroutableGeometry(
                 std::format("linear routing over {} modes reaches at most 2^{} ranks, got {}. Launch fewer "
@@ -166,7 +166,7 @@ public:
     static constexpr auto splitmix(size_t flat_world) -> Router { return Router{flat_world, 1, false}; }
 
     [[nodiscard]] constexpr auto ranks() const noexcept -> size_t { return ranks_; }
-    [[nodiscard]] constexpr auto partitions() const noexcept -> size_t { return parts_; }
+    [[nodiscard]] constexpr auto shards_per_rank() const noexcept -> size_t { return shards_per_rank_; }
     [[nodiscard]] constexpr auto flat_world() const noexcept -> size_t { return flat_; }
     // False for a splitmix router AND for R == 1, which has no rank bit to take: both route densely.
     [[nodiscard]] constexpr auto is_linear() const noexcept -> bool { return linear_; }
@@ -182,10 +182,10 @@ public:
             return static_cast<size_t>(monomial_hash<NumModes>(mono) % flat_);
         }
         const auto rank = static_cast<size_t>(linear_low_<NumModes>(mono));
-        if (parts_ == 1) {
+        if (shards_per_rank_ == 1) {
             return rank; // S == 1 needs no hash
         }
-        return (rank * parts_) + part_of_(monomial_hash<NumModes>(mono));
+        return (rank * shards_per_rank_) + part_of_(monomial_hash<NumModes>(mono));
     }
 
     // dest(M ^ G) for a term M that `my_flat` owns, where `shift` == rank_shift(G). Wrong arguments move
@@ -198,10 +198,10 @@ public:
             return dest<NumModes>(mono);
         }
         const size_t rank = rank_of_slot_(my_flat) ^ shift;
-        if (parts_ == 1) {
+        if (shards_per_rank_ == 1) {
             return rank;
         }
-        return (rank * parts_) + part_of_(monomial_hash<NumModes>(mono));
+        return (rank * shards_per_rank_) + part_of_(monomial_hash<NumModes>(mono));
     }
 
     // The rank-level shift a generator induces: rank(M^G) == rank(M) ^ shift(G). Zero when not linear.
@@ -212,14 +212,14 @@ public:
 
 private:
     // Private: a linear router must go through for_modes, which binds the basis.
-    constexpr Router(size_t ranks, size_t partitions, bool linear)
+    constexpr Router(size_t ranks, size_t shards_per_rank, bool linear)
         : ranks_(ranks == 0 ? 1 : ranks),
-          parts_(partitions == 0 ? 1 : partitions),
-          flat_(ranks_ * parts_),
+          shards_per_rank_(shards_per_rank == 0 ? 1 : shards_per_rank),
+          flat_(ranks_ * shards_per_rank_),
           linear_(linear && ranks_ > 1), // R == 1 has no rank bit: dense by construction
-          parts_pow2_(std::has_single_bit(parts_)),
-          parts_mask_(parts_ - 1),
-          parts_log2_(static_cast<size_t>(std::countr_zero(parts_))) {
+          shards_pow2_(std::has_single_bit(shards_per_rank_)),
+          shards_mask_(shards_per_rank_ - 1),
+          shards_log2_(static_cast<size_t>(std::countr_zero(shards_per_rank_))) {
         if (linear && !std::has_single_bit(ranks_)) {
             throw UnroutableGeometry(
                 std::format("linear routing needs a power-of-two rank count, got {}. Launch 2^k ranks, or set "
@@ -228,13 +228,13 @@ private:
         }
     }
 
-    // parts_ is a runtime value, so strength-reduce the power-of-two case by hand.
+    // shards_per_rank_ is a runtime value, so strength-reduce the power-of-two case by hand.
     [[nodiscard]] [[gnu::always_inline]] auto part_of_(uint64_t q) const noexcept -> size_t {
-        return static_cast<size_t>(parts_pow2_ ? (q & parts_mask_) : (q % parts_));
+        return static_cast<size_t>(shards_pow2_ ? (q & shards_mask_) : (q % shards_per_rank_));
     }
 
     [[nodiscard]] [[gnu::always_inline]] auto rank_of_slot_(size_t flat_slot) const noexcept -> size_t {
-        return parts_pow2_ ? (flat_slot >> parts_log2_) : (flat_slot / parts_);
+        return shards_pow2_ ? (flat_slot >> shards_log2_) : (flat_slot / shards_per_rank_);
     }
 
     // linear_hash(M) & (R - 1). Runs at seeding and once per generator, never per query.
@@ -252,12 +252,12 @@ private:
     }
 
     size_t ranks_;
-    size_t parts_;
+    size_t shards_per_rank_;
     size_t flat_;
     bool linear_;
-    bool parts_pow2_;   // S is 2^k, so `% S` is a mask and `/ S` a shift
-    size_t parts_mask_; // S - 1, and parts_log2_ == log2(S); both meaningless unless parts_pow2_
-    size_t parts_log2_;
+    bool shards_pow2_;   // S is 2^k, so `% S` is a mask and `/ S` a shift
+    size_t shards_mask_; // S - 1, and shards_log2_ == log2(S); both meaningless unless shards_pow2_
+    size_t shards_log2_;
     const uint64_t *basis_ = nullptr; // linear_basis<basis_bits_>(), bound by for_modes
     size_t basis_bits_ = 0;
 };
@@ -267,21 +267,17 @@ inline auto linear_requested() -> bool {
     return config::get().routing_mode.value_or(config::RoutingMode::Linear) == config::RoutingMode::Linear;
 }
 
-// What must match across ranks for the transports to pair up; raw values, so agreement is exact.
+// What must match across ranks for the transports to pair up; raw values, so agreement is exact. The thread count is
+// not part of it: the sharded runtime takes a uniform T as a launch precondition, which nothing checks.
 struct Config {
     uint64_t linear = 0;
-    uint64_t partitions = 1;
     uint64_t seed = 0;
 
-    static auto from_env(size_t partitions) -> Config {
-        return {.linear = static_cast<uint64_t>(linear_requested()),
-                .partitions = static_cast<uint64_t>(partitions),
-                .seed = seed_from_env()};
+    static auto from_env() -> Config {
+        return {.linear = static_cast<uint64_t>(linear_requested()), .seed = seed_from_env()};
     }
 
-    [[nodiscard]] auto describe() const -> std::string {
-        return std::format("linear={}, partitions={}, seed={}", linear, partitions, seed);
-    }
+    [[nodiscard]] auto describe() const -> std::string { return std::format("linear={}, seed={}", linear, seed); }
 };
 
 // Whether an AGREED config routes point-to-point. Never throws, since the replay path asks from inside a
@@ -291,8 +287,8 @@ struct Config {
 }
 
 template <size_t NumModes>
-inline auto make_router(size_t ranks, size_t partitions) -> Router {
-    return Router::for_modes<NumModes>(ranks, partitions, linear_requested());
+inline auto make_router(size_t ranks, size_t shards_per_rank) -> Router {
+    return Router::for_modes<NumModes>(ranks, shards_per_rank, linear_requested());
 }
 
 } // namespace monoprop::routing

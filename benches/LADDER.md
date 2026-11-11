@@ -5,16 +5,18 @@ This benchmark separates kernel, shared-memory, process, network, and scaling ef
 - `N`: nodes
 - `C`: usable cores per node
 - `R`: MPI ranks per node
-- `P`: in-process partitions per rank
-- `P_total = N × R × P`: total partitions
+- `P`: OpenMP threads, and with them shards, per rank
+- `P_total = N × R × P`: total shards
 
 Choose `R` for the platform, normally one rank per NUMA domain, then set `P = C / R`. Keep `R`
 and `P` fixed wherever the ladder requires a direct comparison.
 
 > **Example platform.** All flags, term counts, timings, and memory figures below were measured on
 > code based on `main` commit `97f95f762dfc7174243ccd59dd4ecbbb9775b610`, on Deucalion x86
-> nodes with `C=128`, using `R=8` and `P=16` for MPI runs. They are calibration and job-sizing
-> examples, not portable targets but memory should be relatively similar.
+> nodes with `C=128`, using `R=8` and `P=16` for MPI runs, with the partition runtime that the
+> sharded OpenMP runtime has since replaced (`P` partitions per rank then). They are historical
+> calibration and job-sizing examples, not portable targets and not measurements of the sharded
+> OpenMP runtime, but memory should be relatively similar.
 
 ## Ladder
 
@@ -47,16 +49,21 @@ graph. Run `propagate` separately because it owns another operator.
 
 ## Declaring the shape
 
-The launcher sets `N` and `R`; export `P` explicitly:
+The launcher sets `N` and `R`. Declare `P` before the launch and the import, with exactly `P` threads per
+rank and the placement left to the launcher and OpenMP:
 
 ```bash
-export monoprop_PARTITIONS=<partitions-per-rank>
-export monoprop_NUM_THREADS=<cores-per-rank>
+export monoprop_NUM_THREADS=<threads-per-rank> OMP_NUM_THREADS=<threads-per-rank> OMP_DYNAMIC=FALSE
+export OMP_PLACES=cores OMP_PROC_BIND=close   # one thread per physical core
 ```
 
-For multi-rank runs this is mandatory. The engine otherwise defaults to one partition per rank.
-Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`, and
-`monoprop_threads` in the report's Configuration table.
+Pass `--runtime-shape=openmp` (and `--build-mode=mpi` or `--build-mode=mpi-off`) to have the suite
+refuse a run whose environment, rank count or imported build contradicts that declaration; above one
+rank the suite otherwise asks for the partition count of the removed runtime. Do not set
+`monoprop_PARTITIONS`: the library ignores it, and the `openmp` shape refuses it.
+
+Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`,
+`monoprop_threads`, `declared_shape` and `has_mpi` in the run metadata.
 
 ## Calibrating model size
 
@@ -84,7 +91,7 @@ Examples 128-core platform.
 
 ### L1 example
 
-Set `monoprop_PARTITIONS=1` and `monoprop_NUM_THREADS=1`.
+Set `monoprop_NUM_THREADS=1` and `OMP_NUM_THREADS=1` (measured with the partition runtime at one partition).
 
 | row | flags | selector | terms | time | peak RSS |
 | --- | --- | --- | ---: | ---: | ---: |
@@ -95,7 +102,7 @@ Set `monoprop_PARTITIONS=1` and `monoprop_NUM_THREADS=1`.
 
 ### L2a example
 
-Set `monoprop_PARTITIONS=C` and `monoprop_NUM_THREADS=C`. On the example platform, `C=128`. These are medians of three repetitions.
+Set `monoprop_NUM_THREADS=C` and `OMP_NUM_THREADS=C` (measured with the partition runtime at `C` partitions). On the example platform, `C=128`. These are medians of three repetitions.
 
 
 | row | flags | selector | terms | time | peak RSS |
@@ -186,13 +193,12 @@ size sweep rather than treating this table as a target.
 
 ## Launch templates
 
-For L1 and L2a, request one node and one rank. Set the core and partition counts from the granted
-CPU affinity:
+For L1 and L2a, request one node and one rank. Set the thread count from the granted CPU
+affinity:
 
 ```bash
-export monoprop_PARTITIONS="$C"
-export monoprop_NUM_THREADS="$C"
-just bench L2a-hubbard-branch --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06 \
+export monoprop_NUM_THREADS="$C" OMP_NUM_THREADS="$C" OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=close
+just bench L2a-hubbard-branch --runtime-shape=openmp --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06 \
     -k "test_model_propagate and hubbard"
 ```
 
@@ -200,13 +206,12 @@ For L2b, L3, and L4, request `R` ranks per node and `P` cores per rank. This Slu
 the scheduler variables have already been set consistently:
 
 ```bash
-export monoprop_PARTITIONS="$P"
-export monoprop_NUM_THREADS="$P"
+export monoprop_NUM_THREADS="$P" OMP_NUM_THREADS="$P" OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=close
 export monoprop_BENCH_LABEL=L3-hubbard-branch
 export monoprop_BENCH_RESULTS=benches/results
 
 srun --ntasks-per-node="$R" --cpus-per-task="$P" --cpu-bind=cores \
-    .venv/bin/python -m pytest benches -o filterwarnings=default \
+    .venv/bin/python -m pytest benches -o filterwarnings=default --runtime-shape=openmp \
     --benchmark-json="benches/results/time-$monoprop_BENCH_LABEL.json" \
     -k "test_model_propagate and hubbard" \
     --hubbard-cutoff=10 --hubbard-lower-atol=3.38e-06
@@ -221,7 +226,7 @@ each rank to avoid repeated dependency resolution on shared filesystems.
 
 - Repeat the rank count, cores per rank, and binding options on the launcher command; scheduler
   allocation directives may not propagate them.
-- Keep `P` no larger than the CPUs visible to each rank. Otherwise thread placement is disabled.
+- Keep `P` no larger than the CPUs visible to each rank: the team still has `P` threads, so they oversubscribe.
 - Use the scheduler affinity mask, such as `os.sched_getaffinity(0)`, to verify visible CPUs;
   `nproc` may honor unrelated thread limits.
 - Keep CPU binding enabled unless the target platform has been measured otherwise.

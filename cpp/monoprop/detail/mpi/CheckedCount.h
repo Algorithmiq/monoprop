@@ -19,8 +19,7 @@
 #include <limits>
 #include <stdexcept>
 
-// Below MPICompat.h so the in-process transports (ShmComm, HybridComm), which MPICompat.h includes,
-// narrow their counts through the same policy as the MPI collectives.
+// The one narrowing policy for every count and displacement handed to MPI; MPICompat.h re-exports it.
 
 namespace monoprop::mpi {
 
@@ -45,7 +44,7 @@ inline auto checked_mpi_count(long long value, const char *what = "Aggregate MPI
 }
 
 // A buffer size is not int-bounded to begin with: a per-peer payload is kWords<NumModes> + 1 elements
-// per term, so a single wide-mode query round reaches INT_MAX well inside one partition's term space.
+// per term, so a single wide-mode query round reaches INT_MAX well inside one shard's term space.
 // Kept separate from the `long long` overload so a size_t above LLONG_MAX cannot sign-flip on the way
 // into the check.
 inline auto checked_mpi_count(size_t value, const char *what = "MPI count") -> int {

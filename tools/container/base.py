@@ -18,7 +18,8 @@ Render it with ``uvx hpccm==26.5.0 --recipe tools/container/base.py --format doc
 container.yml tags the image with a hash of that output, so changing anything here (or
 the hpccm version) produces a new base image.
 
-The compilers, Python, Boost and hwloc come from Ubuntu. The communication path is
+The compilers, Python, Boost and hwloc come from Ubuntu; monoprop does not use hwloc, but the
+PMIx and Open MPI built here do. The communication path is
 pinned: DOCA-OFED's InfiniBand user space, and UCX, PMIx and Open MPI built from source.
 Ranks are launched by Slurm with ``srun --mpi=pmix``, so no PMI2 library is built.
 """
@@ -55,6 +56,8 @@ Stage0 += packages(
     apt=[
         "libboost-dev",
         "libevent-dev",
+        # PMIx needs hwloc's headers, which hpccm's runtime-only hwloc package lacks, and Open MPI
+        # must use the same external hwloc as an external PMIx.
         "libhwloc-dev",
         "libnuma-dev",
         "pkg-config",
