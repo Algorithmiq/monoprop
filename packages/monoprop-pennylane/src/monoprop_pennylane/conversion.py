@@ -30,7 +30,7 @@ from monoprop.circuit import Circuit, ExpGate
 from monoprop.pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Sequence
+    from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 
 
 def _resolve_wires(
@@ -73,18 +73,37 @@ def _validate_output_wires(
     return wire_tuple
 
 
-def _pauli_sentence_terms(
-    pauli_sentence: qml.pauli.PauliSentence, wire_map: dict[Hashable, int]
-) -> tuple[list[Pauli], list[complex]]:
-    """Translate a ``PauliSentence`` into monoprop [Pauli][monoprop.pauli.Pauli] terms."""
-    paulis: list[Pauli] = []
-    coeffs: list[complex] = []
-    for word, coeff in pauli_sentence.items():
-        qubits = tuple(wire_map[w] for w in word)
-        letters = "".join(word[w] for w in word)
-        paulis.append(Pauli(letters, qubits))
+def _from_pauli_sentence(
+    pauli_sentence: Mapping[qml.pauli.PauliWord, complex],
+    wire_map: dict[Hashable, int],
+    num_qubits: int,
+) -> PauliOperator:
+    """Translate a ``PauliSentence`` into a [PauliOperator][monoprop.pauli.PauliOperator]."""
+    paulis = [
+        Pauli("".join(word.values()), tuple(wire_map[w] for w in word))
+        for word in pauli_sentence
+    ]
+    return PauliOperator._from_terms(
+        paulis, list(pauli_sentence.values()), num_qubits=num_qubits
+    )
+
+
+def _to_linear_combination(
+    pauli_operator: PauliOperator, wire_tuple: tuple[Hashable, ...]
+) -> qml.ops.LinearCombination:
+    """Rebuild ``pauli_operator`` as PennyLane Pauli words on ``wire_tuple``."""
+    coeffs: list[float] = []
+    ops: list[qml.operation.Operator] = []
+    for pauli, coeff in pauli_operator.terms.items():
+        word = qml.pauli.PauliWord(
+            {
+                wire_tuple[q]: letter
+                for q, letter in zip(pauli.qubits, pauli.string, strict=True)
+            }
+        )
         coeffs.append(coeff)
-    return paulis, coeffs
+        ops.append(word.operation(wire_order=list(wire_tuple)))
+    return qml.ops.LinearCombination(coeffs, ops)
 
 
 def from_pennylane_operator(
@@ -110,16 +129,14 @@ def from_pennylane_operator(
     Returns:
         A PauliOperator instance representing the given operator.
     """
-    # pauli_sentence() returns the operator's own cached pauli_rep, and prune() mutates in place
-    # and returns None -- so a fresh copy is pruned instead, to avoid corrupting the caller's op.
-    pauli_sentence = qml.pauli.PauliSentence(
-        dict(qml.pauli.pauli_sentence(pennylane_op))
-    )
-    pauli_sentence.prune(atol)
-    wire_tuple = _resolve_wires(pauli_sentence.wires, wires)
+    pauli_sentence = {
+        word: coeff
+        for word, coeff in qml.pauli.pauli_sentence(pennylane_op).items()
+        if abs(coeff) > atol
+    }
+    wire_tuple = _resolve_wires((w for word in pauli_sentence for w in word), wires)
     wire_map = {w: i for i, w in enumerate(wire_tuple)}
-    paulis, coeffs = _pauli_sentence_terms(pauli_sentence, wire_map)
-    return PauliOperator._from_terms(paulis, coeffs, num_qubits=len(wire_tuple))
+    return _from_pauli_sentence(pauli_sentence, wire_map, len(wire_tuple))
 
 
 def to_pennylane_operator(
@@ -142,18 +159,7 @@ def to_pennylane_operator(
     wire_tuple = _validate_output_wires(
         wires, pauli_operator.num_qubits, "pauli_operator.num_qubits"
     )
-    coeffs: list[float] = []
-    ops: list[qml.operation.Operator] = []
-    for pauli, coeff in pauli_operator.terms.items():
-        word = qml.pauli.PauliWord(
-            {
-                wire_tuple[q]: letter
-                for q, letter in zip(pauli.qubits, pauli.string, strict=True)
-            }
-        )
-        coeffs.append(coeff)
-        ops.append(word.operation(wire_order=list(wire_tuple)))
-    return qml.ops.LinearCombination(coeffs, ops)
+    return _to_linear_combination(pauli_operator, wire_tuple)
 
 
 def from_pennylane_circuit(
@@ -220,9 +226,8 @@ def from_pennylane_circuit(
                 f"Unsupported gate {type(op).__name__}: its generator is not expressible as a "
                 "sum of Pauli words."
             )
-        paulis, coeffs = _pauli_sentence_terms(pauli_sentence, wire_map)
         gates.append(
-            ExpGate(PauliOperator._from_terms(paulis, coeffs, num_qubits=num_qubits))
+            ExpGate(_from_pauli_sentence(pauli_sentence, wire_map, num_qubits))
         )
         parameters.append(float(op.parameters[0]))
 
@@ -266,34 +271,25 @@ def to_pennylane_circuit(
     wire_tuple = _validate_output_wires(
         wires, circuit.system_size, "circuit.system_size"
     )
-    generators: list[PauliOperator] = []
+    generators: list[qml.ops.LinearCombination] = []
     for gate in circuit.gates:
         if not isinstance(gate.generator, PauliOperator):
             raise TypeError(
                 "to_pennylane_circuit requires a qubit (Pauli) circuit; got a "
                 f"{circuit.family}-family gate."
             )
-        generators.append(gate.generator)
+        generators.append(_to_linear_combination(gate.generator, wire_tuple))
     mapping = circuit.resolved_mapping
+    bound_angles = circuit.parameters
+    n_parameters = circuit.n_parameters
 
     def qfunc(*thetas: float) -> None:
-        angles = thetas or circuit.parameters
-        if len(angles) != circuit.n_parameters:
+        angles = thetas or bound_angles
+        if len(angles) != n_parameters:
             raise ValueError(
-                f"qfunc expects {circuit.n_parameters} angle(s); got {len(angles)}."
+                f"qfunc expects {n_parameters} angle(s); got {len(angles)}."
             )
         for generator, param_index in zip(generators, mapping, strict=True):
-            coeffs: list[float] = []
-            term_ops: list[qml.operation.Operator] = []
-            for pauli, coeff in generator.terms.items():
-                word = qml.pauli.PauliWord(
-                    {
-                        wire_tuple[q]: letter
-                        for q, letter in zip(pauli.qubits, pauli.string, strict=True)
-                    }
-                )
-                coeffs.append(coeff)
-                term_ops.append(word.operation())
-            qml.exp(qml.dot(coeffs, term_ops), 1j * angles[param_index])
+            qml.exp(generator, 1j * angles[param_index])
 
     return qfunc

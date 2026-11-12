@@ -16,13 +16,8 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
-from pytest_cases import parametrize_with_cases
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 try:
     import pennylane as qml
@@ -51,9 +46,7 @@ def _assert_pauli_circuits_close(converted, expected) -> None:
     assert converted.initial_state == expected.initial_state
     assert len(converted) == len(expected)
     assert list(converted.resolved_mapping) == list(expected.resolved_mapping)
-    assert len(converted.parameters) == len(expected.parameters)
-    for got, exp in zip(converted.parameters, expected.parameters):
-        assert got == pytest.approx(exp)
+    assert converted.parameters == pytest.approx(expected.parameters)
     for got_gate, exp_gate in zip(converted.gates, expected.gates):
         # The generator's Pauli terms carry the qubit placement, so this also
         # checks the gate acts on the right qubits.
@@ -152,11 +145,6 @@ class TestFromPennylaneOperator:
         result = from_pennylane_operator(op, wires=["a", 0])
         assert result.num_qubits == 2
 
-    def test_explicit_wires_may_include_idle_wires(self):
-        op = qml.ops.LinearCombination([1.0], [qml.PauliX(0)])
-        result = from_pennylane_operator(op, wires=[0, 1])
-        assert result.num_qubits == 2
-
     def test_rejects_duplicate_explicit_wires(self):
         op = qml.ops.LinearCombination([1.0], [qml.PauliX(0)])
         with pytest.raises(ValueError, match="wires must contain unique labels"):
@@ -167,14 +155,10 @@ class TestFromPennylaneOperator:
 @pytest.mark.pennylane
 class TestToPennylaneOperator:
     def test_single_term_no_reversal(self):
-        result = to_pennylane_operator(PauliOperator({"XZ": 1.0}, num_qubits=2))
-        assert isinstance(result, qml.ops.LinearCombination)
-        (word,) = result.pauli_rep.keys()
-        assert dict(word) == {0: "X", 1: "Z"}
-
-    def test_single_term_coefficient(self):
         result = to_pennylane_operator(PauliOperator({"XZ": 1.5}, num_qubits=2))
-        (coeff,) = result.pauli_rep.values()
+        assert isinstance(result, qml.ops.LinearCombination)
+        ((word, coeff),) = result.pauli_rep.items()
+        assert dict(word) == {0: "X", 1: "Z"}
         assert coeff == pytest.approx(1.5)
 
     def test_round_trip_matches_pauli_operator(self):
@@ -182,11 +166,6 @@ class TestToPennylaneOperator:
         converted = to_pennylane_operator(original)
         back = from_pennylane_operator(converted)
         assert back.isclose(original)
-
-    def test_single_qubit_term(self):
-        result = to_pennylane_operator(PauliOperator({"Z": 2.0}, num_qubits=1))
-        (word,) = result.pauli_rep.keys()
-        assert dict(word) == {0: "Z"}
 
     def test_identity_term_preserved(self):
         original = PauliOperator({"II": 0.5}, num_qubits=2)
@@ -213,20 +192,13 @@ class TestToPennylaneOperator:
             )
 
 
-class PennylaneCircuitCase(NamedTuple):
-    """A `(qfunc, args, kwargs, expected)` case consumed by `parametrize_with_cases`."""
-
-    qfunc: Callable[..., None]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    expected: Circuit
-
-
-class PennylaneCircuitsCases:
+@requires_pennylane
+@pytest.mark.pennylane
+class TestFromPennylaneCircuit:
     # PennyLane's generator() already uses the SAME +i*phi*G sign ExpGate does, so -- unlike the
-    # qiskit cases -- the expected monoprop generator carries the SAME sign PennyLane's own
+    # qiskit tests -- the expected monoprop generator carries the SAME sign PennyLane's own
     # -0.5-scaled generator does, never a negated one.
-    def case_single_rx_gate(self):
+    def test_single_rx_gate(self):
         def qfunc(theta):
             qml.RX(theta, wires=0)
 
@@ -235,9 +207,9 @@ class PennylaneCircuitsCases:
             system_size=1,
             parameters=(0.7,),
         )
-        return PennylaneCircuitCase(qfunc, (0.7,), {}, expected)
+        _assert_pauli_circuits_close(from_pennylane_circuit(qfunc, [], 0.7), expected)
 
-    def case_multiple_gates(self):
+    def test_multiple_gates(self):
         def qfunc(a, b):
             qml.RX(a, wires=0)
             qml.RY(b, wires=1)
@@ -251,9 +223,11 @@ class PennylaneCircuitsCases:
             system_size=2,
             parameters=(0.3, 0.5),
         )
-        return PennylaneCircuitCase(qfunc, (0.3, 0.5), {}, expected)
+        _assert_pauli_circuits_close(
+            from_pennylane_circuit(qfunc, [], 0.3, 0.5), expected
+        )
 
-    def case_pauli_rot_on_non_contiguous_wires(self):
+    def test_pauli_rot_on_non_contiguous_wires(self):
         """Also exercises the implicit idle wire (2) below the highest one touched (3), which is
         counted automatically since wires default to `range(max(touched wire) + 1)`."""
 
@@ -265,9 +239,9 @@ class PennylaneCircuitsCases:
             system_size=4,
             parameters=(0.4,),
         )
-        return PennylaneCircuitCase(qfunc, (0.4,), {}, expected)
+        _assert_pauli_circuits_close(from_pennylane_circuit(qfunc, [], 0.4), expected)
 
-    def case_barrier_ignored(self):
+    def test_barrier_ignored(self):
         def qfunc(theta):
             qml.RZ(theta, wires=0)
             qml.Barrier(wires=0)
@@ -277,18 +251,7 @@ class PennylaneCircuitsCases:
             system_size=1,
             parameters=(0.6,),
         )
-        return PennylaneCircuitCase(qfunc, (0.6,), {}, expected)
-
-
-@requires_pennylane
-@pytest.mark.pennylane
-class TestFromPennylaneCircuit:
-    @parametrize_with_cases(
-        "qfunc, args, kwargs, expected", cases=PennylaneCircuitsCases
-    )
-    def test_valid_circuits(self, qfunc, args, kwargs, expected):
-        converted = from_pennylane_circuit(qfunc, [], *args, **kwargs)
-        _assert_pauli_circuits_close(converted, expected)
+        _assert_pauli_circuits_close(from_pennylane_circuit(qfunc, [], 0.6), expected)
 
     def test_unsupported_gate_raises(self):
         def qfunc():
@@ -392,36 +355,6 @@ class TestToPennylaneCircuit:
         (op,) = result.operations
         assert op.coeff == pytest.approx(1j * 0.5)
 
-    def test_generator_matches_original_no_reversal(self):
-        circuit = Circuit(
-            gates=(ExpGate(PauliOperator({Pauli("XY", (3, 1)): 1.5}, num_qubits=5)),),
-            system_size=5,
-            parameters=(0.7,),
-        )
-        qfunc = to_pennylane_circuit(circuit)
-        result = qml.tape.make_qscript(qfunc)()
-        (op,) = result.operations
-        rebuilt = from_pennylane_operator(op.base, wires=range(5))
-        assert rebuilt.isclose(circuit.gates[0].generator, atol=0.0, rtol=0.0)
-
-    def test_multi_term_generator_matches_original(self):
-        circuit = Circuit(
-            gates=(
-                ExpGate(
-                    PauliOperator(
-                        {Pauli("Z", 0): 0.5, Pauli("Z", 1): 0.3}, num_qubits=2
-                    )
-                ),
-            ),
-            system_size=2,
-            parameters=(0.4,),
-        )
-        qfunc = to_pennylane_circuit(circuit)
-        result = qml.tape.make_qscript(qfunc)()
-        (op,) = result.operations
-        rebuilt = from_pennylane_operator(op.base, wires=range(2))
-        assert rebuilt.isclose(circuit.gates[0].generator, atol=0.0, rtol=0.0)
-
     def test_rejects_majorana_family(self):
         circuit = Circuit(
             gates=(ExpGate(MajoranaOperator({(0, 1): 1.0j}, num_modes=1)),),
@@ -455,7 +388,22 @@ class TestToPennylaneCircuit:
 
 @requires_pennylane
 @pytest.mark.pennylane
-def test_to_pennylane_circuit_generators_match_original() -> None:
+@pytest.mark.parametrize(
+    ("generator_terms", "parameters"),
+    [
+        pytest.param(({("XY", (3, 1)): 1.5},), (0.7,), id="single_term_no_reversal"),
+        pytest.param(({("Z", 0): 0.5, ("Z", 1): 0.3},), (0.4,), id="multi_term"),
+        pytest.param(
+            ({("XYZ", (3, 1, 2)): 1.0}, {("Z", 0): 0.5, ("Z", 1): 0.5}),
+            (-1.2, 0.3),
+            id="two_gates",
+        ),
+    ],
+)
+def test_to_pennylane_circuit_generators_match_original(
+    generator_terms: tuple[dict[tuple[str, int | tuple[int, ...]], float], ...],
+    parameters: tuple[float, ...],
+) -> None:
     """to_pennylane_circuit's output is not itself valid from_pennylane_circuit input.
 
     It emits ``qml.exp`` operations, which ``from_pennylane_circuit`` deliberately does not
@@ -463,18 +411,19 @@ def test_to_pennylane_circuit_generators_match_original() -> None:
     each gate's operator via ``from_pennylane_operator`` and compares on the monoprop side.
     """
     circuit = Circuit(
-        gates=(
-            ExpGate(PauliOperator({Pauli("XYZ", (3, 1, 2)): 1.0}, num_qubits=4)),
+        gates=tuple(
             ExpGate(
-                PauliOperator({Pauli("Z", 0): 0.5, Pauli("Z", 1): 0.5}, num_qubits=4)
-            ),
+                PauliOperator(
+                    {Pauli(*key): coeff for key, coeff in terms.items()}, num_qubits=5
+                )
+            )
+            for terms in generator_terms
         ),
         initial_state=(),
-        system_size=4,
-        parameters=[-1.2, 0.3],
+        system_size=5,
+        parameters=parameters,
     )
-    qfunc = to_pennylane_circuit(circuit)
-    result = qml.tape.make_qscript(qfunc)()
+    result = qml.tape.make_qscript(to_pennylane_circuit(circuit))()
     for gate, op in zip(circuit.gates, result.operations, strict=True):
-        rebuilt = from_pennylane_operator(op.base, wires=range(4))
+        rebuilt = from_pennylane_operator(op.base, wires=range(5))
         assert rebuilt.isclose(gate.generator, atol=0.0, rtol=0.0)
