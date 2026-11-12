@@ -50,6 +50,7 @@ Changelog = "https://github.com/Algorithmiq/monoprop/releases"
 [project.optional-dependencies]
 mpi = ["mpi4py>=4.1.0"]
 qiskit = ["qiskit>=2.0.0"]
+pennylane = ["pennylane>=0.40"]
 
 [dependency-groups]
 dev = ["prek>=0.4", "ruff==0.17.3"]
@@ -68,6 +69,7 @@ interactive = [
   "matplotlib",
   "pylatexenc",
   "qiskit>=2.0.0",
+  "pennylane>=0.40",
   "pyscf",
 ]
 # Dependencies of monoprop's own suite (`tests/`). Deliberately free of workspace
@@ -253,7 +255,12 @@ addopts = [
   "--strict-config",
 ]
 xfail_strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+  "error",
+  # pennylane pins autograd<1.9, whose wrap_util.py has `return` in `finally`: a SyntaxWarning on
+  # Python 3.14 (PEP 765) that "error" turns into a SyntaxError, breaking `import monoprop`.
+  "ignore:'return' in a 'finally' block:SyntaxWarning",
+]
 testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
@@ -263,6 +270,7 @@ markers = [
   "slow: mark test as slow (>=1 minute runtime)",
   "mpi(min_size=1): mark test as requiring --with-mpi and a minimum MPI rank count",
   "qiskit: mark test as requiring qiskit (optional dependency)",
+  "pennylane: mark test as requiring pennylane (optional dependency)",
 ]
 required_plugins = ["pytest-datadir"]
 
@@ -468,7 +476,7 @@ skip = ["*-musllinux_*"]
 repair-wheel-command = "bash {project}/tools/cibw/repair-wheel.sh {dest_dir} {wheel}"
 test-command = "bash {project}/tools/cibw/run-tests.sh {project} {wheel}"
 test-groups = ["test"]
-test-extras = ["qiskit"]
+test-extras = ["qiskit", "pennylane"]
 
 # One MPI variant per ABI family, built against the PyPI MPI packages that install-mpi.sh places
 # under these prefixes; repair-wheel.sh reads the same variable.
