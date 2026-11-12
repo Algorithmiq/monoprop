@@ -21,6 +21,7 @@
 #include <complex>
 #include <concepts>
 #include <cstddef>
+#include <span>
 #include <utility>
 
 #include "monoprop/algebra/AlgebraCommon.h"
@@ -54,6 +55,15 @@ struct MajoranaAlgebra {
                               const Monomial<NumModes> &mono,
                               const Monomial<NumModes> & /*new_mono*/) -> int {
         return mono.parity_and(ctx.interleave_mask) ? -1 : 1;
+    }
+    /*! @brief rotation_sign from the source's ascending positions. */
+    template <typename PosT>
+    static auto rotation_sign_positions(const GenContext &ctx, std::span<const PosT> src) -> int {
+        size_t parity = 0;
+        for (const PosT p : src) {
+            parity ^= static_cast<size_t>(ctx.interleave_mask.test(static_cast<size_t>(p)));
+        }
+        return parity != 0 ? -1 : 1;
     }
     static auto emit_phase(int rotation_sign, size_t mono_pop, size_t gen_pop, size_t overlap) -> int {
         return rotation_sign * hermitian_phase(mono_pop, gen_pop, overlap);
@@ -93,6 +103,10 @@ struct PauliAlgebra {
     static auto rotation_sign(const GenContext &ctx, const Monomial<NumModes> &mono, const Monomial<NumModes> &new_mono)
         -> int {
         return pauli_rotation_sign<NumModes>(ctx.pauli_ctx, mono, new_mono);
+    }
+    template <typename PosT>
+    static auto rotation_sign_positions(const GenContext &ctx, std::span<const PosT> src) -> int {
+        return pauli_rotation_sign_positions<NumModes>(ctx.pauli_ctx, src);
     }
     // Pauli's rotation sign is already the emitted sine phase -- no Hermitian fold.
     static auto emit_phase(int rotation_sign, size_t /*mono_pop*/, size_t /*gen_pop*/, size_t /*overlap*/) -> int {

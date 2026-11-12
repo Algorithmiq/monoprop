@@ -14,11 +14,15 @@
 
 #pragma once
 
+#include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
+#include <stdexcept>
 #include <vector>
 
-#if defined(monoprop_ENABLE_MPI)
+#ifdef monoprop_ENABLE_MPI
 #include <mpi.h>
 #else
 // Fallback MPI types for non-MPI builds (single process).
@@ -46,7 +50,7 @@ struct Comm {
     int shm_rank = 0;             // this participant's local partition index; valid iff kind == Shm | Hybrid
 
     constexpr Comm() = default;
-    constexpr Comm(MPI_Comm c) : mpi(c) {} // implicit on purpose (see above)
+    constexpr Comm(MPI_Comm c) : mpi(c) {} // NOLINT(google-explicit-constructor): implicit on purpose (see above)
 
     static auto make_shm(ShmComm *group, int rank) -> Comm {
         Comm c;
@@ -64,6 +68,111 @@ struct Comm {
         return c;
     }
 };
+
+// A window-relative index, typed apart from a flat slot: mixing the two stays in bounds but addresses
+// the wrong peer whenever the window does not start at 0.
+struct WindowIndex {
+    size_t value = 0;
+
+    constexpr WindowIndex() = default;
+    explicit constexpr WindowIndex(size_t v) noexcept : value(v) {}
+};
+
+// The contiguous run of flat slots a round can reach. Slots are rank-major, so a sparse plan's one peer
+// is S contiguous slots and dense is the count == P case of the same run. See PeerPlan::window.
+struct SlotWindow {
+    size_t base = 0;  // first reachable flat slot
+    size_t count = 0; // slots in the run
+
+    constexpr auto operator==(const SlotWindow &) const -> bool = default;
+
+    [[nodiscard]] constexpr auto stop() const -> size_t { return base + count; }
+    [[nodiscard]] constexpr auto contains(size_t slot) const -> bool { return slot >= base && slot < stop(); }
+    // Asserts membership, so an outside slot cannot alias another's entry.
+    [[nodiscard]] constexpr auto index(size_t slot) const -> WindowIndex {
+        assert(contains(slot) && "flat slot outside the window it is being re-based into");
+        return WindowIndex{slot - base};
+    }
+    [[nodiscard]] constexpr auto slot(WindowIndex i) const -> size_t {
+        assert(i.value < count);
+        return base + i.value;
+    }
+    // Every WindowIndex of the run, in slot order.
+    [[nodiscard]] constexpr auto indices() const {
+        return std::views::iota(size_t{0}, count) | std::views::transform([](size_t k) { return WindowIndex{k}; });
+    }
+};
+
+// A vector over a SlotWindow: at_slot() takes a flat slot, operator[] a WindowIndex, so a flat slot used
+// as a raw index does not compile.
+template <typename T>
+class WindowVec {
+public:
+    using value_type = T;
+
+    WindowVec() = default;
+    explicit WindowVec(SlotWindow w) : win_(w), v_(w.count) {}
+
+    auto reset(SlotWindow w) -> void {
+        win_ = w;
+        v_.assign(w.count, T{});
+    }
+
+    [[nodiscard]] auto window() const -> SlotWindow { return win_; }
+    [[nodiscard]] auto size() const -> size_t { return v_.size(); }
+
+    [[nodiscard]] auto operator[](WindowIndex i) -> T & { return v_[i.value]; }
+    [[nodiscard]] auto operator[](WindowIndex i) const -> const T & { return v_[i.value]; }
+    [[nodiscard]] auto at_slot(size_t slot) -> T & { return v_[win_.index(slot).value]; }
+    [[nodiscard]] auto at_slot(size_t slot) const -> const T & { return v_[win_.index(slot).value]; }
+
+    [[nodiscard]] auto begin() { return v_.begin(); }
+    [[nodiscard]] auto end() { return v_.end(); }
+    [[nodiscard]] auto begin() const { return v_.begin(); }
+    [[nodiscard]] auto end() const { return v_.end(); }
+
+private:
+    SlotWindow win_{};
+    std::vector<T> v_;
+};
+
+// Which destination ranks a round can touch. Dense (the default) is every rank and the collective path;
+// sparse is the single peer `me ^ shift` that linear routing implies. XOR is an involution, so every
+// rank derives the same pairing without communicating.
+//
+// A wrong `shift` fails two ways: ranks that disagree deadlock, and ranks that agree on the same wrong
+// value silently drop blocks outside the peer set. HybridComm::require_plan_covers_traffic_ checks the latter.
+struct PeerPlan {
+    bool sparse = false;
+    int shift = 0;
+
+    [[nodiscard]] constexpr auto dense() const -> bool { return !sparse; }
+    [[nodiscard]] constexpr auto count(int ranks) const -> int { return sparse ? 1 : ranks; }
+    // `k` indexes the peer set, which is a singleton when sparse.
+    [[nodiscard]] constexpr auto peer(int me, int k) const -> int { return sparse ? (me ^ shift) : k; }
+    [[nodiscard]] constexpr auto contains(int me, int b) const -> bool { return !sparse || b == (me ^ shift); }
+    // The flat slots reachable from `me_flat` in a `ranks` x `parts` world: the peer rank's, or all.
+    [[nodiscard]] constexpr auto window(size_t me_flat, size_t ranks, size_t parts) const -> SlotWindow {
+        const size_t peer_rank = sparse ? ((me_flat / parts) ^ static_cast<size_t>(shift)) : 0;
+        return SlotWindow{.base = peer_rank * parts,
+                          .count = static_cast<size_t>(count(static_cast<int>(ranks))) * parts};
+    }
+
+    // `me ^ shift` is used as an index and an MPI rank unchecked. Power-of-two `ranks` is what makes
+    // `shift < ranks` keep it in range.
+    [[nodiscard]] constexpr auto routable(int ranks) const -> bool {
+        return dense()
+               || (ranks > 0 && std::has_single_bit(static_cast<unsigned>(ranks)) && shift >= 0 && shift < ranks);
+    }
+};
+
+// Called by every sparse entry point before it indexes or posts; PeerPlan is an aggregate, so no ctor can.
+inline auto require_routable(PeerPlan plan, int ranks) -> void {
+    if (!plan.routable(ranks)) {
+        throw std::invalid_argument(
+            "sparse peer plan is not routable: it needs a power-of-two rank count and 0 <= shift < ranks");
+    }
+}
 
 // Argument bundles for the variable all-to-all verbs, deliberately here rather than in HybridComm.h:
 // ShmComm.h takes the resolve bundle and compiles in non-MPI builds, so neither bundle may name an

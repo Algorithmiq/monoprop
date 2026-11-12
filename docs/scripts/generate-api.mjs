@@ -176,7 +176,8 @@ async function main() {
   pkg.modules = Object.fromEntries(
     Object.entries(pkg.modules ?? {}).filter(([name]) => KEEP.has(name)),
   );
-  pkg.attributes = []; // drop the package-level __all__ dump
+  // Keep the documented package-level attributes (e.g. `MPI_ABIS`), drop the `__all__` dump.
+  pkg.attributes = (pkg.attributes ?? []).filter((attr) => !attr.name.startsWith('__'));
   pruneModule(pkg);
   normalizeFunctionReturns(pkg);
 

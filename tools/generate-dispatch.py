@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 # Run as a script, so sys.path[0] is tools/ regardless of the working directory CMake picks.
-from _binding_layout import binding_block, binding_blocks
+from _binding_layout import binding_block
 
 
 def python_comment_header_from_text(header_text: str) -> str:
@@ -86,32 +86,14 @@ def _simulator_adapter_source() -> str:
 """
 
 
-def _cores_table(blocks: list[int], class_name: str) -> str:
-    """Emit a dict literal mapping each storage-block width to its core type alias."""
-    entries = ",\n".join(
-        f"    {block}: _{class_name}{block:03d}Core" for block in blocks
-    )
-    return f"_CORES: dict[int, type] = {{\n{entries},\n}}"
-
-
 def _core_dispatch_source(
     *,
     max_logical_num_modes: int,
-    blocks: list[int],
     license_header: str,
     class_name: str,
     module_name: str,
 ) -> str:
-    import_line = (
-        "(\n"
-        + ",\n".join(
-            f"    {class_name}{block:03d} as _{class_name}{block:03d}Core"
-            for block in blocks
-        )
-        + "\n)"
-    )
     modes_per_block = binding_block(1)  # == MODES_PER_STORAGE_BLOCK
-    cores_table = _cores_table(blocks, class_name)
 
     return f'''{license_header}
 
@@ -124,7 +106,7 @@ This file was automatically generated on {datetime.now(tz=UTC).date()}. Do *NOT 
 
 from __future__ import annotations
 
-from {module_name}._core import {import_line}
+from {module_name}._backend import core_module
 from monoprop.exceptions import NumberOfModesInvalidError
 
 _MAX_LOGICAL_NUM_MODES: int = {max_logical_num_modes}
@@ -134,16 +116,13 @@ _MODES_PER_STORAGE_BLOCK: int = {modes_per_block}
 {_simulator_adapter_source()}
 
 
-{cores_table}
-
-
 def _binding_block(n: int) -> int:
     blocks = (n + _MODES_PER_STORAGE_BLOCK - 1) // _MODES_PER_STORAGE_BLOCK
     return max(_MODES_PER_STORAGE_BLOCK, blocks * _MODES_PER_STORAGE_BLOCK)
 
 
-def dispatch(num_modes: int) -> type[_SimulatorAdapter]:
-    """Return the concrete {class_name} adapter for *num_modes*."""
+def dispatch(num_modes: int, comm=None) -> type[_SimulatorAdapter]:
+    """Return the concrete {class_name} adapter for *num_modes*, served by the backend for *comm*."""
     if not isinstance(num_modes, int) or num_modes <= 0:
         errmsg = f"Number of Fermionic modes {{num_modes}} invalid. num_modes must be > 0."
         raise NumberOfModesInvalidError(errmsg)
@@ -156,7 +135,7 @@ def dispatch(num_modes: int) -> type[_SimulatorAdapter]:
         )
         raise NumberOfModesInvalidError(errmsg)
 
-    core_type = _CORES[_binding_block(num_modes)]
+    core_type = getattr(core_module(comm), f"{class_name}{{_binding_block(num_modes):03d}}")
 
     class _BoundSimulatorAdapter(_SimulatorAdapter):
         def __init__(
@@ -197,8 +176,6 @@ def main(
     module_name: str,
 ) -> None:
     """Generate dispatch modules for core Python bindings."""
-    blocks = binding_blocks(max_logical_num_modes)
-
     project_root = Path(__file__).resolve().parents[1]
     license_header_path = project_root / ".github" / "license-header.txt"
     license_header = python_comment_header_from_text(license_header_path.read_text())
@@ -206,7 +183,6 @@ def main(
     Path("_dispatch.py").write_text(
         _core_dispatch_source(
             max_logical_num_modes=max_logical_num_modes,
-            blocks=blocks,
             license_header=license_header,
             class_name=class_name,
             module_name=module_name,

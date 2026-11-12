@@ -18,18 +18,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .conversion_utils import _local_slots_to_pauli
+import numpy as np
+
+from .conversion_utils import _local_slots_to_pauli, _pauli_to_local_slots
 from .monomial_propagator import MonomialPropagator
 from .pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
-    import numpy as np
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import ParameterValues
+    from .monomial_propagator import OperatorTerm, ParameterValues
 
 
 class PauliPropagator(MonomialPropagator[PauliOperator]):
@@ -69,7 +70,10 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 so a value approaching ``num_qubits`` is rejected with a ``RuntimeError`` rather than started.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of weight.
-            comm: Optional MPI communicator (must outlive the propagator).
+            comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate
+                reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
+                point-to-point messages on fixed tags, which your own sends and receives on the
+                same communicator, including ``MPI.ANY_TAG`` receives, could match.
         """
         # The engine takes the Schrodinger cutoff in slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
@@ -116,9 +120,28 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         """
         raw = self._simulator.evolved_operator(self._bind(parameters), atol)  # type: ignore[attr-defined]
         terms: dict[Pauli, complex] = {
-            Pauli(*_local_slots_to_pauli(slots)): coeff for slots, coeff in raw.items()
+            Pauli(*_local_slots_to_pauli(slots), skip_validation=True): coeff
+            for slots, coeff in raw.items()
         }
-        return PauliOperator(terms, self.num_qubits)
+        return PauliOperator(terms, self.num_qubits, skip_validation=True)
+
+    def _encode_terms(self, terms: Sequence[OperatorTerm]) -> list[tuple[int, ...]]:
+        """Encode qubit Pauli terms into the engine's symplectic slots.
+
+        Args:
+            terms: [Pauli][monoprop.pauli.Pauli] terms.
+
+        Returns:
+            The terms' symplectic slot indices, in query order.
+        """
+        slots = []
+        for term in terms:
+            if not isinstance(term, Pauli):
+                raise TypeError(
+                    f"Pauli terms are Pauli objects; got {type(term).__name__}."
+                )
+            slots.append(_pauli_to_local_slots(term.string, term.qubits))
+        return slots
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:
         """Accept a qubit circuit; its gates are expanded by the shared pipeline.
@@ -190,20 +213,22 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         Builds (or extends) the reusable evolution graph, recording each layer's gate
         information (the parameter that drives it and its generator coefficient) so that
         later evaluation takes only ``parameters``. The circuit's angle indices are local
-        (``0``-based); when extending a non-empty graph they are shifted up onto the
-        accumulated parameter axis automatically, so each call's circuit is authored
-        independently.
+        (``0``-based), so each call's circuit is authored independently; they join the
+        accumulated axis in the order of the equivalent single circuit, which is ``b + a``
+        for ``build_graph(a); build_graph(b)`` in Heisenberg and ``a + b`` in Schrodinger.
+        Heisenberg therefore lifts the indices already in the graph by
+        ``circuit.n_parameters``, numbering an extension exactly like the one-call build.
 
         Args:
             circuit: Gates to append, as a [Circuit][monoprop.circuit.Circuit].
-            seed_parameters: The full parameter vector covering the whole accumulated graph,
-                used to regenerate the coefficient seed (by contracting the existing graph) so
-                coefficient truncation sees realistic coefficients when extending. Only needed
-                when extending a non-empty graph *with* coefficient-informed truncation; on the
-                first (or a single) call it defaults to the circuit's own parameters. When
-                omitted while extending, the new layers are built structurally (coefficient
-                truncation is skipped for them); the engine validates the length of an explicit
-                seed.
+            seed_parameters: The full parameter vector covering the whole accumulated graph, on
+                the axis the graph has *after* this call, used to regenerate the coefficient seed
+                (by contracting the existing graph) so coefficient truncation sees realistic
+                coefficients when extending. Only needed when extending a non-empty graph *with*
+                coefficient-informed truncation; on the first (or a single) call it defaults to
+                the circuit's own parameters. When omitted while extending, the new layers are
+                built structurally (coefficient truncation is skipped for them); the engine
+                validates the length of an explicit seed.
             only_rotate_len_k: If provided, apply gates to Pauli terms of length <= k in the
                 evolved operator even if they anticommute. Length is counted in the engine's
                 slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
@@ -214,6 +239,44 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
         )
+
+    def term_expectation_values(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each Pauli string, decomposing the expectation value by term.
+
+        For an observable ``O = sum_i c_i * P_i``, pass the Pauli strings ``[P_1, ..., P_m]`` to get
+        back ``[v_1, ..., v_m]``, where ``v_i = <P_i>`` under the same truncated evolution as
+        [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]. Then
+        ``<O> = sum_i c_i * v_i``. All values together cost about as much as one
+        [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value] call.
+
+        In the Heisenberg picture, pass terms of the initial observable: any other term returns a
+        value that is not its expectation value, or raises if the evolution never created it. To
+        evaluate a term outside the observable, add it with coefficient 0 before building the graph.
+        In the Schrodinger picture, any term returns its expectation value under the truncated
+        evolved state, whether or not it is in the observable.
+
+        Args:
+            terms: [Pauli][monoprop.pauli.Pauli] strings to evaluate.
+            parameters: Variational parameter values (see
+                [expectation_value][monoprop.monomial_propagator.MonomialPropagator.expectation_value]).
+
+        Returns:
+            A ``float64`` NumPy array with one value per term, in the order given.
+
+        Raises:
+            TypeError: If a term is not a [Pauli][monoprop.pauli.Pauli].
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved operator,
+                or once [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] or an
+                in-place
+                [contract_partially][monoprop.monomial_propagator.MonomialPropagator.contract_partially]
+                has absorbed gates into the operator.
+        """
+        values = super().term_expectation_values(terms, parameters)
+        return np.ascontiguousarray(values.real)
 
     def update_initial_operator(self, new_operator: PauliOperator) -> None:
         """Replace the *initial operator* (existing terms only).

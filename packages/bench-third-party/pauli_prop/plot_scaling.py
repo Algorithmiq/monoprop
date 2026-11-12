@@ -33,11 +33,11 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from palette import ENGINE_COLORS as COLORS  # noqa: E402
-from palette import PAULI_ENGINES as ORDER  # noqa: E402
+from palette import ENGINE_COLORS as COLORS
+from palette import PAULI_ENGINES as ORDER
 
 # Backends whose operator lives in device memory. Host RSS does not describe their
 # footprint at all -- it stays flat while the card fills up -- so the working-set column

@@ -153,7 +153,9 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
                                                    /*my_rank_=*/0,
                                                    matched,
                                                    combined_size,
-                                                   RecordingSink{});
+                                                   RecordingSink{},
+                                                   mpi::PeerPlan{},
+                                                   mpi::SlotWindow{.base = 0, .count = 1});
     // The self leg is staged as positions, never encoded, so this feeds the stage the scan would fill.
     using Eng = detail::LayerBuildEngine<8, RecordingSink>;
     const auto stage_self = [&eng](const Monomial<8> &m, int phase) {
@@ -165,7 +167,7 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     };
     stage_self(terms[1], 1);
     stage_self(terms[5], -1);
-    eng.src_idx_r[0] = {0, 2};
+    eng.src_idx_r.at_slot(0) = {0, 2};
 
     eng.resolve_self_queries(/*is_leader_pass=*/true);
 

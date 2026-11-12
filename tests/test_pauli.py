@@ -24,28 +24,27 @@ from monoprop.pauli import Pauli, PauliOperator
 class TestPauliPropagatorCutoff:
     """PauliPropagator fixes the cutoff to Pauli weight ('support')."""
 
-    def _propagator(self, serial_comm):
+    def _propagator(self):
         return PauliPropagator(
             PauliOperator({"ZZ": 1.0}, num_qubits=2),
             initial_state=[],
             cutoff=4,
-            comm=serial_comm,
         )
 
-    def test_cutoff_type_is_support(self, serial_comm):
-        assert self._propagator(serial_comm).cutoff_type == "support"
+    def test_cutoff_type_is_support(self):
+        assert self._propagator().cutoff_type == "support"
 
-    def test_cutoff_type_is_read_only(self, serial_comm):
-        mp = self._propagator(serial_comm)
+    def test_cutoff_type_is_read_only(self):
+        mp = self._propagator()
         with pytest.raises(AttributeError):
             mp.cutoff_type = "length"
 
-    def test_num_qubits(self, serial_comm):
-        mp = self._propagator(serial_comm)
+    def test_num_qubits(self):
+        mp = self._propagator()
         assert mp.num_qubits == 2  # "ZZ" operator
 
     @pytest.mark.parametrize("schrodinger_cutoff", [3, 4, 5])
-    def test_schrodinger_cutoff(self, schrodinger_cutoff, serial_comm):
+    def test_schrodinger_cutoff(self, schrodinger_cutoff):
         """schrodinger_cutoff is a Pauli weight in qubits, matching ``cutoff``.
 
         PauliPropagator doubles it internally (qubit weight -> slot popcount).
@@ -55,7 +54,6 @@ class TestPauliPropagatorCutoff:
             initial_state=[],
             cutoff=4,
             schrodinger_cutoff=schrodinger_cutoff,
-            comm=serial_comm,
         )
         op = mp.evolved_operator()
         assert max(len(p.qubits) for p in op.terms) == schrodinger_cutoff
@@ -73,13 +71,12 @@ class TestPauliPropagatorCutoff:
         pytest.param(PauliOperator({"IZZI": 1.1}, num_qubits=4), id="izzi"),
     ],
 )
-def test_evolved_operator_returns_pauli_operator(initial_operator, serial_comm) -> None:
+def test_evolved_operator_returns_pauli_operator(initial_operator) -> None:
     """Without a graph, evolved_operator returns the Pauli-domain initial operator."""
     propagator = PauliPropagator(
         initial_operator,
         initial_state=[],
         cutoff=2 * initial_operator.num_qubits,
-        comm=serial_comm,
     )
 
     evolved = propagator.evolved_operator()
@@ -89,10 +86,10 @@ def test_evolved_operator_returns_pauli_operator(initial_operator, serial_comm) 
     assert evolved.isclose(initial_operator)
 
 
-def test_update_initial_operator(serial_comm):
+def test_update_initial_operator():
     """Make sure the initial operator update works correctly with PauliOperator input."""
     operator = PauliOperator({"Z": 1.0}, num_qubits=1)
-    mp = PauliPropagator(operator, initial_state=[], cutoff=1, comm=serial_comm)
+    mp = PauliPropagator(operator, initial_state=[], cutoff=1)
 
     updated_operator = PauliOperator({"Z": 2.75}, num_qubits=1)
     mp.update_initial_operator(updated_operator)
@@ -145,6 +142,20 @@ class TestPauli:
     def test_duplicate_qubits_raises(self):
         with pytest.raises(ValueError, match="Duplicate qubit indices"):
             Pauli("XY", (0, 0))
+
+    def test_skip_validation_bypasses_input_checks(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            Pauli("X", -1)
+        assert Pauli("X", -1, skip_validation=True).qubits == (-1,)
+
+    def test_skip_validation_still_canonicalizes(self):
+        assert Pauli("IXY", (2, 1, 0), skip_validation=True) == Pauli("YX", (0, 1))
+
+    def test_operator_skip_validation_forwards_to_string_keys(self):
+        with pytest.raises(ValueError, match="Invalid characters"):
+            PauliOperator({"XA": 1.0}, num_qubits=2)
+        op = PauliOperator({"XA": 1.0}, num_qubits=2, skip_validation=True)
+        assert len(op) == 1
 
 
 class TestPauliOperator:
@@ -334,6 +345,37 @@ class TestPauliOperator:
         pauli = Pauli("X", 0)
         with pytest.raises(ValueError, match="Operator has complex terms"):
             PauliOperator({pauli: 1.0j}, num_qubits=1)
+
+    def test_skip_validation_bypasses_qubit_range_check(self):
+        with pytest.raises(ValueError, match="qubit index"):
+            PauliOperator({"XYZ": 1.0}, num_qubits=2)
+        op = PauliOperator({"XYZ": 1.0}, num_qubits=2, skip_validation=True)
+        assert op.terms == {Pauli("XYZ"): 1.0}
+
+    def test_skip_validation_bypasses_complex_coefficient_check(self):
+        pauli = Pauli("X", 0)
+        with pytest.raises(ValueError, match="Operator has complex terms"):
+            PauliOperator({pauli: 1.0j}, num_qubits=1)
+        op = PauliOperator({pauli: 1.0 + 2.0j}, num_qubits=1, skip_validation=True)
+        assert op.terms == {pauli: 1.0}
+
+    def test_skip_validation_false_matches_default_behavior(self):
+        terms = {"XY": 1.0, "IZ": 0.5}
+        assert PauliOperator(
+            terms, num_qubits=2, skip_validation=False
+        ) == PauliOperator(terms, num_qubits=2)
+
+    def test_skip_validation_still_validates_num_qubits_type(self):
+        with pytest.raises(TypeError, match="num_qubits must be an integer"):
+            PauliOperator({"X": 1.0}, num_qubits="2", skip_validation=True)  # type: ignore[arg-type]
+
+    def test_from_terms_skip_validation_passthrough(self):
+        with pytest.raises(ValueError, match="qubit index"):
+            PauliOperator._from_terms(["XYZ"], [1.0], num_qubits=2)
+        op = PauliOperator._from_terms(
+            ["XYZ"], [1.0], num_qubits=2, skip_validation=True
+        )
+        assert op.terms == {Pauli("XYZ"): 1.0}
 
 
 class TestCircuit:

@@ -245,6 +245,7 @@ This executes the following steps in order:
 | Generate API | `just gen-api` | Regenerates `docs/content/docs/api/` from docstrings |
 | Doctest (Python) | `just doctest-py` | Validates all docstring examples |
 | Doctest (docs) | `just doctest-docs` | Validates code blocks in MDX pages |
+| Check figures | `just check-figures` | Regenerates the benchmark figures and compares them with the committed ones |
 | Generate notebooks | `just gen-notebooks` | Executes notebooks and converts them to MDX |
 | Build site | `cd docs && npm run build` | Produces the static export in `docs/out/` |
 
@@ -258,4 +259,5 @@ just gen-api        # regenerate API reference only
 just gen-notebooks  # regenerate tutorial pages only
 just doctest-py     # run Python docstring doctests
 just doctest-docs   # run documentation page doctests
+just check-figures  # compare benchmark figures with their plot scripts
 ```

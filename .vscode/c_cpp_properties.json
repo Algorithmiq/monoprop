@@ -13,6 +13,7 @@
             "intelliSenseMode": "linux-gcc-x64",
             "compileCommands": [
                 "${workspaceFolder}/build/editable/Release/compile_commands.json",
+                "${workspaceFolder}/build/editable/Release-mpi/compile_commands.json",
                 "${workspaceFolder}/build/editable/Debug/compile_commands.json",
                 "${workspaceFolder}/build/release-gcc/compile_commands.json",
                 "${workspaceFolder}/build/coverage-gcc/compile_commands.json",

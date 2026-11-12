@@ -43,31 +43,36 @@ public:
     PartitionBarrier(const PartitionBarrier &) = delete;
     auto operator=(const PartitionBarrier &) -> PartitionBarrier & = delete;
 
+    // Throws ShmCommPoisoned only for a round that cannot complete. Once every participant has arrived the
+    // round has completed, and a poison set afterwards reports a later failure: its poisoner never arrives at
+    // the next round, which surfaces it. Failing the completed round instead would fail a collective that
+    // succeeded, and under the MPI hybrid partition 0 turns that into MPI_Abort.
     auto sync() -> void {
         const unsigned g = gen_.load(std::memory_order_acquire);
         if (arrived_.fetch_add(1, std::memory_order_acq_rel) + 1 == participants_) {
             arrived_.store(0, std::memory_order_relaxed);
             gen_.store(g + 1, std::memory_order_release);
+            return;
         }
-        else {
-            // Bounded on-core spin first (pinned partitions ⇒ the release store lands in the pause window,
-            // no syscall); only long waits (imbalance, oversubscription) fall to yield.
-            int spins = 0;
-            while (gen_.load(std::memory_order_acquire) == g) {
-                if (poisoned_.load(std::memory_order_acquire)) {
-                    throw ShmCommPoisoned();
+        // Bounded on-core spin first (pinned partitions ⇒ the release store lands in the pause window,
+        // no syscall); only long waits (imbalance, oversubscription) fall to yield.
+        int spins = 0;
+        while (gen_.load(std::memory_order_acquire) == g) {
+            if (poisoned_.load(std::memory_order_acquire)) {
+                // A poisoner that left this round saw gen_ advance first, so seeing its poison means seeing
+                // the advance too: re-read it before failing a round that may have just completed.
+                if (gen_.load(std::memory_order_acquire) != g) {
+                    return;
                 }
-                if (spins < detail::kSpinPauseIters) {
-                    ++spins;
-                    detail::cpu_relax();
-                }
-                else {
-                    std::this_thread::yield();
-                }
+                throw ShmCommPoisoned();
             }
-        }
-        if (poisoned_.load(std::memory_order_acquire)) {
-            throw ShmCommPoisoned();
+            if (spins < detail::kSpinPauseIters) {
+                ++spins;
+                detail::cpu_relax();
+            }
+            else {
+                std::this_thread::yield();
+            }
         }
     }
 

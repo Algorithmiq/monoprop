@@ -41,8 +41,20 @@ namespace nb = nanobind;
 using namespace nanobind::literals;
 
 namespace monoprop::bindings::detail {
-// mpi4py comm object -> MPI_Comm.
+/** @brief Converts the Python `comm` argument to the handle this module's core takes.
+ *
+ * Defined in comm_serial.cpp or comm_mpi.cpp; every extension module compiles exactly one.
+ * The serial module accepts only None and MPI modules only an mpi4py communicator; both throw
+ * nb::type_error otherwise.
+ */
 auto get_mpi_comm(nb::object obj) -> MPI_Comm;
+
+/** @brief Prepares the communicator bridge while the extension module initialises.
+ *
+ * Imports mpi4py's C API in MPI modules and does nothing in the serial module.
+ * Throws nb::python_error when the import fails.
+ */
+auto init_comm_bridge() -> void;
 
 auto cutoff_type_str_2_enum(const std::string &cutoff_type) -> CutoffType;
 auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
@@ -218,6 +230,18 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "parameters"_a,
         "atol"_a,
         "The evolved operator as a {indices: coefficient} dict, keeping terms with |coeff| >= atol");
+
+    cls.def("evolved_operator_coefficients",
+            &MonomialPropagator<NumModes>::evolved_operator_coefficients,
+            "parameters"_a,
+            "terms"_a,
+            "Coefficients of the given index terms, in query order; terms the operator does not carry are 0");
+
+    cls.def("term_expectation_values",
+            &MonomialPropagator<NumModes>::term_expectation_values,
+            "parameters"_a,
+            "terms"_a,
+            "Expectation value of each given index term under the truncated evolution, in query order");
 
     cls.def_prop_ro("num_modes",
                     &MonomialPropagator<NumModes>::logical_num_modes,

@@ -25,7 +25,12 @@ no_mpi_extra := "--no-extra mpi"
 mpi_enabled := lowercase(env('monoprop_ENABLE_MPI', 'off'))
 mpi_extra := if mpi_enabled =~ '^(on|true|yes|1)$' { "" } else { no_mpi_extra }
 
-build_dir := "build/editable" / env('SKBUILD_CMAKE_BUILD_TYPE', 'Release')
+# Mirrors the sanitizer and MPI overrides in pyproject.toml, which pick the build tree.
+
+sanitizer := env('monoprop_SANITIZER', 'none')
+build_type := env('SKBUILD_CMAKE_BUILD_TYPE', if sanitizer == 'asan-ubsan' { 'AsanUbsan' } else if sanitizer == 'tsan' { 'Tsan' } else { 'Release' })
+mpi_build_dir := "build/editable" / build_type + "-mpi"
+build_dir := if mpi_extra == "" { mpi_build_dir } else { "build/editable" / build_type }
 mpiexec := "mpiexec --map-by :OVERSUBSCRIBE"
 
 # Keep both OpenMPI 4 (ORTE) and 5 (PRRTE) spell oversubscription env-vars.
@@ -60,7 +65,7 @@ diff-baseline AGAINST='golden':
 # Report what the installed extension was actually built as.
 
 info:
-    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI": mp.has_mpi})'
+    uv run --no-sync python -c 'import pprint, monoprop as mp; pprint.pprint({"version": mp.__version__, "variant": mp.__variant__, "compiler_flags": mp.__compiler_flags__, "MPI ABIs": mp.MPI_ABIS})'
 
 test: build test-py test-cpp
 
@@ -72,55 +77,123 @@ test-py LABEL='':
     uv run --no-sync pytest -r aR --durations=50 --durations-min=5.0 \
         {{ if LABEL == '' { '' } else { '--junit-xml=pytest-' + LABEL + '.xml -o junit_family=legacy' } }}
 
-test-cpp LABEL='':
-    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-exclude mpi \
+test-cpp LABEL='' BUILD_DIR=build_dir:
+    ctest --test-dir {{ BUILD_DIR }} --output-on-failure --no-tests=error --label-exclude mpi \
         {{ if LABEL == '' { '' } else { '--output-junit ctest-serial-' + LABEL + '.xml' } }}
 
 # --no-tests=error: the MPI tests are registered only by an MPI-enabled build, so an
-# empty set here means the build was misconfigured.
+# empty set here means the build was misconfigured. Only MPI builds have them, so this
+# always reads the MPI tree.
 
 test-cpp-mpi LABEL='':
-    ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
+    ctest --test-dir {{ mpi_build_dir }} --output-on-failure --no-tests=error --label-regex mpi \
         {{ if LABEL == '' { '' } else { '--output-junit ctest-mpi-' + LABEL + '.xml' } }}
 
-# RANKS is a single integer or a semicolon-separated list (e.g. "1;2;4"); the suite runs
-# once per entry. Extra arguments go to pytest, e.g. `just test-py-mpi "1;2;4" -m mpi`.
+# The Python MPI legs: every test that runs on a world communicator (`-m mpi`), under mpiexec, in
+# each configuration CI covers. Linear routing refuses 3 ranks, so 3 runs with splitmix; 2 ranks of 2
+# partitions each make the hybrid ranks x partitions world. A hung collective fails its test after
+# 300 s. LABEL, when given, names the JUnit reports, which rank 0 alone writes.
 
-test-py-mpi RANKS='' *PYTEST_ARGS:
+test-py-mpi LABEL='':
     #!/usr/bin/env bash
     set -euo pipefail
-    shift 1
-    requested_ranks={{ quote(RANKS) }}
-    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"
-    for r in ${ranks//;/ }; do
-      echo "Running the Python test suite with ${r} MPI rank(s)"
-      {{ mpiexec }} -n "$r" uv run --no-sync pytest tests --with-mpi -v "$@"
-    done
+    label={{ quote(LABEL) }}
+    leg() {
+      local name="$1" ranks="$2"
+      shift 2
+      local report=""
+      if [[ -n "$label" ]]; then
+        report="pytest-mpi-$label-$name.xml"
+      fi
+      echo "Python MPI leg $name: $ranks rank(s)${*:+, $*}"
+      # OMPI_COMM_WORLD_RANK is Open MPI's rank variable, PMI_RANK the MPICH family's. A leg runs
+      # exactly the configuration it names: settings inherited from the shell are dropped first.
+      env -u monoprop_ROUTING -u monoprop_PARTITIONS "$@" {{ mpiexec }} -n "$ranks" bash -c '
+        report="$1"
+        shift
+        rank="${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}"
+        if [[ -n "$report" && "$rank" == 0 ]]; then
+          set -- --junit-xml="$report" -o junit_family=legacy "$@"
+        fi
+        exec uv run --no-sync pytest "$@"
+      ' bash "$report" tests --with-mpi -m mpi -v --timeout=300 --timeout-method=thread
+    }
+    leg ranks1 1
+    leg ranks2 2
+    # Of these legs only ranks4 runs the three-rank refusal in test_monoprop_mpi.py, which needs
+    # at least 3 ranks under linear routing.
+    leg ranks4 4 monoprop_ROUTING=linear
+    leg ranks3-splitmix 3 monoprop_ROUTING=splitmix
+    leg ranks2-partitions2 2 monoprop_PARTITIONS=2
 
-# Build MPI-enabled, then run every leg. The C++
-# rank matrix is a build-time setting.
+# Build MPI-enabled, then run every MPI leg CI runs. The C++ rank counts are passed because an MPI
+# build tree caches them, and an older version of this recipe cached `2` alone.
 
-test-mpi RANKS='': && (test-py-mpi RANKS) test-cpp test-cpp-mpi
-    requested_ranks={{ quote(RANKS) }}; \
-    ranks="${requested_ranks:-${monoprop_MPI_TEST_PROCS:-2}}"; \
-    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group workspace-test \
-        --reinstall-package monoprop --no-cache \
-        --config-settings-package="monoprop:cmake.define.monoprop_MPI_TEST_PROCS=${ranks}"
+test-mpi: && test-py-mpi (test-cpp '' mpi_build_dir) test-cpp-mpi
+    monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="2;4" {{ uv_sync }} --group workspace-test
 
-# Build and run a consumer project against the installed package.
+# Build and run a consumer project against the installed package: serially, then, when the
+# installation ships MPI ABIs, through the MPI component under mpiexec, and finally against a
+# package that lacks the consumer's MPI ABI, which must fail at configure time.
 
-test-find-package BUILD_DIR='build/find-package-smoke':
+test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     #!/usr/bin/env bash
     set -euo pipefail
     build_dir={{ quote(BUILD_DIR) }}
-    site_packages="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    python=({{ if PYTHON == '' { 'uv run --no-sync python' } else { quote(PYTHON) } }})
+    site_packages="$("${python[@]}" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
     cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
     "$build_dir/smoke"
+    abis="$("${python[@]}" -c 'import monoprop; print(" ".join(monoprop.MPI_ABIS))')"
+    if [[ -z "$abis" ]]; then
+      exit 0
+    fi
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir-mpi" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON
+    cmake --build "$build_dir-mpi"
+    mpiexec -n 2 "$build_dir-mpi/smoke"
+    # An optional MPI component must leave the serial package usable when no MPI is found.
+    cmake -S cpp/tests/find_package_smoke -B "$build_dir-optional-mpi" \
+      -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_OPTIONAL_MPI=ON \
+      -DCMAKE_DISABLE_FIND_PACKAGE_MPI=ON
+    cmake --build "$build_dir-optional-mpi"
+    "$build_dir-optional-mpi/smoke"
+    # The targets file locates the libraries relative to the config directory, so the altered
+    # copy sits in a mirror of the installation tree whose other entries link to the real ones.
+    mismatch="$(mktemp -d)"
+    mkdir "$mismatch/monoprop"
+    for entry in "$site_packages/monoprop"/*; do
+      if [[ "$(basename "$entry")" != cmake ]]; then
+        ln -s "$entry" "$mismatch/monoprop/"
+      fi
+    done
+    cp -R "$site_packages/monoprop/cmake" "$mismatch/monoprop/cmake"
+    sed -i.orig 's/^set(monoprop_MPI_ABIS .*/set(monoprop_MPI_ABIS "none")/' "$mismatch/monoprop/cmake/monopropConfig.cmake"
+    if cmake -S cpp/tests/find_package_smoke -B "$mismatch/build" \
+        -Dmonoprop_DIR="$mismatch/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON > "$mismatch/log" 2>&1; then
+      echo "a package without the consumer's MPI ABI was accepted" >&2
+      exit 1
+    fi
+    grep -q "supports: none" "$mismatch/log"
 
-# The sanitizer legs run against a tree built with SKBUILD_CMAKE_BUILD_TYPE=AsanUbsan (or
-# Tsan) and the matching monoprop_SANITIZER define.
+# Test built wheels (a file or a directory) against the MPI already on this machine. MPI4PY is
+# "wheel" (the PyPI binary; its file name names the ABI) or "source" (built against the local
+# mpicc; the ABI is read from the library). PACKAGES are extra requirements, e.g. impi-rt.
+# MONOPROP_TEST_VENV keeps the venv at a known path for a follow-up `just test-find-package`.
+
+test-wheel WHEELS MPI4PY='wheel' *PACKAGES:
+    bash tools/cibw/test-wheel-mpi.sh "{{ project_source_dir }}" {{ quote(WHEELS) }} {{ quote(MPI4PY) }} {{ PACKAGES }}
+
+# Run configure's MPI inspection on an installed MPI: ABI family and version floor.
+
+inspect-mpi INCLUDE_DIR ABI:
+    cmake --fresh -S cpp/tests/cmake/inspect_mpi -B build/inspect-mpi \
+      -DMPI_INCLUDE_DIR={{ quote(INCLUDE_DIR) }} -DEXPECTED_ABI={{ quote(ABI) }}
+
+# The sanitizer legs run against a tree built with monoprop_SANITIZER=asan-ubsan (or tsan)
+# exported, which also points build_dir at it.
 #
 # Only the C++ binary is fully instrumented, so the option sets differ per leg and cannot
 # be hoisted to the environment.
@@ -213,7 +286,8 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
       export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
       {{ mpiexec }} -n 2 \
         uv run --no-sync coverage run --parallel-mode \
-          -m pytest tests --with-mpi -m mpi
+          -m pytest tests --with-mpi -m mpi \
+          --timeout=300 --timeout-method=thread
     fi
 
     gcovr_args=(
@@ -377,7 +451,7 @@ bench LABEL *ARGS:
 
 # Run under MPI: RANKS ranks recorded as one LABEL column.
 bench-mpi LABEL RANKS *MPIARGS:
-    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.has_mpi else 'monoprop was built without MPI; run just bench-build-mpi first')"
+    uv run --no-sync python -c "import monoprop, sys; sys.exit(0 if monoprop.MPI_ABIS else 'monoprop was built without MPI; run just bench-build-mpi first')"
     @mkdir -p "{{ bench_results }}"
     label="$1"; ranks="$2"; shift 2; \
     monoprop_BENCH_LABEL="$label" monoprop_BENCH_RESULTS="{{ bench_results }}" \
@@ -394,7 +468,7 @@ bench-mpi LABEL RANKS *MPIARGS:
 
 # Rebuild monoprop with MPI enabled (editable). Run once before `just bench-mpi`.
 bench-build-mpi:
-    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group bench --reinstall-package monoprop --no-cache
+    monoprop_ENABLE_MPI=ON {{ uv_sync }} --group bench
 
 # Quick sanity run: tiny sizes, skip the slow static benchmarks.
 bench-smoke:
@@ -425,8 +499,28 @@ doctest-docs:
     {{ docs_uv }} python -m pytest --markdown-docs docs/content/docs --ignore=docs/content/docs/tutorials --ignore=docs/content/docs/api
     {{ docs_uv }} python -m pytest --markdown-docs README.md
 
+# Regenerate the benchmark figures from their committed results and compare them, as images,
+# with the ones under `docs/public/benchmarks`.
+check-figures:
+    {{ docs_uv }} python -m pytest --no-cov tests/test_benchmark_plots.py
+
+# Regenerate the benchmark figures under `docs/public/benchmarks` from their committed results, in
+# the docs environment that `check-figures` compares them in.
+update-figures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bench=packages/bench-third-party
+    out=docs/public/benchmarks
+    # A personal matplotlibrc must not restyle the committed figures.
+    MPLCONFIGDIR=$(mktemp -d)
+    export MPLCONFIGDIR
+    trap 'rm -rf "$MPLCONFIGDIR"' EXIT
+    {{ docs_uv }} python $bench/plot_headline.py --output $out/headline_runtime.png
+    {{ docs_uv }} python $bench/pauli_prop/plot_results.py --output-dir $out
+    {{ docs_uv }} python $bench/majorana_prop/plot_results.py --output-dir $out
+
 # Build the static documentation site into `docs/out`.
-build-docs: docs-install gen-api doctest-py doctest-docs gen-notebooks
+build-docs: docs-install gen-api doctest-py doctest-docs check-figures gen-notebooks
     cd {{ site }} && npm run build
 
 # Check exported HTML links (including external URLs).

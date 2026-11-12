@@ -131,10 +131,10 @@ class ExpGate:
         """Return a copy of ``generator`` with terms of magnitude ``<= atol`` dropped."""
         if isinstance(generator, PauliOperator):
             terms = {p: c for p, c in generator.terms.items() if abs(c) > atol}
-            return PauliOperator(terms, generator.num_qubits)
+            return PauliOperator(terms, generator.num_qubits, skip_validation=True)
 
         terms = {m: c for m, c in generator.terms.items() if abs(c) > atol}
-        return MajoranaOperator(terms, generator.num_modes)
+        return MajoranaOperator(terms, generator.num_modes, skip_validation=True)
 
     @classmethod
     def _structural_gate(
@@ -256,7 +256,7 @@ class Circuit:
         #: The gate family, computed from the (validated) gates; the propagators dispatch on it.
         self.family = self._resolve_family(gates)
 
-        self.resolved_mapping  # validates the per-gate index scheme
+        _ = self.resolved_mapping  # validates the per-gate index scheme
         if self.parameters and len(self.parameters) != self.n_parameters:
             raise ValueError(
                 f"parameters has {len(self.parameters)} values but the circuit has "
@@ -359,7 +359,8 @@ class Circuit:
         ``other``'s angle indices are shifted up by ``self.n_parameters``, so the two halves keep
         independent angles and every gate in the result gets an explicit ``index``. Prefer one
         [MonomialPropagator.build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] call over
-        incremental multi-call building, whose ordering is picture-dependent.
+        incremental multi-call building, whose ordering is picture-dependent: two calls build
+        ``b + a`` in Heisenberg and ``a + b`` in Schrodinger.
         """
         if not isinstance(other, Circuit):
             return NotImplemented

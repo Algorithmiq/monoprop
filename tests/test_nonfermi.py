@@ -18,7 +18,7 @@ from monoprop import Circuit, MajoranaPropagator
 from monoprop.majorana import MajoranaOperator
 
 
-def test_nonfermi(serial_comm):
+def test_nonfermi():
     # Oracle: a hand-computed evolution of a non-fermionic operator.
     num_modes = 2
     majoranas = [(0,), (0, 1), (0, 1, 3), (2, 3)]
@@ -52,7 +52,6 @@ def test_nonfermi(serial_comm):
         fermionic_operator,
         circuit.initial_state,
         cutoff=4,
-        comm=serial_comm,
     )
     mp.propagate(circuit)
     test_evolved_op = mp.evolved_operator()

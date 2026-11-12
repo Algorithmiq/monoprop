@@ -46,7 +46,10 @@ def _resolve_wires(
     touched; anything else needs an explicit ``wires=``.
     """
     if wires is not None:
-        return tuple(wires)
+        wire_tuple = tuple(wires)
+        if len(set(wire_tuple)) != len(wire_tuple):
+            raise ValueError("wires must contain unique labels.")
+        return wire_tuple
     touched_set = set(touched)
     if not touched_set or not all(isinstance(w, int) and w >= 0 for w in touched_set):
         raise ValueError(
@@ -54,6 +57,20 @@ def _resolve_wires(
             "integers, with at least one touched); pass wires=... explicitly."
         )
     return tuple(range(max(touched_set) + 1))
+
+
+def _validate_output_wires(
+    wires: Sequence[Hashable] | None, width: int, width_name: str
+) -> tuple[Hashable, ...]:
+    """Return output wires after validating their width and uniqueness."""
+    wire_tuple = tuple(range(width)) if wires is None else tuple(wires)
+    if len(wire_tuple) != width:
+        raise ValueError(
+            f"wires has {len(wire_tuple)} entries but {width_name}={width}."
+        )
+    if len(set(wire_tuple)) != len(wire_tuple):
+        raise ValueError("wires must contain unique labels.")
+    return wire_tuple
 
 
 def _pauli_sentence_terms(
@@ -87,7 +104,7 @@ def from_pennylane_operator(
         wires: The wire ordering to use for the resulting qubit indices, with ``wires[i]``
             becoming qubit ``i``. Defaults to ``range(max(touched wire) + 1)`` -- the wire label
             doubles as the qubit index -- so pass this explicitly when a touched wire is not a
-            non-negative integer, or a specific ordering is wanted.
+            non-negative integer, or a specific ordering is wanted. Labels must be unique.
         atol: Absolute tolerance below which a term's coefficient is dropped.
 
     Returns:
@@ -117,8 +134,14 @@ def to_pennylane_operator(
 
     Returns:
         A ``qml.ops.LinearCombination`` over the given wires.
+
+    Raises:
+        ValueError: If ``wires`` does not contain exactly ``pauli_operator.num_qubits`` unique
+            labels.
     """
-    wire_tuple = wires if wires is not None else tuple(range(pauli_operator.num_qubits))
+    wire_tuple = _validate_output_wires(
+        wires, pauli_operator.num_qubits, "pauli_operator.num_qubits"
+    )
     coeffs: list[float] = []
     ops: list[qml.operation.Operator] = []
     for pauli, coeff in pauli_operator.terms.items():
@@ -161,7 +184,7 @@ def from_pennylane_circuit(
         wires: The wire ordering to use for the resulting qubit indices. Defaults to
             ``range(max(touched wire) + 1)`` -- the wire label doubles as the qubit index -- so
             pass this explicitly if the circuit has idle wires past the highest one touched, or
-            a touched wire is not a non-negative integer.
+            a touched wire is not a non-negative integer. Labels must be unique.
         **kwargs: Keyword arguments to call ``qfunc`` with.
 
     Returns:
@@ -170,6 +193,7 @@ def from_pennylane_circuit(
     Raises:
         ValueError: If a gate is not a single-parameter, Pauli-generator gate.
     """
+    qfunc = qfunc.func if isinstance(qfunc, qml.QNode) else qfunc
     tape = qml.tape.make_qscript(qfunc)(*args, **kwargs)
     all_wires = [w for op in tape.operations for w in op.wires]
     wire_tuple = _resolve_wires(all_wires, wires)
@@ -234,16 +258,14 @@ def to_pennylane_circuit(
         A quantum function ``qfunc(*thetas)``, as described above.
 
     Raises:
-        ValueError: If ``wires`` does not match ``circuit.system_size``, or ``qfunc`` is called
-            with a number of angles other than ``circuit.n_parameters`` (and not zero, in which
-            case ``circuit.parameters`` is used instead).
+        ValueError: If ``wires`` does not contain exactly ``circuit.system_size`` unique labels,
+            or ``qfunc`` is called with a number of angles other than ``circuit.n_parameters``
+            (and not zero, in which case ``circuit.parameters`` is used instead).
         TypeError: If ``circuit`` holds a Majorana-family gate rather than a Pauli one.
     """
-    wire_tuple = wires if wires is not None else tuple(range(circuit.system_size))
-    if len(wire_tuple) != circuit.system_size:
-        raise ValueError(
-            f"wires has {len(wire_tuple)} entries but circuit.system_size={circuit.system_size}."
-        )
+    wire_tuple = _validate_output_wires(
+        wires, circuit.system_size, "circuit.system_size"
+    )
     generators: list[PauliOperator] = []
     for gate in circuit.gates:
         if not isinstance(gate.generator, PauliOperator):

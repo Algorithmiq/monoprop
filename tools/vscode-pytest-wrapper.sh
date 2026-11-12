@@ -3,8 +3,8 @@ set -euo pipefail
 
 # VS Code Python Testing wrapper:
 # - Keeps discovery stable by running collect-only directly (no mpiexec).
-# - Runs tests through mpiexec so both [comm_self] and [comm_world]
-#   variants exercise the correct code paths.
+# - Runs tests through mpiexec so the [comm_world] cases run on a real world
+#   communicator.
 #
 # Environment variables:
 #   monoprop_VSCODE_MPI_MODE   all (default) | auto | off
