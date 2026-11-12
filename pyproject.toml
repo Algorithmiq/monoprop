@@ -255,7 +255,12 @@ addopts = [
   "--strict-config",
 ]
 xfail_strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+  "error",
+  # pennylane pins autograd<1.9, whose wrap_util.py has `return` in `finally`: a SyntaxWarning on
+  # Python 3.14 (PEP 765) that "error" turns into a SyntaxError, breaking `import monoprop`.
+  "ignore:'return' in a 'finally' block:SyntaxWarning",
+]
 testpaths = ["tests", "packages/monoprop-bench-tools/tests"]
 # Collect both the test suite (test_*.py) and the benchmark suite (bench_*.py);
 # benches/ is excluded from testpaths so it only runs when invoked explicitly.
