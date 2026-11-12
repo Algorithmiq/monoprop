@@ -23,10 +23,10 @@ from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
 
 
-def _two_gate_graph(serial_comm):
+def _two_gate_graph():
     """A propagator with a two-layer, two-parameter graph already built."""
     operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
-    mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
+    mp = MajoranaPropagator(operator, [0, 1], cutoff=4)
     circuit = Circuit(
         (
             ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2)),
@@ -39,7 +39,7 @@ def _two_gate_graph(serial_comm):
 
 
 class TestConstructorValidation:
-    def test_invalid_tolerances(self, serial_comm):
+    def test_invalid_tolerances(self):
         operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
         with pytest.raises(
             RuntimeError,
@@ -51,10 +51,9 @@ class TestConstructorValidation:
                 cutoff=4,
                 upper_atol=0.1,
                 lower_atol=0.5,
-                comm=serial_comm,
             )
 
-    def test_schrodinger_cutoff_beyond_the_term_index_raises(self, serial_comm):
+    def test_schrodinger_cutoff_beyond_the_term_index_raises(self):
         """A Schrodinger cutoff near the mode count admits 2**num_modes paired basis terms.
 
         The basis is enumerated, not listed, so an over-wide cutoff is no longer an
@@ -72,19 +71,18 @@ class TestConstructorValidation:
                 [],
                 cutoff=4,
                 schrodinger_cutoff=2 * num_modes,
-                comm=serial_comm,
             )
 
 
 class TestGraphAndParameterValidation:
-    def test_build_graph_accumulates_layers(self, serial_comm):
-        mp, _ = _two_gate_graph(serial_comm)
+    def test_build_graph_accumulates_layers(self):
+        mp, _ = _two_gate_graph()
         assert mp.graph_layers == 2
         assert mp.n_parameters == 2
 
     @pytest.mark.parametrize("parameters", [[1.0], [1.0, 2.0, 3.0]])
-    def test_wrong_parameter_length_raises(self, serial_comm, parameters):
-        mp, _ = _two_gate_graph(serial_comm)
+    def test_wrong_parameter_length_raises(self, parameters):
+        mp, _ = _two_gate_graph()
         with pytest.raises(RuntimeError, match="Parameter length"):
             mp.expval(parameters)
 
@@ -104,9 +102,9 @@ class TestGraphAndParameterValidation:
         with pytest.raises(ValueError, match="every gate must set"):
             Circuit(gates, 2)
 
-    def test_shared_mapping_index_ties_gates(self, serial_comm):
+    def test_shared_mapping_index_ties_gates(self):
         operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
-        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
+        mp = MajoranaPropagator(operator, [0, 1], cutoff=4)
         circuit = Circuit(
             (
                 ExpGate(MajoranaOperator({(0,): 1.0}, num_modes=2), index=0),
@@ -118,9 +116,9 @@ class TestGraphAndParameterValidation:
         assert mp.graph_layers == 2
         assert mp.n_parameters == 1
 
-    def test_functional_invalidated_after_graph_mutation(self, serial_comm):
+    def test_functional_invalidated_after_graph_mutation(self):
         operator = MajoranaOperator({(0, 1): 1.0j, (2, 3): 0.5j}, num_modes=2)
-        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, comm=serial_comm)
+        mp = MajoranaPropagator(operator, [0, 1], cutoff=4)
         mp.build_graph(
             Circuit(
                 (
@@ -186,7 +184,6 @@ class TestGraphAndParameterValidation:
     )
     def test_functional_invalidated_after_initial_operator_update(
         self,
-        serial_comm,
         propagator_cls,
         initial_operator,
         updated_operator,
@@ -200,7 +197,6 @@ class TestGraphAndParameterValidation:
             [0, 1],
             cutoff=cutoff,
             schrodinger_cutoff=schrodinger_cutoff,
-            comm=serial_comm,
         )
         mp.build_graph(
             Circuit(tuple(ExpGate(generator) for generator in gate_generators), 2)
@@ -222,10 +218,8 @@ class TestGraphAndParameterValidation:
 
 
 class TestEvolvedOperatorBothPictures:
-    def test_schrodinger_returns_state_dict(self, serial_comm):
+    def test_schrodinger_returns_state_dict(self):
         operator = MajoranaOperator({(0, 1): 1.0j}, num_modes=2)
-        mp = MajoranaPropagator(
-            operator, [0, 1], cutoff=4, schrodinger_cutoff=2, comm=serial_comm
-        )
+        mp = MajoranaPropagator(operator, [0, 1], cutoff=4, schrodinger_cutoff=2)
         result = mp.evolved_operator()
         assert isinstance(result, MajoranaOperator)

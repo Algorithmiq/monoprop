@@ -1,11 +1,22 @@
 # 4 as well as 2: at R = 2 the only shifts are 0 and 1, so a non-zero shift always pairs a rank with
 # its single neighbour and no case distinguishes the shift from the rank index. R = 4 gives shifts
 # 0..3 and a dense pairwise round of 2 * (R - 1) posts, which R = 2 cannot tell from a single leg.
+# Of these defaults only 4 runs mpi_routing_geometry_tests.cpp, which needs at least 3 ranks
+# under linear routing.
 set(
   monoprop_MPI_TEST_PROCS
   "2;4"
   CACHE STRING
   "Semicolon-separated list of ranks for MPI test variants"
+)
+
+# Linear routing, the default, refuses a rank count that is not a power of two, so 3 ranks run
+# only here; 2 and 4 rerun the dense all-to-all at the counts linear routing also covers.
+set(
+  monoprop_MPI_SPLITMIX_TEST_PROCS
+  "2;3;4"
+  CACHE STRING
+  "Semicolon-separated list of ranks for the MPI test variants run with monoprop_ROUTING=splitmix"
 )
 set(_monoprop_mpiexec "${MPIEXEC_EXECUTABLE}")
 if(NOT _monoprop_mpiexec)
@@ -73,6 +84,7 @@ function(discover_tests TARGET)
       "TEST_LIST=${_TEST_LIST}" -D "CTEST_FILE=${ctest_tests_file}" -D
       "TEST_ENABLE_MPI_VARIANTS=${_enable_mpi_variants}" -D
       "TEST_MPI_NUMPROCS=${monoprop_MPI_TEST_PROCS}" -D
+      "TEST_MPI_SPLITMIX_NUMPROCS=${monoprop_MPI_SPLITMIX_TEST_PROCS}" -D
       "MPIEXEC_EXECUTABLE=${_monoprop_mpiexec}" -D
       "MPIEXEC_NUMPROC_FLAG=${_monoprop_mpiexec_numproc_flag}" -D
       "MPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" -D

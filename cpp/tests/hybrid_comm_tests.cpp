@@ -20,6 +20,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include "RankPreconditions.h"
+
 #ifdef monoprop_ENABLE_MPI
 
 #include <algorithm>
@@ -65,10 +67,7 @@ auto world_rank() -> int {
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank, *test_utils::min_ranks(2)) {
     const int R = world_size();
     for (const int S : {1, 2, 3}) {
         std::vector<int> seen_size(static_cast<size_t>(S), -1);
@@ -89,10 +88,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_flat_size_and_rank) {
 }
 
 // Each partition contributes its global id, so the expected total is sum_{g<P} g.
-BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global, *test_utils::min_ranks(2)) {
     const int R = world_size();
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
@@ -114,10 +110,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_global) {
 
 // begin_alltoallv must deliver each source's block contiguously in ascending global source order with
 // tags intact (Resolve.h's positional pairing). With no known recv counts this drives the fused verb.
-BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags, *test_utils::min_ranks(2)) {
     const int R = world_size();
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
@@ -156,10 +149,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_source_order_and_tags) {
 
 // Back-to-back alltoallvs with varying counts (zeros, growth, shrink) on one HybridComm: staging and
 // offset-table reuse (a stale staged byte surfaces as a wrong tag), and the no-trailing-barrier rule.
-BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes, *test_utils::min_ranks(2)) {
     const int R = world_size();
     const int S = 3;
     const int P = R * S;
@@ -208,10 +198,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_repeated_alltoallv_varying_sizes) {
 
 // alltoallv_resolve driven directly: it folds the count round into the payload verb's barriered
 // windows and sizes recv itself.
-BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_fused, *test_utils::min_ranks(2)) {
     const int R = world_size();
     const int S = 3;
     const int P = R * S;
@@ -290,10 +277,7 @@ auto pair_tag(int g, int d, int j) -> int {
 
 // The only direct coverage of HybridComm::alltoallv, and the only count matrix varying along both
 // indices, which is what pins the indexing of col_sum_ and recv_col_.
-BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts, *test_utils::min_ranks(2)) {
     const int R = world_size();
     const int rounds = 12;
     for (const int S : {1, 2, 3}) {
@@ -355,10 +339,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_pairwise_counts) {
 
 // The same pairwise counts through the fused verb, whose recv staging is sized from the count matrix
 // rather than from published rows. rc/rd are outputs here, and are checked.
-BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts, *test_utils::min_ranks(2)) {
     const int R = world_size();
     const int rounds = 12;
     for (const int S : {1, 2, 3}) {
@@ -424,10 +405,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_alltoallv_resolve_pairwise_counts) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global, *test_utils::min_ranks(2)) {
     const int R = world_size();
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
@@ -464,10 +442,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_allreduce_sum_inplace_global) {
 // Poison releases barrier waiters on every rank; the test completing at all proves that. Partition 0 poisons
 // before entering a collective, so no rank is committed to MPI and the partition-0 guard deliberately does
 // not fire. Poisoning inside a collective calls MPI_Abort instead, so it cannot be a ctest case.
-BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters) {
-    if (world_size() < 2) {
-        return;
-    }
+BOOST_AUTO_TEST_CASE(hybrid_comm_poison_releases_waiters, *test_utils::min_ranks(2)) {
     for (const int S : {2, 3}) {
         auto errs = run_hybrid(S, [&](HybridComm &hyb, int u) {
             if (u == 0) {
@@ -515,11 +490,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_peer_is_an_involution) {
 // the two failure modes it can have are DROPPED data and a HANG -- neither of which a dense-path test
 // can see. Every rank derives the same pairing from the same shift, and a block whose destination is
 // not the peer must be empty: send only to the plan's peer and check the delivery is exactly that.
-BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_delivers_only_to_its_peers) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_delivers_only_to_its_peers, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return; // the XOR pairing needs a power-of-two rank count
-    }
     for (const int S : {1, 2, 3}) {
         const int P = R * S;
         for (int shift = 0; shift < R; ++shift) {
@@ -570,11 +542,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_delivers_only_to_its_peers) {
 
 // Same contract on the S == 1 world, which takes the pure-MPI branch (MPI_Ialltoallv vs Isend/Irecv)
 // rather than HybridComm's staged one, and on the KNOWN-recv-counts path the response round uses.
-BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     Comm c{MPI_COMM_WORLD};
     for (int shift = 0; shift < R; ++shift) {
         const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
@@ -609,11 +578,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_on_the_plain_mpi_path) {
 // the response round's transpose is only as masked as whatever produced it. No receive is ever posted
 // for a non-peer, so an unmasked count sizes recv_buffer for bytes nothing writes and wait_into would
 // hand that slot to the caller as data. Both the plain-MPI and the staged HybridComm path must drop it.
-BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_known_recv_counts_are_masked_through_the_plan, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     constexpr int kReal = 4;
     constexpr int kBogus = 7; // what a stale or unmasked transpose would claim a non-peer is sending
     for (int shift = 0; shift < R; ++shift) {
@@ -694,11 +660,8 @@ auto sparse_tag(int src, int dst, int j) -> int {
 // A zero-count leg is where a send/recv posting asymmetry deadlocks rather than mis-delivers: both ends
 // must skip on the SAME value. Nothing above ever sends an empty block over a real message, so force
 // one -- the lower-numbered end of every pair sends nothing while its peer sends four.
-BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_an_empty_leg) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_an_empty_leg, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const int me = world_rank();
     constexpr int kLen = 4;
     for (int shift = 1; shift < R; ++shift) { // shift 0 is the self peer, covered separately
@@ -760,11 +723,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_with_an_empty_leg) {
 // shift == 0 makes every rank its own and only peer, so the sparse path's self slot is the whole
 // exchange -- and skip_self then removes the one leg that would have moved anything for a partition.
 // The remaining S-1 in-rank legs must still arrive.
-BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const int me = world_rank();
     const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = 0};
     BOOST_REQUIRE_EQUAL(plan.peer(me, 0), me);
@@ -820,11 +780,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_skip_self_at_shift_zero) {
 // Engine.h's run_exchange posts both its rounds on ONE communicator under kFlatPayloadTag, and the
 // non-overtaking argument in Pairwise.h is what says a round-2 receive cannot match a round-1 send.
 // Two back-to-back sparse rounds, the second on the transpose of the first's counts, assert it.
-BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_sparse_plan_back_to_back_rounds, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const int me = world_rank();
     Comm c{MPI_COMM_WORLD};
     for (int shift = 0; shift < R; ++shift) {
@@ -912,11 +869,8 @@ auto muted_count(int src, int dst, int S) -> int {
 // pack_send_ running underneath. Only the sparse arm splits -- plan.dense() is a blocking MPI_Alltoall
 // -- so drive the SAME peer-masked layout through both arms and require the delivered blocks to agree
 // element for element. A dropped or torn count block changes a length here, not just a value.
-BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_matches_the_dense_arm) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_matches_the_dense_arm, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return; // the XOR pairing needs a power-of-two rank count
-    }
     const int me = world_rank();
     for (int shift = 0; shift < R; ++shift) {
         const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
@@ -971,11 +925,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_matches_the_dense_arm
 // shift == 0 at full bits makes this rank its own and only peer, so the count round posts NOTHING:
 // sparse_pairwise memcpys the S*S-int block in place and the B3→B4 wait must be a no-op rather than a
 // wait on stale requests. The S^2 in-rank payload legs still have to arrive.
-BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_self_peer_only) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_self_peer_only, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const int me = world_rank();
     const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = 0};
     BOOST_REQUIRE_EQUAL(plan.peer(me, 0), me);
@@ -1015,11 +966,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_self_peer_only) {
 // A peer with nothing to send is where the split can hang: pack_send_ copies zero bytes in B2→B3 while
 // the count round is still live, and the payload round posts no leg for it at all. Back-to-back rounds,
 // the second silent, so the second also runs over the first's staging high-water bytes.
-BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const int me = world_rank();
     for (int shift = 1; shift < R; ++shift) { // shift 0 is the self peer, covered above
         const monoprop::mpi::PeerPlan plan{.sparse = true, .shift = shift};
@@ -1076,11 +1024,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_resolve_split_count_round_zero_count_peer) {
 // The multi-peer and lossy-plan refusals in the same window are NOT exercised here: they reach MPI
 // through guard_partition0_, which turns a throw into MPI_Abort, so a case for them would take the
 // runner down with it.
-BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return; // the XOR pairing needs a power-of-two rank count
-    }
     const int me = world_rank();
     const int peer = me ^ 1; // shift 1, so every rank derives the same pairing
     constexpr int kLen = 5;
@@ -1137,11 +1082,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_reads_every_partitions_row) {
 // The rank-uniform gate picks the transport; the peer set is only a narrowing, so a rank whose rows do
 // not pin one peer down keeps the full set and posts point-to-point over all of it. Before, this shape
 // aborted the job from inside guard_partition0_.
-BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_falls_back_to_every_peer) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_falls_back_to_every_peer, *test_utils::power_of_two_ranks(4)) {
     const int R = world_size();
-    if (R < 4 || (R & (R - 1)) != 0) {
-        return; // two distinct non-self peers is the point, so R = 2 cannot show it
-    }
     const int me = world_rank();
     // XOR by 1 and by 2: an involution each, so the count matrix stays symmetric and every rank spans
     // exactly two peers -- which is what makes this a valid layout the narrowing simply cannot use.
@@ -1203,11 +1145,8 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_derived_wire_plan_falls_back_to_every_peer) {
 // A sparse plan is a public aggregate, so a shift outside the rank-index width reaches the transports
 // as an out-of-range vector index and an invalid MPI rank. Every sparse entry point refuses it first,
 // and it must be an exception rather than an assert: release builds are where it would be indexed.
-BOOST_AUTO_TEST_CASE(hybrid_comm_unroutable_peer_plan_is_refused) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_unroutable_peer_plan_is_refused, *test_utils::power_of_two_ranks()) {
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const monoprop::mpi::PeerPlan bad{.sparse = true, .shift = R};
     const int P = R;
     std::vector<std::vector<int>> send(static_cast<size_t>(P));
@@ -1222,7 +1161,7 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_unroutable_peer_plan_is_refused) {
 
 // MPI reads the payload buffers until the requests retire, so the handle that owns them must not be
 // copyable (two owners, one set of requests) and must not be destroyable while they are live.
-BOOST_AUTO_TEST_CASE(hybrid_comm_pending_alltoallv_owns_its_requests) {
+BOOST_AUTO_TEST_CASE(hybrid_comm_pending_alltoallv_owns_its_requests, *test_utils::power_of_two_ranks()) {
     using Pending = monoprop::mpi::PendingAlltoallv<int>;
     static_assert(!std::is_copy_constructible_v<Pending>);
     static_assert(!std::is_copy_assignable_v<Pending>);
@@ -1231,9 +1170,6 @@ BOOST_AUTO_TEST_CASE(hybrid_comm_pending_alltoallv_owns_its_requests) {
 
     // Dropping a handle without waiting must still complete the transfer, not free the buffers under it.
     const int R = world_size();
-    if (R < 2 || (R & (R - 1)) != 0) {
-        return;
-    }
     const int me = world_rank();
     Comm c{MPI_COMM_WORLD};
     std::vector<std::vector<int>> send(static_cast<size_t>(R));

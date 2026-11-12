@@ -7,7 +7,7 @@
   cmake,
   ninja,
   pkg-config,
-  nanobind,
+  nanobind_3,
   nanobind-backend,
   scikit-build-core,
   setuptools-scm,
@@ -67,7 +67,7 @@ buildPythonPackage {
   ];
 
   build-system = [
-    nanobind
+    nanobind_3
     # Split mode: `nanobind_add_module(... BACKEND_MODULE nanobind_backend)` builds
     # `_core` without a backend of its own, so the module is needed at build time
     # for the stub pass and at run time for the import.
@@ -76,7 +76,8 @@ buildPythonPackage {
     setuptools-scm
   ]
   # Upstream provisions mpi4py through a scikit-build-core override keyed on the
-  # `monoprop_ENABLE_MPI` environment variable, which would resolve it from PyPI.
+  # `monoprop.mpi` setting (environment variable `monoprop_ENABLE_MPI`), which would
+  # resolve it from PyPI.
   # The sandbox has no network, so the store copy is supplied here instead and the
   # variable is deliberately left unset -- see `env` below.
   ++ lib.optionals withMPI [ mpi4py ];
@@ -104,10 +105,10 @@ buildPythonPackage {
         "monoprop_ENABLE_ARCH_FLAGS=${if enableArchFlags then "ON" else "OFF"}"
         # nanobind's CMake config lives inside its Python package, which is not
         # on the interpreter's own site-packages path under nixpkgs.
-        "nanobind_DIR=${nanobind}/${python.sitePackages}/nanobind/cmake"
+        "nanobind_DIR=${nanobind_3}/${python.sitePackages}/nanobind/cmake"
       ]
       # The CMake option is set directly rather than through upstream's
-      # `monoprop_ENABLE_MPI` environment switch: that switch also appends mpi4py to
+      # `monoprop.mpi` setting: that setting also appends mpi4py to
       # `build.requires`, i.e. a PyPI resolution the sandbox denies.
       ++ lib.optionals withMPI [ "monoprop_ENABLE_MPI=ON" ]
     );

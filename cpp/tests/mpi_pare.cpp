@@ -16,16 +16,13 @@
 
 #include <cmath>
 
+#include "RankPreconditions.h"
 #include "TestUtilities.h"
 
 using namespace test_utils;
 
-BOOST_AUTO_TEST_CASE(multi_rank_pare_expval_is_finite) {
+BOOST_AUTO_TEST_CASE(multi_rank_pare_expval_is_finite, *test_utils::min_ranks(2)) {
     const int world_size = monoprop::mpi::size(MPI_COMM_WORLD);
-    if (world_size < 2) {
-        BOOST_TEST_MESSAGE("Skipping multi_rank_pare_expval_is_finite: MPI world size=" << world_size);
-        return;
-    }
 
     constexpr size_t NumModes = 8;
     constexpr double kExpvalAtol = 1e-9;

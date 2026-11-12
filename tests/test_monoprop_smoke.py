@@ -15,28 +15,26 @@
 from __future__ import annotations
 
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import MajoranaPropagator, jordan_wigner_basis_change
-from tests.cases import CasesFermionicProblem
 
 
-def _bound_simulator_type(problem, serial_comm):
+def _bound_simulator_type(problem):
     wrapper = MajoranaPropagator(
         problem.operator,
         problem.monomial_circuit.initial_state,
         cutoff=2 * problem.n_modes,
-        comm=serial_comm,
+        comm=None,
     )
     return type(wrapper._simulator)
 
 
-def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool):
+def _make_bound_simulator(bound_type, problem, *, schrodinger: bool):
     return bound_type(
         initial_operator=problem.operator.terms,
         cutoff=2 * problem.n_modes,
         initial_state=problem.monomial_circuit.initial_state,
-        comm=serial_comm,
+        comm=None,
         schrodinger_cutoff=2 * problem.n_modes if schrodinger else None,
         lower_atol=None,
         upper_atol=None,
@@ -45,12 +43,11 @@ def _make_bound_simulator(bound_type, problem, serial_comm, *, schrodinger: bool
     )
 
 
-def _make_bound_core(problem, serial_comm, *, schrodinger: bool):
-    bound_type = _bound_simulator_type(problem, serial_comm)
+def _make_bound_core(problem, *, schrodinger: bool):
+    bound_type = _bound_simulator_type(problem)
     return _make_bound_simulator(
         bound_type,
         problem,
-        serial_comm,
         schrodinger=schrodinger,
     )
 
@@ -68,55 +65,44 @@ def _evolve_bound_core(core, monomial_circuit):
     return parameters, coeffs
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_constructor_accepts_declared_arguments(
-    problem, serial_comm, schrodinger
-):
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+def test_bound_constructor_accepts_declared_arguments(lih_problem, schrodinger):
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
 
-    assert core.num_modes == problem.n_modes
+    assert core.num_modes == lih_problem.n_modes
     assert core.schrodinger is schrodinger
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_mutators_accept_declared_arguments(problem, serial_comm, schrodinger):
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+def test_bound_mutators_accept_declared_arguments(lih_problem, schrodinger):
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
 
     core.lower_atol = 1e-12
     core.lower_atol = None
     core.upper_atol = 1e-12
     core.upper_atol = None
-    core.cutoff = 2 * problem.n_modes
+    core.cutoff = 2 * lih_problem.n_modes
     core.cutoff_type = "length"
-    core.basis_change = jordan_wigner_basis_change(problem.n_modes)
+    core.basis_change = jordan_wigner_basis_change(lih_problem.n_modes)
     core.basis_change = None
 
-    assert core.cutoff == 2 * problem.n_modes
+    assert core.cutoff == 2 * lih_problem.n_modes
     assert core.cutoff_type == "length"
     assert core.basis_change is None
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
 def test_bound_expectation_value_methods_accept_declared_arguments(
-    problem, serial_comm, schrodinger
+    lih_problem, schrodinger
 ):
-    monomial_circuit = problem.monomial_circuit
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+    monomial_circuit = lih_problem.monomial_circuit
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
     parameters, coeffs = _evolve_bound_core(core, monomial_circuit)
 
     expectation_value_fn = core.expectation_value_functional(pare_threshold=None)
@@ -133,17 +119,12 @@ def test_bound_expectation_value_methods_accept_declared_arguments(
     assert len(coeffs) > 0
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
 @pytest.mark.parametrize(
     "schrodinger", [False, True], ids=["heisenberg", "schrodinger"]
 )
-def test_bound_graph_methods_accept_declared_arguments(
-    problem, serial_comm, schrodinger
-):
-    monomial_circuit = problem.monomial_circuit
-    core = _make_bound_core(problem, serial_comm, schrodinger=schrodinger)
+def test_bound_graph_methods_accept_declared_arguments(lih_problem, schrodinger):
+    monomial_circuit = lih_problem.monomial_circuit
+    core = _make_bound_core(lih_problem, schrodinger=schrodinger)
     parameters, _ = _evolve_bound_core(core, monomial_circuit)
 
     evolved_operator = core.evolved_operator(parameters, 1e-12)
@@ -154,7 +135,7 @@ def test_bound_graph_methods_accept_declared_arguments(
     assert len(graph_size) == 2
     assert core.graph_layers() is not None
 
-    core.update_initial_operator(op_dict=problem.operator.terms)
+    core.update_initial_operator(op_dict=lih_problem.operator.terms)
 
 
 # The ledger keys are a measurement contract: an A/B reads this dictionary from two builds and
@@ -176,13 +157,13 @@ _GRAPH_DIAGNOSTIC_KEYS = (
 )
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblem, has_tag="has_commutator_data"
-)
-def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
+@pytest.mark.parametrize("partitions", [1, 2])
+def test_graph_memory_breakdown_keys_and_totals(lih_problem, partitions, monkeypatch):
     """``graph_memory_breakdown()`` had no Python-side coverage at all before this."""
-    monomial_circuit = problem.monomial_circuit
-    core = _make_bound_core(problem, serial_comm, schrodinger=False)
+    # Read when the propagator is built: the run's flat world is P = partitions.
+    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
+    monomial_circuit = lih_problem.monomial_circuit
+    core = _make_bound_core(lih_problem, schrodinger=False)
     _evolve_bound_core(core, monomial_circuit)
 
     breakdown = core.graph_memory_breakdown()
@@ -204,11 +185,9 @@ def test_graph_memory_breakdown_keys_and_totals(problem, serial_comm):
     # deleted so an A/B against a build that retained them shows the drop instead of losing the row.
     assert breakdown["exchange_layout_bytes"] == 0
 
-    # The slot array is indexed by the flat world, so slot_records / layer_cores recovers P. Stated as
-    # divisibility, not `== 1`, because the MPI gate also runs this at 16 partitions per rank.
+    # The slot array is indexed by the flat world, so slot_records / layer_cores is P.
     assert breakdown["d_layer_cores"] > 0
-    assert breakdown["d_slot_records"] % breakdown["d_layer_cores"] == 0
-    assert breakdown["d_slot_records"] // breakdown["d_layer_cores"] >= 1
+    assert breakdown["d_slot_records"] == partitions * breakdown["d_layer_cores"]
 
     # An occupied slot holds at least one endpoint, so the endpoint count is the P-independent ceiling.
     assert breakdown["d_occupied_slots"] <= breakdown["d_slot_records"]

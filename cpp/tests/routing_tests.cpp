@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "RankPreconditions.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
@@ -404,14 +405,8 @@ BOOST_AUTO_TEST_CASE(routing_gf2_rank_detects_a_degenerate_shift_set) {
 
 // The SHIPPED default, pinned by a test rather than left to a comment: with no environment override a
 // power-of-two rank count routes linearly at fanout 1, a single rank routes densely, and a geometry
-// with no XOR structure is refused. Skipped when the environment does override it, because then the
-// default is not what is under test.
-BOOST_AUTO_TEST_CASE(routing_default_is_linear_where_the_geometry_allows_it) {
-    const char *mode = std::getenv("monoprop_ROUTING");
-    if (mode != nullptr && *mode != '\0') {
-        BOOST_TEST_MESSAGE("routing overridden in the environment; default not under test");
-        return;
-    }
+// with no XOR structure is refused.
+BOOST_AUTO_TEST_CASE(routing_default_is_linear_where_the_geometry_allows_it, *test_utils::default_routing()) {
     BOOST_TEST(routing::make_router<kN>(8, 14).is_linear());
     BOOST_TEST(routing::make_router<kN>(128, 14).linear_bits() == 7U);
     BOOST_TEST(!routing::make_router<kN>(1, 112).is_linear()); // single rank: nothing to route between

@@ -22,7 +22,8 @@ guards that split, which nothing else can: a copy pasted back into a `run:` bloc
 perfectly well until it drifts from the recipe it duplicates.
 
 The exceptions in ``ALLOWED`` are keyed by step name, so renaming an exempt step fails
-here and forces the exception to be reconsidered rather than inherited silently.
+here and forces the exception to be reconsidered rather than inherited silently. Whole
+workflows listed in ``EXEMPT_WORKFLOWS`` are not scanned at all.
 """
 
 from __future__ import annotations
@@ -82,6 +83,13 @@ ALLOWED: dict[tuple[str, str], str] = {
     ): "the benchmarking ladder is only meaningful in CI, so it lives in the workflow",
 }
 
+# Workflow file name -> why every step in it may keep its commands.
+EXEMPT_WORKFLOWS: dict[str, str] = {
+    "container.yml": (
+        "container builds and their checks only run in CI against GHCR, so they have no recipe"
+    ),
+}
+
 # Version and help queries are not builds.
 BENIGN = re.compile(r"\b(uv|cmake|ctest|lychee)\s+--(version|help)\b")
 
@@ -107,6 +115,9 @@ def steps_of(document: object) -> list[tuple[str, str]]:
 
 def check(path: Path) -> list[str]:
     """Return one message per forbidden command found in ``path``."""
+    if path.name in EXEMPT_WORKFLOWS:
+        return []
+
     document = yaml.safe_load(path.read_text())
     steps = steps_of(document)
     problems = []

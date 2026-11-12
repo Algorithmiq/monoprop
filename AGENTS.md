@@ -33,7 +33,8 @@ shared engine; Majorana against Pauli is a runtime `Basis`, and Python exposes `
 
 Public headers `cpp/include/monoprop/`, implementation `cpp/monoprop/`, Python API
 `src/monoprop/`, binding template `src/monoprop/bindings/binder.h`, generators
-`tools/generate-*.py`, sibling distributions `packages/*`. The repository root is the `uv`
+`tools/generate-*.py`, container recipes `tools/container/` (see `building.mdx`), sibling
+distributions `packages/*`. The repository root is the `uv`
 workspace's `monoprop` package.
 
 `bindings.cpp` and `_dispatch.py` are generated -- never edit them. To change the C++ API: edit
@@ -53,7 +54,7 @@ just build-docs
 
 ## Notes
 
-- Python cases live in `tests/cases.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
+- Python reference data lives in `tests/reference_data.py` (`load_problem()` reads `tests/data/*.msgpack`); C++ uses
   `test_utils::load_case()` from `cpp/tests/TestData.h`.
 - Pytest's fd capture hides C++ stderr such as `COMMPROF`; rerun with `-s`.
 - `uv sync` does not relink `bin/monoprop_unit_tests.x` -- compare mtimes and use the standalone

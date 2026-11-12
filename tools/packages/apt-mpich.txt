@@ -1,0 +1,4 @@
+# Added to tools/packages/apt.txt when the MPICH runtime is requested (mpi: mpich).
+
+libmpich-dev            # MPI::MPI_CXX for the C++ consumer, and the headers a source mpi4py builds against
+mpich                   # mpiexec (hydra)

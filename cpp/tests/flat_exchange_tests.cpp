@@ -24,6 +24,7 @@
 #include <numeric>
 #include <vector>
 
+#include "RankPreconditions.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/Exchange.h"
 
@@ -118,11 +119,8 @@ auto run_round(int n,
 
 // A dense gate is today's collective whatever the layout holds -- including the sparse layout the
 // pairwise arm exists for. The layout must not be able to move the branch.
-BOOST_AUTO_TEST_CASE(flat_exchange_dense_gate_always_takes_the_collective) {
+BOOST_AUTO_TEST_CASE(flat_exchange_dense_gate_always_takes_the_collective, *test_utils::even_ranks()) {
     const int n = world_size();
-    if (n < 2 || (n % 2) != 0) {
-        return;
-    }
     const int me = world_rank();
     const int peer = me ^ 1;
     for (const bool dense : {true, false}) {
@@ -147,11 +145,8 @@ BOOST_AUTO_TEST_CASE(flat_exchange_dense_gate_always_takes_the_collective) {
 
 // One peer, me ^ 1 -- an involution, so the count matrix stays symmetric and both ends drop the same
 // n - 1 legs. Two requests (one Irecv, one Isend) and the same bytes delivered.
-BOOST_AUTO_TEST_CASE(flat_exchange_single_leg_takes_the_pairwise_path) {
+BOOST_AUTO_TEST_CASE(flat_exchange_single_leg_takes_the_pairwise_path, *test_utils::even_ranks()) {
     const int n = world_size();
-    if (n < 2 || (n % 2) != 0) {
-        return;
-    }
     const int me = world_rank();
     const int peer = me ^ 1;
     constexpr int len = 3;
@@ -170,11 +165,8 @@ BOOST_AUTO_TEST_CASE(flat_exchange_single_leg_takes_the_pairwise_path) {
 
 // Every leg active on the pairwise arm: it posts a pair per non-zero leg rather than falling back, so
 // the transport really is the gate's choice and not the layout's. The self leg is a copy, not a pair.
-BOOST_AUTO_TEST_CASE(flat_exchange_dense_layout_on_the_pairwise_arm) {
+BOOST_AUTO_TEST_CASE(flat_exchange_dense_layout_on_the_pairwise_arm, *test_utils::power_of_two_ranks()) {
     const int n = world_size();
-    if (n < 2 || (n & (n - 1)) != 0) {
-        return; // off a power of two the gate resolves to dense, i.e. the collective
-    }
     const int me = world_rank();
     const std::vector<int> counts(static_cast<size_t>(n), 1);
     const auto displs = displs_of(counts);
@@ -192,11 +184,8 @@ BOOST_AUTO_TEST_CASE(flat_exchange_dense_layout_on_the_pairwise_arm) {
 // No active leg anywhere: nothing is posted, wait() drains nothing, and the recv buffer is left as the
 // caller sized it. A layer with no cross-rank partners takes this shape on EVERY rank at once -- the
 // symmetric layout is what makes that true -- so the pairwise arm is still the agreed one.
-BOOST_AUTO_TEST_CASE(flat_exchange_empty_layout_posts_nothing) {
+BOOST_AUTO_TEST_CASE(flat_exchange_empty_layout_posts_nothing, *test_utils::power_of_two_ranks()) {
     const int n = world_size();
-    if (n < 2 || (n & (n - 1)) != 0) {
-        return;
-    }
     const std::vector<int> counts(static_cast<size_t>(n), 0);
     BOOST_REQUIRE_EQUAL(total_of(counts), 0);
     const std::vector<int> send(1, 0);

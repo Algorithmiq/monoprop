@@ -12,7 +12,7 @@ description = "Benchmark harness for monoprop: memory accounting, model builders
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.11,<3.16"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -52,7 +52,7 @@ monoprop-bench-bmf = "monoprop_bench_tools.bmf:main"
 
 
 [dependency-groups]
-test = ["pytest>=8.2.2,<9.1"]
+test = ["pytest>=8.2.2,<9.3"]
 
 
 # Only consulted when this package is tested on its own; a run from the

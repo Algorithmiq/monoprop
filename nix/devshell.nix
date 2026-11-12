@@ -57,11 +57,13 @@ mkShell {
     export UV_PYTHON="${python}/bin/python"
 
     # manylinux wheels (numpy, qiskit, ...) resolve libstdc++ through the ambient
-    # loader path, which is empty on NixOS.
+    # loader path, which is empty on NixOS. The mpi4py wheel finds libmpi the same
+    # way, so Open MPI goes on it too.
     export LD_LIBRARY_PATH="${
       lib.makeLibraryPath [
         stdenv.cc.cc.lib
         zlib
+        openmpi
       ]
     }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   '';

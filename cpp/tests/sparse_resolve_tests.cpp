@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
 #include <random>
 #include <set>
 #include <span>
@@ -405,4 +406,71 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
         }
     }
     BOOST_TEST(genuinely_absent > 0);
+}
+
+namespace {
+
+// monomial_hash_positions equals monomial_hash at every tested width.
+template <size_t NumModes>
+auto check_positions_hash_matches_dense(std::mt19937_64 &rng) -> void {
+    using PosT = detail::OperatorIndex<NumModes>::PosT;
+    std::vector<Monomial<NumModes>> cases;
+    cases.emplace_back(); // the empty monomial hashes to the zero-word fold alone
+    Monomial<NumModes> full;
+    for (size_t b = 0; b < Monomial<NumModes>::size(); ++b) {
+        full.set(b);
+    }
+    cases.push_back(full);
+    Monomial<NumModes> top;
+    top.set(Monomial<NumModes>::size() - 1);
+    cases.push_back(top);
+    for (const size_t k : {1UL, 2UL, 6UL, 12UL, 40UL}) {
+        for (size_t rep = 0; rep < 200; ++rep) {
+            cases.push_back(random_monomial<NumModes>(rng, std::min(k, Monomial<NumModes>::size())));
+        }
+    }
+    for (const auto &m : cases) {
+        std::vector<PosT> pos;
+        for (size_t b = m.find_first(); b < m.size(); b = m.find_next(b)) {
+            pos.push_back(static_cast<PosT>(b));
+        }
+        BOOST_TEST(monomial_hash_positions<NumModes>(std::span<const PosT>(pos)) == monomial_hash<NumModes>(m));
+        BOOST_TEST(monomial_hash_positions<NumModes>(std::span<const PosT>(pos)) == MonomialHash<NumModes>{}(m));
+    }
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(positions_hash_equals_dense_hash) {
+    std::mt19937_64 rng(20261005);
+    check_positions_hash_matches_dense<32>(rng);
+    check_positions_hash_matches_dense<96>(rng);
+    check_positions_hash_matches_dense<128>(rng);
+    check_positions_hash_matches_dense<160>(rng);
+    check_positions_hash_matches_dense<256>(rng);
+    check_positions_hash_matches_dense<1024>(rng);
+}
+
+// fully_paired_rows_from matches the dense check, spilled rows included, from `first`.
+BOOST_AUTO_TEST_CASE(fully_paired_rows_from_matches_dense_scan) {
+    constexpr size_t kN = 250;
+    constexpr size_t kInlineWidth = 11;
+    std::mt19937_64 rng(20261006);
+    const auto terms = draw_distinct<kN>(rng, 400);
+
+    detail::OperatorIndex<kN> store(kInlineWidth);
+    store.grow_rows_geometric(terms.size());
+    size_t spilled = 0;
+    for (size_t i = 0; i < terms.size(); ++i) {
+        store.set(i, terms[i]);
+        spilled += static_cast<size_t>(!store.row_positions(i).inlined());
+    }
+    BOOST_TEST(spilled > 0);
+    for (const size_t first : {0UL, 1UL, 137UL, terms.size()}) {
+        VecZ inds(terms.size() - first);
+        std::iota(inds.begin(), inds.end(), first); // NOLINT(modernize-use-ranges)
+        const auto want = is_fully_paired<kN>(inds, store);
+        const auto got = fully_paired_rows_from<kN>(first, store);
+        BOOST_TEST(got == want, boost::test_tools::per_element());
+    }
 }

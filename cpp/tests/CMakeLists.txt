@@ -44,7 +44,7 @@ target_link_libraries(
   monoprop_unit_tests.x
   PRIVATE
     monoprop-sanitizers
-    monoprop-objs
+    ${monoprop_CPP_TEST_OBJS}
     Boost::unit_test_framework
     msgpack-cxx
     PkgConfig::HWLOC
@@ -85,3 +85,16 @@ discover_tests(
 )
 
 add_subdirectory(link_export_probe)
+
+add_test(
+  NAME monoprop_mpi_inspection
+  COMMAND
+    ${CMAKE_COMMAND} -P
+    ${CMAKE_CURRENT_LIST_DIR}/cmake/test_mpi_inspection.cmake
+)
+set_tests_properties(
+  monoprop_mpi_inspection
+  PROPERTIES
+    LABELS
+      "unit"
+)

@@ -14,9 +14,9 @@
 
 """Draw the headline figure: Pauli on the left, Majorana on the right.
 
-Both panels are per-step wall-clock time on a log axis, so the vertical gap between two curves
-reads directly as the speed-up. The two benchmarks are separate runs of separate models; the
-panels share a figure, not an axis.
+Pauli shows per-step wall-clock time; Majorana shows cumulative wall-clock time. Both use a log
+axis, so the vertical gap between two curves reads directly as the speed-up. The two benchmarks
+are separate runs of separate models; the panels share a figure, not an axis.
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ PAULI_MIN_STEP = 5
 MAJORANA_MIN_LAYER = 4
 
 
-def _panel(ax: plt.Axes, xlabel: str, title: str) -> None:
+def _panel(ax: plt.Axes, xlabel: str, ylabel: str, title: str) -> None:
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("time per step [s]")
+    ax.set_ylabel(ylabel)
     ax.set_yscale("log")
     ax.set_title(title, fontsize="medium")
     ax.legend(fontsize=9)
@@ -60,13 +60,19 @@ def main() -> None:
 
     fig, (left, right) = plt.subplots(1, 2, figsize=(12, 4.8))
 
-    steps = pauli["step_range"]
+    # Each recorded iteration applies one Trotter step, regardless of its stored label.
+    steps = list(range(1, len(pauli["step_range"]) + 1))
     for label, runtime in pauli["runtime"].items():
-        points = [(s, v) for s, v in zip(steps, runtime) if s >= PAULI_MIN_STEP]
+        points = [(s, v) for s, v in zip(steps[1:], runtime) if s >= PAULI_MIN_STEP]
         left.plot(
             *zip(*points), color=COLORS[label], label=label, marker="o", markersize=4
         )
-    _panel(left, "Trotter step", "Pauli: 144-qubit 2D transverse-field Ising")
+    _panel(
+        left,
+        "Trotter step",
+        "time per step [s]",
+        "Pauli: 144-qubit 2D tilted-field Ising",
+    )
 
     layers = majorana["step_range"]
     for label, runtime in majorana["runtime_seconds"].items():
@@ -77,6 +83,7 @@ def main() -> None:
     _panel(
         right,
         "circuit layer",
+        "cumulative time [s]",
         f"Majorana: {majorana['n_spinful_sites']}-site 1D Fermi-Hubbard",
     )
 

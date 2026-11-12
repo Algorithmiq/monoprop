@@ -256,7 +256,7 @@ class Circuit:
         #: The gate family, computed from the (validated) gates; the propagators dispatch on it.
         self.family = self._resolve_family(gates)
 
-        self.resolved_mapping  # validates the per-gate index scheme
+        _ = self.resolved_mapping  # validates the per-gate index scheme
         if self.parameters and len(self.parameters) != self.n_parameters:
             raise ValueError(
                 f"parameters has {len(self.parameters)} values but the circuit has "

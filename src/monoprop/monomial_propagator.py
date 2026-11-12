@@ -43,12 +43,17 @@ from .pauli import PauliOperator
 from .utils import validate_basis_change
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from typing import Self
 
     from mpi4py import MPI
 
+    from .majorana import Majorana
+    from .pauli import Pauli
+
     ParameterValues = Circuit | Sequence[float] | np.ndarray | None
+    # A single operator term: a Pauli, a Majorana, or the raw index sequence either engine keys its terms by.
+    OperatorTerm = Majorana | Pauli | Sequence[int] | np.ndarray
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +104,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
             lower_atol: Coefficient-truncation threshold, or ``None``.
             upper_atol: Coefficient-retention threshold, or ``None``.
             basis_change: Internal per-Majorana basis change (``2 * num_modes`` entries).
-            comm: Optional MPI communicator (must outlive the propagator).
+            comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate
+                reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
+                point-to-point messages on fixed tags, which your own sends and receives on the
+                same communicator, including ``MPI.ANY_TAG`` receives, could match.
             basis: Engine basis -- ``"majorana"`` (default) or ``"pauli"``.
         """
         num_modes = majorana_operator.num_modes
@@ -117,7 +125,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         self._initial_state = list(initial_state)
         # dispatch() returns the concrete adapter class for this mode count;
         # call it with keyword args matching the public constructor.
-        self._simulator = dispatch(num_modes)(  # type: ignore[call-arg]
+        self._simulator = dispatch(num_modes, comm)(  # type: ignore[call-arg]
             initial_operator=majorana_operator.terms,
             cutoff=cutoff,
             initial_state=list(initial_state),
@@ -550,6 +558,100 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Returns:
             The evolved operator (Heisenberg picture) or evolved state (Schrodinger picture).
         """
+
+    @abstractmethod
+    def _encode_terms(self, terms: Sequence[OperatorTerm]) -> list[tuple[int, ...]]:
+        """Encode operator terms into the raw index tuples the engine keys terms by.
+
+        The front-end counterpart to the decode ``evolved_operator`` performs, and what
+        [evolved_operator_coefficients][] keys its probes with. Implementations *validate* canonical
+        terms rather than normalizing them: the encode is order-insensitive, and a normalizing
+        encode has no coefficient to put the reordering's sign on. The whole query is passed at
+        once so that validation can run over all of its indices in one pass.
+
+        Args:
+            terms: The operator terms to encode, in query order.
+
+        Returns:
+            One engine index tuple per term, in query order: Majorana indices, or symplectic slots
+            in the Pauli basis.
+        """
+
+    def evolved_operator_coefficients(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the coefficients of ``terms`` alone in the evolved operator, in the order given.
+
+        A cheaper alternative to
+        [evolved_operator][monoprop.monomial_propagator.MonomialPropagator.evolved_operator] when
+        only a few terms are needed. Only those terms are decoded from the evolved operator,
+        avoiding enumerating all its terms.
+
+        Terms must be canonical; for a Majorana product that is not, use
+        [Majorana.from_unsorted][monoprop.majorana.Majorana.from_unsorted] and apply the sign it
+        returns. Raw index sequences are checked here, so a long query of
+        [Majorana][monoprop.majorana.Majorana] terms, which are canonical by construction, skips
+        that check.
+
+        Args:
+            terms: The operator terms to look up.
+            parameters: Variational parameter values (see [expectation_value][]).
+
+        Returns:
+            A complex NumPy array, one coefficient per requested term, in the order requested.
+
+        Raises:
+            TypeError: If an operator term is of the wrong form for the front-end.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: If a term index lies outside the propagator's own system.
+        """
+        slots = self._encode_terms(list(terms))
+        return np.asarray(
+            self._simulator.evolved_operator_coefficients(
+                self._bind(parameters), slots
+            ),
+            dtype=complex,
+        )
+
+    def term_expectation_values(
+        self,
+        terms: Iterable[OperatorTerm],
+        parameters: ParameterValues = None,
+    ) -> np.ndarray:
+        """Return the expectation value of each term, decomposing [expectation_value][] by term.
+
+        For an observable ``O = sum_i c_i * P_i``, pass the terms ``[P_1, ..., P_m]`` to get back
+        ``[v_1, ..., v_m]``, where ``v_i = <P_i>`` under the same truncated evolution as
+        [expectation_value][]. Then ``<O> = sum_i c_i * v_i``. All values together cost about as
+        much as one [expectation_value][] call.
+
+        In the Heisenberg picture, pass terms of the initial observable: any other term returns a
+        value that is not its expectation value, or raises if the evolution never created it. To
+        evaluate a term outside the observable, add it with coefficient 0 before building the
+        graph. In the Schrodinger picture, any term returns its expectation value under the
+        truncated evolved state, whether or not it is in the observable.
+
+        Args:
+            terms: The terms to evaluate, canonical as for [evolved_operator_coefficients][].
+            parameters: Variational parameter values (see [expectation_value][]).
+
+        Returns:
+            A complex NumPy array with one value per term, in the order given.
+
+        Raises:
+            TypeError: If a term is of the wrong form for the front-end.
+            ValueError: If a term is not a canonical monomial.
+            RuntimeError: In the Heisenberg picture, if a term is absent from the evolved
+                operator, or once [propagate][] or an in-place [contract_partially][] has absorbed
+                gates into the operator.
+        """
+        slots = self._encode_terms(list(terms))
+        return np.asarray(
+            self._simulator.term_expectation_values(self._bind(parameters), slots),
+            dtype=complex,
+        )
 
     @abstractmethod
     def update_initial_operator(self, new_operator: T_op) -> None:

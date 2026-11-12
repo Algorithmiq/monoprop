@@ -18,18 +18,16 @@ from contextlib import nullcontext as does_not_raise
 
 import numpy as np
 import pytest
-from pytest_cases import parametrize_with_cases
 
 from monoprop import Circuit, ExpGate, MajoranaPropagator, PauliPropagator
 from monoprop.majorana import MajoranaOperator
 from monoprop.pauli import PauliOperator
-from tests.cases import CasesFermionicProblemOrbitalRotations
 
 
 @pytest.fixture
-def serial_mp_kwargs(serial_comm):
-    """Common MP constructor arguments — always single-rank."""
-    return {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
+def serial_mp_kwargs():
+    """Common MP constructor arguments."""
+    return {"cutoff": 6, "schrodinger_cutoff": 8}
 
 
 def _split_orbital_gates(gates):
@@ -105,7 +103,7 @@ def test_only_rotate_len_k_none_is_uncapped(
     assert np.isclose(expval_none, expval_default, atol=1e-12)
 
 
-def test_basic_orbital_rotation(serial_comm):
+def test_basic_orbital_rotation():
     n_modes = 4
 
     operator = MajoranaOperator({}, n_modes)
@@ -118,7 +116,7 @@ def test_basic_orbital_rotation(serial_comm):
         system_size=n_modes,
     )
     circuit = sequence
-    kwargs = {"cutoff": 6, "schrodinger_cutoff": 8, "comm": serial_comm}
+    kwargs = {"cutoff": 6, "schrodinger_cutoff": 8}
 
     mp_act = MajoranaPropagator(operator, sequence.initial_state, **kwargs)
     initial_state = mp_act.evolved_operator()
@@ -142,15 +140,12 @@ def test_basic_orbital_rotation(serial_comm):
             )
 
 
-@parametrize_with_cases(
-    "problem", cases=CasesFermionicProblemOrbitalRotations, has_tag="only_rotate_len_k"
-)
 @pytest.mark.parametrize("inplace", [False, True])
-def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
-    """Tests size/graph_size (rank-local) so uses serial_comm."""
-    circuit = problem.monomial_circuit.to_circuit()
+def test_only_rotate_len_k(orbital_rotation_problem, inplace, serial_mp_kwargs):
+    """Serial: size/graph_size are rank-local."""
+    circuit = orbital_rotation_problem.monomial_circuit.to_circuit()
     gates = circuit.gates
-    parameters = problem.monomial_circuit.parameters
+    parameters = orbital_rotation_problem.monomial_circuit.parameters
     non_orbital_gates, orbital_gates = _split_orbital_gates(gates)
     # Consecutive prefix/suffix split, so the (identity) parameter values split the same way.
     split = len(non_orbital_gates)
@@ -158,23 +153,27 @@ def test_only_rotate_len_k(problem, inplace, serial_mp_kwargs):
     # tests/test_circuit.py::_rebase.
     non_orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in non_orbital_gates),
-        system_size=problem.n_modes,
+        system_size=orbital_rotation_problem.n_modes,
         parameters=tuple(parameters[:split]),
     )
     orbital = Circuit(
         tuple(ExpGate._with_index(gate, None) for gate in orbital_gates),
-        system_size=problem.n_modes,
+        system_size=orbital_rotation_problem.n_modes,
         parameters=tuple(parameters[split:]),
     )
 
     mp_act = MajoranaPropagator(
-        problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
+        orbital_rotation_problem.operator,
+        orbital_rotation_problem.monomial_circuit.initial_state,
+        **serial_mp_kwargs,
     )
     mp_act.build_graph(circuit)
     act_ener = mp_act.expval_functional()(parameters)
 
     mp = MajoranaPropagator(
-        problem.operator, problem.monomial_circuit.initial_state, **serial_mp_kwargs
+        orbital_rotation_problem.operator,
+        orbital_rotation_problem.monomial_circuit.initial_state,
+        **serial_mp_kwargs,
     )
 
     if inplace:

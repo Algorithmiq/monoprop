@@ -18,7 +18,6 @@ import importlib
 import sys
 
 import pytest
-from pytest_cases import case, parametrize_with_cases
 
 try:
     from qiskit import QuantumCircuit
@@ -230,11 +229,10 @@ class TestToQiskitOperator:
 
 @requires_qiskit
 @pytest.mark.qiskit
-class ToQiskitCircuitCases:
+class TestToQiskitCircuit:
     # ExpGate applies exp(+i theta H) and PauliEvolutionGate exp(-i t H), so the expected qiskit
     # generator carries the NEGATED coefficient at the same evolution time.
-    @case(id="single_gate")
-    def case_single_gate(self):
+    def test_single_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("Z", 0): 1.0}, num_qubits=1)),),
             initial_state=(),
@@ -246,10 +244,9 @@ class ToQiskitCircuitCases:
             PauliEvolutionGate(SparsePauliOp.from_list([("Z", -1.0)]), time=0.7),
             [0],
         )
-        return circuit, 1, expected_circuit
+        assert to_qiskit_circuit(circuit, 1) == expected_circuit
 
-    @case(id="local_gate")
-    def case_local_gate(self):
+    def test_local_gate(self):
         circuit = Circuit(
             (ExpGate(PauliOperator({Pauli("ZXY", (3, 1, 2)): 1.5}, num_qubits=5)),),
             initial_state=(),
@@ -262,23 +259,15 @@ class ToQiskitCircuitCases:
             PauliEvolutionGate(SparsePauliOp.from_list([("ZYX", -1.5)]), time=0.7),
             [1, 2, 3],
         )
-        return circuit, 5, expected_circuit
+        assert to_qiskit_circuit(circuit, 5) == expected_circuit
 
 
 @requires_qiskit
 @pytest.mark.qiskit
-class TestToQiskitCircuit:
-    @parametrize_with_cases("circuit, num_qubits, expected", cases=ToQiskitCircuitCases)
-    def test_to_qiskit_circuit(self, circuit, num_qubits, expected):
-        converted = to_qiskit_circuit(circuit, num_qubits)
-        assert expected == converted
-
-
-class QiskitCircuitsCases:
+class TestFromQiskitCircuit:
     # PauliEvolutionGate applies exp(-i t H) and ExpGate exp(+i theta H), so every expected
     # monoprop generator carries the NEGATED qiskit coefficient at the same angle.
-    @case(id="single_pauli_evolution_gate")
-    def case_single_pauli_evolution_gate(self):
+    def test_single_pauli_evolution_gate(self):
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
@@ -287,9 +276,9 @@ class QiskitCircuitsCases:
             system_size=1,
             parameters=(0.7,),
         )
-        return circuit, expected
+        _assert_pauli_circuits_close(from_qiskit_circuit(circuit, []), expected)
 
-    def case_multiple_pauli_evolution_gates(self):
+    def test_multiple_pauli_evolution_gates(self):
         circuit = QuantumCircuit(2)
         operator1 = SparsePauliOp.from_list([("XZ", 1.0)])
         operator2 = SparsePauliOp.from_list([("IY", 0.5)])
@@ -304,9 +293,9 @@ class QiskitCircuitsCases:
             system_size=2,
             parameters=(0.3, 0.5),
         )
-        return circuit, expected
+        _assert_pauli_circuits_close(from_qiskit_circuit(circuit, []), expected)
 
-    def case_rotation_gates_equivalent_to_pauli_evolution(self):
+    def test_rotation_gates_equivalent_to_pauli_evolution(self):
         circuit = QuantumCircuit(1)
         circuit.rx(0.5, 0)
         circuit.ry(0.3, 0)
@@ -321,9 +310,9 @@ class QiskitCircuitsCases:
             system_size=1,
             parameters=(0.5, 0.3, 0.7),
         )
-        return circuit, expected
+        _assert_pauli_circuits_close(from_qiskit_circuit(circuit, []), expected)
 
-    def case_barrier_ignored(self):
+    def test_barrier_ignored(self):
         circuit = QuantumCircuit(1)
         operator = SparsePauliOp.from_list([("Z", 1.0)])
         circuit.append(PauliEvolutionGate(operator, time=0.7), [0])
@@ -333,16 +322,7 @@ class QiskitCircuitsCases:
             system_size=1,
             parameters=(0.7,),
         )
-        return circuit, expected
-
-
-@requires_qiskit
-@pytest.mark.qiskit
-class TestFromQiskitCircuit:
-    @parametrize_with_cases("circuit, expected", cases=QiskitCircuitsCases)
-    def test_valid_circuits(self, circuit, expected):
-        converted_circuit = from_qiskit_circuit(circuit, [])
-        _assert_pauli_circuits_close(converted_circuit, expected)
+        _assert_pauli_circuits_close(from_qiskit_circuit(circuit, []), expected)
 
     def test_unsupported_gate_raises(self):
         circuit = QuantumCircuit(1)

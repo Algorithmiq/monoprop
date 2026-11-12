@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -249,6 +250,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       upper_atol_(other.upper_atol_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
+      heisenberg_gates_absorbed_(other.heisenberg_gates_absorbed_),
       routing_coverage_reported_(other.routing_coverage_reported_),
       logical_num_modes_(other.logical_num_modes_),
       cutoff_type_(other.cutoff_type_),
@@ -761,6 +763,9 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              graph_layers()));
     }
     evolve_mode_contract_immediately_(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
+    if (!schrodinger_) {
+        heisenberg_gates_absorbed_ = true;
+    }
 }
 
 template <size_t NumModes>
@@ -1183,6 +1188,7 @@ auto MonomialPropagator<NumModes>::contract_partially(const VecD &parameters, bo
         const MPGraph sliced = graph_.slice_graph(num_majoranas, true);
         evolved_op = evolve_operator_with_recompute_(VecD(op), sliced.replay_view(), mapped_params);
         mp_op_.op_coeffs = evolved_op;
+        heisenberg_gates_absorbed_ = true;
     }
     else {
         evolved_op = evolve_operator_with_recompute_(VecD(op), graph_.slice_view(num_majoranas), mapped_params);
@@ -1218,6 +1224,140 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
         return collect(*this);
     }
     return concat_partitions_(collect);
+}
+
+namespace detail {
+
+/// Coefficients of `keys` in `p`'s evolved operator, in query order; a key `p` does not carry yields 0.
+/// `p` must be unpartitioned -- a partition, or a propagator that was never partitioned -- so that
+/// indexing() is available. Non-inplace. Rank-local.
+template <size_t NumModes>
+auto probe_coefficients(MonomialPropagator<NumModes> &p,
+                        const VecD &parameters,
+                        const std::vector<Monomial<NumModes>> &keys) -> std::vector<std::complex<double>> {
+    const VecD evolved = p.contract_partially(parameters, false);
+    std::vector<size_t> rows(keys.size());
+    p.indexing().find_batch(keys.data(), keys.size(), rows.data());
+    std::vector<std::complex<double>> found(keys.size());
+    for (size_t q = 0; q < keys.size(); ++q) {
+        if (rows[q] >= evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+            continue;
+        }
+        found[q] = algebra_decode_coeff<NumModes>(p.basis(), evolved[rows[q]], keys[q]);
+    }
+    return found;
+}
+
+} // namespace detail
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    // Checked: these are user-supplied indices. Past the storage width the unchecked encode's bit
+    // position underflows into an out-of-bounds write; between the logical and storage widths it
+    // encodes a monomial outside this propagator's system, which reads back 0 instead of raising.
+    auto keys = terms | std::views::transform([this](const VecZ &term) {
+                    return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                })
+                | std::ranges::to<std::vector<Monomial<NumModes>>>();
+
+    // map_partitions_ takes a callable over MonomialPropagator &, so the free function is bound to
+    // this query rather than called directly.
+    const auto probe = [&parameters, &keys](MonomialPropagator &p) {
+        return detail::probe_coefficients(p, parameters, keys);
+    };
+
+    std::vector<std::complex<double>> out(terms.size());
+    if (!partition_group_) {
+        out = probe(*this);
+    }
+    else {
+        // The partitions are disjoint, so at most one contributes per key.
+        for (const auto &partition_found : map_partitions_(probe)) {
+            for (size_t q = 0; q < out.size(); ++q) {
+                out[q] += partition_found[q];
+            }
+        }
+    }
+
+    // Round off the anti-hermitian numerical noise.
+    for (auto &coeff : out) {
+        coeff = {std::round(coeff.real() * 1e12) / 1e12, std::round(coeff.imag() * 1e12) / 1e12};
+    }
+
+    // Heisenberg only: the empty monomial is diverted to core_term_ instead of indexed, so the probe
+    // cannot have found it.
+    if (!schrodinger_) {
+        const auto core = core_term();
+        for (size_t q = 0; q < terms.size(); ++q) {
+            if (terms[q].empty()) {
+                out[q] = {core, 0.0};
+            }
+        }
+    }
+    return out;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameters, const std::vector<VecZ> &terms)
+    -> std::vector<std::complex<double>> {
+    // Absorbed gates are no longer in the graph, so the replay would silently leave them out of every value.
+    // The facade never sets its own flag, so check a partition's (they all agree) before fanning out.
+    if (partition_group_ ? first_partition_().heisenberg_gates_absorbed_ : heisenberg_gates_absorbed_) {
+        throw GraphStateConflict("term_expectation_values() is unavailable once propagate() or an in-place "
+                                 "contract_partially() has absorbed gates into a Heisenberg operator, because "
+                                 "the values would miss those gates. Call it after build_graph() and before "
+                                 "contracting in place.");
+    }
+    if (partition_group_) {
+        // Each partition allreduces internally, so every partition returns the global values.
+        return map_partitions_([&](MonomialPropagator &s) { return s.term_expectation_values(parameters, terms); })[0];
+    }
+    // Checked: these are user-supplied indices (see evolved_operator_coefficients()).
+    const auto keys = terms | std::views::transform([this](const VecZ &term) {
+                          return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
+                      })
+                      | std::ranges::to<std::vector<Monomial<NumModes>>>();
+    std::vector<size_t> rows(keys.size());
+    mp_op_.store->find_batch(keys.data(), keys.size(), rows.data());
+
+    const auto ev_op_gradient_fn = [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) {
+        return ev_op_gradient(request, comm, cos);
+    };
+    const VecD values = make_functional_(ev_op_gradient_fn, std::nullopt)(parameters);
+
+    // Each key lives on one rank, so one allreduce gathers each key's value and a found flag: values
+    // first, then flags.
+    const size_t count = keys.size();
+    VecD gathered(2 * count, 0.0);
+    for (size_t q = 0; q < count; ++q) {
+        if (rows[q] < values.size()) { // kNotFound is size_t max, so this covers a miss too
+            gathered[q] = values[rows[q]];
+            gathered[count + q] = 1.0;
+        }
+    }
+    mpi::allreduce_sum_inplace(gathered, comm_);
+
+    std::vector<std::complex<double>> out(count);
+    for (size_t q = 0; q < count; ++q) {
+        if (terms[q].empty()) { // the core term is a fixed identity, which every state reads as 1
+            out[q] = 1.0;
+            continue;
+        }
+        if (gathered[count + q] == 0.0) {
+            if (!schrodinger_) {
+                throw detail::OperatorTermNotFound(
+                    std::format("Operator term [{}] not found in the evolved operator. To evaluate a term outside "
+                                "the initial operator, add it with coefficient 0 before building the graph.",
+                                join_with_separator(terms[q], ", ")));
+            }
+            continue;
+        }
+        // The engine stores row M as the Hermitian h·M, with h = 1 or i, so gathered[q] is ⟨h·M⟩.
+        // To recover ⟨M⟩ we divide by h, which is equivalent to conjugation.
+        out[q] = std::conj(algebra_decode_coeff<NumModes>(basis_, gathered[q], keys[q]));
+    }
+    return out;
 }
 
 } // namespace monoprop
