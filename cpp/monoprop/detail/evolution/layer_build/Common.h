@@ -32,6 +32,35 @@ namespace monoprop::detail {
 // OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
 
+// A miss that max-sins truncation declined to create: no index, no row, no rotation. Above every row
+// index, like kMissingIndex, so the same `>= size` bound check also rejects it.
+inline constexpr size_t kDroppedIndex = kMissingIndex - 1;
+
+/* Max-sins truncation (build_graph only). Each row carries the fewest sine factors on any path that
+ * reached it. A rotation's partner gets its source's count plus `inc`; one that exists before the gate
+ * keeps the min of the two (both endpoints merge), and one that does not is created only if that count is
+ * at most `max_sins`. So only creation is ever refused, and a pair is always rotated or not at all. Counts
+ * are read and written in place: within one gate each row belongs to at most one rotation. */
+//
+// In Schrodinger a fully paired row is part of the reference state, which the engine materializes
+// lazily (it scores against the state whenever it appears), so `paired_is_initial` treats a fully paired
+// partner as present from the start: always created, at count 0, and merged into its source like a hit.
+struct SinTrack {
+    std::vector<uint8_t> *counts; // the partition's per-row counts, sized to the operator
+    uint8_t max_sins;             // at most 254, so a parent count plus inc always fits a byte
+    uint8_t inc;                  // 1, or 0 for a call whose sine branches are free
+    bool paired_is_initial;       // Schrodinger: see above
+
+    [[nodiscard]] auto child(uint8_t parent) const -> uint8_t { return static_cast<uint8_t>(parent + inc); }
+    //! An uncounted call (inc == 0) never declines, even below counts left by a lowered limit.
+    [[nodiscard]] auto admits(uint8_t parent) const -> bool { return inc == 0 || parent + inc <= max_sins; }
+    //! Merges one endpoint: `row` keeps the fewer of its own count and `partner`'s plus inc.
+    auto merge_into(size_t row, uint8_t partner) const -> void {
+        uint8_t &c = (*counts)[row];
+        c = std::min(c, child(partner));
+    }
+};
+
 // Marks matched followers without a per-gate O(n) memset: one counter bump clears every mark. Reused
 // across gates.
 struct MatchedEpochSet {

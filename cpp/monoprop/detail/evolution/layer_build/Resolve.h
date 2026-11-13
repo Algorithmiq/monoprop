@@ -45,9 +45,10 @@ struct IncomingProbe {
     std::vector<size_t> goff;              // window.count+1 flat offsets: g = goff[k] + q
     DefaultInitVector<uint32_t> sender_wi; // g → sender's window index
     DefaultInitVector<int> phase_of;       // g → query phase
+    DefaultInitVector<uint8_t> sins_of;    // g → the source's sine count (Counted form only)
     // g → word offset of that query inside its sender's buffer; a query ordinal names no position.
     DefaultInitVector<size_t> off_of;
-    DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j)
+    DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j; declined: kDroppedIndex)
     std::vector<TermIndex> miss_g;    // j → the g that became miss j (Phase 4 reads the key of miss_g[j])
     size_t base = 0;                  // op size before the miss inserts (the miss-index base)
     size_t nq_total = 0;
@@ -84,11 +85,15 @@ struct IncomingProbe {
 };
 
 // Read-only phases 1-2 of the exchange: `form` says whether the incoming records are fused
-// (ContractSink) or plain (GraphSink). The caller runs phase 3, then insert_incoming_misses.
+// (ContractSink), counted (GraphSink under max-sins) or plain (GraphSink). The caller runs phase 3, then
+// insert_incoming_misses. Under max-sins (`sins` non-null, Counted form) a miss whose source count plus
+// inc exceeds the limit takes kDroppedIndex instead of a row.
 template <size_t NumModes>
 auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized, one VecZ per sender slot
                             MPOperator<NumModes> &op,
-                            QueryForm form) -> IncomingProbe<NumModes> {
+                            QueryForm form,
+                            const SinTrack *sins = nullptr) -> IncomingProbe<NumModes> {
+    assert((sins != nullptr) == (form == QueryForm::Counted));
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingProbe<NumModes>::PosT;
     IncomingProbe<NumModes> pr;
@@ -119,6 +124,9 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
     pr.pos_off.resize(pr.nq_total);
     pr.k_of.resize(pr.nq_total);
     pr.hash_of.resize(pr.nq_total);
+    if (sins != nullptr) {
+        pr.sins_of.resize(pr.nq_total);
+    }
     pr.pos_flat.clear();
     // A hint only, so this stays one allocation for the common case.
     pr.pos_flat.reserve(pr.nq_total * QW::kReservePositionsPerQuery);
@@ -134,6 +142,9 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
             pr.off_of[g] = off;
             const auto d = QW::read_query(buf, form, off, std::span<PosT>(pr.pos_flat).subspan(at, k));
             pr.phase_of[g] = d.phase;
+            if (sins != nullptr) {
+                pr.sins_of[g] = d.sins;
+            }
             off = d.next;
         }
     }
@@ -156,6 +167,10 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
     pr.base = op.store->size();
     for (size_t g = 0; g < pr.nq_total; ++g) {
         if (pr.idx_of[g] == kMissingIndex) {
+            if (sins != nullptr && !sins->admits(pr.sins_of[g]) && !(sins->paired_is_initial && pr.is_paired_at(g))) {
+                pr.idx_of[g] = kDroppedIndex;
+                continue;
+            }
             pr.idx_of[g] = pr.base + pr.miss_g.size();
             pr.miss_g.push_back(static_cast<TermIndex>(g));
         }
@@ -166,10 +181,20 @@ auto probe_incoming_queries(const mpi::WindowVec<VecZ> &incoming, // serialized,
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size().
 template <size_t NumModes>
-auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr) -> void {
+auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr, const SinTrack *sins = nullptr)
+    -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
+    }
+    if (sins != nullptr) {
+        assert(sins->counts->size() == pr.base);
+        sins->counts->resize(pr.base + n_miss);
+        for (size_t j = 0; j < n_miss; ++j) {
+            const size_t g = pr.miss_g[j];
+            (*sins->counts)[pr.base + j] =
+                (sins->paired_is_initial && pr.is_paired_at(g)) ? 0 : sins->child(pr.sins_of[g]);
+        }
     }
     // insert_absent_terms' three steps without its two dense round-trips, and on the same ordering
     // contract, which is what matters: slot j lands at base+j, in miss order = (sender, record) order.
@@ -180,6 +205,17 @@ auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumMod
     }
     op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return pr.hash_of[pr.miss_g[j]]; });
     op.reindex_after_growth(base, n_miss);
+}
+
+// A sink's max-sins state, or null for a sink that has none (ContractSink, test sinks).
+template <typename Sink>
+[[nodiscard]] auto sink_sin_track(const Sink &sink) -> const SinTrack * {
+    if constexpr (requires { sink.sin_track(); }) {
+        return sink.sin_track();
+    }
+    else {
+        return nullptr;
+    }
 }
 
 // resolve_incoming / process_responses are the picture-independent cross-rank exchange skeletons; what
@@ -197,7 +233,8 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
-    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form());
+    const SinTrack *const sins = sink_sin_track(sink);
+    const IncomingProbe<NumModes> pr = probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), sins);
     // The pairing is an XOR involution, so the response window is the query window.
     mpi::WindowVec<std::vector<Resp>> responses(pr.window);
     for (const auto wi : pr.window.indices()) {
@@ -220,7 +257,7 @@ auto resolve_incoming(const mpi::WindowVec<VecZ> &incoming, // serialized, one V
         }
     }
 
-    insert_incoming_misses<NumModes>(op, pr);
+    insert_incoming_misses<NumModes>(op, pr, sins);
     return responses;
 }
 
