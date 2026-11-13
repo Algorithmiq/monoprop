@@ -20,6 +20,7 @@
 #include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -302,6 +303,94 @@ BOOST_AUTO_TEST_CASE(blockwise_truncation_is_partition_count_invariant) {
             BOOST_TEST_CONTEXT("schrodinger_cutoff " << schrodinger_cutoff.value_or(0) << ", seeded " << seeded) {
                 const auto [e1, g1] = run(1, seeded, schrodinger_cutoff);
                 const auto [e3, g3] = run(3, seeded, schrodinger_cutoff);
+                BOOST_TEST(e1 == e3, boost::test_tools::tolerance(1e-12));
+                BOOST_TEST_REQUIRE(g1.size() == g3.size());
+                for (size_t i = 0; i < g1.size(); ++i) {
+                    BOOST_TEST(g1[i] == g3[i], boost::test_tools::tolerance(1e-12));
+                }
+            }
+        }
+    }
+}
+
+// Max-sins truncation. At the largest limit no partner is ever declined, so the graph and results are
+// those of a propagator without one; the counts alone take memory.
+BOOST_AUTO_TEST_CASE(max_sins_at_the_limit_matches_off) {
+    for (const auto schrodinger_cutoff : kPictures) {
+        BOOST_TEST_CONTEXT("schrodinger_cutoff " << schrodinger_cutoff.value_or(0)) {
+            auto off = make_block_sim(2, 1, schrodinger_cutoff);
+            off.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
+            auto on = make_block_sim(2, 1, schrodinger_cutoff);
+            on.update_max_sins(MonomialPropagator<kBlockModes>::kMaxSinsLimit);
+            on.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
+            BOOST_TEST(on.size() == off.size());
+            BOOST_TEST(on.expectation_value(kBlockParams) == off.expectation_value(kBlockParams));
+            BOOST_TEST(off.operator_memory_usage().sin_count_bytes == 0u);
+            BOOST_TEST(on.operator_memory_usage().sin_count_bytes >= on.size());
+        }
+    }
+}
+
+// max_sins = 0 never creates a row in Heisenberg: only rotations between initial rows survive.
+BOOST_AUTO_TEST_CASE(max_sins_zero_creates_no_row) {
+    auto sim = make_block_sim(2);
+    sim.update_max_sins(0);
+    const size_t initial = sim.size();
+    sim.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
+    BOOST_TEST(sim.size() == initial);
+    BOOST_TEST(sim.graph_layers() == kBlockMonos.size());
+}
+
+// Uncounted sines (count_sins = false) never decline a partner, even at max_sins = 0.
+BOOST_AUTO_TEST_CASE(max_sins_uncounted_call_matches_off) {
+    auto off = make_block_sim(2);
+    off.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
+    auto uncounted = make_block_sim(2);
+    uncounted.update_max_sins(0);
+    uncounted.build_graph(kBlockMonos,
+                          kBlockMapping,
+                          kBlockCoeffs,
+                          std::nullopt,
+                          std::nullopt,
+                          std::nullopt,
+                          std::nullopt,
+                          /*count_sins=*/false);
+    BOOST_TEST(uncounted.size() == off.size());
+    BOOST_TEST(uncounted.expectation_value(kBlockParams) == off.expectation_value(kBlockParams));
+}
+
+BOOST_AUTO_TEST_CASE(max_sins_rejects_out_of_range_and_propagate) {
+    auto sim = make_block_sim(2);
+    BOOST_CHECK_THROW(sim.update_max_sins(MonomialPropagator<kBlockModes>::kMaxSinsLimit + 1), PropagatorConfigError);
+    BOOST_TEST(!sim.max_sins().has_value());
+    sim.update_max_sins(1);
+    BOOST_CHECK_THROW(sim.propagate(kBlockMonos, kBlockMapping, kBlockCoeffs, kBlockParams), PropagatorConfigError);
+    sim.update_max_sins(std::nullopt);
+    BOOST_TEST(sim.operator_memory_usage().sin_count_bytes == 0u);
+}
+
+// Counts are partition-local and cross partitions in the query records; the partition count must not
+// change the result.
+BOOST_AUTO_TEST_CASE(max_sins_is_partition_count_invariant) {
+    const auto run = [](size_t partitions, std::optional<unsigned int> schrodinger_cutoff, bool blocks) {
+        auto sim = make_block_sim(2, partitions, schrodinger_cutoff);
+        sim.update_max_sins(1);
+        sim.build_graph(kBlockMonos,
+                        kBlockMapping,
+                        kBlockCoeffs,
+                        std::nullopt,
+                        std::nullopt,
+                        std::nullopt,
+                        blocks ? std::optional<VecZ>{kGateBlocks} : std::nullopt);
+        const auto [e, g] = sim.expectation_value_and_gradient(kBlockParams);
+        return std::tuple{sim.size(), e, g};
+    };
+    for (const auto schrodinger_cutoff : kPictures) {
+        for (const bool blocks : {false, true}) {
+            BOOST_TEST_CONTEXT("schrodinger_cutoff " << schrodinger_cutoff.value_or(0) << ", blocks " << blocks) {
+                const auto [n1, e1, g1] = run(1, schrodinger_cutoff, blocks);
+                const auto [n3, e3, g3] = run(3, schrodinger_cutoff, blocks);
+                BOOST_TEST(n1 == n3);
                 BOOST_TEST(e1 == e3, boost::test_tools::tolerance(1e-12));
                 BOOST_TEST_REQUIRE(g1.size() == g3.size());
                 for (size_t i = 0; i < g1.size(); ++i) {
