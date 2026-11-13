@@ -222,3 +222,75 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
         BOOST_TEST(out[i] == Store::kNotFound);
     }
 }
+
+namespace {
+// Distinct monomials: row k sets the binary digits of k + 1 as Majorana indices.
+MSet distinct_mono(size_t k) {
+    VecZ idx;
+    for (size_t b = 0; b < 2 * N; ++b) {
+        if (((k + 1) >> b) & 1U) {
+            idx.push_back(b);
+        }
+    }
+    return bs(idx);
+}
+} // namespace
+
+// Blockwise truncation unhooks retired rows from the lookup. Backward-shift deletion must leave every
+// other probe chain findable, through later inserts and rehashes, and a re-inserted monomial must land
+// on its fresh row.
+BOOST_AUTO_TEST_CASE(erase_row_keeps_every_other_chain_findable) {
+    constexpr size_t n = 3000;
+    Store s;
+    for (size_t k = 0; k < n; ++k) {
+        s.push_back(distinct_mono(k));
+        s.emplace(distinct_mono(k), k);
+    }
+    std::vector<bool> erased(n, false);
+    for (size_t k = 0; k < n; k += 3) {
+        s.erase_row(k);
+        erased[k] = true;
+    }
+    s.erase_row(0); // already erased: a no-op
+    BOOST_TEST(s.indexed_count() == n - (n + 2) / 3);
+    BOOST_TEST(s.size() == n);
+    for (size_t k = 0; k < n; ++k) {
+        const auto found = s.find(distinct_mono(k));
+        if (erased[k]) {
+            BOOST_TEST(!found.has_value());
+        }
+        else {
+            BOOST_TEST_REQUIRE(found.has_value());
+            BOOST_TEST(*found == k);
+        }
+    }
+    size_t walked = 0;
+    s.for_each([&](const MSet &, size_t idx) {
+        BOOST_TEST(!erased[idx]);
+        ++walked;
+    });
+    BOOST_TEST(walked == s.indexed_count());
+
+    // Regenerate every erased monomial on a fresh row, then grow far enough to force rehashes.
+    for (size_t k = 0; k < n; k += 3) {
+        const size_t fresh = s.size();
+        s.push_back(distinct_mono(k));
+        s.emplace(distinct_mono(k), fresh);
+    }
+    for (size_t k = n; k < 4 * n; ++k) {
+        const size_t row = s.size();
+        s.push_back(distinct_mono(k));
+        s.emplace(distinct_mono(k), row);
+    }
+    const auto clone = s.clone();
+    for (const Store *store : {&s, clone.get()}) {
+        for (size_t k = 0; k < 4 * n; ++k) {
+            const auto found = store->find(distinct_mono(k));
+            BOOST_TEST_REQUIRE(found.has_value());
+            BOOST_TEST((store->row(*found) == distinct_mono(k)));
+            if (k < n) {
+                BOOST_TEST((erased[k] ? *found >= n : *found == k));
+            }
+        }
+    }
+}

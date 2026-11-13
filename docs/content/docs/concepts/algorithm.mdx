@@ -87,7 +87,8 @@ exponential growth is exactly what truncation keeps in check.
 Without truncation, the number of terms typically grows exponentially with the
 number of branching gates, making exact simulation intractable. A **truncation
 rule** is a map $\mathcal{T}$ on the operator space that discards terms
-failing a retention criterion, applied after every gate:
+failing a retention criterion, applied after every rotation $U_{L-j}$ (a gate
+whose generator has several commuting terms is one rotation per term):
 
 $$
 \tilde{H}_{j+1} = \mathcal{T}\!\left(U_{L-j}^\dagger\, \tilde{H}_j\, U_{L-j}\right),
@@ -124,6 +125,20 @@ Keeping the paired monomials is what makes this safe in the Heisenberg picture.
 As shown in *Reading off the expectation value* below, only paired monomials
 survive the trace against a product reference state, while every unpaired
 monomial contributes nothing.
+
+**Blockwise truncation** applies the same rule to a contiguous block of
+rotations at once instead of after each one. With the block's rotations
+$U_a, \dots, U_b$ ($a \le b$, consumed from $U_b$ down to $U_a$),
+
+$$
+\tilde{H}' = \mathcal{T}_\omega\!\left(U_a^\dagger \cdots U_b^\dagger\, \tilde{H}\, U_b \cdots U_a\right),
+$$
+
+where $\mathcal{T}_\omega$ only acts on the monomials created inside the block.
+A monomial can then pass through a long intermediate within the block, and the
+result no longer depends on the order of the commuting terms of one gate. One
+block per gate is the usual choice; see
+[Blockwise truncation](/features/cutoff#blockwise-truncation).
 
 ### Coefficient truncation
 

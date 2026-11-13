@@ -44,6 +44,8 @@ public:
 // those rows. Row layout: slot 0 = popcount c (or kOverflowMarker if c > inline_width_), slots 1..c =
 // ascending set-bit positions; stride_ is fixed for the container's life so row offsets stay stable.
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
+// Rows are append-only; erase_row only unhooks a row from the lookup, so the lookup holds at most one
+// row per monomial while the rows themselves may repeat an erased monomial.
 // Single-writer: one partition, one thread; parallelism is cross-partition.
 template <size_t NumModes>
 class OperatorIndex {
@@ -383,6 +385,37 @@ public:
             }
         }
     }
+    /*! @brief Removes row `i` from the lookup, leaving the row itself stored.
+     *
+     *  Afterwards find() misses the row's monomial, so a later insert of the same monomial lands on a
+     *  fresh row. Backward-shift deletion keeps every remaining probe chain intact without tombstones.
+     *  A row that is not in the lookup is left alone.
+     */
+    auto erase_row(size_t i) -> void {
+        const uint32_t h = fold_hash(row(i));
+        size_t hole = spread(h) & table_.mask;
+        while (table_.slots[hole].idx != static_cast<TermIndex>(i)) {
+            if (table_.slots[hole].idx == kEmptySlot) {
+                return;
+            }
+            hole = (hole + 1) & table_.mask;
+        }
+        table_.slots[hole] = Slot{};
+        --table_.count;
+        // An entry may fill the hole iff its home bucket is not cyclically inside (hole, s].
+        for (size_t s = (hole + 1) & table_.mask; table_.slots[s].idx != kEmptySlot; s = (s + 1) & table_.mask) {
+            const size_t home = spread(table_.slots[s].h) & table_.mask;
+            if (((s - home) & table_.mask) >= ((s - hole) & table_.mask)) {
+                table_.slots[hole] = table_.slots[s];
+                table_.slots[s] = Slot{};
+                hole = s;
+            }
+        }
+    }
+
+    /*! @brief Number of rows reachable through the lookup; size() minus the erased rows. */
+    [[nodiscard]] auto indexed_count() const -> size_t { return table_.count; }
+
     template <typename Func>
     auto for_each(Func &&fn) const -> void {
         for (const Slot &e : table_.slots) {
