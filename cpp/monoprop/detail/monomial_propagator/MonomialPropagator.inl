@@ -74,6 +74,16 @@ public:
     using std::invalid_argument::invalid_argument;
 };
 
+namespace detail {
+// Passes every monomial: the cutoff a layer inside a truncation block builds with. A LengthCutoff, so
+// CutoffEvaluator still takes its built-in fast path (popcount <= cutoff is always true).
+template <size_t NumModes>
+auto pass_all_cutoff_fn() -> const CutoffFn<NumModes> & {
+    static const CutoffFn<NumModes> fn = LengthCutoff<NumModes>{std::numeric_limits<unsigned int>::max(), NumModes};
+    return fn;
+}
+} // namespace detail
+
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_operator,
                                                  unsigned int cutoff,
@@ -586,22 +596,27 @@ auto MonomialPropagator<NumModes>::evolve_mode_build_graph_(const std::vector<Ve
                                                             const VecZ &parameter_mapping,
                                                             const VecD &gen_coeffs,
                                                             const VecZ &gate_indices,
-                                                            std::optional<size_t> only_rotate_len_k) -> void {
+                                                            std::optional<size_t> only_rotate_len_k,
+                                                            const VecZ *block_ids) -> void {
     const auto majoranas_size = majoranas.size();
-    run_gate_loop_(majoranas,
-                   only_rotate_len_k,
-                   [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &mono,
-                                                                                          std::optional<size_t> rot_len,
-                                                                                          size_t i) {
-                       const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-                       propagate_one_(mono,
-                                      rot_len,
-                                      std::nullopt,
-                                      std::nullopt,
-                                      parameter_mapping[idx],
-                                      gen_coeffs[idx],
-                                      gate_indices[idx]);
-                   });
+    run_gate_loop_(
+        majoranas,
+        only_rotate_len_k,
+        [this, &parameter_mapping, &gen_coeffs, &gate_indices, majoranas_size](const VecZ &mono,
+                                                                               std::optional<size_t> rot_len,
+                                                                               size_t i,
+                                                                               bool apply_cutoff) {
+            const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
+            propagate_one_(mono,
+                           rot_len,
+                           std::nullopt,
+                           std::nullopt,
+                           parameter_mapping[idx],
+                           gen_coeffs[idx],
+                           gate_indices[idx],
+                           apply_cutoff);
+        },
+        block_ids);
 }
 
 template <size_t NumModes>
@@ -611,32 +626,45 @@ auto MonomialPropagator<NumModes>::evolve_mode_graph_with_coeffs_(const std::vec
                                                                   const VecZ &gate_indices,
                                                                   const VecD &parameters,
                                                                   const VecD &operator_coeffs,
-                                                                  std::optional<size_t> only_rotate_len_k) -> void {
+                                                                  std::optional<size_t> only_rotate_len_k,
+                                                                  const VecZ *block_ids) -> void {
     auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
     auto coeffs = operator_coeffs;
     const auto majoranas_size = majoranas.size();
 
-    run_gate_loop_(majoranas,
-                   only_rotate_len_k,
-                   [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
-                       const VecZ &mono,
-                       std::optional<size_t> rot_len,
-                       size_t i) {
-                       const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
-                       const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
-                       // The cos word list is not persisted on the layer; the builder moves it out transiently.
-                       auto cos = std::make_shared<CosMask>();
-                       auto storage = build_evolve_result_(mono, rot_len, std::cref(coeffs), build_angle, cos.get());
-                       graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
+    run_gate_loop_(
+        majoranas,
+        only_rotate_len_k,
+        [this, &parameter_mapping, &gen_coeffs, &gate_indices, &mapped_params, &coeffs, majoranas_size](
+            const VecZ &mono,
+            std::optional<size_t> rot_len,
+            size_t i,
+            bool apply_cutoff) {
+            const auto idx = !schrodinger_ ? majoranas_size - 1 - i : i;
+            const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
+            // The cos word list is not persisted on the layer; the builder moves it out transiently.
+            auto cos = std::make_shared<CosMask>();
+            auto storage = build_evolve_result_(mono,
+                                                rot_len,
+                                                std::cref(coeffs),
+                                                build_angle,
+                                                cos.get(),
+                                                nullptr,
+                                                nullptr,
+                                                nullptr,
+                                                apply_cutoff);
+            graph_.append(storage, parameter_mapping[idx], gen_coeffs[idx], gate_indices[idx]);
 
-                       extend_coeffs_from_current_picture_if_needed_(coeffs);
+            extend_coeffs_from_current_picture_if_needed_(coeffs);
 
-                       Layer layer(std::move(storage));
-                       detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
-                           detail::scale_cos_mask(c, *cos, v);
-                       };
-                       evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
-                   });
+            Layer layer(std::move(storage));
+            detail::LayerCosScale cos_scale = [cos](size_t, double *c, double v) {
+                detail::scale_cos_mask(c, *cos, v);
+            };
+            evolve_step(coeffs, layer, apply_angle, comm_, cos_scale);
+        },
+        block_ids,
+        &coeffs);
 }
 
 template <size_t NumModes>
@@ -653,7 +681,10 @@ auto MonomialPropagator<NumModes>::evolve_mode_contract_immediately_(const std::
     run_gate_loop_(
         majoranas,
         only_rotate_len_k,
-        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &mono, std::optional<size_t> rot_len, size_t i) {
+        [this, &mapped_params, op_coeffs, majoranas_size](const VecZ &mono,
+                                                          std::optional<size_t> rot_len,
+                                                          size_t i,
+                                                          bool /*apply_cutoff: no blocks here*/) {
             const auto [build_angle, apply_angle] = gate_angle_(mapped_params, i, majoranas_size);
             // extend_coeffs must run after build_evolve_result_'s self-rank grow and before the apply.
             CosMask cos;
@@ -671,11 +702,22 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                const VecD &gen_coeffs,
                                                std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
-                                               std::optional<size_t> only_rotate_len_k) -> void {
+                                               std::optional<size_t> only_rotate_len_k,
+                                               std::optional<VecZ> block_ids) -> void {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+    // Before the fan-out, so a partitioned propagator throws once rather than from every partition.
+    if (block_ids.has_value()) {
+        validate_block_ids(*block_ids, majoranas.size());
+    }
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
-            s.build_graph(majoranas, parameter_mapping, gen_coeffs, gate_indices, parameters, only_rotate_len_k);
+            s.build_graph(majoranas,
+                          parameter_mapping,
+                          gen_coeffs,
+                          gate_indices,
+                          parameters,
+                          only_rotate_len_k,
+                          block_ids);
         });
         return;
     }
@@ -683,6 +725,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         return;
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
+    const VecZ *const blocks = block_ids.has_value() ? &*block_ids : nullptr;
 
     VecZ local_gates;
     if (gate_indices.has_value()) {
@@ -699,7 +742,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
 
     if (!parameters.has_value()) {
-        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k);
+        evolve_mode_build_graph_(majoranas, parameter_mapping, gen_coeffs, local_gates, only_rotate_len_k, blocks);
     }
     else {
         // map_params() indexes `parameters` by parameter_mapping, so a too-short vector reads out of bounds.
@@ -733,7 +776,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                        local_gates,
                                        *parameters,
                                        seed,
-                                       only_rotate_len_k);
+                                       only_rotate_len_k,
+                                       blocks);
     }
 }
 
@@ -813,16 +857,71 @@ template <size_t NumModes>
 template <typename EvolutionFunc>
 auto MonomialPropagator<NumModes>::run_gate_loop_(const std::vector<VecZ> &majoranas,
                                                   std::optional<size_t> only_rotate_len_k,
-                                                  EvolutionFunc evolution_func) -> void {
+                                                  EvolutionFunc evolution_func,
+                                                  const VecZ *block_ids,
+                                                  const VecD *sweep_coeffs) -> void {
     report_routing_coverage_(majoranas);
     // Serial per partition; parallelism comes from partitioning the operator across cores.
-    for (size_t i = 0; i < majoranas.size(); ++i) {
-        const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
-        const auto &mono = majoranas[idx];
-        evolution_func(mono, only_rotate_len_k, i);
+    if (block_ids == nullptr) {
+        for (size_t i = 0; i < majoranas.size(); ++i) {
+            const auto idx = !schrodinger_ ? majoranas.size() - 1 - i : i;
+            const auto &mono = majoranas[idx];
+            evolution_func(mono, only_rotate_len_k, i, /*apply_cutoff=*/true);
+        }
+    }
+    else {
+        /* Blockwise truncation. A block ends at its last processed monomial: the first in circuit order in
+         * Heisenberg, which runs back from the last monomial, and the last in Schrödinger. That last processed
+         * layer keeps the normal emit-time cutoff, so a partner it would only create to retire is never
+         * stored, and only rows from the block's earlier layers, [block_start, layer_start), need the sweep.
+         * That differs from cutting only at the boundary in one case: two present rows that both fail the
+         * cutoff exchange weight in that layer only if a sine term reaches upper_atol, exactly as under
+         * standard truncation. Without upper_atol such a pair matters only when one row predates the block
+         * (a Heisenberg initial term, say); with it, also when the sweep keeps a row the block created. A pair
+         * with either side passing rotates in full.
+         * Rows are local to their owner, so the sweep needs no communication; every rank and partition
+         * shares the replicated block_ids and closes each block at the same step. */
+        const auto &ids = *block_ids;
+        const size_t n = majoranas.size();
+        size_t block_start = mp_op_.size();
+        for (size_t i = 0; i < n; ++i) {
+            const auto idx = schrodinger_ ? i : n - 1 - i;
+            const bool block_end =
+                schrodinger_ ? idx + 1 == n || ids[idx + 1] != ids[idx] : idx == 0 || ids[idx - 1] != ids[idx];
+            const size_t layer_start = mp_op_.size();
+            evolution_func(majoranas[idx], only_rotate_len_k, i, /*apply_cutoff=*/block_end);
+            if (block_end) {
+                retire_block_rows_(block_start, layer_start, sweep_coeffs);
+                block_start = mp_op_.size();
+            }
+        }
     }
 
     initialize_operator_caches_();
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::retire_block_rows_(size_t first, size_t last, const VecD *coeffs) -> void {
+    if (first >= last) {
+        return;
+    }
+    const detail::CutoffEvaluator<NumModes> cutoff_eval{cutoff_fn_};
+    const auto even_mask = even_bits<2 * NumModes, LSb0>();
+    std::vector<TermIndex> retired;
+    for (size_t r = first; r < last; ++r) {
+        const auto mono = mp_op_.store->row(r);
+        // Paired in the native basis is what scores against the reference state; a basis_change cutoff
+        // could otherwise fail such a row.
+        if (is_paired<NumModes>(mono, even_mask) || cutoff_eval(mono)) {
+            continue;
+        }
+        if (coeffs != nullptr && upper_atol_.has_value() && r < coeffs->size()
+            && std::abs((*coeffs)[r]) >= *upper_atol_) {
+            continue;
+        }
+        retired.push_back(static_cast<TermIndex>(r));
+    }
+    mp_op_.retire_rows(retired);
 }
 
 template <size_t NumModes>
@@ -833,7 +932,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                                         CosMask *out_cos,
                                                         detail::FusedContract *fused_contract,
                                                         VecD *fused_scale_coeffs,
-                                                        bool *fused_scale) -> std::shared_ptr<LayerCore> {
+                                                        bool *fused_scale,
+                                                        bool apply_cutoff) -> std::shared_ptr<LayerCore> {
     // The only place a gate generator's indices are bounds-checked: nothing between the public entry
     // points and here constrains them.
     const auto gen_mono = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
@@ -841,7 +941,7 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
     // The cos-recompute metadata is written onto the returned LayerCore.
     return detail::build_layer<NumModes>(mp_op_,
                                          gen_mono,
-                                         cutoff_fn_,
+                                         apply_cutoff ? cutoff_fn_ : detail::pass_all_cutoff_fn<NumModes>(),
                                          lower_atol_,
                                          coeffs,
                                          upper_atol_,
@@ -864,8 +964,20 @@ auto MonomialPropagator<NumModes>::propagate_one_(const VecZ &gen_vec,
                                                   std::optional<double> param,
                                                   size_t param_index,
                                                   double gen_coeff,
-                                                  size_t gate_index) -> void {
-    graph_.append(build_evolve_result_(gen_vec, only_rotate_len_k, coeffs, param), param_index, gen_coeff, gate_index);
+                                                  size_t gate_index,
+                                                  bool apply_cutoff) -> void {
+    graph_.append(build_evolve_result_(gen_vec,
+                                       only_rotate_len_k,
+                                       coeffs,
+                                       param,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr,
+                                       apply_cutoff),
+                  param_index,
+                  gen_coeff,
+                  gate_index);
 }
 
 template <size_t NumModes>

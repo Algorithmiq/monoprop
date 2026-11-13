@@ -247,12 +247,21 @@ public:
     /// reverse, so a forward split across calls is not equivalent; Schrodinger is front-to-back, so it is.
     /// `parameter_mapping` is taken as given: renumbering an extension onto the equivalent circuit's axis
     /// (as the Python layer does) is the caller's job.
+    ///
+    /// `block_ids` selects blockwise truncation: one id per monomial, contiguous runs from 0 like
+    /// `gate_indices`, each run one truncation block. Inside a block the structural cutoff is suspended;
+    /// once the block's last monomial in processing order (its first in circuit order in Heisenberg, its
+    /// last in Schrodinger) has been applied, every row the block created that is unpaired, fails the
+    /// cutoff and, in a seeded build, has |coeff| < upper_atol is retired. The initial rows are never
+    /// retired, and every call closes its last block.
+    /// nullopt is standard truncation; one block per monomial is identical to it.
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
                      const VecD &gen_coeffs,
                      std::optional<VecZ> gate_indices = std::nullopt,
                      std::optional<VecD> parameters = std::nullopt,
-                     std::optional<size_t> only_rotate_len_k = std::nullopt) -> void;
+                     std::optional<size_t> only_rotate_len_k = std::nullopt,
+                     std::optional<VecZ> block_ids = std::nullopt) -> void;
 
     /// Evolve and contract immediately, without storing a graph.
     auto propagate(const std::vector<VecZ> &majoranas,
@@ -453,7 +462,8 @@ private:
                                   const VecZ &parameter_mapping,
                                   const VecD &gen_coeffs,
                                   const VecZ &gate_indices,
-                                  std::optional<size_t> only_rotate_len_k) -> void;
+                                  std::optional<size_t> only_rotate_len_k,
+                                  const VecZ *block_ids) -> void;
 
     // Returns {build_angle, apply_angle}; apply is the build angle, negated in Schrödinger.
     auto gate_angle_(const VecD &mapped_params, size_t i, size_t majoranas_size) const -> std::pair<double, double> {
@@ -468,7 +478,8 @@ private:
                                         const VecZ &gate_indices,
                                         const VecD &parameters,
                                         const VecD &operator_coeffs,
-                                        std::optional<size_t> only_rotate_len_k) -> void;
+                                        std::optional<size_t> only_rotate_len_k,
+                                        const VecZ *block_ids) -> void;
 
     auto evolve_mode_contract_immediately_(const std::vector<VecZ> &majoranas,
                                            const VecZ &parameter_mapping,
@@ -479,10 +490,20 @@ private:
     // Warns once if this call's generator shifts do not span all log2(R) rank bits.
     auto report_routing_coverage_(const std::vector<VecZ> &majoranas) -> void;
 
+    /// Runs `evolution_func(mono, only_rotate_len_k, step, apply_cutoff)` per monomial in processing order.
+    /// With `block_ids`, `apply_cutoff` is false for all but each block's last processed monomial, and the
+    /// block's rows are swept by retire_block_rows_ right after it, reading `sweep_coeffs` (the seeded
+    /// build's live coefficients, or null) for the upper_atol rescue.
     template <typename EvolutionFunc>
     auto run_gate_loop_(const std::vector<VecZ> &majoranas,
                         std::optional<size_t> only_rotate_len_k,
-                        EvolutionFunc evolution_func) -> void;
+                        EvolutionFunc evolution_func,
+                        const VecZ *block_ids = nullptr,
+                        const VecD *sweep_coeffs = nullptr) -> void;
+
+    /// The block-end sweep: retires every row in [first, last) that is unpaired, fails cutoff_fn_ and is
+    /// not rescued by upper_atol on `coeffs` (null: no rescue). Rows of [first, last) are all live.
+    auto retire_block_rows_(size_t first, size_t last, const VecD *coeffs) -> void;
 
     auto propagate_one_(const VecZ &gen_vec,
                         std::optional<size_t> only_rotate_len_k,
@@ -490,10 +511,12 @@ private:
                         std::optional<double> param = std::nullopt,
                         size_t param_index = 0,
                         double gen_coeff = 0.0,
-                        size_t gate_index = 0) -> void;
+                        size_t gate_index = 0,
+                        bool apply_cutoff = true) -> void;
 
     // fused_scale_coeffs (ContractImmediately only): the picture's mutable coeff vector for the uncapped
     // fused cos sweep; the taken decision is reported via fused_scale so the apply matches. See build_layer.
+    // apply_cutoff = false emits every partner (inside a truncation block); atol checks are unaffected.
     auto build_evolve_result_(const VecZ &gen_vec,
                               std::optional<size_t> only_rotate_len_k,
                               std::optional<std::reference_wrapper<const VecD>> coeffs = std::nullopt,
@@ -501,7 +524,8 @@ private:
                               CosMask *out_cos = nullptr,
                               detail::FusedContract *fused_contract = nullptr,
                               VecD *fused_scale_coeffs = nullptr,
-                              bool *fused_scale = nullptr) -> std::shared_ptr<LayerCore>;
+                              bool *fused_scale = nullptr,
+                              bool apply_cutoff = true) -> std::shared_ptr<LayerCore>;
 
     template <typename Fn,
               typename R = std::invoke_result_t<Fn, const EvalRequest &, mpi::Comm, const detail::CosCallbacks &>>

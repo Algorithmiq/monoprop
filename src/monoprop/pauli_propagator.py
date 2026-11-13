@@ -30,7 +30,11 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from .circuit import Circuit, ExpGate
-    from .monomial_propagator import OperatorTerm, ParameterValues
+    from .monomial_propagator import (
+        OperatorTerm,
+        ParameterValues,
+        TruncationBlocks,
+    )
 
 
 class PauliPropagator(MonomialPropagator[PauliOperator]):
@@ -207,6 +211,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         *,
         seed_parameters: ParameterValues = None,
         only_rotate_len_k: int | None = None,
+        truncation_blocks: TruncationBlocks = None,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -233,11 +238,23 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 evolved operator even if they anticommute. Length is counted in the engine's
                 slots, not in qubits: ``X`` or ``Y`` on a qubit costs one slot and ``Z``
                 costs two, so ``k`` ranges up to ``2 * num_qubits``.
+            truncation_blocks: Blockwise truncation. ``None`` (default)
+                applies the structural cutoff after every generator term. ``"gate"`` makes each
+                gate one block, so a multi-term gate is truncated once, independently of the order
+                of its commuting terms. A sequence gives one block label per entry of
+                ``circuit.gates``, each label one contiguous run of gates. Inside a block no
+                structural cutoff applies; at the block's end the Pauli terms the block created
+                that are unpaired (not Z-only) and over the cutoff are dropped. See
+                [Blockwise truncation](/features/cutoff#blockwise-truncation).
+
+        Raises:
+            ValueError: If ``truncation_blocks`` is malformed.
         """
         super().build_graph(
             circuit,
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
+            truncation_blocks=truncation_blocks,
         )
 
     def term_expectation_values(

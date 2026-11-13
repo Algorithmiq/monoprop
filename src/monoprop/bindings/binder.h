@@ -119,6 +119,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "gate_indices"_a = std::nullopt,
             "parameters"_a = std::nullopt,
             "only_rotate_len_k"_a = std::nullopt,
+            "block_ids"_a = std::nullopt,
             "Build the propagation graph, recording per-layer gate information");
 
     // Deep copy: the operator store is cloned, the immutable graph layer cores are shared.
@@ -288,6 +289,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"initial_state_bytes", b.initial_state_bytes},
                                              {"inverted_index_bytes", b.inverted_index_bytes},
                                              {"matched_scratch_bytes", b.matched_scratch_bytes},
+                                             {"retired_mask_bytes", b.retired_mask_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics, outside total_bytes().
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
@@ -295,7 +297,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"d_invidx_dense_columns", b.inverted_index_dense_columns},
                                              {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
                                              {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
-                                             {"d_init_operator_entries", b.init_operator_entries}};
+                                             {"d_init_operator_entries", b.init_operator_entries},
+                                             {"d_retired_rows", b.retired_rows}};
     });
 
     // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P

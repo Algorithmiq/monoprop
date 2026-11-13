@@ -52,6 +52,11 @@ against the coefficients the existing layers really carry and reproduces the one
 exactly. On the pre-call axis the two blocks' angles swap places, which nothing raises on —
 the graph just keeps a different set of terms.
 
+With [blockwise truncation](/features/cutoff#blockwise-truncation), each call's
+`truncation_blocks` label that call's own gates, and every call closes its last block, so a
+block never spans two calls. Splitting a circuit between calls at a block boundary therefore
+builds the same graph as the one-call build.
+
 ## Expectation value and gradient
 
 The simplest path is to evaluate directly:
