@@ -86,6 +86,10 @@ struct MPOperator {
      * end are live. */
     std::vector<uint64_t> retired_words_;
     size_t retired_count_{0uz};
+    /* Max-sins truncation: per row, the fewest sine factors on any path that reached it (see SinTrack).
+     * Empty while the propagator has no max_sins; once set, every build layer first pads it to the store
+     * with 0, so a row that predates tracking counts as unsined. A retired row's entry is never read. */
+    std::vector<uint8_t> sin_counts_;
 
     MPOperator() noexcept = default;
     MPOperator(MPOperator &&) noexcept = default;
@@ -103,7 +107,8 @@ struct MPOperator {
           basis(other.basis),
           inverted_index_(other.inverted_index_),
           retired_words_(other.retired_words_),
-          retired_count_(other.retired_count_) {}
+          retired_count_(other.retired_count_),
+          sin_counts_(other.sin_counts_) {}
 
     auto size() const -> size_t { return store->size(); }
 
@@ -327,6 +332,8 @@ struct MPOperatorMemoryBreakdown final {
     size_t matched_scratch_bytes{0uz};
     // The retired-row mask (blockwise truncation); 0 when no row was ever retired.
     size_t retired_mask_bytes{0uz};
+    // The per-row sine counts (max-sins truncation); 0 when max_sins is unset.
+    size_t sin_count_bytes{0uz};
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -343,7 +350,8 @@ struct MPOperatorMemoryBreakdown final {
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes + retired_mask_bytes;
+               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes + retired_mask_bytes
+               + sin_count_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -356,6 +364,7 @@ struct MPOperatorMemoryBreakdown final {
         inverted_index_bytes += o.inverted_index_bytes;
         matched_scratch_bytes += o.matched_scratch_bytes;
         retired_mask_bytes += o.retired_mask_bytes;
+        sin_count_bytes += o.sin_count_bytes;
         retired_rows += o.retired_rows;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
@@ -390,6 +399,7 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
     breakdown.retired_mask_bytes = op.retired_words_.capacity() * sizeof(uint64_t);
     breakdown.retired_rows = op.retired_count_;
+    breakdown.sin_count_bytes = op.sin_counts_.capacity() * sizeof(uint8_t);
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

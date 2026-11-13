@@ -91,6 +91,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         cutoff_type: str,
         lower_atol: float | None,
         upper_atol: float | None,
+        max_sins: int | None,
         basis_change: list[list[int]] | None,
         comm: MPI.Comm | None,
         basis: str = "majorana",
@@ -105,6 +106,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             cutoff_type: ``"length"`` or ``"support"``.
             lower_atol: Coefficient-truncation threshold, or ``None``.
             upper_atol: Coefficient-retention threshold, or ``None``.
+            max_sins: Sine-count truncation limit for [build_graph][], or ``None``.
             basis_change: Internal per-Majorana basis change (``2 * num_modes`` entries).
             comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate
                 reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
@@ -134,6 +136,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             schrodinger_cutoff=schrodinger_cutoff,
             lower_atol=lower_atol,
             upper_atol=upper_atol,
+            max_sins=max_sins,
             cutoff_type=cutoff_type,
             basis_change=basis_change,
             comm=comm,
@@ -257,6 +260,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         seed_parameters: ParameterValues = None,
         only_rotate_len_k: int | None = None,
         truncation_blocks: TruncationBlocks = None,
+        count_sins: bool = True,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -287,6 +291,11 @@ class MonomialPropagator(ABC, Generic[T_op]):
                 cutoff applies; at the block's end every term the block created that is unpaired
                 and over the cutoff is dropped. See
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
+            count_sins: With ``max_sins`` set, ``False`` makes this call's sine branches free: a
+                new term inherits its source's sine count, so the call creates every term
+                standard truncation would. Use it for gates that should not spend the budget, such
+                as candidate orbital rotations appended to a built graph. Ignored without
+                ``max_sins``.
 
         Raises:
             ValueError: If ``truncation_blocks`` is malformed.
@@ -329,6 +338,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
             bound,
             only_rotate_len_k,
             block_ids=block_ids,
+            count_sins=bool(count_sins),
         )
         # Advance the axis only once the graph owns the layers: expand_monomials, _bind and the C++
         # validation all raise, and a retry after such a failure must reuse the same indices.
@@ -789,6 +799,28 @@ class MonomialPropagator(ABC, Generic[T_op]):
     @upper_atol.setter
     def upper_atol(self, new_upper_atol: float | None) -> None:
         self._simulator.upper_atol = new_upper_atol
+
+    @property
+    def max_sins(self) -> int | None:
+        """Current max-sins truncation limit for [build_graph][] (``None`` if unset).
+
+        Setting ``None`` disables it and frees the per-term sine counts. Enabling it counts every
+        term that already exists as having no sine factors; lowering it does not drop existing
+        terms. See [Max-sins truncation](/features/cutoff#max-sins-truncation).
+        """
+        return self._simulator.max_sins
+
+    @max_sins.setter
+    def max_sins(self, new_max_sins: int | None) -> None:
+        self._simulator.max_sins = new_max_sins
+
+    def reset_sin_counts(self) -> None:
+        """Count every current term as having no sine factors.
+
+        Later [build_graph][] calls then spend the whole ``max_sins`` budget afresh from the
+        current operator. A no-op when ``max_sins`` is ``None``.
+        """
+        self._simulator.reset_sin_counts()
 
     @property
     def cutoff_type(self) -> str:

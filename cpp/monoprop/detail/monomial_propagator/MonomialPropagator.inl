@@ -97,6 +97,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  size_t logical_num_modes,
                                                  Basis basis,
                                                  size_t partitions,
+                                                 std::optional<size_t> max_sins,
                                                  PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
@@ -123,6 +124,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                 upper_atol.value(),
                                                 lower_atol.value()));
     }
+    validate_max_sins_(max_sins);
+    max_sins_ = max_sins;
 
     const size_t n_partitions = resolve_partition_count_(partitions, comm);
     // The R ranks x S partitions form one flat P = R*S SPMD world, so a mismatch across ranks would
@@ -176,7 +179,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                                       basis_change,
                                                                       logical_num_modes,
                                                                       basis,
-                                                                      /*partitions=*/1);
+                                                                      /*partitions=*/1,
+                                                                      max_sins);
             }};
         partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
                                                                                          factory,
@@ -258,6 +262,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       cutoff_(other.cutoff_),
       lower_atol_(other.lower_atol_),
       upper_atol_(other.upper_atol_),
+      max_sins_(other.max_sins_),
+      sin_increment_(other.sin_increment_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
       heisenberg_gates_absorbed_(other.heisenberg_gates_absorbed_),
@@ -703,7 +709,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
                                                std::optional<size_t> only_rotate_len_k,
-                                               std::optional<VecZ> block_ids) -> void {
+                                               std::optional<VecZ> block_ids,
+                                               bool count_sins) -> void {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
     // Before the fan-out, so a partitioned propagator throws once rather than from every partition.
     if (block_ids.has_value()) {
@@ -717,7 +724,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                           gate_indices,
                           parameters,
                           only_rotate_len_k,
-                          block_ids);
+                          block_ids,
+                          count_sins);
         });
         return;
     }
@@ -726,6 +734,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
     }
     validate_coefficient_lengths(parameter_mapping, gen_coeffs);
     const VecZ *const blocks = block_ids.has_value() ? &*block_ids : nullptr;
+    sin_increment_ = count_sins ? 1 : 0;
 
     VecZ local_gates;
     if (gate_indices.has_value()) {
@@ -788,6 +797,10 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              const VecD &parameters,
                                              std::optional<size_t> only_rotate_len_k) -> void {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+    if (max_sins_.has_value()) {
+        throw PropagatorConfigError("max_sins truncation applies to build_graph() only; set max_sins to None "
+                                    "before calling propagate().");
+    }
     if (partition_group_) {
         for_each_partition_([&](MonomialPropagator &s) {
             s.propagate(majoranas, parameter_mapping, gen_coeffs, parameters, only_rotate_len_k);
@@ -938,6 +951,15 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
     // points and here constrains them.
     const auto gen_mono = indices_to_bitset_checked<NumModes>(gen_vec, 2 * logical_num_modes_);
 
+    // Max-sins is a build_graph rule only; propagate() refuses it before reaching here.
+    std::optional<detail::SinTrack> sins;
+    if (max_sins_.has_value() && fused_contract == nullptr) {
+        sins = detail::SinTrack{.counts = &mp_op_.sin_counts_,
+                                .max_sins = static_cast<uint8_t>(*max_sins_),
+                                .inc = sin_increment_,
+                                .paired_is_initial = schrodinger_};
+    }
+
     // The cos-recompute metadata is written onto the returned LayerCore.
     return detail::build_layer<NumModes>(mp_op_,
                                          gen_mono,
@@ -954,7 +976,8 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
                                          schrodinger_,
                                          fused_scale_coeffs,
                                          fused_scale,
-                                         basis_);
+                                         basis_,
+                                         sins.has_value() ? &*sins : nullptr);
 }
 
 template <size_t NumModes>

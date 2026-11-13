@@ -6,7 +6,9 @@ description: Controlling operator growth with structural cutoffs and coefficient
 monoprop limits the growth of the propagated operator with two independent
 mechanisms: a **structural cutoff** on the size of each monomial, and
 **coefficient-tolerance** thresholds on the magnitude of each term. Both can be
-changed at any point during a simulation.
+changed at any point during a simulation. Graph builds can also bound the number
+of sine branches on the paths to each monomial
+([max-sins truncation](#max-sins-truncation)).
 
 The structural cutoff discards monomials that grow "too large". What counts as
 large depends on the simulator: [MajoranaPropagator][] offers a choice between two
@@ -114,6 +116,70 @@ Restrictions and differences:
   `schrodinger_cutoff` admits, and any other paired monomial enters when a rotation
   first reaches it. When that cutoff leaves out paired monomials a gate reaches, the
   result can depend on the order of the gate's terms even with `"gate"` blocks.
+
+## Max-sins truncation
+
+Every rotation splits a monomial that anticommutes with the generator into a
+cosine branch, the monomial itself, and a sine branch, its partner (see
+[Propagation Algorithm](/concepts/algorithm)). For small angles, a monomial
+reached only along paths with many sine branches carries a small coefficient.
+**Max-sins truncation** bounds that count, independently of the angles, so it
+suits a graph that is built once and evaluated at many parameter values:
+
+```python notest
+sim = MajoranaPropagator(hamiltonian, initial_state, cutoff=6, max_sins=4)
+sim.build_graph(circuit)
+```
+
+The rule follows [PauliPropagation.jl](https://github.com/MSRudolph/PauliPropagation.jl)'s
+`max_sins`:
+
+- Every monomial carries the fewest sine branches on any path that reached it.
+  The initial operator (the observable, or in the Schrödinger picture the state)
+  starts at 0.
+- A rotation gives the partner its source's count plus one. When the partner
+  already exists, the rotation is always kept, and both monomials keep the smaller
+  of their own count and their partner's plus one.
+- A partner that does not exist yet is created only if its count is at most
+  `max_sins`. Otherwise the source is only cosine-scaled. This is the only thing
+  max-sins truncation drops.
+
+`max_sins=0` therefore only rotates monomials into each other that already exist,
+and a larger `max_sins` never keeps fewer monomials. It is applied at every
+rotation, together with the structural cutoff, `lower_atol` and blockwise
+truncation: a partner must pass every active rule. It works with partitioning, MPI
+and both bases, at one byte of memory per monomial (`sin_count_bytes` in
+`operator_memory_breakdown()`).
+
+The counts carry over between `build_graph` calls, so an extension continues them.
+Two controls change that:
+
+- `build_graph(circuit, count_sins=False)` makes the call's sine branches free: a
+  partner takes its source's count, so the call creates every monomial it would
+  without max-sins truncation, while the counts stay up to date for later calls.
+  Use it for gates that should not spend the budget, such as candidate orbital
+  rotations appended to a built graph.
+- `reset_sin_counts()` sets every count to 0, so later calls spend the whole
+  budget again from the current operator. Setting `max_sins` from `None` to a
+  value does the same.
+
+```python notest
+sim.build_graph(ansatz)                          # counted
+sim.build_graph(candidates, count_sins=False)    # free
+sim.max_sins = None                              # off: frees the counts
+```
+
+Restrictions and differences:
+
+- Max-sins truncation applies to `build_graph` only;
+  [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] raises a
+  `RuntimeError` while `max_sins` is set.
+- Lowering `max_sins` does not drop monomials that already exist; it only stops
+  new ones.
+- In the Schrödinger picture every fully paired monomial is part of the reference
+  state, even before a rotation first reaches it, so it counts 0 and is never
+  declined.
+- `max_sins` is at most 254, since each count is stored in one byte.
 
 ## Gate-application length cap
 

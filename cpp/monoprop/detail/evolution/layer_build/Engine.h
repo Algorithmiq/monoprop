@@ -70,11 +70,17 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 
 // Graph-build sink: accumulates the per-rank PartnerAcc endpoints and assembles a LayerCore at finalize.
 // wants_values=false — the scan captures no coeffs and every rotation records only (index, phase).
+//
+// With max-sins truncation (`sins` non-null) the queries are Counted, and a response is no longer only
+// asserted on: it carries the target's pre-gate count back for the querier's merge, or init_response()
+// for a partner the resolver declined to create, whose rotation both sides then leave out in step.
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
-    [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
-    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
+    [[nodiscard]] auto incoming_form() const -> QueryForm {
+        return sins != nullptr ? QueryForm::Counted : QueryForm::Plain;
+    }
+    [[nodiscard]] auto querier_form() const -> QueryForm { return incoming_form(); }
     using Response = TermIndex;
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
@@ -85,8 +91,15 @@ struct GraphSink {
     size_t def_out_base_ = 0;
     // Per-window-slot base into acc[slot].in_entries (set in prepare).
     mpi::WindowVec<size_t> in_base_;
+    const SinTrack *sins = nullptr;
 
-    GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
+    GraphSink(size_t R_, size_t my_rank_, const SinTrack *sins_ = nullptr)
+        : R(R_),
+          my_rank(my_rank_),
+          acc(R_),
+          sins(sins_) {}
+
+    [[nodiscard]] auto sin_track() const -> const SinTrack * { return sins; }
 
     auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
         acc[my_rank].in_entries.push_back({found, phase});
@@ -119,7 +132,14 @@ struct GraphSink {
         for (const auto wi : w.indices()) {
             PartnerAcc &a = acc[w.slot(wi)];
             in_base_[wi] = a.in_entries.size();
-            a.in_entries.resize(in_base_[wi] + responses[wi].size());
+            // Under max-sins a declined query records nothing, so entries are appended, not slotted:
+            // queries arrive sender by sender in order, so the layout is the same.
+            if (sins != nullptr) {
+                a.in_entries.reserve(in_base_[wi] + responses[wi].size());
+            }
+            else {
+                a.in_entries.resize(in_base_[wi] + responses[wi].size());
+            }
         }
     }
     auto on_resolved(size_t g,
@@ -128,8 +148,26 @@ struct GraphSink {
                      size_t ip,
                      const IncomingProbe<NumModes> &pr,
                      const mpi::WindowVec<VecZ> & /*incoming*/) -> Response {
+        if (sins != nullptr) {
+            return on_resolved_counted_(g, s, ip, pr);
+        }
         acc[pr.window.slot(s)].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
         return static_cast<TermIndex>(ip);
+    }
+    // Answers with the target's pre-gate count, a fresh row's own, or init_response() if declined.
+    auto on_resolved_counted_(size_t g, mpi::WindowIndex s, size_t ip, const IncomingProbe<NumModes> &pr) -> Response {
+        if (ip == kDroppedIndex) {
+            return init_response();
+        }
+        acc[pr.window.slot(s)].in_entries.push_back({ip, pr.phase_of[g]});
+        const uint8_t src_sins = pr.sins_of[g];
+        if (ip >= pr.base) {
+            // insert_incoming_misses writes the same count; a reference-state row answers 0 for the merge.
+            return (sins->paired_is_initial && pr.is_paired_at(g)) ? 0 : sins->child(src_sins);
+        }
+        const uint8_t tgt_sins = (*sins->counts)[ip];
+        sins->merge_into(ip, src_sins);
+        return tgt_sins;
     }
     auto process_reserve(const mpi::WindowVec<std::vector<Response>> & /*inc_r*/, size_t /*my_rank*/) -> void {}
     auto on_response_block(size_t r,
@@ -140,6 +178,18 @@ struct GraphSink {
         const size_t base = out.size();
         const size_t nq = resp.size();
         const QueryForm form = querier_form();
+        if (sins != nullptr) {
+            out.reserve(base + nq);
+            size_t off = 0;
+            for (size_t q = 0; q < nq; ++q) {
+                if (resp[q] != init_response()) {
+                    out.push_back({srcs[q], QueryWire<NumModes>::phase_at(qbuf, off)});
+                    sins->merge_into(srcs[q], static_cast<uint8_t>(resp[q]));
+                }
+                off = QueryWire<NumModes>::next_off(qbuf, form, off);
+            }
+            return;
+        }
         out.resize(base + nq);
         size_t off = 0;
         for (size_t q = 0; q < nq; ++q) {
@@ -482,11 +532,22 @@ struct LayerBuildEngine {
         // Grow the rows, write each miss's positions, insert; same base+k ordering as insert_absent_terms.
         // Kept as the dense reference sparse_resolve_tests.cpp differentially tests this path against.
         const size_t base = local_op.store->grow_rows_geometric(n_miss);
+        const SinTrack *const sins = sink_sin_track(sink);
+        if (sins != nullptr) {
+            assert(sins->counts->size() == base);
+            sins->counts->resize(base + n_miss);
+        }
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
             local_op.store->set_positions(base + k,
                                           std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
+            if (sins != nullptr) {
+                // The source took part in no other rotation this gate, so its count is still pre-gate.
+                const bool initial =
+                    sins->paired_is_initial && is_paired_positions_(deferred_pos_flat_.data() + m.pos_at, m.k);
+                (*sins->counts)[base + k] = initial ? 0 : sins->child((*sins->counts)[m.src]);
+            }
         }
         local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
         local_op.reindex_after_growth(base, n_miss);
@@ -508,6 +569,19 @@ private:
             counts[window.slot(wi)] = static_cast<int>(src_idx_r[wi].size());
         }
         return counts;
+    }
+
+    // Max-sins on a self miss: whether to create the partner. A reference-state partner (Schrodinger, fully
+    // paired) is always created and merged into its source like a hit on a count-0 row.
+    auto admit_self_miss_(const SinTrack &sins, size_t src, size_t pos_at, uint32_t k) -> bool {
+        if (sins.paired_is_initial && is_paired_positions_(self_stage_.pos_flat.data() + pos_at, k)) {
+            sins.merge_into(src, 0);
+            return true;
+        }
+        return sins.admits((*sins.counts)[src]);
+    }
+    static auto is_paired_positions_(const RowPosT *pos, size_t k) -> bool {
+        return k == 2 * QueryWire<NumModes>::pair_count(std::span<const RowPosT>(pos, k));
     }
 
     // Batched self-resolve over the index's group-prefetch find_batch; hits/misses are emitted to the sink
@@ -560,6 +634,7 @@ private:
                     }
                 }
             }
+            const SinTrack *const sins = sink_sin_track(sink);
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {
@@ -571,7 +646,16 @@ private:
                     if (is_leader_pass && found[j] < combined_size) {
                         matched.mark(found[j]);
                     }
+                    if (sins != nullptr) {
+                        const uint8_t src_sins = (*sins->counts)[srcs[j]];
+                        const uint8_t tgt_sins = (*sins->counts)[found[j]];
+                        sins->merge_into(found[j], src_sins);
+                        sins->merge_into(srcs[j], tgt_sins);
+                    }
                     sink.self_hit(srcs[j], found[j], phases[j], v_src);
+                }
+                else if (sins != nullptr && !admit_self_miss_(*sins, srcs[j], pos_off[j], k_of[j])) {
+                    continue; // max-sins: an over-limit partner that does not exist is never created
                 }
                 else {
                     // The stage dies with this pass and the misses are flushed after both, so copy now.
@@ -607,8 +691,15 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  bool schrodinger = false,
                  VecD *fused_scale_coeffs = nullptr,
                  bool *fused_scale_out = nullptr,
-                 Basis basis = Basis::Majorana) -> std::shared_ptr<LayerCore> {
+                 Basis basis = Basis::Majorana,
+                 const SinTrack *sin_track = nullptr) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
+    // Max-sins is a graph-build rule; the fused contraction has no count to keep.
+    assert(sin_track == nullptr || fused_contract == nullptr);
+    if (sin_track != nullptr) {
+        // Rows that predate tracking (or came in through a path that does not count) start at 0.
+        sin_track->counts->resize(local_op.store->size(), 0);
+    }
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // R is the flat world (ranks x partitions).
@@ -659,7 +750,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        gen_shift,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
-                                                       cos_build);
+                                                       cos_build,
+                                                       sin_track != nullptr ? sin_track->counts->data() : nullptr);
         });
         if (fused.cos_blocks.size() == 1) {
             // The serial scan produces a single cosine block set — take it wholesale.
@@ -714,7 +806,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              .basis = basis});
     }
     else {
-        storage = run(GraphSink<NumModes>{R, my_rank});
+        storage = run(GraphSink<NumModes>{R, my_rank, sin_track});
     }
 
     // Recompute metadata rides with the layer so it survives every graph transform. scaled_count is the

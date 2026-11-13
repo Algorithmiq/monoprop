@@ -101,6 +101,8 @@ def test_model_propagate(
     """Benchmark a fixed model's in-place evolution alone -- no expectation value, no graph."""
     _config_cls, build_fn, steps_fn = MODELS[model]
     config = model_configs[model]
+    if config.max_sins >= 0:
+        pytest.skip(f"{model}: max_sins truncation applies to build_graph only")
     steps = steps_fn(config)
     record_model_config(model, config)
 

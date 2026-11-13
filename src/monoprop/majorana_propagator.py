@@ -90,6 +90,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         cutoff_type: str = "length",
         lower_atol: float | None = None,
         upper_atol: float | None = None,
+        max_sins: int | None = None,
         comm: MPI.Comm | None = None,
     ) -> None:
         """Initialize the propagator.
@@ -115,6 +116,11 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 exception applies on top of either.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of complexity.
+            max_sins: [build_graph][] never creates a Majorana monomial whose fewest sine factors over
+                all paths reaching it exceed ``max_sins`` (an integer in ``[0, 254]``);
+                rotations into existing monomials are always kept. ``None`` (default) disables it,
+                and [propagate][] rejects a set one. See
+                [Max-sins truncation](/features/cutoff#max-sins-truncation).
             comm: Optional MPI communicator (must outlive the simulator). Pass a duplicate
                 reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
                 point-to-point messages on fixed tags, which your own sends and receives on the
@@ -133,6 +139,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             cutoff_type=cutoff_type,
             lower_atol=lower_atol,
             upper_atol=upper_atol,
+            max_sins=max_sins,
             basis_change=None,
             comm=comm,
         )
@@ -285,6 +292,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         seed_parameters: ParameterValues = None,
         only_rotate_len_k: int | None = None,
         truncation_blocks: TruncationBlocks = None,
+        count_sins: bool = True,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -320,6 +328,11 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 structural cutoff applies; at the block's end the Majorana monomials the block created
                 that are unpaired (not a product of whole mode pairs) and over the cutoff are dropped. See
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
+            count_sins: With ``max_sins`` set, ``False`` makes this call's sine branches free: a
+                new Majorana monomial inherits its source's sine count, so the call creates every Majorana monomial
+                standard truncation would. Use it for gates that should not spend the budget, such
+                as candidate orbital rotations appended to a built graph. Ignored without
+                ``max_sins``.
 
         Raises:
             ValueError: If ``truncation_blocks`` is malformed.
@@ -329,6 +342,7 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
             truncation_blocks=truncation_blocks,
+            count_sins=count_sins,
         )
 
     def size(self) -> int:

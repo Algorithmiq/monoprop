@@ -86,6 +86,7 @@ public:
                        size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0,
+                       std::optional<size_t> max_sins = std::nullopt,
                        PartitionChildFactory child_factory = nullptr);
 
     /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
@@ -202,6 +203,27 @@ public:
         });
     }
 
+    /// Max-sins truncation for build_graph(): nullopt turns it off and frees the per-row counts; a value
+    /// in [0, kMaxSinsLimit] turns it on, and rows that exist when it is first turned on count 0 sines.
+    /// Lowering it does not re-truncate existing rows. propagate() refuses a propagator that has one set.
+    auto update_max_sins(std::optional<size_t> new_max_sins) -> void {
+        validate_max_sins_(new_max_sins);
+        update_setting_([&](MonomialPropagator &p) {
+            p.max_sins_ = new_max_sins;
+            if (!new_max_sins.has_value()) {
+                p.mp_op_.sin_counts_ = std::vector<uint8_t>{};
+            }
+        });
+    }
+
+    /// Sets every row's sine count to 0, as if each row were an initial one; a no-op without max_sins.
+    auto reset_sin_counts() -> void {
+        update_setting_([](MonomialPropagator &p) { std::ranges::fill(p.mp_op_.sin_counts_, uint8_t{0}); });
+    }
+
+    /// The largest max_sins: a byte holds every count, and a count plus one sine must still fit.
+    static constexpr size_t kMaxSinsLimit = 254;
+
     auto update_cutoff_type(CutoffType new_cutoff_type) -> void {
         validate_cutoff_config_(new_cutoff_type, basis_change_);
         update_setting_([&](MonomialPropagator &p) {
@@ -231,6 +253,8 @@ public:
 
     auto upper_atol() const -> std::optional<double> { return upper_atol_; }
 
+    auto max_sins() const -> std::optional<size_t> { return max_sins_; }
+
     auto cutoff_type() const -> CutoffType { return cutoff_type_; }
 
     auto basis_change() const -> std::optional<std::vector<VecZ>> { return basis_change_; }
@@ -255,13 +279,20 @@ public:
     /// cutoff and, in a seeded build, has |coeff| < upper_atol is retired. The initial rows are never
     /// retired, and every call closes its last block.
     /// nullopt is standard truncation; one block per monomial is identical to it.
+    ///
+    /// With max_sins() set, each row carries the fewest sine factors on any path that reached it, and a
+    /// rotation never creates a partner whose count would exceed max_sins(); a rotation into an existing
+    /// row is always kept, and both endpoints keep the smaller count. `count_sins` = false makes this call's
+    /// sine branches free (a partner inherits its source's count), e.g. for candidate gates appended to a
+    /// built graph; the counts are still merged. It is ignored without max_sins().
     auto build_graph(const std::vector<VecZ> &majoranas,
                      const VecZ &parameter_mapping,
                      const VecD &gen_coeffs,
                      std::optional<VecZ> gate_indices = std::nullopt,
                      std::optional<VecD> parameters = std::nullopt,
                      std::optional<size_t> only_rotate_len_k = std::nullopt,
-                     std::optional<VecZ> block_ids = std::nullopt) -> void;
+                     std::optional<VecZ> block_ids = std::nullopt,
+                     bool count_sins = true) -> void;
 
     /// Evolve and contract immediately, without storing a graph.
     auto propagate(const std::vector<VecZ> &majoranas,
@@ -388,6 +419,10 @@ private:
     unsigned int cutoff_;
 
     std::optional<double> lower_atol_, upper_atol_;
+    // Max-sins truncation (build_graph only): nullopt is off. sin_increment_ is the current build_graph
+    // call's per-sine increment, 0 under count_sins = false.
+    std::optional<size_t> max_sins_;
+    uint8_t sin_increment_{1};
     double core_term_{0.0};
 
     // Bumped by every initial-operator re-weight. A functional snapshots the operator coefficients, so
@@ -447,6 +482,12 @@ private:
     }
 
     auto regenerate_cutoff_fn_() -> void;
+
+    static auto validate_max_sins_(std::optional<size_t> max_sins) -> void {
+        if (max_sins.has_value() && *max_sins > kMaxSinsLimit) {
+            throw PropagatorConfigError(std::format("max_sins ({}) must be at most {}.", *max_sins, kMaxSinsLimit));
+        }
+    }
 
     /// Reject a (cutoff_type, basis_change) pair this algebra or system size cannot honour.
     auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const
