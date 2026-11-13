@@ -90,8 +90,8 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
         cutoff_type: str = "length",
         lower_atol: float | None = None,
         upper_atol: float | None = None,
-        comm: MPI.Comm | None = None,
         max_sins: int | None = None,
+        comm: MPI.Comm | None = None,
     ) -> None:
         """Initialize the propagator.
 
@@ -116,15 +116,15 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 exception applies on top of either.
             lower_atol: Monomials with ``|coeff| < lower_atol`` are discarded during evolution.
             upper_atol: Monomials with ``|coeff| > upper_atol`` are kept regardless of complexity.
+            max_sins: [build_graph][] never creates a Majorana monomial whose fewest sine factors over
+                all paths reaching it exceed ``max_sins`` (an integer in ``[0, 254]``);
+                rotations into existing monomials are always kept. ``None`` (default) disables it,
+                and [propagate][] rejects a set one. See
+                [Max-sins truncation](/features/cutoff#max-sins-truncation).
             comm: Optional MPI communicator (must outlive the simulator). Pass a duplicate
                 reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
                 point-to-point messages on fixed tags, which your own sends and receives on the
                 same communicator, including ``MPI.ANY_TAG`` receives, could match.
-            max_sins: Max-sins truncation for [build_graph][]: ``None`` (default) disables it; an
-                integer ``k`` in ``[0, 254]`` never creates a Majorana monomial whose fewest sine factors
-                over all paths reaching it exceeds ``k``. Rotations into existing monomials are
-                always kept. [propagate][] rejects a propagator with ``max_sins`` set. See
-                [Max-sins truncation](/features/cutoff#max-sins-truncation).
         """
         majorana_operator: MajoranaOperator = (
             initial_operator
@@ -139,9 +139,9 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
             cutoff_type=cutoff_type,
             lower_atol=lower_atol,
             upper_atol=upper_atol,
+            max_sins=max_sins,
             basis_change=None,
             comm=comm,
-            max_sins=max_sins,
         )
 
     def _circuit_gates(self, circuit: Circuit) -> Sequence[ExpGate]:

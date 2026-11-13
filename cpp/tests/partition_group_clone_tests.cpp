@@ -59,6 +59,7 @@ public:
                NumModes,
                Basis::Majorana,
                partitions,
+               std::nullopt,
                typename Base::PartitionChildFactory{[=](mpi::Comm partition_comm) -> std::unique_ptr<Base> {
                    return std::make_unique<DerivedPropagator>(initial_operator,
                                                               cutoff,

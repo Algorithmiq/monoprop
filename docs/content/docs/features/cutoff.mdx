@@ -173,7 +173,7 @@ Restrictions and differences:
 
 - Max-sins truncation applies to `build_graph` only;
   [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] raises a
-  `ValueError` while `max_sins` is set.
+  `RuntimeError` while `max_sins` is set.
 - Lowering `max_sins` does not drop monomials that already exist; it only stops
   new ones.
 - In the Schrödinger picture every fully paired monomial is part of the reference

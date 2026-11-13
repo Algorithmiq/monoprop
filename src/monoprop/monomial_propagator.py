@@ -59,24 +59,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The engine keeps one byte of sine count per term, and a count plus one sine must still fit.
-MAX_SINS_LIMIT = 254
-
-
-def _validate_max_sins(max_sins: int | None) -> None:
-    """Reject a ``max_sins`` that is not ``None`` or an integer in ``[0, MAX_SINS_LIMIT]``.
-
-    Raises:
-        ValueError: If ``max_sins`` is out of range or not an integer.
-    """
-    if max_sins is None:
-        return
-    if isinstance(max_sins, bool) or not isinstance(max_sins, (int, np.integer)):
-        raise ValueError(f"max_sins must be None or an integer; got {max_sins!r}.")  # noqa: TRY004
-    if not 0 <= max_sins <= MAX_SINS_LIMIT:
-        raise ValueError(f"max_sins must be in [0, {MAX_SINS_LIMIT}]; got {max_sins}.")
-
-
 T_op = TypeVar("T_op", MajoranaOperator, PauliOperator)
 
 
@@ -109,10 +91,10 @@ class MonomialPropagator(ABC, Generic[T_op]):
         cutoff_type: str,
         lower_atol: float | None,
         upper_atol: float | None,
+        max_sins: int | None,
         basis_change: list[list[int]] | None,
         comm: MPI.Comm | None,
         basis: str = "majorana",
-        max_sins: int | None = None,
     ) -> None:
         """Dispatch to the compiled per-mode simulator and record shared state.
 
@@ -124,15 +106,14 @@ class MonomialPropagator(ABC, Generic[T_op]):
             cutoff_type: ``"length"`` or ``"support"``.
             lower_atol: Coefficient-truncation threshold, or ``None``.
             upper_atol: Coefficient-retention threshold, or ``None``.
+            max_sins: Sine-count truncation limit for [build_graph][], or ``None``.
             basis_change: Internal per-Majorana basis change (``2 * num_modes`` entries).
             comm: Optional MPI communicator (must outlive the propagator). Pass a duplicate
                 reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
                 point-to-point messages on fixed tags, which your own sends and receives on the
                 same communicator, including ``MPI.ANY_TAG`` receives, could match.
             basis: Engine basis -- ``"majorana"`` (default) or ``"pauli"``.
-            max_sins: Max-sins truncation limit for [build_graph][], or ``None``.
         """
-        _validate_max_sins(max_sins)
         num_modes = majorana_operator.num_modes
         logger.debug(
             "_init_simulator. num_modes=%d, cutoff=%d, schrodinger_cutoff=%s",
@@ -155,13 +136,12 @@ class MonomialPropagator(ABC, Generic[T_op]):
             schrodinger_cutoff=schrodinger_cutoff,
             lower_atol=lower_atol,
             upper_atol=upper_atol,
+            max_sins=max_sins,
             cutoff_type=cutoff_type,
             basis_change=basis_change,
             comm=comm,
             basis=basis,
         )
-        if max_sins is not None:
-            self._simulator.max_sins = max_sins
 
     @classmethod
     def from_circuit(
@@ -379,15 +359,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
         Args:
             circuit: Gates to apply, and the angle values to apply them at.
             only_rotate_len_k: See [build_graph][].
-
-        Raises:
-            ValueError: If ``max_sins`` is set; max-sins truncation is graph-only.
         """
-        if self.max_sins is not None:
-            raise ValueError(
-                "max_sins truncation applies to build_graph() only; set max_sins to None "
-                "before calling propagate()."
-            )
         self._validate_only_rotate_len_k(only_rotate_len_k)
         self._check_initial_state(circuit)
         self._check_circuit_width(circuit)
@@ -830,7 +802,7 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     @property
     def max_sins(self) -> int | None:
-        """Max-sins truncation limit for [build_graph][] (``None`` if disabled).
+        """Current max-sins truncation limit for [build_graph][] (``None`` if unset).
 
         Setting ``None`` disables it and frees the per-term sine counts. Enabling it counts every
         term that already exists as having no sine factors; lowering it does not drop existing
@@ -840,7 +812,6 @@ class MonomialPropagator(ABC, Generic[T_op]):
 
     @max_sins.setter
     def max_sins(self, new_max_sins: int | None) -> None:
-        _validate_max_sins(new_max_sins)
         self._simulator.max_sins = new_max_sins
 
     def reset_sin_counts(self) -> None:

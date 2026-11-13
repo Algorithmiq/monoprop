@@ -83,7 +83,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            size_t logical_num_modes,
            const std::string &basis,
-           size_t partitions) {
+           size_t partitions,
+           std::optional<size_t> max_sins) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  initial_state,
@@ -95,7 +96,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  basis_change,
                                                  logical_num_modes,
                                                  basis_str_2_enum(basis),
-                                                 partitions);
+                                                 partitions,
+                                                 max_sins);
         },
         "initial_operator"_a,
         "cutoff"_a,
@@ -109,6 +111,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
         "partitions"_a = 0,
+        "max_sins"_a = std::nullopt,
         "Instantiate the simulator.");
 
     cls.def("build_graph",

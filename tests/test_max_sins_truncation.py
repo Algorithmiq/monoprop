@@ -412,19 +412,44 @@ def test_propagate_rejects_max_sins():
     theta = tuple(rng.uniform(0, 2 * np.pi, len(gates)))
     circuit = Circuit(gates, N_MODES, parameters=theta, initial_state=STATE)
     mp = MajoranaPropagator(_random_hamiltonian(rng), STATE, cutoff=2, max_sins=2)
-    with pytest.raises(ValueError, match="build_graph"):
+    with pytest.raises(RuntimeError, match="build_graph"):
         mp.propagate(circuit)
     mp.max_sins = None
     mp.propagate(circuit)
 
 
-@pytest.mark.parametrize("bad", [-1, 255, 1.5, True, "2"])
-def test_rejects_malformed_max_sins(bad):
+@pytest.mark.parametrize(
+    ("bad", "error"),
+    [
+        (255, RuntimeError),
+        (1000, RuntimeError),
+        (-1, TypeError),
+        (1.5, TypeError),
+        ("2", TypeError),
+    ],
+)
+def test_rejects_malformed_max_sins(bad, error):
+    """Like the other truncation settings: the engine rejects a bad value, the binding a bad type."""
     rng = np.random.default_rng(0)
     hamiltonian = _random_hamiltonian(rng)
-    with pytest.raises(ValueError, match="max_sins"):
+    with pytest.raises(error):
         MajoranaPropagator(hamiltonian, STATE, cutoff=2, max_sins=bad)
     mp = MajoranaPropagator(hamiltonian, STATE, cutoff=2)
-    with pytest.raises(ValueError, match="max_sins"):
+    with pytest.raises(error):
         mp.max_sins = bad
     assert mp.max_sins is None
+
+
+def test_constructor_and_property_agree():
+    """max_sins given at construction behaves exactly like setting the property afterwards."""
+    rng = np.random.default_rng(7)
+    hamiltonian = _random_hamiltonian(rng, 4)
+    gates = _excitation_gates(rng, 6)
+    theta = rng.uniform(0, 2 * np.pi, len(gates))
+    built = _build(hamiltonian, gates, theta, 4, 2)
+    late = MajoranaPropagator(hamiltonian, STATE, cutoff=4)
+    late.max_sins = 2
+    late.build_graph(Circuit(gates, N_MODES, initial_state=STATE))
+    assert built.max_sins == late.max_sins == 2
+    assert built.graph_size() == late.graph_size()
+    assert built.expval_and_grad(theta)[0] == late.expval_and_grad(theta)[0]

@@ -97,6 +97,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  size_t logical_num_modes,
                                                  Basis basis,
                                                  size_t partitions,
+                                                 std::optional<size_t> max_sins,
                                                  PartitionChildFactory child_factory)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
@@ -123,6 +124,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                 upper_atol.value(),
                                                 lower_atol.value()));
     }
+    validate_max_sins_(max_sins);
+    max_sins_ = max_sins;
 
     const size_t n_partitions = resolve_partition_count_(partitions, comm);
     // The R ranks x S partitions form one flat P = R*S SPMD world, so a mismatch across ranks would
@@ -176,7 +179,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                                       basis_change,
                                                                       logical_num_modes,
                                                                       basis,
-                                                                      /*partitions=*/1);
+                                                                      /*partitions=*/1,
+                                                                      max_sins);
             }};
         partition_group_ = std::make_unique<detail::partition::PartitionGroup<NumModes>>(static_cast<int>(n_partitions),
                                                                                          factory,

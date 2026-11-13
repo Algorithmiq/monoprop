@@ -86,6 +86,7 @@ public:
                        size_t logical_num_modes = NumModes,
                        Basis basis = Basis::Majorana,
                        size_t partitions = 0,
+                       std::optional<size_t> max_sins = std::nullopt,
                        PartitionChildFactory child_factory = nullptr);
 
     /// Out-of-line because partition_group_ is a unique_ptr to an incomplete type here.
@@ -206,10 +207,7 @@ public:
     /// in [0, kMaxSinsLimit] turns it on, and rows that exist when it is first turned on count 0 sines.
     /// Lowering it does not re-truncate existing rows. propagate() refuses a propagator that has one set.
     auto update_max_sins(std::optional<size_t> new_max_sins) -> void {
-        if (new_max_sins.has_value() && *new_max_sins > kMaxSinsLimit) {
-            throw PropagatorConfigError(
-                std::format("max_sins must be at most {}, got {}.", kMaxSinsLimit, *new_max_sins));
-        }
+        validate_max_sins_(new_max_sins);
         update_setting_([&](MonomialPropagator &p) {
             p.max_sins_ = new_max_sins;
             if (!new_max_sins.has_value()) {
@@ -484,6 +482,12 @@ private:
     }
 
     auto regenerate_cutoff_fn_() -> void;
+
+    static auto validate_max_sins_(std::optional<size_t> max_sins) -> void {
+        if (max_sins.has_value() && *max_sins > kMaxSinsLimit) {
+            throw PropagatorConfigError(std::format("max_sins ({}) must be at most {}.", *max_sins, kMaxSinsLimit));
+        }
+    }
 
     /// Reject a (cutoff_type, basis_change) pair this algebra or system size cannot honour.
     auto validate_cutoff_config_(CutoffType cutoff_type, const std::optional<std::vector<VecZ>> &basis_change) const

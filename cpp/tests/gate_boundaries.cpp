@@ -195,7 +195,8 @@ constexpr size_t kBlockModes = 3;
 // literal Eq. 4 rule.
 auto make_block_sim(unsigned int cutoff,
                     size_t partitions = 1,
-                    std::optional<unsigned int> schrodinger_cutoff = std::nullopt) -> MonomialPropagator<kBlockModes> {
+                    std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
+                    std::optional<size_t> max_sins = std::nullopt) -> MonomialPropagator<kBlockModes> {
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 0.7};
     ham[VecZ{2, 3}] = std::complex<double>{0.0, -0.4};
@@ -212,7 +213,8 @@ auto make_block_sim(unsigned int cutoff,
                                            std::nullopt,
                                            kBlockModes,
                                            Basis::Majorana,
-                                           partitions);
+                                           partitions,
+                                           max_sins);
 }
 
 // Two-term "excitation-like" gates and one four-index gate, each gate its own parameter.
@@ -360,8 +362,10 @@ BOOST_AUTO_TEST_CASE(max_sins_uncounted_call_matches_off) {
 }
 
 BOOST_AUTO_TEST_CASE(max_sins_rejects_out_of_range_and_propagate) {
+    constexpr size_t kTooMany = MonomialPropagator<kBlockModes>::kMaxSinsLimit + 1;
+    BOOST_CHECK_THROW(make_block_sim(2, 1, std::nullopt, kTooMany), PropagatorConfigError);
     auto sim = make_block_sim(2);
-    BOOST_CHECK_THROW(sim.update_max_sins(MonomialPropagator<kBlockModes>::kMaxSinsLimit + 1), PropagatorConfigError);
+    BOOST_CHECK_THROW(sim.update_max_sins(kTooMany), PropagatorConfigError);
     BOOST_TEST(!sim.max_sins().has_value());
     sim.update_max_sins(1);
     BOOST_CHECK_THROW(sim.propagate(kBlockMonos, kBlockMapping, kBlockCoeffs, kBlockParams), PropagatorConfigError);
@@ -370,11 +374,11 @@ BOOST_AUTO_TEST_CASE(max_sins_rejects_out_of_range_and_propagate) {
 }
 
 // Counts are partition-local and cross partitions in the query records; the partition count must not
-// change the result.
+// change the result. The constructor argument reaches every partition.
 BOOST_AUTO_TEST_CASE(max_sins_is_partition_count_invariant) {
     const auto run = [](size_t partitions, std::optional<unsigned int> schrodinger_cutoff, bool blocks) {
-        auto sim = make_block_sim(2, partitions, schrodinger_cutoff);
-        sim.update_max_sins(1);
+        auto sim = make_block_sim(2, partitions, schrodinger_cutoff, /*max_sins=*/1);
+        BOOST_TEST(sim.max_sins().value_or(0) == 1u);
         sim.build_graph(kBlockMonos,
                         kBlockMapping,
                         kBlockCoeffs,
