@@ -56,6 +56,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         lower_atol: float | None = None,
         upper_atol: float | None = None,
         comm: MPI.Comm | None = None,
+        max_sins: int | None = None,
     ) -> None:
         """Initialize the qubit propagator.
 
@@ -78,6 +79,11 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 reserved for monoprop, such as ``MPI.COMM_WORLD.Dup()``: monoprop exchanges
                 point-to-point messages on fixed tags, which your own sends and receives on the
                 same communicator, including ``MPI.ANY_TAG`` receives, could match.
+            max_sins: Max-sins truncation for [build_graph][]: ``None`` (default) disables it; an
+                integer ``k`` in ``[0, 254]`` never creates a Pauli term whose fewest sine factors
+                over all paths reaching it exceeds ``k``. Rotations into existing terms are
+                always kept. [propagate][] rejects a propagator with ``max_sins`` set. See
+                [Max-sins truncation](/features/cutoff#max-sins-truncation).
         """
         # The engine takes the Schrodinger cutoff in slots (two per qubit); this API in qubits.
         schrodinger_cutoff = (
@@ -93,6 +99,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             upper_atol=upper_atol,
             basis_change=None,
             comm=comm,
+            max_sins=max_sins,
             basis="pauli",
         )
 
@@ -212,6 +219,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
         seed_parameters: ParameterValues = None,
         only_rotate_len_k: int | None = None,
         truncation_blocks: TruncationBlocks = None,
+        count_sins: bool = True,
     ) -> None:
         """Append a circuit to the propagation graph.
 
@@ -246,6 +254,11 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
                 structural cutoff applies; at the block's end the Pauli terms the block created
                 that are unpaired (not Z-only) and over the cutoff are dropped. See
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
+            count_sins: With ``max_sins`` set, ``False`` makes this call's sine branches free: a
+                new Pauli term inherits its source's sine count, so the call creates every Pauli term
+                standard truncation would. Use it for gates that should not spend the budget, such
+                as candidate orbital rotations appended to a built graph. Ignored without
+                ``max_sins``.
 
         Raises:
             ValueError: If ``truncation_blocks`` is malformed.
@@ -255,6 +268,7 @@ class PauliPropagator(MonomialPropagator[PauliOperator]):
             seed_parameters=seed_parameters,
             only_rotate_len_k=only_rotate_len_k,
             truncation_blocks=truncation_blocks,
+            count_sins=count_sins,
         )
 
     def term_expectation_values(

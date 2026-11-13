@@ -120,6 +120,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "parameters"_a = std::nullopt,
             "only_rotate_len_k"_a = std::nullopt,
             "block_ids"_a = std::nullopt,
+            "count_sins"_a = true,
             "Build the propagation graph, recording per-layer gate information");
 
     // Deep copy: the operator store is cloned, the immutable graph layer cores are shared.
@@ -179,6 +180,16 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator<NumModes>::update_upper_atol,
                     "upper_atol"_a = std::nullopt,
                     "Upper absolute tolerance of the cutoff function, or None");
+
+    cls.def_prop_rw("max_sins",
+                    &MonomialPropagator<NumModes>::max_sins,
+                    &MonomialPropagator<NumModes>::update_max_sins,
+                    "max_sins"_a = std::nullopt,
+                    "Largest sine count build_graph() creates a row with, or None for no max-sins truncation");
+
+    cls.def("reset_sin_counts",
+            &MonomialPropagator<NumModes>::reset_sin_counts,
+            "Set every row's sine count to 0; a no-op without max_sins");
 
     cls.def_prop_rw("cutoff",
                     &MonomialPropagator<NumModes>::cutoff,
@@ -290,6 +301,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                              {"inverted_index_bytes", b.inverted_index_bytes},
                                              {"matched_scratch_bytes", b.matched_scratch_bytes},
                                              {"retired_mask_bytes", b.retired_mask_bytes},
+                                             {"sin_count_bytes", b.sin_count_bytes},
                                              {"total_bytes", b.total_bytes()},
                                              // Diagnostics, outside total_bytes().
                                              {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
