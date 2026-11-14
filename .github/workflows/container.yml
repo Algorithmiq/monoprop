@@ -119,7 +119,7 @@ jobs:
           echo "ref=${BASE_IMAGE_NAME}:${hash}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to the container registry
-        uses: docker/login-action@v4.7.0
+        uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -213,7 +213,7 @@ jobs:
           path: build/container/app
 
       - name: Log in to the container registry
-        uses: docker/login-action@v4.7.0
+        uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
