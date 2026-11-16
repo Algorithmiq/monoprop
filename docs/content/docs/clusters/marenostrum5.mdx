@@ -30,18 +30,28 @@ rsync -P monoprop_<tag>.sif <user>@<mn5-host>:<project-dir>/
 
 ## Check the image
 
-Get an interactive allocation on a compute node, then check that monoprop imports and sees
-MPI on two ranks:
+Get an interactive allocation on a compute node, then check that monoprop runs a propagator
+over MPI on two ranks:
 
 ```bash
 salloc --nodes=1 --account=<account> -q gp_debug --exclusive --time=00:10:00
 module load singularity
-srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif \
-    python3 -c 'import monoprop; print(monoprop.__version__, monoprop.has_mpi)'
+srun -n 2 --mpi=pmix singularity exec monoprop_<tag>.sif python3 -c '
+import monoprop
+from mpi4py import MPI
+comm = MPI.COMM_WORLD.Dup()
+operator = monoprop.PauliOperator({monoprop.Pauli("Z", (0,)): 1.0}, 2)
+propagator = monoprop.PauliPropagator(operator, [0], cutoff=2, comm=comm)
+print(comm.Get_rank(), monoprop.__version__, "MPI backend loaded")
+del propagator
+comm.Free()'
 ```
 
-Both ranks should print the image's version and `True`. This is the check CI cannot run:
-the CI machines may lack the Sapphire Rapids instructions the image is compiled for.
+Each rank should print its rank, the image's version and `MPI backend loaded`. Building a
+propagator with a communicator loads monoprop's MPI backend for the MPI library mpi4py uses,
+so this also checks that the image's mpi4py and monoprop agree on it; if they did not, it would
+raise [MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError]. This is the check CI
+cannot run: the CI machines may lack the Sapphire Rapids instructions the image is compiled for.
 
 MN5's Slurm offers munge authentication to PMIx, which the container's PMIx is built
 without. The image sets `PMIX_MCA_psec=native`, so the ranks use PMIx's native
