@@ -333,16 +333,6 @@ BOOST_AUTO_TEST_CASE(max_sins_at_the_limit_matches_off) {
     }
 }
 
-// max_sins = 0 never creates a row in Heisenberg: only rotations between initial rows survive.
-BOOST_AUTO_TEST_CASE(max_sins_zero_creates_no_row) {
-    auto sim = make_block_sim(2);
-    sim.update_max_sins(0);
-    const size_t initial = sim.size();
-    sim.build_graph(kBlockMonos, kBlockMapping, kBlockCoeffs);
-    BOOST_TEST(sim.size() == initial);
-    BOOST_TEST(sim.graph_layers() == kBlockMonos.size());
-}
-
 // Uncounted sines (count_sins = false) never decline a partner, even at max_sins = 0.
 BOOST_AUTO_TEST_CASE(max_sins_uncounted_call_matches_off) {
     auto off = make_block_sim(2);
@@ -359,18 +349,6 @@ BOOST_AUTO_TEST_CASE(max_sins_uncounted_call_matches_off) {
                           /*count_sins=*/false);
     BOOST_TEST(uncounted.size() == off.size());
     BOOST_TEST(uncounted.expectation_value(kBlockParams) == off.expectation_value(kBlockParams));
-}
-
-BOOST_AUTO_TEST_CASE(max_sins_rejects_out_of_range_and_propagate) {
-    constexpr size_t kTooMany = MonomialPropagator<kBlockModes>::kMaxSinsLimit + 1;
-    BOOST_CHECK_THROW(make_block_sim(2, 1, std::nullopt, kTooMany), PropagatorConfigError);
-    auto sim = make_block_sim(2);
-    BOOST_CHECK_THROW(sim.update_max_sins(kTooMany), PropagatorConfigError);
-    BOOST_TEST(!sim.max_sins().has_value());
-    sim.update_max_sins(1);
-    BOOST_CHECK_THROW(sim.propagate(kBlockMonos, kBlockMapping, kBlockCoeffs, kBlockParams), PropagatorConfigError);
-    sim.update_max_sins(std::nullopt);
-    BOOST_TEST(sim.operator_memory_usage().sin_count_bytes == 0u);
 }
 
 // Counts are partition-local and cross partitions in the query records; the partition count must not

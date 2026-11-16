@@ -308,30 +308,17 @@ struct QueryWire {
      */
     template <std::ranges::contiguous_range Out>
     static auto read_query(WireView buf, QueryForm form, size_t off, Out &&out) -> Decoded {
-        if (form == QueryForm::Counted) {
-            return read_counted(buf, off, std::forward<Out>(out));
-        }
         Decoded d = read_positions(buf, off, std::forward<Out>(out));
-        d.next += (form == QueryForm::Fused ? 1U : 0U);
-        return d;
-    }
-
-    //! read_positions() for the `Counted` form, which also reads the trailing count.
-    template <std::ranges::contiguous_range Out>
-    static auto read_counted(WireView buf, size_t off, Out &&out) -> Decoded {
-        using OutT = std::ranges::range_value_t<Out>;
-        const Header h = header_at(buf, off);
-        Reader r{buf, off, h.bits};
-        if (h.k != 0) {
-            auto prev = static_cast<size_t>(r.get(kPosBits));
-            out[0] = static_cast<OutT>(prev);
-            for (size_t j = 1; j < h.k; ++j) {
-                prev += static_cast<size_t>(r.get(h.gw)) + 1U;
-                out[j] = static_cast<OutT>(prev);
-            }
+        if (form == QueryForm::Fused) {
+            ++d.next;
         }
-        const auto sins = static_cast<uint8_t>(r.get(kSinBits));
-        return {off + words_of(gap_bits(h.k, h.gw) + kSinBits), h.phase, sins};
+        else if (form == QueryForm::Counted) {
+            const Header h = header_at(buf, off);
+            const size_t count_at = gap_bits(h.k, h.gw);
+            d.sins = static_cast<uint8_t>(Reader{buf, off, count_at}.get(kSinBits));
+            d.next = off + words_of(count_at + kSinBits);
+        }
+        return d;
     }
 
     //! The fused value word, a bit_cast that follows a record's positions.

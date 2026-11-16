@@ -571,14 +571,23 @@ private:
         return counts;
     }
 
-    // Max-sins on a self miss: whether to create the partner. A reference-state partner (Schrodinger, fully
-    // paired) is always created and merged into its source like a hit on a count-0 row.
-    auto admit_self_miss_(const SinTrack &sins, size_t src, size_t pos_at, uint32_t k) -> bool {
-        if (sins.paired_is_initial && is_paired_positions_(self_stage_.pos_flat.data() + pos_at, k)) {
-            sins.merge_into(src, 0);
+    // Max-sins on a self miss: whether to create the partner (always, without max-sins). A reference-state
+    // partner (Schrodinger, fully paired) is always created and merged into its source like a hit on a
+    // count-0 row.
+    auto admit_self_miss_(const SinTrack *sins, size_t src, size_t pos_at, uint32_t k) -> bool {
+        if (sins == nullptr) {
             return true;
         }
-        return sins.admits((*sins.counts)[src]);
+        if (sins->paired_is_initial && is_paired_positions_(self_stage_.pos_flat.data() + pos_at, k)) {
+            sins->merge_into(src, 0);
+            return true;
+        }
+        return sins->admits((*sins->counts)[src]);
+    }
+    static auto merge_hit_sins_(const SinTrack *sins, size_t src, size_t found) -> void {
+        if (sins != nullptr) {
+            sins->merge_pair(src, found);
+        }
     }
     static auto is_paired_positions_(const RowPosT *pos, size_t k) -> bool {
         return k == 2 * QueryWire<NumModes>::pair_count(std::span<const RowPosT>(pos, k));
@@ -598,6 +607,7 @@ private:
         std::array<size_t, kResolveBatch> srcs;
         std::array<double, kResolveBatch> vals;
         std::array<size_t, kResolveBatch> found;
+        const SinTrack *const sins = sink_sin_track(sink);
         const size_t hi = self_stage_.size();
         size_t q = 0;
         while (q < hi) {
@@ -634,7 +644,6 @@ private:
                     }
                 }
             }
-            const SinTrack *const sins = sink_sin_track(sink);
             for (size_t j = 0; j < m; ++j) {
                 double v_src = 0.0;
                 if constexpr (Sink::wants_values) {
@@ -646,18 +655,11 @@ private:
                     if (is_leader_pass && found[j] < combined_size) {
                         matched.mark(found[j]);
                     }
-                    if (sins != nullptr) {
-                        const uint8_t src_sins = (*sins->counts)[srcs[j]];
-                        const uint8_t tgt_sins = (*sins->counts)[found[j]];
-                        sins->merge_into(found[j], src_sins);
-                        sins->merge_into(srcs[j], tgt_sins);
-                    }
+                    merge_hit_sins_(sins, srcs[j], found[j]);
                     sink.self_hit(srcs[j], found[j], phases[j], v_src);
                 }
-                else if (sins != nullptr && !admit_self_miss_(*sins, srcs[j], pos_off[j], k_of[j])) {
-                    continue; // max-sins: an over-limit partner that does not exist is never created
-                }
-                else {
+                // Max-sins never creates an over-limit partner that does not exist.
+                else if (admit_self_miss_(sins, srcs[j], pos_off[j], k_of[j])) {
                     // The stage dies with this pass and the misses are flushed after both, so copy now.
                     const size_t at = deferred_pos_flat_.size();
                     const auto *const first = self_stage_.pos_flat.data() + pos_off[j];

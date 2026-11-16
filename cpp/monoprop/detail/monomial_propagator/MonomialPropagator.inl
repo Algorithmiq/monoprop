@@ -953,7 +953,7 @@ auto MonomialPropagator<NumModes>::build_evolve_result_(const VecZ &gen_vec,
 
     // Max-sins is a build_graph rule only; propagate() refuses it before reaching here.
     std::optional<detail::SinTrack> sins;
-    if (max_sins_.has_value() && fused_contract == nullptr) {
+    if (max_sins_.has_value()) {
         sins = detail::SinTrack{.counts = &mp_op_.sin_counts_,
                                 .max_sins = static_cast<uint8_t>(*max_sins_),
                                 .inc = sin_increment_,

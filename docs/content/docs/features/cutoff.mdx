@@ -148,20 +148,19 @@ The rule follows [PauliPropagation.jl](https://github.com/MSRudolph/PauliPropaga
 and a larger `max_sins` never keeps fewer monomials. It is applied at every
 rotation, together with the structural cutoff, `lower_atol` and blockwise
 truncation: a partner must pass every active rule. It works with partitioning, MPI
-and both bases, at one byte of memory per monomial (`sin_count_bytes` in
-`operator_memory_breakdown()`).
+and both bases, at one byte of memory per monomial.
 
-The counts carry over between `build_graph` calls, so an extension continues them.
-Two controls change that:
+The counts carry over between [build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] calls, so an extension
+continues them. Two controls change that:
 
 - `build_graph(circuit, count_sins=False)` makes the call's sine branches free: a
   partner takes its source's count, so the call creates every monomial it would
   without max-sins truncation, while the counts stay up to date for later calls.
   Use it for gates that should not spend the budget, such as candidate orbital
   rotations appended to a built graph.
-- `reset_sin_counts()` sets every count to 0, so later calls spend the whole
-  budget again from the current operator. Setting `max_sins` from `None` to a
-  value does the same.
+- [reset_sin_counts][monoprop.monomial_propagator.MonomialPropagator.reset_sin_counts] sets every count to 0, so later calls
+  spend the whole budget again from the current operator. Setting
+  [max_sins][monoprop.monomial_propagator.MonomialPropagator.max_sins] from `None` to a value does the same.
 
 ```python notest
 sim.build_graph(ansatz)                          # counted
@@ -171,7 +170,7 @@ sim.max_sins = None                              # off: frees the counts
 
 Restrictions and differences:
 
-- Max-sins truncation applies to `build_graph` only;
+- Max-sins truncation applies to [build_graph][monoprop.monomial_propagator.MonomialPropagator.build_graph] only;
   [propagate][monoprop.monomial_propagator.MonomialPropagator.propagate] raises a
   `RuntimeError` while `max_sins` is set.
 - Lowering `max_sins` does not drop monomials that already exist; it only stops

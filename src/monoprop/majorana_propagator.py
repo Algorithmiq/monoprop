@@ -329,10 +329,10 @@ class MajoranaPropagator(MonomialPropagator[MajoranaOperator]):
                 that are unpaired (not a product of whole mode pairs) and over the cutoff are dropped. See
                 [Blockwise truncation](/features/cutoff#blockwise-truncation).
             count_sins: With ``max_sins`` set, ``False`` makes this call's sine branches free: a
-                new Majorana monomial inherits its source's sine count, so the call creates every Majorana monomial
-                standard truncation would. Use it for gates that should not spend the budget, such
-                as candidate orbital rotations appended to a built graph. Ignored without
-                ``max_sins``.
+                new Majorana monomial inherits its source's sine count, so the call creates every
+                Majorana monomial standard truncation would. Use it for gates that should not spend
+                the budget, such as candidate orbital rotations appended to a built graph. Ignored
+                without ``max_sins``.
 
         Raises:
             ValueError: If ``truncation_blocks`` is malformed.

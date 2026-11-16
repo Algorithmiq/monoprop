@@ -208,7 +208,7 @@ public:
     /// Lowering it does not re-truncate existing rows. propagate() refuses a propagator that has one set.
     auto update_max_sins(std::optional<size_t> new_max_sins) -> void {
         validate_max_sins_(new_max_sins);
-        update_setting_([&](MonomialPropagator &p) {
+        update_setting_([new_max_sins](MonomialPropagator &p) {
             p.max_sins_ = new_max_sins;
             if (!new_max_sins.has_value()) {
                 p.mp_op_.sin_counts_ = std::vector<uint8_t>{};

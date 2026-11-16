@@ -40,11 +40,10 @@ inline constexpr size_t kDroppedIndex = kMissingIndex - 1;
  * reached it. A rotation's partner gets its source's count plus `inc`; one that exists before the gate
  * keeps the min of the two (both endpoints merge), and one that does not is created only if that count is
  * at most `max_sins`. So only creation is ever refused, and a pair is always rotated or not at all. Counts
- * are read and written in place: within one gate each row belongs to at most one rotation. */
-//
-// In Schrodinger a fully paired row is part of the reference state, which the engine materializes
-// lazily (it scores against the state whenever it appears), so `paired_is_initial` treats a fully paired
-// partner as present from the start: always created, at count 0, and merged into its source like a hit.
+ * are read and written in place: within one gate each row belongs to at most one rotation.
+ *
+ * In Schrodinger a fully paired row belongs to the lazily materialized reference state, so
+ * `paired_is_initial` treats such a partner as present from the start: always created, at count 0. */
 struct SinTrack {
     std::vector<uint8_t> *counts; // the partition's per-row counts, sized to the operator
     uint8_t max_sins;             // at most 254, so a parent count plus inc always fits a byte
@@ -58,6 +57,12 @@ struct SinTrack {
     auto merge_into(size_t row, uint8_t partner) const -> void {
         uint8_t &c = (*counts)[row];
         c = std::min(c, child(partner));
+    }
+    //! Merges both endpoints of a rotation between two existing rows, from their pre-merge counts.
+    auto merge_pair(size_t a, size_t b) const -> void {
+        const uint8_t count_a = (*counts)[a];
+        merge_into(a, (*counts)[b]);
+        merge_into(b, count_a);
     }
 };
 
