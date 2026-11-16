@@ -18,6 +18,7 @@
 #include <cctype>
 #include <complex>
 #include <format>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -65,26 +66,26 @@ auto basis_enum_2_str(Basis basis) -> std::string;
 /** @brief The operator memory breakdown as the dict `operator_memory_breakdown()` returns. */
 template <size_t NumModes>
 auto operator_breakdown_dict(const monoprop::detail::MPOperatorMemoryBreakdown<NumModes> &b)
-    -> std::map<std::string, size_t> {
-    return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
-                                         {"op_coeffs_bytes", b.op_coeffs_bytes},
-                                         {"state_coeffs_bytes", b.state_coeffs_bytes},
-                                         {"indexing_bytes", b.indexing_bytes},
-                                         {"init_operator_bytes", b.init_operator_bytes},
-                                         {"initial_state_bytes", b.initial_state_bytes},
-                                         {"inverted_index_bytes", b.inverted_index_bytes},
-                                         {"matched_scratch_bytes", b.matched_scratch_bytes},
-                                         {"retired_mask_bytes", b.retired_mask_bytes},
-                                         {"sin_count_bytes", b.sin_count_bytes},
-                                         {"total_bytes", b.total_bytes()},
-                                         // Diagnostics, outside total_bytes().
-                                         {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
-                                         {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
-                                         {"d_invidx_dense_columns", b.inverted_index_dense_columns},
-                                         {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
-                                         {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
-                                         {"d_init_operator_entries", b.init_operator_entries},
-                                         {"d_retired_rows", b.retired_rows}};
+    -> std::map<std::string, size_t, std::less<>> {
+    return std::map<std::string, size_t, std::less<>>{{"operator_terms_bytes", b.operator_terms_bytes},
+                                                      {"op_coeffs_bytes", b.op_coeffs_bytes},
+                                                      {"state_coeffs_bytes", b.state_coeffs_bytes},
+                                                      {"indexing_bytes", b.indexing_bytes},
+                                                      {"init_operator_bytes", b.init_operator_bytes},
+                                                      {"initial_state_bytes", b.initial_state_bytes},
+                                                      {"inverted_index_bytes", b.inverted_index_bytes},
+                                                      {"matched_scratch_bytes", b.matched_scratch_bytes},
+                                                      {"retired_mask_bytes", b.retired_mask_bytes},
+                                                      {"sin_count_bytes", b.sin_count_bytes},
+                                                      {"total_bytes", b.total_bytes()},
+                                                      // Diagnostics, outside total_bytes().
+                                                      {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
+                                                      {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                                      {"d_invidx_dense_columns", b.inverted_index_dense_columns},
+                                                      {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
+                                                      {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
+                                                      {"d_init_operator_entries", b.init_operator_entries},
+                                                      {"d_retired_rows", b.retired_rows}};
 }
 
 template <size_t NumModes>

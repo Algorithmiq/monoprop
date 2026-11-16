@@ -676,6 +676,17 @@ static inline auto empty_coeffs() -> const VecD & {
     return coeffs;
 }
 
+// Max-sins: pads the per-row counts to the operator, so rows that predate tracking count 0, and returns
+// the scan's view of them; null without max-sins.
+template <size_t NumModes>
+auto padded_sin_counts_(const SinTrack *sins, const MPOperator<NumModes> &op) -> const uint8_t * {
+    if (sins == nullptr) {
+        return nullptr;
+    }
+    sins->counts->resize(op.store->size(), 0);
+    return sins->counts->data();
+}
+
 // Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
 template <size_t NumModes>
 auto build_layer(MPOperator<NumModes> &local_op,
@@ -698,10 +709,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     // Max-sins is a graph-build rule; the fused contraction has no count to keep.
     assert(sin_track == nullptr || fused_contract == nullptr);
-    if (sin_track != nullptr) {
-        // Rows that predate tracking (or came in through a path that does not count) start at 0.
-        sin_track->counts->resize(local_op.store->size(), 0);
-    }
+    const uint8_t *const sin_counts = padded_sin_counts_(sin_track, local_op);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
     // R is the flat world (ranks x partitions).
@@ -753,7 +761,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                                        /*capture_values=*/use_fused,
                                                        sweep_ptr,
                                                        cos_build,
-                                                       sin_track != nullptr ? sin_track->counts->data() : nullptr);
+                                                       sin_counts);
         });
         if (fused.cos_blocks.size() == 1) {
             // The serial scan produces a single cosine block set — take it wholesale.
