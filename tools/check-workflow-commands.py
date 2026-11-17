@@ -66,7 +66,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "Build SDist",
     ): "release packaging was deliberately left in the workflow",
     (
-        "deploy.yml",
+        "build.yml",
+        "Build SDist",
+    ): "release packaging was deliberately left in the workflow",
+    (
+        "build.yml",
         "Build sdist and wheel",
     ): "release packaging was deliberately left in the workflow",
     (

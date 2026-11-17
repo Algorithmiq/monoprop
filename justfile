@@ -530,3 +530,16 @@ check-doc-links:
 # Serve the documentation locally with hot reloading.
 serve-docs:
     cd {{ site }} && npm run dev
+
+git_cliff := "git-cliff==2.14.2"
+
+# Preview the changelog entry of the next release, with the central cliff.toml at the version release.yml pins.
+changelog:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ref=$(sed -nE 's|.*Algorithmiq/release-tools/.github/workflows/release.yml@([^[:space:]]+).*|\1|p' \
+        .github/workflows/release.yml)
+    # Link the PR numbers like the release PR does: GitHub Actions sets GITHUB_REPOSITORY.
+    repo=$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+    GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$repo}" uvx --from {{ git_cliff }} git-cliff --unreleased \
+        --config-url "https://raw.githubusercontent.com/Algorithmiq/release-tools/$ref/cliff.toml"

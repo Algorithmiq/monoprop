@@ -1,5 +1,5 @@
 default_language_version.python = "python3"
-exclude = "^(.cruft.json|.copier-answers.yml|performance_scripts/data\\.py|performance_scripts/csvs/)$"
+exclude = "^(.cruft.json|.copier-answers.yml|performance_scripts/data\\.py|performance_scripts/csvs/|CHANGELOG\\.md)$"
 default_stages = ["pre-commit", "pre-push"]
 
 [[repos]]
