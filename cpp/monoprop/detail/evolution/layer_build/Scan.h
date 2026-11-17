@@ -266,6 +266,8 @@ struct FusedScanResult {
 //
 // `gen_shift` must be router.rank_shift(gen) and `op` hold only terms `my_rank` owns, so the owner of
 // M⊕G is rank(M) ^ gen_shift (asserted against dest()). `window` is the plan's window for `my_rank`.
+// `sin_counts` (max-sins truncation; per-row, null when off) makes cross-rank records Counted, carrying
+// the source's count to the resolver; a self-owned query needs none, its resolve reads the row directly.
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -279,7 +281,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             size_t gen_shift,
                             bool capture_values = false,
                             double *fused_scale_coeffs = nullptr,
-                            double fused_scale_cos = 1.0) -> FusedScanResult<NumModes> {
+                            double fused_scale_cos = 1.0,
+                            const uint8_t *sin_counts = nullptr) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t gen_pop = gen.count();
     const size_t rank_count = router.flat_world();
@@ -373,6 +376,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
             }
             if (r_prime == my_rank) {
                 (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
+            }
+            else if (sin_counts != nullptr) {
+                QueryWire<NumModes>::push_counted(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime),
+                                                  pos,
+                                                  phase,
+                                                  sin_counts[i]);
             }
             else {
                 QueryWire<NumModes>::push(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime), pos, phase);

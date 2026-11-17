@@ -148,6 +148,16 @@ terms that would otherwise accumulate over a long sequence of gates. It may also
 **keep** new monomials whose coefficients exceed an upper threshold even when
 their length exceeds the length cutoff.
 
+### Sine-count truncation
+
+A third, angle-independent rule bounds the number of **sine branches** on the
+paths that reach a monomial. Each monomial carries the fewest sine branches on
+any path from the initial operator, and a new monomial whose count would exceed
+a limit $K$ is not created. For small angles, a path with $k$ sine branches
+contributes at order $\sin^k\theta$, so this keeps every contribution up to
+order $K$ in the angles that the other rules keep. See
+[Max-sins truncation](/features/cutoff#max-sins-truncation).
+
 ## Reading off the expectation value
 
 Once every gate has been applied, the expectation value is obtained by evaluating

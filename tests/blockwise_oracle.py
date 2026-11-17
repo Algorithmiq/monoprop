@@ -12,13 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dict-based reference for standard and blockwise Majorana truncation, in both pictures.
+"""Dict-based reference for standard, blockwise and max-sins Majorana truncation, in both pictures.
 
 Independent of the engine: it works on the Hermitian operator algebra (complex coefficients on
 sorted Majorana strings) rather than the engine's encoded real coefficients, and implements the
 blockwise rule literally -- no structural cutoff inside a block, and at each block end every
 monomial created during the block that is unpaired and over the cutoff is dropped. Standard
 truncation is the same rule with every layer its own block.
+
+Max-sins truncation is layered on top: every term carries the fewest sine factors on any path that
+reached it (initial terms 0). In each layer a rotation between two present terms keeps both and
+gives each the smaller of its own count and its partner's plus one; an absent partner takes its
+source's count plus one and is created only if that is at most ``max_sins``. In Schrodinger a
+paired partner is part of the reference state, so it counts as present with count 0.
 
 Conventions, as monoprop documents them: a gate applies ``exp(+i theta H)`` for a Hermitian
 generator ``H`` (one layer per generator term, in ``generator.terms`` order), the Heisenberg sweep
@@ -98,6 +104,7 @@ def _rotate(
     theta: float,
     fresh_paired: Callable[[Term], complex] | None = None,
     frozen_pair: Callable[[Term, complex, Term, complex], bool] | None = None,
+    blocked: set[Term] | None = None,
 ) -> dict[Term, complex]:
     """Conjugate ``op`` by ``exp(i theta h)`` with ``h = coeff * gamma_string`` Hermitian.
 
@@ -106,6 +113,7 @@ def _rotate(
     filters what it keeps. With ``fresh_paired``, an absent paired partner first enters with that
     value, so it rotates as if it had been present all along. ``frozen_pair(term, value, partner,
     partner_value)``, for two present terms, withholds their exchange (both are only cos-scaled).
+    A partner in ``blocked`` is never created (max-sins); its source is only cos-scaled.
     """
     if fresh_paired is not None:
         op = dict(op)
@@ -129,6 +137,8 @@ def _rotate(
             and partner in op
             and frozen_pair(term, value, partner, op[partner])
         ):
+            continue
+        if blocked is not None and partner in blocked:
             continue
         out[partner] = out.get(partner, 0.0) + value * sin_unit * sign
     return out
@@ -154,6 +164,43 @@ def _emit_cut(
     return frozen
 
 
+def _sin_step(
+    op: dict[Term, complex],
+    string: Term,
+    counts: dict[Term, int],
+    max_sins: int,
+    inc: int,
+    *,
+    paired_is_initial: bool,
+    frozen_pair: Callable[[Term, complex, Term, complex], bool] | None,
+) -> set[Term]:
+    """Update ``counts`` in place for one layer and return the partners max-sins forbids creating.
+
+    Reads pre-layer counts only: within a layer each term belongs to at most one rotation pair.
+    """
+    before = dict(counts)
+    blocked: set[Term] = set()
+    for term, value in op.items():
+        if not _anticommute(term, string):
+            continue
+        partner, _ = _product(term, string)
+        mine = before.get(term, 0)
+        if partner in op:
+            if frozen_pair is not None and frozen_pair(
+                term, value, partner, op[partner]
+            ):
+                continue
+            counts[term] = min(counts.get(term, mine), before.get(partner, 0) + inc)
+        elif paired_is_initial and is_paired(partner):
+            counts[partner] = 0
+            counts[term] = min(counts.get(term, mine), inc)
+        elif inc == 0 or mine + inc <= max_sins:
+            counts[partner] = mine + inc
+        else:
+            blocked.add(partner)
+    return blocked
+
+
 def evolve(
     operator: MajoranaOperator | dict[Term, complex],
     circuit: Circuit,
@@ -169,6 +216,9 @@ def evolve(
     schrodinger: bool = False,
     fresh_paired: Callable[[Term], complex] | None = None,
     engine_block_end: bool = False,
+    max_sins: int | None = None,
+    count_sins: bool = True,
+    sin_counts: dict[Term, int] | None = None,
 ) -> dict[Term, complex]:
     """Evolve ``operator`` through ``circuit`` with standard or blockwise truncation.
 
@@ -195,6 +245,10 @@ def evolve(
             literal rule: two present terms both over the cutoff exchange weight there only if one
             of their sine terms reaches ``upper_atol``. Without ``upper_atol``, this differs from
             the literal rule only for unpaired over-cutoff terms present before the block.
+        max_sins: Max-sins truncation limit (see the module docstring), or ``None``.
+        count_sins: ``False`` makes every sine free (a partner inherits its source's count).
+        sin_counts: The per-term counts, read and updated in place so a later call continues
+            them; terms absent from it count 0. Only used with ``max_sins``.
 
     Returns:
         The evolved operator as ``{sorted Majorana tuple: complex coefficient}``.
@@ -216,6 +270,7 @@ def evolve(
 
     terms = operator if isinstance(operator, dict) else operator.terms
     op = {tuple(term): complex(value) for term, value in terms.items()}
+    counts = sin_counts if sin_counts is not None else {}
     present_at_block_start = set(op)
     dropped: set[Term] = set()
     regenerated: set[Term] = set()
@@ -230,7 +285,19 @@ def evolve(
             frozen_pair = _emit_cut(
                 abs(math.sin(2.0 * angle * abs(coeff))), cutoff, cutoff_type, upper_atol
             )
-        op = _rotate(op, string, coeff, angle, fresh_paired, frozen_pair)
+        blocked = None
+        if max_sins is not None:
+            # A pair whose exchange is withheld merges no counts either.
+            blocked = _sin_step(
+                op,
+                string,
+                counts,
+                max_sins,
+                1 if count_sins else 0,
+                paired_is_initial=fresh_paired is not None,
+                frozen_pair=frozen_pair,
+            )
+        op = _rotate(op, string, coeff, angle, fresh_paired, frozen_pair, blocked)
         regenerated |= dropped & set(op)
         if naive_regeneration:
             op = {term: value for term, value in op.items() if term not in dropped}
@@ -243,6 +310,9 @@ def evolve(
             dropped |= set(op) - set(survivors)
             op = survivors
             present_at_block_start = set(op)
+            if max_sins is not None:
+                for term in [t for t in counts if t not in op]:
+                    del counts[term]
     if stats is not None:
         stats["dropped"] = len(dropped)
         stats["regenerated"] = len(regenerated)
