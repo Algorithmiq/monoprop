@@ -2,8 +2,8 @@
 #
 # Runs on the v* tags that the release workflow pushes: build, draft the GitHub release
 # with every file attached, publish to PyPI and push the container image, then publish the
-# GitHub release, which makes it immutable. Never on `release: published`. The builds
-# for pull requests live in build.yml and container.yml.
+# GitHub release, which makes it immutable. Never on `release: published`. The build
+# jobs are build.yml, shared with the pull request builds.
 name: Publish monoprop Python sdist and wheels to PyPI
 
 on:
@@ -30,148 +30,9 @@ permissions:
   contents: read
 
 jobs:
-  build-sdist:
-    name: Build source distribution
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0  # such that setuptools_scm can do its job correctly
-
-      - name: Check release version
-        shell: bash
-        run: |
-          expected="${GITHUB_REF_NAME#v}"
-          actual="$(tr -d '[:space:]' < VERSION)"
-
-          if [[ "$actual" != "$expected" ]]; then
-            echo "::error::VERSION is '$actual', but the release tag is '$expected'"
-            exit 1
-          fi
-
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.3
-
-      - name: Build SDist
-        run: |
-          uv tool run --from build pyproject-build --verbose --sdist --installer uv
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cibw-sdist
-          path: dist/*.tar.gz
-
-  build-bench-tools:
-    name: Build monoprop-bench-tools
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0  # such that hatch-vcs can read the tags
-
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.3
-
-      - name: Build sdist and wheel
-        run: uv build --package monoprop-bench-tools --out-dir bench-tools-dist
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: bench-tools-dist
-          path: bench-tools-dist/*
-
-  build-wheels:
-    name: Build Python wheels for ${{ matrix.os }}
-    runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: 90
-    strategy:
-      matrix:
-        os: [ linux-intel, linux-arm, macos-arm ]
-        include:
-          - archs: native
-            platform: auto
-          - os: linux-intel
-            runs-on: ubuntu-26.04
-          - os: linux-arm
-            runs-on: ubuntu-26.04-arm
-          - os: macos-arm
-            runs-on: macos-15
-
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - uses: pypa/cibuildwheel@v4.3.5
-        with:
-          extras: "uv"
-        env:
-          CIBW_PLATFORM: ${{ matrix.platform }}
-          CIBW_ARCHS: ${{ matrix.archs }}
-          CIBW_DEBUG_TRACEBACK: TRUE
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v7
-        with:
-          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
-          path: wheelhouse/*.whl
-
-  test-wheels:
-    name: Test wheel with ${{ matrix.mpi }} (${{ matrix.mpi4py }} mpi4py) on ${{ matrix.runner }}
-    needs: build-wheels
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Version floors: Ubuntu 22.04 ships Open MPI 4.1.2 and MPICH 4.0; impi-rt 2021.1.1 is the
-          # oldest Intel MPI on PyPI. Its Boost (1.74) is below monoprop's 1.85, so the C++
-          # consumer runs only on macOS here (and in test.yml); inspect-mpi still checks the headers.
-          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: openmpi-4.1, setup-mpi: "on", build-deps: "false", mpi4py: source, packages: "", abi: openmpi, mpi-include: /usr/lib/x86_64-linux-gnu/openmpi/include, cpp: false }
-          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: openmpi-4.1, setup-mpi: "on", build-deps: "false", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: false }
-          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: mpich-4.0, setup-mpi: mpich, build-deps: "false", mpi4py: source, packages: "", abi: mpich, mpi-include: /usr/include/x86_64-linux-gnu/mpich, cpp: false }
-          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: mpich-4.0, setup-mpi: mpich, build-deps: "false", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: false }
-          - { runner: ubuntu-22.04, artifact: linux-intel, mpi: intel-2021.1, setup-mpi: "off", build-deps: "false", mpi4py: wheel, packages: "impi-rt==2021.1.1", abi: "", mpi-include: "", cpp: false }
-          # Latest Intel MPI, and Homebrew Open MPI (the macOS rpath allowlist)
-          - { runner: ubuntu-26.04, artifact: linux-intel, mpi: intel-latest, setup-mpi: "off", build-deps: "false", mpi4py: wheel, packages: impi-rt, abi: "", mpi-include: "", cpp: false }
-          - { runner: macos-15, artifact: macos-arm, mpi: homebrew-openmpi, setup-mpi: "on", build-deps: "true", mpi4py: wheel, packages: "", abi: "", mpi-include: "", cpp: true }
-    env:
-      MONOPROP_TEST_VENV: ${{ github.workspace }}/.wheel-test-venv
-      PYTHON: python
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      # test-wheel-mpi.sh creates its venv from $PYTHON; pin the interpreter instead of relying
-      # on the runner image's python3 and its venv module.
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: cibw-wheels-${{ matrix.artifact }}-*
-          path: dist
-          merge-multiple: true
-
-      - name: Set up the build environment
-        uses: ./.github/actions/setup
-        with:
-          python-version: "3.12"
-          cache-suffix: wheel-test-${{ matrix.mpi }}-${{ matrix.mpi4py }}
-          mpi: ${{ matrix.setup-mpi }}
-          build-deps: ${{ matrix.build-deps }}
-
-      - name: Check configure's MPI inspection on the system headers
-        if: matrix.mpi-include != ''
-        run: just inspect-mpi "${{ matrix.mpi-include }}" ${{ matrix.abi }}
-
-      - name: Test the wheel under MPI
-        run: just test-wheel dist ${{ matrix.mpi4py }} ${{ matrix.packages }}
-
-      - name: Build a C++ consumer against the installed wheel
-        if: matrix.cpp
-        run: just test-find-package build/find-package-smoke "$MONOPROP_TEST_VENV/bin/python"
+  build:
+    name: Build and test the distributions
+    uses: ./.github/workflows/build.yml
 
   sbom:
     # The software bills of materials of the locked runtime dependencies, attached to the
@@ -428,10 +289,7 @@ jobs:
     # Immutable releases: files can only be attached while the release is a draft.
     name: Create the draft GitHub release
     needs:
-      - build-sdist
-      - build-bench-tools
-      - build-wheels
-      - test-wheels
+      - build
       - sbom
     runs-on: ubuntu-slim
     permissions:

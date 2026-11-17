@@ -2,6 +2,8 @@ name: Build monoprop Python sdist and wheels
 
 on:
   workflow_dispatch:
+  # The publish workflow calls this one on release tags.
+  workflow_call:
   pull_request:
     paths:
       - .github/workflows/build.yml
@@ -14,8 +16,10 @@ on:
       - .github/actions/setup/**
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A called workflow sees the caller's `github.workflow`: the prefix keeps its group
+  # apart from the caller's, and a run for a release tag is never cancelled.
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   COLUMNS: 120
@@ -133,6 +137,18 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0  # such that setuptools_scm can do its job correctly
+
+      - name: Check release version
+        if: ${{ github.ref_type == 'tag' }}
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(tr -d '[:space:]' < VERSION)"
+
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::VERSION is '$actual', but the release tag is '$expected'"
+            exit 1
+          fi
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v10.3.3
