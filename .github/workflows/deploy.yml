@@ -202,9 +202,12 @@ jobs:
 
   container-app:
     name: Build, check and push the monoprop image
+    # After draft_release, so that a tag that fails the version check, the wheel tests
+    # or the license check pushes no image and does not move `latest`.
     needs:
       - container-sdist
       - container-base
+      - draft_release
     runs-on: ubuntu-26.04
     timeout-minutes: 90
     permissions:
