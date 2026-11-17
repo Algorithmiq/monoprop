@@ -1,136 +1,37 @@
+# Publishing: see https://github.com/Algorithmiq/release-tools#readme
+#
+# Runs on the v* tags that the release workflow pushes: build, draft the GitHub release
+# with every file attached, publish to PyPI and push the container image, then publish the
+# GitHub release, which makes it immutable. Never on `release: published`. The builds
+# for pull requests live in build.yml and container.yml.
 name: Publish monoprop Python sdist and wheels to PyPI
 
 on:
-  workflow_dispatch:
-  release:
-    types:
-      - published
-  pull_request:
-    paths:
-      - .github/workflows/deploy.yml
-      - VERSION
-      - pyproject.toml
-      - packages/monoprop-bench-tools/pyproject.toml
-      - tools/cibw/**
-      - tools/packages/**
-      - cmake/custom/monopropMPI*.cmake
-      - .github/actions/setup/**
+  push:
+    tags: ["v*", "!v*.dev*"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A publish run must never be cut short half-way through.
+  cancel-in-progress: false
 
 env:
   COLUMNS: 120
   FORCE_COLOR: 3
+  HPCCM_VERSION: "26.5.0"
+  # -march target of the monoprop image, also the suffix of its tags; list it in
+  # CPU_TARGETS in tools/cleanup-ghcr.py so the suffixed tags stay pinned.
+  MARCH: sapphirerapids
+  REGISTRY: ghcr.io
+  BASE_IMAGE_NAME: ghcr.io/algorithmiq/monoprop-base
+  APP_IMAGE_NAME: ghcr.io/algorithmiq/monoprop
 
 permissions:
   contents: read
 
 jobs:
-  check-pr-changes:
-    name: Check PR changes for deploy workflow
-    runs-on: ubuntu-26.04
-    outputs:
-      should-run: ${{ steps.check.outputs.should-run }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-      - id: changed-deploy-workflow
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
-        with:
-          files: .github/workflows/deploy.yml
-      - id: changed-version
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
-        with:
-          files: VERSION
-      - id: changed-pyproject
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
-        with:
-          files: pyproject.toml
-      - id: changed-bench-tools-pyproject
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
-        with:
-          files: packages/monoprop-bench-tools/pyproject.toml
-      - id: changed-wheel-support
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: tj-actions/changed-files@v47.0.6
-        with:
-          files: |
-            tools/cibw/**
-            tools/packages/**
-            cmake/custom/monopropMPI*.cmake
-            .github/actions/setup/**
-      - id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DEPLOY_WORKFLOW_CHANGED: ${{ steps.changed-deploy-workflow.outputs.any_changed }}
-          VERSION_CHANGED: ${{ steps.changed-version.outputs.any_changed }}
-          PYPROJECT_CHANGED: ${{ steps.changed-pyproject.outputs.any_changed }}
-          BENCH_TOOLS_PYPROJECT_CHANGED: ${{ steps.changed-bench-tools-pyproject.outputs.any_changed }}
-          WHEEL_SUPPORT_CHANGED: ${{ steps.changed-wheel-support.outputs.any_changed }}
-        run: |
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "should-run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          python - <<'PY'
-          import os
-          import subprocess
-          import tomllib
-
-          base_sha = os.environ["BASE_SHA"]
-          head_sha = os.environ["HEAD_SHA"]
-          deploy_workflow_changed = os.environ["DEPLOY_WORKFLOW_CHANGED"] == "true"
-          version_changed = os.environ["VERSION_CHANGED"] == "true"
-          pyproject_changed = os.environ["PYPROJECT_CHANGED"] == "true"
-          bench_tools_changed = os.environ["BENCH_TOOLS_PYPROJECT_CHANGED"] == "true"
-          wheel_support_changed = os.environ["WHEEL_SUPPORT_CHANGED"] == "true"
-
-          if (
-              deploy_workflow_changed
-              or version_changed
-              or bench_tools_changed
-              or wheel_support_changed
-          ):
-              should_run = True
-          elif not pyproject_changed:
-              should_run = False
-          else:
-              def read_file(sha: str) -> str | None:
-                  try:
-                      return subprocess.check_output(
-                          ["git", "show", f"{sha}:pyproject.toml"], text=True
-                      )
-                  except subprocess.CalledProcessError:
-                      return None
-
-              def get_cibuildwheel_config(content: str | None):
-                  if content is None:
-                      return None
-                  data = tomllib.loads(content)
-                  return data.get("tool", {}).get("cibuildwheel")
-
-              base_cfg = get_cibuildwheel_config(read_file(base_sha))
-              head_cfg = get_cibuildwheel_config(read_file(head_sha))
-              should_run = base_cfg != head_cfg
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"should-run={'true' if should_run else 'false'}\n")
-          PY
-
   build-sdist:
     name: Build source distribution
-    needs: check-pr-changes
-    if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -138,7 +39,6 @@ jobs:
           fetch-depth: 0  # such that setuptools_scm can do its job correctly
 
       - name: Check release version
-        if: ${{ github.event_name == 'release' }}
         shell: bash
         run: |
           expected="${GITHUB_REF_NAME#v}"
@@ -163,8 +63,6 @@ jobs:
 
   build-bench-tools:
     name: Build monoprop-bench-tools
-    needs: check-pr-changes
-    if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -183,8 +81,6 @@ jobs:
           path: bench-tools-dist/*
 
   build-wheels:
-    needs: check-pr-changes
-    if: ${{ github.event_name != 'pull_request' || needs.check-pr-changes.outputs.should-run == 'true' }}
     name: Build Python wheels for ${{ matrix.os }}
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 90
@@ -246,8 +142,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      # test-wheel-mpi.sh creates its venv from $PYTHON; pin the interpreter instead of relying on
-      # the runner image's python3 and its venv module.
+      # test-wheel-mpi.sh creates its venv from $PYTHON; pin the interpreter instead of relying
+      # on the runner image's python3 and its venv module.
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -277,14 +173,304 @@ jobs:
         if: matrix.cpp
         run: just test-find-package build/find-package-smoke "$MONOPROP_TEST_VENV/bin/python"
 
-  upload_pypi:
-    name: Upload to PyPI
+  sbom:
+    # The software bills of materials of the locked runtime dependencies, attached to the
+    # release, and their licenses checked: a failure stops the release before the draft
+    # exists. A separate artifact: the upload takes everything in dist/.
+    name: SBOM and license check
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: Algorithmiq/release-tools/actions/sbom@v1.6.1
+        with:
+          flavours: |
+            core
+            mpi --extra mpi
+            qiskit --extra qiskit
+      - uses: Algorithmiq/release-tools/actions/license-check@v1.6.1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom/*
+
+  container-sdist:
+    name: Build source distribution for the container
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      file: ${{ steps.sdist.outputs.file }}
+      version: ${{ steps.sdist.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0 # such that setuptools_scm can do its job correctly
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Build SDist
+        id: sdist
+        run: |
+          uv tool run --from build pyproject-build --verbose --sdist --installer uv
+          file="$(basename dist/monoprop-*.tar.gz)"
+          version="${file#monoprop-}"
+          version="${version%.tar.gz}"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Pin the image's runtime dependencies to the versions CI tests against: the
+      # hashed export is what the image installs, the unhashed one constrains pip's
+      # isolated build environment, where hashes would demand them of every package.
+      - name: Export the locked dependencies
+        run: |
+          export_args=(--frozen --no-dev --extra mpi --extra qiskit --no-emit-project)
+          uv export "${export_args[@]}" --output-file dist/requirements.txt
+          uv export "${export_args[@]}" --no-hashes --output-file dist/constraints.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: container-sdist
+          path: |
+            dist/monoprop-*.tar.gz
+            dist/requirements.txt
+            dist/constraints.txt
+
+  container-base:
+    name: Resolve or build the base image
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.hash.outputs.ref }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Render the base Dockerfile
+        run: |
+          mkdir -p build/container/base
+          uvx "hpccm==${HPCCM_VERSION}" --recipe tools/container/base.py --format docker \
+            > build/container/base/Dockerfile
+
+      # The tag hashes the rendered Dockerfile, not the recipe, so an hpccm upgrade that
+      # changes the output also yields a new base image.
+      - name: Compute the content-addressed tag
+        id: hash
+        run: |
+          hash="$(sha256sum build/container/base/Dockerfile | cut -c1-12)"
+          echo "ref=${BASE_IMAGE_NAME}:${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Check whether the base image exists
+        id: exists
+        env:
+          REF: ${{ steps.hash.outputs.ref }}
+        run: |
+          if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract metadata for the base image
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.BASE_IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=tag
+          labels: |
+            org.opencontainers.image.vendor=Algorithmiq
+            org.opencontainers.image.description=MPI base image (UCX, PMIx, Open MPI) for monoprop
+
+      - name: Build and push the base image
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: build/container/base
+          file: build/container/base/Dockerfile
+          no-cache: true
+          push: true
+          tags: ${{ steps.hash.outputs.ref }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Cleanup keeps versions by their release, main or pr-N tags, so the base image
+      # carries the tags of every event that used it.
+      - name: Tag the base image for this event
+        env:
+          REF: ${{ steps.hash.outputs.ref }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && args+=(--tag "$tag")
+          done <<< "$TAGS"
+          if (( ${#args[@]} == 0 )); then
+            exit 0
+          fi
+          docker buildx imagetools create "${args[@]}" "$REF"
+          # A retag must not create a new manifest: the hash tag would lose its pins.
+          expected="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)"
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            actual="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$tag points at $actual, expected $expected"
+              exit 1
+            fi
+          done <<< "$TAGS"
+
+  container-app:
+    name: Build, check and push the monoprop image
+    needs:
+      - container-sdist
+      - container-base
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: container-sdist
+          path: build/container/app
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Extract metadata for the monoprop image
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.APP_IMAGE_NAME }}
+          flavor: |
+            latest=false
+          # The image runs only on MARCH CPUs, so every tag names it. Only a final release
+          # moves `latest`: the bot's pre-release tags end in aN, bN or rcN.
+          tags: |
+            type=semver,pattern={{version}},suffix=-${{ env.MARCH }}
+            type=ref,event=tag,suffix=-${{ env.MARCH }}
+            type=sha,prefix=sha-,format=short,suffix=-${{ env.MARCH }}
+            type=raw,value=latest,suffix=-${{ env.MARCH }},enable=${{ !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc') }}
+          labels: |
+            org.opencontainers.image.vendor=Algorithmiq
+            org.opencontainers.image.base.name=${{ needs.container-base.outputs.ref }}
+
+      - name: Build the image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: build/container/app
+          file: tools/container/Dockerfile
+          build-args: |
+            BASE_IMAGE=${{ needs.container-base.outputs.ref }}
+            SDIST=${{ needs.container-sdist.outputs.file }}
+            MARCH=${{ env.MARCH }}
+          no-cache: true
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Smoke-test the image
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          VERSION: ${{ needs.container-sdist.outputs.version }}
+        run: |
+          docker run --rm --shm-size=1g \
+            -v "$PWD/tools/container/smoke-test.sh:/smoke-test.sh:ro" \
+            "$IMAGE" bash /smoke-test.sh "$VERSION"
+
+      # Same inputs as the build above, so Buildx serves every layer from its cache.
+      - name: Push the image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: build/container/app
+          file: tools/container/Dockerfile
+          build-args: |
+            BASE_IMAGE=${{ needs.container-base.outputs.ref }}
+            SDIST=${{ needs.container-sdist.outputs.file }}
+            MARCH=${{ env.MARCH }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  draft_release:
+    # Immutable releases: files can only be attached while the release is a draft.
+    name: Create the draft GitHub release
     needs:
       - build-sdist
+      - build-bench-tools
       - build-wheels
       - test-wheels
-    if: github.event_name == 'release' && github.event.action == 'published'
+      - sbom
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+      pull-requests: read  # release-notes reads the PR descriptions
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0  # git-cliff needs the full history and the tags
 
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: bench-tools-dist
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sbom
+          path: sbom
+
+      - id: notes
+        uses: Algorithmiq/release-tools/actions/release-notes@v1.6.1
+
+      - uses: Algorithmiq/release-tools/actions/draft-release@v1.6.1
+        with:
+          notes-file: ${{ steps.notes.outputs.path }}
+          files: |
+            dist/*
+            sbom/*
+
+  upload_pypi:
+    name: Upload to PyPI
+    needs: draft_release
     runs-on: ubuntu-26.04
     environment: pypi
     permissions:
@@ -312,9 +498,7 @@ jobs:
     # Separate from `upload_pypi` because it is a separate PyPI project, with its own
     # trusted-publisher entry
     name: Upload monoprop-bench-tools to PyPI
-    needs: build-bench-tools
-    if: github.event_name == 'release' && github.event.action == 'published'
-
+    needs: draft_release
     runs-on: ubuntu-26.04
     environment: pypi
     permissions:
@@ -336,33 +520,15 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.14.3
 
-  upload_release_assets:
-    name: Attach wheels and sdist to GitHub release
+  publish_release:
+    # Publishing locks the tag and the files and creates GitHub's release attestation.
+    name: Publish the GitHub release
     needs:
-      - build-sdist
-      - build-wheels
-      - test-wheels
-      - build-bench-tools
-    if: github.event_name == 'release' && github.event.action == 'published'
-
-    runs-on: ubuntu-26.04
+      - upload_pypi
+      - upload_pypi_bench_tools
+      - container-app
+    runs-on: ubuntu-slim
     permissions:
       contents: write
-
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: cibw-*
-          path: dist
-          merge-multiple: true
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: bench-tools-dist
-          path: dist
-
-      - name: Upload wheels and sdist to release
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+      - uses: Algorithmiq/release-tools/actions/publish-release@v1.6.1

@@ -304,6 +304,7 @@ exclude = [
   "docs/conf.py",
   "performance_scripts/*.py",
   ".github/workflows/scripts/*.py",
+  "CHANGELOG.md",
 ]
 
 target-version = "py311"

@@ -1,0 +1,17 @@
+# Backports: see https://github.com/Algorithmiq/release-tools#readme
+name: Backport
+
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  backport:
+    uses: Algorithmiq/release-tools/.github/workflows/backport.yml@v1.6.1
+    with:
+      client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+    secrets:
+      private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}

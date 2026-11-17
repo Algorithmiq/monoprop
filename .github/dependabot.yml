@@ -28,6 +28,9 @@ updates:
     schedule:
       interval: "weekly"
     groups:
+      release-tools:
+        patterns:
+          - "Algorithmiq/release-tools*"
       actions:
         patterns:
           - "*"
