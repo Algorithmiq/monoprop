@@ -1205,7 +1205,7 @@ auto MonomialPropagator<NumModes>::make_functional_(Fn &&func, std::optional<dou
     // must not outlive the propagator.
     auto cos = build_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), basis_);
 
-    return [func = std::move(func),
+    return [func = std::forward<Fn>(func),
             core_term,
             state = std::move(state),
             op = std::move(op),
