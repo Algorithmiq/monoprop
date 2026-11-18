@@ -2,6 +2,36 @@
 
 All notable changes to this project are listed here.
 
+## 0.10.0 (2026-11-18)
+
+### Breaking changes
+
+- **wheels:** Publish MPI-enabled wheels across MPI ABI families ([#426](https://github.com/Algorithmiq/monoprop/pull/426))
+
+### Features
+
+- **nix:** Use upstream nanobind 3.1.0 and build for Python 3.12-3.14 ([#391](https://github.com/Algorithmiq/monoprop/pull/391))
+- **propagator:** Read every term's expectation value from one adjoint replay ([#393](https://github.com/Algorithmiq/monoprop/pull/393))
+- Support Python 3.15 ([#395](https://github.com/Algorithmiq/monoprop/pull/395))
+- **build:** Declare named build options with scikit-build-core 1.1 ([#421](https://github.com/Algorithmiq/monoprop/pull/421))
+- **container:** Publish an MPI container image for HPC clusters ([#418](https://github.com/Algorithmiq/monoprop/pull/418))
+- **propagator:** Add opt-in blockwise truncation to build_graph ([#441](https://github.com/Algorithmiq/monoprop/pull/441))
+- **propagator:** Add opt-in max-sins truncation to build_graph ([#444](https://github.com/Algorithmiq/monoprop/pull/444))
+
+### Fixes
+
+- **benchmarks:** Correct step alignment, model name and time axes ([#411](https://github.com/Algorithmiq/monoprop/pull/411))
+- **mpi:** Do not fail a completed partition barrier round on a later poison ([#433](https://github.com/Algorithmiq/monoprop/pull/433))
+- **propagator:** Forward functional argument instead of moving it ([#453](https://github.com/Algorithmiq/monoprop/pull/453))
+
+### Performance
+
+- **propagate:** Make per-term emit and pass-1 cost independent of N ([#383](https://github.com/Algorithmiq/monoprop/pull/383))
+
+### Documentation
+
+- **mpi:** Ask callers to pass a duplicated communicator ([#430](https://github.com/Algorithmiq/monoprop/pull/430))
+
 ## 0.9.2 (2026-10-01)
 
 ### Breaking changes
