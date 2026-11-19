@@ -24,8 +24,7 @@ from monoprop.pauli import PauliOperator
 
 try:
     import pennylane as qml
-
-    from monoprop.pennylane_conversion import (
+    from monoprop_pennylane import (
         from_pennylane_circuit,
         from_pennylane_operator,
         to_pennylane_operator,
@@ -123,7 +122,7 @@ def test_rotation_sign_matches_pennylane(gate, angle, qubit, observable):
     Each case pairs a single rotation with an observable that anticommutes with its generator on
     the same qubit the gate acts on, so the expectation value is an odd function of the angle and
     a spurious sign flip would show up exactly. Unlike qiskit, PennyLane's own convention needs no
-    negation (see [monoprop.pennylane_conversion][]), so this pins that down against PennyLane's
+    negation (see `monoprop_pennylane.conversion`), so this pins that down against PennyLane's
     own simulator rather than relying on a round trip, which cannot catch a consistently-applied
     sign bug.
     """

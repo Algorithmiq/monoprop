@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
+import warnings
 
 from . import _backend
 from ._core import (
@@ -95,17 +97,40 @@ if importlib.util.find_spec("qiskit") is not None:
         "to_qiskit_operator",
     ]
 
-if importlib.util.find_spec("pennylane") is not None:
-    from .pennylane_conversion import (
-        from_pennylane_circuit,
-        from_pennylane_operator,
-        to_pennylane_circuit,
-        to_pennylane_operator,
-    )
 
-    __all__ += [
-        "from_pennylane_circuit",
-        "from_pennylane_operator",
-        "to_pennylane_circuit",
-        "to_pennylane_operator",
-    ]
+def _load_plugins() -> None:
+    """Attach every installed monoprop plugin's public API onto this namespace.
+
+    Each `monoprop.plugins` entry point names a module whose `__all__` is copied here, like
+    `from module import *`; see `monoprop_pennylane`. Plugins load after every core name is
+    bound, so a plugin may `import monoprop` itself. Dunder names are never copied. A name
+    replacing a different object still wins but warns. A plugin that fails to load is skipped
+    with a warning, so one broken plugin cannot break `import monoprop`.
+    """
+    for entry_point in importlib.metadata.entry_points(group="monoprop.plugins"):
+        try:
+            plugin = entry_point.load()
+        except Exception as exc:  # noqa: BLE001 - one broken plugin must not break `import monoprop`
+            warnings.warn(
+                f"monoprop plugin {entry_point.name!r} failed to load: {exc}",
+                stacklevel=2,
+            )
+            continue
+        names = [
+            name for name in getattr(plugin, "__all__", ()) if not name.startswith("__")
+        ]
+        for name in names:
+            value = getattr(plugin, name)
+            # Identity, not presence: re-binding the same object (a reload) is no collision.
+            if globals().get(name, value) is not value:
+                warnings.warn(
+                    f"monoprop plugin {entry_point.name!r} overwrites existing name {name!r}",
+                    stacklevel=2,
+                )
+            globals()[name] = value
+            if name not in __all__:
+                __all__.append(name)  # noqa: PYI056
+
+
+_load_plugins()
+del _load_plugins
