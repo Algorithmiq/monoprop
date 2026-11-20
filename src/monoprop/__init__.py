@@ -27,6 +27,7 @@ from ._core import (
     __variant__,
     antihermitian_generator_correction,
     is_antihermitian,
+    placement_report,
 )
 from ._version import version as __version__
 from .circuit import (
@@ -77,6 +78,7 @@ __all__ = [
     "integrals_to_fermion",
     "is_antihermitian",
     "jordan_wigner_basis_change",
+    "placement_report",
     "validate_parameter_mapping",
 ]
 
