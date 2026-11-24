@@ -372,6 +372,8 @@ set_tests_properties(
 # (default budget) skip them. Binding is left to the OpenMP settings: Open MPI would otherwise bind each rank to one
 # core and squeeze its T threads onto it (unknown OMPI_MCA_* variables are harmless under other MPIs). Oversubscription
 # is allowed in both Open MPI spellings, so a direct `ctest -L mpi` fits 3- and 4-rank launches onto smaller hosts.
+# Oversubscribed, spinning OpenMP waiters starve the ranks' MPI progress (4 ranks x 4 threads on a 4-core runner take
+# minutes instead of seconds), so waiting workers sleep.
 function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
   cmake_parse_arguments("" "" "" "ENVIRONMENT" ${ARGN})
   add_test(
@@ -389,7 +391,7 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
       TIMEOUT
         300
       ENVIRONMENT
-        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
+        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
   )
 endfunction()
 
