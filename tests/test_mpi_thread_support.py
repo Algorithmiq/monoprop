@@ -24,6 +24,7 @@ the case's route is skipped and says so, never passed.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -54,6 +55,10 @@ def _launcher() -> str | None:
 
 pytestmark = [
     pytest.mark.skipif(not monoprop.MPI_ABIS, reason="needs an MPI build"),
+    # The probe initializes MPI through mpi4py, which an MPI-enabled wheel's serial test environment lacks.
+    pytest.mark.skipif(
+        importlib.util.find_spec("mpi4py") is None, reason="needs mpi4py"
+    ),
     pytest.mark.skipif(
         _inside_multirank_job(),
         reason="launches fresh interpreters, which cannot run inside a multi-rank job",

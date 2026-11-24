@@ -35,6 +35,7 @@ Comparisons:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -447,8 +448,10 @@ def _launcher() -> str | None:
 
 
 needs_mpi_launch = pytest.mark.skipif(
-    not monoprop.MPI_ABIS or _launcher() is None,
-    reason="needs an MPI build and an MPI launcher on PATH",
+    not monoprop.MPI_ABIS
+    or importlib.util.find_spec("mpi4py") is None
+    or _launcher() is None,
+    reason="needs an MPI build, mpi4py and an MPI launcher on PATH",
 )
 
 

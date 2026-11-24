@@ -31,6 +31,7 @@ Not collected by pytest: the file name has no ``test_`` prefix.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import itertools
 import json
 import math
@@ -58,7 +59,10 @@ from tests.reference_data import load_problem  # noqa: E402
 
 
 def _has_mpi() -> bool:
-    # A current build reports MPI_ABIS; the legacy environment this probe also runs in reports has_mpi.
+    # A current build reports MPI_ABIS; the legacy environment this probe also runs in reports has_mpi. An MPI-enabled
+    # wheel tested without mpi4py (cibuildwheel's serial suite) runs serially, like an MPI-off build.
+    if importlib.util.find_spec("mpi4py") is None:
+        return False
     abis = getattr(monoprop, "MPI_ABIS", None)
     return bool(abis) if abis is not None else bool(getattr(monoprop, "has_mpi", False))
 
