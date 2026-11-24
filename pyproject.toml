@@ -435,6 +435,9 @@ convention = "google"
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
+# Explicit: src/monoprop/_dispatch.py is generated at build time, so a fresh checkout (CI's lint job) would
+# otherwise classify monoprop._dispatch as third-party.
+known-first-party = ["monoprop"]
 
 
 [tool.pyright]
