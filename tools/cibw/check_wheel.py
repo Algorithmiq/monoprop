@@ -18,7 +18,8 @@
 
 Each MPI extension and MPI libmonoprop must depend on exactly its ABI family's MPI soname, left
 unresolved for the user's MPI; nothing else may depend on MPI; no binary may carry an absolute
-RPATH, except the macOS MPI search directories on MPI binaries; no MPI library may be bundled;
+RPATH, except the macOS MPI search directories on MPI binaries; no MPI library may be bundled; a
+library bundled into a macOS wheel must be named ``@rpath/<file>`` (see ``name_bundled_dylibs.py``);
 the type stub and ``py.typed`` must be present.
 """
 
@@ -64,6 +65,7 @@ class Binary(NamedTuple):
     path: str
     needed: tuple[str, ...]
     rpaths: tuple[str, ...]
+    install_id: str | None = None
 
 
 def parse_readelf(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -100,6 +102,31 @@ def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return tuple(needed), tuple(rpaths)
 
 
+def parse_otool_install_id(text: str) -> str | None:
+    """Return the LC_ID_DYLIB name from ``otool -l`` output, if the binary has one."""
+    command = None
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == "cmd":
+            command = fields[1]
+        elif len(fields) >= 2 and fields[0] == "name" and command == "LC_ID_DYLIB":
+            return fields[1]
+    return None
+
+
+def audit_install_id(binary: Binary, *, macos: bool) -> list[str]:
+    """Return a message if ``binary`` is a library bundled into a macOS wheel not named ``@rpath/<file>``."""
+    path = Path(binary.path)
+    if not macos or ".dylibs" not in path.parts[:-1]:
+        return []
+    want = f"@rpath/{path.name}"
+    if binary.install_id == want:
+        return []
+    return [
+        f"{binary.path}: bundled library is named {binary.install_id!r}, not {want!r}"
+    ]
+
+
 def audit_binary(binary: Binary, *, macos: bool) -> list[str]:
     """Return one message per rule ``binary`` breaks."""
     errors: list[str] = []
@@ -119,6 +146,7 @@ def audit_binary(binary: Binary, *, macos: bool) -> list[str]:
             errors.append(
                 f"{binary.path}: MPI must be loaded through @rpath: {mpi_deps}"
             )
+    errors += audit_install_id(binary, macos=macos)
     allowed = MACOS_MPI_RPATHS if macos and abi else ()
     missing = [rpath for rpath in allowed if rpath not in binary.rpaths]
     if missing:
@@ -200,8 +228,13 @@ def audit_abi_table(
 def _read_binary(root: Path, path: Path, *, macos: bool) -> Binary:
     command = ["otool", "-l", str(path)] if macos else ["readelf", "-d", str(path)]
     output = subprocess.run(command, check=True, capture_output=True, text=True).stdout  # noqa: S603
-    needed, rpaths = parse_otool(output) if macos else parse_readelf(output)
-    return Binary(path.relative_to(root).as_posix(), needed, rpaths)
+    if macos:
+        needed, rpaths = parse_otool(output)
+        install_id = parse_otool_install_id(output)
+    else:
+        needed, rpaths = parse_readelf(output)
+        install_id = None
+    return Binary(path.relative_to(root).as_posix(), needed, rpaths, install_id)
 
 
 def main() -> int:

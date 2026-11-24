@@ -317,6 +317,10 @@ MPI build before must switch to the `MPI` component. A project that can run eith
 the component with `OPTIONAL_COMPONENTS MPI` instead: when no MPI or no matching family is found,
 `monoprop_MPI_FOUND` is false and `monoprop::monoprop` is still available.
 
+OpenMP's compile flags and `omp.h` come from the consumer's own `find_package(OpenMP)`. A macOS wheel bundles the
+libomp its libraries load, and LLVM's libomp aborts when a second copy initializes in one process, so the wheel's
+package points `OpenMP::OpenMP_CXX` at that bundled copy, for the consumer's own OpenMP code too.
+
 `just test-find-package` goes one step further out: it builds
 `cpp/tests/find_package_smoke` — a standalone project that consumes the *installed*
 package through `find_package(monoprop CONFIG)` — and runs it. That is the only leg that

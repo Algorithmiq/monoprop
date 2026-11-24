@@ -152,6 +152,29 @@ def test_macos_mpi_dependency_must_go_through_rpath() -> None:
     assert check_wheel.audit_binary(binary, macos=True)
 
 
+def test_parse_otool_install_id() -> None:
+    text = (
+        "Load command 3\n"
+        "          cmd LC_ID_DYLIB\n"
+        "      cmdsize 48\n"
+        "         name @rpath/libomp.dylib (offset 24)\n"
+    )
+    assert check_wheel.parse_otool_install_id(text) == "@rpath/libomp.dylib"
+    assert check_wheel.parse_otool_install_id(OTOOL) is None
+
+
+def test_macos_bundled_library_named_through_rpath_passes() -> None:
+    binary = Binary("monoprop/.dylibs/libomp.dylib", (), (), "@rpath/libomp.dylib")
+    assert check_wheel.audit_binary(binary, macos=True) == []
+
+
+def test_macos_bundled_library_with_delocate_placeholder_fails() -> None:
+    binary = Binary(
+        "monoprop/.dylibs/libomp.dylib", (), (), "/DLC/monoprop/.dylibs/libomp.dylib"
+    )
+    assert check_wheel.audit_binary(binary, macos=True)
+
+
 def test_bundled_mpi_library_fails() -> None:
     assert check_wheel.audit_bundled(["monoprop.libs/libhwloc-1a2b.so.15"]) == []
     assert check_wheel.audit_bundled(["monoprop.libs/libopen-pal-1a2b.so.80"])
