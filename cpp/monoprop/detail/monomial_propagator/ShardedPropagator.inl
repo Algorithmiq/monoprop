@@ -80,7 +80,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  CutoffType cutoff_type,
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
-                                                 Basis basis)
+                                                 Basis basis,
+                                                 std::optional<size_t> max_sins)
     : MonomialPropagator(ObservedTag{},
                          nullptr,
                          initial_operator,
@@ -93,7 +94,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                          cutoff_type,
                          std::move(basis_change),
                          logical_num_modes,
-                         basis) {}
+                         basis,
+                         max_sins) {}
 
 template <size_t NumModes>
 MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
@@ -108,12 +110,14 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
                                                  CutoffType cutoff_type,
                                                  std::optional<std::vector<VecZ>> basis_change,
                                                  size_t logical_num_modes,
-                                                 Basis basis)
+                                                 Basis basis,
+                                                 std::optional<size_t> max_sins)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       cutoff_{cutoff},
       lower_atol_{lower_atol},
       upper_atol_{upper_atol},
+      max_sins_{max_sins},
       logical_num_modes_{logical_num_modes},
       cutoff_type_{cutoff_type},
       basis_change_{std::move(basis_change)},
@@ -149,6 +153,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
                                                 upper_atol.value(),
                                                 lower_atol.value()));
     }
+    validate_max_sins_(max_sins);
 
     std::optional<detail::sharded::PairedBasisBounds> paired;
     if (schrodinger_) {
@@ -203,6 +208,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       cutoff_(other.cutoff_),
       lower_atol_(other.lower_atol_),
       upper_atol_(other.upper_atol_),
+      max_sins_(other.max_sins_),
       core_term_(other.core_term_),
       initial_operator_epoch_(other.initial_operator_epoch_),
       heisenberg_gates_absorbed_(other.heisenberg_gates_absorbed_),
@@ -356,6 +362,7 @@ auto MonomialPropagator<NumModes>::construction_context_() const -> detail::shar
                                                           .router = *router_,
                                                           .lower_atol = lower_atol_,
                                                           .upper_atol = upper_atol_,
+                                                          .max_sins = max_sins_,
                                                           .basis = basis_,
                                                           .schrodinger = schrodinger_,
                                                           .world = world_,
@@ -389,9 +396,14 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                                                const VecD &gen_coeffs,
                                                std::optional<VecZ> gate_indices,
                                                std::optional<VecD> parameters,
-                                               std::optional<size_t> only_rotate_len_k) -> void {
+                                               std::optional<size_t> only_rotate_len_k,
+                                               std::optional<VecZ> block_ids,
+                                               bool count_sins) -> void {
     run_operation_(true, [&](bool &mutation_started) {
         validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+        if (block_ids.has_value()) {
+            validate_block_ids(*block_ids, majoranas.size());
+        }
         if (majoranas.empty()) {
             return;
         }
@@ -435,11 +447,14 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         const auto generators = generators_(majoranas);
         report_routing_coverage_(majoranas);
         const auto ctx = construction_context_();
-        const auto circuit = detail::sharded::GraphCircuit<NumModes>{.generators = generators,
-                                                                     .parameter_mapping = parameter_mapping,
-                                                                     .gen_coeffs = gen_coeffs,
-                                                                     .gate_indices = local_gates,
-                                                                     .only_rotate_len_k = only_rotate_len_k};
+        const auto circuit = detail::sharded::GraphCircuit<NumModes>{
+            .generators = generators,
+            .parameter_mapping = parameter_mapping,
+            .gen_coeffs = gen_coeffs,
+            .gate_indices = local_gates,
+            .only_rotate_len_k = only_rotate_len_k,
+            .block_ids = block_ids ? std::span<const size_t>(*block_ids) : std::span<const size_t>{},
+            .count_sins = count_sins};
         const auto observer = detail::sharded::RootConstructionObserver{observer_};
         if (!parameters.has_value()) {
             finish_construction_(detail::sharded::build_graph<NumModes>(parallel_, shards_, ctx, circuit, observer),
@@ -464,6 +479,10 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                                              std::optional<size_t> only_rotate_len_k) -> void {
     run_operation_(true, [&](bool &mutation_started) {
         validate_only_rotate_len_k_(only_rotate_len_k, 2 * logical_num_modes_);
+        if (max_sins_.has_value()) {
+            throw PropagatorConfigError("max_sins truncation applies to build_graph() only; set max_sins to None "
+                                        "before calling propagate().");
+        }
         if (majoranas.empty()) {
             return;
         }
@@ -493,6 +512,21 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                              mutation_started);
         if (!schrodinger_) {
             heisenberg_gates_absorbed_ = true;
+        }
+    });
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::reset_sin_counts() -> void {
+    run_operation_(false, [&](bool &mutation_started) {
+        if (!max_sins_.has_value()) {
+            return;
+        }
+        mutation_started = true;
+        if (const auto error = run_owner_phase_(detail::sharded::RootWork::sin_counts, [&](size_t shard) {
+                std::ranges::fill(shards_[shard]->op.sin_counts_, uint8_t{0});
+            })) {
+            std::rethrow_exception(error);
         }
     });
 }

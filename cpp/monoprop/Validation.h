@@ -33,6 +33,9 @@ monoprop_EXPORT auto validate_coefficient_lengths(const VecZ &parameter_mapping,
 // contiguous runs from 0.
 monoprop_EXPORT auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void;
 
+// block_ids assigns each monomial a truncation block: one entry per monomial, contiguous runs from 0.
+monoprop_EXPORT auto validate_block_ids(const VecZ &block_ids, size_t num_monomials) -> void;
+
 // params must have max(parameter_mapping)+1 entries.
 monoprop_EXPORT auto validate_parameters_length(const VecD &params, const VecZ &parameter_mapping) -> void;
 

@@ -2,9 +2,6 @@ name: Container images
 
 on:
   workflow_dispatch:
-  release:
-    types:
-      - published
   pull_request:
     paths:
       - .github/workflows/container.yml
@@ -119,7 +116,7 @@ jobs:
           echo "ref=${BASE_IMAGE_NAME}:${hash}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to the container registry
-        uses: docker/login-action@v4.7.0
+        uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -147,8 +144,6 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=ref,event=tag
             type=ref,event=branch
             type=ref,event=pr
           labels: |
@@ -213,7 +208,7 @@ jobs:
           path: build/container/app
 
       - name: Log in to the container registry
-        uses: docker/login-action@v4.7.0
+        uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -231,12 +226,9 @@ jobs:
             latest=false
           # The image runs only on MARCH CPUs, so every tag names it.
           tags: |
-            type=semver,pattern={{version}},suffix=-${{ env.MARCH }}
-            type=ref,event=tag,suffix=-${{ env.MARCH }}
             type=ref,event=branch,suffix=-${{ env.MARCH }}
             type=ref,event=pr,suffix=-${{ env.MARCH }}
             type=sha,prefix=sha-,format=short,suffix=-${{ env.MARCH }}
-            type=raw,value=latest,suffix=-${{ env.MARCH }},enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
           labels: |
             org.opencontainers.image.vendor=Algorithmiq
             org.opencontainers.image.base.name=${{ needs.base.outputs.ref }}

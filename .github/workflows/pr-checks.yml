@@ -1,0 +1,16 @@
+# PR title and migration notes: see https://github.com/Algorithmiq/release-tools#readme
+name: PR checks
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+  merge_group:
+
+permissions:
+  pull-requests: read
+
+jobs:
+  # Reports the checks "PR checks / PR title" and "PR checks / Migration notes".
+  pr-checks:
+    name: PR checks
+    uses: Algorithmiq/release-tools/.github/workflows/pr-checks.yml@v1.6.1

@@ -53,27 +53,41 @@ auto validate_coefficient_lengths(const VecZ &parameter_mapping, const VecD &gen
                          "The length of parameter_mapping and gen_coeffs must be the same.");
 }
 
-auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void {
-    if (gate_indices.size() != num_monomials) {
+namespace {
+
+// Shared by gate_indices and block_ids: one entry per monomial, contiguous runs numbered from 0.
+auto validate_contiguous_runs(const VecZ &ids, size_t num_monomials, const char *name) -> void {
+    if (ids.size() != num_monomials) {
         throw ValidationError(
-            std::format("gate_indices has {} entries but there are {} monomials.", gate_indices.size(), num_monomials));
+            std::format("{} has {} entries but there are {} monomials.", name, ids.size(), num_monomials));
     }
-    if (gate_indices.empty()) {
+    if (ids.empty()) {
         return;
     }
-    if (gate_indices.front() != 0) {
-        throw ValidationError(std::format("gate_indices must start at 0; got {}.", gate_indices.front()));
+    if (ids.front() != 0) {
+        throw ValidationError(std::format("{} must start at 0; got {}.", name, ids.front()));
     }
-    for (size_t i = 1; i < gate_indices.size(); ++i) {
-        if (gate_indices[i] != gate_indices[i - 1] && gate_indices[i] != gate_indices[i - 1] + 1) {
-            throw ValidationError(std::format("gate_indices must be contiguous runs from 0 (each entry "
+    for (size_t i = 1; i < ids.size(); ++i) {
+        if (ids[i] != ids[i - 1] && ids[i] != ids[i - 1] + 1) {
+            throw ValidationError(std::format("{} must be contiguous runs from 0 (each entry "
                                               "equal to the previous or previous+1); got a jump from {} "
                                               "to {} at position {}.",
-                                              gate_indices[i - 1],
-                                              gate_indices[i],
+                                              name,
+                                              ids[i - 1],
+                                              ids[i],
                                               i));
         }
     }
+}
+
+} // namespace
+
+auto validate_gate_indices(const VecZ &gate_indices, size_t num_monomials) -> void {
+    validate_contiguous_runs(gate_indices, num_monomials, "gate_indices");
+}
+
+auto validate_block_ids(const VecZ &block_ids, size_t num_monomials) -> void {
+    validate_contiguous_runs(block_ids, num_monomials, "block_ids");
 }
 
 auto validate_parameters_length(const VecD &params, const VecZ &parameter_mapping) -> void {

@@ -1,0 +1,35 @@
+# Releases: see https://github.com/Algorithmiq/release-tools#readme
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Release to start: next minor or major (patch releases: add the backport label to the fix PR)"
+        type: choice
+        options: [minor, major]
+        default: minor
+      stage:
+        description: "Stage to start at or promote to (patch releases have no pre-releases)"
+        type: choice
+        options: [rc, beta, alpha]
+        default: rc
+  push:
+    branches: ["release/**"]
+    tags: ["v*", "!v*.dev*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: Algorithmiq/release-tools/.github/workflows/release.yml@v1.6.1
+    with:
+      client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+      bump: ${{ inputs.bump }}
+      stage: ${{ inputs.stage }}
+      # Files that hold the version (e.g. "VERSION pyproject.toml"); empty if it
+      # comes from the git tag (setuptools-scm, hatch-vcs).
+      version-files: "VERSION"
+    secrets:
+      private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}

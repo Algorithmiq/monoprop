@@ -180,6 +180,9 @@ static_assert(std::is_constructible_v<MP,
                                       mpi::Comm>,
               "the defaulted tail must stay defaulted");
 static_assert(!kConstructible<MP, size_t>, "no partition count");
+static_assert(kConstructible<MP, std::optional<size_t>> && kConstructible<MP, std::nullopt_t>,
+              "max_sins takes the partition count's old position, spelled as an optional");
+static_assert(!kConstructible<MP, std::optional<size_t>, std::optional<size_t>>);
 static_assert(!kConstructible<MP, size_t, RemovedFactory>, "no child factory");
 static_assert(!kConstructible<MP, size_t, std::nullptr_t>);
 // No replacement thread or shard count of any integral type.

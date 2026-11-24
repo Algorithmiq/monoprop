@@ -74,14 +74,21 @@ inline auto append_inserted_endpoints(CosMask &cos_all, size_t combined_size, co
 
 // Graph-build sink: accumulates the per-rank PartnerAcc endpoints and assembles a LayerCore at finalize.
 // wants_values=false — the scan captures no coeffs and every rotation records only (index, phase).
+//
+// With max-sins truncation (`sins` non-null) the queries are Counted, and a response is no longer only
+// asserted on: it carries the target's pre-gate count back for the querier's merge, or init_response()
+// for a partner the resolver declined to create, whose rotation both sides then leave out in step.
 template <size_t NumModes>
 struct GraphSink {
     static constexpr bool wants_values = false;
     // on_resolved for distinct queries may run concurrently after prepare(): each writes only its own
     // acc[slot].in_entries element, which prepare() sized. Certifies nothing about the other methods.
+    // Max-sins vetoes it at run time (parallel_resolve_enabled()): a declined query records nothing.
     static constexpr bool parallel_resolve = true;
-    [[nodiscard]] auto incoming_form() const -> QueryForm { return QueryForm::Plain; }
-    [[nodiscard]] auto querier_form() const -> QueryForm { return QueryForm::Plain; }
+    [[nodiscard]] auto incoming_form() const -> QueryForm {
+        return sins != nullptr ? QueryForm::Counted : QueryForm::Plain;
+    }
+    [[nodiscard]] auto querier_form() const -> QueryForm { return incoming_form(); }
     using Response = TermIndex;
     static auto init_response() -> Response { return std::numeric_limits<TermIndex>::max(); }
 
@@ -92,8 +99,18 @@ struct GraphSink {
     size_t def_out_base_ = 0;
     // Per-window-slot base into acc[slot].in_entries (set in prepare).
     mpi::WindowVec<size_t> in_base_;
+    const SinTrack *sins = nullptr;
 
-    GraphSink(size_t R_, size_t my_rank_) : R(R_), my_rank(my_rank_), acc(R_) {}
+    GraphSink(size_t R_, size_t my_rank_, const SinTrack *sins_ = nullptr)
+        : R(R_),
+          my_rank(my_rank_),
+          acc(R_),
+          sins(sins_) {}
+
+    [[nodiscard]] auto sin_track() const -> const SinTrack * { return sins; }
+
+    //! Under max-sins on_resolved appends, so the scatter stays serial and in query order.
+    [[nodiscard]] auto parallel_resolve_enabled() const -> bool { return sins == nullptr; }
 
     auto self_hit(size_t src, size_t found, int phase, double /*v_src*/) -> void {
         acc[my_rank].in_entries.push_back({found, phase});
@@ -126,7 +143,14 @@ struct GraphSink {
         for (const auto wi : w.indices()) {
             PartnerAcc &a = acc[w.slot(wi)];
             in_base_[wi] = a.in_entries.size();
-            a.in_entries.resize(in_base_[wi] + responses[wi].size());
+            // Under max-sins a declined query records nothing, so entries are appended, not slotted:
+            // queries arrive sender by sender in order, so the layout is the same.
+            if (sins != nullptr) {
+                a.in_entries.reserve(in_base_[wi] + responses[wi].size());
+            }
+            else {
+                a.in_entries.resize(in_base_[wi] + responses[wi].size());
+            }
         }
     }
     auto on_resolved(size_t g,
@@ -135,8 +159,26 @@ struct GraphSink {
                      size_t ip,
                      const IncomingProbe<NumModes> &pr,
                      typename QueryWire<NumModes>::WireView /*stream*/) -> Response {
+        if (sins != nullptr) {
+            return on_resolved_counted_(g, s, ip, pr);
+        }
         acc[pr.window.slot(s)].in_entries[in_base_[s] + q] = {ip, pr.phase_of[g]};
         return static_cast<TermIndex>(ip);
+    }
+    // Answers with the target's pre-gate count, a fresh row's own, or init_response() if declined.
+    auto on_resolved_counted_(size_t g, mpi::WindowIndex s, size_t ip, const IncomingProbe<NumModes> &pr) -> Response {
+        if (ip == kDroppedIndex) {
+            return init_response();
+        }
+        acc[pr.window.slot(s)].in_entries.push_back({ip, pr.phase_of[g]});
+        const uint8_t src_sins = pr.sins_of[g];
+        if (ip >= pr.base) {
+            // insert_incoming_misses writes the same count; a reference-state row answers 0 for the merge.
+            return (sins->paired_is_initial && pr.is_paired_at(g)) ? 0 : sins->child(src_sins);
+        }
+        const uint8_t tgt_sins = (*sins->counts)[ip];
+        sins->merge_into(ip, src_sins);
+        return tgt_sins;
     }
     template <class Responses>
     auto process_reserve(const mpi::WindowVec<Responses> & /*inc_r*/, size_t /*my_rank*/) -> void {}
@@ -150,6 +192,18 @@ struct GraphSink {
         const size_t base = out.size();
         const size_t nq = resp.size();
         const QueryForm form = querier_form();
+        if (sins != nullptr) {
+            out.reserve(base + nq);
+            size_t off = 0;
+            for (size_t q = 0; q < nq; ++q) {
+                if (resp[q] != init_response()) {
+                    out.push_back({srcs[q], QueryWire<NumModes>::phase_at(qbuf, off)});
+                    sins->merge_into(srcs[q], static_cast<uint8_t>(resp[q]));
+                }
+                off = QueryWire<NumModes>::next_off(qbuf, form, off);
+            }
+            return;
+        }
         out.resize(base + nq);
         size_t off = 0;
         for (size_t q = 0; q < nq; ++q) {
@@ -646,11 +700,22 @@ struct LayerBuildEngine {
         // Grow the rows, write each miss's positions, insert; same base+k ordering as insert_absent_terms.
         // Kept as the dense reference sparse_resolve_tests.cpp differentially tests this path against.
         const size_t base = local_op.store->grow_rows_geometric(n_miss);
+        const SinTrack *const sins = sink_sin_track(sink);
+        if (sins != nullptr) {
+            assert(sins->counts->size() == base);
+            sins->counts->resize(base + n_miss);
+        }
         for (size_t k = 0; k < n_miss; ++k) {
             const auto &m = deferred_self_misses[k];
             local_op.store->set_positions(base + k,
                                           std::span<const RowPosT>(deferred_pos_flat_).subspan(m.pos_at, m.k));
             sink.emit_deferred(k, base + k, m.src, m.phase, m.v_src);
+            if (sins != nullptr) {
+                // The source took part in no other rotation this gate, so its count is still pre-gate.
+                const bool initial =
+                    sins->paired_is_initial && is_paired_positions_(deferred_pos_flat_.data() + m.pos_at, m.k);
+                (*sins->counts)[base + k] = initial ? 0 : sins->child((*sins->counts)[m.src]);
+            }
         }
         local_op.store
             ->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; }, options);
@@ -677,6 +742,28 @@ private:
 
     bool leaders_pass_ = true; // the pass the retained streams belong to, as prepare_exchange() adopted them
 
+    // Max-sins on a self miss: whether to create the partner (always, without max-sins). A reference-state
+    // partner (Schrodinger, fully paired) is always created and merged into its source like a hit on a
+    // count-0 row.
+    auto admit_self_miss_(const SinTrack *sins, size_t src, size_t pos_at, uint32_t k) -> bool {
+        if (sins == nullptr) {
+            return true;
+        }
+        if (sins->paired_is_initial && is_paired_positions_(self_stage_.pos_flat.data() + pos_at, k)) {
+            sins->merge_into(src, 0);
+            return true;
+        }
+        return sins->admits((*sins->counts)[src]);
+    }
+    static auto merge_hit_sins_(const SinTrack *sins, size_t src, size_t found) -> void {
+        if (sins != nullptr) {
+            sins->merge_pair(src, found);
+        }
+    }
+    static auto is_paired_positions_(const RowPosT *pos, size_t k) -> bool {
+        return k == 2 * QueryWire<NumModes>::pair_count(std::span<const RowPosT>(pos, k));
+    }
+
     // Self-resolve scratch for one window of at most self_probe_window queries, reused across windows and both
     // passes: gathered offsets (absolute into the stage), counts, results, hashes and the emission payload.
     std::vector<size_t> self_pos_off_;
@@ -695,6 +782,7 @@ private:
     auto resolve_range_(std::vector<size_t> &ls, [[maybe_unused]] std::vector<double> *lv, bool is_leader_pass)
         -> void {
         const size_t op_size = local_op.store->size();
+        const SinTrack *const sins = sink_sin_track(sink);
         const size_t hi = self_stage_.size();
         const size_t cap = std::min(hi, self_probe_window);
         if constexpr (requires { sink.reserve_self_hits(hi); }) {
@@ -763,9 +851,11 @@ private:
                     if (is_leader_pass && found < combined_size) {
                         matched.mark(found);
                     }
+                    merge_hit_sins_(sins, self_src_[j], found);
                     sink.self_hit(self_src_[j], found, self_phase_[j], v_src);
                 }
-                else {
+                // Max-sins never creates an over-limit partner that does not exist.
+                else if (admit_self_miss_(sins, self_src_[j], self_pos_off_[j], self_k_of_[j])) {
                     // The stage dies with this pass and the misses are flushed after both, so copy now.
                     const size_t at = deferred_pos_flat_.size();
                     const auto *const first = self_stage_.pos_flat.data() + self_pos_off_[j];
@@ -781,6 +871,17 @@ private:
 static inline auto empty_coeffs() -> const VecD & {
     static const VecD coeffs;
     return coeffs;
+}
+
+// Max-sins: pads the per-row counts to the operator, so rows that predate tracking count 0, and returns
+// the scan's view of them; null without max-sins.
+template <size_t NumModes>
+auto padded_sin_counts_(const SinTrack *sins, const MPOperator<NumModes> &op) -> const uint8_t * {
+    if (sins == nullptr) {
+        return nullptr;
+    }
+    sins->counts->resize(op.store->size(), 0);
+    return sins->counts->data();
 }
 
 /*!
@@ -812,6 +913,8 @@ struct GateScan {
  * \param router    Flat-owner routing; `my_rank` is this owner's flat slot and `op` holds only rows it owns.
  * \param use_fused Whether the caller contracts immediately (ContractSink): values are captured and the fused
  *                  cosine sweep may run.
+ * \param sin_track Max-sins state of `local_op` (graph builds only), or null. Its counts are padded to the store
+ *                  here, and cross-owner queries become Counted records.
  * \return The streams, cosine set and decisions; `fused_scale` is the single authority for the apply.
  */
 template <size_t NumModes, class Observer = NoRangeObserver>
@@ -829,7 +932,11 @@ auto scan_gate(MPOperator<NumModes> &local_op,
                VecD *fused_scale_coeffs,
                Basis basis,
                parallel::Options options = {},
-               const Observer &observer = {}) -> GateScan<NumModes> {
+               const Observer &observer = {},
+               const SinTrack *sin_track = nullptr) -> GateScan<NumModes> {
+    // Max-sins is a graph-build rule; the fused contraction has no count to keep.
+    assert(sin_track == nullptr || !use_fused);
+    const uint8_t *const sin_counts = padded_sin_counts_(sin_track, local_op);
     GateScan<NumModes> scan;
     // Under linear routing every query for this generator goes to rank my_rank ^ rank_shift(gen).
     const size_t gen_shift = router.rank_shift<NumModes>(gen);
@@ -871,7 +978,8 @@ auto scan_gate(MPOperator<NumModes> &local_op,
                                                                  sweep_ptr,
                                                                  cos_build,
                                                                  options,
-                                                                 observer);
+                                                                 observer,
+                                                                 sin_counts);
         });
         auto &cos_all = scan.cos_all;
         if (fused.cos_blocks.size() == 1) {
@@ -935,7 +1043,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                  bool *fused_scale_out = nullptr,
                  Basis basis = Basis::Majorana,
                  parallel::Options options = {},
-                 const Observer &observer = {}) -> std::shared_ptr<LayerCore> {
+                 const Observer &observer = {},
+                 const SinTrack *sin_track = nullptr) -> std::shared_ptr<LayerCore> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
     const size_t R = static_cast<size_t>(mpi::size(comm));
@@ -958,7 +1067,8 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                               fused_scale_coeffs,
                                               basis,
                                               options,
-                                              observer);
+                                              observer,
+                                              sin_track);
     // scan_gate is the single authority for this decision; the fused caller must drive its apply from it.
     if (fused_scale_out != nullptr) {
         *fused_scale_out = scan.fused_scale;
@@ -1008,7 +1118,7 @@ auto build_layer(MPOperator<NumModes> &local_op,
                                              .basis = basis});
     }
     else {
-        storage = run(GraphSink<NumModes>{R, my_rank});
+        storage = run(GraphSink<NumModes>{R, my_rank, sin_track});
     }
 
     // Recompute metadata rides with the layer so it survives every graph transform.

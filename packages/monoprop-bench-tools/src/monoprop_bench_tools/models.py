@@ -258,6 +258,11 @@ def build_random_propagator(
     return propagator, problem.circuit
 
 
+def max_sins_or_none(max_sins: int) -> int | None:
+    """Map a config's ``max_sins`` (negative = off) onto the propagator argument."""
+    return None if max_sins < 0 else max_sins
+
+
 @dataclass(frozen=True, slots=True)
 class HubbardConfig:
     """Configuration for the static Hubbard benchmark (sandbox default input)."""
@@ -273,6 +278,8 @@ class HubbardConfig:
     neel_start_spin: str = "down"
     cutoff: int = 6
     lower_atol: float = 1e-4
+    # Max-sins truncation limit for build_graph; negative disables it (the CLI cannot pass None).
+    max_sins: int = -1
 
     @property
     def num_qubits(self) -> int:
@@ -385,6 +392,7 @@ def build_hubbard_problem(
         cutoff_type="length",
         lower_atol=config.lower_atol,
         comm=comm,
+        max_sins=max_sins_or_none(config.max_sins),
     )
     return propagator, circuit
 
@@ -552,6 +560,8 @@ class KickedIsingConfig:
     coupling: float = np.pi / 4
     cutoff: int = 8
     lower_atol: float = 1e-4
+    # Max-sins truncation limit for build_graph; negative disables it (the CLI cannot pass None).
+    max_sins: int = -1
 
 
 def _xlayer(num_qubits: int, angle: float) -> list[tuple[ExpGate, float]]:
@@ -630,6 +640,7 @@ def build_kicked_ising_problem(
         lower_atol=config.lower_atol,
         upper_atol=None,
         comm=comm,
+        max_sins=max_sins_or_none(config.max_sins),
     )
     return propagator, circuit
 

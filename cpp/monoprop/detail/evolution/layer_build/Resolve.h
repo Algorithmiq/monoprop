@@ -120,9 +120,10 @@ struct IncomingProbe {
     std::vector<size_t> goff;              // window.count+1 flat offsets: g = goff[k] + q
     DefaultInitVector<uint32_t> sender_wi; // g → sender's window index
     DefaultInitVector<int> phase_of;       // g → query phase
+    DefaultInitVector<uint8_t> sins_of;    // g → the source's sine count (Counted form only)
     // g → word offset of that query inside its sender's buffer; a query ordinal names no position.
     DefaultInitVector<size_t> off_of;
-    DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j)
+    DefaultInitVector<size_t> idx_of; // g → resolved index (hit: < base; miss: base+j; declined: kDroppedIndex)
     // j → the query ordinal g that became miss j (Phase 4 reads its key). Ordinals, not TermIndex values:
     // their range is the query count, not the store's.
     std::vector<size_t> miss_g;
@@ -179,8 +180,8 @@ auto check_fits(const Vec &v, size_t n, const char *what) -> void {
  *
  * `incoming` holds one serialized stream per sender window slot: owning `VecZ` blocks as a transport unpacked them, or
  * read-only views of buffers another owner published (QueryWire::WireView); the streams are only read and must stay
- * unchanged until this returns. `form` says whether the records are fused (ContractSink) or plain (GraphSink). In
- * order:
+ * unchanged until this returns. `form` says whether the records are fused (ContractSink), counted (GraphSink under
+ * max-sins) or plain (GraphSink). In order:
  *   1. On the caller, every sender stream is walked in window order with QueryWire::checked_extent, so a
  *      malformed header, a noncanonical escape or a truncated record is rejected before any payload is read.
  *      The query and position prefixes, sender narrowing and vector limits are checked, every per-query array
@@ -190,11 +191,13 @@ auto check_fits(const Vec &v, size_t n, const char *what) -> void {
  *      positions outside the term's width, and each record must end exactly at its prepared boundary.
  *   3. After that join, probe_frozen_positions looks every query up in the frozen store, keeping its hash.
  *   4. After that join, the caller checks that base + misses stays below the row-ID ceiling, then assigns miss
- *      j the ID base + j in ascending sender-window/query order.
+ *      j the ID base + j in ascending sender-window/query order. Under max-sins (`sins` non-null, Counted form)
+ *      a miss whose source count plus inc exceeds the limit takes kDroppedIndex instead of an ID.
  * A failure in any phase leaves `op` untouched. The caller runs phase 3 (the scatter), then
  * insert_incoming_misses.
  *
  * \param observer Test seam reporting KernelRange::decode and KernelRange::incoming_probe; see NoRangeObserver.
+ * \param sins     Max-sins state of the resolving shard, or null; non-null exactly for the Counted form.
  * \throws MalformedQueryStream for a malformed stream (from the caller before decoding, or from a decode worker
  *         for invalid positions, rethrown after the join and before probing).
  * \throws TermIndexCeilingReached if the misses would pass the row-ID ceiling.
@@ -205,7 +208,9 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
                             MPOperator<NumModes> &op,
                             QueryForm form,
                             parallel::Options options = {},
-                            const Observer &observer = {}) -> IncomingProbe<NumModes> {
+                            const Observer &observer = {},
+                            const SinTrack *sins = nullptr) -> IncomingProbe<NumModes> {
+    assert((sins != nullptr) == (form == QueryForm::Counted));
     using QW = QueryWire<NumModes>;
     using PosT = typename IncomingProbe<NumModes>::PosT;
     IncomingProbe<NumModes> pr;
@@ -258,6 +263,10 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
     pr.pos_off.resize(n);
     pr.k_of.resize(n);
     pr.hash_of.resize(n);
+    if (sins != nullptr) {
+        resolve_detail::check_fits(pr.sins_of, n, "queries");
+        pr.sins_of.resize(n);
+    }
     pr.pos_flat.resize(positions);
 
     // 1c. Canonical sender-window/query order: record offsets, counts and absolute position offsets. The headers
@@ -273,7 +282,7 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
             pr.k_of[g] = static_cast<uint32_t>(h.k); // k <= kMaxPositions <= 65535
             pr.pos_off[g] = pos_at;
             pos_at += h.k;
-            off += QW::words_of_header(h) + (form == QueryForm::Fused ? 1U : 0U);
+            off += QW::words_of_record(h, form);
         }
     }
     assert(pos_at == positions);
@@ -300,6 +309,9 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
                                 boundary));
             }
             pr.phase_of[g] = d.phase;
+            if (sins != nullptr) {
+                pr.sins_of[g] = d.sins;
+            }
         }
     });
 
@@ -315,10 +327,14 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
                                      KernelRange::incoming_probe);
 
     // 4. Phase 2 ((sender,query) prefix order): each miss takes the next index base+j. The row-ID limit is
-    // checked before any predicted ID is written.
+    // checked before any predicted ID is written. A miss max-sins declines takes kDroppedIndex.
+    const auto declined = [&](size_t g) {
+        return sins != nullptr && !sins->admits(pr.sins_of[g]) && !(sins->paired_is_initial && pr.is_paired_at(g));
+    };
     size_t n_miss = 0;
     for (size_t g = 0; g < n; ++g) {
-        n_miss += static_cast<size_t>(pr.idx_of[g] >= pr.base); // kNotFound is size_t max, so it lands here too
+        // kNotFound is size_t max, so it lands here too.
+        n_miss += static_cast<size_t>(pr.idx_of[g] >= pr.base && !declined(g));
     }
     if (n_miss > OperatorIndex<NumModes>::kIndexCeiling - pr.base) {
         throw TermIndexCeilingReached(std::format("probe_incoming_queries: {} new terms on a store of {} would pass "
@@ -330,6 +346,10 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
     size_t j = 0;
     for (size_t g = 0; g < n; ++g) {
         if (pr.idx_of[g] >= pr.base) {
+            if (declined(g)) {
+                pr.idx_of[g] = kDroppedIndex;
+                continue;
+            }
             pr.idx_of[g] = pr.base + j;
             pr.miss_g[j++] = g;
         }
@@ -340,13 +360,25 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size(). Publication
 // is single-writer: grow, set_positions, bulk_insert_hashed with the probe's cached hashes (`options` is its
-// publication seam, which the packed index ignores), then the inverted-index maintenance.
+// publication seam, which the packed index ignores), then the inverted-index maintenance. Under max-sins (`sins`
+// non-null) each new row also gets its sine count.
 template <size_t NumModes>
-auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr, parallel::Options options = {})
-    -> void {
+auto insert_incoming_misses(MPOperator<NumModes> &op,
+                            const IncomingProbe<NumModes> &pr,
+                            parallel::Options options = {},
+                            const SinTrack *sins = nullptr) -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
+    }
+    if (sins != nullptr) {
+        assert(sins->counts->size() == pr.base);
+        sins->counts->resize(pr.base + n_miss);
+        for (size_t j = 0; j < n_miss; ++j) {
+            const size_t g = pr.miss_g[j];
+            (*sins->counts)[pr.base + j] =
+                (sins->paired_is_initial && pr.is_paired_at(g)) ? 0 : sins->child(pr.sins_of[g]);
+        }
     }
     // insert_absent_terms' three steps without its two dense round-trips, and on the same ordering
     // contract, which is what matters: slot j lands at base+j, in miss order = (sender, record) order.
@@ -377,6 +409,17 @@ auto leader_marks_unique(const IncomingProbe<NumModes> &pr, size_t combined_size
     }
     std::ranges::sort(hits);
     return std::ranges::adjacent_find(hits) == hits.end();
+}
+
+// A sink's max-sins state, or null for a sink that has none (ContractSink, test sinks).
+template <typename Sink>
+[[nodiscard]] auto sink_sin_track(const Sink &sink) -> const SinTrack * {
+    if constexpr (requires { sink.sin_track(); }) {
+        return sink.sin_track();
+    }
+    else {
+        return nullptr;
+    }
 }
 
 /*!
@@ -428,8 +471,9 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
                       parallel::Options options = {},
                       const Observer &observer = {}) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
+    const SinTrack *const sins = sink_sin_track(sink);
     const IncomingProbe<NumModes> pr =
-        probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), options, observer);
+        probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), options, observer, sins);
     // The pairing is an XOR involution, so the response window is the query window.
     mpi::WindowVec<std::vector<Resp>> responses(pr.window);
     for (const auto wi : pr.window.indices()) {
@@ -472,7 +516,7 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
         }
     }
 
-    insert_incoming_misses<NumModes>(op, pr, options);
+    insert_incoming_misses<NumModes>(op, pr, options, sins);
     return responses;
 }
 

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -75,6 +76,14 @@
  * replays it through replay_forward_in_team() in the same team. Its P5 then also extends the coefficients and begins
  * the replay of the new layer over its transient cosine set (snapshot, publish, cosine pass), and one more checkpoint
  * (P6) finishes it from the partners' published snapshots before the next gate's traversal reads the coefficients.
+ *
+ * Graph construction's truncation rules. Under max-sins each owner tracks its own shard's per-row sine counts
+ * (SinTrack): a cross-owner query carries its source's count (a Counted record), the destination declines an
+ * over-limit miss and answers with the target's pre-gate count, and the source merges that answer when it consumes it,
+ * so an owner only ever writes its own counts; the destination's resolve scatter then stays serial. Under blockwise
+ * truncation the gates inside a block traverse with a pass-all cutoff, and a block's last gate ends with one more
+ * checkpointed phase (retire) in which every owner retires the failing unpaired rows its shard gained in the block's
+ * earlier gates; an opaque cutoff retires every shard on the primary, as it traverses them.
  *
  * The identity generator skips the exchange phases; with one flat owner there is no cross owner, so only the resolve
  * and consume work is skipped, and same-shard resolution still runs. Row insertion order is therefore cross-owner
@@ -159,6 +168,7 @@ enum class ConstructionWork : std::uint8_t {
     consume_followers, //!< Fold the answers to this shard's follower queries.
     finalize,          //!< Insert deferred same-shard misses; finalize the layer and append it to the graph.
     apply,             //!< Propagation only: extend the coefficients and apply the fused records.
+    retire,            //!< Blockwise truncation, at a block's last gate: retire the block's failing unpaired rows.
     caches,            //!< After the last gate: release gate buffers, warm the shard's caches, shrink its vectors.
     seed,              //!< Informed construction: copy the picture, prepare and run the seed replay.
     replay,            //!< Informed construction: begin (P5) or finish (P6) the replay of the new layer.
@@ -208,8 +218,10 @@ struct ConstructionContext {
     routing::Router router;              //!< Flat-owner routing at geometry (P, T), as the shards were seeded.
     std::optional<double> lower_atol;    //!< Lower sine cutoff; applies only where coefficients are supplied.
     std::optional<double> upper_atol;    //!< Upper rescue threshold; applies only where coefficients are supplied.
-    Basis basis = Basis::Majorana;       //!< Rotation signs, and Schrödinger fresh-insert scoring.
-    bool schrodinger = false;            //!< Picture: forward gate order and state coefficients when true.
+    //! Max-sins truncation limit, at most 254; graph construction only (propagation refuses one).
+    std::optional<size_t> max_sins;
+    Basis basis = Basis::Majorana; //!< Rotation signs, and Schrödinger fresh-insert scoring.
+    bool schrodinger = false;      //!< Picture: forward gate order and state coefficients when true.
     //! This process among the router's ranks; read on the caller (PhysicalWorld::of()) before the call.
     PhysicalWorld world{};
     //! The owner's physical rounds, reused across its calls; null allocates rounds for this call only.
@@ -228,6 +240,10 @@ struct GraphCircuit {
     std::span<const double> gen_coeffs;             //!< Generator coefficient of each gate's layer.
     std::span<const size_t> gate_indices;           //!< Absolute gate index of each layer (offset already applied).
     std::optional<size_t> only_rotate_len_k;        //!< Rotate only sources of at most this many slots.
+    //! Blockwise truncation: one block id per gate, contiguous runs from 0, or empty for standard truncation.
+    std::span<const size_t> block_ids{};
+    //! Whether this call's sine branches count toward ConstructionContext::max_sins; ignored without one.
+    bool count_sins = true;
 };
 
 /*!
@@ -477,7 +493,55 @@ struct OwnerFrame {
     CosCallbacks seed_callbacks;          // informed: the seed replay's callbacks
     ForwardScratch replay_scratch;        // informed: self sources of the new layer's replay
     PublishedPair replay_published;       // informed: read by partners at P6
+    std::optional<SinTrack> sins;         // graph modes under max-sins: this owner's shard counts
+    size_t block_start = 0;               // blockwise: the store size when the current block began
+
+    [[nodiscard]] auto sin_track() const -> const SinTrack * { return sins ? &*sins : nullptr; }
 };
+
+/*
+ * Passes every monomial: the cutoff a gate inside a truncation block builds with. A LengthCutoff, so CutoffEvaluator
+ * still takes its built-in fast path and the traversal may run on the owners.
+ */
+template <size_t NumModes>
+auto pass_all_cutoff_fn() -> const CutoffFn<NumModes> & {
+    static const CutoffFn<NumModes> fn = LengthCutoff<NumModes>{std::numeric_limits<unsigned int>::max(), NumModes};
+    return fn;
+}
+
+/*
+ * The block-end sweep on one shard: retires every row in [first, last) that is unpaired, fails `cutoff_fn` and is not
+ * rescued by `upper_atol` on `coeffs` (null: no rescue). Rows of [first, last) are all live. Rows are owner-local, so
+ * the sweep needs no communication. Evaluates `cutoff_fn`, so an opaque predicate needs the exclusive phase.
+ */
+template <size_t NumModes>
+auto retire_block_rows(MPOperator<NumModes> &op,
+                       size_t first,
+                       size_t last,
+                       const CutoffFn<NumModes> &cutoff_fn,
+                       std::optional<double> upper_atol,
+                       const VecD *coeffs) -> void {
+    if (first >= last) {
+        return;
+    }
+    const CutoffEvaluator<NumModes> cutoff_eval{cutoff_fn};
+    const auto even_mask = monoprop::even_bits<2 * NumModes, LSb0>();
+    std::vector<TermIndex> retired;
+    for (size_t r = first; r < last; ++r) {
+        const auto mono = op.store->row(r);
+        // Paired in the native basis is what scores against the reference state; a basis_change cutoff could
+        // otherwise fail such a row.
+        if (monoprop::is_paired<NumModes>(mono, even_mask) || cutoff_eval(mono)) {
+            continue;
+        }
+        if (coeffs != nullptr && upper_atol.has_value() && r < coeffs->size()
+            && std::abs((*coeffs)[r]) >= *upper_atol) {
+            continue;
+        }
+        retired.push_back(static_cast<TermIndex>(r));
+    }
+    op.retire_rows(retired);
+}
 
 // Construction's work reported through an evaluation observer: the seed replay's steps.
 template <class Observer>
@@ -502,7 +566,8 @@ auto check_arguments(const char *what,
                      const ConstructionContext<NumModes> &ctx,
                      size_t gates,
                      std::initializer_list<size_t> lengths,
-                     std::optional<size_t> only_rotate_len_k) -> void {
+                     std::optional<size_t> only_rotate_len_k,
+                     std::span<const size_t> block_ids = {}) -> void {
     if (options.threads < 1 || shards.size() != static_cast<size_t>(options.threads)
         || std::ranges::any_of(shards, [](const auto &state) { return !state; })) {
         throw std::invalid_argument(
@@ -526,6 +591,12 @@ auto check_arguments(const char *what,
                 std::format("sharded::{}: a per-gate array has {} entries for {} gates", what, length, gates));
         }
     }
+    if (!block_ids.empty()) {
+        validate_block_ids(VecZ(block_ids.begin(), block_ids.end()), gates);
+    }
+    if (ctx.max_sins.has_value() && *ctx.max_sins > std::numeric_limits<uint8_t>::max() - 1U) {
+        throw std::invalid_argument(std::format("sharded::{}: max_sins {} exceeds 254", what, *ctx.max_sins));
+    }
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
 }
 
@@ -544,7 +615,9 @@ auto run_gates(parallel::Options options,
                const Observer &observer,
                AngleOf &&angle_of,
                Append &&append,
-               const std::span<const double> *seed_params = nullptr) -> ConstructionOutcome {
+               const std::span<const double> *seed_params = nullptr,
+               std::span<const size_t> block_ids = {},
+               bool count_sins = true) -> ConstructionOutcome {
     constexpr bool Fused = Mode == GateMode::propagate;
     constexpr bool Informed = Mode == GateMode::informed;
     using Sink = std::conditional_t<Fused, ContractSink<NumModes>, GraphSink<NumModes>>;
@@ -558,8 +631,11 @@ auto run_gates(parallel::Options options,
     const size_t flat_world = ctx.router.flat_world();
     const size_t first_local = ctx.world.rank * threads;
     const bool schrodinger = ctx.schrodinger;
-    // Opaque predicates keep the exclusive traversal; see the header comment.
+    // Opaque predicates keep the exclusive traversal (and block-end sweep); see the header comment.
     const bool owner_traversal = CutoffEvaluator<NumModes>(ctx.cutoff_fn).parallel_safe();
+    // Max-sins and blockwise truncation are graph-build rules; propagation never gets either.
+    const bool track_sins = !Fused && ctx.max_sins.has_value();
+    const bool blockwise = !Fused && !block_ids.empty();
 
     // Caller-side metadata: T frame pointers. Entry t has one writer, owner t; readers dereference it only after the
     // checkpoint that published it.
@@ -628,6 +704,13 @@ auto run_gates(parallel::Options options,
                 observer.visit(W::frame, no_step, t);
                 frames[t] = std::make_unique<Frame>(observer.kernels(t));
                 replay_pairs[t] = &frames[t]->replay_published;
+                if (track_sins) {
+                    frames[t]->sins = SinTrack{.counts = &own.op.sin_counts_,
+                                               .max_sins = static_cast<uint8_t>(*ctx.max_sins),
+                                               .inc = static_cast<uint8_t>(count_sins ? 1 : 0),
+                                               .paired_is_initial = schrodinger};
+                }
+                frames[t]->block_start = own.op.size();
             })) {
             return;
         }
@@ -682,6 +765,14 @@ auto run_gates(parallel::Options options,
                                  world)
                     : std::vector<size_t>{};
             const bool remote = !peers.empty();
+            /* Blockwise truncation: a block ends at its last processed gate, the first in circuit order in Heisenberg
+             * and the last in Schrödinger. Only that gate builds with the structural cutoff; the gates before it
+             * build with a pass-all cutoff, and the rows they created are swept once it is done. */
+            const bool block_end = !blockwise
+                                   || (schrodinger ? idx + 1 == gates || block_ids[idx + 1] != block_ids[idx]
+                                                   : idx == 0 || block_ids[idx - 1] != block_ids[idx]);
+            const CutoffFn<NumModes> &gate_cutoff = block_end ? ctx.cutoff_fn : pass_all_cutoff_fn<NumModes>();
+            const bool gate_owner_traversal = owner_traversal || !block_end;
 
             // Scans shard s into a fresh gate buffer; the previous gate's buffers were last read before P5.
             const auto traverse = [&](size_t s) {
@@ -711,7 +802,7 @@ auto run_gates(parallel::Options options,
                     // A coefficient-informed build: coefficients and build angle, no fused sweep.
                     work.scan = scan_gate<NumModes, KernelObserver>(state.op,
                                                                     gen,
-                                                                    ctx.cutoff_fn,
+                                                                    gate_cutoff,
                                                                     ctx.lower_atol,
                                                                     std::cref(*f.coeffs),
                                                                     ctx.upper_atol,
@@ -723,12 +814,13 @@ auto run_gates(parallel::Options options,
                                                                     nullptr,
                                                                     ctx.basis,
                                                                     kSerial,
-                                                                    f.kernels);
+                                                                    f.kernels,
+                                                                    f.sin_track());
                 }
                 else {
                     work.scan = scan_gate<NumModes, KernelObserver>(state.op,
                                                                     gen,
-                                                                    ctx.cutoff_fn,
+                                                                    gate_cutoff,
                                                                     ctx.lower_atol,
                                                                     std::nullopt,
                                                                     ctx.upper_atol,
@@ -740,7 +832,8 @@ auto run_gates(parallel::Options options,
                                                                     nullptr,
                                                                     ctx.basis,
                                                                     kSerial,
-                                                                    f.kernels);
+                                                                    f.kernels,
+                                                                    f.sin_track());
                 }
             };
             // Owner-local: builds the engine (which starts the matched epoch) and runs the leader prepare.
@@ -772,7 +865,7 @@ auto run_gates(parallel::Options options,
                                                    flat,
                                                    own.matched,
                                                    work.scan.combined_size,
-                                                   Sink(flat_world, flat),
+                                                   Sink(flat_world, flat, frame.sin_track()),
                                                    work.scan.window,
                                                    kSerial,
                                                    frame.kernels);
@@ -894,7 +987,7 @@ auto run_gates(parallel::Options options,
 
             // P1: traversal and leader preparation.
             bool ok = false;
-            if (owner_traversal) {
+            if (gate_owner_traversal) {
                 ok = phase(failure, t, [&] {
                     traverse(t);
                     prepare_leaders();
@@ -1060,6 +1153,34 @@ auto run_gates(parallel::Options options,
                     return;
                 }
             }
+            /* The block-end sweep, after the gate's last checkpoint: informed construction rescues by the coefficients
+             * the new layer's replay has just evolved. The last gate kept the structural cutoff, so only the rows of
+             * the block's earlier gates, [block_start, this gate's combined_size), need it. Each owner sweeps its own
+             * shard; an opaque cutoff sweeps every shard on the primary, as the traversal does. */
+            if (blockwise && block_end) {
+                const auto retire = [&](size_t s) {
+                    observer.visit(W::retire, step, s);
+                    Frame &f = *frames[s];
+                    MPOperator<NumModes> &op = shards[s]->op;
+                    retire_block_rows<NumModes>(op,
+                                                f.block_start,
+                                                f.work->scan.combined_size,
+                                                ctx.cutoff_fn,
+                                                ctx.upper_atol,
+                                                Informed ? f.coeffs : nullptr);
+                    f.block_start = op.size();
+                };
+                const bool swept = owner_traversal ? phase(failure, t, [&] { retire(t); }) : phase(failure, t, [&] {
+                    if (t == 0) {
+                        for (size_t s = 0; s < threads; ++s) {
+                            retire(s);
+                        }
+                    }
+                });
+                if (!swept) {
+                    return;
+                }
+            }
         }
 
         // The last phase: its decision ends the sequence either way.
@@ -1129,7 +1250,8 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
         ctx,
         gates,
         {circuit.parameter_mapping.size(), circuit.gen_coeffs.size(), circuit.gate_indices.size()},
-        circuit.only_rotate_len_k);
+        circuit.only_rotate_len_k,
+        circuit.block_ids);
     if (gates == 0) {
         return {};
     }
@@ -1146,7 +1268,10 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
                                circuit.parameter_mapping[idx],
                                circuit.gen_coeffs[idx],
                                circuit.gate_indices[idx]);
-        });
+        },
+        nullptr,
+        circuit.block_ids,
+        circuit.count_sins);
 }
 
 /*!
@@ -1189,7 +1314,8 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
                                           graph.gen_coeffs.size(),
                                           graph.gate_indices.size(),
                                           circuit.mapped_params.size()},
-                                         graph.only_rotate_len_k);
+                                         graph.only_rotate_len_k,
+                                         graph.block_ids);
     if (gates == 0) {
         return {};
     }
@@ -1217,7 +1343,9 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
                                graph.gen_coeffs[idx],
                                graph.gate_indices[idx]);
         },
-        seed);
+        seed,
+        graph.block_ids,
+        graph.count_sins);
 }
 
 /*!
@@ -1252,6 +1380,9 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
                                          gates,
                                          {circuit.mapped_params.size()},
                                          circuit.only_rotate_len_k);
+    if (ctx.max_sins.has_value()) {
+        throw std::invalid_argument("sharded::propagate: max-sins truncation applies to graph construction only");
+    }
     if (gates == 0) {
         return {};
     }

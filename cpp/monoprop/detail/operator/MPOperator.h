@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -134,6 +135,17 @@ struct MPOperator {
     // Set once at propagator construction.
     Basis basis{Basis::Majorana};
     mutable std::optional<InvertedIndex<NumModes>> inverted_index_{std::nullopt};
+    /* Retired rows (blockwise truncation), one bit per row, word-aligned like the inverted index. A
+     * retired row stays in the store and the inverted index -- replay's cosine fold of the layers where it
+     * was still live must keep scaling it -- but is unhooked from the lookup and masked out of the build
+     * scan, so it never again sources or receives a sine. Empty until the first retirement; rows past its
+     * end are live. */
+    std::vector<uint64_t> retired_words_;
+    size_t retired_count_{0uz};
+    /* Max-sins truncation: per row, the fewest sine factors on any path that reached it (see SinTrack).
+     * Empty while the propagator has no max_sins; once set, every build layer first pads it to the store
+     * with 0, so a row that predates tracking counts as unsined. A retired row's entry is never read. */
+    std::vector<uint8_t> sin_counts_;
 
     // Not noexcept: the store's member initializer allocates, and an allocation failure must reach the caller.
     MPOperator() = default;
@@ -150,9 +162,40 @@ struct MPOperator {
           init_op_map(other.init_op_map),
           initial_state(other.initial_state),
           basis(other.basis),
-          inverted_index_(other.inverted_index_) {}
+          inverted_index_(other.inverted_index_),
+          retired_words_(other.retired_words_),
+          retired_count_(other.retired_count_),
+          sin_counts_(other.sin_counts_) {}
 
     auto size() const -> size_t { return store->size(); }
+
+    /*! @brief Retires `rows`: marks them in the mask and erases them from the lookup.
+     *
+     *  Callers pass live, unpaired rows only. A paired row scores against the reference state, so
+     *  retiring one would leave its last value in every later expectation value. A retired row must
+     *  also carry no observable weight, which holds for rows the current build created: Heisenberg only
+     *  weighs rows that predate the build, and Schrödinger, which contracts the observable against
+     *  unpaired rows too, resolves its terms (get_operator()) only once the build's gate loop is done --
+     *  by lookup, so onto the regenerated row, or none.
+     */
+    auto retire_rows(std::span<const TermIndex> rows) -> void {
+        if (rows.empty()) {
+            return;
+        }
+        retired_words_.resize((size() + 63) / 64, 0);
+        for (const TermIndex r : rows) {
+            assert(r >= op_coeffs.size() || op_coeffs[r] == 0.0);
+            retired_words_[r / 64] |= uint64_t{1} << (r % 64);
+            store->erase_row(r);
+        }
+        retired_count_ += rows.size();
+    }
+
+    /*! @brief The retired mask; word `w` covers rows [64w, 64w + 64), and rows past its end are live. */
+    [[nodiscard]] auto retired_words() const -> std::span<const uint64_t> { return retired_words_; }
+
+    /*! @brief Number of retired rows. */
+    [[nodiscard]] auto retired_count() const -> size_t { return retired_count_; }
 
     // Does not keep the lazy inverted index in sync: appends happen during setup, before the index is
     // first materialized, so a later append just makes inverted_index() rebuild via its staleness guard.
@@ -414,6 +457,10 @@ struct MPOperatorMemoryBreakdown final {
     size_t inverted_index_bytes{0uz};
     // The MatchedEpochSet stamp array. Propagator-owned, so 0 unless MonomialPropagator fills it in.
     size_t matched_scratch_bytes{0uz};
+    // The retired-row mask (blockwise truncation); 0 when no row was ever retired.
+    size_t retired_mask_bytes{0uz};
+    // The per-row sine counts (max-sins truncation); 0 when max_sins is unset.
+    size_t sin_count_bytes{0uz};
 
     // Diagnostics: breakdowns of the fields above, deliberately excluded from total_bytes() so they can
     // never double-count.
@@ -425,10 +472,13 @@ struct MPOperatorMemoryBreakdown final {
     size_t state_coeffs_nonzero{0uz};
     // Live entries behind init_operator_bytes, which is bucket_count(): bytes with no entries are dead buckets.
     size_t init_operator_entries{0uz};
+    // Rows retired by blockwise truncation; they still occupy operator_terms_bytes and op_coeffs_bytes.
+    size_t retired_rows{0uz};
 
     auto total_bytes() const -> size_t {
         return operator_terms_bytes + op_coeffs_bytes + state_coeffs_bytes + indexing_bytes + init_operator_bytes
-               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes;
+               + initial_state_bytes + inverted_index_bytes + matched_scratch_bytes + retired_mask_bytes
+               + sin_count_bytes;
     }
 
     auto operator+=(const MPOperatorMemoryBreakdown &o) -> MPOperatorMemoryBreakdown & {
@@ -440,6 +490,9 @@ struct MPOperatorMemoryBreakdown final {
         initial_state_bytes += o.initial_state_bytes;
         inverted_index_bytes += o.inverted_index_bytes;
         matched_scratch_bytes += o.matched_scratch_bytes;
+        retired_mask_bytes += o.retired_mask_bytes;
+        sin_count_bytes += o.sin_count_bytes;
+        retired_rows += o.retired_rows;
         inverted_index_dense_bytes += o.inverted_index_dense_bytes;
         inverted_index_sparse_bytes += o.inverted_index_sparse_bytes;
         inverted_index_dense_columns += o.inverted_index_dense_columns;
@@ -470,6 +523,9 @@ inline auto estimate_memory_usage(const MPOperator<NumModes> &op) -> MPOperatorM
         breakdown.inverted_index_dense_columns = tiers[2];
     }
     breakdown.operator_terms_slack_bytes = op.store->slack_bytes();
+    breakdown.retired_mask_bytes = op.retired_words_.capacity() * sizeof(uint64_t);
+    breakdown.retired_rows = op.retired_count_;
+    breakdown.sin_count_bytes = op.sin_counts_.capacity() * sizeof(uint8_t);
     // State phases are unit-magnitude, so at rest the scored count IS the nonzero count; a live vector needs a scan.
     breakdown.state_coeffs_nonzero =
         op.state_coeffs.empty()

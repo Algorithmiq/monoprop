@@ -11,12 +11,12 @@
   },
   "dependencies": {
     "cnfast": "^0.2.0",
-    "fumadocs-core": "16.17.10",
-    "fumadocs-mdx": "15.4.10",
-    "fumadocs-ui": "16.17.10",
+    "fumadocs-core": "16.19.4",
+    "fumadocs-mdx": "15.6.3",
+    "fumadocs-ui": "16.19.4",
     "katex": "^0.19.1",
-    "lucide-react": "^1.67.0",
-    "next": "16.4.5",
+    "lucide-react": "^1.74.0",
+    "next": "16.4.6",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "rehype-citation": "^2.3.2",
@@ -25,12 +25,12 @@
     "remark-math": "^6.0.0"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.4",
+    "@tailwindcss/postcss": "^4.3.5",
     "@types/mdx": "^2.0.14",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "postcss": "^8.5.32",
+    "postcss": "^8.5.33",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "yaml": "^2.9.1"

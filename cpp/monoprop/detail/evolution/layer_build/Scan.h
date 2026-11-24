@@ -327,7 +327,8 @@ auto fused_find_and_collect_range(const MPOperator<NumModes> &op,
                                   size_t whi,
                                   bool capture_values,
                                   double *fused_scale_coeffs,
-                                  double fused_scale_cos) -> FusedScanResult<NumModes> {
+                                  double fused_scale_cos,
+                                  const uint8_t *sin_counts) -> FusedScanResult<NumModes> {
     const size_t gen_pop = gen.count();
     const size_t rank_count = router.flat_world();
     const auto ectx = A::make_gen_context(gen);
@@ -389,6 +390,12 @@ auto fused_find_and_collect_range(const MPOperator<NumModes> &op,
         }
         if (r_prime == my_rank) {
             (is_follower ? res.follower_self : res.leader_self).push(pos, phase);
+        }
+        else if (sin_counts != nullptr) {
+            QueryWire<NumModes>::push_counted(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime),
+                                              pos,
+                                              phase,
+                                              sin_counts[i]);
         }
         else {
             QueryWire<NumModes>::push(is_follower ? fq.at_slot(r_prime) : lq.at_slot(r_prime), pos, phase);
@@ -487,64 +494,94 @@ auto fused_find_and_collect_range(const MPOperator<NumModes> &op,
                                 && (fused_scale_coeffs != nullptr || coeffs.size() >= ham.size());
     // Bound once: each access to the thread_local `nz` would otherwise go through the TLS lookup.
     const std::span<const EvenParityNzWord> nz_words(nz);
-    for (size_t kw = 0; kw < nz_words.size(); ++kw) {
-        const auto &w = nz_words[kw];
-        if (prefetch_ahead && kw + kPrefetchWords < nz_words.size()) {
-            const auto &ahead = nz_words[kw + kPrefetchWords];
-            for (uint64_t m = ahead.overlap; m; m &= m - 1) {
-                const size_t i = ahead.base + static_cast<size_t>(std::countr_zero(m));
-                ham.prefetch_row(i);
-                __builtin_prefetch(&prefetch_coeffs[i]);
-            }
-        }
-        if (word_aligned_cos && fused_scale_coeffs != nullptr) {
-            // Fused cos sweep: scaling in place here is what replaces building a cosine set.
-            for (uint64_t m = w.overlap; m; m &= m - 1) {
-                const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                const size_t i = w.base + tz;
-                const double v_src = fused_scale_coeffs[i];
-                fused_scale_coeffs[i] = v_src * fused_scale_cos;
-                const double abs_c = std::abs(v_src);
-                if (cut_st.is_below_sin(abs_c)) {
-                    continue;
+    /* Retired rows (blockwise truncation) are cos-scaled like any anticommuting row, so the cosine set
+     * stays the replay fold, but never emit: masking emission alone keeps them from sourcing a sine.
+     * Rows past the mask's end are live. kMasked = false is the unchanged loop for an operator that
+     * never retired a row. */
+    const std::span<const uint64_t> retired = op.retired_words();
+    auto emit_pass = [&]<bool kMasked>() {
+        for (size_t kw = 0; kw < nz_words.size(); ++kw) {
+            const auto &w = nz_words[kw];
+            uint64_t live = w.overlap;
+            if constexpr (kMasked) {
+                if (const size_t wi = w.base / 64; wi < retired.size()) {
+                    live &= ~retired[wi];
                 }
-                const size_t mono_pop = op.store->popcount(i);
-                const bool is_follower = (w.foll >> tz) & 1u;
-                emit(mono_pop, i, abs_c, v_src, is_follower);
             }
-        }
-        else if (word_aligned_cos) {
-            // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
-            // gate before the popcount row read — deferring popcount saves random packed-row loads.
-            cos_b.push_word(w.base, w.overlap);
-            for (uint64_t m = w.overlap; m; m &= m - 1) {
-                const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                const size_t i = w.base + tz;
-                const auto [v_src, abs_c] = derive_coeff(i);
-                if (cut_st.is_below_sin(abs_c)) {
-                    continue;
+            if (prefetch_ahead && kw + kPrefetchWords < nz_words.size()) {
+                const auto &ahead = nz_words[kw + kPrefetchWords];
+                for (uint64_t m = ahead.overlap; m; m &= m - 1) {
+                    const size_t i = ahead.base + static_cast<size_t>(std::countr_zero(m));
+                    ham.prefetch_row(i);
+                    __builtin_prefetch(&prefetch_coeffs[i]);
                 }
-                const size_t mono_pop = op.store->popcount(i);
-                const bool is_follower = (w.foll >> tz) & 1u;
-                emit(mono_pop, i, abs_c, v_src, is_follower);
             }
-        }
-        else {
-            // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
-            // orbital-passing terms, so the popcount row read must precede both.
-            for (uint64_t m = w.overlap; m; m &= m - 1) {
-                const size_t tz = static_cast<size_t>(std::countr_zero(m));
-                const size_t i = w.base + tz;
-                const size_t mono_pop = op.store->popcount(i);
-                if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
-                    continue;
+            if (word_aligned_cos && fused_scale_coeffs != nullptr) {
+                if constexpr (kMasked) {
+                    for (uint64_t m = w.overlap & ~live; m; m &= m - 1) {
+                        const size_t i = w.base + static_cast<size_t>(std::countr_zero(m));
+                        fused_scale_coeffs[i] *= fused_scale_cos;
+                    }
                 }
-                cos_b.push_index(i);
-                const auto [v_src, abs_c] = derive_coeff(i);
-                const bool is_follower = (w.foll >> tz) & 1u;
-                emit(mono_pop, i, abs_c, v_src, is_follower);
+                // Fused cos sweep: scaling in place here is what replaces building a cosine set.
+                for (uint64_t m = live; m; m &= m - 1) {
+                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                    const size_t i = w.base + tz;
+                    const double v_src = fused_scale_coeffs[i];
+                    fused_scale_coeffs[i] = v_src * fused_scale_cos;
+                    const double abs_c = std::abs(v_src);
+                    if (cut_st.is_below_sin(abs_c)) {
+                        continue;
+                    }
+                    const size_t mono_pop = op.store->popcount(i);
+                    const bool is_follower = (w.foll >> tz) & 1u;
+                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                }
+            }
+            else if (word_aligned_cos) {
+                // No orbital gate: record the whole word in the cosine set, then per bit apply the atol
+                // gate before the popcount row read — deferring popcount saves random packed-row loads.
+                cos_b.push_word(w.base, w.overlap);
+                for (uint64_t m = live; m; m &= m - 1) {
+                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                    const size_t i = w.base + tz;
+                    const auto [v_src, abs_c] = derive_coeff(i);
+                    if (cut_st.is_below_sin(abs_c)) {
+                        continue;
+                    }
+                    const size_t mono_pop = op.store->popcount(i);
+                    const bool is_follower = (w.foll >> tz) & 1u;
+                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                }
+            }
+            else {
+                // Orbital gate active: it needs mono_pop, and the per-index cosine push covers only
+                // orbital-passing terms, so the popcount row read must precede both.
+                for (uint64_t m = w.overlap; m; m &= m - 1) {
+                    const size_t tz = static_cast<size_t>(std::countr_zero(m));
+                    const size_t i = w.base + tz;
+                    const size_t mono_pop = op.store->popcount(i);
+                    if (mono_pop > static_cast<size_t>(*only_rotate_len_k)) {
+                        continue;
+                    }
+                    cos_b.push_index(i);
+                    if constexpr (kMasked) {
+                        if (((live >> tz) & 1u) == 0) {
+                            continue;
+                        }
+                    }
+                    const auto [v_src, abs_c] = derive_coeff(i);
+                    const bool is_follower = (w.foll >> tz) & 1u;
+                    emit(mono_pop, i, abs_c, v_src, is_follower);
+                }
             }
         }
+    };
+    if (retired.empty()) {
+        emit_pass.template operator()<false>();
+    }
+    else {
+        emit_pass.template operator()<true>();
     }
     res.cos_blocks.push_back(cos_b.finish());
     return res;
@@ -725,6 +762,9 @@ auto merge_scan_ranges(std::vector<FusedScanResult<NumModes>> &pieces,
 // the serial scan's at every budget and team size. Otherwise the serial scan runs on the caller. Lazy
 // index/parity data is prepared here, on the caller, before any worker starts. `observer` is a test seam
 // (see NoRangeObserver) reporting the KernelRange::scan ranges.
+//
+// `sin_counts` (max-sins truncation; per-row, null when off) makes cross-rank records Counted, carrying
+// the source's count to the resolver; a self-owned query needs none, its resolve reads the row directly.
 template <size_t NumModes, Algebra A, class Observer = NoRangeObserver>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
@@ -740,7 +780,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0,
                             parallel::Options options = {},
-                            const Observer &observer = {}) -> FusedScanResult<NumModes> {
+                            const Observer &observer = {},
+                            const uint8_t *sin_counts = nullptr) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     (void)scan_ranges(0, options); // validates the budget before anything runs
     assert(window.stop() <= router.flat_world() && window.count != 0);
@@ -813,7 +854,8 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                                                          whi,
                                                          capture_values,
                                                          fused_scale_coeffs,
-                                                         fused_scale_cos);
+                                                         fused_scale_cos,
+                                                         sin_counts);
     };
     // Opaque cutoffs and small scans keep the serial scan: one range on the caller, no merge.
     const size_t ranges = cutoff_eval.parallel_safe() ? scan_ranges(word_count, options) : 1;

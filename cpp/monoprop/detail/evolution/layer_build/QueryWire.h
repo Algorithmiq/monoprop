@@ -32,8 +32,10 @@
 
 namespace monoprop::detail {
 
-/*! @brief `Fused` records carry a trailing value word after the positions; `Plain` ones do not. */
-enum class QueryForm { Plain, Fused };
+/*! @brief `Fused` records carry a trailing value word after the positions; `Counted` ones carry the
+ *  source's sine count in `kSinBits` right after the last gap, inside the record's own words; `Plain`
+ *  ones carry neither. */
+enum class QueryForm { Plain, Fused, Counted };
 
 /*! @brief A received query stream that no QueryWire::push sequence could have produced: a truncated or
  *  noncanonical record, an out-of-range header field, or positions outside the term's width.
@@ -91,13 +93,17 @@ struct QueryWire {
 
     static constexpr size_t kMaxPositions = kBits;
 
+    //! The `Counted` form's sine-count field: a byte, the whole range of the per-row count.
+    static constexpr size_t kSinBits = 8;
+
     //! Reserve hint only, for a caller batching many records into one flat position buffer.
     static constexpr size_t kReservePositionsPerQuery = 6;
 
     /*! @brief What one decode call read and consumed. */
     struct Decoded {
-        size_t next; //!< word offset just past what this call consumed
-        int phase;   //!< the record's ternary phase
+        size_t next;      //!< word offset just past what this call consumed
+        int phase;        //!< the record's ternary phase
+        uint8_t sins = 0; //!< the source's sine count (`Counted` form only)
     };
 
     /*! @brief Bit-packs variable-width fields into `buf`, one 64-bit word at a time.
@@ -201,6 +207,14 @@ struct QueryWire {
         return words_of_header(header_at(buf, off));
     }
 
+    //! Words one whole record with header `h` occupies in `form`, value word or count field included.
+    [[nodiscard]] static constexpr auto words_of_record(const Header &h, QueryForm form) noexcept -> size_t {
+        if (form == QueryForm::Counted) {
+            return words_of(gap_bits(h.k, h.gw) + kSinBits);
+        }
+        return words_of_header(h) + (form == QueryForm::Fused ? 1U : 0U);
+    }
+
     /*! @brief A validated record's position count and its words, the fused value word included. */
     struct RecordExtent {
         size_t k;     //!< positions the record decodes to
@@ -239,7 +253,7 @@ struct QueryWire {
             throw malformed(std::format("a noncanonical escaped count {}", h.k));
         }
         // Every term fits kMaxPositions <= 65535 positions of at most 16 bits, so gap_bits cannot wrap.
-        const size_t words = words_of_header(h) + (form == QueryForm::Fused ? 1U : 0U);
+        const size_t words = words_of_record(h, form);
         if (words > buf.size() - off) {
             throw malformed(std::format("{} words needed, {} remain", words, buf.size() - off));
         }
@@ -270,6 +284,17 @@ struct QueryWire {
      */
     template <std::ranges::contiguous_range Pos>
     static auto push(VecZ &buf, const Pos &pos, int phase) -> size_t {
+        return push_impl<false>(buf, pos, phase, 0);
+    }
+
+    //! push() for the `Counted` form: the same record with `sins` appended after the last gap.
+    template <std::ranges::contiguous_range Pos>
+    static auto push_counted(VecZ &buf, const Pos &pos, int phase, uint8_t sins) -> size_t {
+        return push_impl<true>(buf, pos, phase, sins);
+    }
+
+    template <bool kCounted, std::ranges::contiguous_range Pos>
+    static auto push_impl(VecZ &buf, const Pos &pos, int phase, [[maybe_unused]] uint8_t sins) -> size_t {
         const size_t k = std::ranges::size(pos);
         assert(k <= kMaxPositions && "term has more positions than the record's width admits");
         assert(phase >= -1 && phase <= 1 && "emit_phase is ternary: rotation_sign, or REAL_PARTS entry");
@@ -290,6 +315,9 @@ struct QueryWire {
             for (size_t j = 1; j < k; ++j) {
                 w.put(static_cast<uint64_t>(pos[j] - pos[j - 1] - 1U), gw);
             }
+        }
+        if constexpr (kCounted) {
+            w.put(static_cast<uint64_t>(sins), kSinBits);
         }
         w.flush();
         return w.words;
@@ -343,18 +371,31 @@ struct QueryWire {
         return d;
     }
 
-    //! Offset of the next record in a stream; `off` always names the start of one.
-    [[nodiscard]] static auto next_off(WireView buf, QueryForm form, size_t off) -> size_t {
-        return off + words_at(buf, off) + (form == QueryForm::Fused ? 1U : 0U);
+    //! Words one whole record of `form` occupies, value word or count field included.
+    [[nodiscard]] static auto record_words(WireView buf, QueryForm form, size_t off) -> size_t {
+        return words_of_record(header_at(buf, off), form);
     }
 
-    /*! @brief Decodes one record from a query stream, whose `form` says whether a value word
-     *  follows. `Decoded::next` names the following record.
+    //! Offset of the next record in a stream; `off` always names the start of one.
+    [[nodiscard]] static auto next_off(WireView buf, QueryForm form, size_t off) -> size_t {
+        return off + record_words(buf, form, off);
+    }
+
+    /*! @brief Decodes one record from a query stream, whose `form` says whether a value word or a
+     *  count field follows. `Decoded::next` names the following record.
      */
     template <std::ranges::contiguous_range Out>
     static auto read_query(WireView buf, QueryForm form, size_t off, Out &&out) -> Decoded {
         Decoded d = read_positions(buf, off, std::forward<Out>(out));
-        d.next += (form == QueryForm::Fused ? 1U : 0U);
+        if (form == QueryForm::Fused) {
+            ++d.next;
+        }
+        else if (form == QueryForm::Counted) {
+            const Header h = header_at(buf, off);
+            const size_t count_at = gap_bits(h.k, h.gw);
+            d.sins = static_cast<uint8_t>(Reader{buf, off, count_at}.get(kSinBits));
+            d.next = off + words_of(count_at + kSinBits);
+        }
         return d;
     }
 
@@ -396,7 +437,7 @@ struct QueryWire {
 
     //! Copies the record at src_off (and its value word, if fused) to dst_off; returns the words moved.
     static auto move_query(VecZ &buf, QueryForm form, size_t src_off, size_t dst_off) -> size_t {
-        const size_t n = words_at(buf, src_off) + (form == QueryForm::Fused ? 1U : 0U);
+        const size_t n = record_words(buf, form, src_off);
         if (src_off != dst_off) {
             assert(dst_off < src_off && "compaction only ever moves a query earlier");
             std::copy(buf.begin() + static_cast<std::ptrdiff_t>(src_off),

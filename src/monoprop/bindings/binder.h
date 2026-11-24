@@ -18,6 +18,7 @@
 #include <cctype>
 #include <complex>
 #include <format>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -62,6 +63,31 @@ auto cutoff_type_enum_2_str(CutoffType cutoff_type) -> std::string;
 auto basis_str_2_enum(const std::string &basis) -> Basis;
 auto basis_enum_2_str(Basis basis) -> std::string;
 
+/** @brief The operator memory breakdown as the dict `operator_memory_breakdown()` returns. */
+template <size_t NumModes>
+auto operator_breakdown_dict(const monoprop::detail::MPOperatorMemoryBreakdown<NumModes> &b)
+    -> std::map<std::string, size_t, std::less<>> {
+    return std::map<std::string, size_t, std::less<>>{{"operator_terms_bytes", b.operator_terms_bytes},
+                                                      {"op_coeffs_bytes", b.op_coeffs_bytes},
+                                                      {"state_coeffs_bytes", b.state_coeffs_bytes},
+                                                      {"indexing_bytes", b.indexing_bytes},
+                                                      {"init_operator_bytes", b.init_operator_bytes},
+                                                      {"initial_state_bytes", b.initial_state_bytes},
+                                                      {"inverted_index_bytes", b.inverted_index_bytes},
+                                                      {"matched_scratch_bytes", b.matched_scratch_bytes},
+                                                      {"retired_mask_bytes", b.retired_mask_bytes},
+                                                      {"sin_count_bytes", b.sin_count_bytes},
+                                                      {"total_bytes", b.total_bytes()},
+                                                      // Diagnostics, outside total_bytes().
+                                                      {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
+                                                      {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
+                                                      {"d_invidx_dense_columns", b.inverted_index_dense_columns},
+                                                      {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
+                                                      {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
+                                                      {"d_init_operator_entries", b.init_operator_entries},
+                                                      {"d_retired_rows", b.retired_rows}};
+}
+
 template <size_t NumModes>
 auto bind_monomial_propagator(nb::module_ &mod) -> void {
     using namespace monoprop;
@@ -83,7 +109,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            const std::string &cutoff_type,
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            size_t logical_num_modes,
-           const std::string &basis) {
+           const std::string &basis,
+           std::optional<size_t> max_sins) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
                                                  initial_state,
@@ -94,7 +121,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  cutoff_type_str_2_enum(cutoff_type),
                                                  basis_change,
                                                  logical_num_modes,
-                                                 basis_str_2_enum(basis));
+                                                 basis_str_2_enum(basis),
+                                                 max_sins);
         },
         "initial_operator"_a,
         "cutoff"_a,
@@ -107,6 +135,9 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "basis_change"_a = std::nullopt,
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
+        // Keyword-only: a positional value here would land where the removed partition count went.
+        nb::kw_only(),
+        "max_sins"_a = std::nullopt,
         "Instantiate the simulator; its shard count is the thread budget captured from monoprop_NUM_THREADS.");
 
     cls.def("build_graph",
@@ -117,6 +148,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
             "gate_indices"_a = std::nullopt,
             "parameters"_a = std::nullopt,
             "only_rotate_len_k"_a = std::nullopt,
+            "block_ids"_a = std::nullopt,
+            "count_sins"_a = true,
             "Build the propagation graph, recording per-layer gate information");
 
     // Deep copy: the operator store is cloned, the immutable graph layer cores are shared.
@@ -176,6 +209,16 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                     &MonomialPropagator<NumModes>::update_upper_atol,
                     "upper_atol"_a = std::nullopt,
                     "Upper absolute tolerance of the cutoff function, or None");
+
+    cls.def_prop_rw("max_sins",
+                    &MonomialPropagator<NumModes>::max_sins,
+                    &MonomialPropagator<NumModes>::update_max_sins,
+                    "max_sins"_a = std::nullopt,
+                    "Largest sine count build_graph() creates a row with, or None for no max-sins truncation");
+
+    cls.def("reset_sin_counts",
+            &MonomialPropagator<NumModes>::reset_sin_counts,
+            "Set every row's sine count to 0; a no-op without max_sins");
 
     cls.def_prop_rw("cutoff",
                     &MonomialPropagator<NumModes>::cutoff,
@@ -277,23 +320,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
 
     // total_bytes() alone cannot say whether the row store or the transposed inverted index dominates.
     cls.def("operator_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
-        const auto b = self.operator_memory_usage();
-        return std::map<std::string, size_t>{{"operator_terms_bytes", b.operator_terms_bytes},
-                                             {"op_coeffs_bytes", b.op_coeffs_bytes},
-                                             {"state_coeffs_bytes", b.state_coeffs_bytes},
-                                             {"indexing_bytes", b.indexing_bytes},
-                                             {"init_operator_bytes", b.init_operator_bytes},
-                                             {"initial_state_bytes", b.initial_state_bytes},
-                                             {"inverted_index_bytes", b.inverted_index_bytes},
-                                             {"matched_scratch_bytes", b.matched_scratch_bytes},
-                                             {"total_bytes", b.total_bytes()},
-                                             // Diagnostics, outside total_bytes().
-                                             {"d_invidx_dense_bytes", b.inverted_index_dense_bytes},
-                                             {"d_invidx_sparse_bytes", b.inverted_index_sparse_bytes},
-                                             {"d_invidx_dense_columns", b.inverted_index_dense_columns},
-                                             {"d_terms_slack_bytes", b.operator_terms_slack_bytes},
-                                             {"d_state_coeffs_nonzero", b.state_coeffs_nonzero},
-                                             {"d_init_operator_entries", b.init_operator_entries}};
+        return operator_breakdown_dict(self.operator_memory_usage());
     });
 
     // Summed over this rank's stores. The graph's slot arrays are indexed by the flat world (ranks x shards), so these

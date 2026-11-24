@@ -44,6 +44,7 @@ enum class RootWork : std::uint8_t {
     export_block,     //!< Caller: decode this shard's evolved block (evolved_operator_terms() and friends).
     combine,          //!< Caller, after the evaluation team joined: fold and reduce the shards' results.
     adjoint_seed,     //!< Owner phase: scatter this shard's state for term_expectation_values()' adjoint sweep.
+    sin_counts,       //!< Owner phase: reset this shard's max-sins counts (reset_sin_counts()).
 };
 
 /*!

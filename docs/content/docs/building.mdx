@@ -527,11 +527,17 @@ with the run's tag (`pr-N`, `main` or the release version). The base image is bu
 `sha-<commit>`, each followed by `-$MARCH` (e.g. `main-sapphirerapids`), because it runs only
 on that CPU; non-pre-release releases also move `latest-$MARCH`.
 
-The workflow runs on pushes to `main`, on releases, on manual dispatch, and on pull
-requests that touch `tools/container/` or the workflow. `tools/container/smoke-test.sh`
+The workflow runs on pushes to `main`, on manual dispatch, and on pull
+requests that touch `tools/container/` or the workflow. Release images are built the same
+way by the container jobs of `.github/workflows/deploy.yml`, on the release tags that the
+release workflow pushes. `tools/container/smoke-test.sh`
 checks the monoprop image before it is pushed. It never imports monoprop, because the CI
 machine's CPU may lack the instructions `-march` enables, so check a new image on the
 target machine as well (see [MareNostrum5](/clusters/marenostrum5#check-the-image)).
+Being a source build, the image has a single MPI backend, for the ABI family of the base
+image's Open MPI; the smoke test checks that mpi4py loads that same family, without which
+propagators given a communicator raise
+[MPIAbiMismatchError][monoprop.exceptions.MPIAbiMismatchError].
 
 To reproduce the build locally:
 

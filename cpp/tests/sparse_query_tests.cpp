@@ -432,6 +432,59 @@ BOOST_AUTO_TEST_CASE(sparse_record_fused_stream_interleaves_values_and_stays_wal
     BOOST_TEST(off == fused.size());
 }
 
+// Max-sins records carry a count byte after the last gap, inside the record's own words, so a record
+// whose gaps end near a word boundary grows a word. Walk, decode and compact such a stream.
+BOOST_AUTO_TEST_CASE(sparse_record_counted_stream_round_trips_and_compacts) {
+    using QW = QueryWire<128>;
+    const QueryForm form = QueryForm::Counted;
+    std::mt19937_64 rng(0xC0DEULL);
+    std::vector<std::vector<uint16_t>> terms;
+    std::vector<uint8_t> counts;
+    std::vector<size_t> offs;
+    VecZ buf;
+    size_t spilled = 0;
+    for (size_t i = 0; i < 200; ++i) {
+        terms.push_back(scattered(rng() % 45, 256, rng));
+        counts.push_back(static_cast<uint8_t>(i % 3 == 0 ? 254 : rng() % 256));
+        offs.push_back(buf.size());
+        const size_t w = QW::push_counted(buf, terms.back(), static_cast<int>(i % 3) - 1, counts.back());
+        BOOST_TEST(w == QW::record_words(buf, form, offs.back()));
+        spilled += (w > QW::words_at(buf, offs.back())) ? 1U : 0U;
+    }
+    BOOST_TEST(spilled > 0U); // the count byte crossed a word boundary at least once
+    BOOST_TEST(QW::count_queries(buf, form) == terms.size());
+
+    const auto check = [&](const VecZ &b, const std::vector<size_t> &keep) {
+        size_t off = 0;
+        for (const size_t i : keep) {
+            std::vector<uint16_t> out(terms[i].size() + 1);
+            const auto rq = QW::read_query(b, form, off, out);
+            out.resize(terms[i].size());
+            BOOST_TEST(out == terms[i], boost::test_tools::per_element());
+            BOOST_TEST(rq.phase == static_cast<int>(i % 3) - 1);
+            BOOST_TEST(rq.sins == counts[i]);
+            off = QW::next_off(b, form, off);
+            BOOST_TEST(rq.next == off);
+        }
+        BOOST_TEST(off == b.size());
+    };
+    std::vector<size_t> all(terms.size());
+    std::iota(all.begin(), all.end(), size_t{0});
+    check(buf, all);
+
+    // Compact out every third record, as drop_matched_cross_rank_followers does.
+    std::vector<size_t> kept;
+    size_t dst = 0;
+    for (size_t i = 0; i < terms.size(); ++i) {
+        if (i % 3 != 1) {
+            dst += QW::move_query(buf, form, offs[i], dst);
+            kept.push_back(i);
+        }
+    }
+    buf.resize(dst);
+    check(buf, kept);
+}
+
 // A separate case because `-0.0 == 0.0` evaluates true, so bit-exactness needs its own assertion.
 BOOST_AUTO_TEST_CASE(sparse_record_fused_value_channel_is_bit_exact_and_reusable) {
     using QW = QueryWire<128>;
