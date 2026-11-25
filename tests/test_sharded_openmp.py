@@ -70,6 +70,20 @@ _FIXTURES = [
     ("pauli_deep", "schrodinger"),
     ("pauli_deep_vanishing", "heisenberg"),
 ]
+# The cases a wheel's test run keeps (one per basis); the rest exercise the same compiled core, which is one abi3
+# binary for every interpreter and runs in full in the source-build test matrix.
+_WHEEL_FIXTURES = {("random_exact", "heisenberg"), ("pauli_deep", "heisenberg")}
+
+
+def _wheel_subset(values: list[Any], keep: set[Any]) -> list[Any]:
+    """Mark every value not in ``keep`` as ``wheel_redundant``."""
+    return [
+        pytest.param(
+            *(value if isinstance(value, tuple) else (value,)),
+            marks=() if value in keep else pytest.mark.wheel_redundant,
+        )
+        for value in values
+    ]
 
 
 def _inside_multirank_job() -> bool:
@@ -279,7 +293,8 @@ def unset_partition_variable_run() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "value", ["off", "auto", "1", "2", "3", "0", "", "not-a-count"]
+    "value",
+    _wheel_subset(["off", "auto", "1", "2", "3", "0", "", "not-a-count"], {"2"}),
 )
 def test_obsolete_partition_variable_is_ignored(
     value: str, unset_partition_variable_run: dict[str, Any]
@@ -297,7 +312,8 @@ def test_obsolete_partition_variable_is_ignored(
 
 
 @pytest.mark.parametrize(
-    "budget", ["", "0", "-1", "abc", "2,3", " 3", "+3", "2147483648"]
+    "budget",
+    _wheel_subset(["", "0", "-1", "abc", "2,3", " 3", "+3", "2147483648"], {"abc"}),
 )
 def test_invalid_budget_is_rejected(budget: str) -> None:
     out = _run(
@@ -384,7 +400,9 @@ def _check_single_run(full: dict[str, Any], picture: str) -> None:
     assert full["updated"]["energy"] == full["updated"]["functional"]
 
 
-@pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
+@pytest.mark.parametrize(
+    ("fixture", "picture"), _wheel_subset(_FIXTURES, _WHEEL_FIXTURES)
+)
 def test_full_api_agrees_across_team_sizes(fixture: str, picture: str) -> None:
     runs = {t: _run(_full_spec(fixture, picture), t) for t in _TEAMS}
     for t, run in runs.items():

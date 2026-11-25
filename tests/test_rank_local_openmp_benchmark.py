@@ -37,6 +37,9 @@ import pytest
 
 import monoprop
 
+# Repository tooling, not the package: a wheel's test run skips it.
+pytestmark = pytest.mark.wheel_redundant
+
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _ROOT / "tools/benchmark-rank-local-openmp.py"
 

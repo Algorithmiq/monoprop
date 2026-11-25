@@ -256,6 +256,11 @@ CIBUILDWHEEL=1 monoprop_ENABLE_MPI=ON \
 `CIBUILDWHEEL=1` is what cibuildwheel exports; it keeps the build machine's library directories
 out of the RPATHs.
 
+CI tests each built wheel under every supported Python (`tools/cibw/run-tests.sh`), deselecting the
+`wheel_redundant` marker: tests of repository tooling, and the extra cases of the compiled core's checks, which is
+one abi3 binary for every interpreter and runs in full in the source-build test matrix. Mark a test `wheel_redundant`
+only when one of those two reasons applies.
+
 ### Verify the install
 
 ```bash

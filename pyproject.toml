@@ -261,6 +261,7 @@ python_files = ["test_*.py", "bench_*.py"]
 pythonpath = ["."]
 markers = [
   "slow: mark test as slow (>=1 minute runtime)",
+  "wheel_redundant: deselected when testing a built wheel (tools/cibw/run-tests.sh) under each Python: tests repository tooling, not the package, or repeats the compiled core's coverage, which is the same abi3 binary for every interpreter and runs in full in the source-build test matrix",
   "mpi(min_size=1): mark test as requiring --with-mpi and a minimum MPI rank count",
   "qiskit: mark test as requiring qiskit (optional dependency)",
 ]
