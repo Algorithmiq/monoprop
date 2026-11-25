@@ -16,6 +16,9 @@ env:
   FORCE_COLOR: 3
   COLUMNS: 120
   CPM_USE_LOCAL_PACKAGES: "TRUE"
+  # -march=native bakes the runner's CPU into every compile, and the x86 runners come with
+  # different CPUs, so ccache would rarely hit; no analysis here depends on the target.
+  monoprop_ENABLE_ARCH_FLAGS: "OFF"
 
 permissions:
   contents: read

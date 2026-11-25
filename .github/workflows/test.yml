@@ -59,6 +59,12 @@ jobs:
 
     env:
       monoprop_ENABLE_MPI: "${{ matrix.mpi }}"
+      # -march=native bakes the runner's CPU into every compile (and into Variants.h), and the x86
+      # runners come with different CPUs, so their ccache would rarely hit. One x86 lane keeps the
+      # native build; the others build for the default target, as the wheels do.
+      monoprop_ENABLE_ARCH_FLAGS: >-
+        ${{ (matrix.runner == 'ubuntu-26.04' && !(matrix.compiler == 'default' && matrix.mpi == 'off'
+        && matrix.python-version == '3.11')) && 'OFF' || 'ON' }}
 
     steps:
       - uses: actions/checkout@v7.0.1
