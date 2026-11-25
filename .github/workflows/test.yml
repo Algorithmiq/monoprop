@@ -81,6 +81,7 @@ jobs:
           # The MPI-off and MPI builds are ABI-incompatible, and so is every build from before the partition runtime was
           # removed: the `sharded` part retires the caches of the dual-runtime matrix.
           cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}-sharded
+          ccache: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
           mpi: ${{ matrix.mpi }}
 
       - name: Install package

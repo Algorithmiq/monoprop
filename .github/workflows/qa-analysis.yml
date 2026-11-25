@@ -63,6 +63,7 @@ jobs:
           # coverage.py traces through sys.monitoring from 3.14, much faster than settrace.
           python-version: "3.14"
           cache-suffix: coverage-mpi-${{ matrix.mpi }}-sharded
+          ccache: coverage-mpi-${{ matrix.mpi }}
           mpi: ${{ matrix.mpi }}
 
       - name: Collect coverage
@@ -147,6 +148,9 @@ jobs:
         uses: ./.github/actions/setup
         with:
           cache-suffix: gcc-asan-ubsan-sharded
+          ccache: gcc-asan-ubsan
+          # An ASan binding translation unit peaks near 5 GB: two at once fit the runner's 16 GB.
+          build-jobs: "2"
 
       - name: Install package
         run: just build --group workspace-test
@@ -187,6 +191,9 @@ jobs:
         uses: ./.github/actions/setup
         with:
           cache-suffix: clang-tsan-sharded
+          ccache: clang-tsan
+          # Sanitized binding translation units are memory-heavy (see the ASan job).
+          build-jobs: "3"
 
       - name: Install package
         run: just build --group workspace-test
@@ -208,6 +215,7 @@ jobs:
         uses: ./.github/actions/setup
         with:
           cache-suffix: sonarqube-mpi-sharded
+          ccache: sonarqube-mpi
           mpi: "on"
 
       - name: Install package
@@ -254,6 +262,7 @@ jobs:
           CXX: clang++
         with:
           cache-suffix: clang-tidy-mpi-sharded
+          ccache: clang-tidy-mpi
           mpi: "on"
 
       - name: Build (generates compile_commands.json)

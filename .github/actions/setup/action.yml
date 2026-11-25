@@ -24,6 +24,18 @@ inputs:
       test a built wheel skip them; Ubuntu 22.04 lacks some of them.
     required: false
     default: "true"
+  ccache:
+    description: >-
+      Compiler-cache key, unique per build configuration (compiler, build type, MPI, sanitizer); the
+      runner's OS and architecture and the Python version are added. Empty disables ccache.
+    required: false
+    default: ""
+  build-jobs:
+    description: >-
+      Parallel compile jobs for the package build; empty uses every CPU. Lower it where the CPU count
+      times a translation unit's peak memory would exceed the runner's memory.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -109,3 +121,50 @@ runs:
         if [[ "$mpi" == mpich && -e "$libdir/libmpich.so.12" && ! -e "$libdir/libmpi.so.12" ]]; then
           sudo ln -sr "$libdir/libmpich.so.12" "$libdir/libmpi.so.12"
         fi
+
+    # pyproject.toml's -j2 suits a laptop; a runner can take every CPU, and CTest schedules tests by
+    # their PROCESSORS (cpp/tests/CMakeLists.txt), so it never oversubscribes the runner either.
+    - name: Configure build and test parallelism
+      shell: bash
+      env:
+        BUILD_JOBS: ${{ inputs.build-jobs }}
+      run: |
+        set -euo pipefail
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          cpus="$(sysctl -n hw.ncpu)"
+        else
+          cpus="$(nproc)"
+        fi
+        {
+          echo "SKBUILD_BUILD_TOOL_ARGS=-j${BUILD_JOBS:-$cpus}"
+          echo "CTEST_PARALLEL_LEVEL=$cpus"
+        } >> "$GITHUB_ENV"
+
+    - name: Set up ccache
+      if: inputs.ccache != ''
+      uses: hendrikmuhs/ccache-action@v1.2.26
+      with:
+        key: ${{ runner.os }}-${{ runner.arch }}-py${{ inputs.python-version }}-${{ inputs.ccache }}
+        max-size: 1G
+        # Keep only what this build used, so a configuration's cache does not grow across commits.
+        evict-old-files: job
+
+    # uv builds in a fresh, randomly named environment, so nanobind's headers and sources would sit
+    # at a new path every build and every binding translation unit would miss the cache. CMake
+    # searches nanobind_ROOT first, so the same pinned nanobind at a fixed path takes its place.
+    - name: Route the build through ccache
+      if: inputs.ccache != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(sed -n '/^\[build-system\]/,/^\[project\]/s/^[[:space:]]*"nanobind==\([^"]*\)",*$/\1/p' pyproject.toml)"
+        if [[ -z "$version" ]]; then
+          echo "pyproject.toml pins no nanobind build requirement" >&2
+          exit 1
+        fi
+        uv pip install --quiet --target "$RUNNER_TEMP/nanobind" "nanobind==$version"
+        {
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          echo "nanobind_ROOT=$RUNNER_TEMP/nanobind/nanobind"
+        } >> "$GITHUB_ENV"
