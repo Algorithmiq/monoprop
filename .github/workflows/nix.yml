@@ -36,7 +36,7 @@ jobs:
 
     continue-on-error: ${{ matrix.runner == 'macos-15' }}
 
-    # Each monoprop build is a heavy template + LTO compile, and a 7 GB macos-15
+    # Each monoprop build is a heavy template compile, and a 7 GB macos-15
     # runner swaps with more than two at once, so CI builds one interpreter.
     # Python 3.12 is the one the binary cache covers least, i.e. the one whose
     # dependency overrides in flake.nix are most likely to break.
