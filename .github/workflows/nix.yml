@@ -77,12 +77,43 @@ jobs:
             mpicc --version
           '
 
+      # The dev-shell build below runs outside the sandbox, so it can use ccache; the packages above
+      # are sandboxed derivations and always compile from scratch.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2.26
+        with:
+          key: nix-dev-shell-${{ runner.os }}-${{ runner.arch }}
+          max-size: 1G
+          evict-old-files: job
+
       # Configures, links and runs the installed-package consumer, which instantiates the
-      # OpenMP worksharing template, with the shell's compiler and OpenMP runtime.
+      # OpenMP worksharing template, with the shell's compiler and OpenMP runtime. The consumer
+      # needs only the installed package: the C++ unit tests run in the other workflows. The
+      # nanobind_ROOT copy keeps uv's randomly named build environment out of the binding units'
+      # include paths, and Nix's store files all share one mtime, so ccache hashes the compiler's
+      # content.
       - name: Check the OpenMP consumer from the dev shell
         run: |
+          set -euo pipefail
+          NANOBIND_VERSION="$(sed -n '/^\[build-system\]/,/^\[project\]/s/^[[:space:]]*"nanobind==\([^"]*\)",*$/\1/p' pyproject.toml)"
+          if [[ -z "$NANOBIND_VERSION" ]]; then
+            echo "pyproject.toml pins no nanobind build requirement" >&2
+            exit 1
+          fi
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            cpus="$(sysctl -n hw.ncpu)"
+          else
+            cpus="$(nproc)"
+          fi
+          export NANOBIND_VERSION CCACHE_COMPILERCHECK=content
+          export CMAKE_C_COMPILER_LAUNCHER="$(command -v ccache)"
+          export CMAKE_CXX_COMPILER_LAUNCHER="$CMAKE_C_COMPILER_LAUNCHER"
+          export nanobind_ROOT="$RUNNER_TEMP/nanobind/nanobind"
+          export monoprop_ENABLE_MPI=OFF monoprop_ENABLE_CXX_UNIT_TESTS=OFF monoprop_ENABLE_ARCH_FLAGS=OFF
+          export SKBUILD_BUILD_TOOL_ARGS="-j$cpus"
           nix develop --command bash -euo pipefail -c '
-            monoprop_ENABLE_MPI=OFF just build --group workspace-test
+            uv pip install --quiet --target "$RUNNER_TEMP/nanobind" "nanobind==$NANOBIND_VERSION"
+            just build --group workspace-test
             just test-find-package
           '
 

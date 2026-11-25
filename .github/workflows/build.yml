@@ -207,6 +207,49 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Split mode and abi3 compile each platform once per run; ccache reuses that compile across
+      # pushes. Release builds (tags) always compile from scratch. Outside the workspace, so
+      # cibuildwheel does not copy the cache into its container with the project.
+      - name: Choose the ccache directory
+        if: github.ref_type != 'tag'
+        run: echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
+
+      - name: Set up ccache
+        if: github.ref_type != 'tag'
+        uses: hendrikmuhs/ccache-action@v1.2.26
+        with:
+          key: wheel-${{ matrix.os }}
+          max-size: 1G
+          evict-old-files: job
+          # On Linux a static binary in /usr/local/bin, which the manylinux container runs from /host.
+          install: ${{ runner.os == 'Linux' && 'binary' || 'detect' }}
+
+      # The Linux build runs in a container that sees the runner's filesystem under /host. uv builds
+      # in a randomly named environment, so a fixed-path copy of the pinned nanobind (nanobind_ROOT,
+      # which CMake searches first) keeps the binding units' include paths, hence their cache
+      # entries, stable.
+      - name: Route the wheel build through ccache
+        id: ccache
+        if: github.ref_type != 'tag'
+        run: |
+          set -euo pipefail
+          version="$(sed -n '/^\[build-system\]/,/^\[project\]/s/^[[:space:]]*"nanobind==\([^"]*\)",*$/\1/p' pyproject.toml)"
+          if [[ -z "$version" ]]; then
+            echo "pyproject.toml pins no nanobind build requirement" >&2
+            exit 1
+          fi
+          python3 -m venv "$RUNNER_TEMP/nanobind-venv"
+          "$RUNNER_TEMP/nanobind-venv/bin/pip" install --quiet --target "$RUNNER_TEMP/nanobind" "nanobind==$version"
+          host=""
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            host=/host
+          fi
+          {
+            echo "launcher=$host$(command -v ccache)"
+            echo "dir=$host$CCACHE_DIR"
+            echo "nanobind=$host$RUNNER_TEMP/nanobind/nanobind"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: pypa/cibuildwheel@v4.3.5
         with:
           extras: "uv"
@@ -214,6 +257,18 @@ jobs:
           CIBW_PLATFORM: ${{ matrix.platform }}
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_DEBUG_TRACEBACK: TRUE
+          # Empty in release builds, which then compile without ccache.
+          CMAKE_C_COMPILER_LAUNCHER: ${{ steps.ccache.outputs.launcher }}
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ steps.ccache.outputs.launcher }}
+          CCACHE_DIR: ${{ steps.ccache.outputs.dir }}
+          nanobind_ROOT: ${{ steps.ccache.outputs.nanobind }}
+          CIBW_ENVIRONMENT_PASS_LINUX: >-
+            CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER CCACHE_DIR nanobind_ROOT
+
+      # The container compiles as root; the runner's ccache must own the cache to evict and save it.
+      - name: Hand the ccache directory back to the runner
+        if: ${{ always() && github.ref_type != 'tag' && runner.os == 'Linux' }}
+        run: sudo chown -R "$(id -u):$(id -g)" "$CCACHE_DIR"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v7
