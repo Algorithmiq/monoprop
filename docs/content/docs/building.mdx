@@ -295,6 +295,9 @@ uv sync --all-extras -v
 ctest --test-dir build/editable/Release
 ```
 
+Add `-j N` (or set `CTEST_PARALLEL_LEVEL=N`; CI sets it to the runner's CPU count) to run tests in parallel: every
+launch declares its ranks × threads as its CTest `PROCESSORS`, so CTest never runs more than `N` threads at once.
+
 This uses the scikit-build-core Release tree at `build/editable/Release` and
 runs `bin/monoprop_unit_tests.x` there, along with `bin/monoprop_link_export_probe.x` — a
 link-time check that the installed shared `monoprop` library exports every `detail/**` free

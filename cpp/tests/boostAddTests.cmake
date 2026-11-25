@@ -294,6 +294,9 @@ function(register_mpi_variant RANKS ROUTING)
     PROPERTIES
       TIMEOUT
       600
+      # CTest's parallel scheduler charges the launch its ranks (each at T = 1).
+      PROCESSORS
+      ${RANKS}
   )
   set(script "${script}" PARENT_SCOPE)
   set(tests ${tests} PARENT_SCOPE)

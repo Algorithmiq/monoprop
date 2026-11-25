@@ -97,6 +97,29 @@ discover_tests(
   ${_monoprop_serial_env_entries}
 )
 
+# CTest's parallel scheduler (`ctest -j N`, CTEST_PARALLEL_LEVEL) charges each test its PROCESSORS, so a launch claims
+# its ranks x threads and a parallel run never oversubscribes the host; a test claiming more than N runs alone. The
+# discovered per-case tests run at T = 1 and keep the default of one. A launch that names no team takes the OpenMP
+# default (every core): it claims four, enough to keep it from sharing a small runner.
+function(monoprop_set_test_processors NAME RANKS ENVIRONMENT)
+  if(ENVIRONMENT MATCHES "(^|;)monoprop_NUM_THREADS=([0-9]+)")
+    set(_threads ${CMAKE_MATCH_2})
+  elseif(ENVIRONMENT MATCHES "(^|;)OMP_NUM_THREADS=([0-9]+)")
+    set(_threads ${CMAKE_MATCH_2})
+  elseif(ENVIRONMENT MATCHES "(^|;)OMP_THREAD_LIMIT=([0-9]+)")
+    set(_threads ${CMAKE_MATCH_2})
+  else()
+    set(_threads 4)
+  endif()
+  math(EXPR _processors "${RANKS} * ${_threads}")
+  set_tests_properties(
+    ${NAME}
+    PROPERTIES
+      PROCESSORS
+        ${_processors}
+  )
+endfunction()
+
 # Fresh processes for the construction-time thread budget: each entry reruns one unit case under its own
 # launch environment, since an object captures monoprop_NUM_THREADS once, when it is constructed.
 function(monoprop_add_launch_env_case NAME CASE)
@@ -119,6 +142,7 @@ function(monoprop_add_launch_env_case NAME CASE)
       ENVIRONMENT
         "${_environment}"
   )
+  monoprop_set_test_processors(${NAME} 1 "${_ENVIRONMENT}")
   if(_ENVIRONMENT_MODIFICATION)
     set_tests_properties(
       ${NAME}
@@ -383,6 +407,7 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:monoprop_unit_tests.x>
       --run_test=${CASES}
   )
+  math(EXPR _processors "${RANKS} * ${THREADS}")
   set_tests_properties(
     ${NAME}
     PROPERTIES
@@ -390,6 +415,8 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
         "mpi;mpi-${RANKS}"
       TIMEOUT
         300
+      PROCESSORS
+        ${_processors}
       ENVIRONMENT
         "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
   )
@@ -482,6 +509,9 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
           "mpi;mpi_failure"
         TIMEOUT
           90
+        # Two ranks; the thread-support scenarios run two threads per rank.
+        PROCESSORS
+          4
         SKIP_RETURN_CODE
           77
         # As for the suite's MPI variants: CI containers may run as root. Binding is left to OpenMP, so a rank's two

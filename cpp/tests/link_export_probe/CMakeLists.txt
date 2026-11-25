@@ -49,6 +49,8 @@ set_tests_properties(
   PROPERTIES
     LABELS
       "unit"
+    PROCESSORS
+      2
     ENVIRONMENT
       "monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
 )
@@ -63,6 +65,8 @@ foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
     PROPERTIES
       LABELS
         "unit"
+      PROCESSORS
+        2
       ENVIRONMENT
         "${_monoprop_serial_env_entries};monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
   )
@@ -80,6 +84,7 @@ if(monoprop_MPI_ABI_NAMES AND _monoprop_mpiexec)
         ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:monoprop_mpi_${_abi}_link_export_probe.x>
     )
+    math(EXPR _processors "2 * ${_threads}")
     set_tests_properties(
       monoprop_link_export_probe_mpi2_t${_threads}
       PROPERTIES
@@ -87,6 +92,8 @@ if(monoprop_MPI_ABI_NAMES AND _monoprop_mpiexec)
           "mpi;mpi-2"
         TIMEOUT
           300
+        PROCESSORS
+          ${_processors}
         ENVIRONMENT
           "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_RANKS=2"
     )
