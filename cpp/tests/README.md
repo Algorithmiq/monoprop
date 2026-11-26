@@ -128,9 +128,6 @@ name and cannot address suite-nested cases, tests use flat
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
-- **Public surface**: `sharded_api_tests.cpp` (compile-time probes of the
-  constructor, nested types, extension hooks, exceptions, the removed selector and
-  headers, each negative probe paired with a positive control).
 - **Transports / distribution**: `mpi_alltoallv_tests.cpp` (the real-MPI request
   helpers of the low-level engine: `begin_alltoallv`, `PendingAlltoallv`,
   `alltoall_counts` and the sparse `PeerPlan`, at world size 1 and in the whole-suite
@@ -284,10 +281,6 @@ needed. A file with its own `main()` must be excluded from the glob, as
 
 There is one runtime, and every suite compiles against it.
 
-- `sharded_api_tests.cpp` checks the public surface at compile time: no constructor tail, `PartitionChildFactory`,
-  facade helper, partition-named exception, cached thread-count reader, selector macro or partition/in-process
-  communicator header, each probe paired with a positive control, and positive controls pin the eleven-argument
-  constructor, `clone_()`, `apply_initial_operator_()` and the virtual destructor.
 - `sharded_root_tests.cpp` covers the root (`ShardedPropagator.inl`): T routed shards at the (P, T) router,
   aggregates over every shard with shared metadata counted once, the raw-accessor rule (the actual sole shard at
   T = 1, `MultiShardUnsupported` naming the T = 1 launch otherwise, the validity guard first, the object still usable),

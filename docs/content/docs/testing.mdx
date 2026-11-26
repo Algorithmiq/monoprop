@@ -205,9 +205,7 @@ from separate processes (below).
 
 #### The sharded runtime's own launches
 
-`sharded_api_tests.cpp` checks the public C++ surface at compile time: the removed partition interface, selector
-and headers are absent, each negative probe paired with a positive control that shows the probe can see what it
-looks for. `sharded_root_tests.cpp` drives the root's public operations with private shard
+`sharded_root_tests.cpp` drives the root's public operations with private shard
 inspection, actual worker observation and failure injection, rerun as `sharded_root_env_t1`, `_t2` and `_t4`
 and `sharded_root_env_openmp_default_t3` (no `monoprop_NUM_THREADS`, `OMP_NUM_THREADS=3`). The fused-sweep cases
 rerun as `fused_env_t2` and `_t4`. Each fixed-T entry is a fresh process; no case changes T inside a process.
