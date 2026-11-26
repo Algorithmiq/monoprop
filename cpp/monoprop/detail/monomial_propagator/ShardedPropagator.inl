@@ -24,7 +24,6 @@
 #include <format>
 #include <functional>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -127,13 +126,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
     // selects or checks it.
     // Before any MPI query or collective in this constructor.
     mpi::require_initializing_thread();
-    try {
-        mpi::require_thread_support();
-    }
-    catch (...) {
-        // A rank that threw here would strand its peers in the routing agreement below.
-        mpi::operation_failed(comm, std::current_exception());
-    }
+    // A rank that threw here would strand its peers in the routing agreement below.
+    mpi::guard_distributed(comm, [] { mpi::require_thread_support(); });
     const auto ranks = static_cast<size_t>(mpi::size(comm));
     try {
         parallel_ = detail::parallel::capture_thread_budget();
@@ -297,18 +291,7 @@ auto MonomialPropagator<NumModes>::n_gates() const -> size_t {
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::graph_gate_arrays_() const -> std::pair<VecZ, VecD> {
-    const MPGraph &graph = shards_.front()->graph;
-    const size_t count = graph.layers();
-    VecZ parameter_mapping(count);
-    VecD gen_coeffs(count);
-    // Layers store gate info in simulation order; the evaluation machinery expects optimizer order (the reverse).
-    for (size_t layer = 0; layer < count; ++layer) {
-        const auto traversal = graph.get_layer_traversal(layer);
-        const size_t optimizer_index = count - 1 - layer;
-        parameter_mapping[optimizer_index] = traversal.param_index();
-        gen_coeffs[optimizer_index] = traversal.gen_coeff();
-    }
-    return {std::move(parameter_mapping), std::move(gen_coeffs)};
+    return detail::gate_arrays(shards_.front()->graph);
 }
 
 template <size_t NumModes>
@@ -357,6 +340,51 @@ auto MonomialPropagator<NumModes>::generators_(const std::vector<VecZ> &majorana
 }
 
 template <size_t NumModes>
+auto MonomialPropagator<NumModes>::local_shard_(const Monomial<NumModes> &mono) const -> std::optional<size_t> {
+    const size_t first_local = world_.rank * shards_.size();
+    const size_t owner = find_rank<NumModes>(mono, *router_);
+    if (owner < first_local || owner - first_local >= shards_.size()) {
+        return std::nullopt;
+    }
+    return owner - first_local;
+}
+
+template <size_t NumModes>
+auto MonomialPropagator<NumModes>::route_to_local_shards_(const MonomialList<NumModes> &keys) const
+    -> std::vector<VecZ> {
+    std::vector<VecZ> routed(shards_.size());
+    for (size_t q = 0; q < keys.size(); ++q) {
+        if (const auto shard = local_shard_(keys[q])) {
+            routed[*shard].push_back(q);
+        }
+    }
+    return routed;
+}
+
+template <size_t NumModes>
+template <typename Request>
+auto MonomialPropagator<NumModes>::replay_(const VecD &mapped_params, Request &&request) -> std::vector<VecD> {
+    const size_t threads = shards_.size();
+    std::vector<detail::sharded::ReplayRequest> requests;
+    std::vector<detail::CosCallbacks> callbacks;
+    requests.reserve(threads);
+    callbacks.reserve(threads);
+    for (size_t shard = 0; shard < threads; ++shard) {
+        requests.push_back(request(shard));
+        callbacks.push_back(detail::make_cos_callbacks<NumModes>(shards_[shard]->op.inverted_index(),
+                                                                 requests.back().graph,
+                                                                 basis_,
+                                                                 detail::parallel::serial));
+    }
+    auto outcome =
+        detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_, world_, rounds_.get());
+    if (outcome.error) {
+        std::rethrow_exception(outcome.error);
+    }
+    return std::move(outcome.coeffs);
+}
+
+template <size_t NumModes>
 auto MonomialPropagator<NumModes>::construction_context_() const -> detail::sharded::ConstructionContext<NumModes> {
     return detail::sharded::ConstructionContext<NumModes>{.cutoff_fn = cutoff_fn_,
                                                           .router = *router_,
@@ -380,14 +408,18 @@ auto MonomialPropagator<NumModes>::finish_construction_(const detail::sharded::C
 
 template <size_t NumModes>
 template <typename Body>
-auto MonomialPropagator<NumModes>::run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> std::exception_ptr {
-    return detail::sharded::run_team(parallel_, [&](size_t shard, detail::sharded::TeamFailure &failure) noexcept {
-        // The only phase: its decision ends the sequence either way.
-        static_cast<void>(detail::sharded::phase(failure, shard, [&] {
-            detail::sharded::notify_root(observer_, work, shard);
-            body(shard);
-        }));
-    });
+auto MonomialPropagator<NumModes>::run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> void {
+    const auto error =
+        detail::sharded::run_team(parallel_, [&](size_t shard, detail::sharded::TeamFailure &failure) noexcept {
+            // The only phase: its decision ends the sequence either way.
+            static_cast<void>(detail::sharded::phase(failure, shard, [&] {
+                detail::sharded::notify_root(observer_, work, shard);
+                body(shard);
+            }));
+        });
+    if (error) {
+        std::rethrow_exception(error);
+    }
 }
 
 template <size_t NumModes>
@@ -408,15 +440,10 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
             return;
         }
         validate_coefficient_lengths(parameter_mapping, gen_coeffs);
-        validate_generators_(majoranas);
-        VecZ local_gates;
-        if (gate_indices.has_value()) {
-            local_gates = *gate_indices;
-        }
-        else {
-            local_gates.resize(majoranas.size());
-            std::iota(local_gates.begin(), local_gates.end(), size_t{0});
-        }
+        const auto generators = generators_(majoranas);
+        auto local_gates = gate_indices.has_value()
+                               ? std::move(*gate_indices)
+                               : std::views::iota(size_t{0}, majoranas.size()) | std::ranges::to<VecZ>();
         validate_gate_indices(local_gates, majoranas.size());
         VecD mapped_params;
         // Replay angles of the existing layers, exactly as contract_partially() computes them, for the seed.
@@ -435,8 +462,7 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
                         parameters->size()));
                 }
                 const VecD prefix(parameters->begin(), parameters->begin() + static_cast<std::ptrdiff_t>(m));
-                seed_params = schrodinger_ ? map_params(prefix, existing_mapping, existing_gen_coeffs, -1.0)
-                                           : map_params(prefix, existing_mapping, existing_gen_coeffs, 1.0, true);
+                seed_params = detail::replay_angles(prefix, existing_mapping, existing_gen_coeffs, schrodinger_);
             }
             mapped_params = map_params(*parameters, parameter_mapping, gen_coeffs, 1.0);
         }
@@ -444,7 +470,6 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
         for (auto &g : local_gates) {
             g += gate_offset;
         }
-        const auto generators = generators_(majoranas);
         report_routing_coverage_(majoranas);
         const auto ctx = construction_context_();
         const auto circuit = detail::sharded::GraphCircuit<NumModes>{
@@ -488,7 +513,7 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
         }
         validate_coefficient_lengths(parameter_mapping, gen_coeffs);
         validate_parameters_length(parameters, parameter_mapping);
-        validate_generators_(majoranas);
+        const auto generators = generators_(majoranas);
         if (graph_layers() > 0) {
             throw GraphStateConflict(
                 std::format("Cannot propagate() on top of a non-empty graph of {} layer(s): "
@@ -498,7 +523,6 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
                             graph_layers()));
         }
         const auto mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, 1.0);
-        const auto generators = generators_(majoranas);
         report_routing_coverage_(majoranas);
         const auto ctx = construction_context_();
         const auto circuit = detail::sharded::PropagationCircuit<NumModes>{.generators = generators,
@@ -523,11 +547,8 @@ auto MonomialPropagator<NumModes>::reset_sin_counts() -> void {
             return;
         }
         mutation_started = true;
-        if (const auto error = run_owner_phase_(detail::sharded::RootWork::sin_counts, [&](size_t shard) {
-                std::ranges::fill(shards_[shard]->op.sin_counts_, uint8_t{0});
-            })) {
-            std::rethrow_exception(error);
-        }
+        run_owner_phase_(detail::sharded::RootWork::sin_counts,
+                         [&](size_t shard) { std::ranges::fill(shards_[shard]->op.sin_counts_, uint8_t{0}); });
     });
 }
 
@@ -547,7 +568,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
         mutation_started = true;
         // The LayerCore is shared and immutable, so relabelling copies it and replaces the layer's core; each owner
         // copies its own shard's cores.
-        const auto error = run_owner_phase_(detail::sharded::RootWork::remap, [&](size_t shard) {
+        run_owner_phase_(detail::sharded::RootWork::remap, [&](size_t shard) {
             MPGraph &graph = shards_[shard]->graph;
             for (size_t layer = 0; layer < count; ++layer) {
                 // Per-layer mapping in optimizer order; per-gate mapping indexed by absolute gate index.
@@ -565,9 +586,6 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
                 }
             }
         });
-        if (error) {
-            std::rethrow_exception(error);
-        }
     });
 }
 
@@ -577,8 +595,6 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
     return run_operation_(true, [&](bool &mutation_started) -> std::pair<MonomialList<NumModes>, VecD> {
         // Read-only pass on the caller: every index is checked and routed with the shards' own (P, T) ownership
         // before anything, the epoch included, changes. Each rank applies its own shards' share only.
-        const routing::Router &router = *router_;
-        const size_t first_local = world_.rank * shards_.size();
         std::vector<OperatorDict> shares(shards_.size());
         std::optional<double> new_core_term;
         for (const auto &[ind, coeff] : op_dict) {
@@ -587,9 +603,8 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
                 new_core_term = algebra_encode_coeff<NumModes>(basis_, coeff, mono);
                 continue;
             }
-            const size_t owner = find_rank<NumModes>(mono, router);
-            if (owner >= first_local && owner - first_local < shares.size()) {
-                shares[owner - first_local][bitset_to_indices<NumModes>(mono)] = coeff;
+            if (const auto shard = local_shard_(mono)) {
+                shares[*shard][bitset_to_indices<NumModes>(mono)] = coeff;
             }
         }
         // A term the operator lacks is an argument error: reject it before the epoch moves, as one shard alone would.
@@ -603,12 +618,9 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
             core_term_ = *new_core_term;
         }
         std::vector<std::pair<MonomialList<NumModes>, VecD>> updated(shards_.size());
-        const auto error = run_owner_phase_(detail::sharded::RootWork::initial_operator, [&](size_t shard) {
+        run_owner_phase_(detail::sharded::RootWork::initial_operator, [&](size_t shard) {
             updated[shard] = shards_[shard]->op.update_initial_operator(shares[shard], schrodinger_);
         });
-        if (error) {
-            std::rethrow_exception(error);
-        }
         // This rank's new (terms, coefficients), shard blocks in shard order.
         std::pair<MonomialList<NumModes>, VecD> merged;
         for (auto &[terms, coeffs] : updated) {
@@ -767,8 +779,13 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
                                                     bool &mutation_started,
                                                     VecD *concatenated) -> std::vector<VecD> {
     const size_t threads = shards_.size();
-    const auto concatenate = [&](const std::vector<VecD> &blocks) {
+    // A sole block the caller does not keep is moved, which leaves the returned blocks unspecified.
+    const auto concatenate = [&](std::vector<VecD> &blocks, bool keep) {
         if (concatenated == nullptr) {
+            return;
+        }
+        if (blocks.size() == 1 && !keep) {
+            *concatenated = std::move(blocks.front());
             return;
         }
         size_t total = 0;
@@ -785,60 +802,43 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
         // Nothing to replay: each owner copies its current picture (materializing pending entries, a lazy cache).
         mutation_started = true;
         std::vector<VecD> blocks(threads);
-        const auto error = run_owner_phase_(detail::sharded::RootWork::picture, [&](size_t shard) {
-            blocks[shard] = shards_[shard]->op.current_picture(schrodinger_);
-        });
-        if (error) {
-            std::rethrow_exception(error);
-        }
-        concatenate(blocks);
+        run_owner_phase_(detail::sharded::RootWork::picture,
+                         [&](size_t shard) { blocks[shard] = shards_[shard]->op.current_picture(schrodinger_); });
+        concatenate(blocks, false);
         return blocks;
     }
 
     const auto [parameter_mapping, gen_coeffs] = graph_gate_arrays_();
     const size_t num_layers = parameter_mapping.size();
-    // Heisenberg replays the oldest layers first in reverse optimizer order; Schrödinger replays the reversed window
-    // of slice_view() at the negated angles, starting from the dense state.
-    const VecD mapped_params = schrodinger_ ? map_params(parameters, parameter_mapping, gen_coeffs, -1.0)
-                                            : map_params(parameters, parameter_mapping, gen_coeffs, 1.0, true);
+    // Schrödinger replays the reversed window of slice_view().
+    const VecD mapped_params = detail::replay_angles(parameters, parameter_mapping, gen_coeffs, schrodinger_);
     // From here the pictures and inverted indices (lazy caches) are read, and an in-place contraction consumes the
     // graphs.
     mutation_started = true;
     // An in-place contraction's sliced graphs own the consumed layers; they are bound here, before any view of them,
     // and outlive the team.
     std::vector<std::optional<MPGraph>> sliced(threads);
-    std::vector<detail::sharded::ReplayRequest> requests;
-    std::vector<detail::CosCallbacks> callbacks;
-    requests.reserve(threads);
-    callbacks.reserve(threads);
-    for (size_t shard = 0; shard < threads; ++shard) {
+    auto blocks = replay_(mapped_params, [&](size_t shard) {
         auto &state = *shards_[shard];
         const VecD &picture = state.op.current_picture(schrodinger_);
         const MPGraphView view = inplace
                                      ? sliced[shard].emplace(state.graph.slice_graph(num_layers, true)).replay_view()
                                      : state.graph.slice_view(num_layers);
-        requests.push_back(detail::sharded::ReplayRequest{.coeffs = picture, .graph = view});
-        callbacks.push_back(
-            detail::make_cos_callbacks<NumModes>(state.op.inverted_index(), view, basis_, detail::parallel::Options{}));
-    }
-    auto outcome =
-        detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_, world_, rounds_.get());
-    if (outcome.error) {
-        std::rethrow_exception(outcome.error);
-    }
-    concatenate(outcome.coeffs);
+        return detail::sharded::ReplayRequest{.coeffs = picture, .graph = view};
+    });
+    concatenate(blocks, inplace);
     if (inplace) {
         // Each block replaces its own shard's picture, which owns the rows the block is indexed by.
         for (size_t shard = 0; shard < threads; ++shard) {
             auto &op = shards_[shard]->op;
-            (schrodinger_ ? op.state_coeffs : op.op_coeffs) = std::move(outcome.coeffs[shard]);
+            (schrodinger_ ? op.state_coeffs : op.op_coeffs) = std::move(blocks[shard]);
         }
         if (!schrodinger_) {
             heisenberg_gates_absorbed_ = true;
         }
         return {};
     }
-    return std::move(outcome.coeffs);
+    return blocks;
 }
 
 template <size_t NumModes>
@@ -888,24 +888,28 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
     // Checked: these are user-supplied indices. Past the storage width the unchecked encode's bit position
     // underflows into an out-of-bounds write; between the logical and storage widths it encodes a monomial outside
     // this propagator's system, which reads back 0 instead of raising.
-    auto keys = terms | std::views::transform([this](const VecZ &term) {
-                    return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
-                })
-                | std::ranges::to<std::vector<Monomial<NumModes>>>();
+    const auto keys = generators_(terms);
     return run_operation_(true, [&](bool &mutation_started) -> std::vector<std::complex<double>> {
         validate_parameters_length(parameters, graph_gate_arrays_().first);
         const auto blocks = contract_blocks_(parameters, false, mutation_started, nullptr);
         std::vector<std::complex<double>> out(keys.size());
-        std::vector<size_t> rows(keys.size());
-        // Shards hold disjoint rows, so at most one finds a key; a key no shard of this rank holds stays 0, as
+        // A key lives only on its routed owner; a key no shard of this rank holds stays 0, as
         // evolved_operator_terms() leaves it out. Rank-local, like evolved_operator_terms().
+        const auto routed = route_to_local_shards_(keys);
+        std::vector<Monomial<NumModes>> queries;
+        std::vector<size_t> rows;
         for (size_t shard = 0; shard < shards_.size(); ++shard) {
             detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
             const VecD &evolved = blocks[shard];
-            shards_[shard]->op.store->find_batch(keys.data(), keys.size(), rows.data());
-            for (size_t q = 0; q < keys.size(); ++q) {
-                if (rows[q] < evolved.size()) { // kNotFound is size_t max, so this covers a miss too
-                    out[q] = algebra_decode_coeff<NumModes>(basis_, evolved[rows[q]], keys[q]);
+            queries.clear();
+            for (const size_t q : routed[shard]) {
+                queries.push_back(keys[q]);
+            }
+            rows.resize(queries.size());
+            shards_[shard]->op.store->find_batch(queries.data(), queries.size(), rows.data());
+            for (size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i] < evolved.size()) { // kNotFound is size_t max, so this covers a miss too
+                    out[routed[shard][i]] = algebra_decode_coeff<NumModes>(basis_, evolved[rows[i]], queries[i]);
                 }
             }
         }
@@ -938,29 +942,34 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
                                      "contracting in place.");
         }
         // Checked: these are user-supplied indices (see evolved_operator_coefficients()).
-        const auto keys = terms | std::views::transform([this](const VecZ &term) {
-                              return indices_to_bitset_checked<NumModes>(term, 2 * logical_num_modes_);
-                          })
-                          | std::ranges::to<std::vector<Monomial<NumModes>>>();
+        const auto keys = generators_(terms);
         const auto [parameter_mapping, gen_coeffs] = graph_gate_arrays_();
         validate_functional_call(parameters, expected_num_params(parameter_mapping));
 
-        // Each key lives on at most one shard of one rank. The lookup only reads the frozen stores, and the flag
-        // reduction is collective over replicated arguments, so a Heisenberg miss is rejected before any mutation.
-        // A rank-local failure ahead of the reduction would strand the peers in it, hence the guard.
+        // Each key lives on at most one shard of one rank, its routed owner, so only that shard is searched. The
+        // lookup only reads the frozen stores, and the flag reduction is collective over replicated arguments, so a
+        // Heisenberg miss is rejected before any mutation. A rank-local failure ahead of the reduction would strand
+        // the peers in it, hence the guard.
         const size_t count = keys.size();
         const size_t threads = shards_.size();
-        std::vector<std::vector<size_t>> rows;
+        std::vector<std::vector<size_t>> routed;
+        std::vector<std::vector<size_t>> rows(threads); // rows[shard][i]: the row of key routed[shard][i]
         VecD found;
         mpi::guard_distributed(comm_, [&] {
-            rows.assign(threads, std::vector<size_t>(count));
             found.assign(count, 0.0);
+            routed = route_to_local_shards_(keys);
+            std::vector<Monomial<NumModes>> queries;
             for (size_t shard = 0; shard < threads; ++shard) {
                 const auto &op = shards_[shard]->op;
-                op.store->find_batch(keys.data(), count, rows[shard].data());
-                for (size_t q = 0; q < count; ++q) {
-                    if (rows[shard][q] < op.size()) { // kNotFound is size_t max, so this covers a miss too
-                        found[q] = 1.0;
+                queries.clear();
+                for (const size_t q : routed[shard]) {
+                    queries.push_back(keys[q]);
+                }
+                rows[shard].resize(queries.size());
+                op.store->find_batch(queries.data(), queries.size(), rows[shard].data());
+                for (size_t i = 0; i < queries.size(); ++i) {
+                    if (rows[shard][i] < op.size()) { // kNotFound is size_t max, so this covers a miss too
+                        found[routed[shard][i]] = 1.0;
                     }
                 }
             }
@@ -987,7 +996,7 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
          */
         mutation_started = true;
         std::vector<VecD> seeds(threads);
-        const auto seed_error = run_owner_phase_(detail::sharded::RootWork::adjoint_seed, [&](size_t shard) {
+        run_owner_phase_(detail::sharded::RootWork::adjoint_seed, [&](size_t shard) {
             auto &op = shards_[shard]->op;
             if (schrodinger_) {
                 seeds[shard] = op.dense_state();
@@ -996,47 +1005,24 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
             const auto sparse = op.sparse_state();
             EvalState::sparse(op.size(), sparse.rows, sparse.values).scatter_into(seeds[shard]);
         });
-        if (seed_error) {
-            std::rethrow_exception(seed_error);
-        }
         std::vector<VecD> values;
         if (parameters.empty()) {
             values = std::move(seeds);
         }
         else {
             const VecD mapped_params = map_params(parameters, parameter_mapping, gen_coeffs, -1.0);
-            std::vector<detail::sharded::ReplayRequest> requests;
-            std::vector<detail::CosCallbacks> callbacks;
-            requests.reserve(threads);
-            callbacks.reserve(threads);
-            for (size_t shard = 0; shard < threads; ++shard) {
-                const auto &state = *shards_[shard];
-                const MPGraphView view = state.graph.reverse_replay_view();
-                requests.push_back(detail::sharded::ReplayRequest{.coeffs = seeds[shard], .graph = view});
-                callbacks.push_back(detail::make_cos_callbacks<NumModes>(state.op.inverted_index(),
-                                                                         view,
-                                                                         basis_,
-                                                                         detail::parallel::Options{}));
-            }
-            auto outcome = detail::sharded::replay_shards(requests,
-                                                          mapped_params,
-                                                          callbacks,
-                                                          parallel_,
-                                                          observer_,
-                                                          world_,
-                                                          rounds_.get());
-            if (outcome.error) {
-                std::rethrow_exception(outcome.error);
-            }
-            values = std::move(outcome.coeffs);
+            values = replay_(mapped_params, [&](size_t shard) {
+                return detail::sharded::ReplayRequest{.coeffs = seeds[shard],
+                                                      .graph = shards_[shard]->graph.reverse_replay_view()};
+            });
         }
 
         VecD gathered(count, 0.0);
         for (size_t shard = 0; shard < threads; ++shard) {
             detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
-            for (size_t q = 0; q < count; ++q) {
-                if (rows[shard][q] < values[shard].size()) {
-                    gathered[q] = values[shard][rows[shard][q]];
+            for (size_t i = 0; i < routed[shard].size(); ++i) {
+                if (rows[shard][i] < values[shard].size()) {
+                    gathered[routed[shard][i]] = values[shard][rows[shard][i]];
                 }
             }
         }

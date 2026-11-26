@@ -359,14 +359,11 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
 
 // Phase 4 (bulk insert of the distinct absent terms) into op slots [base, base+n_miss). Call after the
 // caller's Phase-3 scatter, which reads pre-insert op_coeffs for hits and needs base == op.size(). Publication
-// is single-writer: grow, set_positions, bulk_insert_hashed with the probe's cached hashes (`options` is its
-// publication seam, which the packed index ignores), then the inverted-index maintenance. Under max-sins (`sins`
-// non-null) each new row also gets its sine count.
+// is single-writer: grow, set_positions, bulk_insert_hashed with the probe's cached hashes, then the
+// inverted-index maintenance. Under max-sins (`sins` non-null) each new row also gets its sine count.
 template <size_t NumModes>
-auto insert_incoming_misses(MPOperator<NumModes> &op,
-                            const IncomingProbe<NumModes> &pr,
-                            parallel::Options options = {},
-                            const SinTrack *sins = nullptr) -> void {
+auto insert_incoming_misses(MPOperator<NumModes> &op, const IncomingProbe<NumModes> &pr, const SinTrack *sins = nullptr)
+    -> void {
     const size_t n_miss = pr.miss_g.size();
     if (n_miss == 0) {
         return;
@@ -388,7 +385,7 @@ auto insert_incoming_misses(MPOperator<NumModes> &op,
         const size_t g = pr.miss_g[j];
         op.store->set_positions(base + j, pr.positions_at(g));
     }
-    op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return pr.hash_of[pr.miss_g[j]]; }, options);
+    op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return pr.hash_of[pr.miss_g[j]]; });
     op.reindex_after_growth(base, n_miss);
 }
 
@@ -503,20 +500,14 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
         }
     };
     observer.prepare(KernelRange::scatter, blocks);
-    if (sink_resolves_in_parallel(sink)) {
-        // Each query writes its own response and its own sink record; a leader hit marks its own row, distinct
-        // across queries (leader_marks_unique), and misses (ip >= base >= combined_size) mark nothing. The
-        // marks are distinct uint16 elements, so no synchronization; never paper over a duplicate with atomics.
-        assert(!is_leader_pass || leader_marks_unique(pr, combined_size));
-        parallel::for_blocks(blocks, options, scatter);
-    }
-    else {
-        for (size_t block = 0; block < blocks; ++block) {
-            scatter(block);
-        }
-    }
+    // In parallel, each query writes its own response and its own sink record; a leader hit marks its own row,
+    // distinct across queries (leader_marks_unique), and misses (ip >= base >= combined_size) mark nothing. The
+    // marks are distinct uint16 elements, so no synchronization; never paper over a duplicate with atomics.
+    const bool parallel_resolve = sink_resolves_in_parallel(sink);
+    assert(!parallel_resolve || !is_leader_pass || leader_marks_unique(pr, combined_size));
+    parallel::for_blocks(blocks, parallel_resolve ? options : parallel::serial, scatter);
 
-    insert_incoming_misses<NumModes>(op, pr, options, sins);
+    insert_incoming_misses<NumModes>(op, pr, sins);
     return responses;
 }
 

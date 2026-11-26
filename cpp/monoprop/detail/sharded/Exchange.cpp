@@ -134,10 +134,7 @@ auto checked_int(long long value, const char *what) -> int {
 // Write `counts` (non-negative) to `wire` in the narrowest of 1, 2 or 4 unsigned bytes per count that holds the
 // largest, little-endian as the host stores it; return that width.
 auto encode_counts(std::span<const int> counts, std::byte *wire) -> size_t {
-    int largest = 0;
-    for (const int count : counts) {
-        largest = std::max(largest, count);
-    }
+    const int largest = std::ranges::max(counts);
     const auto store = [&]<class U>(U /*tag*/) {
         for (size_t i = 0; i < counts.size(); ++i) {
             const auto value = static_cast<U>(counts[i]);
@@ -212,9 +209,7 @@ struct PhysicalExchange::State {
     // Element offsets into the staging; derived by the primary's planning, or owner-parallel. recv_off has the rows'
     // shape. The send side is stored by column, entry [dest * stride + peer * threads + source], with a copy of the
     // column's counts in send_col_rows: owner-parallel planning has owner t place and pack column t, so its entries are
-    // contiguous and private to it. Stored by row, every line of a column was shared by eight owners, each writing
-    // its own entry (place_column()), and each packing read missed on lines the others had just written (about a
-    // quarter of a small 2 x 48 evaluation's call time).
+    // contiguous and private to it, and no cache line of a column is shared with another owner.
     std::vector<long long> send_off;
     std::vector<int> send_col_rows;
     std::vector<long long> recv_off;
@@ -237,10 +232,8 @@ struct PhysicalExchange::State {
     // High-water-mark staging, never resized while a request may point into it.
     Staging send_stage;
     Staging recv_stage;
-    // Count round: [peer][dest shard][source shard] counts. count_send holds them as ints; on the wire each peer's
-    // block travels in the narrowest unsigned width (1, 2 or 4 bytes) that holds its largest count, so the small
-    // blocks of a light round stay below the transport's eager limit instead of paying a rendezvous; the receiver
-    // reads the width from the received size.
+    // Count round: [peer][dest shard][source shard] counts. count_send holds them as ints; each peer's block travels
+    // as encode_counts() writes it.
     std::vector<int> count_send;
     std::vector<std::byte> count_wire_send;
     std::vector<std::byte> count_wire_recv;
@@ -281,6 +274,12 @@ struct PhysicalExchange::State {
     auto require_idle(const char *what) const -> void {
         if (posted != 0 || count_posted != 0) {
             throw std::logic_error(std::format("sharded exchange: {} while a posted round is still in flight", what));
+        }
+    }
+
+    auto require_shard(size_t shard) const -> void {
+        if (shard >= threads) {
+            throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, threads));
         }
     }
 
@@ -473,10 +472,12 @@ PhysicalExchange::~PhysicalExchange() {
 
 namespace {
 
-auto require_state(const void *state) -> void {
+template <class State>
+auto require_state(State *state) -> State & {
     if (state == nullptr) {
         throw std::logic_error("sharded exchange: an inert (default-constructed or moved-from) exchange was used");
     }
+    return *state;
 }
 
 } // namespace
@@ -518,11 +519,8 @@ auto PhysicalExchange::release_staging() noexcept -> void {
 }
 
 auto PhysicalExchange::reset_rows(size_t shard) -> void {
-    require_state(state_.get());
-    State &s = *state_;
-    if (shard >= s.threads) {
-        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
-    }
+    State &s = require_state(state_.get());
+    s.require_shard(shard);
     std::fill_n(s.send_rows.begin() + static_cast<std::ptrdiff_t>(shard * s.stride), s.stride, 0);
     std::fill_n(s.recv_rows.begin() + static_cast<std::ptrdiff_t>(shard * s.stride), s.stride, 0);
 }
@@ -551,8 +549,7 @@ auto PhysicalExchange::recv_count(size_t shard, size_t peer, size_t source) cons
 }
 
 auto PhysicalExchange::plan_send(std::span<const size_t> peers, ExchangeTransport transport) -> void {
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     s.require_idle("plan_send");
     s.send_planned = false;
     s.recv_planned = false;
@@ -564,11 +561,8 @@ auto PhysicalExchange::plan_send(std::span<const size_t> peers, ExchangeTranspor
 }
 
 auto PhysicalExchange::close_rows(size_t shard) -> void {
-    require_state(state_.get());
-    State &s = *state_;
-    if (shard >= s.threads) {
-        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
-    }
+    State &s = require_state(state_.get());
+    s.require_shard(shard);
     for (size_t k = 0; k < s.max_peers; ++k) {
         long long sent = 0;
         long long received = 0;
@@ -583,11 +577,8 @@ auto PhysicalExchange::close_rows(size_t shard) -> void {
 }
 
 auto PhysicalExchange::write_symmetric_rows(size_t shard, std::span<const int> slot_counts) -> void {
-    require_state(state_.get());
-    State &s = *state_;
-    if (shard >= s.threads) {
-        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
-    }
+    State &s = require_state(state_.get());
+    s.require_shard(shard);
     int *const send = s.send_rows.data() + (shard * s.stride);
     int *const recv = s.recv_rows.data() + (shard * s.stride);
     size_t k = 0;
@@ -613,8 +604,7 @@ auto PhysicalExchange::write_symmetric_rows(size_t shard, std::span<const int> s
 }
 
 auto PhysicalExchange::plan_totals(std::span<const size_t> peers, ExchangeTransport transport) -> void {
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     s.require_idle("plan_totals");
     s.send_planned = false;
     s.recv_planned = false;
@@ -623,8 +613,7 @@ auto PhysicalExchange::plan_totals(std::span<const size_t> peers, ExchangeTransp
 }
 
 auto PhysicalExchange::plan_totals(ExchangeTransport transport) -> void {
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     s.require_idle("plan_totals");
     s.send_planned = false;
     s.recv_planned = false;
@@ -669,11 +658,8 @@ auto PhysicalExchange::State::plan_from_totals() -> void {
 }
 
 auto PhysicalExchange::plan_column(size_t shard) -> void {
-    require_state(state_.get());
-    State &s = *state_;
-    if (shard >= s.threads) {
-        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
-    }
+    State &s = require_state(state_.get());
+    s.require_shard(shard);
     for (size_t k = 0; k < s.max_peers; ++k) {
         long long sum = 0;
         for (size_t u = 0; u < s.threads; ++u) {
@@ -684,14 +670,11 @@ auto PhysicalExchange::plan_column(size_t shard) -> void {
 }
 
 auto PhysicalExchange::place_column(size_t shard) -> void {
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     if (!s.send_planned || !s.recv_planned) {
         throw std::logic_error("sharded exchange: place_column() before plan_totals()");
     }
-    if (shard >= s.threads) {
-        throw std::out_of_range(std::format("sharded exchange: shard {} of {}", shard, s.threads));
-    }
+    s.require_shard(shard);
     // Every partial sum is bounded by its peer's checked total.
     for (size_t k = 0; k < s.peers.size(); ++k) {
         const size_t r = s.peers[k];
@@ -723,8 +706,7 @@ auto PhysicalExchange::place_column(size_t shard) -> void {
 
 auto PhysicalExchange::post_counts() -> void {
     require_primary("post_counts");
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     if (!s.send_planned) {
         throw std::logic_error("sharded exchange: post_counts() before plan_send()");
     }
@@ -775,8 +757,7 @@ auto PhysicalExchange::post_counts() -> void {
 
 auto PhysicalExchange::wait_counts() -> void {
     require_primary("wait_counts");
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     const size_t n = s.threads;
     const size_t t2 = n * n;
 #ifdef monoprop_ENABLE_MPI
@@ -818,8 +799,7 @@ auto PhysicalExchange::wait_counts() -> void {
 }
 
 auto PhysicalExchange::plan_recv() -> void {
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     if (!s.send_planned) {
         throw std::logic_error("sharded exchange: plan_recv() before plan_send()");
     }
@@ -837,8 +817,7 @@ auto PhysicalExchange::plan_recv() -> void {
 
 auto PhysicalExchange::post() -> void {
     require_primary("post");
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     if (!s.send_planned || !s.recv_planned) {
         throw std::logic_error("sharded exchange: post() before the round's layout is planned");
     }
@@ -906,28 +885,24 @@ auto PhysicalExchange::wait() -> void {
 auto PhysicalRounds::get(Kind kind, const PhysicalWorld &world, size_t threads) -> PhysicalExchange & {
     PhysicalExchange &round = rounds_.at(static_cast<size_t>(kind));
     if (round.threads() != threads || round.ranks() != world.ranks || round.rank() != world.rank) {
-        switch (kind) {
-            case Kind::queries:
-                round = PhysicalExchange(world, threads, ExchangeElement::u64, sharded_query_tag);
-                break;
-            case Kind::graph_answers:
-                round = PhysicalExchange(world, threads, ExchangeElement::u32, sharded_answer_tag);
-                break;
-            case Kind::fused_answers:
-                round = PhysicalExchange(world, threads, ExchangeElement::f64, sharded_answer_tag);
-                break;
-            case Kind::replay:
-                round = PhysicalExchange(world, threads, ExchangeElement::f64, sharded_replay_tag);
-                break;
-        }
+        // Element type and tag of each Kind, in Kind order.
+        struct RoundSpec {
+            ExchangeElement element;
+            int tag;
+        };
+        static constexpr std::array<RoundSpec, 4> specs{{{ExchangeElement::u64, sharded_query_tag},
+                                                         {ExchangeElement::u32, sharded_answer_tag},
+                                                         {ExchangeElement::f64, sharded_answer_tag},
+                                                         {ExchangeElement::f64, sharded_replay_tag}}};
+        const RoundSpec &spec = specs.at(static_cast<size_t>(kind));
+        round = PhysicalExchange(world, threads, spec.element, spec.tag);
     }
     return round;
 }
 
 auto PhysicalExchange::send_bytes_(size_t shard, size_t peer, size_t dest, ExchangeElement element)
     -> std::span<std::byte> {
-    require_state(state_.get());
-    State &s = *state_;
+    State &s = require_state(state_.get());
     if (element != s.element || !s.send_planned) {
         throw std::logic_error("sharded exchange: send_block() with the wrong element type or before plan_send()");
     }
@@ -940,9 +915,8 @@ auto PhysicalExchange::send_bytes_(size_t shard, size_t peer, size_t dest, Excha
             static_cast<size_t>(s.send_rows[i]) * s.elem};
 }
 
-auto PhysicalExchange::send_column_bytes_(size_t shard, size_t peer, ExchangeElement element) -> ColumnBytes {
-    require_state(state_.get());
-    State &s = *state_;
+auto PhysicalExchange::send_column_bytes_(size_t shard, size_t peer, ExchangeElement element) -> SendColumn<std::byte> {
+    State &s = require_state(state_.get());
     if (element != s.element || !s.send_planned) {
         throw std::logic_error("sharded exchange: send_column() with the wrong element type or before planning");
     }
@@ -962,8 +936,7 @@ auto PhysicalExchange::send_column_bytes_(size_t shard, size_t peer, ExchangeEle
 
 auto PhysicalExchange::recv_bytes_(size_t shard, size_t peer, size_t source, ExchangeElement element) const
     -> std::span<const std::byte> {
-    require_state(state_.get());
-    const State &s = *state_;
+    const State &s = require_state(state_.get());
     if (element != s.element || !s.recv_planned) {
         throw std::logic_error("sharded exchange: recv_block() with the wrong element type or before plan_recv()");
     }

@@ -31,6 +31,7 @@
 #include <unistd.h>
 #endif
 
+#include "KernelTestSupport.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -41,19 +42,6 @@ using namespace monoprop;
 using cd = std::complex<double>;
 
 namespace {
-
-// Build an MPOperator whose store rows are also indexed (findable). append_term writes a row only;
-// find() needs the hash index, which only the insert_absent_terms path populates.
-auto build_indexed_op(const std::vector<Monomial<8>> &terms, Basis basis = Basis::Majorana) -> detail::MPOperator<8> {
-    detail::MPOperator<8> op;
-    op.basis = basis;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
-    return op;
-}
 
 // Independent expected state vector: score paired rows with the basis' state phase, 0 otherwise.
 auto expected_state(detail::MPOperator<8> &op, Basis basis, const VecZ &initial_state) -> VecD {
@@ -166,7 +154,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_state_scores_only_new_terms_incrementally) 
 BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map) {
     const auto a = indices_to_bitset<8>({0, 1});
     const auto b = indices_to_bitset<8>({2, 3});
-    auto op = build_indexed_op({a, b});
+    auto op = kernel_test::make_op<8>({a, b});
 
     const auto absent = indices_to_bitset<8>({4, 5});
     op.init_op_map[a] = 3.0;      // present in store -> should land on row 0 and be erased
@@ -187,7 +175,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_drains_present_terms_from_init_map
 BOOST_AUTO_TEST_CASE(mp_operator_get_operator_releases_init_map_when_fully_bound) {
     const auto a = indices_to_bitset<8>({0, 1});
     const auto b = indices_to_bitset<8>({2, 3});
-    auto op = build_indexed_op({a, b});
+    auto op = kernel_test::make_op<8>({a, b});
 
     op.init_op_map.reserve(4096); // buckets far in excess of the two live entries
     op.init_op_map[a] = 3.0;
@@ -212,7 +200,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_shrinks_init_map_when_partially_bo
     const auto a = indices_to_bitset<8>({0, 1});
     const auto b = indices_to_bitset<8>({2, 3});
     const auto absent = indices_to_bitset<8>({4, 5});
-    auto op = build_indexed_op({a, b});
+    auto op = kernel_test::make_op<8>({a, b});
 
     op.init_op_map.reserve(4096);
     op.init_op_map[a] = 3.0;
@@ -232,7 +220,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_shrinks_init_map_when_partially_bo
 
 // Nothing bound: the map is left exactly as it was, buckets included.
 BOOST_AUTO_TEST_CASE(mp_operator_get_operator_keeps_init_map_when_nothing_bound) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 1})});
+    auto op = kernel_test::make_op<8>({indices_to_bitset<8>({0, 1})});
 
     const auto absent = indices_to_bitset<8>({4, 5});
     op.init_op_map[absent] = 9.0;
@@ -245,8 +233,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_get_operator_keeps_init_map_when_nothing_bound)
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pauli) {
     const auto present = indices_to_bitset<8>({0, 2});
-    auto op = build_indexed_op({present}, Basis::Pauli); // row 0 indexed
-    op.init_op_map[indices_to_bitset<8>({4, 6})] = 0.0;  // seed a pending term
+    auto op = kernel_test::make_op<8>({present}, Basis::Pauli); // row 0 indexed
+    op.init_op_map[indices_to_bitset<8>({4, 6})] = 0.0;         // seed a pending term
 
     OperatorDict dict;
     dict[VecZ{0, 2}] = cd(1.5, 0.0); // present in store -> row coeff
@@ -261,7 +249,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_require_updatable_terms_heisenberg_rejects_absent_term) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
+    auto op = kernel_test::make_op<8>({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
     dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from both store and init_op_map
@@ -269,7 +257,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_require_updatable_terms_heisenberg_rejects_abse
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_absent_term) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
+    auto op = kernel_test::make_op<8>({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
     const auto fresh = indices_to_bitset<8>({1, 3, 5});
@@ -281,8 +269,8 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_abse
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identity_term) {
     // The Majorana codec divides by the term's hermitian phase, which is 1 for the identity term, so
     // a real coefficient round-trips as itself without tripping the non-Hermitian guard.
-    const Monomial<8> identity;             // empty
-    auto op = build_indexed_op({identity}); // basis defaults to Majorana
+    const Monomial<8> identity;                    // empty
+    auto op = kernel_test::make_op<8>({identity}); // basis defaults to Majorana
 
     OperatorDict dict;
     dict[VecZ{}] = cd(2.75, 0.0);
@@ -295,7 +283,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_majorana_encode_identit
 BOOST_AUTO_TEST_CASE(mp_operator_insert_absent_terms_grows_and_indexes) {
     const auto e0 = indices_to_bitset<8>({0, 1});
     const auto e1 = indices_to_bitset<8>({2, 3});
-    auto op = build_indexed_op({e0, e1});
+    auto op = kernel_test::make_op<8>({e0, e1});
 
     const std::vector<Monomial<8>> fresh = {indices_to_bitset<8>({4, 5}),
                                             indices_to_bitset<8>({6, 7}),
@@ -358,7 +346,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_breakdown_counts_matched_scratch_in_total_and_s
     BOOST_CHECK_EQUAL(acc.total_bytes(), 130U);
 
     // An operator on its own has no stamp array to report.
-    auto bare = build_indexed_op({indices_to_bitset<8>({0, 1})});
+    auto bare = kernel_test::make_op<8>({indices_to_bitset<8>({0, 1})});
     BOOST_CHECK_EQUAL(detail::estimate_memory_usage<8>(bare).matched_scratch_bytes, 0U);
 }
 
@@ -460,7 +448,7 @@ BOOST_AUTO_TEST_CASE(mp_operator_release_slack_returns_large_spare_capacity_in_p
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_copy_constructor_clones_store_and_coeffs) {
-    auto op = build_indexed_op({indices_to_bitset<8>({0, 1}), indices_to_bitset<8>({2, 3})});
+    auto op = kernel_test::make_op<8>({indices_to_bitset<8>({0, 1}), indices_to_bitset<8>({2, 3})});
     op.initial_state = {0};
     (void)op.sparse_state();
 

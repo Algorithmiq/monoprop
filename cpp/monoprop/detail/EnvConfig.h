@@ -30,10 +30,6 @@
  *   monoprop_ROUTE_SEED         decimal uint64 basis seed → route_seed
  *
  * Both routing knobs throw on a malformed value: a silent default would change the transport unseen.
- *
- * The thread budget is not read here. Every propagator captures monoprop_NUM_THREADS when it is constructed, through
- * the strict parallel::capture_thread_budget() (ThreadBudget.h), which rejects a malformed value and falls back to
- * omp_get_max_threads() only when the variable is unset.
  */
 
 namespace monoprop::config {

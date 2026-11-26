@@ -250,15 +250,6 @@ auto cos_count_lazy(const InvertedIndex<NumModes> &sc, const LazyFold<NumModes> 
     return count;
 }
 
-// The number of indices cos_indices_mask() appends.
-inline auto cos_count_mask(const CosMask &cos) -> size_t {
-    size_t count = 0;
-    for (const auto &block : cos.blocks) {
-        count += static_cast<size_t>(std::popcount(block.second));
-    }
-    return count;
-}
-
 inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) -> void {
     for (const auto &[base, bits] : cos.blocks) {
         for_each_cos_index(base, bits, [&out](size_t i) { out.push_back(static_cast<TermIndex>(i)); });
@@ -308,8 +299,7 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
                          double *state,
                          double *ham,
                          double cos_val,
-                         double sec_val,
-                         [[maybe_unused]] parallel::Options options = {}) -> double {
+                         double sec_val) -> double {
     double loc = 0.0;
     const uint64_t *const row_parity = fold_row_parity<NumModes>(sc, r.fold);
     for_each_cos_fold_word<NumModes>(sc, r, 0, r.fold.mask_words, row_parity, [&](size_t wi, uint64_t bits) {
@@ -352,12 +342,8 @@ auto scale_cos_mask(double *coeff,
         }
     });
 }
-inline auto accumulate_cos_mask(double *state,
-                                double *ham,
-                                const CosMask &cos,
-                                double cos_val,
-                                double sec_val,
-                                [[maybe_unused]] parallel::Options options = {}) -> double {
+inline auto accumulate_cos_mask(double *state, double *ham, const CosMask &cos, double cos_val, double sec_val)
+    -> double {
     const size_t n = cos.blocks.size();
     double loc = 0.0;
     for (size_t k = 0; k < n; ++k) {
@@ -441,9 +427,9 @@ auto full_cos_mask(const InvertedIndex<NumModes> &inverted_index, const LayerTra
  * \brief Per-layer cosine callbacks replaying `graph` against `inverted_index`.
  *
  * A pared layer replays its stored mask (an empty stored mask replays nothing); every other layer recomputes its
- * fold from the index. Each closure captures `options` for its kernels. The closures keep raw pointers into the index
- * and into the layers' stored masks, so they must outlive neither the index nor the graph owning those layers. Row
- * parity words are fetched inside each call, never cached, since they move whenever the store grows. The result is
+ * fold from the index. The scaling closure captures `options` for its kernels. The closures keep raw pointers into the
+ * index and into the layers' stored masks, so they must outlive neither the index nor the graph owning those layers.
+ * Row parity words are fetched inside each call, never cached, since they move whenever the store grows. The result is
  * marked CosCallbacks::owner_parallel: the closures touch only this index, these layers and thread-local scratch.
  *
  * \param inverted_index The index of the store whose rows the graph's endpoints name.
@@ -457,21 +443,15 @@ auto make_cos_callbacks(const InvertedIndex<NumModes> &inverted_index,
                         Basis basis = Basis::Majorana,
                         parallel::Options options = {}) -> CosCallbacks {
     struct LayerCos {
-        bool recomputes_cos = false;
-        LazyFold<NumModes> recipe{};       // used iff recomputes_cos
+        LazyFold<NumModes> recipe{};       // used iff filtered is null
         const CosMask *filtered = nullptr; // points into a pruned layer's stored cos
     };
     auto cache = std::make_shared<std::vector<LayerCos>>();
     cache->reserve(graph.layers());
     for (size_t i = 0; i < graph.layers(); ++i) {
         const auto &layer = graph.get_layer(i);
-        LayerCos entry;
-        if (const CosMask *pruned = layer.pruned_cos(); pruned != nullptr) {
-            entry.recomputes_cos = false;
-            entry.filtered = pruned;
-        }
-        else {
-            entry.recomputes_cos = true;
+        LayerCos entry{.filtered = layer.pruned_cos()};
+        if (entry.filtered == nullptr) {
             const auto t = layer.traversal();
             const auto gen = generator_from_words<NumModes>(t.generator_words());
             entry.recipe = make_lazy_fold<NumModes>(inverted_index, gen, t.scaled_count(), basis);
@@ -482,23 +462,23 @@ auto make_cos_callbacks(const InvertedIndex<NumModes> &inverted_index,
     const auto *sc = &inverted_index;
     LayerCosScale cos_scale = [cache, sc, options](size_t i, double *c, double v) {
         const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
+        if (e.filtered != nullptr) {
             scale_cos_mask(c, *e.filtered, v, options);
         }
         else {
             scale_cos_lazy<NumModes>(*sc, e.recipe, c, v, options);
         }
     };
-    LayerCosAccumulate cos_acc = [cache, sc, options](size_t i, double *s, double *h, double v, double sec) {
+    LayerCosAccumulate cos_acc = [cache, sc](size_t i, double *s, double *h, double v, double sec) {
         const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
-            return accumulate_cos_mask(s, h, *e.filtered, v, sec, options);
+        if (e.filtered != nullptr) {
+            return accumulate_cos_mask(s, h, *e.filtered, v, sec);
         }
-        return accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec, options);
+        return accumulate_cos_lazy<NumModes>(*sc, e.recipe, s, h, v, sec);
     };
     LayerCosIndices cos_inds = [cache, sc](size_t i, std::vector<TermIndex> &out) {
         const auto &e = (*cache)[i];
-        if (!e.recomputes_cos) {
+        if (e.filtered != nullptr) {
             cos_indices_mask(*e.filtered, out);
             return;
         }
@@ -506,7 +486,8 @@ auto make_cos_callbacks(const InvertedIndex<NumModes> &inverted_index,
     };
     LayerCosCount cos_count = [cache, sc](size_t i) -> size_t {
         const auto &e = (*cache)[i];
-        return e.recomputes_cos ? cos_count_lazy<NumModes>(*sc, e.recipe) : cos_count_mask(*e.filtered);
+        // A stored mask keeps its set-bit count.
+        return e.filtered != nullptr ? e.filtered->total_count : cos_count_lazy<NumModes>(*sc, e.recipe);
     };
     return {.scale = std::move(cos_scale),
             .accumulate = std::move(cos_acc),

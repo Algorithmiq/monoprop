@@ -18,8 +18,8 @@
 /*
  * Snapshot-safe replay, energy, gradients, retained/pared functionals and coefficient-informed construction over T
  * shards of one process (detail/sharded/Evaluation.h, Construction.h). The team size T is the captured launch budget;
- * cpp/tests/CMakeLists.txt reruns these cases in fresh processes at T = 1, 2 and 4. Cases that need a nonprimary worker
- * are left out of T = 1.
+ * cpp/tests/CMakeLists.txt runs each case in its own process at T = 1 and reruns these cases in fresh processes at T =
+ * 2 and 4. Cases that need a nonprimary worker are left out of T = 1.
  *
  * Oracles:
  * - The rank-level root at the same launch (MPI_COMM_SELF, the launch's T), through its public operations: per-shard
@@ -46,10 +46,12 @@
 #include <exception>
 #include <format>
 #include <functional>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <numeric>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -87,16 +89,18 @@ using E = sharded::EvaluationWork;
 using W = sharded::ConstructionWork;
 using sharded_test::add_term;
 using sharded_test::bits;
+using sharded_test::build_checked;
 using sharded_test::Case;
 using sharded_test::Circuit;
-using sharded_test::data_circuit;
 using sharded_test::disarm_team;
+using sharded_test::exact_atol;
+using sharded_test::exact_reference_cases;
 using sharded_test::Fixture;
 using sharded_test::fixture_cases;
 using sharded_test::generators;
 using sharded_test::has_allocation_probe;
 using sharded_test::has_nonprimary_worker;
-using sharded_test::Key;
+using sharded_test::holds_bad_alloc;
 using sharded_test::key_of;
 using sharded_test::label;
 using sharded_test::majorana_circuit;
@@ -105,22 +109,29 @@ using sharded_test::message_of;
 using sharded_test::num_modes;
 using sharded_test::pauli_circuit;
 using sharded_test::pauli_operator;
+using sharded_test::reference_propagate;
 using sharded_test::reference_root;
+using sharded_test::require_success;
 using sharded_test::RetainedMap;
 using sharded_test::seed;
+using sharded_test::seed_and_build;
 using sharded_test::Sharded;
 using sharded_test::team_options;
 using sharded_test::team_size;
+using test_utils::near;
+using Visit = sharded_test::Visit<E>;
+using FailAt = sharded_test::FailAt<E>;
+using AllocAt = sharded_test::AllocAt<E>;
 
-constexpr double exact_atol = 1e-9; // the frozen exact-energy tolerance of the construction and fused-sweep tests
+// Whether `a` and `b` hold the same bit patterns, element by element.
+auto same_bits(std::span<const double> a, std::span<const double> b) -> bool {
+    return std::ranges::equal(a, b, std::ranges::equal_to{}, bits, bits);
+}
 
-auto bits_of(const VecD &v) -> std::vector<uint64_t> {
-    std::vector<uint64_t> out;
-    out.reserve(v.size());
-    for (const double x : v) {
-        out.push_back(bits(x));
-    }
-    return out;
+// An energy and gradient bitwise equal to `want`.
+auto check_same_bits(const std::pair<double, VecD> &got, const std::pair<double, VecD> &want) -> void {
+    BOOST_TEST(bits(got.first) == bits(want.first));
+    BOOST_TEST(same_bits(got.second, want.second));
 }
 
 // --- Fixtures -------------------------------------------------------------------------------------------------
@@ -152,48 +163,6 @@ auto parameter_sets(const Circuit &c) -> std::vector<std::pair<std::string, VecD
 
 // --- Sharded setup ----------------------------------------------------------------------------------------------
 
-auto require_success(const std::exception_ptr &error, const char *what) -> void {
-    if (error) {
-        BOOST_FAIL(what << " failed: " << message_of(error));
-    }
-}
-
-template <size_t N>
-auto run_graph(Sharded<N> &s, const Circuit &c, std::optional<size_t> k, size_t gate_offset = 0) -> void {
-    const auto gens = generators<N>(s.f, c);
-    VecZ gate_indices(c.gates.size());
-    std::iota(gate_indices.begin(), gate_indices.end(), gate_offset);
-    const auto ctx = s.ctx();
-    const auto outcome = sharded::build_graph<N>(team_options(),
-                                                 s.shards,
-                                                 ctx,
-                                                 {.generators = gens,
-                                                  .parameter_mapping = c.mapping,
-                                                  .gen_coeffs = c.gen_coeffs,
-                                                  .gate_indices = gate_indices,
-                                                  .only_rotate_len_k = k});
-    require_success(outcome.error, "build_graph");
-}
-
-// Optimizer-order gate arrays of a shard graph, as MonomialPropagator::graph_gate_arrays_() reads them.
-auto gate_arrays(const MPGraph &graph) -> std::pair<VecZ, VecD> {
-    const size_t count = graph.layers();
-    VecZ mapping(count);
-    VecD gen(count);
-    for (size_t layer = 0; layer < count; ++layer) {
-        const auto t = graph.get_layer_traversal(layer);
-        mapping[count - 1 - layer] = t.param_index();
-        gen[count - 1 - layer] = t.gen_coeff();
-    }
-    return {std::move(mapping), std::move(gen)};
-}
-
-// contract_partially()'s replay angles for a picture over a graph's layers.
-auto contraction_angles(const MPGraph &graph, bool schrodinger, const VecD &params) -> VecD {
-    const auto [mapping, gen] = gate_arrays(graph);
-    return schrodinger ? map_params(params, mapping, gen, -1.0) : map_params(params, mapping, gen, 1.0, true);
-}
-
 // Coefficient-informed construction on the shards, with the angles the root's build_graph derives.
 template <size_t N, class Observer = sharded::NoConstructionObserver>
 auto run_informed(Sharded<N> &s,
@@ -203,15 +172,14 @@ auto run_informed(Sharded<N> &s,
                   size_t gate_offset = 0,
                   const Observer &observer = {}) -> sharded::ConstructionOutcome {
     const auto gens = generators<N>(s.f, c);
-    VecZ gate_indices(c.gates.size());
-    std::iota(gate_indices.begin(), gate_indices.end(), gate_offset);
+    const auto indices = sharded_test::gate_indices(c, gate_offset);
     const auto mapped = map_params(parameters, c.mapping, c.gen_coeffs, 1.0);
     std::optional<VecD> seed_angles;
     if (s.shards.front()->graph.layers() > 0) {
-        const auto [existing, _] = gate_arrays(s.shards.front()->graph);
-        const size_t m = expected_num_params(existing);
+        const auto [mapping, gen] = monoprop::detail::gate_arrays(s.shards.front()->graph);
+        const size_t m = expected_num_params(mapping);
         const VecD prefix(parameters.begin(), parameters.begin() + static_cast<std::ptrdiff_t>(m));
-        seed_angles = contraction_angles(s.shards.front()->graph, s.schrodinger(), prefix);
+        seed_angles = monoprop::detail::replay_angles(prefix, mapping, gen, s.schrodinger());
     }
     const auto ctx = s.ctx();
     return sharded::build_graph_informed<N>(
@@ -221,7 +189,7 @@ auto run_informed(Sharded<N> &s,
         {.graph = {.generators = gens,
                    .parameter_mapping = c.mapping,
                    .gen_coeffs = c.gen_coeffs,
-                   .gate_indices = gate_indices,
+                   .gate_indices = indices,
                    .only_rotate_len_k = k},
          .mapped_params = mapped,
          .seed_params = seed_angles ? std::optional<std::span<const double>>(*seed_angles) : std::nullopt},
@@ -230,7 +198,7 @@ auto run_informed(Sharded<N> &s,
 
 template <size_t N>
 auto retained_context(const Sharded<N> &s, std::optional<double> pare) -> sharded::RetainedContext {
-    auto [mapping, gen] = gate_arrays(s.shards.front()->graph);
+    auto [mapping, gen] = monoprop::detail::gate_arrays(s.shards.front()->graph);
     return {.core_term = s.core(),
             .parameter_mapping = std::move(mapping),
             .gen_coeffs = std::move(gen),
@@ -253,63 +221,27 @@ auto retain(Sharded<N> &s,
 auto evaluate(const sharded::RetainedEvaluation &r,
               const VecD &params,
               bool gradient,
-              const sharded::EvaluationObserver *observer = nullptr,
-              const sharded::PhysicalWorld &world = {}) -> sharded::EvaluationOutcome {
+              const sharded::EvaluationObserver *observer = nullptr) -> sharded::EvaluationOutcome {
     const auto requests = r.requests(params);
-    return sharded::evaluate_shards(requests, r.callbacks, team_options(), gradient, observer, world);
+    return sharded::evaluate_shards(requests, r.callbacks, team_options(), gradient, observer);
 }
 
-// The root's combination: the ascending-shard fold, the reduction over the world, then the replicated identity.
-auto energy_and_gradient(const sharded::RetainedEvaluation &r,
-                         const VecD &params,
-                         const sharded::PhysicalWorld &world = {}) -> std::pair<double, VecD> {
-    const auto requests = r.requests(params);
-    const auto outcome = sharded::evaluate_shards(requests, r.callbacks, team_options(), true, nullptr, world);
+// The root's one-process combination: the ascending-shard fold, then the replicated identity.
+auto energy_and_gradient(const sharded::RetainedEvaluation &r, const VecD &params, bool gradient = true)
+    -> std::pair<double, VecD> {
+    const auto outcome = evaluate(r, params, gradient);
     if (outcome.error) {
         std::rethrow_exception(outcome.error);
     }
-    const double value = mpi::allreduce_sum(sharded::combine_contributions(outcome.contributions), world.comm);
-    VecD gradient = sharded::combine_gradients(outcome.gradients);
-    if (!params.empty()) {
-        mpi::allreduce_sum_inplace(gradient, world.comm);
-    }
-    return {requests.front().e_core + value, std::move(gradient)};
+    return {r.core_term + sharded::combine_contributions(outcome.contributions),
+            gradient ? sharded::combine_gradients(outcome.gradients) : VecD{}};
 }
 
-auto energy(const sharded::RetainedEvaluation &r, const VecD &params, const sharded::PhysicalWorld &world = {})
-    -> double {
-    const auto requests = r.requests(params);
-    const auto outcome = sharded::evaluate_shards(requests, r.callbacks, team_options(), false, nullptr, world);
-    if (outcome.error) {
-        std::rethrow_exception(outcome.error);
-    }
-    return requests.front().e_core
-           + mpi::allreduce_sum(sharded::combine_contributions(outcome.contributions), world.comm);
+auto energy(const sharded::RetainedEvaluation &r, const VecD &params) -> double {
+    return energy_and_gradient(r, params, false).first;
 }
 
 // --- Observation ------------------------------------------------------------------------------------------------
-
-struct Visit {
-    E work;
-    size_t step;
-    int worker;
-    int team;
-    int level;
-    std::thread::id thread;
-};
-
-struct FailAt {
-    E work;
-    size_t step;
-    size_t shard;
-};
-
-struct AllocAt {
-    E work;
-    size_t step;
-    size_t shard;
-    size_t nth;
-};
 
 // Per-shard visit logs and optional injected failures. Slot s is written by the thread performing shard s's work:
 // its owner, or the primary inside an exclusive phase; never two threads between the same checkpoints.
@@ -325,28 +257,13 @@ public:
     }
 
     auto visit(E work, size_t step, size_t shard) const -> void override {
-        (void)allocation::disarm_failure();
-        logs_[shard].push_back(
-            {work, step, omp_get_thread_num(), omp_get_num_threads(), omp_get_level(), std::this_thread::get_id()});
-        for (const auto &f : fail_) {
-            if (f.work == work && f.step == step && f.shard == shard) {
-                throw std::runtime_error(
-                    std::format("injected failure: work {} step {} shard {}", static_cast<int>(work), step, shard));
-            }
-        }
-        if (alloc_ && alloc_->work == work && alloc_->step == step && alloc_->shard == shard) {
-            allocation::arm_failure(alloc_->nth);
-        }
+        sharded_test::record_visit(logs_[shard], work, step, shard, fail_, alloc_);
     }
 
     [[nodiscard]] auto logs() const -> const std::vector<std::vector<Visit>> & { return logs_; }
 
     [[nodiscard]] auto count(E work) const -> size_t {
-        size_t n = 0;
-        for (const auto &log : logs_) {
-            n += static_cast<size_t>(std::ranges::count_if(log, [&](const Visit &v) { return v.work == work; }));
-        }
-        return n;
+        return static_cast<size_t>(std::ranges::count(logs_ | std::views::join, work, &Visit::work));
     }
 
 private:
@@ -356,52 +273,6 @@ private:
 };
 
 // --- Independent references -------------------------------------------------------------------------------------
-
-template <size_t N>
-auto mono_of(const Key &key) -> Monomial<N> {
-    Monomial<N> m;
-    for (size_t w = 0; w < key.size(); ++w) {
-        m.data()[w] = key[w];
-    }
-    return m;
-}
-
-// Independent propagation on a map: each anticommuting key M moves to cos(2a) M + sin(2a) phase(M) (M ^ G). Absent
-// partners enter with 0 (an operator has no implicit terms).
-template <size_t N>
-auto reference_operator(RetainedMap map, const std::vector<Monomial<N>> &gens, const VecD &mapped, Basis basis)
-    -> RetainedMap {
-    const size_t n = gens.size();
-    for (size_t step = 0; step < n; ++step) {
-        const size_t idx = n - 1 - step;
-        const auto &gen = gens[idx];
-        const double c = std::cos(2 * mapped[idx]);
-        const double sn = std::sin(2 * mapped[idx]);
-        with_algebra<N>(basis, [&]<typename A>() {
-            const auto fold = A::fold_generator(gen);
-            const bool odd = A::fold_needs_odd_correction(gen);
-            const auto ctx = A::make_gen_context(gen);
-            const auto anti = [&](const Monomial<N> &m) {
-                return ((m & fold).count() + (odd ? m.count() : 0)) % 2 == 1;
-            };
-            RetainedMap next;
-            for (const auto &[key, v] : map) {
-                const auto m = mono_of<N>(key);
-                if (!anti(m)) {
-                    next[key] += v;
-                    continue;
-                }
-                const auto partner = m ^ gen;
-                const int phase =
-                    A::emit_phase(A::rotation_sign(ctx, m, partner), m.count(), gen.count(), (m & gen).count());
-                next[key] += c * v;
-                next[key_of<N>(partner)] += sn * static_cast<double>(phase) * v;
-            }
-            map = std::move(next);
-        });
-    }
-    return map;
-}
 
 // <psi| U^dagger O U |psi> from the reference Heisenberg operator: the identity once, plus each term's state score.
 template <size_t N>
@@ -418,19 +289,12 @@ auto reference_energy(const Fixture &f, const Circuit &c, const VecD &params) ->
         map[key_of<N>(mono)] = encoded;
     }
     const auto mapped = map_params(params, c.mapping, c.gen_coeffs, 1.0);
-    const auto evolved = reference_operator<N>(map, generators<N>(f, c), mapped, f.basis);
+    const auto evolved = reference_propagate<N>(map, generators<N>(f, c), mapped, false, f.basis, f.initial_state);
     const auto mask = initial_state_mask<N>(f.initial_state);
     double total = core;
     for (const auto &[key, v] : evolved) {
-        const auto m = mono_of<N>(key);
-        bool diagonal = true;
-        for (size_t mode = 0; mode < N; ++mode) {
-            if (m.test(2 * mode) != m.test((2 * mode) + 1)) {
-                diagonal = false;
-                break;
-            }
-        }
-        if (diagonal) {
+        const auto m = monoprop::detail::generator_from_words<N>(key);
+        if (is_paired<N>(m)) {
             total += v * algebra_state_phase<N>(f.basis, m, mask);
         }
     }
@@ -450,10 +314,6 @@ auto central_differences(Fn &&fn, const VecD &params, double eps = 1e-5) -> VecD
     return grad;
 }
 
-auto close(double a, double b, double atol, double rtol = 0.0) -> bool {
-    return std::abs(a - b) <= atol + (rtol * std::max(std::abs(a), std::abs(b)));
-}
-
 // Layout census of a set of shard graphs: what the fixtures exercise.
 struct Census {
     size_t self_pairs = 0;   // layers with a nonempty self slot
@@ -463,9 +323,9 @@ struct Census {
     size_t empty_owners = 0; // shards without rows
 };
 
+// Adds the layout of `shards` to `c`.
 template <size_t N>
-auto census(const sharded::Shards<N> &shards) -> Census {
-    Census c;
+auto census(const sharded::Shards<N> &shards, Census c = {}) -> Census {
     for (size_t t = 0; t < shards.size(); ++t) {
         const auto &state = *shards[t];
         c.empty_owners += state.op.size() == 0 ? 1 : 0;
@@ -495,7 +355,6 @@ auto census(const sharded::Shards<N> &shards) -> Census {
 // Checked in both directions against the independent map propagator and its central differences.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_peers_read_published_snapshots,
                      *boost::unit_test::precondition(has_nonprimary_worker)) {
-    const auto options = team_options();
     Fixture f{.name = "cross-shard", .op = {}, .initial_state = {0, 2}, .cutoff = 2 * num_modes, .logical = num_modes};
     for (size_t i = 0; i + 1 < 2 * num_modes; ++i) {
         add_term(f.op, Basis::Majorana, {i, i + 1}, 0.3 + (0.05 * static_cast<double>(i)));
@@ -506,34 +365,26 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_peers_read_published_snapshots,
                     .mapping = {0, 1, 2, 3},
                     .gen_coeffs = {0.5, -0.75, 1.0, 0.25},
                     .params = {0.4, 0.9, -0.3, 1.1}};
-    auto s = seed<num_modes>(f, options);
-    run_graph<num_modes>(s, c, std::nullopt);
+    auto s = seed_and_build<num_modes>(f, c);
     const auto layout = census<num_modes>(s.shards);
     BOOST_TEST_REQUIRE(layout.cross_slots > 0U);
     const auto r = retain<num_modes>(s);
     const auto reference = [&](const VecD &p) { return reference_energy<num_modes>(f, c, p); };
     const auto [e, grad] = energy_and_gradient(r, c.params);
-    BOOST_TEST(close(energy(r, c.params), reference(c.params), exact_atol));
-    BOOST_TEST(close(e, reference(c.params), exact_atol));
+    const double want = reference(c.params);
+    BOOST_TEST(near(energy(r, c.params), want, exact_atol, 0.0));
+    BOOST_TEST(near(e, want, exact_atol, 0.0));
     const auto fd = central_differences(reference, c.params);
     for (size_t i = 0; i < grad.size(); ++i) {
-        BOOST_TEST(close(grad[i], fd[i], 1e-6), "component " << i << ": " << grad[i] << " vs " << fd[i]);
+        BOOST_TEST(near(grad[i], fd[i], 1e-6, 0.0), "component " << i << ": " << grad[i] << " vs " << fd[i]);
     }
 }
 
 // Whole self pairs, other-local-shard and multi-peer layouts, empty owners and no-work layers are all exercised at
 // T >= 2, and evaluation over them matches the root.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_covers_every_layout, *boost::unit_test::precondition(has_nonprimary_worker)) {
-    const auto options = team_options();
     const size_t threads = team_size();
     Census total;
-    const auto accumulate = [&](const Census &c) {
-        total.self_pairs += c.self_pairs;
-        total.cross_slots += c.cross_slots;
-        total.multi_peer += c.multi_peer;
-        total.empty_layers += c.empty_layers;
-        total.empty_owners += c.empty_owners;
-    };
     Fixture two{.name = "two-terms", .op = {}, .initial_state = {0}, .cutoff = 4, .logical = 6};
     add_term(two.op, Basis::Majorana, {0, 1}, 0.5);
     add_term(two.op, Basis::Majorana, {}, 1.5);
@@ -542,16 +393,13 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_covers_every_layout, *boost::unit_test::
     cases.push_back({.f = two, .c = few});
     for (const auto &cs : cases) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto s = seed<num_modes>(cs.f, options);
-            run_graph<num_modes>(s, cs.c, cs.k);
-            accumulate(census<num_modes>(s.shards));
+            auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
+            total = census<num_modes>(s.shards, total);
             auto old = reference_root<num_modes>(cs.f, threads);
             old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
             const auto r = retain<num_modes>(s);
-            const auto [ge, grad] = old.expectation_value_and_gradient(cs.c.params);
-            const auto [se, sgrad] = energy_and_gradient(r, cs.c.params);
-            BOOST_TEST(bits(se) == bits(ge));
-            BOOST_TEST((bits_of(sgrad) == bits_of(grad)));
+            const auto want = old.expectation_value_and_gradient(cs.c.params);
+            check_same_bits(energy_and_gradient(r, cs.c.params), want);
         }
     }
     BOOST_TEST(total.self_pairs > 0U);
@@ -610,8 +458,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_rejects_invalid_arguments_before_the_tea
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
     const auto r = retain<num_modes>(s);
     const auto requests = r.requests(cs.c.params);
     const Recorder recorder(threads);
@@ -677,61 +524,39 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_rejects_invalid_arguments_before_the_tea
     BOOST_CHECK_THROW((void)sharded::replay_shards(replays, one_angle, r.callbacks, options), std::invalid_argument);
     const auto mapped = map_params(cs.c.params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
     BOOST_CHECK_THROW((void)sharded::replay_shards(replays, mapped, no_scale, options), MissingLayerCallback);
-    for (const auto &log : recorder.logs()) {
-        BOOST_TEST(log.empty());
-    }
+    BOOST_TEST(std::ranges::empty(recorder.logs() | std::views::join));
 }
 
 // Exact-cutoff graphs against the independent map propagator: energies (and the frozen exact energy of
 // random_exact), gradients against central differences of the reference, and single-gate closed-form fits.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_independent_references) {
-    const auto options = team_options();
     const size_t threads = team_size();
     const auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
-    std::vector<std::pair<Fixture, Circuit>> cases;
-    for (const auto sc : {std::optional<unsigned int>{}, std::optional<unsigned int>{16}}) {
-        cases.push_back({{.name = "random-exact",
-                          .op = data.hamiltonian,
-                          .initial_state = data.initial_state,
-                          .schrodinger_cutoff = sc,
-                          .cutoff = 2 * num_modes},
-                         data_circuit(data)});
-        cases.push_back({{.name = "majorana-logical-6",
-                          .op = majorana_operator(6),
-                          .initial_state = {0, 3},
-                          .schrodinger_cutoff = sc ? std::optional<unsigned int>{12} : std::nullopt,
-                          .cutoff = 12,
-                          .logical = 6},
-                         majorana_circuit(6)});
-        cases.push_back({{.name = "pauli",
-                          .op = pauli_operator(),
-                          .initial_state = {},
-                          .schrodinger_cutoff = sc,
-                          .basis = Basis::Pauli,
-                          .cutoff_type = CutoffType::Support,
-                          .cutoff = num_modes},
-                         pauli_circuit()});
-    }
+    // reference_energy() evolves the operator in either picture, so the two pictures of a fixture share it.
+    std::map<std::string, std::pair<double, VecD>> references;
     // Named elements, not structured bindings: Clang cannot capture a binding in a lambda under OpenMP.
-    for (const auto &entry : cases) {
+    for (const auto &entry : exact_reference_cases(data)) {
         const Fixture &f = entry.first;
         const Circuit &c = entry.second;
         const bool schrodinger = f.schrodinger_cutoff.has_value();
         BOOST_TEST_CONTEXT(f.name << (schrodinger ? " schrodinger" : " heisenberg") << " T=" << threads) {
-            auto s = seed<num_modes>(f, options);
-            run_graph<num_modes>(s, c, std::nullopt);
+            auto s = seed_and_build<num_modes>(f, c);
             const auto r = retain<num_modes>(s);
-            const auto reference = [&](const VecD &p) { return reference_energy<num_modes>(f, c, p); };
+            if (!references.contains(f.name)) {
+                const auto reference = [&](const VecD &p) { return reference_energy<num_modes>(f, c, p); };
+                references.emplace(f.name, std::pair{reference(c.params), central_differences(reference, c.params)});
+            }
+            const auto &want = references.at(f.name);
             const double e = energy(r, c.params);
-            BOOST_TEST(close(e, reference(c.params), exact_atol, 1e-12));
+            BOOST_TEST(near(e, want.first, exact_atol, 1e-12));
             if (f.name == "random-exact") {
                 BOOST_CHECK_SMALL(e - data.actual_expval, exact_atol);
             }
             const auto [ge, grad] = energy_and_gradient(r, c.params);
-            BOOST_TEST(close(ge, e, 1e-12, 1e-12));
-            const auto fd = central_differences(reference, c.params);
+            BOOST_TEST(near(ge, e, 1e-12, 1e-12));
+            const auto &fd = want.second;
             for (size_t i = 0; i < grad.size(); ++i) {
-                BOOST_TEST(close(grad[i], fd[i], 1e-6, 1e-6), "component " << i << ": " << grad[i] << " vs " << fd[i]);
+                BOOST_TEST(near(grad[i], fd[i], 1e-6, 1e-6), "component " << i << ": " << grad[i] << " vs " << fd[i]);
             }
         }
     }
@@ -752,8 +577,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_independent_references) {
         BOOST_TEST_CONTEXT(f.name << " closed form T=" << threads) {
             const double g = 0.8;
             const Circuit c{.gates = {gate}, .mapping = {0}, .gen_coeffs = {g}, .params = {0.0}};
-            auto s = seed<num_modes>(f, options);
-            run_graph<num_modes>(s, c, std::nullopt);
+            auto s = seed_and_build<num_modes>(f, c);
             const auto r = retain<num_modes>(s);
             const auto at = [&](double theta) { return energy(r, VecD{theta}); };
             const double e0 = at(0.0);
@@ -764,10 +588,10 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_independent_references) {
             const double cc = eq - a;
             for (const double theta : {0.17, -0.61}) {
                 const double want = a + (b * std::cos(2 * g * theta)) + (cc * std::sin(2 * g * theta));
-                BOOST_TEST(close(at(theta), want, 1e-12, 1e-12));
+                BOOST_TEST(near(at(theta), want, 1e-12, 1e-12));
                 const auto [e, grad] = energy_and_gradient(r, VecD{theta});
                 const double dwant = 2 * g * ((-b * std::sin(2 * g * theta)) + (cc * std::cos(2 * g * theta)));
-                BOOST_TEST(close(grad[0], dwant, 1e-12, 1e-10), grad[0] << " vs " << dwant);
+                BOOST_TEST(near(grad[0], dwant, 1e-12, 1e-10), grad[0] << " vs " << dwant);
             }
             // The gate really moves the energy. (An odd Majorana generator never maps an even term onto a diagonal
             // partner, so its sine coefficient vanishes and only the cosine term carries the angle.)
@@ -781,7 +605,6 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_matches_independent_references) {
 // cosines (theta = pi/4 at unit generator coefficient) and angles that record nothing; each against central
 // differences of the sharded energy and bitwise against the root.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
-    const auto options = team_options();
     const size_t threads = team_size();
     Fixture f{.name = "deep-zz",
               .op = {},
@@ -817,24 +640,26 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
         }
         return c;
     };
-    struct Run {
-        size_t layers;
+    // The graph does not depend on the angles, so each depth is built once and evaluated at each of its angles.
+    struct Angle {
         double theta;
         uint8_t flags; // the record branches the angles must reach
     };
-    const std::vector<Run> runs = {{4, 1.0, replay::kRecordRotationsBelow},
-                                   {8, 1.0, replay::kRecordRotationsBelow},
-                                   {1, std::numbers::pi / 4, replay::kRecordCosineSet},
-                                   {2, std::numbers::pi / 4, replay::kRecordCosineSet},
-                                   {4, std::numbers::pi / 4, replay::kRecordCosineSet},
-                                   {4, 0.05, 0},
-                                   {8, 0.05, 0}};
+    struct Run {
+        size_t layers;
+        std::vector<Angle> angles;
+    };
+    const std::vector<Run> runs = {
+        {1, {{std::numbers::pi / 4, replay::kRecordCosineSet}}},
+        {2, {{std::numbers::pi / 4, replay::kRecordCosineSet}}},
+        {4,
+         {{1.0, replay::kRecordRotationsBelow}, {std::numbers::pi / 4, replay::kRecordCosineSet}, {0.05, uint8_t{0}}}},
+        {8, {{1.0, replay::kRecordRotationsBelow}, {0.05, uint8_t{0}}}},
+    };
     for (const auto &run : runs) {
-        BOOST_TEST_CONTEXT("layers " << run.layers << " theta " << run.theta << " T=" << threads) {
-            auto c = circuit(run.layers);
-            c.params.assign(2 * run.layers, run.theta);
-            auto s = seed<num_modes>(f, options);
-            run_graph<num_modes>(s, c, std::nullopt);
+        BOOST_TEST_CONTEXT("layers " << run.layers << " T=" << threads) {
+            const auto c = circuit(run.layers);
+            auto s = seed_and_build<num_modes>(f, c);
             const auto r = retain<num_modes>(s);
             // The cutoff prunes, or the checks would be vacuous.
             size_t cos_only = 0;
@@ -847,27 +672,33 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
                 }
             }
             BOOST_TEST_REQUIRE(cos_only > 0U);
-            std::vector<uint8_t> wanted;
-            (void)replay::plan_cos_records(map_params(c.params, r.parameter_mapping, r.gen_coeffs, 1.0, true), wanted);
-            uint8_t reached = 0;
-            for (const uint8_t w : wanted) {
-                reached |= w;
-            }
-            BOOST_TEST((reached & run.flags) == run.flags);
-            if (run.flags == 0) {
-                BOOST_TEST(reached == 0);
-            }
-            const auto [e, grad] = energy_and_gradient(r, c.params);
-            BOOST_TEST(std::ranges::all_of(grad, [](double x) { return std::isfinite(x); }));
-            const auto fd = central_differences([&](const VecD &p) { return energy(r, p); }, c.params);
-            for (size_t i = 0; i < grad.size(); ++i) {
-                BOOST_TEST(close(grad[i], fd[i], 1e-6), "component " << i << ": " << grad[i] << " vs " << fd[i]);
-            }
             auto old = reference_root<num_modes>(f, threads);
             old.build_graph(c.gates, c.mapping, c.gen_coeffs, std::nullopt, std::nullopt, std::nullopt);
-            const auto [le, lgrad] = old.expectation_value_and_gradient(c.params);
-            BOOST_TEST(bits(e) == bits(le));
-            BOOST_TEST((bits_of(grad) == bits_of(lgrad)));
+            for (const auto &angle : run.angles) {
+                BOOST_TEST_CONTEXT("theta " << angle.theta) {
+                    const VecD params(2 * run.layers, angle.theta);
+                    std::vector<uint8_t> wanted;
+                    (void)replay::plan_cos_records(map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true),
+                                                   wanted);
+                    uint8_t reached = 0;
+                    for (const uint8_t w : wanted) {
+                        reached |= w;
+                    }
+                    BOOST_TEST((reached & angle.flags) == angle.flags);
+                    if (angle.flags == 0) {
+                        BOOST_TEST(reached == 0);
+                    }
+                    const auto got = energy_and_gradient(r, params);
+                    const auto &grad = got.second;
+                    BOOST_TEST(std::ranges::all_of(grad, [](double x) { return std::isfinite(x); }));
+                    const auto fd = central_differences([&](const VecD &p) { return energy(r, p); }, params);
+                    for (size_t i = 0; i < grad.size(); ++i) {
+                        BOOST_TEST(near(grad[i], fd[i], 1e-6, 0.0),
+                                   "component " << i << ": " << grad[i] << " vs " << fd[i]);
+                    }
+                    check_same_bits(got, old.expectation_value_and_gradient(params));
+                }
+            }
         }
     }
 }
@@ -875,12 +706,11 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_deep_circuit_gradients) {
 // Repeated parameters accumulate per shard in the reverse order, and two consecutive vanishing layers record the same
 // indices twice (rotations below and the cosine set): restoration is idempotent and the gradient stays exact.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_parameters_and_duplicate_records) {
-    const auto options = team_options();
     const size_t threads = team_size();
-    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[9]}) {
+    const auto all = fixture_cases();
+    for (const auto &cs : {all[0], all[1], all[9]}) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto s = seed<num_modes>(cs.f, options);
-            run_graph<num_modes>(s, cs.c, cs.k);
+            auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
             const auto r = retain<num_modes>(s);
             // Drive every other replayed layer to a vanishing cosine: consecutive vanishing layers pile both flags up.
             VecD params = cs.c.params;
@@ -897,16 +727,16 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_parameters_and_duplicate_record
             BOOST_TEST(both);
             auto old = reference_root<num_modes>(cs.f, threads);
             old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
-            const auto [le, lgrad] = old.expectation_value_and_gradient(params);
-            const auto [e, grad] = energy_and_gradient(r, params);
-            BOOST_TEST(bits(e) == bits(le));
-            BOOST_TEST((bits_of(grad) == bits_of(lgrad)));
+            const auto want = old.expectation_value_and_gradient(params);
+            const auto got = energy_and_gradient(r, params);
+            check_same_bits(got, want);
+            const auto &grad = got.second;
             // A repeated parameter's component is the sum over its layers: perturbing the parameter moves the energy
             // by the whole component.
             const auto fd = central_differences([&](const VecD &p) { return energy(r, p); }, params, 1e-6);
             for (size_t i = 0; i < grad.size(); ++i) {
                 if (std::ranges::count(cs.c.mapping, i) > 1) {
-                    BOOST_TEST(close(grad[i], fd[i], 1e-5, 1e-5),
+                    BOOST_TEST(near(grad[i], fd[i], 1e-5, 1e-5),
                                "repeated " << i << ": " << grad[i] << " vs " << fd[i]);
                 }
             }
@@ -918,13 +748,12 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_parameters_and_duplicate_record
 // thresholds in both pictures; cross-owner lists are the unchanged shared cores; some layers really store a pruned
 // mask; and the owner seam uses the flat owner, not a communicator rank.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_the_root) {
-    const auto options = team_options();
     const size_t threads = team_size();
     size_t stored = 0;
     size_t empty_stored = 0;
-    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
-        auto s = seed<num_modes>(cs.f, options);
-        run_graph<num_modes>(s, cs.c, cs.k);
+    const auto all = fixture_cases();
+    for (const auto &cs : {all[0], all[1], all[7], all[9]}) {
+        auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
         auto old = reference_root<num_modes>(cs.f, threads);
         old.build_graph(cs.c.gates, cs.c.mapping, cs.c.gen_coeffs, std::nullopt, std::nullopt, cs.k);
         for (const double threshold : {1e-3, 0.05, 0.0, -1.0}) {
@@ -935,10 +764,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_pared_functionals_match_the_root) {
                 for (const auto &[name, params] : parameter_sets(cs.c)) {
                     BOOST_TEST_CONTEXT(name) {
                         BOOST_TEST(bits(energy(r, params)) == bits(ev(params)));
-                        const auto [le, lgrad] = evg(params);
-                        const auto [e, grad] = energy_and_gradient(r, params);
-                        BOOST_TEST(bits(e) == bits(le));
-                        BOOST_TEST((bits_of(grad) == bits_of(lgrad)));
+                        const auto want = evg(params);
+                        check_same_bits(energy_and_gradient(r, params), want);
                     }
                 }
                 for (size_t t = 0; t < threads; ++t) {
@@ -1032,9 +859,9 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
     const SmallRuns one_value_runs(1);
     const SmallRuns two_value_runs(2);
     size_t multi_partner_layers = 0;
-    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
-        auto s = seed<num_modes>(cs.f, options);
-        run_graph<num_modes>(s, cs.c, cs.k);
+    const auto all = fixture_cases();
+    for (const auto &cs : {all[0], all[1], all[7], all[9]}) {
+        auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
         const auto r = retain<num_modes>(s);
         for (size_t t = 0; t < threads; ++t) {
             const MPGraph &graph = *r.shards[t].graph;
@@ -1046,32 +873,37 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
             }
         }
         for (const auto &[name, params] : parameter_sets(cs.c)) {
-            for (const SmallRuns *small : {&one_value_runs, &two_value_runs}) {
-                BOOST_TEST_CONTEXT(label(cs) << " " << name << " T=" << threads << " run=" << small->staging_run()) {
-                    const auto requests = r.requests(params);
-                    for (const bool gradient : {false, true}) {
-                        const auto plain = sharded::evaluate_shards(requests, r.callbacks, options, gradient);
-                        const auto runs = sharded::evaluate_shards(requests, r.callbacks, options, gradient, small);
-                        require_success(plain.error, "evaluate_shards");
-                        require_success(runs.error, "evaluate_shards, small runs");
-                        BOOST_TEST((bits_of(runs.contributions) == bits_of(plain.contributions)));
-                        BOOST_TEST_REQUIRE(runs.gradients.size() == plain.gradients.size());
-                        for (size_t t = 0; t < plain.gradients.size(); ++t) {
-                            BOOST_TEST((bits_of(runs.gradients[t]) == bits_of(plain.gradients[t])), "shard " << t);
+            BOOST_TEST_CONTEXT(label(cs) << " " << name << " T=" << threads) {
+                const auto requests = r.requests(params);
+                const auto plain_energy = sharded::evaluate_shards(requests, r.callbacks, options, false);
+                const auto plain_gradient = sharded::evaluate_shards(requests, r.callbacks, options, true);
+                require_success(plain_energy.error, "evaluate_shards");
+                require_success(plain_gradient.error, "evaluate_shards");
+                std::vector<sharded::ReplayRequest> replays;
+                for (const auto &shard : r.shards) {
+                    replays.push_back({.coeffs = shard.op, .graph = shard.graph->replay_view()});
+                }
+                const auto mapped = map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
+                const auto plain_replay = sharded::replay_shards(replays, mapped, r.callbacks, options);
+                require_success(plain_replay.error, "replay_shards");
+                for (const SmallRuns *small : {&one_value_runs, &two_value_runs}) {
+                    BOOST_TEST_CONTEXT("run=" << small->staging_run()) {
+                        for (const bool gradient : {false, true}) {
+                            const auto &plain = gradient ? plain_gradient : plain_energy;
+                            const auto runs = sharded::evaluate_shards(requests, r.callbacks, options, gradient, small);
+                            require_success(runs.error, "evaluate_shards, small runs");
+                            BOOST_TEST(same_bits(runs.contributions, plain.contributions));
+                            BOOST_TEST_REQUIRE(runs.gradients.size() == plain.gradients.size());
+                            for (size_t t = 0; t < plain.gradients.size(); ++t) {
+                                BOOST_TEST(same_bits(runs.gradients[t], plain.gradients[t]), "shard " << t);
+                            }
                         }
-                    }
-                    std::vector<sharded::ReplayRequest> replays;
-                    for (const auto &shard : r.shards) {
-                        replays.push_back({.coeffs = shard.op, .graph = shard.graph->replay_view()});
-                    }
-                    const auto mapped = map_params(params, r.parameter_mapping, r.gen_coeffs, 1.0, true);
-                    const auto plain = sharded::replay_shards(replays, mapped, r.callbacks, options);
-                    const auto runs = sharded::replay_shards(replays, mapped, r.callbacks, options, small);
-                    require_success(plain.error, "replay_shards");
-                    require_success(runs.error, "replay_shards, small runs");
-                    BOOST_TEST_REQUIRE(runs.coeffs.size() == plain.coeffs.size());
-                    for (size_t t = 0; t < plain.coeffs.size(); ++t) {
-                        BOOST_TEST((bits_of(runs.coeffs[t]) == bits_of(plain.coeffs[t])), "shard " << t);
+                        const auto runs = sharded::replay_shards(replays, mapped, r.callbacks, options, small);
+                        require_success(runs.error, "replay_shards, small runs");
+                        BOOST_TEST_REQUIRE(runs.coeffs.size() == plain_replay.coeffs.size());
+                        for (size_t t = 0; t < plain_replay.coeffs.size(); ++t) {
+                            BOOST_TEST(same_bits(runs.coeffs[t], plain_replay.coeffs[t]), "shard " << t);
+                        }
                     }
                 }
             }
@@ -1089,11 +921,10 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_staging_runs_do_not_change_results) {
  * fills the reservation exactly and never reallocates.
  */
 BOOST_AUTO_TEST_CASE(sharded_evaluation_cosine_counts_reserve_records_exactly) {
-    const auto options = team_options();
     size_t nonempty = 0;
-    for (const auto &cs : {fixture_cases()[0], fixture_cases()[1], fixture_cases()[7], fixture_cases()[9]}) {
-        auto s = seed<num_modes>(cs.f, options);
-        run_graph<num_modes>(s, cs.c, cs.k);
+    const auto all = fixture_cases();
+    for (const auto &cs : {all[0], all[1], all[7], all[9]}) {
+        auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
         const auto r = retain<num_modes>(s, 0.05);
         for (size_t t = 0; t < s.shards.size(); ++t) {
             const auto &state = *s.shards[t];
@@ -1138,9 +969,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_cosine_counts_reserve_records_exactly) {
 
 // A stored empty pruned cosine mask replays nothing: it is not a request to recompute the full mask.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_empty_stored_mask_applies_nothing) {
-    const auto options = team_options();
-    auto s = seed<num_modes>(fixture_cases()[0].f, options);
-    run_graph<num_modes>(s, fixture_cases()[0].c, std::nullopt);
+    const auto cs = fixture_cases()[0];
+    auto s = seed_and_build<num_modes>(cs.f, cs.c);
     const auto &state = *s.shards[0];
     std::vector<Layer> layers;
     for (size_t l = 0; l < state.graph.layers(); ++l) {
@@ -1177,12 +1007,11 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_empty_stored_mask_applies_nothing) {
 BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_growth) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto small_case = fixture_cases()[9];
-    const auto large_case = fixture_cases()[7];
-    auto small = seed<num_modes>(small_case.f, options);
-    run_graph<num_modes>(small, small_case.c, std::nullopt);
-    auto large = seed<num_modes>(large_case.f, options);
-    run_graph<num_modes>(large, large_case.c, std::nullopt);
+    const auto all = fixture_cases();
+    const auto &small_case = all[9];
+    const auto &large_case = all[7];
+    auto small = seed_and_build<num_modes>(small_case.f, small_case.c);
+    auto large = seed_and_build<num_modes>(large_case.f, large_case.c);
     const auto rs = retain<num_modes>(small);
     const auto rl = retain<num_modes>(large);
     const auto first_small = energy_and_gradient(rs, small_case.c.params);
@@ -1191,10 +1020,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
         const auto a = energy_and_gradient(rl, large_case.c.params);
         const auto b = energy_and_gradient(rs, small_case.c.params);
         const auto c = energy(rl, large_case.c.params);
-        BOOST_TEST(bits(a.first) == bits(first_large.first));
-        BOOST_TEST((bits_of(a.second) == bits_of(first_large.second)));
-        BOOST_TEST(bits(b.first) == bits(first_small.first));
-        BOOST_TEST((bits_of(b.second) == bits_of(first_small.second)));
+        check_same_bits(a, first_large);
+        check_same_bits(b, first_small);
         BOOST_TEST(bits(c) == bits(first_large.first));
     }
 
@@ -1203,10 +1030,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
                             .cutoff_fn = large.cutoff_fn,
                             .router = large.router,
                             .shards = sharded::copy_shards(options, large.shards)};
-    run_graph<num_modes>(copy, pauli_circuit(), std::nullopt, large_case.c.gates.size());
-    const auto again = energy_and_gradient(rl, large_case.c.params);
-    BOOST_TEST(bits(again.first) == bits(first_large.first));
-    BOOST_TEST((bits_of(again.second) == bits_of(first_large.second)));
+    build_checked<num_modes>(copy, pauli_circuit(), std::nullopt, large_case.c.gates.size());
+    check_same_bits(energy_and_gradient(rl, large_case.c.params), first_large);
 
     // Index growth under retained callbacks: an owned graph (negative threshold keeps every recomputing layer) keeps
     // its layer count while the shards' store grows.
@@ -1216,7 +1041,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
     for (const auto &state : large.shards) {
         rows_before.push_back(state->op.size());
     }
-    run_graph<num_modes>(large, majorana_circuit(num_modes), std::nullopt, large_case.c.gates.size());
+    build_checked<num_modes>(large, majorana_circuit(num_modes), std::nullopt, large_case.c.gates.size());
     size_t grown = 0;
     for (size_t t = 0; t < threads; ++t) {
         grown += large.shards[t]->op.size() > rows_before[t] ? 1 : 0;
@@ -1224,9 +1049,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
     BOOST_TEST_REQUIRE(grown > 0U);
     BOOST_CHECK_THROW(rl.validate_call(large_case.c.params), std::runtime_error); // the aliasing graph grew
     BOOST_CHECK_NO_THROW(owned.validate_call(large_case.c.params));
-    const auto after = energy_and_gradient(owned, large_case.c.params);
-    BOOST_TEST(bits(after.first) == bits(before.first));
-    BOOST_TEST((bits_of(after.second) == bits_of(before.second)));
+    check_same_bits(energy_and_gradient(owned, large_case.c.params), before);
 }
 
 // Actual participation, asserted after the join: every evaluation, replay, retained-preparation and informed seed or
@@ -1235,8 +1058,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_owners_do_their_own_work) {
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[1]; // Schrödinger, cross-owner traffic at T >= 2
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
     const Recorder retain_log(threads);
     const auto r = retain<num_modes>(s, 1e-3, &retain_log);
     const size_t layers = r.expected_layers;
@@ -1335,8 +1157,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_opaque_callbacks_run_on_the_primary) {
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
     auto r = retain<num_modes>(s);
     const auto params = parameter_sets(cs.c).back().second; // vanishing: the indices callback runs too
     const auto want = energy_and_gradient(r, params);
@@ -1364,9 +1185,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_opaque_callbacks_run_on_the_primary) {
     const auto requests = r.requests(params);
     const auto outcome = sharded::evaluate_shards(requests, r.callbacks, options, true, &rec);
     require_success(outcome.error, "opaque evaluation");
-    const auto got = energy_and_gradient(r, params);
-    BOOST_TEST(bits(got.first) == bits(want.first));
-    BOOST_TEST((bits_of(got.second) == bits_of(want.second)));
+    check_same_bits(energy_and_gradient(r, params), want);
     for (size_t t = 0; t < threads; ++t) {
         BOOST_TEST(!calls[t].empty());
         BOOST_TEST(std::ranges::all_of(calls[t], [](int worker) { return worker == 0; }));
@@ -1390,10 +1209,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_combination_folds_in_shard_order) {
     BOOST_TEST(!std::signbit(sharded::combine_contributions(std::vector<double>{-0.0})));
     BOOST_CHECK_THROW((void)sharded::combine_gradients(std::vector<VecD>{{1.0}, {1.0, 2.0}}), std::invalid_argument);
     // The evaluator adds the identity to the fold of its per-shard terms, once.
-    const auto options = team_options();
     const auto cs = fixture_cases()[7];
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
     const auto r = retain<num_modes>(s);
     const auto outcome = evaluate(r, cs.c.params, false);
     require_success(outcome.error, "evaluate");
@@ -1428,14 +1245,8 @@ auto phase_of(const Visit &v, size_t layers) -> long long {
 }
 
 auto no_later_work(const Recorder &rec, long long limit, size_t layers) -> bool {
-    for (const auto &log : rec.logs()) {
-        for (const auto &v : log) {
-            if (phase_of(v, layers) > limit) {
-                return false;
-            }
-        }
-    }
-    return true;
+    return std::ranges::none_of(rec.logs() | std::views::join,
+                                [&](const Visit &v) { return phase_of(v, layers) > limit; });
 }
 
 } // namespace
@@ -1446,9 +1257,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_w
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[1];
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
-    const auto copy = sharded::copy_shards(options, s.shards);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
+    auto copy = sharded::copy_shards(options, s.shards);
     const auto r = retain<num_modes>(s);
     const size_t layers = r.expected_layers;
     const auto params = parameter_sets(cs.c)[1].second;
@@ -1485,17 +1295,10 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_w
         }
     }
     // After every failure: an independent copy made earlier evaluates identically, and so does the original.
-    Sharded<num_modes> c{.f = s.f,
-                         .cutoff_fn = s.cutoff_fn,
-                         .router = s.router,
-                         .shards = sharded::copy_shards(options, copy)};
+    Sharded<num_modes> c{.f = s.f, .cutoff_fn = s.cutoff_fn, .router = s.router, .shards = std::move(copy)};
     const auto rc = retain<num_modes>(c);
-    const auto from_copy = energy_and_gradient(rc, params);
-    BOOST_TEST(bits(from_copy.first) == bits(reference.first));
-    BOOST_TEST((bits_of(from_copy.second) == bits_of(reference.second)));
-    const auto after = energy_and_gradient(r, params);
-    BOOST_TEST(bits(after.first) == bits(reference.first));
-    BOOST_TEST((bits_of(after.second) == bits_of(reference.second)));
+    check_same_bits(energy_and_gradient(rc, params), reference);
+    check_same_bits(energy_and_gradient(r, params), reference);
 }
 
 // Real failures inside callbacks (forward cosine pass, reverse accumulation, record indices), inside the retained
@@ -1505,8 +1308,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_callback_paring_and_construction_failure
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
     auto r = retain<num_modes>(s);
     const auto params = parameter_sets(cs.c).back().second;
     std::vector<uint8_t> wanted;
@@ -1611,9 +1413,8 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_callback_paring_and_construction_failure
             BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
             BOOST_TEST(message_of(outcome.error) == "injected construction failure");
             BOOST_TEST(outcome.mutation_started);
-            for (const auto &log : logs) {
-                BOOST_TEST(std::ranges::none_of(log, [](const auto &v) { return v.first == W::caches; }));
-            }
+            BOOST_TEST(
+                std::ranges::none_of(logs | std::views::join, [](const auto &v) { return v.first == W::caches; }));
             BOOST_TEST(sharded::total_size(copy) == copy_rows);
         }
     }
@@ -1626,8 +1427,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[1];
-    auto s = seed<num_modes>(cs.f, options);
-    run_graph<num_modes>(s, cs.c, cs.k);
+    auto s = seed_and_build<num_modes>(cs.f, cs.c, cs.k);
     const auto r = retain<num_modes>(s);
     const size_t layers = r.expected_layers;
     // Vanishing cosines: the records hold a cosine-set layer's indices. The frame phase reserves them exactly
@@ -1665,16 +1465,7 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
                 const auto outcome = sharded::evaluate_shards(requests, r.callbacks, options, true, &rec);
                 disarm_team();
                 failed = static_cast<bool>(outcome.error);
-                if (failed) {
-                    try {
-                        std::rethrow_exception(outcome.error);
-                    }
-                    catch (const std::bad_alloc &) {
-                        bad_alloc = true;
-                    }
-                    catch (...) {
-                    }
-                }
+                bad_alloc = failed && holds_bad_alloc(outcome.error);
             });
             host.join();
             if (failed) {
@@ -1689,7 +1480,5 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_allocation_failures_are_contained,
                                                    << injected << " injected failures");
         BOOST_TEST((injected > 0U) == allocates);
     }
-    const auto after = energy_and_gradient(r, params);
-    BOOST_TEST(bits(after.first) == bits(reference.first));
-    BOOST_TEST((bits_of(after.second) == bits_of(reference.second)));
+    check_same_bits(energy_and_gradient(r, params), reference);
 }

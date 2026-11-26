@@ -32,7 +32,6 @@
 
 #include "monoprop/TypeAliases.h"
 #include "monoprop/core/Monomial.h"
-#include "monoprop/detail/parallel/Options.h"
 
 namespace monoprop::detail {
 
@@ -369,13 +368,9 @@ public:
     // at consecutive indices) and the same slot assignment. `hashes[k]` must be fold_hash of the key of
     // row base+k -- a wrong one leaves the row unfindable, which surfaces later as a duplicate insert.
     // Neither this nor bulk_insert deduplicates: two rows with one key are both indexed and find() returns
-    // the first (pinned by operator_index_tests). `options` is the publication seam an alternative index may
-    // use to publish in parallel; this packed table ignores it and always inserts serially, in order.
+    // the first (pinned by operator_index_tests). Inserts serially, in order.
     template <typename HashFn>
-    auto bulk_insert_hashed(size_t n,
-                            mapped_type base,
-                            HashFn &&hash_at,
-                            [[maybe_unused]] parallel::Options options = {}) -> void {
+    auto bulk_insert_hashed(size_t n, mapped_type base, HashFn &&hash_at) -> void {
         if (n == 0) {
             return;
         }

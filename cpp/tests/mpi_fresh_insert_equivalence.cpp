@@ -21,22 +21,16 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include <algorithm>
-#include <bit>
 #include <cmath>
 #include <complex>
-#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "KernelTestSupport.h"
 #include "PauliTestOracle.h"
-#include "PropagatorTestAccess.h"
 #include "RankPreconditions.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
-#include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 namespace {

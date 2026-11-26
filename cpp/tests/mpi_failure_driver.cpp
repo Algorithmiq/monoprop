@@ -97,12 +97,6 @@ auto say(int rank, std::string_view text) -> void {
     std::fflush(stderr);
 }
 
-auto world_rank() -> int {
-    int rank = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    return rank;
-}
-
 // Twenty terms anticommuting with the {0, 1} generator, so both ranks own work under any hash split.
 auto hamiltonian() -> OperatorDict {
     OperatorDict ham;
@@ -117,11 +111,6 @@ const std::vector<VecZ> circuit_gates{{0, 1}, {2, 3}, {1, 4}};
 const VecZ circuit_mapping{0, 1, 2};
 const VecD circuit_gen_coeffs{1.0, 1.0, 1.0};
 const VecD circuit_params{0.3, 0.2, 0.1};
-
-// The budget is captured when a root is constructed, from the launch's monoprop_NUM_THREADS.
-auto set_team(int threads) -> void {
-    ::setenv("monoprop_NUM_THREADS", std::to_string(threads).c_str(), 1);
-}
 
 // --- the sharded root, injected through its observer ---------------------------------------------------------------
 
@@ -170,8 +159,10 @@ private:
     bool corrupt_;
 };
 
-auto make_root(const detail::sharded::RootObserver *observer, MPI_Comm comm = MPI_COMM_WORLD)
+// A root at `threads` threads per rank: the budget is captured at construction, from monoprop_NUM_THREADS.
+auto make_root(int threads, const detail::sharded::RootObserver *observer, MPI_Comm comm = MPI_COMM_WORLD)
     -> std::unique_ptr<Propagator> {
+    ::setenv("monoprop_NUM_THREADS", std::to_string(threads).c_str(), 1);
     return Access::construct_observed(observer,
                                       hamiltonian(),
                                       static_cast<unsigned int>(2 * num_modes),
@@ -212,9 +203,8 @@ auto sharded_scenario(int rank, std::string_view scenario, std::string_view opti
     else if (scenario == "malformed-receive") {
         corrupt = rank == 1;
     }
-    set_team(2);
     const Injector injector(rank, rank == 0 ? arm : std::nullopt, corrupt);
-    auto sim = make_root(&injector);
+    auto sim = make_root(2, &injector);
     say(rank, std::format("{} local terms, team {}", sim->size(), Access::options(*sim).threads));
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     if (option == "local-round") {
@@ -229,24 +219,23 @@ auto sharded_scenario(int rank, std::string_view scenario, std::string_view opti
 
 // --- the exported replay functions on the sole shard of a T = 1 root -----------------------------------------------
 
-auto make_sole_shard_root() -> std::unique_ptr<Propagator> {
-    set_team(1);
-    return make_root(nullptr);
-}
-
-auto active_ticket(int rank) -> void {
-    auto sim = make_sole_shard_root();
+// One evolve_step over the first layer of a built T = 1 root's sole shard, with `scale` as its cosine pass.
+auto post_replay(int rank, const detail::LayerCosScale &scale) -> void {
+    auto sim = make_root(1, nullptr);
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     VecD coeffs = sim->mp_op().get_operator();
     const auto view = sim->graph().replay_view();
+    say(rank, "posting the replay exchange");
+    evolve_step(coeffs, view, 0.3, 0, MPI_COMM_WORLD, scale);
+}
+
+auto active_ticket(int rank) -> void {
     // Splitmix replays through MPI_Ialltoallv, so the Ticket always holds a posted request here.
-    const detail::LayerCosScale scale = [rank](size_t, double *, double) {
+    post_replay(rank, [rank](size_t, double *, double) {
         if (rank == 0) {
             throw std::runtime_error("injected failure while the replay Ticket is in flight");
         }
-    };
-    say(rank, "posting the replay exchange");
-    evolve_step(coeffs, view, 0.3, 0, MPI_COMM_WORLD, scale);
+    });
 }
 
 // Throws from one logical range of a real kernel, on whichever worker owns it.
@@ -263,10 +252,6 @@ struct ThrowingRangeObserver {
 };
 
 auto active_ticket_cosine_worker(int rank) -> void {
-    auto sim = make_sole_shard_root();
-    sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
-    VecD coeffs = sim->mp_op().get_operator();
-    const auto view = sim->graph().replay_view();
     // A stored mask of four kernel ranges, so the kernel really opens a team; the real layer is tiny.
     CosMask mask;
     for (size_t w = 0; w < 4 * detail::cos_mask_range_blocks; ++w) {
@@ -274,13 +259,11 @@ auto active_ticket_cosine_worker(int rank) -> void {
         mask.total_count += 64;
     }
     auto scratch = std::make_shared<VecD>(mask.blocks.size() * 64, 1.0);
-    const detail::LayerCosScale scale = [rank, mask, scratch](size_t, double *, double v) {
+    post_replay(rank, [rank, mask, scratch](size_t, double *, double v) {
         if (rank == 0) {
             detail::scale_cos_mask(scratch->data(), mask, v, {.threads = 2}, ThrowingRangeObserver{});
         }
-    };
-    say(rank, "posting the replay exchange");
-    evolve_step(coeffs, view, 0.3, 0, MPI_COMM_WORLD, scale);
+    });
 }
 
 // --- thread support ------------------------------------------------------------------------------------------------
@@ -294,12 +277,11 @@ auto close_to(double a, double b) -> bool {
 // checked against a single-process root of the same budget, so the physical rounds really carried data. Every MPI call
 // inside the library comes from this (the initializing) thread as its team's primary. Returns the energy.
 auto run_operations(int rank, MPI_Comm comm, std::string_view label) -> double {
-    set_team(2);
-    auto reference = make_root(nullptr, MPI_COMM_SELF);
+    auto reference = make_root(2, nullptr, MPI_COMM_SELF);
     reference->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     const auto [ref_energy, ref_gradient] = reference->expectation_value_and_gradient(circuit_params);
 
-    auto sim = make_root(nullptr, comm);
+    auto sim = make_root(2, nullptr, comm);
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     const double energy = sim->expectation_value(circuit_params);
     const auto [energy_g, gradient] = sim->expectation_value_and_gradient(circuit_params);
@@ -312,14 +294,14 @@ auto run_operations(int rank, MPI_Comm comm, std::string_view label) -> double {
     const Propagator copy(*sim);
     const double energy_c = Propagator(copy).expectation_value(circuit_params);
 
-    auto fresh = make_root(nullptr, comm);
+    auto fresh = make_root(2, nullptr, comm);
     fresh->propagate(circuit_gates, circuit_mapping, circuit_gen_coeffs, circuit_params);
-    auto fresh_reference = make_root(nullptr, MPI_COMM_SELF);
+    auto fresh_reference = make_root(2, nullptr, MPI_COMM_SELF);
     fresh_reference->propagate(circuit_gates, circuit_mapping, circuit_gen_coeffs, circuit_params);
     const double propagated = fresh->expectation_value(VecD{});
     const double propagated_ref = fresh_reference->expectation_value(VecD{});
 
-    auto updated = make_root(nullptr, comm);
+    auto updated = make_root(2, nullptr, comm);
     updated->update_initial_operator(hamiltonian());
     updated->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     const double energy_u = updated->expectation_value(circuit_params);
@@ -354,8 +336,7 @@ auto run_operations(int rank, MPI_Comm comm, std::string_view label) -> double {
 auto thread_support_operations(int rank) -> void {
     const double world = run_operations(rank, MPI_COMM_WORLD, "world");
     // A supplied communicator whose rank order is the reverse of the world's: ownership moves, results do not.
-    int size = 1;
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int size = mpi::size(MPI_COMM_WORLD);
     MPI_Comm reordered = MPI_COMM_NULL;
     MPI_Comm_split(MPI_COMM_WORLD, 0, size - 1 - rank, &reordered);
     const double split = run_operations(rank, reordered, "reordered split communicator");
@@ -366,15 +347,13 @@ auto thread_support_operations(int rank) -> void {
 }
 
 auto insufficient_level(int rank) -> void {
-    set_team(2);
     // The constructor validates the provided level before it communicates.
-    const auto sim = make_root(nullptr);
+    const auto sim = make_root(2, nullptr);
     say(rank, std::format("constructed with {} terms despite the insufficient level", sim->size()));
 }
 
 auto wrong_thread(int rank) -> void {
-    set_team(2);
-    auto sim = make_root(nullptr);
+    auto sim = make_root(2, nullptr);
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     if (rank == 0) {
         std::thread host([&sim] { (void)sim->expectation_value(circuit_params); });
@@ -428,9 +407,8 @@ auto main(int argc, char **argv) -> int {
     else {
         mpi::init(&argc, &argv);
     }
-    const int rank = world_rank();
-    int size = 1;
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int rank = mpi::rank(MPI_COMM_WORLD);
+    const int size = mpi::size(MPI_COMM_WORLD);
     int provided = MPI_THREAD_SINGLE;
     MPI_Query_thread(&provided);
     say(rank,

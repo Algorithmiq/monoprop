@@ -181,10 +181,10 @@ auto run_pauli_chain() -> void {
 }
 
 auto run_raw_access_chain() -> void {
-    constexpr size_t kModes = 2;
+    constexpr size_t num_modes = 2;
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
-    MonomialPropagator<kModes> sim(ham, 2 * kModes, VecZ{0, 1}, std::nullopt, MPI_COMM_SELF);
+    MonomialPropagator<num_modes> sim(ham, 2 * num_modes, VecZ{0, 1}, std::nullopt, MPI_COMM_SELF);
     sim.build_graph(std::vector<VecZ>{{0, 2}, {1, 3}}, VecZ{0, 1}, VecD{1.0, 1.0});
     const auto [value, grad] = sim.expectation_value_and_gradient(VecD{0.1, 0.2});
     const auto budget = monoprop::detail::parallel::capture_thread_budget();

@@ -14,9 +14,9 @@
 
 /*
  * The fixed-team phase primitive (detail/sharded/Team.h). The team size T is the captured launch budget
- * (monoprop_NUM_THREADS, else omp_get_max_threads()); cpp/tests/CMakeLists.txt reruns these cases in fresh
- * processes at T = 1, 2 and 4. Cases that need a nonprimary worker skip below T = 2; the T = 2 and T = 4
- * launches run them.
+ * (monoprop_NUM_THREADS, else omp_get_max_threads()); cpp/tests/CMakeLists.txt runs each case in its own process at
+ * T = 1 and reruns these cases in fresh processes at T = 2 and 4. Cases that need a nonprimary worker skip below T = 2;
+ * the T = 2 and T = 4 launches run them.
  *
  * Workers never call BOOST_TEST. Each writes only its own preallocated observation slot (or an atomic, so a
  * mutated helper that repeats an owner cannot race), and every assertion runs on the caller after run_team()
@@ -30,14 +30,11 @@
 
 #include <omp.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <cstdlib>
 #include <exception>
 #include <numeric>
-#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -54,6 +51,7 @@ using namespace std::chrono_literals;
 
 namespace {
 
+using sharded_test::expected_team;
 using sharded_test::has_nonprimary_worker;
 using sharded_test::team_options;
 using sharded_test::team_size;
@@ -62,15 +60,6 @@ using sharded_test::team_size;
 static_assert(sharded::TeamBody<decltype([](size_t, sharded::TeamFailure &) noexcept {})>);
 static_assert(!sharded::TeamBody<decltype([](size_t, sharded::TeamFailure &) {})>);
 static_assert(!sharded::TeamBody<decltype([](size_t) noexcept {})>);
-
-// The team a fixed-T launch in cpp/tests/CMakeLists.txt promises; absent in ordinary discovered runs.
-auto expected_team() -> std::optional<int> {
-    const auto *value = std::getenv("monoprop_TEST_EXPECT_TEAM");
-    if (value == nullptr) {
-        return std::nullopt;
-    }
-    return std::stoi(value);
-}
 
 // What one worker saw of its own team, written only by that worker.
 struct alignas(64) Observation {
@@ -119,25 +108,6 @@ struct WorkerError {
 };
 
 } // namespace
-
-BOOST_AUTO_TEST_CASE(sharded_team_visits_each_owner) {
-    const auto options = team_options();
-    const auto threads = team_size(options);
-    auto visits = std::vector<std::atomic<int>>(threads);
-    auto observations = std::vector<Observation>(threads);
-    auto decisions = std::vector<int>(threads, -1);
-    const auto error = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
-        observe(observations[shard]);
-        decisions[shard] = sharded::phase(failure, shard, [&] { visits[shard].fetch_add(1); }) ? 1 : 0;
-    });
-    BOOST_TEST(!error);
-    for (size_t shard = 0; shard < threads; ++shard) {
-        BOOST_TEST(visits[shard].load() == 1, "shard " << shard);
-        BOOST_TEST(observations[shard].calls.load() == 1, "shard " << shard);
-        BOOST_TEST(observations[shard].team == options.threads, "shard " << shard);
-        BOOST_TEST(decisions[shard] == 1, "shard " << shard);
-    }
-}
 
 // At most `limit` workers are inside the section at once, every worker enters exactly once, and the section's
 // value is returned. The sleep keeps holders inside long enough for the others to queue behind the limit.
@@ -202,13 +172,15 @@ BOOST_AUTO_TEST_CASE(sharded_team_observes_worker_identity) {
     const auto caller_level = omp_get_level();
     auto in_body = std::vector<Observation>(threads);
     auto in_phase = std::vector<Observation>(threads);
+    auto decisions = std::vector<int>(threads, -1);
     const auto error = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
         observe(in_body[shard]);
-        sharded::phase(failure, shard, [&] { observe(in_phase[shard]); });
+        decisions[shard] = sharded::phase(failure, shard, [&] { observe(in_phase[shard]); }) ? 1 : 0;
     });
     BOOST_TEST(!error);
     auto distinct = std::set<std::thread::id>{};
     for (size_t shard = 0; shard < threads; ++shard) {
+        BOOST_TEST(decisions[shard] == 1, "shard " << shard);
         for (const auto *slot : {&in_body[shard], &in_phase[shard]}) {
             BOOST_TEST(slot->calls.load() == 1, "shard " << shard);
             BOOST_TEST(slot->worker == static_cast<int>(shard), "shard " << shard);
@@ -504,14 +476,10 @@ BOOST_AUTO_TEST_CASE(sharded_team_simultaneous_failures_select_the_lowest_worker
                 BOOST_TEST((decisions[shard] == std::vector<int>{0}), "iteration " << iteration << " shard " << shard);
             }
             BOOST_REQUIRE(error);
-            try {
-                std::rethrow_exception(error);
-            }
-            catch (const WorkerError &e) {
-                BOOST_TEST(e.worker == lowest_failing, "iteration " << iteration);
-            }
-            catch (...) {
-                BOOST_FAIL("the selected exception changed type");
+            BOOST_TEST_CONTEXT("iteration " << iteration) {
+                BOOST_CHECK_EXCEPTION(std::rethrow_exception(error), WorkerError, [&](const WorkerError &e) {
+                    return e.worker == lowest_failing;
+                });
             }
         }
     }
@@ -556,41 +524,19 @@ BOOST_AUTO_TEST_CASE(sharded_team_preserves_the_original_exception) {
 
     const auto payload = fail_with([] { throw PayloadError(17); });
     BOOST_REQUIRE(payload);
-    try {
-        std::rethrow_exception(payload);
-    }
-    catch (const PayloadError &e) {
-        BOOST_TEST(e.payload == 17);
-        BOOST_TEST(std::string(e.what()) == "payload");
-    }
-    catch (...) {
-        BOOST_FAIL("PayloadError changed type");
-    }
+    BOOST_CHECK_EXCEPTION(std::rethrow_exception(payload), PayloadError, [](const PayloadError &e) {
+        return e.payload == 17 && std::string(e.what()) == "payload";
+    });
 
     const auto opaque = fail_with([] { throw Opaque{5, "not a std::exception"}; });
     BOOST_REQUIRE(opaque);
-    try {
-        std::rethrow_exception(opaque);
-    }
-    catch (const Opaque &e) {
-        BOOST_TEST(e.code == 5);
-        BOOST_TEST(e.text == "not a std::exception");
-    }
-    catch (...) {
-        BOOST_FAIL("Opaque changed type");
-    }
+    BOOST_CHECK_EXCEPTION(std::rethrow_exception(opaque), Opaque, [](const Opaque &e) {
+        return e.code == 5 && e.text == "not a std::exception";
+    });
 
     const auto integer = fail_with([] { throw 23; });
     BOOST_REQUIRE(integer);
-    try {
-        std::rethrow_exception(integer);
-    }
-    catch (const int value) {
-        BOOST_TEST(value == 23);
-    }
-    catch (...) {
-        BOOST_FAIL("int changed type");
-    }
+    BOOST_CHECK_EXCEPTION(std::rethrow_exception(integer), int, [](int value) { return value == 23; });
 }
 
 // Checkpoint N's decision must stay stable while slow workers consume it: a fast worker that passes
@@ -632,15 +578,9 @@ BOOST_AUTO_TEST_CASE(sharded_team_checkpoint_generations_are_stable,
                 BOOST_TEST(executed_third[shard] == 0, context());
             }
             BOOST_REQUIRE(error);
-            try {
-                std::rethrow_exception(error);
-            }
-            catch (const WorkerError &e) {
-                BOOST_TEST(e.worker == fast);
-            }
-            catch (...) {
-                BOOST_FAIL("the selected exception changed type");
-            }
+            BOOST_CHECK_EXCEPTION(std::rethrow_exception(error), WorkerError, [&](const WorkerError &e) {
+                return e.worker == fast;
+            });
         }
     }
 }
@@ -667,17 +607,9 @@ BOOST_AUTO_TEST_CASE(sharded_team_checkpoint_ignores_a_later_generation_failure,
             };
             auto proceeding = true;
             for (size_t p = 0; p < 3; ++p) {
-                if (proceeding) {
-                    try {
-                        if (p == 1 && shard == fast) {
-                            failure.record(shard, std::make_exception_ptr(WorkerError{shard}));
-                            fast_recorded.store(true, std::memory_order_release);
-                            throw WorkerError{shard};
-                        }
-                    }
-                    catch (...) {
-                        failure.record(shard, std::current_exception());
-                    }
+                if (proceeding && p == 1 && shard == fast) {
+                    failure.record(shard, std::make_exception_ptr(WorkerError{shard}));
+                    fast_recorded.store(true, std::memory_order_release);
                 }
                 const auto decision = failure.checkpoint(hold_until_recorded);
                 if (proceeding) {
@@ -691,15 +623,9 @@ BOOST_AUTO_TEST_CASE(sharded_team_checkpoint_ignores_a_later_generation_failure,
                        "fast " + std::to_string(fast) + " shard " + std::to_string(shard));
         }
         BOOST_REQUIRE(error);
-        try {
-            std::rethrow_exception(error);
-        }
-        catch (const WorkerError &e) {
-            BOOST_TEST(e.worker == fast);
-        }
-        catch (...) {
-            BOOST_FAIL("the selected exception changed type");
-        }
+        BOOST_CHECK_EXCEPTION(std::rethrow_exception(error), WorkerError, [&](const WorkerError &e) {
+            return e.worker == fast;
+        });
     }
 }
 
@@ -739,30 +665,15 @@ BOOST_AUTO_TEST_CASE(sharded_team_rejects_a_nonpositive_budget_before_the_region
     }
 }
 
-// Only meaningful under the fixed-T launches, which set monoprop_TEST_EXPECT_TEAM; it checks that the
-// launch really supplied the team the other cases are rerun with.
+// Meaningful under every launch that names its team in monoprop_TEST_EXPECT_TEAM (the per-case runs at T = 1 and the
+// fixed-T launches): it checks that the launch's captured budget is the team it names, which
+// sharded_team_observes_worker_identity checks run_team() really forms.
 BOOST_AUTO_TEST_CASE(sharded_team_launch_supplies_the_expected_team) {
     const auto expected = expected_team();
     if (!expected) {
-        BOOST_TEST_MESSAGE("monoprop_TEST_EXPECT_TEAM is unset; not a fixed-team launch");
+        BOOST_TEST_MESSAGE("monoprop_TEST_EXPECT_TEAM is unset; the launch names no team");
         return;
     }
-    const auto options = team_options();
-    BOOST_TEST(options.threads == *expected);
+    BOOST_TEST(team_options().threads == *expected);
     BOOST_TEST(omp_get_dynamic() == 0);
-    const auto threads = team_size(options);
-    auto observations = std::vector<Observation>(threads);
-    const auto error = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
-        sharded::phase(failure, shard, [&] { observe(observations[shard]); });
-    });
-    BOOST_TEST(!error);
-    auto distinct = std::set<std::thread::id>{};
-    for (size_t shard = 0; shard < threads; ++shard) {
-        BOOST_TEST(observations[shard].calls.load() == 1, "shard " << shard);
-        BOOST_TEST(observations[shard].team == *expected, "shard " << shard);
-        distinct.insert(observations[shard].thread);
-    }
-    BOOST_TEST(distinct.size() == static_cast<size_t>(*expected));
-    BOOST_TEST_MESSAGE("sharded_team_launch_supplies_the_expected_team: observed "
-                       << distinct.size() << " workers, expected " << *expected);
 }

@@ -310,6 +310,22 @@ inline auto scan_range_words(size_t range, size_t ranges, size_t words) -> std::
  *
  * The remaining parameters are fused_find_and_collect's; see there.
  */
+// A result with every per-slot stream sized to `window` (values only when `capture_values`) and nothing in it. An
+// early return is sized too, so the fused engine's src_val_r access stays in bounds.
+template <size_t NumModes>
+auto empty_scan_result(mpi::SlotWindow window, bool capture_values) -> FusedScanResult<NumModes> {
+    FusedScanResult<NumModes> res;
+    res.leader_queries.reset(window);
+    res.leader_src.reset(window);
+    res.follower_queries.reset(window);
+    res.follower_src.reset(window);
+    if (capture_values) {
+        res.leader_val.reset(window);
+        res.follower_val.reset(window);
+    }
+    return res;
+}
+
 template <size_t NumModes, Algebra A>
 auto fused_find_and_collect_range(const MPOperator<NumModes> &op,
                                   const Monomial<NumModes> &gen,
@@ -333,15 +349,7 @@ auto fused_find_and_collect_range(const MPOperator<NumModes> &op,
     const size_t rank_count = router.flat_world();
     const auto ectx = A::make_gen_context(gen);
 
-    FusedScanResult<NumModes> res;
-    res.leader_queries.reset(window);
-    res.leader_src.reset(window);
-    res.follower_queries.reset(window);
-    res.follower_src.reset(window);
-    if (capture_values) {
-        res.leader_val.reset(window);
-        res.follower_val.reset(window);
-    }
+    auto res = empty_scan_result<NumModes>(window, capture_values);
 
     // The anticommutation fold runs over G's inverted-index columns (Majorana: G; Pauli: J(G) =
     // pair_swap(G), so pauli_anticommutes = parity(|M ∩ J(G)|), and Pauli never needs the odd-|G|
@@ -786,33 +794,19 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     (void)scan_ranges(0, options); // validates the budget before anything runs
     assert(window.stop() <= router.flat_world() && window.count != 0);
 
-    // Sized even on the early returns below, so the fused engine's src_val_r access stays in bounds.
-    const auto empty_result = [&] {
-        FusedScanResult<NumModes> res;
-        res.leader_queries.reset(window);
-        res.leader_src.reset(window);
-        res.follower_queries.reset(window);
-        res.follower_src.reset(window);
-        if (capture_values) {
-            res.leader_val.reset(window);
-            res.follower_val.reset(window);
-        }
-        return res;
-    };
-
     const Monomial<NumModes> fold_gen = A::fold_generator(gen);
     const bool g_odd = A::fold_needs_odd_correction(gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
     if (gen_columns.count == 0) {
         observer.prepare(KernelRange::scan, 0);
-        return empty_result();
+        return empty_scan_result<NumModes>(window, capture_values);
     }
     // Both lazy accessors may build caches, so they run here and never in a worker.
     const auto &index = op.inverted_index();
     const size_t word_count = index.words();
     if (word_count == 0) {
         observer.prepare(KernelRange::scan, 0);
-        return empty_result();
+        return empty_scan_result<NumModes>(window, capture_values);
     }
     const uint64_t *const row_parity = g_odd ? index.row_parity_words() : nullptr;
     // The fused sweep writes fused_scale_coeffs[i] for every anticommuting i < n, so it must be the
@@ -832,7 +826,7 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     // g_odd guard is load-bearing: an odd Majorana generator anticommutes with disjoint odd-weight terms.
     if (!g_odd && fold_cols_empty) {
         observer.prepare(KernelRange::scan, 0);
-        auto res = empty_result();
+        auto res = empty_scan_result<NumModes>(window, capture_values);
         res.cos_blocks.push_back(CosMask{});
         return res;
     }

@@ -23,12 +23,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <map>
 #include <optional>
 #include <set>
-#include <span>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -44,7 +42,6 @@
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
 #include "monoprop/detail/operator/MPOperator.h"
-#include "monoprop/detail/operator/RowAccess.h"
 
 namespace scan_test {
 
@@ -82,22 +79,7 @@ inline auto mono_of(uint64_t word) -> Mono {
 }
 
 inline auto mono_of_bits(std::initializer_list<size_t> bits) -> Mono {
-    Mono m{};
-    for (const auto b : bits) {
-        m.set(b);
-    }
-    return m;
-}
-
-inline auto build_op(const std::vector<Mono> &terms, Basis basis) -> Op {
-    Op op;
-    op.basis = basis;
-    detail::insert_absent_terms<num_modes>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Mono & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<num_modes>(*op.store, base + k, terms[k]); });
-    return op;
+    return kernel_test::generator<num_modes>(bits);
 }
 
 // Distinct terms this rank owns under `router`, `rows` of them, in draw order. Owned-only, as a propagator
@@ -144,14 +126,19 @@ inline auto router_of(const Geometry &g) -> routing::Router {
     return routing::Router::for_modes<num_modes>(g.ranks, g.parts, g.linear);
 }
 
+// A fresh operator for `g`: its inverted index and row-parity cache have never been built.
+inline auto cold_op(const Geometry &g, Basis basis) -> Op {
+    return kernel_test::make_op<num_modes>(owned_terms(router_of(g), g.my_rank, rows_per_rank, 0x5CA11ULL + g.my_rank),
+                                           basis);
+}
+
 // Operators are expensive to build at this size, so each (geometry, basis) is built once per process.
 inline auto geometry_op(const Geometry &g, Basis basis) -> const Op & {
     static std::map<std::tuple<size_t, size_t, bool, size_t, int>, Op> cache;
     const auto key = std::tuple{g.ranks, g.parts, g.linear, g.my_rank, static_cast<int>(basis)};
     auto it = cache.find(key);
     if (it == cache.end()) {
-        const auto router = router_of(g);
-        auto op = build_op(owned_terms(router, g.my_rank, rows_per_rank, 0x5CA11ULL + g.my_rank), basis);
+        auto op = cold_op(g, basis);
         (void)op.inverted_index();
         it = cache.emplace(key, std::move(op)).first;
     }
@@ -245,15 +232,7 @@ auto run_scan(const Geometry &g, const Scenario &s, detail::parallel::Options op
     return run_scan_on(geometry_op(g, s.basis), g, s, options, observer);
 }
 
-// A fresh operator for `g`: its inverted index and row-parity cache have never been built.
-inline auto cold_op(const Geometry &g, Basis basis) -> Op {
-    return build_op(owned_terms(router_of(g), g.my_rank, rows_per_rank, 0x5CA11ULL + g.my_rank), basis);
-}
-
-inline auto bitwise_equal(std::span<const double> a, std::span<const double> b) -> bool {
-    // memcmp must not see an empty vector's null data pointer, even for zero bytes.
-    return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
-}
+using kernel_test::bitwise_equal;
 
 // The concatenated cosine set, as LayerBuildEngine consumes it.
 inline auto concatenated_cos(const Result &r) -> CosMask {
@@ -372,62 +351,6 @@ inline auto check_same_scan(const Outcome &a, const Outcome &b, bool capture) ->
     BOOST_TEST(ca.total_count == cb.total_count);
     BOOST_TEST((ca.blocks == cb.blocks));
     BOOST_TEST(bitwise_equal(a.coeffs, b.coeffs));
-}
-
-// FNV-1a over a result's logical content, for comparing one build's scan with another's.
-inline auto digest(const Outcome &o, bool capture) -> uint64_t {
-    uint64_t h = 1469598103934665603ULL;
-    const auto mix = [&h](uint64_t v) {
-        for (int k = 0; k < 8; ++k) {
-            h = (h ^ ((v >> (8 * k)) & 0xFFU)) * 1099511628211ULL;
-        }
-    };
-    const auto mix_d = [&mix](double d) { mix(std::bit_cast<uint64_t>(d)); };
-    const Result &r = o.result;
-    for (const auto wi : o.window.indices()) {
-        mix(0xABCDEFULL);
-        for (const auto v : r.leader_queries[wi]) {
-            mix(v);
-        }
-        for (const auto v : r.follower_queries[wi]) {
-            mix(v);
-        }
-        for (const auto v : r.leader_src[wi]) {
-            mix(v);
-        }
-        for (const auto v : r.follower_src[wi]) {
-            mix(v);
-        }
-        if (capture) {
-            for (const auto v : r.leader_val[wi]) {
-                mix_d(v);
-            }
-            for (const auto v : r.follower_val[wi]) {
-                mix_d(v);
-            }
-        }
-    }
-    for (const auto *stage : {&r.leader_self, &r.follower_self}) {
-        mix(stage->size());
-        for (size_t q = 0; q < stage->size(); ++q) {
-            mix(stage->pos_off[q]);
-            mix(stage->k_of[q]);
-            mix(static_cast<uint64_t>(static_cast<int64_t>(stage->phase_of[q])));
-        }
-        for (size_t p = 0; p < stage->positions(); ++p) {
-            mix(stage->pos_flat[p]);
-        }
-    }
-    const auto cos = concatenated_cos(r);
-    mix(cos.total_count);
-    for (const auto &[base, bits] : cos.blocks) {
-        mix(base);
-        mix(bits);
-    }
-    for (const auto c : o.coeffs) {
-        mix_d(c);
-    }
-    return h;
 }
 
 enum class Expect {

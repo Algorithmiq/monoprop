@@ -14,16 +14,23 @@
 
 #pragma once
 
-// The operator, circuit and shard-seeding fixtures shared by the sharded construction and evaluation suites, and the
-// rank-level root they are compared against.
+// The operator, circuit and shard-seeding fixtures shared by the sharded state, construction and evaluation suites,
+// their phase observation, and the references they are compared against: the rank-level root and an independent
+// coefficient-map propagator.
 
 #include <boost/test/unit_test.hpp>
 
+#include <omp.h>
+
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <numeric>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "PauliTestOracle.h"
@@ -31,7 +38,9 @@
 #include "ShardedTestSupport.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/Algebra.h"
 #include "monoprop/algebra/AlgebraCommon.h"
+#include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
@@ -221,6 +230,35 @@ inline auto label(const Case &c) -> std::string {
     return c.k ? std::format("{} k={}", c.f.name, *c.k) : c.f.name;
 }
 
+// Exact-cutoff cases in both pictures: random_exact (`data`), Majorana at six logical modes and Pauli.
+inline auto exact_reference_cases(const test_utils::CaseData &data) -> std::vector<std::pair<Fixture, Circuit>> {
+    std::vector<std::pair<Fixture, Circuit>> cases;
+    for (const auto sc : {std::optional<unsigned int>{}, std::optional<unsigned int>{16}}) {
+        cases.push_back({{.name = "random-exact",
+                          .op = data.hamiltonian,
+                          .initial_state = data.initial_state,
+                          .schrodinger_cutoff = sc,
+                          .cutoff = 2 * num_modes},
+                         data_circuit(data)});
+        cases.push_back({{.name = "majorana-logical-6",
+                          .op = majorana_operator(6),
+                          .initial_state = {0, 3},
+                          .schrodinger_cutoff = sc ? std::optional<unsigned int>{12} : std::nullopt,
+                          .cutoff = 12,
+                          .logical = 6},
+                         majorana_circuit(6)});
+        cases.push_back({{.name = "pauli",
+                          .op = pauli_operator(),
+                          .initial_state = {},
+                          .schrodinger_cutoff = sc,
+                          .basis = Basis::Pauli,
+                          .cutoff_type = CutoffType::Support,
+                          .cutoff = num_modes},
+                         pauli_circuit()});
+    }
+    return cases;
+}
+
 // --- Sharded setup ----------------------------------------------------------------------------------------------
 
 template <size_t N>
@@ -267,28 +305,32 @@ struct Sharded {
     }
 };
 
+// Caller-side preparation of the seeding inputs, as the rank-level constructor performs it. Views `f`.
 template <size_t N>
-auto seed(const Fixture &f, parallel::Options options, const sharded::PhysicalWorld &world = {}) -> Sharded<N> {
-    const auto router = routing::make_router<N>(world.ranks, static_cast<size_t>(options.threads));
-    const auto cutoff_fn = make_cutoff_fn<N>(f);
+auto operator_seed(const Fixture &f, const routing::Router &router) -> sharded::OperatorSeed<N> {
     std::optional<sharded::PairedBasisBounds> paired;
     if (f.schrodinger_cutoff) {
         paired = sharded::paired_basis_bounds(*f.schrodinger_cutoff, f.logical, router.flat_world());
     }
     // The inline width only selects the row packing (overflow spills losslessly), so the plain cutoff serves here.
-    const auto width_fn = monoprop::detail::cutoff_function<N>(f.cutoff_type, f.cutoff, f.logical);
-    const auto seed_inputs = sharded::OperatorSeed<N>{
-        .initial_operator = f.op,
-        .initial_state = f.initial_state,
-        .router = router,
-        .basis = f.basis,
-        .logical_num_modes = f.logical,
-        .paired = paired,
-        .inline_width = sharded::packed_inline_width<N>(paired.has_value(), f.basis_change ? cutoff_fn : width_fn)};
-    return {.f = f,
-            .cutoff_fn = cutoff_fn,
+    const auto width_fn = f.basis_change ? make_cutoff_fn<N>(f)
+                                         : monoprop::detail::cutoff_function<N>(f.cutoff_type, f.cutoff, f.logical);
+    return {.initial_operator = f.op,
+            .initial_state = f.initial_state,
             .router = router,
-            .shards = sharded::seed_shards(options, seed_inputs, world.rank),
+            .basis = f.basis,
+            .logical_num_modes = f.logical,
+            .paired = paired,
+            .inline_width = sharded::packed_inline_width<N>(paired.has_value(), width_fn)};
+}
+
+template <size_t N>
+auto seed(const Fixture &f, parallel::Options options, const sharded::PhysicalWorld &world = {}) -> Sharded<N> {
+    const auto router = routing::make_router<N>(world.ranks, static_cast<size_t>(options.threads));
+    return {.f = f,
+            .cutoff_fn = make_cutoff_fn<N>(f),
+            .router = router,
+            .shards = sharded::seed_shards(options, operator_seed<N>(f, router), world.rank),
             .world = world};
 }
 
@@ -299,6 +341,49 @@ auto generators(const Fixture &f, const Circuit &c) -> std::vector<Monomial<N>> 
         out.push_back(indices_to_bitset_checked<N>(g, 2 * f.logical));
     }
     return out;
+}
+
+// Gate indices offset, offset + 1, ... for the gates of `c`.
+inline auto gate_indices(const Circuit &c, size_t offset) -> VecZ {
+    VecZ indices(c.gates.size());
+    std::iota(indices.begin(), indices.end(), offset);
+    return indices;
+}
+
+// Graph construction on the shards, with the gate indices following `gate_offset`.
+template <size_t N, class Observer = sharded::NoConstructionObserver>
+auto run_graph(Sharded<N> &s,
+               const Circuit &c,
+               std::optional<size_t> k,
+               const Observer &observer = {},
+               size_t gate_offset = 0) -> sharded::ConstructionOutcome {
+    const auto gens = generators<N>(s.f, c);
+    const auto indices = gate_indices(c, gate_offset);
+    const auto ctx = s.ctx();
+    return sharded::build_graph<N>(team_options(),
+                                   s.shards,
+                                   ctx,
+                                   {.generators = gens,
+                                    .parameter_mapping = c.mapping,
+                                    .gen_coeffs = c.gen_coeffs,
+                                    .gate_indices = indices,
+                                    .only_rotate_len_k = k},
+                                   observer);
+}
+
+// run_graph() without an observer, failing the case if the construction fails.
+template <size_t N>
+auto build_checked(Sharded<N> &s, const Circuit &c, std::optional<size_t> k = std::nullopt, size_t gate_offset = 0)
+    -> void {
+    require_success(run_graph<N>(s, c, k, {}, gate_offset).error, "build_graph");
+}
+
+// `f` seeded at the launch's team, with `c` built on it.
+template <size_t N>
+auto seed_and_build(const Fixture &f, const Circuit &c, std::optional<size_t> k = std::nullopt) -> Sharded<N> {
+    auto s = seed<N>(f, team_options());
+    build_checked<N>(s, c, k);
+    return s;
 }
 
 // The rank-level reference at geometry (1, T): the root over MPI_COMM_SELF, built through its public operations at the
@@ -319,6 +404,116 @@ auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
                                    f.basis);
     BOOST_TEST_REQUIRE(monoprop::detail::PropagatorTestAccess<N>::shards(p).size() == threads);
     return p;
+}
+
+// --- Observation ------------------------------------------------------------------------------------------------
+
+// One observed phase visit, with the worker, team, nesting level and thread that executed it.
+template <class Work>
+struct Visit {
+    Work work;
+    size_t step;
+    int worker;
+    int team;
+    int level;
+    std::thread::id thread;
+};
+
+template <class Work>
+struct FailAt {
+    Work work;
+    size_t step;
+    size_t shard;
+};
+
+template <class Work>
+struct AllocAt {
+    Work work;
+    size_t step;
+    size_t shard;
+    size_t nth;
+};
+
+// Records a visit in `log`, then throws the failure armed at it, or arms the allocation failure armed at it.
+template <class Work>
+auto record_visit(std::vector<Visit<Work>> &log,
+                  Work work,
+                  size_t step,
+                  size_t shard,
+                  const std::vector<FailAt<Work>> &fail,
+                  const std::optional<AllocAt<Work>> &alloc) -> void {
+    // A pending armed allocation failure never leaks into a later phase.
+    (void)allocation::disarm_failure();
+    log.push_back(
+        {work, step, omp_get_thread_num(), omp_get_num_threads(), omp_get_level(), std::this_thread::get_id()});
+    for (const auto &f : fail) {
+        if (f.work == work && f.step == step && f.shard == shard) {
+            throw std::runtime_error(
+                std::format("injected failure: work {} step {} shard {}", static_cast<int>(work), step, shard));
+        }
+    }
+    if (alloc && alloc->work == work && alloc->step == step && alloc->shard == shard) {
+        allocation::arm_failure(alloc->nth);
+    }
+}
+
+// --- Independent reference --------------------------------------------------------------------------------------
+
+// Independent propagation on a map: each anticommuting key M moves to cos(2a) M + sin(2a) phase(M) (M ^ G). An absent
+// partner enters with its implicit value: 0 for an operator, and for a state its initial score.
+template <size_t N>
+auto reference_propagate(RetainedMap map,
+                         const std::vector<Monomial<N>> &gens,
+                         const VecD &mapped,
+                         bool schrodinger,
+                         Basis basis,
+                         const VecZ &initial_state) -> RetainedMap {
+    const auto mask = initial_state_mask<N>(initial_state);
+    const size_t n = gens.size();
+    for (size_t step = 0; step < n; ++step) {
+        const size_t idx = schrodinger ? step : n - 1 - step;
+        const auto &gen = gens[idx];
+        const double angle = schrodinger ? -mapped[idx] : mapped[idx];
+        const double c = std::cos(2 * angle);
+        const double sn = std::sin(2 * angle);
+        with_algebra<N>(basis, [&]<typename A>() {
+            const auto fold = A::fold_generator(gen);
+            const bool odd = A::fold_needs_odd_correction(gen);
+            const auto ctx = A::make_gen_context(gen);
+            const auto anti = [&](const Monomial<N> &m) {
+                return ((m & fold).count() + (odd ? m.count() : 0)) % 2 == 1;
+            };
+            // Only a state's paired partner has a nonzero implicit value; a zero one would change no sum (up to the
+            // sign of a zero).
+            if (schrodinger) {
+                std::vector<Monomial<N>> partners;
+                for (const auto &[key, v] : map) {
+                    const auto m = monoprop::detail::generator_from_words<N>(key);
+                    if (anti(m) && is_paired<N>(m ^ gen) && !map.contains(key_of<N>(m ^ gen))) {
+                        partners.push_back(m ^ gen);
+                    }
+                }
+                for (const auto &m : partners) {
+                    map.emplace(key_of<N>(m), algebra_state_phase<N>(basis, m, mask));
+                }
+            }
+            RetainedMap next;
+            for (const auto &[key, v] : map) {
+                const auto m = monoprop::detail::generator_from_words<N>(key);
+                if (!anti(m)) {
+                    next[key] += v;
+                    continue;
+                }
+                const auto partner = m ^ gen;
+                const int phase =
+                    A::emit_phase(A::rotation_sign(ctx, m, partner), m.count(), gen.count(), (m & gen).count());
+                next[key] += c * v;
+                next[key_of<N>(partner)] += sn * static_cast<double>(phase) * v;
+            }
+            map = std::move(next);
+        });
+    }
+    return map;
 }
 
 } // namespace sharded_test

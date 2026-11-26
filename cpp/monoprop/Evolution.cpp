@@ -149,36 +149,6 @@ auto derivative_snapshot_scratch() -> DerivativeSnapshotScratch & {
     return scratch;
 }
 
-// Pack sin_send entries from the pre-cos snapshots; the live state/op there are clobbered by the cos pass.
-// The send layout stays dense in the world; only the snapshot is indexed by position.
-void pack_cross_rank_derivative_payload_impl(const DerivativeSnapshotScratch &snap,
-                                             const LayerTraversal &layer,
-                                             int my_rank,
-                                             const LayerExchangeLayout &layout,
-                                             VecD &send_buffer) {
-    detail::replay::pack_derivative_payload(snap, layer, static_cast<size_t>(my_rank), [&](size_t rank) {
-        return send_buffer.data() + layout.displs[rank];
-    });
-}
-
-// Remote endpoint pass: own pre-cos values come from the sin_recv snapshots, partner values from the
-// received sin_send payload.
-auto apply_cross_rank_derivative_exchange_impl(VecD &state,
-                                               VecD &op,
-                                               const LayerTraversal &layer,
-                                               const DerivativeSnapshotScratch &snap,
-                                               const TrigValues &trig,
-                                               const ExchangePayload &payload) -> EndpointContrib {
-    return detail::replay::apply_derivative_payload(
-        state,
-        op,
-        layer,
-        snap,
-        trig,
-        static_cast<size_t>(payload.my_rank),
-        [&](size_t rank) { return payload.recv_buffer.data() + payload.recv_displs[rank]; });
-}
-
 // Pack + Ialltoallv fire up front so the transfer overlaps the cos pass and the self-slot.
 inline auto begin_cross_rank_derivative_exchange(const DerivativeSnapshotScratch &snap,
                                                  const LayerTraversal &layer,
@@ -187,17 +157,23 @@ inline auto begin_cross_rank_derivative_exchange(const DerivativeSnapshotScratch
     if (!layer_exchange_participates(comm)) {
         return {};
     }
-    // Safe to fire before the cos pass: pack reads pre-cos snapshots and the transfer touches only buffers.
+    // Safe to fire before the cos pass: pack reads the sin_send entries off the pre-cos snapshots (the live state/op
+    // there are clobbered by the cos pass) and the transfer touches only buffers. The send layout stays dense in the
+    // world; only the snapshot is indexed by position.
     // Scale 2: each rotation endpoint carries both the op and the state payload.
-    return begin_layer_exchange(layer,
-                                2,
-                                comm,
-                                [&snap, &layer](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
-                                    pack_cross_rank_derivative_payload_impl(snap, layer, my_rank, layout, send_buffer);
-                                });
+    return begin_layer_exchange(
+        layer,
+        2,
+        comm,
+        [&snap, &layer](int my_rank, const LayerExchangeLayout &layout, VecD &send_buffer) {
+            detail::replay::pack_derivative_payload(snap, layer, static_cast<size_t>(my_rank), [&](size_t rank) {
+                return send_buffer.data() + layout.displs[rank];
+            });
+        });
 }
 
-// Must run after the cos pass — the ordering is floating-point significant.
+// Must run after the cos pass — the ordering is floating-point significant. Remote endpoint pass: own pre-cos values
+// come from the sin_recv snapshots, partner values from the received sin_send payload.
 inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   VecD &op,
                                                   const LayerTraversal &layer,
@@ -205,26 +181,14 @@ inline auto finish_cross_rank_derivative_exchange(VecD &state,
                                                   const TrigValues &trig,
                                                   InFlightExchange &in_flight) -> EndpointContrib {
     return finish_layer_exchange(in_flight, [&state, &op, &layer, &snap, &trig](const ExchangePayload &payload) {
-        return apply_cross_rank_derivative_exchange_impl(state, op, layer, snap, trig, payload);
-    });
-}
-
-void pack_cross_rank_evolution_payload_impl(VecD &op,
-                                            const LayerTraversal &layer,
-                                            int my_rank,
-                                            const LayerExchangeLayout &layout,
-                                            VecD &send_buffer) {
-    detail::replay::pack_evolution_payload(op, layer, static_cast<size_t>(my_rank), [&](size_t rank) {
-        return send_buffer.data() + layout.displs[rank];
-    });
-}
-
-void apply_cross_rank_evolution_exchange_impl(VecD &op,
-                                              const LayerTraversal &layer,
-                                              double sin_val,
-                                              const ExchangePayload &payload) {
-    detail::replay::apply_evolution_payload(op, layer, sin_val, static_cast<size_t>(payload.my_rank), [&](size_t rank) {
-        return payload.recv_buffer.data() + payload.recv_displs[rank];
+        return detail::replay::apply_derivative_payload(
+            state,
+            op,
+            layer,
+            snap,
+            trig,
+            static_cast<size_t>(payload.my_rank),
+            [&](size_t rank) { return payload.recv_buffer.data() + payload.recv_displs[rank]; });
     });
 }
 
@@ -238,7 +202,9 @@ inline auto begin_cross_rank_evolution_exchange(VecD &op, const LayerTraversal &
         1,
         comm,
         [&op, &layer](int my_rank, const LayerExchangeLayout &active_layout, VecD &send_buffer) {
-            pack_cross_rank_evolution_payload_impl(op, layer, my_rank, active_layout, send_buffer);
+            detail::replay::pack_evolution_payload(op, layer, static_cast<size_t>(my_rank), [&](size_t rank) {
+                return send_buffer.data() + active_layout.displs[rank];
+            });
         });
 }
 
@@ -247,7 +213,12 @@ inline auto finish_cross_rank_evolution_exchange(VecD &op,
                                                  double sin_val,
                                                  InFlightExchange &in_flight) -> void {
     finish_layer_exchange(in_flight, [&op, &layer, sin_val](const ExchangePayload &payload) {
-        apply_cross_rank_evolution_exchange_impl(op, layer, sin_val, payload);
+        detail::replay::apply_evolution_payload(
+            op,
+            layer,
+            sin_val,
+            static_cast<size_t>(payload.my_rank),
+            [&](size_t rank) { return payload.recv_buffer.data() + payload.recv_displs[rank]; });
     });
 }
 
@@ -268,22 +239,23 @@ auto state_operator_derivative_local(VecD &state,
     const size_t R = layer.cross_rank_rank_count();
 
     auto &snap = derivative_snapshot_scratch();
+    const bool self_pre = record.count > 0 && my_rank < R;
     // Snapshots and packing may throw on this rank alone before it posts: guarded, since peers post regardless.
     auto in_flight = mpi::guard_distributed(comm, [&] {
         detail::replay::snapshot_remote_endpoints(state, op, layer, my_rank, snap);
         // The self slot reads its entry op off the post-cos slots, which a record overwrites first.
-        if (record.count > 0 && my_rank < R) {
+        if (self_pre) {
             detail::replay::snapshot_self_recv_op(op, layer, snap);
         }
         // No-op at single rank; the transfer touches only buffers, so the cos pass below may mutate state/op.
         return begin_cross_rank_derivative_exchange(snap, layer, comm);
     });
-    const bool self_pre = record.count > 0 && my_rank < R;
 
     // Caught here, while in_flight still owns posted requests: unwinding past it would wait on peers.
     EndpointContrib ep;
     const double A = mpi::guard_distributed(comm, [&] {
-        const double a = detail::replay::accumulate_layer(state, op, layer_idx, trig, record, cos_acc);
+        const double a =
+            detail::replay::accumulate_layer_raw(state, op, layer_idx, trig, record, cos_acc) * trig.sec_val;
         if (my_rank < R) {
             ep = detail::replay::apply_self_slot_derivative_paired(state,
                                                                    op,

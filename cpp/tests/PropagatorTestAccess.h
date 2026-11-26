@@ -19,18 +19,11 @@
 // inject failures at real mutation and evaluation boundaries through existing members, to inspect the
 // root's actual shards and to attach the test-only RootObserver.
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
 
-#include "monoprop/Evolution.h"
-#include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
-#include "monoprop/algebra/AlgebraCommon.h"
-#include "monoprop/detail/evolution/layer_build/Common.h"
-#include "monoprop/detail/evolution/layer_build/Engine.h"
-#include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/sharded/RootObserver.h"

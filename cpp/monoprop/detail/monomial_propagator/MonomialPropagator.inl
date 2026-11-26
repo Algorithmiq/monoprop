@@ -27,11 +27,6 @@
 #include "monoprop/detail/evolution/LayerBuilder.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
-#include "monoprop/detail/mpi/OperationFailure.h"
-#include "monoprop/detail/parallel/ThreadBudget.h"
-#include "monoprop/detail/sharded/Construction.h"
-#include "monoprop/detail/sharded/Evaluation.h"
-#include "monoprop/detail/sharded/State.h"
 
 namespace monoprop {
 
@@ -102,13 +97,6 @@ auto MonomialPropagator<NumModes>::run_operation_(bool uses_mpi, Body &&body) ->
 }
 
 template <size_t NumModes>
-auto MonomialPropagator<NumModes>::validate_generators_(const std::vector<VecZ> &majoranas) const -> void {
-    for (const auto &gate : majoranas) {
-        (void)indices_to_bitset_checked<NumModes>(gate, 2 * logical_num_modes_);
-    }
-}
-
-template <size_t NumModes>
 auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_type,
                                                            const std::optional<std::vector<VecZ>> &basis_change) const
     -> void {
@@ -140,12 +128,10 @@ auto MonomialPropagator<NumModes>::validate_cutoff_config_(CutoffType cutoff_typ
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::regenerate_cutoff_fn_() -> void {
     if (basis_change_.has_value()) {
-        MonomialList<NumModes> basis;
-        basis.reserve(2 * logical_num_modes_);
-        for (size_t i = 0; i < 2 * logical_num_modes_; ++i) {
-            basis.push_back(indices_to_bitset_checked<NumModes>(basis_change_.value()[i], 2 * logical_num_modes_));
-        }
-        cutoff_fn_ = detail::cutoff_function_basis_change<NumModes>(cutoff_type_, cutoff_, basis, logical_num_modes_);
+        cutoff_fn_ = detail::cutoff_function_basis_change<NumModes>(cutoff_type_,
+                                                                    cutoff_,
+                                                                    generators_(*basis_change_),
+                                                                    logical_num_modes_);
     }
     else {
         cutoff_fn_ = detail::cutoff_function<NumModes>(cutoff_type_, cutoff_, logical_num_modes_);

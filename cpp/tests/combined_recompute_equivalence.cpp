@@ -91,11 +91,7 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
     const size_t n = sim.mp_op().size();
     BOOST_REQUIRE(n > 0);
 
-    // Distinct, non-degenerate coefficients so a missed/extra index shows up.
-    std::vector<double> baseline(n);
-    for (size_t i = 0; i < n; ++i) {
-        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
-    }
+    const std::vector<double> baseline = kernel_test::distinct_values(n);
     const double cos_val = 0.6234;
 
     size_t odd_layers = 0;
@@ -120,9 +116,9 @@ BOOST_AUTO_TEST_CASE(combined_scale_cache_equals_recompute) {
         monoprop::detail::scale_cos_lazy<kNumModes>(inverted_index, recipe, threaded.data(), cos_val, {.threads = 3});
 
         BOOST_TEST_INFO("layer " << li);
-        BOOST_TEST(std::memcmp(a.data(), b.data(), n * sizeof(double)) == 0);
+        BOOST_TEST(kernel_test::bitwise_equal(a, b));
         BOOST_TEST_INFO("layer " << li << " threads 3");
-        BOOST_TEST(std::memcmp(a.data(), threaded.data(), n * sizeof(double)) == 0);
+        BOOST_TEST(kernel_test::bitwise_equal(a, threaded));
     }
     // The fixture must actually exercise the odd-|G| parity correction, or the guardrail is hollow.
     BOOST_TEST(odd_layers > 0u);
@@ -170,9 +166,9 @@ BOOST_AUTO_TEST_CASE(combined_accumulate_cache_equals_recompute) {
                                                                            sec_val);
 
         BOOST_TEST_INFO("layer " << li);
-        BOOST_TEST(std::memcmp(sa.data(), sb.data(), n * sizeof(double)) == 0);
+        BOOST_TEST(kernel_test::bitwise_equal(sa, sb));
         BOOST_TEST_INFO("layer " << li);
-        BOOST_TEST(std::memcmp(ha.data(), hb.data(), n * sizeof(double)) == 0);
+        BOOST_TEST(kernel_test::bitwise_equal(ha, hb));
         BOOST_CHECK_SMALL(std::abs(ea - eb), 1e-9 * (1.0 + std::abs(ea)));
     }
 }
@@ -193,10 +189,10 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
     const size_t n = sim.mp_op().size();
     BOOST_REQUIRE(n > 0);
 
-    std::vector<double> recorded(n), polluted(n), state0(n);
+    const std::vector<double> recorded = kernel_test::distinct_values(n);
+    std::vector<double> polluted(n), state0(n);
     std::vector<TermIndex> indices(n);
     for (size_t i = 0; i < n; ++i) {
-        recorded[i] = 1.0 + static_cast<double>(i) * 1e-3;
         // What a divide-based reverse pass would have arrived at: the same value, amplified apart.
         polluted[i] = recorded[i] * (i % 2 == 0 ? 8.0 : 0.125);
         state0[i] = 0.5 + static_cast<double>(i) * 1e-3;
@@ -246,7 +242,7 @@ BOOST_AUTO_TEST_CASE(a_recorded_coefficient_leaves_the_sum_undivided) {
                 monoprop::detail::restore_cos_record(ham.data(), record);
 
                 BOOST_TEST_INFO("layer " << li);
-                BOOST_TEST(std::memcmp(ham.data(), recorded.data(), n * sizeof(double)) == 0);
+                BOOST_TEST(kernel_test::bitwise_equal(ham, recorded));
                 BOOST_TEST_INFO("layer " << li);
                 BOOST_CHECK_SMALL(std::abs(got - expected), 1e-9 * (1.0 + std::abs(expected)));
 
@@ -336,11 +332,7 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
     BOOST_REQUIRE(after != nullptr);
     BOOST_TEST(before != after); // a pointer cached in the fold would now dangle
 
-    const size_t n = sim.mp_op().size();
-    std::vector<double> baseline(n);
-    for (size_t i = 0; i < n; ++i) {
-        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
-    }
+    const std::vector<double> baseline = kernel_test::distinct_values(sim.mp_op().size());
     const double cos_val = 0.6234;
 
     auto prepared =
@@ -355,7 +347,7 @@ BOOST_AUTO_TEST_CASE(lazy_fold_survives_operator_growth) {
                                                     cos_val,
                                                     {.threads = threads});
         BOOST_TEST_INFO("threads " << threads);
-        BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
+        BOOST_TEST(kernel_test::bitwise_equal(expected, actual));
     }
 }
 
@@ -397,13 +389,7 @@ auto check_threaded_lazy_fold(const monoprop::detail::InvertedIndex<kernel_test:
     constexpr size_t index_modes = kernel_test::synthetic_index_modes;
     const size_t n = index.rows();
     const auto recipe = monoprop::detail::make_lazy_fold<index_modes>(index, fc.gen, scaled_count, fc.basis);
-    const std::vector<double> baseline = [n] {
-        std::vector<double> v(n);
-        for (size_t i = 0; i < n; ++i) {
-            v[i] = 1.0 + static_cast<double>(i) * 1e-3;
-        }
-        return v;
-    }();
+    const std::vector<double> baseline = kernel_test::distinct_values(n);
     const double cos_val = 0.6234;
 
     std::vector<std::vector<double>> threaded;
@@ -425,10 +411,10 @@ auto check_threaded_lazy_fold(const monoprop::detail::InvertedIndex<kernel_test:
     scale_cos_cached<index_modes>(prepared, oracle.data(), cos_val);
 
     BOOST_TEST_CONTEXT(fc.label << " rows=" << n << " scaled_count=" << scaled_count) {
-        BOOST_TEST(std::memcmp(oracle.data(), serial.data(), n * sizeof(double)) == 0);
+        BOOST_TEST(kernel_test::bitwise_equal(oracle, serial));
         for (size_t t = 0; t < threaded.size(); ++t) {
             BOOST_TEST_INFO("threads " << t + 2);
-            BOOST_TEST(std::memcmp(oracle.data(), threaded[t].data(), n * sizeof(double)) == 0);
+            BOOST_TEST(kernel_test::bitwise_equal(oracle, threaded[t]));
         }
         // Rows at or beyond scaled_count are never scaled.
         size_t scaled_beyond = 0;
@@ -488,10 +474,7 @@ BOOST_AUTO_TEST_CASE(combined_threaded_lazy_fold_survives_index_growth) {
     kernel_test::grow_synthetic_index(index, 4 * block_rows + 123, 78);
     const size_t n = index.rows();
 
-    std::vector<double> baseline(n);
-    for (size_t i = 0; i < n; ++i) {
-        baseline[i] = 1.0 + static_cast<double>(i) * 1e-3;
-    }
+    const std::vector<double> baseline = kernel_test::distinct_values(n);
     const double cos_val = 0.6234;
     std::vector<double> actual = baseline;
     monoprop::detail::scale_cos_lazy<index_modes>(index, recipe, actual.data(), cos_val, {.threads = 4});
@@ -500,5 +483,5 @@ BOOST_AUTO_TEST_CASE(combined_threaded_lazy_fold_survives_index_growth) {
     const auto prepared = monoprop::detail::make_fold_cache<index_modes>(index, gen, scaled_count, Basis::Majorana);
     std::vector<double> expected = baseline;
     scale_cos_cached<index_modes>(prepared, expected.data(), cos_val);
-    BOOST_TEST(std::memcmp(expected.data(), actual.data(), n * sizeof(double)) == 0);
+    BOOST_TEST(kernel_test::bitwise_equal(expected, actual));
 }

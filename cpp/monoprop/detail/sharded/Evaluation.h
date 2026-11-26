@@ -210,13 +210,6 @@ private:
 };
 
 /*!
- * \brief Owner `shard`'s rows of a replay round from its publication: what it sends to and receives from every shard
- *        of every other rank, then its row totals (PhysicalExchange::close_rows()). A layer's partner layout is
- *        symmetric, so both counts are the published block size.
- */
-monoprop_EXPORT auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
-
-/*!
  * \brief evaluate_shards()' argument checks of one shard's request, in its order: the state against the operator, then,
  *        with parameters, the graph's layer count, the generator coefficients' length and every parameter index.
  *
@@ -226,14 +219,6 @@ monoprop_EXPORT auto write_replay_rows(PhysicalExchange &round, const PublishedE
  * \throws EvalStateArgumentError; std::invalid_argument, with evaluate_shards()' messages.
  */
 monoprop_EXPORT auto check_shard_request(const EvalRequest &request) -> void;
-
-/*!
- * \brief Owner `shard` copies its published blocks for every shard of every other rank into the round's send slices.
- *
- * Requires the round's offsets for this owner's row, which plan_send() lays out; ReplayRound plans owner-parallel
- * and packs by column instead (pack_replay_column()).
- */
-monoprop_EXPORT auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void;
 
 /*!
  * \brief Owner `shard` copies every local owner's published block for remote shard `shard` of every other rank into
@@ -259,7 +244,8 @@ struct ReplayRound {
     ExchangeTransport transport = ExchangeTransport::pairwise; //!< mpi::routes_pairwise() of the communicator.
 
     /*!
-     * \brief The round's three phases, after the phase in which every owner wrote its rows (write_replay_rows()).
+     * \brief The round's three phases, after the phase in which every owner wrote its rows
+     *        (PhysicalExchange::write_symmetric_rows()).
      *
      * The round is planned owner-parallel over every other rank: the primary sizes it from the owners' row totals
      * while every owner sums its column; every owner then places its column's offsets and runs `pack()`, which fills
@@ -320,10 +306,8 @@ struct PartnerStaging {
  *        never less than one value).
  *
  * A step whose values fit one run stages all of them in one run either way, so sizing by need changes no copy and no
- * read, only how much an owner reserves: a whole default run per owner was most of a small evaluation's first-call
- * page faults and, at T = 96, 3 MiB of resident memory. A block larger than the run is read where its partner
- * published it rather than staged: widening every owner's staging to the step's largest block held about 1.3 MiB more
- * at T = 96 on Hubbard models, and a block that large is a sequential read the apply streams on its own.
+ * read, only how much an owner reserves. A block larger than the run is read where its partner published it rather
+ * than staged: it is a sequential read the apply streams on its own.
  */
 [[nodiscard]] constexpr auto staging_capacity(size_t run_values, size_t step_values) -> size_t {
     return std::max(std::min(run_values, step_values), size_t{1});
@@ -333,9 +317,8 @@ struct PartnerStaging {
  * \brief Resize `v` to `n` elements, reallocating only past its capacity and then to at least twice that capacity.
  *
  * std::vector::resize() grows from the current size: an owner's per-step buffer whose size falls and rises from step to
- * step would reallocate by small increments each time it passes its old capacity, thousands of times in a T = 96
- * evaluation, and every reallocation copies the block and leaves the old one free in the owner's malloc arena. Values
- * below `n` are kept, as resize() keeps them.
+ * step would reallocate by small increments each time it passes its old capacity, and every reallocation copies the
+ * block. Values below `n` are kept, as resize() keeps them.
  */
 template <class T>
 auto grow_to(std::vector<T> &v, size_t n) -> void {
@@ -367,11 +350,6 @@ monoprop_EXPORT auto forward_publish(const VecD &coeffs,
                                      size_t flat_owner,
                                      ForwardScratch &scratch,
                                      PublishedEndpoints &out) -> void;
-
-/*!
- * \brief The cosine pass of a forward step: `scale(layer_idx, coeffs, cos(2 * param))`.
- */
-monoprop_EXPORT auto forward_scale(VecD &coeffs, size_t layer_idx, double param, const LayerCosScale &scale) -> void;
 
 /*!
  * \brief The cosine pass of a forward step over a transient cosine mask, with serial kernels.
@@ -596,7 +574,7 @@ struct RetainedEvaluation {
                                       .gen_coeffs = gen_coeffs,
                                       .graph = shard.graph->replay_view(),
                                       .params = params,
-                                      .parallel = parallel::Options{}});
+                                      .parallel = parallel::serial});
         }
         return out;
     }
@@ -614,7 +592,7 @@ struct RetainedOutcome {
 /*!
  * \brief Snapshot, optionally pare, and build callbacks for every shard, each on its owner, in one team.
  *
- * Per shard, as MonomialPropagator::make_functional_() does for one store: the state (sparse Heisenberg scores, or
+ * Per shard: the state (sparse Heisenberg scores, or
  * the dense Schrödinger state) with its length snapshotted, a copy of the operator coefficients, then -- with a
  * threshold -- the keep set of the picture's driving vector and pare_graph_owner() at the shard's flat slot, and the
  * callbacks, built with serial kernels. Preparation warms the shard's lazy caches, so a failure after the first
@@ -650,7 +628,6 @@ auto prepare_retained(parallel::Options options,
     // Caller-owned slots: entry t is written by owner t only, and read after the join.
     std::vector<std::optional<RetainedShard>> slots(threads);
     std::vector<CosCallbacks> callbacks(threads);
-    const parallel::Options serial{}; // within-shard kernels are serial
     bool mutation_started = false;
     const auto error = run_team(options, [&](size_t t, TeamFailure &failure) noexcept {
         if (t == 0) {
@@ -690,7 +667,8 @@ auto prepare_retained(parallel::Options options,
             else {
                 graph = std::shared_ptr<const MPGraph>(std::shared_ptr<const void>{}, &live);
             }
-            callbacks[t] = make_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), context.basis, serial);
+            callbacks[t] =
+                make_cos_callbacks<NumModes>(inverted_index, graph->replay_view(), context.basis, parallel::serial);
             slots[t].emplace(
                 RetainedShard{.state = std::move(state), .op = std::move(coeffs), .graph = std::move(graph)});
         }));

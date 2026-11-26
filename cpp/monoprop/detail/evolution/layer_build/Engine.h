@@ -15,7 +15,6 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <format>
@@ -38,7 +37,6 @@
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/graph_encoding/MPGraphEncodingStorage.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
-#include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/operator/RowAccess.h"
 #include "monoprop/detail/parallel/Options.h"
@@ -407,9 +405,8 @@ struct ContractSink {
  * owner consumed its answers and every destination resolved the payload. The next prepare_exchange replaces them.
  *
  * `Observer` is the test seam of the threaded kernels (see NoRangeObserver). It may also provide
- * `exchange_prepared(leaders, payload, sources, values)`, `exchange_resolved(leaders, responses)` and
- * `exchange_consumed(leaders, responses)`, which the phases call with what they produced or consumed; production
- * observers provide none of them.
+ * `exchange_prepared(leaders)`, which prepare_exchange() calls once it has produced the payload; production observers
+ * do not.
  */
 template <size_t NumModes, typename Sink, class Observer = NoRangeObserver>
 struct LayerBuildEngine {
@@ -521,7 +518,6 @@ struct LayerBuildEngine {
                           SelfQueryStage<NumModes> &&self_stage) -> const mpi::WindowVec<VecZ> & {
         assert(queries.window() == window && sources.window() == window);
         assert(values.size() == 0 || values.window() == window); // empty under GraphSink
-        leaders_pass_ = leaders;
         queries_r = std::move(queries);
         src_idx_r = std::move(sources);
         self_stage_ = std::move(self_stage);
@@ -535,8 +531,8 @@ struct LayerBuildEngine {
         if (R > 1) {
             payload = &sink.send_buffer(queries_r, src_val_r, combined_qv_);
         }
-        if constexpr (requires { observer.exchange_prepared(leaders, *payload, src_idx_r, src_val_r); }) {
-            observer.exchange_prepared(leaders, *payload, src_idx_r, src_val_r);
+        if constexpr (requires { observer.exchange_prepared(leaders); }) {
+            observer.exchange_prepared(leaders);
         }
         return *payload;
     }
@@ -565,12 +561,7 @@ struct LayerBuildEngine {
                                                     window.base,
                                                     window.stop()));
         }
-        auto responses =
-            resolve_incoming<NumModes>(incoming, local_op, leaders, matched, combined_size, sink, options, observer);
-        if constexpr (requires { observer.exchange_resolved(leaders, responses); }) {
-            observer.exchange_resolved(leaders, responses);
-        }
-        return responses;
+        return resolve_incoming<NumModes>(incoming, local_op, leaders, matched, combined_size, sink, options, observer);
     }
 
     /*!
@@ -601,9 +592,6 @@ struct LayerBuildEngine {
                                                     responses[wi].size(),
                                                     src_idx_r[wi].size()));
             }
-        }
-        if constexpr (requires { observer.exchange_consumed(leaders_pass_, responses); }) {
-            observer.exchange_consumed(leaders_pass_, responses);
         }
         process_responses<NumModes>(responses, src_idx_r, queries_r, my_rank, sink);
     }
@@ -677,8 +665,7 @@ struct LayerBuildEngine {
                 (*sins->counts)[base + k] = initial ? 0 : sins->child((*sins->counts)[m.src]);
             }
         }
-        local_op.store
-            ->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; }, options);
+        local_op.store->bulk_insert_hashed(n_miss, base, [&](size_t j) { return deferred_self_misses[j].hash; });
         local_op.reindex_after_growth(base, n_miss);
     }
 
@@ -688,8 +675,6 @@ struct LayerBuildEngine {
     }
 
 private:
-    bool leaders_pass_ = true; // the pass the retained streams belong to, as prepare_exchange() adopted them
-
     // Max-sins on a self miss: whether to create the partner (always, without max-sins). A reference-state
     // partner (Schrodinger, fully paired) is always created and merged into its source like a hit on a
     // count-0 row.

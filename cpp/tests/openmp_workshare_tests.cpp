@@ -31,39 +31,12 @@
 #include <thread>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/parallel/Workshare.h"
 
 using monoprop::detail::parallel::for_blocks;
 using monoprop::detail::parallel::Options;
-
-namespace {
-
-// A test-side probe, not library behavior: can this runtime give a two-thread region right now?
-auto runtime_offers_two_workers(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    if (omp_get_thread_limit() < 2) {
-        return {false};
-    }
-    int team = 0;
-#pragma omp parallel num_threads(2)
-    {
-#pragma omp single
-        team = omp_get_num_threads();
-    }
-    boost::test_tools::assertion_result result(team >= 2);
-    result.message() << "the OpenMP runtime provided " << team << " worker(s) for a two-thread request";
-    return result;
-}
-
-} // namespace
-
-BOOST_AUTO_TEST_CASE(openmp_blocks_visit_once) {
-    std::vector<int> visits(19);
-    for_blocks(19, {.threads = 3}, [&](size_t b) { ++visits[b]; });
-    for (const auto n : visits) {
-        BOOST_TEST(n == 1);
-    }
-}
 
 BOOST_AUTO_TEST_CASE(openmp_blocks_visit_once_across_counts_and_budgets) {
     for (const size_t count : {size_t{0}, size_t{1}, size_t{19}}) {
@@ -253,7 +226,7 @@ BOOST_AUTO_TEST_CASE(openmp_blocks_first_populated_worker_slot_is_rethrown) {
 // Test-only worker observation: each block records its actual OpenMP worker ID. A request for four
 // workers is not evidence of participation; the recorded IDs are.
 BOOST_AUTO_TEST_CASE(openmp_blocks_multiple_workers_participate,
-                     *boost::unit_test::precondition(runtime_offers_two_workers)) {
+                     *boost::unit_test::precondition(kernel_test::runtime_offers_two_workers)) {
     constexpr size_t count = 64;
     constexpr int threads = 4;
     std::vector<int> worker(count, -1);

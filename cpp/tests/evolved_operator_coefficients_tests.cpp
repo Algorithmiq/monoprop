@@ -39,34 +39,15 @@ using namespace test_utils;
 constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 8;
 
-auto majorana_sim(const CaseData &data) -> MonomialPropagator<kNumModes> {
-    return MonomialPropagator<kNumModes>(data.hamiltonian,
-                                         kCutoff,
-                                         data.initial_state,
-                                         std::nullopt,
-                                         MPI_COMM_SELF,
-                                         std::nullopt,
-                                         std::nullopt,
-                                         CutoffType::Length,
-                                         std::nullopt,
-                                         kNumModes,
-                                         Basis::Majorana);
-}
-
-// A propagator whose graph is built and ready to contract.
-auto built_sim(const CaseData &data) -> MonomialPropagator<kNumModes> {
-    auto sim = majorana_sim(data);
-    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-    return sim;
-}
-
-// A Schrodinger-picture propagator: the state's identity amplitude is an ordinary index row there,
-// so the empty key resolves through the probe rather than through core_term().
-auto built_schrodinger_sim(const CaseData &data) -> MonomialPropagator<kNumModes> {
+// A propagator whose graph is built and ready to contract; in the Schrodinger picture (`schrodinger_cutoff`) the
+// state's identity amplitude is an ordinary index row, so the empty key resolves through the probe rather than through
+// core_term().
+auto built_sim(const CaseData &data, std::optional<unsigned int> schrodinger_cutoff = std::nullopt)
+    -> MonomialPropagator<kNumModes> {
     auto sim = MonomialPropagator<kNumModes>(data.hamiltonian,
                                              kCutoff,
                                              data.initial_state,
-                                             std::optional<unsigned int>{kCutoff},
+                                             schrodinger_cutoff,
                                              MPI_COMM_SELF,
                                              std::nullopt,
                                              std::nullopt,
@@ -210,7 +191,7 @@ BOOST_AUTO_TEST_CASE(evolved_coefficients_empty_term_resolves_to_core_term) {
 // the state's identity amplitude -- so the empty query resolves through the probe like any other.
 BOOST_AUTO_TEST_CASE(evolved_coefficients_schrodinger_coefficients_match_enumerated_terms) {
     const auto data = load_case_data<kNumModes>("random_exact.msgpack");
-    auto sim = built_schrodinger_sim(data);
+    auto sim = built_sim(data, kCutoff);
 
     const auto terms = sim.evolved_operator_terms(data.parameters, 0.0);
     BOOST_REQUIRE(!terms.empty());

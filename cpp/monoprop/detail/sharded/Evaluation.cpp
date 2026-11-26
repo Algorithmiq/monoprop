@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <functional>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -52,9 +54,6 @@ auto publication_layout(const PackedCrossRankStorage &cross_rank,
     derive_exchange_layout(cross_rank, flat_owner, scale, out, what);
 }
 
-// Within-shard kernels run serially: the team's parallelism is across owners.
-constexpr parallel::Options serial_kernels{};
-
 auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step, size_t shard) -> void {
     if (observer != nullptr) {
         observer->visit(work, step, shard);
@@ -69,9 +68,8 @@ auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step
  * keeps many of those transfers in flight, where reading them inside the apply loop exposes each one, and the apply
  * then reads the run from cache. The first run is staged before the apply starts; the apply visits the partners in
  * their canonical order, so each later request either hits the current run or starts the next one. A block larger
- * than a run is not staged: it forms a run of its own, read where the partner published it. The block checks, the
- * values and the order the apply reads them in are unchanged. The staging is the owner's, reached through a plain
- * reference: a thread-local object here costs a TLS lookup at every use in the copy loop.
+ * than a run is not staged: it forms a run of its own, read where the partner published it. The staging is the
+ * owner's, passed by reference so the copy loop does no thread-local lookup.
  */
 template <size_t Scale>
 auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_t flat_owner, PartnerStaging &staging) {
@@ -224,6 +222,26 @@ auto plan_evaluation(std::span<const EvalRequest> requests,
     return plan;
 }
 
+// One step's callback work: each owner runs its own part, or else the primary runs every owner's in shard order.
+template <typename Part>
+auto step_callbacks(bool owner_parallel, size_t t, size_t owners, size_t step, Part part) {
+    return [=] {
+        if (owner_parallel) {
+            part(t, step);
+        }
+        else if (t == 0) {
+            for (size_t s = 0; s < owners; ++s) {
+                part(s, step);
+            }
+        }
+    };
+}
+
+// The cosine pass of a forward step: `scale(layer_idx, coeffs, cos(2 * param))`.
+auto forward_scale(VecD &coeffs, size_t layer_idx, double param, const LayerCosScale &scale) -> void {
+    scale(layer_idx, coeffs.data(), std::cos(2 * param));
+}
+
 // The evaluation's shared, caller-owned state for one team.
 struct EvaluationRun {
     std::span<const EvalRequest> requests;
@@ -328,7 +346,7 @@ struct EvaluationRun {
         }
         if (remote.round != nullptr) {
             // The callback part runs while the step's round is in flight; see run().
-            write_replay_rows(*remote.round, out, t);
+            remote.round->write_symmetric_rows(t, out.layout.counts);
         }
         else if (!plan.opaque) {
             callback_part(t, step);
@@ -407,16 +425,10 @@ struct EvaluationRun {
                 return;
             }
             // Opaque callbacks: the primary runs every shard's callback part while the other owners wait.
-            const auto callbacks_of_step = [&] {
-                if (!plan.opaque) {
-                    callback_part(t, p);
-                }
-                else if (t == 0) {
-                    for (size_t s = 0; s < frames.size(); ++s) {
-                        callback_part(s, p);
-                    }
-                }
-            };
+            const auto callbacks_of_step =
+                step_callbacks(!plan.opaque, t, frames.size(), p, [this](size_t s, size_t step) {
+                    callback_part(s, step);
+                });
             if (remote.round != nullptr && p < plan.steps) {
                 if (!remote.run(
                         failure,
@@ -473,7 +485,7 @@ auto forward_steps(TeamFailure &failure,
                                 own.published[p % 2]);
                 if (round != nullptr) {
                     // The cosine pass runs while the step's round is in flight, below.
-                    write_replay_rows(*round, own.published[p % 2], t);
+                    round->write_symmetric_rows(t, own.published[p % 2].layout.counts);
                 }
                 else if (job.owner_parallel) {
                     cosine(t, p);
@@ -486,16 +498,7 @@ auto forward_steps(TeamFailure &failure,
         if (p == steps) {
             continue;
         }
-        const auto cosines_of_step = [&] {
-            if (job.owner_parallel) {
-                cosine(t, p);
-            }
-            else if (t == 0) {
-                for (size_t s = 0; s < job.owners.size(); ++s) {
-                    cosine(s, p);
-                }
-            }
-        };
+        const auto cosines_of_step = step_callbacks(job.owner_parallel, t, job.owners.size(), p, cosine);
         if (round != nullptr) {
             if (!job.remote.run(failure, t, [&] { pack_replay_column(*round, pairs, p % 2, t); }, cosines_of_step)) {
                 return false;
@@ -573,26 +576,6 @@ auto check_shard_request(const EvalRequest &request) -> void {
     }
 }
 
-auto write_replay_rows(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
-    round.write_symmetric_rows(shard, out.layout.counts);
-}
-
-auto pack_replay_blocks(PhysicalExchange &round, const PublishedEndpoints &out, size_t shard) -> void {
-    const size_t threads = round.threads();
-    const auto peers = round.peers();
-    for (size_t k = 0; k < peers.size(); ++k) {
-        for (size_t t = 0; t < threads; ++t) {
-            const auto slice = round.send_block<double>(shard, k, t);
-            if (slice.empty()) {
-                continue;
-            }
-            const size_t slot = (peers[k] * threads) + t;
-            const auto *const first = out.values.data() + out.layout.displs[slot];
-            std::copy_n(first, slice.size(), slice.begin());
-        }
-    }
-}
-
 auto pack_replay_column(PhysicalExchange &round,
                         std::span<const PublishedPair *const> owners,
                         size_t buffer,
@@ -626,14 +609,8 @@ auto forward_publish(const VecD &coeffs,
     });
 }
 
-auto forward_scale(VecD &coeffs, size_t layer_idx, double param, const LayerCosScale &scale) -> void {
-    const double cos_val = std::cos(2 * param);
-    scale(layer_idx, coeffs.data(), cos_val);
-}
-
 auto forward_scale_mask(VecD &coeffs, const CosMask &cos, double param) -> void {
-    const double cos_val = std::cos(2 * param);
-    scale_cos_mask(coeffs.data(), cos, cos_val, serial_kernels);
+    scale_cos_mask(coeffs.data(), cos, std::cos(2 * param), parallel::serial);
 }
 
 auto forward_finish(VecD &coeffs,
@@ -703,11 +680,7 @@ auto evaluate_shards(std::span<const EvalRequest> requests,
 }
 
 auto combine_contributions(std::span<const double> contributions) -> double {
-    auto total = 0.0;
-    for (const double contribution : contributions) {
-        total += contribution;
-    }
-    return total;
+    return std::accumulate(contributions.begin(), contributions.end(), 0.0);
 }
 
 auto combine_gradients(std::span<const VecD> gradients) -> VecD {
@@ -715,18 +688,13 @@ auto combine_gradients(std::span<const VecD> gradients) -> VecD {
         return {};
     }
     const size_t length = gradients.front().size();
-    for (const VecD &g : gradients) {
-        if (g.size() != length) {
-            throw std::invalid_argument("sharded::combine_gradients: the shards' gradients differ in length");
-        }
+    if (std::ranges::any_of(gradients, [length](const VecD &g) { return g.size() != length; })) {
+        throw std::invalid_argument("sharded::combine_gradients: the shards' gradients differ in length");
     }
+    // Per component, a left fold in ascending shard order from 0.0.
     VecD total(length, 0.0);
-    for (size_t k = 0; k < length; ++k) {
-        auto acc = 0.0;
-        for (const VecD &g : gradients) {
-            acc += g[k];
-        }
-        total[k] = acc;
+    for (const VecD &g : gradients) {
+        std::ranges::transform(total, g, total.begin(), std::plus{});
     }
     return total;
 }

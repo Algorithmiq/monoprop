@@ -73,15 +73,20 @@ if(monoprop_TEST_EXCLUDE_MPI_FABRIC AND monoprop_ENABLE_MPI)
   )
 endif()
 
+# The exact team T of a fresh-process launch: monoprop_NUM_THREADS = OMP_NUM_THREADS = T with OMP_DYNAMIC off, named in
+# monoprop_TEST_EXPECT_TEAM, which only the sharded_team and sharded_root suites read.
+function(monoprop_team_environment OUT THREADS)
+  set(
+    ${OUT}
+    "monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${THREADS}"
+    PARENT_SCOPE
+  )
+endfunction()
+
 # The launch-time thread policy of every discovered case, set by the registration because the runner supplies no
 # budget: ordinary (raw-layout) cases run at exactly T = 1, per case and in the whole-suite MPI variants alike; teams of
 # T > 1 are dedicated fresh-process launches below, and kernel cases request their own teams explicitly.
-set(
-  _monoprop_unit_environment
-  "monoprop_NUM_THREADS=1"
-  "OMP_NUM_THREADS=1"
-  "OMP_DYNAMIC=FALSE"
-)
+monoprop_team_environment(_monoprop_unit_environment 1)
 
 # Automatic discovery of unit tests.
 # Default CTest run includes per-case serial tests plus suite-level MPI variants
@@ -99,10 +104,13 @@ discover_tests(
 
 # CTest's parallel scheduler (`ctest -j N`, CTEST_PARALLEL_LEVEL) charges each test its PROCESSORS, so a launch claims
 # its ranks x threads and a parallel run never oversubscribes the host; a test claiming more than N runs alone. The
-# discovered per-case tests run at T = 1 and keep the default of one. A launch that names no team takes the OpenMP
-# default (every core): it claims four, enough to keep it from sharing a small runner.
-function(monoprop_set_test_processors NAME RANKS ENVIRONMENT)
-  if(ENVIRONMENT MATCHES "(^|;)monoprop_NUM_THREADS=([0-9]+)")
+# discovered per-case tests run at T = 1 and keep the default of one. THREADS is the launch's team; when empty it is read
+# from ENVIRONMENT. A launch that names no team takes the OpenMP default (every core): it claims four, enough to keep it
+# from sharing a small runner.
+function(monoprop_set_test_processors NAME RANKS THREADS ENVIRONMENT)
+  if(THREADS)
+    set(_threads ${THREADS})
+  elseif(ENVIRONMENT MATCHES "(^|;)monoprop_NUM_THREADS=([0-9]+)")
     set(_threads ${CMAKE_MATCH_2})
   elseif(ENVIRONMENT MATCHES "(^|;)OMP_NUM_THREADS=([0-9]+)")
     set(_threads ${CMAKE_MATCH_2})
@@ -121,9 +129,20 @@ function(monoprop_set_test_processors NAME RANKS ENVIRONMENT)
 endfunction()
 
 # Fresh processes for the construction-time thread budget: each entry reruns one unit case under its own
-# launch environment, since an object captures monoprop_NUM_THREADS once, when it is constructed.
+# launch environment, since an object captures monoprop_NUM_THREADS once, when it is constructed. THREADS T puts the
+# exact team (monoprop_team_environment) ahead of ENVIRONMENT; TIMEOUT bounds the launch.
 function(monoprop_add_launch_env_case NAME CASE)
-  cmake_parse_arguments("" "" "" "ENVIRONMENT;ENVIRONMENT_MODIFICATION" ${ARGN})
+  cmake_parse_arguments(
+    ""
+    ""
+    "THREADS;TIMEOUT"
+    "ENVIRONMENT;ENVIRONMENT_MODIFICATION"
+    ${ARGN}
+  )
+  if(_THREADS)
+    monoprop_team_environment(_team ${_THREADS})
+    list(PREPEND _ENVIRONMENT ${_team})
+  endif()
   add_test(
     NAME ${NAME}
     COMMAND
@@ -142,7 +161,15 @@ function(monoprop_add_launch_env_case NAME CASE)
       ENVIRONMENT
         "${_environment}"
   )
-  monoprop_set_test_processors(${NAME} 1 "${_ENVIRONMENT}")
+  monoprop_set_test_processors(${NAME} 1 "${_THREADS}" "${_ENVIRONMENT}")
+  if(_TIMEOUT)
+    set_tests_properties(
+      ${NAME}
+      PROPERTIES
+        TIMEOUT
+          ${_TIMEOUT}
+    )
+  endif()
   if(_ENVIRONMENT_MODIFICATION)
     set_tests_properties(
       ${NAME}
@@ -155,27 +182,26 @@ endfunction()
 
 # Budget capture at the launch: every root captures it, and its T is its shard count, so each launch names an exact
 # team.
-monoprop_add_launch_env_case(
-  openmp_env_root_budget_1
-  openmp_root_budget_matches_the_launch_environment
-  ENVIRONMENT "OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=1;monoprop_TEST_EXPECT_BUDGET=1"
-)
-monoprop_add_launch_env_case(
-  openmp_env_root_budget_3
-  openmp_root_budget_matches_the_launch_environment
-  ENVIRONMENT "OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=3;monoprop_TEST_EXPECT_BUDGET=3"
-)
+foreach(_budget IN ITEMS 1 3)
+  monoprop_add_launch_env_case(
+    openmp_env_root_budget_${_budget}
+    openmp_root_budget_matches_the_launch_environment
+    ENVIRONMENT "OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=${_budget};monoprop_TEST_EXPECT_BUDGET=${_budget}"
+  )
+endforeach()
 # The runtime contract at an exact team of four: settings and affinity untouched, the budget read once, and the
 # invalid-owner rule, all inside real multi-owner operations.
 monoprop_add_launch_env_case(
   openmp_env_root_t4
   "openmp_root_budget_matches_the_launch_environment,openmp_root_captures_once_and_copies_preserve_it,openmp_propagator_work_leaves_openmp_settings_unchanged,openmp_failed_build_invalidates_the_owner,openmp_invalid_owner_can_still_be_destroyed"
-  ENVIRONMENT "OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=4;OMP_NUM_THREADS=4;monoprop_TEST_EXPECT_BUDGET=4"
+  THREADS 4
+  ENVIRONMENT "monoprop_TEST_EXPECT_BUDGET=4"
 )
 monoprop_add_launch_env_case(
   openmp_env_no_affinity_change
   openmp_propagator_work_does_not_change_affinity
-  ENVIRONMENT "OMP_PROC_BIND=false;OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2"
+  THREADS 2
+  ENVIRONMENT "OMP_PROC_BIND=false"
 )
 
 # The threaded cosine, fused-apply, scan and resolve kernels under runtime-limited and dynamic teams: exact results and
@@ -197,50 +223,32 @@ monoprop_add_launch_env_case(
   ENVIRONMENT "OMP_DYNAMIC=TRUE"
 )
 
-# One exact-team launch per T of the cases matching PATTERN, each a fresh process named <PREFIX>_env_t<T> with
-# monoprop_NUM_THREADS = OMP_NUM_THREADS = T and OMP_DYNAMIC off, never a limited or dynamic team. EXPECT_TEAM also names
-# the team the cases must see. Cases that need a nonprimary worker skip themselves at T = 1. A timeout is a hang, not a
-# pass.
+# One exact-team launch per T of the cases matching PATTERN, each a fresh process named <PREFIX>_env_t<T> under
+# monoprop_team_environment, never a limited or dynamic team. Cases that need a nonprimary worker skip themselves at
+# T = 1. A timeout is a hang, not a pass: the discovered per-case runs share the T = 1 environment
+# (_monoprop_unit_environment) but only CTest's default timeout, so a suite with a TIMEOUT keeps its _env_t1 launch.
 function(monoprop_add_team_launches PREFIX PATTERN)
-  cmake_parse_arguments("" "EXPECT_TEAM" "TIMEOUT" "THREADS" ${ARGN})
+  cmake_parse_arguments("" "" "TIMEOUT" "THREADS" ${ARGN})
   foreach(_threads IN LISTS _THREADS)
-    set(
-      _environment
-      "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-    )
-    if(_EXPECT_TEAM)
-      string(APPEND _environment ";monoprop_TEST_EXPECT_TEAM=${_threads}")
-    endif()
     monoprop_add_launch_env_case(
       ${PREFIX}_env_t${_threads}
       "${PATTERN}"
-      ENVIRONMENT "${_environment}"
+      THREADS ${_threads}
+      TIMEOUT "${_TIMEOUT}"
     )
-    if(_TIMEOUT)
-      set_tests_properties(
-        ${PREFIX}_env_t${_threads}
-        PROPERTIES
-          TIMEOUT
-            ${_TIMEOUT}
-      )
-    endif()
   endforeach()
 endfunction()
 
 # The fixed-team phase primitive (detail/sharded/Team.h) assumes exactly T workers, so its cases run only under
 # exact-team launches, never under the limited or dynamic teams above, which test for_blocks' reduced-team contract.
 # The passive-wait launch parks waiting workers, which widens the windows the checkpoint-generation cases probe.
-monoprop_add_team_launches(sharded_team "sharded_team_*" THREADS 1 2 4 EXPECT_TEAM TIMEOUT 120)
+monoprop_add_team_launches(sharded_team "sharded_team_*" THREADS 1 2 4 TIMEOUT 120)
 monoprop_add_launch_env_case(
   sharded_team_env_t4_passive
   "sharded_team_*"
-  ENVIRONMENT "monoprop_NUM_THREADS=4;OMP_NUM_THREADS=4;OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=4"
-)
-set_tests_properties(
-  sharded_team_env_t4_passive
-  PROPERTIES
-    TIMEOUT
-      120
+  THREADS 4
+  TIMEOUT 120
+  ENVIRONMENT "OMP_WAIT_POLICY=PASSIVE"
 )
 
 # Owner-initialized shard state (detail/sharded/State.h).
@@ -263,7 +271,7 @@ monoprop_add_team_launches(sharded_evaluation "sharded_evaluation_*" THREADS 1 2
 
 # The root (MonomialPropagator over detail/sharded/*) through its public operations, with private shard inspection,
 # phase observation and fault injection (PropagatorTestAccess.h).
-monoprop_add_team_launches(sharded_root "sharded_root_*" THREADS 1 2 4 EXPECT_TEAM TIMEOUT 900)
+monoprop_add_team_launches(sharded_root "sharded_root_*" THREADS 1 2 4 TIMEOUT 900)
 
 # The fused-sweep, two-pass and real-record cases (fused_cos_sweep_tests.cpp) at fixed teams of two and four: each
 # launch audits its own shards' records and agrees with itself bitwise; geometries are compared through complete
@@ -275,14 +283,9 @@ monoprop_add_team_launches(fused "fused_*,two_pass_apply_matches_graph_replay" T
 monoprop_add_launch_env_case(
   sharded_root_env_openmp_default_t3
   "sharded_root_unset_budget_takes_the_openmp_default,sharded_root_owns_t_routed_shards"
+  TIMEOUT 900
   ENVIRONMENT "OMP_NUM_THREADS=3;OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=3;monoprop_TEST_EXPECT_UNSET_BUDGET=3"
   ENVIRONMENT_MODIFICATION "monoprop_NUM_THREADS=unset:"
-)
-set_tests_properties(
-  sharded_root_env_openmp_default_t3
-  PROPERTIES
-    TIMEOUT
-      900
 )
 
 # Multi-process launches of the sharded runtime: P ranks x T threads each, every rank with an exact team. The
@@ -305,7 +308,11 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
       ${MPIEXEC_PREFLAGS} $<TARGET_FILE:monoprop_unit_tests.x>
       --run_test=${CASES}
   )
-  math(EXPR _processors "${RANKS} * ${THREADS}")
+  monoprop_team_environment(_team ${THREADS})
+  set(
+    _environment
+    "${_monoprop_mpi_launch_env};${_team};OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
+  )
   set_tests_properties(
     ${NAME}
     PROPERTIES
@@ -313,16 +320,15 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
         "mpi;mpi-${RANKS}"
       TIMEOUT
         300
-      PROCESSORS
-        ${_processors}
       ENVIRONMENT
-        "${_monoprop_mpi_launch_env};monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
+        "${_environment}"
   )
+  monoprop_set_test_processors(${NAME} ${RANKS} ${THREADS} "")
 endfunction()
 
-# The physical round (detail/sharded/Exchange.h) between processes, in every MPI build: two and three ranks at
-# T = 1, 2 and 4. At world size 1 (the per-case serial runs) the multi-rank cases skip. A timeout is a hang.
 if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
+  # The physical round (detail/sharded/Exchange.h) between processes, in every MPI build: two and three ranks at
+  # T = 1, 2 and 4. At world size 1 (the per-case serial runs) the multi-rank cases skip. A timeout is a hang.
   foreach(_ranks IN ITEMS 2 3)
     foreach(_threads IN ITEMS 1 2 4)
       monoprop_add_sharded_mpi_launch(
@@ -330,11 +336,9 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
       )
     endforeach()
   endforeach()
-endif()
 
-# The root over P ranks: two and four ranks (linear routing) at T = 1, 2 and 4; three ranks under splitmix; and three
-# ranks under linear routing, which every rank must reject together. A hang is a failure.
-if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
+  # The root over P ranks: two and four ranks (linear routing) at T = 1, 2 and 4; three ranks under splitmix; and
+  # three ranks under linear routing, which every rank must reject together. A hang is a failure.
   foreach(_ranks IN ITEMS 2 4)
     foreach(_threads IN ITEMS 1 2 4)
       monoprop_add_sharded_mpi_launch(
@@ -360,11 +364,9 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
       )
     endforeach()
   endforeach()
-endif()
 
-# Distributed failure and thread-support scenarios, each a separate two-rank launch with a 30 s timeout. Labelled mpi,
-# so only the MPI test leg runs them (mpi_failure_driver.cpp lists them).
-if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
+  # Distributed failure and thread-support scenarios, each a separate two-rank launch with a 30 s timeout. Labelled
+  # mpi, so only the MPI test leg runs them (mpi_failure_driver.cpp lists them).
   add_executable(monoprop_mpi_failure_driver.x mpi_failure_driver.cpp)
   target_include_directories(
     monoprop_mpi_failure_driver.x

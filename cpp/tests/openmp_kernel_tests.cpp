@@ -40,22 +40,14 @@
 namespace {
 
 using namespace monoprop;
+using kernel_test::bitwise_equal;
+using kernel_test::distinct_values;
 using kernel_test::RangeLog;
 using kernel_test::RecordingObserver;
 using monoprop::detail::KernelRange;
 using monoprop::detail::parallel::Options;
-using scan_test::bitwise_equal;
 
 constexpr auto thread_budgets = {1, 2, 3, 4};
-
-// Distinct, non-degenerate values, so a missed, extra or doubled scaling shows up bitwise.
-auto distinct_values(size_t n) -> VecD {
-    VecD v(n);
-    for (size_t i = 0; i < n; ++i) {
-        v[i] = 1.0 + static_cast<double>(i) * 1e-3;
-    }
-    return v;
-}
 
 // Equal up to the rounding of one multiply-add whose terms are bounded by |original| + 1 (|cos|, |sin| and every
 // snapshot value are at most one here): the difference a separately compiled fused multiply-add can make.
@@ -247,22 +239,21 @@ auto reference_apply(const HandContract &h, const VecD &coeffs, bool schrodinger
     return out;
 }
 
+template <class Observer = monoprop::detail::NoRangeObserver>
 auto apply_copy(const HandContract &h,
                 const VecD &coeffs,
                 bool schrodinger,
                 bool fused_scale,
                 int threads,
-                const RecordingObserver *observer = nullptr) -> VecD {
-    auto fc = h.fc;
-    VecD out = coeffs;
-    const double param = rotation_angle();
-    if (observer != nullptr) {
-        monoprop::detail::apply_fused_contract(fc, out, h.cos, param, schrodinger, fused_scale, {threads}, *observer);
-    }
-    else {
-        monoprop::detail::apply_fused_contract(fc, out, h.cos, param, schrodinger, fused_scale, {threads});
-    }
-    return out;
+                const Observer &observer = {}) -> VecD {
+    return kernel_test::apply_fused_copy(h.fc,
+                                         coeffs,
+                                         h.cos,
+                                         rotation_angle(),
+                                         schrodinger,
+                                         fused_scale,
+                                         threads,
+                                         observer);
 }
 
 } // namespace
@@ -332,16 +323,10 @@ BOOST_AUTO_TEST_CASE(openmp_cos_lazy_workers_participate,
     const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
     const auto index = kernel_test::make_synthetic_index(rows, 11);
     const auto gen = kernel_test::generator({0, 3, 7}); // odd: exercises the caller-prepared row parity
-    const auto recipe =
-        monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index, gen, rows, Basis::Majorana);
+    const auto recipe = monoprop::detail::make_lazy_fold(index, gen, rows, Basis::Majorana);
     VecD c = distinct_values(rows);
     RangeLog log;
-    monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(index,
-                                                                         recipe,
-                                                                         c.data(),
-                                                                         0.5,
-                                                                         Options{.threads = 4},
-                                                                         RecordingObserver{&log});
+    monoprop::detail::scale_cos_lazy(index, recipe, c.data(), 0.5, Options{.threads = 4}, RecordingObserver{&log});
     kernel_test::check_participation(log[KernelRange::cos_lazy], 4, "scale_cos_lazy budget 4");
 }
 
@@ -349,27 +334,25 @@ BOOST_AUTO_TEST_CASE(openmp_cos_lazy_small_or_serial_work_stays_on_the_caller) {
     const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
     const auto index = kernel_test::make_synthetic_index(rows, 12);
     const auto gen = kernel_test::generator({1, 4});
-    const auto recipe =
-        monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index, gen, rows, Basis::Majorana);
+    const auto recipe = monoprop::detail::make_lazy_fold(index, gen, rows, Basis::Majorana);
     VecD c = distinct_values(rows);
     RangeLog one_thread;
-    monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(index,
-                                                                         recipe,
-                                                                         c.data(),
-                                                                         0.5,
-                                                                         Options{.threads = 1},
-                                                                         RecordingObserver{&one_thread});
+    monoprop::detail::scale_cos_lazy(index,
+                                     recipe,
+                                     c.data(),
+                                     0.5,
+                                     Options{.threads = 1},
+                                     RecordingObserver{&one_thread});
     kernel_test::check_serial(one_thread[KernelRange::cos_lazy], 4, "budget 1");
     // A partial scaled_count inside the first block: one range, serial at any budget.
-    const auto short_recipe =
-        monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index, gen, 1000, Basis::Majorana);
+    const auto short_recipe = monoprop::detail::make_lazy_fold(index, gen, 1000, Basis::Majorana);
     RangeLog tiny;
-    monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(index,
-                                                                         short_recipe,
-                                                                         c.data(),
-                                                                         0.5,
-                                                                         Options{.threads = 4},
-                                                                         RecordingObserver{&tiny});
+    monoprop::detail::scale_cos_lazy(index,
+                                     short_recipe,
+                                     c.data(),
+                                     0.5,
+                                     Options{.threads = 4},
+                                     RecordingObserver{&tiny});
     kernel_test::check_serial(tiny[KernelRange::cos_lazy], 1, "one range, budget 4");
 }
 
@@ -381,6 +364,7 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_exact_on_disjoint_records) {
     const auto owners = kernel_test::add_owner_counts(h.fc);
     BOOST_TEST(std::ranges::all_of(owners, [](const auto &kv) { return kv.second == 1; }));
     const VecD coeffs = distinct_values(h.slots);
+    const auto sel = selected(h.cos, h.slots);
     for (const bool schrodinger : {false, true}) {
         for (const bool fused_scale : {false, true}) {
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " fused_scale=" << fused_scale) {
@@ -401,12 +385,12 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_exact_on_disjoint_records) {
                     BOOST_TEST(bitwise_equal(apply_copy(h, coeffs, schrodinger, fused_scale, threads), serial));
                 }
                 // Slots no record or mask touches keep their values.
-                const auto sel = selected(h.cos, h.slots);
+                size_t untouched_changed = 0;
                 for (size_t i = 0; i < h.slots; ++i) {
-                    if (sel[i] == 0 && !owners.contains(i)) {
-                        BOOST_TEST(serial[i] == coeffs[i]);
-                    }
+                    untouched_changed +=
+                        static_cast<size_t>(sel[i] == 0 && !owners.contains(i) && serial[i] != coeffs[i]);
                 }
+                BOOST_TEST(untouched_changed == 0U);
             }
         }
     }
@@ -418,7 +402,7 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_workers_participate,
     const VecD coeffs = distinct_values(h.slots);
     RangeLog log;
     const RecordingObserver observer{&log};
-    (void)apply_copy(h, coeffs, /*schrodinger=*/true, /*fused_scale=*/false, 4, &observer);
+    (void)apply_copy(h, coeffs, /*schrodinger=*/true, /*fused_scale=*/false, 4, observer);
     const size_t records = h.fc.hits.size() + h.fc.inserts.size() + h.fc.cross_half.size();
     kernel_test::check_participation(log[KernelRange::fused_gather], 3, "insert gather budget 4");
     kernel_test::check_participation(log[KernelRange::cos_mask],
@@ -434,7 +418,7 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_small_or_serial_work_stays_on_the_caller
     const VecD coeffs = distinct_values(h.slots);
     RangeLog one_thread;
     const RecordingObserver serial_observer{&one_thread};
-    (void)apply_copy(h, coeffs, true, false, 1, &serial_observer);
+    (void)apply_copy(h, coeffs, true, false, 1, serial_observer);
     const size_t records = h.fc.hits.size() + h.fc.inserts.size() + h.fc.cross_half.size();
     kernel_test::check_serial(one_thread[KernelRange::fused_gather], 3, "gather budget 1");
     kernel_test::check_serial(one_thread[KernelRange::fused_apply],
@@ -444,7 +428,7 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_small_or_serial_work_stays_on_the_caller
     // Fused-scale Heisenberg: no gather and no cosine phase at all.
     RangeLog heisenberg;
     const RecordingObserver heisenberg_observer{&heisenberg};
-    (void)apply_copy(h, coeffs, false, true, 4, &heisenberg_observer);
+    (void)apply_copy(h, coeffs, false, true, 4, heisenberg_observer);
     BOOST_TEST(heisenberg[KernelRange::fused_gather].prepares == 0u);
     BOOST_TEST(heisenberg[KernelRange::cos_mask].prepares == 0u);
 
@@ -452,7 +436,7 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_small_or_serial_work_stays_on_the_caller
     const VecD tiny_coeffs = distinct_values(tiny.slots);
     RangeLog small;
     const RecordingObserver small_observer{&small};
-    (void)apply_copy(tiny, tiny_coeffs, true, false, 4, &small_observer);
+    (void)apply_copy(tiny, tiny_coeffs, true, false, 4, small_observer);
     kernel_test::check_serial(small[KernelRange::fused_gather], 1, "tiny gather budget 4");
     kernel_test::check_serial(small[KernelRange::fused_apply], 1, "tiny records budget 4");
 
@@ -460,7 +444,7 @@ BOOST_AUTO_TEST_CASE(openmp_fused_apply_small_or_serial_work_stays_on_the_caller
     empty.slots = 16;
     RangeLog none;
     const RecordingObserver none_observer{&none};
-    const VecD untouched = apply_copy(empty, distinct_values(16), true, false, 4, &none_observer);
+    const VecD untouched = apply_copy(empty, distinct_values(16), true, false, 4, none_observer);
     BOOST_TEST(bitwise_equal(untouched, distinct_values(16)));
     kernel_test::check_serial(none[KernelRange::fused_apply], 0, "empty contract budget 4");
 }
@@ -477,42 +461,40 @@ BOOST_AUTO_TEST_CASE(openmp_kernel_worker_failures_join_before_rethrow) {
             BOOST_TEST(std::ranges::all_of(s.visits, [](int v) { return v <= 1; }));
         }
     };
+    const CosMask mask = plan_mask();
+    const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
+    const auto index = kernel_test::make_synthetic_index(rows, 13);
+    const auto recipe =
+        monoprop::detail::make_lazy_fold(index, kernel_test::generator({0, 3, 7}), rows, Basis::Majorana);
+    const auto h = hand_contract(3 * 1024 + 17, 2 * 1024 + 5, 1500, 14);
     for (const int threads : {1, 4}) {
         BOOST_TEST_CONTEXT("threads " << threads) {
             VecD c(4097 * 64, 1.0);
             RangeLog mask_log;
             BOOST_CHECK_THROW(monoprop::detail::scale_cos_mask(c.data(),
-                                                               plan_mask(),
+                                                               mask,
                                                                0.5,
                                                                Options{.threads = threads},
                                                                RecordingObserver{&mask_log, KernelRange::cos_mask, 2}),
                               std::runtime_error);
             check(mask_log, KernelRange::cos_mask, "scale_cos_mask");
 
-            const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
-            const auto index = kernel_test::make_synthetic_index(rows, 13);
-            const auto recipe =
-                monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index,
-                                                                                     kernel_test::generator({0, 3, 7}),
-                                                                                     rows,
-                                                                                     Basis::Majorana);
+            index.row_parity_.clear(); // cold, as on a fresh index: the kernel builds row parity first
             VecD lazy = distinct_values(rows);
             RangeLog lazy_log;
-            BOOST_CHECK_THROW(monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(
-                                  index,
-                                  recipe,
-                                  lazy.data(),
-                                  0.5,
-                                  Options{.threads = threads},
-                                  RecordingObserver{&lazy_log, KernelRange::cos_lazy, 2}),
+            BOOST_CHECK_THROW(monoprop::detail::scale_cos_lazy(index,
+                                                               recipe,
+                                                               lazy.data(),
+                                                               0.5,
+                                                               Options{.threads = threads},
+                                                               RecordingObserver{&lazy_log, KernelRange::cos_lazy, 2}),
                               std::runtime_error);
             check(lazy_log, KernelRange::cos_lazy, "scale_cos_lazy");
 
-            const auto h = hand_contract(3 * 1024 + 17, 2 * 1024 + 5, 1500, 14);
             for (const auto kind : {KernelRange::fused_gather, KernelRange::cos_mask, KernelRange::fused_apply}) {
                 RangeLog fused_log;
                 const RecordingObserver observer{&fused_log, kind, 2};
-                BOOST_CHECK_THROW((void)apply_copy(h, distinct_values(h.slots), true, false, threads, &observer),
+                BOOST_CHECK_THROW((void)apply_copy(h, distinct_values(h.slots), true, false, threads, observer),
                                   std::runtime_error);
                 check(fused_log, kind, "apply_fused_contract");
             }

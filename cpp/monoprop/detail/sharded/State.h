@@ -214,8 +214,6 @@ auto seed_operator(const OperatorSeed<NumModes> &seed, size_t flat_owner, MPOper
     const auto reserve = seed.paired ? seed.paired->reserve() : std::max<size_t>(1, heisenberg_rows.size());
     op.store = std::make_unique<OperatorIndex<NumModes>>(seed.inline_width);
     op.store->reserve(reserve);
-    // Store replaced: drop any lazy inverted index so it rebuilds against the new store.
-    op.inverted_index_.reset();
 
     // The kept monomials are distinct, so emplace (insert-if-absent) is an assigning insert. A row index is a
     // position in the kept subsequence, so the enumeration order is load-bearing.
@@ -237,7 +235,8 @@ auto seed_operator(const OperatorSeed<NumModes> &seed, size_t flat_owner, MPOper
     }
 
     op.initial_state = seed.initial_state;
-    op.initialize_caches(seed.paired.has_value());
+    op.warm_caches(seed.paired.has_value());
+    op.release_slack();
 }
 
 /*!

@@ -19,6 +19,7 @@
 #include <span>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/detail/operator/InvertedIndex.h"
@@ -41,25 +42,6 @@ MSet bs(const VecZ &r) {
 // indices_to_bitset maps mode m to bit 2N-1-m; columns are indexed by raw bit position.
 constexpr size_t col_of(size_t mode) {
     return 2 * N - 1 - mode;
-}
-
-// A column's set rows, whichever tier holds them — so an assertion can compare two indices that
-// picked different tiers for the same membership.
-auto rows_of(const Sc &sc, size_t c) -> std::vector<size_t> {
-    std::vector<size_t> out;
-    if (!sc.column_is_dense(c)) {
-        for (const auto row : sc.sparse_column_rows(c)) {
-            out.push_back(static_cast<size_t>(row));
-        }
-        return out;
-    }
-    const uint64_t *words = sc.dense_column_data(c);
-    for (size_t r = 0; r < sc.rows(); ++r) {
-        if (((words[r >> 6] >> (r & 63U)) & 1U) != 0U) {
-            out.push_back(r);
-        }
-    }
-    return out;
 }
 } // namespace
 
@@ -181,7 +163,8 @@ BOOST_AUTO_TEST_CASE(inverted_index_append_rows_matches_rebuild) {
     BOOST_REQUIRE_EQUAL(inc.rows(), full.rows());
     for (size_t c = 0; c < Sc::kNumColumns; ++c) {
         BOOST_TEST_CONTEXT("column " << c) {
-            BOOST_TEST(rows_of(inc, c) == rows_of(full, c), boost::test_tools::per_element());
+            BOOST_TEST(kernel_test::column_rows(inc, c) == kernel_test::column_rows(full, c),
+                       boost::test_tools::per_element());
         }
     }
 

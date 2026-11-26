@@ -15,8 +15,9 @@
 #pragma once
 
 // Test-only support shared by the sharded runtime suites: the launch's captured team and the Boost preconditions on
-// it, a scoped environment variable, the dedicated multi-rank launch check, exact keys and bit patterns for bitwise
-// comparisons, and the coefficient encoding the operator fixtures use.
+// it, a scoped environment variable, the dedicated multi-rank launch check, failure inspection, the exactness
+// tolerance, exact keys and bit patterns for bitwise comparisons, and the coefficient encoding the operator fixtures
+// use.
 
 #include <boost/test/unit_test.hpp>
 
@@ -27,15 +28,20 @@
 #include <cstdlib>
 #include <exception>
 #include <map>
+#include <new>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "AllocationProbe.h"
+#include "RankPreconditions.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/algebra/AlgebraCommon.h"
 #include "monoprop/core/Monomial.h"
+#include "monoprop/detail/mpi/MPICompat.h"
+#include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/Team.h"
@@ -50,6 +56,9 @@ using Key = std::vector<uint64_t>;
 using RetainedMap = std::map<Key, double>;
 
 inline constexpr size_t num_modes = 8;
+
+// Absolute tolerance of an exact-cutoff energy against an independent reference or a frozen exact energy.
+inline constexpr double exact_atol = 1e-9;
 
 inline auto team_options() -> parallel::Options {
     return parallel::capture_thread_budget();
@@ -109,21 +118,59 @@ private:
     std::optional<std::string> old_;
 };
 
+// The team the launch promises in monoprop_TEST_EXPECT_TEAM (cpp/tests/CMakeLists.txt): 1 in the per-case runs, T in
+// the fixed-T launches; empty when the run names none.
+inline auto expected_team() -> std::optional<int> {
+    const char *value = std::getenv("monoprop_TEST_EXPECT_TEAM");
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    return std::stoi(value);
+}
+
 // Multi-rank cases run only in their dedicated launches, which name the world size (cpp/tests/CMakeLists.txt).
 inline auto dedicated_launch(size_t ranks) -> bool {
     const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
     return text != nullptr && std::stoul(text) == ranks;
 }
 
+// Requires the dedicated launch of MPI_COMM_WORLD's size; stacks with the world-size preconditions of
+// RankPreconditions.h.
+inline auto dedicated_launch() -> boost::unit_test::decorator::precondition {
+    return boost::unit_test::precondition([](boost::unit_test::test_unit_id) {
+        const int ranks = monoprop::mpi::size(MPI_COMM_WORLD);
+        boost::test_tools::assertion_result result(dedicated_launch(static_cast<size_t>(ranks)));
+        result.message() << "needs the dedicated launch of " << ranks << " ranks (monoprop_TEST_SHARDED_RANKS)";
+        return result;
+    });
+}
+
+// A failure the suites inject, distinguishable from any the library raises.
+struct InjectedFailure : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+// The message of a non-empty exception pointer.
 inline auto message_of(const std::exception_ptr &error) -> std::string {
+    return monoprop::mpi::describe_exception(error);
+}
+
+inline auto require_success(const std::exception_ptr &error, const char *what) -> void {
+    if (error) {
+        BOOST_FAIL(what << " failed: " << message_of(error));
+    }
+}
+
+// Whether a non-empty exception pointer holds a std::bad_alloc. Makes no Boost.Test call, so any thread may ask.
+inline auto holds_bad_alloc(const std::exception_ptr &error) -> bool {
     try {
         std::rethrow_exception(error);
     }
-    catch (const std::exception &e) {
-        return e.what();
+    catch (const std::bad_alloc &) {
+        return true;
     }
     catch (...) {
-        return "non-standard exception";
+        return false;
     }
 }
 

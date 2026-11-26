@@ -298,21 +298,9 @@ struct MPOperator {
         coeffs.resize(size(), 0.0);
     }
 
-    auto shrink_state_to_fit() -> void {
-        release_spare_capacity(state_rows_);
-        release_spare_capacity(state_vals_);
-        release_spare_capacity(state_coeffs);
-    }
-
-    // Materialize the caches every operation expects after construction or a gate loop: pending initial entries
-    // placed onto their rows, the picture's state, then the inverted index. Heisenberg warms the sparse state only;
-    // densifying it here would defeat it. Schrödinger's dense vector IS the live evolved vector.
-    auto initialize_caches(bool schrodinger) -> void {
-        warm_caches(schrodinger);
-        release_slack();
-    }
-
-    // The first half of initialize_caches(): every cache materialized, no capacity released.
+    // Materialize the caches every operation expects after construction or a gate loop, releasing no capacity:
+    // pending initial entries placed onto their rows, the picture's state, then the inverted index. Heisenberg warms
+    // the sparse state only; densifying it here would defeat it. Schrödinger's dense vector IS the live evolved vector.
     auto warm_caches(bool schrodinger) -> void {
         (void)get_operator();
         if (schrodinger) {
@@ -324,11 +312,13 @@ struct MPOperator {
         (void)inverted_index();
     }
 
-    // The second half: the coefficient and state vectors' spare capacity given back (release_spare_capacity()). Large
-    // vectors keep their blocks; a small one is copied down, holding its old and new block at once.
+    // The coefficient and state vectors' spare capacity given back (release_spare_capacity()). Large vectors keep
+    // their blocks; a small one is copied down, holding its old and new block at once.
     auto release_slack() -> void {
         release_spare_capacity(op_coeffs);
-        shrink_state_to_fit();
+        release_spare_capacity(state_rows_);
+        release_spare_capacity(state_vals_);
+        release_spare_capacity(state_coeffs);
     }
 
     // The bytes release_slack() copies: every vector with spare capacity not released in place is copied whole.

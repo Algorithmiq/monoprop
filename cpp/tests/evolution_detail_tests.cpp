@@ -45,17 +45,6 @@ struct RecordingSink {
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
 
-// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
-auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
-    detail::MPOperator<8> op;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
-    return op;
-}
-
 } // namespace
 
 BOOST_AUTO_TEST_CASE(matched_epoch_begin_gate_clears_all) {
@@ -141,7 +130,7 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     for (size_t i = 0; i < 6; ++i) {
         terms.push_back(indices_to_bitset<8>({i, i + 8}));
     }
-    detail::MPOperator<8> op = indexed_op(terms);
+    detail::MPOperator<8> op = kernel_test::make_op<8>(terms);
     const size_t combined_size = 4; // rows 4 and 5 stand for terms this layer inserted after construction
 
     MatchedEpochSet matched;

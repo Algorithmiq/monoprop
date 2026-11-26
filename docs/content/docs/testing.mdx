@@ -172,9 +172,10 @@ ctest --test-dir build/editable/Release-mpi -N -L mpi-splitmix
 ```
 
 The launch-time thread policy is part of the registration, not of the test runner: every discovered case, per
-case and in the whole-suite variants, runs with `monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE`, so
-ordinary cases see one store per rank. The runner itself never sets `monoprop_NUM_THREADS`, so running the binary
-by hand uses your environment: set those variables yourself to reproduce a CTest case.
+case and in the whole-suite variants, runs with `monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE` and
+`monoprop_TEST_EXPECT_TEAM=1`, so ordinary cases see one store per rank. The runner itself never sets
+`monoprop_NUM_THREADS`, so running the binary by hand uses your environment: set those variables yourself to
+reproduce a CTest case.
 
 Cases that need another launch environment run again as separate entries, each a fresh process, because a
 propagator reads its thread budget once, when it is constructed: the `openmp_env_*` entries, the exact-team

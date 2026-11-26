@@ -31,16 +31,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/layer_build/Common.h"
+#include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/operator/InvertedIndex.h"
+#include "monoprop/detail/operator/MPOperator.h"
+#include "monoprop/detail/operator/RowAccess.h"
 
 namespace kernel_test {
 
@@ -55,6 +60,22 @@ struct RangeSlots {
     std::vector<int> team;   // omp_get_num_threads() seen by that owner
     std::vector<int> level;  // omp_get_level() seen by that owner (0: not inside any region)
     std::vector<int> visits; // visits per range; each element has one writer
+
+    // Counts one prepare() and sizes every slot for `ranges` ranges, on the calling thread.
+    auto prepare(size_t ranges) -> void {
+        ++prepares;
+        worker.assign(ranges, -1);
+        team.assign(ranges, 0);
+        level.assign(ranges, 0);
+        visits.assign(ranges, 0);
+    }
+    // Records the calling worker as the owner of `range`; only that range's owner calls this.
+    auto record(size_t range) -> void {
+        worker[range] = omp_get_thread_num();
+        team[range] = omp_get_num_threads();
+        level[range] = omp_get_level();
+        ++visits[range];
+    }
 };
 
 struct RangeLog {
@@ -69,20 +90,9 @@ struct RecordingObserver {
     KernelRange throw_kind = KernelRange::cos_lazy;
     size_t throw_range = SIZE_MAX;
 
-    auto prepare(KernelRange kind, size_t ranges) const -> void {
-        auto &s = (*log)[kind];
-        ++s.prepares;
-        s.worker.assign(ranges, -1);
-        s.team.assign(ranges, 0);
-        s.level.assign(ranges, 0);
-        s.visits.assign(ranges, 0);
-    }
+    auto prepare(KernelRange kind, size_t ranges) const -> void { (*log)[kind].prepare(ranges); }
     auto visit(KernelRange kind, size_t range) const -> void {
-        auto &s = (*log)[kind];
-        s.worker[range] = omp_get_thread_num();
-        s.team[range] = omp_get_num_threads();
-        s.level[range] = omp_get_level();
-        ++s.visits[range];
+        (*log)[kind].record(range);
         if (kind == throw_kind && range == throw_range) {
             throw std::runtime_error("injected kernel worker failure");
         }
@@ -95,10 +105,7 @@ struct RecordingObserver {
 struct PhaseLog {
     struct Call {
         KernelRange kind;
-        std::vector<int> worker; // -1 if never visited
-        std::vector<int> team;
-        std::vector<int> level;
-        std::vector<int> visits;
+        RangeSlots slots; // prepares is always 1
     };
     std::vector<Call> calls;
 
@@ -121,28 +128,16 @@ struct AccumulatingObserver {
     size_t throw_range = SIZE_MAX;
 
     auto prepare(KernelRange kind, size_t ranges) const -> void {
-        log->calls.push_back({kind,
-                              std::vector<int>(ranges, -1),
-                              std::vector<int>(ranges, 0),
-                              std::vector<int>(ranges, 0),
-                              std::vector<int>(ranges, 0)});
+        log->calls.push_back({.kind = kind, .slots = {}});
+        log->calls.back().slots.prepare(ranges);
     }
     auto visit(KernelRange kind, size_t range) const -> void {
-        auto &c = log->calls.back();
-        c.worker[range] = omp_get_thread_num();
-        c.team[range] = omp_get_num_threads();
-        c.level[range] = omp_get_level();
-        ++c.visits[range];
+        log->calls.back().slots.record(range);
         if (kind == throw_kind && range == throw_range && log->of(kind).size() == throw_call + 1) {
             throw std::runtime_error("injected resolve worker failure");
         }
     }
 };
-
-// A PhaseLog call as RangeSlots, so the participation/serial checks below apply to it.
-inline auto slots_of(const PhaseLog::Call &c) -> RangeSlots {
-    return RangeSlots{.prepares = 1, .worker = c.worker, .team = c.team, .level = c.level, .visits = c.visits};
-}
 
 // Evidence that one kernel's own ranges ran on several workers of a region the kernel opened.
 struct Participation {
@@ -328,13 +323,76 @@ inline auto grow_synthetic_index(monoprop::detail::InvertedIndex<synthetic_index
     }
 }
 
-// A Majorana/Pauli generator over the synthetic index's 16 columns.
-inline auto generator(std::initializer_list<size_t> columns) -> monoprop::Monomial<synthetic_index_modes> {
-    monoprop::Monomial<synthetic_index_modes> gen{};
+// A Majorana/Pauli generator with exactly `columns` set, by default over the synthetic index's 16 columns.
+template <size_t N = synthetic_index_modes>
+auto generator(std::initializer_list<size_t> columns) -> monoprop::Monomial<N> {
+    monoprop::Monomial<N> gen{};
     for (const auto c : columns) {
         gen.set(c);
     }
     return gen;
+}
+
+// An operator whose rows are `terms`, in order.
+template <size_t N>
+auto make_op(const std::vector<monoprop::Monomial<N>> &terms, monoprop::Basis basis = monoprop::Basis::Majorana)
+    -> monoprop::detail::MPOperator<N> {
+    monoprop::detail::MPOperator<N> op;
+    op.basis = basis;
+    if (terms.empty()) {
+        return op;
+    }
+    monoprop::detail::insert_absent_terms<N>(
+        op,
+        terms.size(),
+        [&](size_t k) -> const monoprop::Monomial<N> & { return terms[k]; },
+        [&](size_t k, size_t base) { monoprop::assign_row<N>(*op.store, base + k, terms[k]); });
+    return op;
+}
+
+// A column's set rows, whichever tier holds them, so two indices that picked different tiers compare equal.
+template <size_t N>
+auto column_rows(const monoprop::detail::InvertedIndex<N> &index, size_t c) -> std::vector<size_t> {
+    if (!index.column_is_dense(c)) {
+        const auto sparse = index.sparse_column_rows(c);
+        return std::vector<size_t>(sparse.begin(), sparse.end());
+    }
+    std::vector<size_t> rows;
+    const uint64_t *w = index.dense_column_data(c);
+    for (size_t r = 0; r < index.rows(); ++r) {
+        if (((w[r >> 6] >> (r & 63U)) & 1U) != 0U) {
+            rows.push_back(r);
+        }
+    }
+    return rows;
+}
+
+// Distinct, non-degenerate values, so a missed, extra or doubled scaling shows up bitwise.
+inline auto distinct_values(size_t n) -> monoprop::VecD {
+    monoprop::VecD v(n);
+    for (size_t i = 0; i < n; ++i) {
+        v[i] = 1.0 + static_cast<double>(i) * 1e-3;
+    }
+    return v;
+}
+
+inline auto bitwise_equal(std::span<const double> a, std::span<const double> b) -> bool {
+    // memcmp must not see an empty vector's null data pointer, even for zero bytes.
+    return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
+}
+
+// apply_fused_contract on copies of `fc` and `coeffs`, reporting to `observer`.
+template <class Observer = monoprop::detail::NoRangeObserver>
+auto apply_fused_copy(monoprop::detail::FusedContract fc,
+                      monoprop::VecD coeffs,
+                      const monoprop::CosMask &cos,
+                      double angle,
+                      bool schrodinger,
+                      bool fused_scale,
+                      int threads,
+                      const Observer &observer = {}) -> monoprop::VecD {
+    monoprop::detail::apply_fused_contract(fc, coeffs, cos, angle, schrodinger, fused_scale, {threads}, observer);
+    return coeffs;
 }
 
 // Independent add-owner count: every slot a fused contract writes (sources and targets of full

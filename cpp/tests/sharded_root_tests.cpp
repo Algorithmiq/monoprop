@@ -14,9 +14,9 @@
 
 /*
  * The sharded OpenMP root: MonomialPropagator over the T shard states of one rank, through its public operations. The
- * team size T is the captured launch budget; cpp/tests/CMakeLists.txt reruns every case in fresh processes at T = 1, 2
- * and 4 (sharded_root_env_t*), and the serial per-case registrations run at T = 1. Cases that need a nonprimary worker
- * return early at T = 1.
+ * team size T is the captured launch budget; cpp/tests/CMakeLists.txt runs every case in its own process at T = 1 and
+ * reruns them all in fresh processes at T = 2 and 4 (sharded_root_env_t*). Cases that need a nonprimary worker return
+ * early at T = 1.
  *
  * Private inspection, phase observation and failure injection go through PropagatorTestAccess (shards(), the (1, T)
  * router, and the test-only RootObserver every seam reports to). Observers record the executing worker inside the
@@ -41,7 +41,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -60,7 +59,6 @@
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
-#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/RootObserver.h"
 
 namespace {
@@ -74,8 +72,7 @@ using MP = MonomialPropagator<num_modes>;
 using Access = monoprop::detail::PropagatorTestAccess<num_modes>;
 
 auto launch_team() -> size_t {
-    const char *text = std::getenv("monoprop_TEST_EXPECT_TEAM");
-    return text == nullptr ? 1 : static_cast<size_t>(std::stoul(text));
+    return static_cast<size_t>(sharded_test::expected_team().value_or(1));
 }
 
 auto lih() -> const CaseData & {
@@ -83,16 +80,13 @@ auto lih() -> const CaseData & {
     return data;
 }
 
-struct Injected : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
+using Injected = sharded_test::InjectedFailure;
 
 enum class Seam : std::uint8_t { shard, construction, evaluation, root };
 
 struct Visit {
     Seam seam;
     int work;
-    size_t step;
     size_t shard;
     int worker;
     int team;
@@ -145,7 +139,6 @@ private:
             const std::lock_guard lock(mutex_);
             visits_.push_back(Visit{seam,
                                     work,
-                                    step,
                                     shard,
                                     omp_get_thread_num(),
                                     omp_get_num_threads(),
@@ -172,28 +165,41 @@ struct Config {
     bool schrodinger = false;
     std::optional<double> lower_atol = std::nullopt;
     std::optional<std::vector<VecZ>> basis_change = std::nullopt;
-    Basis basis = Basis::Majorana;
+    std::optional<OperatorDict> op = std::nullopt;    // LiH's Hamiltonian when empty
+    std::optional<VecZ> initial_state = std::nullopt; // LiH's initial state when empty
 };
 
-auto make(const Config &config = {}, const sharded::RootObserver *observer = nullptr) -> std::unique_ptr<MP> {
+auto make_on(mpi::Comm comm, const Config &config = {}, const sharded::RootObserver *observer = nullptr)
+    -> std::unique_ptr<MP> {
     const auto &data = lih();
     return Access::construct_observed(observer,
-                                      data.hamiltonian,
+                                      config.op ? *config.op : data.hamiltonian,
                                       4U,
-                                      data.initial_state,
+                                      config.initial_state ? *config.initial_state : data.initial_state,
                                       config.schrodinger ? std::optional<unsigned int>{6U} : std::nullopt,
-                                      mpi::Comm(MPI_COMM_SELF),
+                                      comm,
                                       config.lower_atol,
                                       std::optional<double>{},
                                       CutoffType::Length,
                                       config.basis_change,
                                       num_modes,
-                                      config.basis);
+                                      Basis::Majorana);
+}
+
+auto make(const Config &config = {}, const sharded::RootObserver *observer = nullptr) -> std::unique_ptr<MP> {
+    return make_on(mpi::Comm(MPI_COMM_SELF), config, observer);
 }
 
 auto build(MP &sim) -> void {
     const auto &data = lih();
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+}
+
+// make(), with the LiH circuit built.
+auto make_built(const Config &config = {}, const sharded::RootObserver *observer = nullptr) -> std::unique_ptr<MP> {
+    auto sim = make(config, observer);
+    build(*sim);
+    return sim;
 }
 
 auto params() -> const VecD & {
@@ -279,7 +285,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_sole_shard_serial_evaluation_matches_the_phase
     using Access = monoprop::detail::PropagatorTestAccess<8>;
     const auto data = load_case_data<8>("random_exact.msgpack");
     const sharded::RootObserver phases; // observes nothing; its presence keeps the sharded phases
-    const auto bits = [](double v) { return std::bit_cast<uint64_t>(v); };
+    using sharded_test::bits;
     const auto same = [&](const std::pair<double, VecD> &a, const std::pair<double, VecD> &b) {
         return bits(a.first) == bits(b.first) && a.second.size() == b.second.size()
                && std::ranges::equal(a.second, b.second, [&](double x, double y) { return bits(x) == bits(y); });
@@ -333,8 +339,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_sole_shard_serial_evaluation_matches_the_phase
 
 // An invalid owner fails its validity guard before the shard-count check, at every T.
 BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_check_validity_first) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     Access::set_cutoff_fn(*sim, [](const Monomial<num_modes> &) -> bool { throw Injected("injected cutoff failure"); });
     BOOST_CHECK_THROW(build(*sim), Injected);
     BOOST_TEST_REQUIRE(Access::is_invalid(*sim));
@@ -369,8 +374,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_unset_budget_takes_the_openmp_default) {
 BOOST_AUTO_TEST_CASE(sharded_root_owns_t_routed_shards) {
     for (const bool schrodinger : {false, true}) {
         BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
-            auto sim = make({.schrodinger = schrodinger});
-            build(*sim);
+            auto sim = make_built({.schrodinger = schrodinger});
             const size_t team = launch_team();
             const auto &shards = Access::shards(*sim);
             const auto &router = Access::router(*sim);
@@ -399,8 +403,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_owns_t_routed_shards) {
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_aggregates_cover_every_shard_once) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     const auto &shards = Access::shards(*sim);
     size_t rows = 0;
     std::pair<size_t, size_t> graph_size{0, 0};
@@ -534,16 +537,14 @@ BOOST_AUTO_TEST_CASE(sharded_root_opaque_cutoff_traverses_on_the_primary) {
             BOOST_TEST(static_cast<size_t>(v.worker) == v.shard);
         }
     }
-    auto reference = make();
-    build(*reference);
+    auto reference = make_built();
     BOOST_TEST(energy_of(*sim) == energy_of(*reference));
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_export_pairs_each_shard_with_its_block) {
     for (const bool schrodinger : {false, true}) {
         BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
-            auto sim = make({.schrodinger = schrodinger});
-            build(*sim);
+            auto sim = make_built({.schrodinger = schrodinger});
             const auto contracted = sim->contract_partially(params(), false);
             const auto terms = sim->evolved_operator_terms(params(), 0.0);
             const auto &shards = Access::shards(*sim);
@@ -576,8 +577,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_export_pairs_each_shard_with_its_block) {
 BOOST_AUTO_TEST_CASE(sharded_root_contraction_updates_the_right_picture) {
     for (const bool schrodinger : {false, true}) {
         BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
-            auto sim = make({.schrodinger = schrodinger});
-            build(*sim);
+            auto sim = make_built({.schrodinger = schrodinger});
             const auto &shards = Access::shards(*sim);
             const auto picture = [&](size_t t) -> const VecD & {
                 return schrodinger ? shards[t]->op.state_coeffs : shards[t]->op.op_coeffs;
@@ -612,8 +612,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_contraction_updates_the_right_picture) {
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_initial_operator_updates_route_to_owners) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     const auto epoch = Access::epoch(*sim);
     OperatorDict scaled;
     for (const auto &[key, value] : lih().hamiltonian) {
@@ -631,15 +630,13 @@ BOOST_AUTO_TEST_CASE(sharded_root_initial_operator_updates_route_to_owners) {
             BOOST_TEST(router.dest<num_modes>(mono) == t);
         }
     }
-    auto reference = make();
-    build(*reference);
+    auto reference = make_built();
     // Linear in the operator: every coefficient doubled, the identity included.
     BOOST_TEST(energy_of(*sim) == 2.0 * energy_of(*reference), boost::test_tools::tolerance(1e-12));
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_remap_replaces_immutable_cores) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     const MP before(*sim);
     const auto &shards = Access::shards(*sim);
     const auto &old_shards = Access::shards(before);
@@ -657,8 +654,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_remap_replaces_immutable_cores) {
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_copies_are_owner_allocated_and_independent) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     const double energy = energy_of(*sim);
     auto copy = std::make_unique<MP>(*sim);
     const auto clone = Access::clone(*sim);
@@ -751,8 +747,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_virtual_hooks_keep_working) {
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_rejections_before_mutation_leave_it_usable) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     const double energy = energy_of(*sim);
     const auto retained = sim->expectation_value_functional();
     const auto &data = lih();
@@ -883,8 +878,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_failures_after_mutation_invalidate_the_root) {
 BOOST_AUTO_TEST_CASE(sharded_root_functional_failures_invalidate_their_owner) {
     const size_t last = launch_team() - 1;
     Recorder recorder;
-    auto sim = make({}, &recorder);
-    build(*sim);
+    auto sim = make_built({}, &recorder);
     const auto functional = sim->expectation_value_and_gradient_functional();
     const auto value = functional(params());
     // Argument errors are checked before the team: the owner stays usable.
@@ -898,8 +892,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_functional_failures_invalidate_their_owner) {
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_functional_epoch_and_graph_guards) {
-    auto sim = make();
-    build(*sim);
+    auto sim = make_built();
     const auto energy = sim->expectation_value_functional();
     const auto pared = sim->expectation_value_and_gradient_functional(1e-3);
     const double before = energy(params());
@@ -920,8 +913,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_copy_and_seed_failures_are_contained) {
     recorder.arm({Seam::shard, 2 * static_cast<int>(sharded::ShardWork::seed), last, std::nullopt});
     BOOST_CHECK_THROW(make({}, &recorder), Injected);
     recorder.disarm();
-    auto sim = make({}, &recorder);
-    build(*sim);
+    auto sim = make_built({}, &recorder);
     const double energy = energy_of(*sim);
     recorder.arm({Seam::shard, 2 * static_cast<int>(sharded::ShardWork::copy) + 1, last, std::nullopt});
     BOOST_CHECK_THROW(MP{*sim}, Injected);
@@ -931,10 +923,8 @@ BOOST_AUTO_TEST_CASE(sharded_root_copy_and_seed_failures_are_contained) {
     BOOST_TEST(energy_of(*sim) == energy);
 }
 
-BOOST_AUTO_TEST_CASE(sharded_root_allocation_failures_are_catchable) {
-    if (!allocation::available()) {
-        return; // the probe is compiled out under this sanitizer
-    }
+BOOST_AUTO_TEST_CASE(sharded_root_allocation_failures_are_catchable,
+                     *boost::unit_test::precondition(sharded_test::has_allocation_probe)) {
     // Every operator new on the calling thread (the caller and, inside teams, worker 0) fails in turn. Each failure
     // must surface as std::bad_alloc: before mutation the object is unchanged, after it the object is invalid.
     const auto data = load_case_data<8>("random_exact.msgpack");
@@ -1006,34 +996,10 @@ auto routable_world() -> bool {
     return !routing::linear_requested() || std::has_single_bit(world_size());
 }
 
-auto has_routable_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    boost::test_tools::assertion_result result(world_size() >= 2 && dedicated_launch(world_size()) && routable_world());
-    result.message() << "the launch has " << world_size() << " rank(s)"
-                     << (routing::linear_requested() ? " under linear routing" : "")
-                     << "; this case needs at least 2 ranks the router accepts";
+auto routable(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
+    boost::test_tools::assertion_result result(routable_world());
+    result.message() << "the linear router rejects " << world_size() << " ranks";
     return result;
-}
-
-auto make_on(mpi::Comm comm, const Config &config = {}, const sharded::RootObserver *observer = nullptr)
-    -> std::unique_ptr<MP> {
-    const auto &data = lih();
-    return Access::construct_observed(observer,
-                                      data.hamiltonian,
-                                      4U,
-                                      data.initial_state,
-                                      config.schrodinger ? std::optional<unsigned int>{6U} : std::nullopt,
-                                      comm,
-                                      config.lower_atol,
-                                      std::optional<double>{},
-                                      CutoffType::Length,
-                                      config.basis_change,
-                                      num_modes,
-                                      config.basis);
-}
-
-// The plan's general tolerance for cross-geometry comparisons.
-auto close(double a, double b) -> bool {
-    return std::abs(a - b) <= 1e-9 + (1e-7 * std::max(std::abs(a), std::abs(b)));
 }
 
 auto key_hash(const VecZ &key) -> uint64_t {
@@ -1066,7 +1032,7 @@ auto check_global_terms(const std::vector<std::pair<VecZ, std::complex<double>>>
                 ++missing;
                 continue;
             }
-            if (!close(value.real(), it->second.real()) || !close(value.imag(), it->second.imag())) {
+            if (!near(value.real(), it->second.real()) || !near(value.imag(), it->second.imag())) {
                 ++off;
             }
         }
@@ -1086,7 +1052,7 @@ auto check_close_vectors(const VecD &got, const VecD &want, const char *what) ->
     BOOST_TEST_CONTEXT(what) {
         BOOST_TEST_REQUIRE(got.size() == want.size());
         for (size_t i = 0; i < got.size(); ++i) {
-            BOOST_TEST(close(got[i], want[i]), "component " << i << ": " << got[i] << " vs " << want[i]);
+            BOOST_TEST(near(got[i], want[i]), "component " << i << ": " << got[i] << " vs " << want[i]);
         }
     }
 }
@@ -1106,7 +1072,8 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejects_an_unroutable_geometry) {
     BOOST_CHECK_THROW(make_on(mpi::Comm(MPI_COMM_WORLD)), routing::UnroutableGeometry);
 }
 
-BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners, *boost::unit_test::precondition(has_routable_ranks)) {
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners,
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     const size_t team = launch_team();
     auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
     auto self = make_on(mpi::Comm(MPI_COMM_SELF));
@@ -1131,7 +1098,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners, *boost::unit_t
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_operations_reuse_the_owners_rounds,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     using Kind = sharded::PhysicalRounds::Kind;
     const auto &data = lih();
     const size_t team = launch_team();
@@ -1161,7 +1128,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_operations_reuse_the_owners_rounds,
  * evaluation reuses. The rounds themselves stay the owner's, and a later construction gives the same results.
  */
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_construction_returns_its_staging,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     using Kind = sharded::PhysicalRounds::Kind;
     const auto &data = lih();
     const size_t team = launch_team();
@@ -1175,22 +1142,23 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_construction_returns_its_staging,
     BOOST_TEST(rounds->peek(Kind::graph_answers).threads() == team);
     BOOST_TEST(rounds->peek(Kind::queries).staging_bytes() == 0U);
     BOOST_TEST(rounds->peek(Kind::graph_answers).staging_bytes() == 0U);
-    BOOST_TEST(close(world->expectation_value(data.parameters), self->expectation_value(data.parameters)));
+    BOOST_TEST(near(world->expectation_value(data.parameters), self->expectation_value(data.parameters)));
     BOOST_TEST(rounds->peek(Kind::replay).staging_bytes() > 0U);
     // A second construction plans and maps its staging again.
     build(*world);
     build(*self);
     BOOST_TEST(rounds->peek(Kind::queries).staging_bytes() == 0U);
     BOOST_TEST(mpi::allreduce_sum<size_t>(world->size(), mpi::Comm(MPI_COMM_WORLD)) == self->size());
-    BOOST_TEST(close(world->expectation_value(data.parameters), self->expectation_value(data.parameters)));
+    BOOST_TEST(near(world->expectation_value(data.parameters), self->expectation_value(data.parameters)));
 }
 
-BOOST_AUTO_TEST_CASE(sharded_root_multirank_matches_one_process, *boost::unit_test::precondition(has_routable_ranks)) {
+BOOST_AUTO_TEST_CASE(sharded_root_multirank_matches_one_process,
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     const auto &data = lih();
-    for (const Config config : {Config{},
-                                Config{.schrodinger = true},
-                                Config{.lower_atol = 1e-3},
-                                Config{.schrodinger = true, .lower_atol = 1e-4}}) {
+    for (const Config &config : {Config{},
+                                 Config{.schrodinger = true},
+                                 Config{.lower_atol = 1e-3},
+                                 Config{.schrodinger = true, .lower_atol = 1e-4}}) {
         BOOST_TEST_CONTEXT("schrodinger=" << config.schrodinger << " lower_atol=" << config.lower_atol.has_value()) {
             auto world = make_on(mpi::Comm(MPI_COMM_WORLD), config);
             auto self = make_on(mpi::Comm(MPI_COMM_SELF), config);
@@ -1204,33 +1172,33 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_matches_one_process, *boost::unit_te
                 build(*self);
             }
             const auto &p = params();
-            BOOST_TEST(close(world->expectation_value(p), self->expectation_value(p)));
+            BOOST_TEST(near(world->expectation_value(p), self->expectation_value(p)));
             const auto [wv, wg] = world->expectation_value_and_gradient(p);
             const auto [sv, sg] = self->expectation_value_and_gradient(p);
-            BOOST_TEST(close(wv, sv));
+            BOOST_TEST(near(wv, sv));
             check_close_vectors(wg, sg, "gradient");
             const auto [pv, pg] = world->expectation_value_and_gradient_functional(1e-3)(p);
             const auto [qv, qg] = self->expectation_value_and_gradient_functional(1e-3)(p);
-            BOOST_TEST(close(pv, qv));
+            BOOST_TEST(near(pv, qv));
             check_close_vectors(pg, qg, "pared gradient");
             check_global_terms(world->evolved_operator_terms(p, 0.0), self->evolved_operator_terms(p, 0.0), "export");
             // A copy evaluates alike and mutates independently.
             auto copy = std::make_unique<MP>(*world);
-            BOOST_TEST(close(copy->expectation_value(p), wv));
+            BOOST_TEST(near(copy->expectation_value(p), wv));
             // Contract in place, then extend the contracted picture.
             BOOST_TEST(mpi::allreduce_sum<size_t>(world->contract_partially(p, true).size(), mpi::Comm(MPI_COMM_WORLD))
                        == self->contract_partially(p, true).size());
-            BOOST_TEST(close(world->expectation_value({}), self->expectation_value({})));
+            BOOST_TEST(near(world->expectation_value({}), self->expectation_value({})));
             build(*world);
             build(*self);
-            BOOST_TEST(close(world->expectation_value(p), self->expectation_value(p)));
-            BOOST_TEST(close(copy->expectation_value(p), wv));
+            BOOST_TEST(near(world->expectation_value(p), self->expectation_value(p)));
+            BOOST_TEST(near(copy->expectation_value(p), wv));
         }
     }
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_propagation_matches_one_process,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     const auto &data = lih();
     for (const bool schrodinger : {false, true}) {
         BOOST_TEST_CONTEXT("schrodinger=" << schrodinger) {
@@ -1238,14 +1206,14 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_propagation_matches_one_process,
             auto self = make_on(mpi::Comm(MPI_COMM_SELF), Config{.schrodinger = schrodinger});
             world->propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
             self->propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
-            BOOST_TEST(close(world->expectation_value({}), self->expectation_value({})));
+            BOOST_TEST(near(world->expectation_value({}), self->expectation_value({})));
             check_global_terms(world->evolved_operator_terms({}, 0.0), self->evolved_operator_terms({}, 0.0), "map");
         }
     }
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_updates_route_to_their_owners,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     const auto &data = lih();
     auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
     auto self = make_on(mpi::Comm(MPI_COMM_SELF));
@@ -1257,11 +1225,11 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_updates_route_to_their_owners,
     }
     world->update_initial_operator(scaled);
     self->update_initial_operator(scaled);
-    BOOST_TEST(close(world->expectation_value(params()), self->expectation_value(params())));
+    BOOST_TEST(near(world->expectation_value(params()), self->expectation_value(params())));
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_mpi_runs_on_the_primary_and_owners_on_their_workers,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     const size_t team = launch_team();
     Recorder recorder;
     auto world = make_on(mpi::Comm(MPI_COMM_WORLD), Config{.lower_atol = 1e-3}, &recorder);
@@ -1289,7 +1257,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_mpi_runs_on_the_primary_and_owners_o
 // Raw access depends on T alone: at T = 1 every rank hands out its actual sole shard, whatever P; above it every rank
 // rejects. The ordinary extension hooks work over P ranks, each rank applying and returning its own share only.
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_raw_accessors_and_hooks,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     const size_t team = launch_team();
     const auto &data = lih();
     auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
@@ -1329,12 +1297,12 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_raw_accessors_and_hooks,
     BOOST_TEST(foreign == 0U);
     const size_t routed = data.hamiltonian.size() - (data.hamiltonian.contains(VecZ{}) ? 1 : 0);
     BOOST_TEST(mpi::allreduce_sum<size_t>(derived.last_terms.size(), mpi::Comm(MPI_COMM_WORLD)) == routed);
-    BOOST_TEST(close(derived.expectation_value(params()), energy));
+    BOOST_TEST(near(derived.expectation_value(params()), energy));
     BOOST_TEST(clone->expectation_value(params()) == energy);
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejections_before_mutation_leave_it_usable,
-                     *boost::unit_test::precondition(has_routable_ranks)) {
+                     *min_ranks(2) * dedicated_launch() * boost::unit_test::precondition(routable)) {
     // Replicated arguments fail the same validation on every rank, before any team or collective.
     auto world = make_on(mpi::Comm(MPI_COMM_WORLD));
     build(*world);
@@ -1346,18 +1314,8 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejections_before_mutation_leave_it_
 }
 
 BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
-    auto empty = Access::construct_observed(nullptr,
-                                            OperatorDict{},
-                                            4U,
-                                            VecZ{},
-                                            std::optional<unsigned int>{},
-                                            mpi::Comm(MPI_COMM_SELF),
-                                            std::optional<double>{},
-                                            std::optional<double>{},
-                                            CutoffType::Length,
-                                            std::optional<std::vector<VecZ>>{},
-                                            num_modes,
-                                            Basis::Majorana);
+    // Roots with no initial state.
+    auto empty = make({.op = OperatorDict{}, .initial_state = VecZ{}});
     BOOST_TEST(empty->size() == 0U);
     empty->build_graph({VecZ{0, 1}, VecZ{}}, VecZ{0, 1}, VecD{1.0, 1.0});
     BOOST_TEST(empty->graph_layers() == 2U);
@@ -1370,18 +1328,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
 
     // The replicated identity is rank-level metadata: added once to every result, at every T, never exported by
     // a shard.
-    auto core_only = Access::construct_observed(nullptr,
-                                                OperatorDict{{VecZ{}, std::complex<double>{2.5, 0.0}}},
-                                                4U,
-                                                VecZ{},
-                                                std::optional<unsigned int>{},
-                                                mpi::Comm(MPI_COMM_SELF),
-                                                std::optional<double>{},
-                                                std::optional<double>{},
-                                                CutoffType::Length,
-                                                std::optional<std::vector<VecZ>>{},
-                                                num_modes,
-                                                Basis::Majorana);
+    auto core_only = make({.op = OperatorDict{{VecZ{}, std::complex<double>{2.5, 0.0}}}, .initial_state = VecZ{}});
     core_only->build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0});
     BOOST_TEST(core_only->core_term() == 2.5);
     BOOST_TEST(core_only->expectation_value(VecD{0.3}) == 2.5);

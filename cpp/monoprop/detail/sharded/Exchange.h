@@ -58,8 +58,8 @@
  * Column t's offsets and counts are owner t's own contiguous entries, written by place_column(t) and read by its
  * packing: no line of them is shared with another owner's column.
  *
- * Wire layout: the message to peer rank b holds, for each of b's shards t in
- * ascending order, each local source shard's block for (b, t) in ascending source order. Received messages have the
+ * Wire layout: the message to peer rank b holds, for each of b's shards t in ascending order, each local source shard's
+ * block for (b, t) in ascending source order. Received messages have the
  * same layout, so a local destination's part of a message is contiguous and its blocks ascend by source shard.
  * Every count, per-peer total and displacement is a checked int; a violation throws before anything is posted.
  *
@@ -313,7 +313,7 @@ public:
      */
     template <class T>
     [[nodiscard]] auto send_column(size_t shard, size_t peer) -> SendColumn<T> {
-        const ColumnBytes column = send_column_bytes_(shard, peer, exchange_element_of<T>);
+        const SendColumn<std::byte> column = send_column_bytes_(shard, peer, exchange_element_of<T>);
         return {.stage = column.stage, .offsets = column.offsets, .counts = column.counts};
     }
 
@@ -329,16 +329,12 @@ public:
 
 private:
     struct State;
-    //! A column's staging and its offsets and counts in elements, before the element type is applied.
-    struct ColumnBytes {
-        std::byte *stage = nullptr;
-        std::span<const long long> offsets;
-        std::span<const int> counts;
-    };
 
     monoprop_EXPORT auto send_bytes_(size_t shard, size_t peer, size_t dest, ExchangeElement element)
         -> std::span<std::byte>;
-    monoprop_EXPORT auto send_column_bytes_(size_t shard, size_t peer, ExchangeElement element) -> ColumnBytes;
+    //! The column's staging, offsets and counts in elements, before the element type is applied.
+    monoprop_EXPORT auto send_column_bytes_(size_t shard, size_t peer, ExchangeElement element)
+        -> SendColumn<std::byte>;
     [[nodiscard]] monoprop_EXPORT auto recv_bytes_(size_t shard,
                                                    size_t peer,
                                                    size_t source,
@@ -353,9 +349,7 @@ private:
  * Every construction, evaluation and replay call of an owner reuses these rounds instead of allocating its own. The
  * replay round's staging grows to a high-water mark once and stays, since every evaluation reuses it; the construction
  * rounds unmap theirs when a construction ends (release_staging()), since no evaluation reads it. Staging is mapped
- * directly, so neither its growth nor its release moves glibc's dynamic mmap threshold: rounds allocated per call
- * through malloc raised it at every free of a large block, after which the per-gate transient allocations stayed
- * resident in fragmented thread arenas.
+ * directly, so neither its growth nor its release moves glibc's dynamic mmap threshold.
  *
  * One owner uses its rounds from one operation at a time, on its calling thread; copies of an owner get their own empty
  * set, never a shared one. A round is created on first use, and recreated if the geometry it was created for changed.

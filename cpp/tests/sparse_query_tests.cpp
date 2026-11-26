@@ -31,6 +31,7 @@
 #include "monoprop/detail/evolution/layer_build/QueryWire.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 
+#include "ScanTestSupport.h"
 #include "dense_query_reference.h"
 
 using namespace monoprop;
@@ -635,10 +636,7 @@ BOOST_AUTO_TEST_CASE(sparse_record_round_trips_every_reachable_k_and_gap_width) 
 
 namespace {
 
-constexpr size_t merge_modes = 32;
-using MergeResult = FusedScanResult<merge_modes>;
-
-auto reset_streams(MergeResult &r, mpi::SlotWindow w, bool capture) -> void {
+auto reset_streams(scan_test::Result &r, mpi::SlotWindow w, bool capture) -> void {
     r.leader_queries.reset(w);
     r.leader_src.reset(w);
     r.follower_queries.reset(w);
@@ -649,24 +647,6 @@ auto reset_streams(MergeResult &r, mpi::SlotWindow w, bool capture) -> void {
     }
 }
 
-auto same_stage(const SelfQueryStage<merge_modes> &a, const SelfQueryStage<merge_modes> &b) -> bool {
-    if (a.size() != b.size() || a.positions() != b.positions()) {
-        return false;
-    }
-    for (size_t q = 0; q < a.size(); ++q) {
-        if (a.pos_off[q] != b.pos_off[q] || a.k_of[q] != b.k_of[q] || a.phase_of[q] != b.phase_of[q]) {
-            return false;
-        }
-    }
-    return std::equal(a.pos_flat.begin(),
-                      a.pos_flat.begin() + static_cast<std::ptrdiff_t>(a.positions()),
-                      b.pos_flat.begin());
-}
-
-auto bits_equal(const std::vector<double> &a, const std::vector<double> &b) -> bool {
-    return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
-}
-
 } // namespace
 
 // Hand-built per-range pieces with variable-length wire records (escaped k included), a window at a
@@ -675,13 +655,13 @@ auto bits_equal(const std::vector<double> &a, const std::vector<double> &b) -> b
 // records, sources and values in range order, each self stage rebased in range order, cosine sets in
 // range order, and every piece's buffers released afterwards.
 BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stages) {
-    using QW = QueryWire<merge_modes>;
+    using QW = QueryWire<scan_test::num_modes>;
     const mpi::SlotWindow window{.base = 2, .count = 3};
     const size_t me = 3;
     for (const bool capture : {false, true}) {
         std::mt19937_64 rng(0x3E26EULL);
-        std::vector<MergeResult> pieces(4);
-        MergeResult expect;
+        std::vector<scan_test::Result> pieces(4);
+        scan_test::Result expect;
         reset_streams(expect, window, capture);
         size_t src = 0;
         for (size_t p = 0; p < pieces.size(); ++p) {
@@ -726,7 +706,7 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stage
             expect_cos.push_back(piece.cos_blocks.front());
         }
 
-        const auto merged = merge_scan_ranges<merge_modes>(pieces, window, me, capture);
+        const auto merged = merge_scan_ranges<scan_test::num_modes>(pieces, window, me, capture);
 
         BOOST_TEST_CONTEXT("capture=" << capture) {
             BOOST_TEST((merged.leader_queries.window() == window));
@@ -739,8 +719,8 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stage
                 BOOST_TEST((merged.leader_src[wi] == expect.leader_src[wi]));
                 BOOST_TEST((merged.follower_src[wi] == expect.follower_src[wi]));
                 if (capture) {
-                    BOOST_TEST(bits_equal(merged.leader_val[wi], expect.leader_val[wi]));
-                    BOOST_TEST(bits_equal(merged.follower_val[wi], expect.follower_val[wi]));
+                    BOOST_TEST(scan_test::bitwise_equal(merged.leader_val[wi], expect.leader_val[wi]));
+                    BOOST_TEST(scan_test::bitwise_equal(merged.follower_val[wi], expect.follower_val[wi]));
                 }
             }
             // Self wire stays empty; the stages carry the self slot's queries in order.
@@ -748,8 +728,8 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stage
             BOOST_TEST(merged.follower_queries.at_slot(me).empty());
             BOOST_TEST(expect.leader_self.size() > 0U);
             BOOST_TEST(expect.follower_self.size() > 0U);
-            BOOST_TEST(same_stage(merged.leader_self, expect.leader_self));
-            BOOST_TEST(same_stage(merged.follower_self, expect.follower_self));
+            scan_test::check_same_stage(merged.leader_self, expect.leader_self, "leader_self");
+            scan_test::check_same_stage(merged.follower_self, expect.follower_self, "follower_self");
             BOOST_TEST(merged.leader_self.size() == merged.leader_src.at_slot(me).size());
             BOOST_TEST(merged.follower_self.size() == merged.follower_src.at_slot(me).size());
             BOOST_TEST_REQUIRE(merged.cos_blocks.size() == expect_cos.size());
@@ -783,7 +763,7 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stage
 BOOST_AUTO_TEST_CASE(openmp_scan_merge_moves_the_first_useful_buffer) {
     const mpi::SlotWindow window{.base = 0, .count = 2};
     const size_t me = 0;
-    std::vector<MergeResult> pieces(3);
+    std::vector<scan_test::Result> pieces(3);
     for (auto &piece : pieces) {
         reset_streams(piece, window, false);
     }
@@ -810,7 +790,7 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_moves_the_first_useful_buffer) {
     pieces[0].leader_self.reserve(8, 4); // capacity without content is not a query
     const auto *stage_data = pieces[1].leader_self.pos_flat.data();
 
-    auto merged = merge_scan_ranges<merge_modes>(pieces, window, me, false);
+    auto merged = merge_scan_ranges<scan_test::num_modes>(pieces, window, me, false);
     BOOST_TEST(merged.leader_src.at_slot(0).data() == only_data);
     BOOST_TEST(merged.follower_src.at_slot(1).data() == roomy_data);
     BOOST_TEST((merged.follower_src.at_slot(1) == std::vector<size_t>{1, 2, 9}));

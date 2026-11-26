@@ -22,18 +22,18 @@
 #include <map>
 #include <numbers>
 #include <optional>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <omp.h>
 
-#include <set>
-
-#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/RootObserver.h"
 
 #include "KernelTestSupport.h"
 #include "PropagatorTestAccess.h"
 #include "ScanTestSupport.h"
+#include "ShardedTestSupport.h"
 #include "TestUtilities.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
@@ -54,68 +54,33 @@ using scan_test::bitwise_equal;
 
 // The two paths accumulate FP differently even before the sweep, so demand 1e-12: tight enough that a
 // wrong cos factor on any endpoint (relative error O(1)) fails loudly, loose enough for reordering.
-constexpr double kAgreeAtol = 1e-12;
-constexpr double kExactAtol = 1e-9;
+constexpr double agree_atol = 1e-12;
 
+// Every root captures the launch's shard count T (sharded_test::team_size()), and no case changes it.
 template <size_t NumModes>
-auto inplace_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
+auto build_root(const CaseData &data, const SimulatorConfig &cfg) -> MonomialPropagator<NumModes> {
     auto sim = build_simulator<NumModes>(data, cfg);
-    sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
-    auto fn = sim.expectation_value_functional(std::nullopt);
-    return fn(VecD{});
-}
-
-template <size_t NumModes>
-auto graph_energy(const CaseData &data, const SimulatorConfig &cfg) -> double {
-    auto sim = build_simulator<NumModes>(data, cfg);
-    sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-    auto fn = sim.expectation_value_functional(std::nullopt);
-    return fn(data.parameters);
-}
-
-// The budgets a case may use in this process: only the launch's, captured by every root.
-auto budgets() -> std::vector<int> {
-    return {monoprop::detail::parallel::capture_thread_budget().threads};
-}
-
-template <size_t NumModes>
-auto build_root(const CaseData &data, const SimulatorConfig &cfg, int budget) -> MonomialPropagator<NumModes> {
-    MonomialPropagator<NumModes> sim(data.hamiltonian,
-                                     static_cast<unsigned int>(2 * NumModes),
-                                     data.initial_state,
-                                     cfg.schrodinger_cutoff,
-                                     cfg.comm,
-                                     cfg.atol,
-                                     cfg.upper_atol,
-                                     cfg.cutoff_type,
-                                     cfg.basis_change,
-                                     NumModes,
-                                     Basis::Majorana);
-    BOOST_TEST_REQUIRE(monoprop::detail::PropagatorTestAccess<NumModes>::options(sim).threads == budget);
+    BOOST_TEST_REQUIRE(static_cast<size_t>(monoprop::detail::PropagatorTestAccess<NumModes>::options(sim).threads)
+                       == sharded_test::team_size());
     return sim;
 }
 
-void check_agreement(const CaseData &data, const SimulatorConfig &cfg, const char *label) {
-    const double inplace = inplace_energy<ExampleDataFix::n_modes>(data, cfg);
-    const double graph = graph_energy<ExampleDataFix::n_modes>(data, cfg);
-    BOOST_TEST_CONTEXT(label << " inplace=" << inplace << " graph=" << graph) {
-        BOOST_CHECK_SMALL(inplace - graph, kAgreeAtol);
-        BOOST_CHECK_SMALL(inplace - data.actual_expval, kExactAtol);
-    }
-}
-
-// check_agreement on roots at the launch's T, with the same tolerances.
-void check_root_agreement(const CaseData &data, const SimulatorConfig &cfg, int budget, const char *label) {
-    constexpr size_t N = ExampleDataFix::n_modes;
-    auto inplace_sim = build_root<N>(data, cfg, budget);
-    inplace_sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters);
+// In-place propagation against graph replay, on roots at the launch's T; `cap` is only_rotate_len_k for both.
+void check_agreement(const CaseData &data,
+                     const SimulatorConfig &cfg,
+                     const char *label,
+                     std::optional<size_t> cap = std::nullopt) {
+    constexpr size_t n_modes = ExampleDataFix::n_modes;
+    auto inplace_sim = build_root<n_modes>(data, cfg);
+    inplace_sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
     const double inplace = inplace_sim.expectation_value_functional(std::nullopt)(VecD{});
-    auto graph_sim = build_root<N>(data, cfg, budget);
-    graph_sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
+    auto graph_sim = build_root<n_modes>(data, cfg);
+    graph_sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, std::nullopt, cap);
     const double graph = graph_sim.expectation_value_functional(std::nullopt)(data.parameters);
-    BOOST_TEST_CONTEXT(label << " budget=" << budget << " inplace=" << inplace << " graph=" << graph) {
-        BOOST_CHECK_SMALL(inplace - graph, kAgreeAtol);
-        BOOST_CHECK_SMALL(inplace - data.actual_expval, kExactAtol);
+    BOOST_TEST_CONTEXT(label << " budget=" << sharded_test::team_size() << " inplace=" << inplace
+                             << " graph=" << graph) {
+        BOOST_CHECK_SMALL(inplace - graph, agree_atol);
+        BOOST_CHECK_SMALL(inplace - data.actual_expval, sharded_test::exact_atol);
     }
 }
 
@@ -124,17 +89,22 @@ void check_root_agreement(const CaseData &data, const SimulatorConfig &cfg, int 
 constexpr size_t big_modes = 10; // 20 Majoranas
 using BigAccess = monoprop::detail::PropagatorTestAccess<big_modes>;
 
-// A synthetic Hermitian operator of 16k even-weight terms and gates of weights 2-4 (odd included), large
-// enough that fused records and replayed folds span several logical ranges. One gate sits at theta = pi/4,
-// where the fused sweep recovers pre-cos values through 1/cos ~ 1.6e16.
-auto big_case() -> CaseData {
+// A synthetic Hermitian operator of `terms` even-weight terms on the state filling M's even Majoranas, and `gates`
+// gates of weights 2-4 (odd included). Gate `pi_gate` sits at theta = pi/4, where the fused sweep recovers pre-cos
+// values through 1/cos ~ 1.6e16. Each (later, earlier) repeat gives gate `later` the generator of gate `earlier`.
+template <size_t M>
+auto synthetic_case(uint64_t seed,
+                    size_t terms,
+                    size_t gates,
+                    size_t pi_gate,
+                    std::initializer_list<std::pair<size_t, size_t>> repeats) -> CaseData {
     CaseData data;
-    data.num_modes = big_modes;
-    kernel_test::SplitMix rng{2026};
+    data.num_modes = M;
+    kernel_test::SplitMix rng{seed};
     const auto draw_indices = [&rng](size_t weight) {
         VecZ idx;
         while (idx.size() < weight) {
-            const size_t m = rng.below(2 * big_modes);
+            const size_t m = rng.below(2 * M);
             if (std::ranges::find(idx, m) == idx.end()) {
                 idx.push_back(m);
             }
@@ -142,32 +112,38 @@ auto big_case() -> CaseData {
         std::ranges::sort(idx);
         return idx;
     };
-    while (data.hamiltonian.size() < 16000) {
+    while (data.hamiltonian.size() < terms) {
         const auto idx = draw_indices(2 * (1 + rng.below(3)));
         const double x = static_cast<double>(rng.below(1U << 20)) / (1U << 20) - 0.5;
-        data.hamiltonian[idx] = x * hermitian_coefficient<big_modes>(indices_to_bitset<big_modes>(idx));
+        data.hamiltonian[idx] = x * hermitian_coefficient<M>(indices_to_bitset<M>(idx));
     }
-    data.initial_state = {0, 2, 4, 6, 8};
-    constexpr size_t gates = 9;
+    for (size_t m = 0; m < M / 2; ++m) {
+        data.initial_state.push_back(2 * m);
+    }
     for (size_t g = 0; g < gates; ++g) {
         data.majoranas.push_back(draw_indices(2 + rng.below(3)));
         data.param_inds.push_back(g);
         data.gen_coeffs.push_back(1.0);
-        data.parameters.push_back(g == 4 ? std::numbers::pi / 4 : 0.1 + static_cast<double>(rng.below(900)) / 1000.0);
+        data.parameters.push_back(g == pi_gate ? std::numbers::pi / 4
+                                               : 0.1 + static_cast<double>(rng.below(900)) / 1000.0);
     }
-    // Repeated generators: rotating again by G targets the M*G terms the first rotation inserted, so both
-    // pictures produce hit records as well as inserts.
-    data.majoranas[6] = data.majoranas[2];
-    data.majoranas[8] = data.majoranas[3];
+    for (const auto &[later, earlier] : repeats) {
+        data.majoranas[later] = data.majoranas[earlier];
+    }
     return data;
 }
 
-auto big_root(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm) -> MonomialPropagator<big_modes> {
+// 16k terms, so fused records and replayed folds span several logical ranges. Repeated generators: rotating again
+// by G targets the M*G terms the first rotation inserted, so both pictures produce hit records as well as inserts.
+auto big_case() -> CaseData {
+    return synthetic_case<big_modes>(2026, 16000, 9, 4, {{6, 2}, {8, 3}});
+}
+
+auto big_root(const CaseData &data, bool schrodinger) -> MonomialPropagator<big_modes> {
     return build_root<big_modes>(
         data,
         SimulatorConfig{.schrodinger_cutoff = schrodinger ? std::optional<unsigned int>(2 * big_modes) : std::nullopt,
-                        .comm = comm},
-        budget);
+                        .comm = MPI_COMM_WORLD});
 }
 
 auto comm_size(MPI_Comm comm) -> int {
@@ -200,33 +176,8 @@ BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_schrodinger_atol, Examp
 // graph replay, with the same tolerances: the insert snapshots must be gathered before the cosine phase.
 BOOST_FIXTURE_TEST_CASE(two_pass_apply_matches_graph_replay, ExampleDataFix) {
     constexpr size_t cap = 2 * n_modes;
-    for (const bool schrodinger : {false, true}) {
-        for (const int budget : budgets()) {
-            const SimulatorConfig cfg{.schrodinger_cutoff =
-                                          schrodinger ? std::optional<unsigned int>(2 * n_modes) : std::nullopt};
-            auto inplace_sim = build_root<n_modes>(data, cfg, budget);
-            inplace_sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
-            const double inplace = inplace_sim.expectation_value_functional(std::nullopt)(VecD{});
-            auto graph_sim = build_root<n_modes>(data, cfg, budget);
-            graph_sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, std::nullopt, cap);
-            const double graph = graph_sim.expectation_value_functional(std::nullopt)(data.parameters);
-            BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " budget=" << budget << " inplace=" << inplace
-                                              << " graph=" << graph) {
-                BOOST_CHECK_SMALL(inplace - graph, kAgreeAtol);
-                BOOST_CHECK_SMALL(inplace - data.actual_expval, kExactAtol);
-            }
-        }
-    }
-}
-
-// The same fused-versus-replay agreement at the launch's T shards. This fixture is small; the big-workload cases below
-// cover many-gate records.
-BOOST_FIXTURE_TEST_CASE(fused_sweep_matches_graph_replay_at_the_launch_team, ExampleDataFix) {
-    for (const int budget : budgets()) {
-        check_root_agreement(data, SimulatorConfig{}, budget, "heisenberg");
-        check_root_agreement(data, SimulatorConfig{.atol = 1e-10}, budget, "heisenberg atol=1e-10");
-        check_root_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, budget, "schrodinger");
-    }
+    check_agreement(data, SimulatorConfig{}, "two-pass heisenberg", cap);
+    check_agreement(data, SimulatorConfig{.schrodinger_cutoff = 2 * n_modes}, "two-pass schrodinger", cap);
 }
 
 namespace {
@@ -266,33 +217,36 @@ private:
     mutable std::vector<std::vector<CapturedGate>> gates_;
 };
 
-auto picture_of(const monoprop::detail::MPOperator<big_modes> &op, bool schrodinger) -> const VecD & {
+template <size_t N>
+auto picture_of(const monoprop::detail::MPOperator<N> &op, bool schrodinger) -> const VecD & {
     return schrodinger ? op.state_coeffs : op.op_coeffs;
 }
 
-auto apply_captured(const CapturedGate &gate, int threads, kernel_test::RangeLog *log) -> VecD {
-    auto fc = gate.fc;
-    VecD out = gate.before;
-    if (log != nullptr) {
-        monoprop::detail::apply_fused_contract(fc,
-                                               out,
-                                               gate.cos,
-                                               gate.apply_angle,
-                                               gate.schrodinger,
-                                               gate.fused_scale,
-                                               {threads},
-                                               kernel_test::RecordingObserver{log});
+// Rows in row-ID order: a store's IDs are its insertion order, so equal rows mean equal IDs.
+template <size_t N>
+auto same_store_rows(const monoprop::detail::OperatorIndex<N> &sa, const monoprop::detail::OperatorIndex<N> &sb)
+    -> bool {
+    if (sa.size() != sb.size()) {
+        return false;
     }
-    else {
-        monoprop::detail::apply_fused_contract(fc,
-                                               out,
-                                               gate.cos,
-                                               gate.apply_angle,
-                                               gate.schrodinger,
-                                               gate.fused_scale,
-                                               {threads});
+    for (size_t i = 0; i < sa.size(); ++i) {
+        if (materialize_row<N>(sa, i) != materialize_row<N>(sb, i)) {
+            return false;
+        }
     }
-    return out;
+    return true;
+}
+
+template <class Observer = monoprop::detail::NoRangeObserver>
+auto apply_captured(const CapturedGate &gate, int threads, const Observer &observer = {}) -> VecD {
+    return kernel_test::apply_fused_copy(gate.fc,
+                                         gate.before,
+                                         gate.cos,
+                                         gate.apply_angle,
+                                         gate.schrodinger,
+                                         gate.fused_scale,
+                                         threads,
+                                         observer);
 }
 
 } // namespace
@@ -305,12 +259,12 @@ auto apply_captured(const CapturedGate &gate, int threads, kernel_test::RangeLog
 // another flat owner (P x T > 1). Under an MPI launch each rank audits its own shards.
 BOOST_AUTO_TEST_CASE(fused_shard_records_have_one_add_owner_and_apply_exactly) {
     const auto data = big_case();
-    const auto launch = budgets().front();
-    const auto flat_world = static_cast<size_t>(comm_size(MPI_COMM_WORLD)) * static_cast<size_t>(launch);
+    const size_t launch = sharded_test::team_size();
+    const auto flat_world = static_cast<size_t>(comm_size(MPI_COMM_WORLD)) * launch;
     for (const bool schrodinger : {false, true}) {
         for (const bool length_cap : {false, true}) {
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap << " T=" << launch) {
-                auto sim = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
+                auto sim = big_root(data, schrodinger);
                 const auto &shards = BigAccess::shards(sim);
                 const RecordCapture capture(shards.size());
                 BigAccess::observe(sim, &capture);
@@ -344,11 +298,12 @@ BOOST_AUTO_TEST_CASE(fused_shard_records_have_one_add_owner_and_apply_exactly) {
                         halves += gate.fc.cross_half.size();
                         const size_t records = gate.fc.hits.size() + gate.fc.inserts.size() + gate.fc.cross_half.size();
                         (gate.fused_scale ? fused_seen : two_pass_seen) = true;
-                        const VecD serial = apply_captured(gate, 1, nullptr);
+                        const VecD serial = apply_captured(gate, 1);
                         for (const int threads : {2, 3, 4}) {
                             kernel_test::RangeLog log;
+                            const kernel_test::RecordingObserver observer{&log};
                             budget_mismatches +=
-                                static_cast<size_t>(!bitwise_equal(apply_captured(gate, threads, &log), serial));
+                                static_cast<size_t>(!bitwise_equal(apply_captured(gate, threads, observer), serial));
                             if (records > max_gate_records) {
                                 max_gate_records = records;
                                 max_apply_ranges = log[monoprop::detail::KernelRange::fused_apply].worker.size();
@@ -386,31 +341,27 @@ BOOST_AUTO_TEST_CASE(fused_shard_records_have_one_add_owner_and_apply_exactly) {
 // and the same energies. Every row sits on the shard its flat owner names, and no key is on two shards.
 BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
     const auto data = big_case();
-    const auto launch = budgets().front();
+    const size_t launch = sharded_test::team_size();
     const auto rank = static_cast<size_t>(mpi::rank(mpi::Comm(MPI_COMM_WORLD)));
     for (const bool schrodinger : {false, true}) {
         for (const bool length_cap : {false, true}) {
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap << " T=" << launch) {
                 const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * big_modes) : std::nullopt;
-                auto first = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
-                auto second = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
+                auto first = big_root(data, schrodinger);
+                auto second = big_root(data, schrodinger);
                 first.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
                 second.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
                 const auto &a = BigAccess::shards(first);
                 const auto &b = BigAccess::shards(second);
                 const auto &router = BigAccess::router(first);
-                std::set<VecZ> keys;
+                std::unordered_set<Monomial<big_modes>, MonomialHash<big_modes>> keys;
                 size_t misrouted = 0;
                 for (size_t t = 0; t < a.size(); ++t) {
-                    BOOST_TEST(a[t]->op.store->size() == b[t]->op.store->size());
-                    for (size_t i = 0; i < a[t]->op.store->size() && i < b[t]->op.store->size(); ++i) {
-                        BOOST_TEST((materialize_row<big_modes>(*a[t]->op.store, i)
-                                    == materialize_row<big_modes>(*b[t]->op.store, i)));
-                    }
+                    BOOST_TEST(same_store_rows(*a[t]->op.store, *b[t]->op.store));
                     BOOST_TEST(bitwise_equal(picture_of(a[t]->op, schrodinger), picture_of(b[t]->op, schrodinger)));
                     a[t]->op.store->for_each([&](const auto &mono, size_t) {
                         misrouted += static_cast<size_t>(router.dest<big_modes>(mono) != rank * a.size() + t);
-                        keys.insert(bitset_to_indices<big_modes>(mono));
+                        keys.insert(mono);
                     });
                 }
                 BOOST_TEST(misrouted == 0U);
@@ -419,8 +370,8 @@ BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
             }
         }
         BOOST_TEST_CONTEXT("graph replay, schrodinger=" << schrodinger << " T=" << launch) {
-            auto first = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
-            auto second = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
+            auto first = big_root(data, schrodinger);
+            auto second = big_root(data, schrodinger);
             first.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
             second.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
             BOOST_TEST(bitwise_equal(first.contract_partially(data.parameters, false),
@@ -480,37 +431,9 @@ constexpr size_t wide_modes = 16; // 32 Majoranas
 using WideAccess = monoprop::detail::PropagatorTestAccess<wide_modes>;
 
 // About 90k even-weight terms, so the scan's operator spans at least two fold blocks from the first gate and
-// more as gates insert partners; gates of weights 2-4 with two repeats, and one at theta = pi/4.
+// more as gates insert partners.
 auto wide_case() -> CaseData {
-    CaseData data;
-    data.num_modes = wide_modes;
-    kernel_test::SplitMix rng{0x5CA2ULL};
-    const auto draw_indices = [&rng](size_t weight) {
-        VecZ idx;
-        while (idx.size() < weight) {
-            const size_t m = rng.below(2 * wide_modes);
-            if (std::ranges::find(idx, m) == idx.end()) {
-                idx.push_back(m);
-            }
-        }
-        std::ranges::sort(idx);
-        return idx;
-    };
-    while (data.hamiltonian.size() < 90000) {
-        const auto idx = draw_indices(2 * (1 + rng.below(3)));
-        const double x = static_cast<double>(rng.below(1U << 20)) / (1U << 20) - 0.5;
-        data.hamiltonian[idx] = x * hermitian_coefficient<wide_modes>(indices_to_bitset<wide_modes>(idx));
-    }
-    data.initial_state = {0, 2, 4, 6, 8, 10, 12, 14};
-    constexpr size_t gates = 6;
-    for (size_t g = 0; g < gates; ++g) {
-        data.majoranas.push_back(draw_indices(2 + rng.below(3)));
-        data.param_inds.push_back(g);
-        data.gen_coeffs.push_back(1.0);
-        data.parameters.push_back(g == 2 ? std::numbers::pi / 4 : 0.1 + static_cast<double>(rng.below(900)) / 1000.0);
-    }
-    data.majoranas[4] = data.majoranas[1];
-    return data;
+    return synthetic_case<wide_modes>(0x5CA2ULL, 90000, 6, 2, {{4, 1}});
 }
 
 // The root at the launch's T.
@@ -528,33 +451,13 @@ auto wide_root(const CaseData &data, bool schrodinger, MPI_Comm comm) -> Monomia
                                           Basis::Majorana);
 }
 
-// Rows in row-ID order: a store's IDs are its insertion order, so equal rows mean equal IDs.
-auto same_store_rows(const monoprop::detail::OperatorIndex<wide_modes> &sa,
-                     const monoprop::detail::OperatorIndex<wide_modes> &sb) -> bool {
-    if (sa.size() != sb.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < sa.size(); ++i) {
-        if (materialize_row<wide_modes>(sa, i) != materialize_row<wide_modes>(sb, i)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 auto same_core(const LayerCore &a, const LayerCore &b) -> bool {
     const auto &x = a.cross_rank;
     const auto &y = b.cross_rank;
-    if (x.occupied.size() != y.occupied.size()) {
-        return false;
-    }
-    for (size_t k = 0; k < x.occupied.size(); ++k) {
-        if (x.occupied[k].slot != y.occupied[k].slot || x.occupied[k].sin_send_count != y.occupied[k].sin_send_count
-            || x.occupied[k].in_count != y.occupied[k].in_count) {
-            return false;
-        }
-    }
-    return x.sin_send_indices == y.sin_send_indices
+    const auto same_slot = [](const auto &p, const auto &q) {
+        return p.slot == q.slot && p.sin_send_count == q.sin_send_count && p.in_count == q.in_count;
+    };
+    return std::ranges::equal(x.occupied, y.occupied, same_slot) && x.sin_send_indices == y.sin_send_indices
            && x.sin_recv_phases.uses_binary_phases == y.sin_recv_phases.uses_binary_phases
            && x.sin_recv_phases.total_count == y.sin_recv_phases.total_count
            && x.sin_recv_phases.phase_words == y.sin_recv_phases.phase_words
@@ -603,9 +506,7 @@ BOOST_AUTO_TEST_CASE(fused_wide_shards_match_at_fixed_geometry) {
                 BOOST_TEST_CONTEXT("shard " << t) {
                     BOOST_TEST(same_store_rows(*a[t]->op.store, *b[t]->op.store));
                     BOOST_TEST(same_graph(a[t]->graph, b[t]->graph));
-                    const auto &pa = schrodinger ? a[t]->op.state_coeffs : a[t]->op.op_coeffs;
-                    const auto &pb = schrodinger ? b[t]->op.state_coeffs : b[t]->op.op_coeffs;
-                    BOOST_TEST(bitwise_equal(pa, pb));
+                    BOOST_TEST(bitwise_equal(picture_of(a[t]->op, schrodinger), picture_of(b[t]->op, schrodinger)));
                 }
             }
             BOOST_TEST(bitwise_equal(first.contract_partially(data.parameters, false),
@@ -621,9 +522,8 @@ BOOST_AUTO_TEST_CASE(fused_wide_shards_match_at_fixed_geometry) {
                 for (size_t t = 0; t < xs.size(); ++t) {
                     BOOST_TEST_CONTEXT("cap=" << cap << " shard " << t) {
                         BOOST_TEST(same_store_rows(*xs[t]->op.store, *ys[t]->op.store));
-                        const auto &pa = schrodinger ? xs[t]->op.state_coeffs : xs[t]->op.op_coeffs;
-                        const auto &pb = schrodinger ? ys[t]->op.state_coeffs : ys[t]->op.op_coeffs;
-                        BOOST_TEST(bitwise_equal(pa, pb));
+                        BOOST_TEST(
+                            bitwise_equal(picture_of(xs[t]->op, schrodinger), picture_of(ys[t]->op, schrodinger)));
                     }
                 }
             }

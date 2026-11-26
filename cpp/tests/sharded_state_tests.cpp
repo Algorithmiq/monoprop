@@ -17,8 +17,8 @@
 
 /*
  * Owner-initialized shard state (detail/sharded/State.h). The team size T is the captured launch budget;
- * cpp/tests/CMakeLists.txt reruns these cases in fresh processes at T = 1, 2 and 4. Cases that need a nonprimary
- * worker skip below T = 2.
+ * cpp/tests/CMakeLists.txt runs each case in its own process at T = 1 and reruns these cases in fresh processes at
+ * T = 2 and 4. Cases that need a nonprimary worker skip below T = 2.
  *
  * Oracles: an independent reference for seeding, derived in the test from the routing, enumeration and store
  * primitives, and the rank-level root (the same seam, driven through the public constructor at the launch's T,
@@ -56,6 +56,7 @@
 #include "AllocationProbe.h"
 #include "PauliTestOracle.h"
 #include "PropagatorTestAccess.h"
+#include "ShardedFixtures.h"
 #include "ShardedTestSupport.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
@@ -74,9 +75,13 @@ namespace allocation = test_utils::allocation;
 using namespace std::chrono_literals;
 
 using sharded_test::add_term;
+using sharded_test::Fixture;
 using sharded_test::has_allocation_probe;
 using sharded_test::has_nonprimary_worker;
+using sharded_test::InjectedFailure;
 using sharded_test::num_modes;
+using sharded_test::operator_seed;
+using sharded_test::reference_root;
 using sharded_test::ScopedEnv;
 using sharded_test::team_options;
 using sharded_test::team_size;
@@ -99,17 +104,7 @@ struct MonoLess {
 
 // --- Fixtures -------------------------------------------------------------------------------------------------
 
-struct Fixture {
-    std::string name;
-    OperatorDict op;
-    VecZ initial_state;
-    std::optional<unsigned int> schrodinger_cutoff = std::nullopt;
-    Basis basis = Basis::Majorana;
-    CutoffType cutoff_type = CutoffType::Length;
-    unsigned int cutoff = 4;
-    size_t logical = num_modes;
-};
-
+// Richer than ShardedFixtures.h's operators: every pair, Y terms and an extra long term, which only seeding reads.
 // Pairs, a ladder of quartics and a few six- and eight-slot terms over the first 2 * logical slots, plus identity.
 // Under a length-4 cutoff the long terms exceed the packed inline width and spill to the overflow map.
 auto majorana_operator(size_t logical) -> OperatorDict {
@@ -228,46 +223,9 @@ auto all_fixtures() -> std::vector<Fixture> {
     return fixtures;
 }
 
-// The root at the launch's T over MPI_COMM_SELF: its shards are seeded by the seam under test.
-auto root(const Fixture &f) -> Propagator {
-    return Propagator(f.op,
-                      f.cutoff,
-                      f.initial_state,
-                      f.schrodinger_cutoff,
-                      MPI_COMM_SELF,
-                      std::nullopt,
-                      std::nullopt,
-                      f.cutoff_type,
-                      std::nullopt,
-                      f.logical,
-                      f.basis);
-}
-
-// The rank-level reference for aggregates: the root, which must run at the launch's T.
-auto oracle_of(const Fixture &f, size_t threads) -> Propagator {
-    auto sim = root(f);
-    BOOST_TEST_REQUIRE(Access::shards(sim).size() == threads);
-    return sim;
-}
-
-// Caller-side preparation, as the rank-level constructor performs it.
-auto make_seed(const Fixture &f, routing::Router router) -> sharded::OperatorSeed<num_modes> {
-    const auto cutoff_fn = monoprop::detail::cutoff_function<num_modes>(f.cutoff_type, f.cutoff, f.logical);
-    std::optional<sharded::PairedBasisBounds> paired;
-    if (f.schrodinger_cutoff) {
-        paired = sharded::paired_basis_bounds(*f.schrodinger_cutoff, f.logical, router.flat_world());
-    }
-    return {.initial_operator = f.op,
-            .initial_state = f.initial_state,
-            .router = router,
-            .basis = f.basis,
-            .logical_num_modes = f.logical,
-            .paired = paired,
-            .inline_width = sharded::packed_inline_width<num_modes>(f.schrodinger_cutoff.has_value(), cutoff_fn)};
-}
-
-auto local_router(size_t threads) -> routing::Router {
-    return routing::make_router<num_modes>(1, threads);
+// The seeding inputs of `f` at geometry (1, T). Views `f`.
+auto local_seed(const Fixture &f, size_t threads) -> sharded::OperatorSeed<num_modes> {
+    return operator_seed<num_modes>(f, routing::make_router<num_modes>(1, threads));
 }
 
 // --- Owner observation ----------------------------------------------------------------------------------------
@@ -407,28 +365,21 @@ auto operator_difference(const Operator &a, const Operator &b) -> std::string {
             }
         }
     }
-    const auto ma = monoprop::detail::estimate_memory_usage(a);
-    const auto mb = monoprop::detail::estimate_memory_usage(b);
-    const auto fields_a = std::vector<size_t>{ma.operator_terms_bytes,
-                                              ma.op_coeffs_bytes,
-                                              ma.state_coeffs_bytes,
-                                              ma.indexing_bytes,
-                                              ma.init_operator_bytes,
-                                              ma.initial_state_bytes,
-                                              ma.inverted_index_bytes,
-                                              ma.operator_terms_slack_bytes,
-                                              ma.init_operator_entries,
-                                              ma.state_coeffs_nonzero};
-    const auto fields_b = std::vector<size_t>{mb.operator_terms_bytes,
-                                              mb.op_coeffs_bytes,
-                                              mb.state_coeffs_bytes,
-                                              mb.indexing_bytes,
-                                              mb.init_operator_bytes,
-                                              mb.initial_state_bytes,
-                                              mb.inverted_index_bytes,
-                                              mb.operator_terms_slack_bytes,
-                                              mb.init_operator_entries,
-                                              mb.state_coeffs_nonzero};
+    const auto fields = [](const Operator &op) {
+        const auto m = monoprop::detail::estimate_memory_usage(op);
+        return std::vector<size_t>{m.operator_terms_bytes,
+                                   m.op_coeffs_bytes,
+                                   m.state_coeffs_bytes,
+                                   m.indexing_bytes,
+                                   m.init_operator_bytes,
+                                   m.initial_state_bytes,
+                                   m.inverted_index_bytes,
+                                   m.operator_terms_slack_bytes,
+                                   m.init_operator_entries,
+                                   m.state_coeffs_nonzero};
+    };
+    const auto fields_a = fields(a);
+    const auto fields_b = fields(b);
     for (size_t k = 0; k < fields_a.size(); ++k) {
         if (fields_a[k] != fields_b[k]) {
             return std::format("memory accounting field {}: {} != {}", k, fields_a[k], fields_b[k]);
@@ -500,27 +451,18 @@ auto bridged_shards(const Propagator &p, size_t threads) -> Shards {
 
 // A root at T with a built graph: nontrivial grown stores, layers, caches and
 // matched scratch. The Hamiltonian's long terms exceed the inline width, so the stores have overflow rows too.
-struct BuiltSource {
-    test_utils::CaseData data;
-    Fixture fixture;
-    Propagator propagator;
-};
-
-auto built_source(size_t threads) -> BuiltSource {
-    auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
-    auto fixture = Fixture{.name = "built", .op = majorana_operator(num_modes), .initial_state = data.initial_state};
-    auto propagator = oracle_of(fixture, threads);
+auto built_source(size_t threads) -> Propagator {
+    const auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
+    const auto fixture =
+        Fixture{.name = "built", .op = majorana_operator(num_modes), .initial_state = data.initial_state};
+    auto propagator = reference_root<num_modes>(fixture, threads);
     propagator.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
-    return {std::move(data), std::move(fixture), std::move(propagator)};
+    // A copy: like the shards bridged_shards() copies from it, it carries no growth slack in its buffers.
+    return Propagator(propagator);
 }
 
 struct WorkerError {
     size_t shard;
-};
-
-class InjectedFailure : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
 };
 
 // An initializer body for make_shards that builds a small real state on the owner.
@@ -580,7 +522,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_an_independent_reference) {
         const auto router = routing::make_router<num_modes>(ranks, threads);
         for (const auto &fixture : all_fixtures()) {
             BOOST_TEST_CONTEXT(fixture.name << " ranks " << ranks) {
-                const auto seed = make_seed(fixture, router);
+                const auto seed = operator_seed<num_modes>(fixture, router);
                 // The width rule by hand: Schrödinger takes the default; a length cutoff bounds positions, a support
                 // cutoff bounds qubits (two slots each).
                 const size_t width = fixture.schrodinger_cutoff ? size_t{11}
@@ -669,7 +611,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_routed_rows_belong_to_their_flat_owner) {
         const auto router = routing::Router::for_modes<num_modes>(geometry.ranks, threads, geometry.linear);
         for (const auto &fixture : all_fixtures()) {
             BOOST_TEST_CONTEXT(fixture.name << " ranks " << geometry.ranks << " linear " << geometry.linear) {
-                const auto seed = make_seed(fixture, router);
+                const auto seed = operator_seed<num_modes>(fixture, router);
                 std::set<Mono, MonoLess> expected;
                 if (seed.paired) {
                     for (const auto &mono : generate_paired_op<num_modes>(seed.paired->max_pairs, fixture.logical)) {
@@ -729,7 +671,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_empty_owners_participate, *boost::unit_test::
     add_term(op, Basis::Majorana, {}, 1.0);
     add_term(op, Basis::Majorana, {0, 1}, 0.5);
     const auto fixture = Fixture{.name = "one-term", .op = op, .initial_state = {0, 1}};
-    const auto seed = make_seed(fixture, local_router(threads));
+    const auto seed = local_seed(fixture, threads);
     auto slots = std::vector<OwnerSlot>(threads);
     const auto shards = sharded::seed_shards(options, seed, 0, OwnerProbe{.slots = &slots});
     check_owner_bodies(slots, sharded::ShardWork::seed, "one-term");
@@ -749,7 +691,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_keeps_sparse_heisenberg_and_dense_schrodinger
     size_t pending = 0;
     for (const auto &fixture : nontrivial_fixtures()) {
         BOOST_TEST_CONTEXT(fixture.name) {
-            const auto shards = sharded::seed_shards(options, make_seed(fixture, local_router(threads)), 0);
+            const auto shards = sharded::seed_shards(options, local_seed(fixture, threads), 0);
             for (const auto &state : shards) {
                 const auto &op = state->op;
                 BOOST_TEST(op.state_scored_rows_ == op.size());
@@ -776,8 +718,8 @@ BOOST_AUTO_TEST_CASE(sharded_state_counts_and_accounting_sum_over_shards) {
     const auto threads = team_size();
     for (const auto &fixture : all_fixtures()) {
         BOOST_TEST_CONTEXT(fixture.name) {
-            const auto oracle = oracle_of(fixture, threads);
-            const auto shards = sharded::seed_shards(options, make_seed(fixture, local_router(threads)), 0);
+            const auto oracle = reference_root<num_modes>(fixture, threads);
+            const auto shards = sharded::seed_shards(options, local_seed(fixture, threads), 0);
             BOOST_TEST(sharded::total_size(shards) == oracle.size());
             const auto ours = sharded::operator_memory_usage(shards);
             const auto theirs = oracle.operator_memory_usage();
@@ -793,15 +735,14 @@ BOOST_AUTO_TEST_CASE(sharded_state_counts_and_accounting_sum_over_shards) {
     }
     // A built state reports its matched scratch per shard.
     auto source = built_source(threads);
-    const auto shards = bridged_shards(source.propagator, threads);
+    const auto shards = bridged_shards(source, threads);
     const auto ours = sharded::operator_memory_usage(shards);
-    const auto theirs = source.propagator.operator_memory_usage();
+    const auto theirs = source.operator_memory_usage();
     BOOST_TEST(ours.total_bytes() == theirs.total_bytes());
     BOOST_TEST(ours.matched_scratch_bytes == theirs.matched_scratch_bytes);
     BOOST_TEST(ours.matched_scratch_bytes > 0U);
-    BOOST_TEST(sharded::graph_memory_usage(shards).total_bytes()
-               == source.propagator.graph_memory_usage().total_bytes());
-    BOOST_TEST(sharded::total_size(shards) == source.propagator.size());
+    BOOST_TEST(sharded::graph_memory_usage(shards).total_bytes() == source.graph_memory_usage().total_bytes());
+    BOOST_TEST(sharded::total_size(shards) == source.size());
 }
 
 BOOST_AUTO_TEST_CASE(sharded_state_rejects_invalid_arguments_before_the_team) {
@@ -823,9 +764,9 @@ BOOST_AUTO_TEST_CASE(sharded_state_rejects_invalid_arguments_before_the_team) {
                       std::logic_error);
 
     const auto fixture = nontrivial_fixtures().front();
-    const auto mismatched = make_seed(fixture, routing::make_router<num_modes>(1, threads + 1));
+    const auto mismatched = operator_seed<num_modes>(fixture, routing::make_router<num_modes>(1, threads + 1));
     BOOST_CHECK_THROW((void)sharded::seed_shards(options, mismatched, 0), std::invalid_argument);
-    const auto seed = make_seed(fixture, local_router(threads));
+    const auto seed = local_seed(fixture, threads);
     BOOST_CHECK_THROW((void)sharded::seed_shards(options, seed, 1), std::invalid_argument);
 
     auto source = sharded::seed_shards(options, seed, 0);
@@ -852,7 +793,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_is_exact_and_owner_allocated) {
     const auto options = team_options();
     const auto threads = team_size();
     auto source = built_source(threads);
-    const auto shards = bridged_shards(source.propagator, threads);
+    const auto shards = bridged_shards(source, threads);
     size_t overflow = 0;
     size_t layers = 0;
     for (const auto &state : shards) {
@@ -892,8 +833,8 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_is_exact_and_owner_allocated) {
 BOOST_AUTO_TEST_CASE(sharded_state_copies_mutate_independently) {
     const auto options = team_options();
     const auto threads = team_size();
-    auto source_propagator = built_source(threads);
-    auto source = bridged_shards(source_propagator.propagator, threads);
+    const auto built = built_source(threads);
+    auto source = bridged_shards(built, threads);
     const auto reference = snapshot(source);
     auto copy = sharded::copy_shards(options, source);
 
@@ -939,8 +880,8 @@ BOOST_AUTO_TEST_CASE(sharded_state_copies_mutate_independently) {
 BOOST_AUTO_TEST_CASE(sharded_state_graph_cores_are_shared_and_lists_independent) {
     const auto options = team_options();
     const auto threads = team_size();
-    auto built = std::make_unique<BuiltSource>(built_source(threads));
-    auto source = bridged_shards(built->propagator, threads);
+    auto built = std::make_unique<Propagator>(built_source(threads));
+    auto source = bridged_shards(*built, threads);
     auto copy = sharded::copy_shards(options, source);
     std::vector<std::shared_ptr<const LayerCore>> cores;
     std::vector<size_t> layer_counts;
@@ -987,7 +928,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
     const auto options = team_options();
     const auto threads = team_size();
     const auto fixture = nontrivial_fixtures().front();
-    const auto source = sharded::seed_shards(options, make_seed(fixture, local_router(threads)), 0);
+    const auto source = sharded::seed_shards(options, local_seed(fixture, threads), 0);
 
     // A reread of the environment would now fail, so neither copy may capture a fresh budget.
     const ScopedEnv poisoned("monoprop_NUM_THREADS", "0");
@@ -999,10 +940,6 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
     const auto difference = shards_difference(copy, source);
     BOOST_TEST(difference.empty(), difference);
 }
-
-// Preservation evidence for the rank-level owner guard (MonomialPropagator::require_valid_), which shard seeding reuses
-// rather than duplicating per shard: an invalid owner's state is rejected before anything is copied, while copies made
-// before the failure stay exact and usable.
 
 // --- Failure paths --------------------------------------------------------------------------------------------
 
@@ -1108,16 +1045,19 @@ BOOST_AUTO_TEST_CASE(sharded_state_concurrent_failures_select_the_lowest_owner,
     }
 }
 
-// Real allocation failures at every operator new of one owner's seed body. Each must reach the caller as the
-// original std::bad_alloc after the join (an allocating noexcept constructor would terminate instead), with every
-// published sibling released. The sweep ends at the first count the body does not reach, which must seed exactly.
-BOOST_AUTO_TEST_CASE(sharded_state_seed_allocation_failures_are_catchable,
-                     *boost::unit_test::precondition(has_allocation_probe)) {
-    const auto options = team_options();
-    const auto threads = team_size();
-    const auto fixture = nontrivial_fixtures().at(1);
-    const auto seed = make_seed(fixture, local_router(threads));
-    const auto reference = sharded::seed_shards(options, seed, 0);
+namespace {
+
+/*
+ * Real allocation failures at every operator new of one owner's body in `attempt(probe)`, for the primary and the last
+ * owner in turn. Each must reach the caller as the original std::bad_alloc after the join (an allocating noexcept
+ * constructor would terminate instead), with every published sibling released. The sweep ends at the first count the
+ * body does not reach, whose shards must equal `reference`. `after_sweep` runs after each owner's sweep.
+ */
+template <class Attempt, class AfterSweep>
+auto sweep_allocation_failures(size_t threads,
+                               const Shards &reference,
+                               const Attempt &attempt,
+                               const AfterSweep &after_sweep) -> void {
     for (const size_t failing : std::set<size_t>{0, threads - 1}) {
         BOOST_TEST_CONTEXT("failing owner " << failing) {
             size_t failures = 0;
@@ -1128,11 +1068,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_allocation_failures_are_catchable,
                 auto slots = std::vector<OwnerSlot>(threads);
                 const allocation::LiveBytes live;
                 try {
-                    auto shards =
-                        sharded::seed_shards(options,
-                                             seed,
-                                             0,
-                                             OwnerProbe{.slots = &slots, .fail_shard = failing, .fail_nth = nth});
+                    auto shards = attempt(OwnerProbe{.slots = &slots, .fail_shard = failing, .fail_nth = nth});
                     completed = slots[failing].unfired;
                     if (completed) {
                         const auto difference = shards_difference(shards, reference);
@@ -1152,60 +1088,43 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_allocation_failures_are_catchable,
             BOOST_TEST(failures > 0U);
             BOOST_TEST(other_errors == 0U);
             BOOST_TEST(leaks == 0U);
+            after_sweep();
         }
     }
 }
 
+} // namespace
+
+// The sweep over one owner's seed body.
+BOOST_AUTO_TEST_CASE(sharded_state_seed_allocation_failures_are_catchable,
+                     *boost::unit_test::precondition(has_allocation_probe)) {
+    const auto options = team_options();
+    const auto threads = team_size();
+    const auto fixture = nontrivial_fixtures().at(1);
+    const auto seed = local_seed(fixture, threads);
+    sweep_allocation_failures(
+        threads,
+        sharded::seed_shards(options, seed, 0),
+        [&](const OwnerProbe &probe) { return sharded::seed_shards(options, seed, 0, probe); },
+        [] {});
+}
+
 // The same sweep over one owner's copy body: every failure leaves the source and an earlier independent copy exact.
+// Neither is written after the sweep starts, so one check after each owner's sweep sees any damage it did.
 BOOST_AUTO_TEST_CASE(sharded_state_copy_allocation_failures_leave_sources_intact,
                      *boost::unit_test::precondition(has_allocation_probe)) {
     const auto options = team_options();
     const auto threads = team_size();
-    auto built = built_source(threads);
-    const auto source = bridged_shards(built.propagator, threads);
+    const auto built = built_source(threads);
+    const auto source = bridged_shards(built, threads);
     const auto reference = snapshot(source);
     const auto earlier = sharded::copy_shards(options, source);
-    for (const size_t failing : std::set<size_t>{0, threads - 1}) {
-        BOOST_TEST_CONTEXT("failing owner " << failing) {
-            size_t failures = 0;
-            size_t leaks = 0;
-            size_t other_errors = 0;
-            size_t damaged = 0;
-            bool completed = false;
-            for (size_t nth = 1; nth <= 100000 && !completed; ++nth) {
-                auto slots = std::vector<OwnerSlot>(threads);
-                {
-                    const allocation::LiveBytes live;
-                    try {
-                        auto copy =
-                            sharded::copy_shards(options,
-                                                 source,
-                                                 OwnerProbe{.slots = &slots, .fail_shard = failing, .fail_nth = nth});
-                        completed = slots[failing].unfired;
-                        if (completed) {
-                            const auto difference = shards_difference(copy, reference);
-                            BOOST_TEST(difference.empty(), difference);
-                        }
-                    }
-                    catch (const std::bad_alloc &) {
-                        ++failures;
-                    }
-                    catch (...) {
-                        ++other_errors;
-                    }
-                    leaks += live.net() != 0 ? 1 : 0;
-                }
-                damaged +=
-                    (!shards_difference(source, reference).empty() || !shards_difference(earlier, reference).empty())
-                        ? 1
-                        : 0;
-            }
-            BOOST_TEST_MESSAGE("allocation failures injected and caught: " << failures);
-            BOOST_TEST(completed);
-            BOOST_TEST(failures > 0U);
-            BOOST_TEST(other_errors == 0U);
-            BOOST_TEST(leaks == 0U);
-            BOOST_TEST(damaged == 0U);
-        }
-    }
+    sweep_allocation_failures(
+        threads,
+        reference,
+        [&](const OwnerProbe &probe) { return sharded::copy_shards(options, source, probe); },
+        [&] {
+            BOOST_TEST(shards_difference(source, reference).empty());
+            BOOST_TEST(shards_difference(earlier, reference).empty());
+        });
 }

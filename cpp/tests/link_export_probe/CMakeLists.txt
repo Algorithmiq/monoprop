@@ -23,7 +23,10 @@ set(
 #
 # (g): the consumer must inherit exactly its target's MPI setting: the serial libmonoprop never carries
 # monoprop_ENABLE_MPI, every MPI-enabled one always does.
-function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI)
+#
+# The test runs at a fixed team of two, so the multi-shard paths (and the raw-access rejection) run; ENV_PREFIX entries
+# go ahead of that team in its environment.
+function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI ENV_PREFIX)
   add_executable(${NAME}.x ${_monoprop_probe_sources})
   target_link_libraries(
     ${NAME}.x
@@ -39,35 +42,29 @@ function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI)
   if(NOT APPLE)
     target_link_options(${NAME}.x PRIVATE "-Wl,--no-undefined")
   endif()
-endfunction()
-
-monoprop_add_link_export_probe(monoprop_link_export_probe monoprop 0)
-add_test(NAME monoprop_link_export_probe COMMAND monoprop_link_export_probe.x)
-# A fixed team of two, so the multi-shard paths (and the raw-access rejection) run here.
-set_tests_properties(
-  monoprop_link_export_probe
-  PROPERTIES
-    LABELS
-      "unit"
-    PROCESSORS
-      2
-    ENVIRONMENT
-      "monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
-)
-
-# The same probe against every MPI-enabled libmonoprop, in singleton MPI (no mpiexec).
-foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
-  set(_probe monoprop_mpi_${_abi}_link_export_probe)
-  monoprop_add_link_export_probe(${_probe} monoprop_mpi_${_abi} 1)
-  add_test(NAME ${_probe} COMMAND ${_probe}.x)
+  add_test(NAME ${NAME} COMMAND ${NAME}.x)
+  monoprop_team_environment(_team 2)
+  set(
+    _environment
+    ${ENV_PREFIX}
+    ${_team}
+  )
   set_tests_properties(
-    ${_probe}
+    ${NAME}
     PROPERTIES
       LABELS
         "unit"
-      PROCESSORS
-        2
       ENVIRONMENT
-        "${_monoprop_serial_env_entries};monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
+        "${_environment}"
+  )
+  monoprop_set_test_processors(${NAME} 1 2 "")
+endfunction()
+
+monoprop_add_link_export_probe(monoprop_link_export_probe monoprop 0 "")
+
+# The same probe against every MPI-enabled libmonoprop, in singleton MPI (no mpiexec).
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  monoprop_add_link_export_probe(
+    monoprop_mpi_${_abi}_link_export_probe monoprop_mpi_${_abi} 1 "${_monoprop_serial_env_entries}"
   )
 endforeach()

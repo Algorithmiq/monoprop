@@ -37,6 +37,7 @@
 #include <exception>
 #include <format>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -57,27 +58,13 @@ using sharded::PhysicalExchange;
 using sharded::PhysicalWorld;
 using sharded_test::dedicated_launch;
 using sharded_test::has_nonprimary_worker;
+using sharded_test::message_of;
 using sharded_test::team_options;
 
 constexpr int exchange_tag = 0x5E01;
 
 auto world() -> PhysicalWorld {
     return PhysicalWorld::of(monoprop::mpi::Comm(MPI_COMM_WORLD));
-}
-
-auto has_two_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto ranks = world().ranks;
-    boost::test_tools::assertion_result result(ranks >= 2 && dedicated_launch(ranks));
-    result.message() << "the launch has " << ranks << " MPI rank(s); this case needs a dedicated launch of at least 2";
-    return result;
-}
-
-auto has_even_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto ranks = world().ranks;
-    boost::test_tools::assertion_result result(ranks >= 2 && ranks % 2 == 0 && dedicated_launch(ranks));
-    result.message() << "the launch has " << ranks << " MPI rank(s); the XOR peer needs a dedicated launch of an even "
-                     << "count of at least 2";
-    return result;
 }
 
 // Block size from source (rank a, shard u) to destination (rank b, shard t) in round `round`: 0 .. 5 elements, so
@@ -111,14 +98,28 @@ constexpr auto element_of() -> ExchangeElement {
     }
 }
 
-auto all_other_ranks(const PhysicalWorld &w) -> std::vector<size_t> {
-    std::vector<size_t> peers;
-    for (size_t b = 0; b < w.ranks; ++b) {
-        if (b != w.rank) {
-            peers.push_back(b);
+// Blocks of `b` laid out unlike the same blocks of `a`: a different size, or a different offset from its staging's
+// start (the two exchanges own different buffers), over every (shard, peer, other shard) of both directions.
+auto layout_mismatches(PhysicalExchange &a, PhysicalExchange &b, size_t threads, size_t peers) -> size_t {
+    const auto *send_a = a.send_block<double>(0, 0, 0).data();
+    const auto *send_b = b.send_block<double>(0, 0, 0).data();
+    const auto *recv_a = a.recv_block<double>(0, 0, 0).data();
+    const auto *recv_b = b.recv_block<double>(0, 0, 0).data();
+    size_t mismatches = 0;
+    for (size_t t = 0; t < threads; ++t) {
+        for (size_t k = 0; k < peers; ++k) {
+            for (size_t o = 0; o < threads; ++o) {
+                const auto sa = a.send_block<double>(t, k, o);
+                const auto sb = b.send_block<double>(t, k, o);
+                const auto ra = a.recv_block<double>(t, k, o);
+                const auto rb = b.recv_block<double>(t, k, o);
+                mismatches +=
+                    static_cast<size_t>(sa.size() != sb.size() || sa.data() - send_a != sb.data() - send_b
+                                        || ra.size() != rb.size() || ra.data() - recv_a != rb.data() - recv_b);
+            }
         }
     }
-    return peers;
+    return mismatches;
 }
 
 struct RoundSpec {
@@ -232,18 +233,7 @@ auto run_round(PhysicalExchange &ex, const PhysicalWorld &w, const RoundSpec &sp
 }
 
 auto describe(const std::exception_ptr &error) -> std::string {
-    if (!error) {
-        return "none";
-    }
-    try {
-        std::rethrow_exception(error);
-    }
-    catch (const std::exception &e) {
-        return e.what();
-    }
-    catch (...) {
-        return "unknown";
-    }
+    return error ? message_of(error) : "none";
 }
 
 template <class T>
@@ -264,11 +254,12 @@ auto check_rounds(const std::vector<RoundSpec> &specs) -> void {
     }
 }
 
-auto every_variant(const std::vector<size_t> &peers) -> std::vector<RoundSpec> {
+// By default the scales grow, shrink and grow again on the same object: staging is reused, never assumed fresh.
+auto every_variant(const std::vector<size_t> &peers, const std::vector<size_t> &scales = {1, 300, 1, 2})
+    -> std::vector<RoundSpec> {
     std::vector<RoundSpec> specs;
     size_t round = 0;
-    // Grow, shrink and grow again on the same object: staging is reused, never assumed fresh.
-    for (const size_t scale : {size_t{1}, size_t{300}, size_t{1}, size_t{2}}) {
+    for (const size_t scale : scales) {
         for (const auto transport : {ExchangeTransport::pairwise, ExchangeTransport::collective}) {
             for (const bool known : {false, true}) {
                 specs.push_back(
@@ -301,7 +292,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_rejects_invalid_layouts_before_posting) {
     BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{w.rank}, ExchangeTransport::pairwise), std::invalid_argument);
     BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{w.ranks}, ExchangeTransport::pairwise), std::invalid_argument);
     if (w.ranks >= 3) {
-        const auto peers = all_other_ranks(w);
+        const auto peers = sharded::other_ranks(w);
         BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{peers[1], peers[0]}, ExchangeTransport::pairwise),
                           std::invalid_argument);
         BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{peers[0], peers[0]}, ExchangeTransport::pairwise),
@@ -331,13 +322,8 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_rejects_invalid_layouts_before_posting) {
 // No MPI call is made, so a world of several ranks can be described without launching them; every rank position is
 // covered, sparse and dense count tables, empty rows and columns.
 BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primary_layout) {
-    uint64_t state = 0x9E3779B97F4A7C15ULL;
-    const auto next = [&state](uint64_t bound) {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        return state % bound;
-    };
+    // Values below `bound` for the random count tables, reproducible from the seed.
+    auto next = [rng = std::mt19937_64(0x9E3779B97F4A7C15ULL)](uint64_t bound) mutable { return rng() % bound; };
     for (const size_t ranks : {size_t{2}, size_t{3}, size_t{4}}) {
         for (const size_t threads : {size_t{1}, size_t{2}, size_t{5}}) {
             for (size_t rank = 0; rank < ranks; ++rank) {
@@ -347,12 +333,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
                         const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = rank, .ranks = ranks};
                         PhysicalExchange primary(w, threads, ExchangeElement::f64, exchange_tag);
                         PhysicalExchange owners(w, threads, ExchangeElement::f64, exchange_tag);
-                        std::vector<size_t> peers;
-                        for (size_t b = 0; b < ranks; ++b) {
-                            if (b != rank) {
-                                peers.push_back(b);
-                            }
-                        }
+                        const auto peers = sharded::other_ranks(w);
                         for (size_t t = 0; t < threads; ++t) {
                             primary.reset_rows(t);
                             owners.reset_rows(t);
@@ -378,26 +359,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
                         for (size_t t = threads; t-- > 0;) { // any order: each owner writes only its own column
                             owners.place_column(t);
                         }
-                        // Offsets relative to each staging's start, since the two exchanges own different buffers.
-                        const auto *send0 = primary.send_block<double>(0, 0, 0).data();
-                        const auto *send1 = owners.send_block<double>(0, 0, 0).data();
-                        const auto *recv0 = primary.recv_block<double>(0, 0, 0).data();
-                        const auto *recv1 = owners.recv_block<double>(0, 0, 0).data();
-                        size_t mismatches = 0;
-                        for (size_t t = 0; t < threads; ++t) {
-                            for (size_t k = 0; k < peers.size(); ++k) {
-                                for (size_t o = 0; o < threads; ++o) {
-                                    const auto a = primary.send_block<double>(t, k, o);
-                                    const auto b = owners.send_block<double>(t, k, o);
-                                    const auto c = primary.recv_block<double>(t, k, o);
-                                    const auto d = owners.recv_block<double>(t, k, o);
-                                    mismatches += static_cast<size_t>(
-                                        a.size() != b.size() || a.data() - send0 != b.data() - send1
-                                        || c.size() != d.size() || c.data() - recv0 != d.data() - recv1);
-                                }
-                            }
-                        }
-                        BOOST_TEST(mismatches == 0U);
+                        BOOST_TEST(layout_mismatches(primary, owners, threads, peers.size()) == 0U);
                         BOOST_TEST(owners.live() == 0);
                     }
                 }
@@ -427,13 +389,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
 // send_block slices (u, peer, t) of every local source u. Layouts shorter than the world fill the missing slots with
 // zero counts; the owner's own rank is never a peer.
 BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_entrywise_path) {
-    uint64_t state = 0xD1B54A32D192ED03ULL;
-    const auto next = [&state](uint64_t bound) {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        return state % bound;
-    };
+    auto next = [rng = std::mt19937_64(0xD1B54A32D192ED03ULL)](uint64_t bound) mutable { return rng() % bound; };
     for (const size_t ranks : {size_t{2}, size_t{3}, size_t{4}}) {
         for (const size_t threads : {size_t{1}, size_t{2}, size_t{5}}) {
             for (size_t rank = 0; rank < ranks; ++rank) {
@@ -443,12 +399,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_
                         const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = rank, .ranks = ranks};
                         PhysicalExchange entrywise(w, threads, ExchangeElement::f64, exchange_tag);
                         PhysicalExchange bulk(w, threads, ExchangeElement::f64, exchange_tag);
-                        std::vector<size_t> peers;
-                        for (size_t b = 0; b < ranks; ++b) {
-                            if (b != rank) {
-                                peers.push_back(b);
-                            }
-                        }
+                        const auto peers = sharded::other_ranks(w);
                         for (size_t t = 0; t < threads; ++t) {
                             // One publication layout per owner, indexed by flat slot; about a third of the slots
                             // empty, the own rank's slots arbitrary (never read), and sometimes cut short.
@@ -480,11 +431,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_
                             entrywise.place_column(t);
                             bulk.place_column(t);
                         }
-                        const auto *send0 = entrywise.send_block<double>(0, 0, 0).data();
-                        const auto *send1 = bulk.send_block<double>(0, 0, 0).data();
-                        const auto *recv0 = entrywise.recv_block<double>(0, 0, 0).data();
-                        const auto *recv1 = bulk.recv_block<double>(0, 0, 0).data();
-                        size_t mismatches = 0;
+                        size_t mismatches = layout_mismatches(entrywise, bulk, threads, peers.size());
                         for (size_t t = 0; t < threads; ++t) {
                             for (size_t k = 0; k < peers.size(); ++k) {
                                 const auto column = bulk.send_column<double>(t, k);
@@ -494,13 +441,6 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_
                                     mismatches += static_cast<size_t>(
                                         entrywise.send_count(t, k, o) != bulk.send_count(t, k, o)
                                         || entrywise.recv_count(t, k, o) != bulk.recv_count(t, k, o));
-                                    const auto a = entrywise.send_block<double>(t, k, o);
-                                    const auto b = bulk.send_block<double>(t, k, o);
-                                    const auto c = entrywise.recv_block<double>(t, k, o);
-                                    const auto d = bulk.recv_block<double>(t, k, o);
-                                    mismatches += static_cast<size_t>(
-                                        a.size() != b.size() || a.data() - send0 != b.data() - send1
-                                        || c.size() != d.size() || c.data() - recv0 != d.data() - recv1);
                                     // Column t's entry for source o is send_block(o, k, t).
                                     const auto slice = bulk.send_block<double>(o, k, t);
                                     const auto block = column.block(o);
@@ -589,7 +529,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_payload_totals_must_fit_mpi_counts) {
     const int big = std::numeric_limits<int>::max();
     ex.set_send_count(0, 0, 0, static_cast<size_t>(big));
     ex.set_send_count(1, 0, 0, static_cast<size_t>(big));
-    BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{all_other_ranks(w).front()}, ExchangeTransport::pairwise),
+    BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{sharded::other_ranks(w).front()}, ExchangeTransport::pairwise),
                       std::length_error);
     BOOST_TEST(ex.live() == 0);
 }
@@ -632,18 +572,18 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_mpi_calls_run_only_on_the_primary,
 
 // --- Multi-rank rounds --------------------------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(sharded_exchange_moves_every_block_to_its_owner, *boost::unit_test::precondition(has_two_ranks)) {
-    const auto peers = all_other_ranks(world());
+BOOST_AUTO_TEST_CASE(sharded_exchange_moves_every_block_to_its_owner, *test_utils::min_ranks(2) * dedicated_launch()) {
+    const auto peers = sharded::other_ranks(world());
     check_rounds<double>(every_variant(peers));
     check_rounds<uint64_t>(every_variant(peers));
     check_rounds<uint32_t>(every_variant(peers));
 }
 
 BOOST_AUTO_TEST_CASE(sharded_exchange_count_blocks_of_every_width_arrive,
-                     *boost::unit_test::precondition(has_two_ranks)) {
+                     *test_utils::min_ranks(2) * dedicated_launch()) {
     // Counts of at most 5, 300 and 100000 travel as 1-, 2- and 4-byte counts; a later light round after a heavy one
     // shrinks the block again. The receiver must read each block's width from its size.
-    const auto peers = all_other_ranks(world());
+    const auto peers = sharded::other_ranks(world());
     std::vector<RoundSpec> specs;
     size_t round = 0;
     for (const size_t scale : {size_t{1}, size_t{60}, size_t{20000}, size_t{1}, size_t{60}}) {
@@ -655,34 +595,20 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_count_blocks_of_every_width_arrive,
     check_rounds<uint32_t>(specs);
 }
 
-BOOST_AUTO_TEST_CASE(sharded_exchange_sparse_peer_round, *boost::unit_test::precondition(has_even_ranks)) {
+BOOST_AUTO_TEST_CASE(sharded_exchange_sparse_peer_round, *test_utils::even_ranks() * dedicated_launch()) {
     const auto w = world();
     check_rounds<uint64_t>(every_variant({w.rank ^ 1U}));
 }
 
-BOOST_AUTO_TEST_CASE(sharded_exchange_empty_rounds_complete, *boost::unit_test::precondition(has_two_ranks)) {
+BOOST_AUTO_TEST_CASE(sharded_exchange_empty_rounds_complete, *test_utils::min_ranks(2) * dedicated_launch()) {
     // A round whose every count is zero still completes on every rank, under both transports.
-    const auto w = world();
-    PhysicalExchange ex(w, static_cast<size_t>(team_options().threads), ExchangeElement::f64, exchange_tag);
-    for (const auto transport : {ExchangeTransport::pairwise, ExchangeTransport::collective}) {
-        for (const bool known : {false, true}) {
-            const RoundSpec spec{.peers = all_other_ranks(w),
-                                 .transport = transport,
-                                 .counts_known = known,
-                                 .round = 0,
-                                 .scale = 0};
-            const auto [error, problems] = run_round<double>(ex, w, spec);
-            BOOST_TEST(describe(error) == "none");
-            BOOST_TEST(problems.empty());
-            BOOST_TEST(ex.live() == 0);
-        }
-    }
+    check_rounds<double>(every_variant(sharded::other_ranks(world()), {0}));
 }
 
-BOOST_AUTO_TEST_CASE(sharded_exchange_moves_keep_and_drain_requests, *boost::unit_test::precondition(has_two_ranks)) {
+BOOST_AUTO_TEST_CASE(sharded_exchange_moves_keep_and_drain_requests, *test_utils::min_ranks(2) * dedicated_launch()) {
     // A posted round moved into a new owner keeps its requests; assigning over a live owner drains it first.
     const auto w = world();
-    const auto peers = all_other_ranks(w);
+    const auto peers = sharded::other_ranks(w);
     PhysicalExchange ex(w, 1, ExchangeElement::f64, exchange_tag);
     const auto post_one = [&](PhysicalExchange &e, double value) {
         e.reset_rows(0);

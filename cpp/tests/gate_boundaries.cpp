@@ -17,13 +17,13 @@
 #include <algorithm>
 #include <array>
 #include <complex>
-#include <cstdlib>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 
+#include "ShardedTestSupport.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -193,38 +193,13 @@ namespace {
 
 constexpr size_t kBlockModes = 3;
 
-// Sets monoprop_NUM_THREADS for a scope, then restores it: a root captures its shard count T once, at construction.
-class ScopedBudget {
-public:
-    explicit ScopedBudget(size_t threads) {
-        if (const char *old = std::getenv(budget_variable_)) {
-            old_ = std::string(old);
-        }
-        ::setenv(budget_variable_, std::to_string(threads).c_str(), 1);
-    }
-    ScopedBudget(const ScopedBudget &) = delete;
-    auto operator=(const ScopedBudget &) -> ScopedBudget & = delete;
-    ~ScopedBudget() {
-        if (old_) {
-            ::setenv(budget_variable_, old_->c_str(), 1);
-        }
-        else {
-            ::unsetenv(budget_variable_);
-        }
-    }
-
-private:
-    static constexpr const char *budget_variable_ = "monoprop_NUM_THREADS";
-    std::optional<std::string> old_;
-};
-
 // Every unpaired observable term is within cutoff 2, the regime where blockwise truncation is the
 // literal Eq. 4 rule. `shards` is the root's thread budget T, captured at construction.
 auto make_block_sim(unsigned int cutoff,
                     size_t shards = 1,
                     std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
                     std::optional<size_t> max_sins = std::nullopt) -> MonomialPropagator<kBlockModes> {
-    const ScopedBudget budget(shards);
+    const sharded_test::ScopedEnv budget("monoprop_NUM_THREADS", std::to_string(shards));
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 0.7};
     ham[VecZ{2, 3}] = std::complex<double>{0.0, -0.4};

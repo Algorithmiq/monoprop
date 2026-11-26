@@ -195,38 +195,6 @@ struct DerivativeSnapshotScratch {
     VecD self_recv_op;                //!< Self-slot entry op, kept only where a record overwrites op before it is read.
 };
 
-// Emptied, not filled: the self slot recovers live, and a previous layer's snapshot must not be read.
-inline auto clear_slot_snapshot(DerivativeSnapshotScratch &snap, size_t pos) -> void {
-    snap.sin_send_state[pos].clear();
-    snap.sin_send_op[pos].clear();
-    snap.sin_recv_state[pos].clear();
-    snap.sin_recv_op[pos].clear();
-}
-
-inline auto fill_slot_snapshot(DerivativeSnapshotScratch &snap,
-                               size_t pos,
-                               const VecD &state,
-                               const VecD &op,
-                               const detail::CrossRankSlotView &slot) -> void {
-    const size_t count = slot.sin_send_count;
-    auto &bs = snap.sin_send_state[pos];
-    auto &bh = snap.sin_send_op[pos];
-    auto &ds = snap.sin_recv_state[pos];
-    auto &dh = snap.sin_recv_op[pos];
-    bs.resize(count);
-    bh.resize(count);
-    ds.resize(count);
-    dh.resize(count);
-    for (size_t k = 0; k < count; ++k) {
-        const size_t bi = detail::slot_sin_send_index(slot, k);
-        bs[k] = state[bi];
-        bh[k] = op[bi];
-        const size_t di = detail::slot_sin_recv_index(slot, k);
-        ds[k] = state[di];
-        dh[k] = op[di];
-    }
-}
-
 /*!
  * \brief Snapshot pre-cosine (state, op) at every partner slot's sin_send/sin_recv endpoints.
  *
@@ -249,11 +217,24 @@ inline auto snapshot_remote_endpoints(const VecD &state,
     }
     layer.for_each_occupied_slot(
         [&snap, my_rank, &state, &op](size_t pos, size_t r, const detail::CrossRankSlotView &slot) {
-            if (r == my_rank) {
-                clear_slot_snapshot(snap, pos);
-                return;
+            // Emptied, not filled: the self slot recovers live, and a previous layer's snapshot must not be read.
+            const size_t count = r == my_rank ? 0 : slot.sin_send_count;
+            auto &bs = snap.sin_send_state[pos];
+            auto &bh = snap.sin_send_op[pos];
+            auto &ds = snap.sin_recv_state[pos];
+            auto &dh = snap.sin_recv_op[pos];
+            bs.resize(count);
+            bh.resize(count);
+            ds.resize(count);
+            dh.resize(count);
+            for (size_t k = 0; k < count; ++k) {
+                const size_t bi = detail::slot_sin_send_index(slot, k);
+                bs[k] = state[bi];
+                bh[k] = op[bi];
+                const size_t di = detail::slot_sin_recv_index(slot, k);
+                ds[k] = state[di];
+                dh[k] = op[di];
             }
-            fill_slot_snapshot(snap, pos, state, op, slot);
         });
 }
 
@@ -377,27 +358,11 @@ inline auto apply_self_slot_derivative_paired(VecD &state,
 }
 
 /*!
- * \brief The layer's cosine accumulation A in pre-layer units, with the record stood in and put back.
+ * \brief The layer's cosine accumulation, with the record stood in and put back, before the kernel's ×sec.
  *
- * A = Σ s_old·h_pre over all anticommuting indices, endpoints included -- hence the later subtraction. Pre-dividing
- * lets the kernel's own ×sec land back on the recorded value; the restore fixes up the rest.
- */
-inline auto accumulate_layer(VecD &state,
-                             VecD &op,
-                             size_t layer_idx,
-                             const TrigValues &trig,
-                             const detail::CosRecordView &record,
-                             const detail::LayerCosAccumulate &cos_acc) -> double {
-    detail::predivide_cos_record(op.data(), record, trig.cos_val);
-    const double a = cos_acc(layer_idx, state.data(), op.data(), trig.cos_val, trig.sec_val) * trig.sec_val;
-    detail::restore_cos_record(op.data(), record);
-    return a;
-}
-
-/*!
- * \brief As accumulate_layer(), but returns the kernel's raw accumulation, before its ×sec.
- *
- * The sharded evaluator's form; see layer_derivative_from_raw().
+ * Times `trig.sec_val` it is A in pre-layer units: A = Σ s_old·h_pre over all anticommuting indices, endpoints
+ * included -- hence the later subtraction. Pre-dividing lets the kernel's own ×sec land back on the recorded value; the
+ * restore fixes up the rest. The sharded evaluator keeps the raw form; see layer_derivative_from_raw().
  */
 inline auto accumulate_layer_raw(VecD &state,
                                  VecD &op,

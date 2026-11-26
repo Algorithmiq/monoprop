@@ -387,15 +387,6 @@ protected:
         return std::make_unique<MonomialPropagator<NumModes>>(*this);
     }
 
-    static inline const auto ev_fn = [](const EvalRequest &request,
-                                        mpi::Comm comm,
-                                        const detail::CosCallbacks &cos) -> double { return ev(request, comm, cos); };
-
-    static inline const auto ev_and_grad_fn =
-        [](const EvalRequest &request, mpi::Comm comm, const detail::CosCallbacks &cos) -> std::pair<double, VecD> {
-        return ev_and_grad(request, comm, cos);
-    };
-
     /// Distribute op_dict across ranks and apply this rank's share; returns its new (terms, coeffs)
     /// so caches can refresh.
     auto apply_initial_operator_(const OperatorDict &op_dict) -> std::pair<MonomialList<NumModes>, VecD>;
@@ -459,9 +450,6 @@ private:
     /// rethrows and leaves the object usable; a failure after it goes to mutation_failed_().
     template <typename Body>
     auto run_operation_(bool uses_mpi, Body &&body) -> decltype(auto);
-
-    /// Reject generator indices outside the system before any gate runs.
-    auto validate_generators_(const std::vector<VecZ> &majoranas) const -> void;
 
     /// `other`, once checked valid; used first in the copy constructor's member initializers.
     static auto checked_source_(const MonomialPropagator &other) -> const MonomialPropagator &;
@@ -544,8 +532,14 @@ private:
         }
     }
 
-    /// Converted generators, after validate_generators_().
+    /// Converted generators; rejects an index outside the system, so callers convert before any gate runs.
     auto generators_(const std::vector<VecZ> &majoranas) const -> MonomialList<NumModes>;
+
+    /// The shard of this rank that owns `mono` under the (P, T) router, or nullopt when another rank owns it.
+    auto local_shard_(const Monomial<NumModes> &mono) const -> std::optional<size_t>;
+
+    /// Positions of `keys`, ascending, grouped by their owning shard of this rank (local_shard_()).
+    auto route_to_local_shards_(const MonomialList<NumModes> &keys) const -> std::vector<VecZ>;
 
     /// The construction seam's read-only rank-level configuration.
     auto construction_context_() const -> detail::sharded::ConstructionContext<NumModes>;
@@ -555,9 +549,9 @@ private:
         -> void;
 
     /// Run `body(shard)` once on every owner, in one team of the captured budget, after reporting `work`.
-    /// \return The lowest failing owner's original exception, after the join.
+    /// \throws The lowest failing owner's original exception, after the join.
     template <typename Body>
-    auto run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> std::exception_ptr;
+    auto run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> void;
 
     /// Snapshot, optionally pare and build callbacks for every shard (prepare_retained), transferring the outcome.
     auto prepare_retained_(std::optional<double> pare_threshold, bool &mutation_started)
@@ -576,9 +570,16 @@ private:
 
     /// Per-shard evolved coefficients at validated `parameters` (contract_partially's blocks, in shard order).
     /// Sets `mutation_started` before the first cache or graph change; inplace consumes the graph and stores the
-    /// blocks only once concatenation can no longer fail.
+    /// blocks only once concatenation can no longer fail. With `concatenated`, the returned blocks are unspecified.
     auto contract_blocks_(const VecD &parameters, bool inplace, bool &mutation_started, VecD *concatenated)
         -> std::vector<VecD>;
+
+    /// Replay every shard's `request(shard)` at `mapped_params` in one team, with serial cosine callbacks over the
+    /// shard's inverted index, built in shard order after its request.
+    /// \returns The evolved blocks, in shard order.
+    /// \throws The replay's original error, after the join.
+    template <typename Request>
+    auto replay_(const VecD &mapped_params, Request &&request) -> std::vector<VecD>;
 };
 
 } // namespace monoprop

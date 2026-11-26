@@ -77,25 +77,7 @@ endif()
 if(NOT _output MATCHES "${EXPECT}")
   message(FATAL_ERROR "FAILED: expected diagnostic /${EXPECT}/ not found")
 endif()
-if(
-  DEFINED
-    FORBID
-  AND
-    NOT
-      "${FORBID}"
-        STREQUAL
-        ""
-  AND
-    _output
-      MATCHES
-      "${FORBID}"
-)
+if(NOT "${FORBID}" STREQUAL "" AND _output MATCHES "${FORBID}")
   message(FATAL_ERROR "FAILED: forbidden output /${FORBID}/ found")
 endif()
-if(EXPECT_SUCCESS)
-  message("PASSED: exit 0 after ${_elapsed} s with the expected completion")
-else()
-  message(
-    "PASSED: nonzero exit after ${_elapsed} s with the expected diagnostic"
-  )
-endif()
+message("PASSED: exit ${_result} after ${_elapsed} s with the expected output")

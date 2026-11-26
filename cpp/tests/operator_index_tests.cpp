@@ -26,7 +26,6 @@
 #include "monoprop/algebra/MajoranaAlgebra.h" // indices_to_bitset
 #include "monoprop/core/Monomial.h"
 #include "monoprop/detail/operator/OperatorIndex.h"
-#include "monoprop/detail/parallel/Options.h"
 
 using namespace monoprop;
 using namespace monoprop::detail;
@@ -229,50 +228,43 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
 // Shared invariant 14, pinned: bulk insertion does not deduplicate. Two rows holding the same key are both
 // indexed, and a lookup returns the first one inserted (it sits earlier on the probe chain). Production never
 // relies on this -- query keys are distinct by construction -- but a replacement index must either keep it or
-// change it as an explicit, reviewed contract change. The options overload is the threaded publication seam;
-// the packed index ignores it and publishes serially, identically.
+// change it as an explicit, reviewed contract change.
 BOOST_AUTO_TEST_CASE(bulk_insert_duplicate_keys_are_both_indexed) {
     const auto dup = bs({2, 7, 9});
     const auto other = bs({1, 4});
     const std::array<MSet, 3> keys{dup, other, dup};
-    for (const int threads : {1, 4}) {
-        for (const bool hashed : {false, true}) {
-            Store s;
-            const size_t base = s.grow_rows_geometric(keys.size());
-            for (size_t k = 0; k < keys.size(); ++k) {
-                s.set(base + k, keys[k]);
-            }
-            if (hashed) {
-                s.bulk_insert_hashed(
-                    keys.size(),
-                    base,
-                    [&](size_t k) {
-                        std::vector<Store::PosT> pos;
-                        s.for_each_position(base + k, [&](size_t b) { pos.push_back(static_cast<Store::PosT>(b)); });
-                        return Store::fold_hash_positions(pos);
-                    },
-                    parallel::Options{.threads = threads});
-            }
-            else {
-                s.bulk_insert(keys.size(), base, [&](size_t k) -> const MSet & { return keys[k]; });
-            }
-            BOOST_TEST_CONTEXT("threads=" << threads << " hashed=" << hashed) {
-                BOOST_TEST(s.size() == 3u);
-                size_t indexed = 0;
-                std::vector<size_t> rows_for_dup;
-                s.for_each([&](const MSet &key, size_t row) {
-                    ++indexed;
-                    if (key == dup) {
-                        rows_for_dup.push_back(row);
-                    }
-                });
-                BOOST_TEST(indexed == 3u);
-                std::ranges::sort(rows_for_dup);
-                BOOST_TEST((rows_for_dup == std::vector<size_t>{0, 2}));
-                BOOST_REQUIRE(s.find(dup).has_value());
-                BOOST_TEST(*s.find(dup) == 0u);
-                BOOST_TEST(*s.find(other) == 1u);
-            }
+    for (const bool hashed : {false, true}) {
+        Store s;
+        const size_t base = s.grow_rows_geometric(keys.size());
+        for (size_t k = 0; k < keys.size(); ++k) {
+            s.set(base + k, keys[k]);
+        }
+        if (hashed) {
+            s.bulk_insert_hashed(keys.size(), base, [&](size_t k) {
+                std::vector<Store::PosT> pos;
+                s.for_each_position(base + k, [&](size_t b) { pos.push_back(static_cast<Store::PosT>(b)); });
+                return Store::fold_hash_positions(pos);
+            });
+        }
+        else {
+            s.bulk_insert(keys.size(), base, [&](size_t k) -> const MSet & { return keys[k]; });
+        }
+        BOOST_TEST_CONTEXT("hashed=" << hashed) {
+            BOOST_TEST(s.size() == 3u);
+            size_t indexed = 0;
+            std::vector<size_t> rows_for_dup;
+            s.for_each([&](const MSet &key, size_t row) {
+                ++indexed;
+                if (key == dup) {
+                    rows_for_dup.push_back(row);
+                }
+            });
+            BOOST_TEST(indexed == 3u);
+            std::ranges::sort(rows_for_dup);
+            BOOST_TEST((rows_for_dup == std::vector<size_t>{0, 2}));
+            BOOST_REQUIRE(s.find(dup).has_value());
+            BOOST_TEST(*s.find(dup) == 0u);
+            BOOST_TEST(*s.find(other) == 1u);
         }
     }
 }

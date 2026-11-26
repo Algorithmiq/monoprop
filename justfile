@@ -141,8 +141,8 @@ test-mpi: && test-py-mpi (test-cpp '' mpi_build_dir) test-cpp-mpi
     monoprop_ENABLE_MPI=ON monoprop_MPI_TEST_PROCS="2;4" {{ uv_sync }} --group workspace-test
 
 # Build and run a consumer project against the installed package: serially at one thread and at a
-# fixed team of two, then, when the installation ships MPI ABIs, through the MPI component on two
-# ranks at both team sizes, and finally against a package that lacks the consumer's MPI ABI, which
+# fixed team of two, then, when the installation ships MPI ABIs, through the MPI component as a
+# singleton (no launcher) at both team sizes, and finally against a package that lacks the consumer's MPI ABI, which
 # must fail at configure time.
 
 test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
@@ -249,12 +249,9 @@ sanitizer-reports:
     done
 
 # TSan cannot load an instrumented _core into stock CPython, so this leg is C++ only, and
-# restricted to the concurrency surface: the sharded runtime's team, state, construction,
-# evaluation, exchange and root suites and the fused-record launches (their fixed-T launches
-# included), every `openmp_` case (the workshare primitive, kernels, scan, resolve and budget
-# checks, and their fixed-T launches), the multi-shard coefficient launches and the threaded
-# lazy-fold checks. Only Clang with LLVM's libomp and its Archer
-# tool gives evidence; GCC's libgomp is not TSan-aware (docs/content/docs/building.mdx).
+# restricted to the concurrency surface that `selection` names. Only Clang with LLVM's libomp
+# and its Archer tool gives evidence; GCC's libgomp is not TSan-aware
+# (docs/content/docs/building.mdx).
 
 test-cpp-tsan:
     #!/usr/bin/env bash

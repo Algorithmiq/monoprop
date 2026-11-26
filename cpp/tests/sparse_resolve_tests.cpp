@@ -23,15 +23,18 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <set>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "KernelTestSupport.h"
+#include "ShardedTestSupport.h"
 
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/core/Monomial.h"
@@ -81,20 +84,7 @@ auto random_paired_monomial(std::mt19937_64 &rng, size_t d) -> Monomial<NumModes
 // 0 and 1 for the degenerate records, up to 20 for multi-word ones, 14 for the overflow spill.
 const std::vector<size_t> kPopcounts = {0, 1, 2, 4, 5, 6, 7, 8, 11, 12, 14, 20};
 
-template <size_t NumModes>
-auto make_op(const std::vector<Monomial<NumModes>> &terms) -> detail::MPOperator<NumModes> {
-    detail::MPOperator<NumModes> op;
-    op.basis = Basis::Majorana;
-    if (terms.empty()) {
-        return op;
-    }
-    detail::insert_absent_terms<NumModes>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<NumModes> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<NumModes>(*op.store, base + k, terms[k]); });
-    return op;
-}
+using kernel_test::make_op;
 
 template <size_t NumModes>
 auto draw_distinct(std::mt19937_64 &rng, size_t n) -> std::vector<Monomial<NumModes>> {
@@ -425,14 +415,8 @@ using detail::KernelRange;
 using kernel_test::AccumulatingObserver;
 using kernel_test::PhaseLog;
 
-template <size_t N>
-auto key_of(const Monomial<N> &m) -> std::vector<uint64_t> {
-    std::vector<uint64_t> key;
-    for (size_t w = 0; w < Monomial<N>::num_words(); ++w) {
-        key.push_back(m.word(w));
-    }
-    return key;
-}
+using kernel_test::column_rows;
+using sharded_test::key_of;
 
 template <size_t N>
 auto rows_of(const detail::MPOperator<N> &op) -> std::vector<Monomial<N>> {
@@ -461,26 +445,6 @@ auto exact_sizes(const detail::IncomingProbe<N> &p, size_t positions) -> bool {
            && p.hash_of.size() == n && p.pos_flat.size() == positions && p.miss_g.capacity() == p.miss_g.size();
 }
 
-// The rows a column holds, whichever representation it is in.
-template <size_t N>
-auto column_rows(const detail::InvertedIndex<N> &index, size_t c) -> std::vector<size_t> {
-    std::vector<size_t> rows;
-    if (index.column_is_dense(c)) {
-        const uint64_t *w = index.dense_column_data(c);
-        for (size_t r = 0; r < index.rows(); ++r) {
-            if (((w[r >> 6] >> (r & 63U)) & 1U) != 0U) {
-                rows.push_back(r);
-            }
-        }
-    }
-    else {
-        for (const auto r : index.sparse_column_rows(c)) {
-            rows.push_back(r);
-        }
-    }
-    return rows;
-}
-
 // An index kept up to date by reindex_after_growth against one built from scratch over the same rows.
 template <size_t N>
 auto same_inverted_index(const detail::MPOperator<N> &grown, const detail::MPOperator<N> &fresh) -> bool {
@@ -495,6 +459,39 @@ auto same_inverted_index(const detail::MPOperator<N> &grown, const detail::MPOpe
         }
     }
     return true;
+}
+
+template <size_t N>
+auto keys_of(const std::vector<Monomial<N>> &terms) -> std::set<std::vector<uint64_t>> {
+    std::set<std::vector<uint64_t>> keys;
+    for (const auto &m : terms) {
+        keys.insert(key_of<N>(m));
+    }
+    return keys;
+}
+
+// The next draw_distinct term whose key is not in `used`, recorded there.
+template <size_t N>
+auto fresh_key(std::mt19937_64 &rng, std::set<std::vector<uint64_t>> &used) -> Monomial<N> {
+    for (;;) {
+        const auto m = draw_distinct<N>(rng, 1)[0];
+        if (used.insert(key_of<N>(m)).second) {
+            return m;
+        }
+    }
+}
+
+// A rank-0 Heisenberg Majorana ContractSink without the fused sweep.
+template <size_t N>
+auto contract_sink(size_t ranks, detail::FusedContract &fc, const VecD &coeffs) -> detail::ContractSink<N> {
+    return detail::ContractSink<N>{.R = ranks,
+                                   .my_rank = 0,
+                                   .fc = fc,
+                                   .op_coeffs = coeffs,
+                                   .fused_scale = false,
+                                   .inv_cos = 1.0,
+                                   .schrodinger = false,
+                                   .basis = Basis::Majorana};
 }
 
 // Distinct keys for one resolution: `hits` drawn from the seeded store, the rest fresh, in shuffled order.
@@ -519,10 +516,7 @@ auto plan_queries(uint64_t seed, const std::vector<size_t> &per_sender, HitMix m
     }
     // Enough stored terms for every planned hit: all of them, or one query in three.
     plan.seeds = draw_distinct<N>(rng, std::max(n_seed, mix == HitMix::all ? total : (total / 3) + 1));
-    std::set<std::vector<uint64_t>> used;
-    for (const auto &m : plan.seeds) {
-        used.insert(key_of<N>(m));
-    }
+    auto used = keys_of<N>(plan.seeds);
     size_t next_seed = 0;
     size_t i = 0;
     plan.per_sender.resize(per_sender.size());
@@ -535,14 +529,8 @@ auto plan_queries(uint64_t seed, const std::vector<size_t> &per_sender, HitMix m
                 ++plan.hits;
                 continue;
             }
-            for (;;) {
-                const auto m = draw_distinct<N>(rng, 1)[0];
-                if (used.insert(key_of<N>(m)).second) {
-                    plan.per_sender[s].push_back(m);
-                    ++plan.misses;
-                    break;
-                }
-            }
+            plan.per_sender[s].push_back(fresh_key<N>(rng, used));
+            ++plan.misses;
         }
     }
     return plan;
@@ -610,7 +598,7 @@ auto check_incoming_budgets(const char *label,
         }
         BOOST_TEST(hits == plan.hits);
         BOOST_TEST(std::ranges::equal(serial.miss_g, expect_misses));
-        detail::insert_incoming_misses<N>(serial_op, serial, {.threads = 1});
+        detail::insert_incoming_misses<N>(serial_op, serial);
         const auto serial_rows = rows_of<N>(serial_op);
         BOOST_TEST(serial_rows.size() == plan.seeds.size() + plan.misses);
         for (size_t j = 0; j < expect_misses.size(); ++j) {
@@ -620,8 +608,9 @@ auto check_incoming_budgets(const char *label,
             const auto found = serial_op.store->find(serial_rows[i]);
             BOOST_TEST((found.has_value() && *found == i));
         }
-        if (prebuilt_index) {
-            BOOST_TEST(same_inverted_index<N>(serial_op, make_op<N>(serial_rows)));
+        const auto rebuilt = prebuilt_index ? std::optional{make_op<N>(serial_rows)} : std::nullopt;
+        if (rebuilt) {
+            BOOST_TEST(same_inverted_index<N>(serial_op, *rebuilt));
         }
 
         for (const int threads : {2, 3, 4, 8}) {
@@ -631,10 +620,10 @@ auto check_incoming_budgets(const char *label,
             }
             const auto pr = detail::probe_incoming_queries<N>(incoming, op, form, {.threads = threads});
             BOOST_TEST(same_probe<N>(serial, pr), "budget " << threads);
-            detail::insert_incoming_misses<N>(op, pr, {.threads = threads});
+            detail::insert_incoming_misses<N>(op, pr);
             BOOST_TEST((rows_of<N>(op) == serial_rows), "budget " << threads);
-            if (prebuilt_index) {
-                BOOST_TEST(same_inverted_index<N>(op, make_op<N>(serial_rows)));
+            if (rebuilt) {
+                BOOST_TEST(same_inverted_index<N>(op, *rebuilt));
             }
         }
     }
@@ -820,7 +809,7 @@ BOOST_AUTO_TEST_CASE(openmp_incoming_decode_rejects_invalid_positions_before_pro
                                                                         AccumulatingObserver{&log}),
                               detail::MalformedQueryStream);
             BOOST_TEST(log.of(KernelRange::decode).size() == 1U);
-            BOOST_TEST(log.of(KernelRange::decode)[0]->worker.size() == 3U);
+            BOOST_TEST(log.of(KernelRange::decode)[0]->slots.worker.size() == 3U);
             BOOST_TEST(log.of(KernelRange::incoming_probe).empty());
             BOOST_TEST(op.size() == plan.seeds.size());
         }
@@ -840,7 +829,7 @@ BOOST_AUTO_TEST_CASE(openmp_incoming_decode_worker_failure_joins_before_probing)
                                                                 AccumulatingObserver{&log, KernelRange::decode, 0, 3}),
                       std::runtime_error);
     BOOST_TEST(log.of(KernelRange::decode).size() == 1U);
-    BOOST_TEST(log.of(KernelRange::decode)[0]->visits.at(3) == 1);
+    BOOST_TEST(log.of(KernelRange::decode)[0]->slots.visits.at(3) == 1);
     BOOST_TEST(log.of(KernelRange::incoming_probe).empty());
     BOOST_TEST(op.size() == plan.seeds.size());
 }
@@ -860,8 +849,8 @@ BOOST_AUTO_TEST_CASE(openmp_incoming_decode_and_probe_workers_participate,
     BOOST_TEST(pr.nq_total == 1024U);
     BOOST_REQUIRE(log.of(KernelRange::decode).size() == 1U);
     BOOST_REQUIRE(log.of(KernelRange::incoming_probe).size() == 1U);
-    kernel_test::check_participation(kernel_test::slots_of(*log.of(KernelRange::decode)[0]), 4, "decode");
-    kernel_test::check_participation(kernel_test::slots_of(*log.of(KernelRange::incoming_probe)[0]), 4, "probe");
+    kernel_test::check_participation(log.of(KernelRange::decode)[0]->slots, 4, "decode");
+    kernel_test::check_participation(log.of(KernelRange::incoming_probe)[0]->slots, 4, "probe");
     // Budget 1 and a single block stay on the caller.
     for (const auto &[threads, senders] :
          std::vector<std::pair<int, std::vector<size_t>>>{{1, {500, 0, 524}}, {4, {200, 0, 56}}}) {
@@ -874,10 +863,8 @@ BOOST_AUTO_TEST_CASE(openmp_incoming_decode_and_probe_workers_participate,
                                                   {.threads = threads},
                                                   AccumulatingObserver{&serial_log});
         const size_t blocks = detail::logical_ranges(senders[0] + senders[2], detail::probe_block_queries);
-        kernel_test::check_serial(kernel_test::slots_of(*serial_log.of(KernelRange::decode)[0]), blocks, "decode");
-        kernel_test::check_serial(kernel_test::slots_of(*serial_log.of(KernelRange::incoming_probe)[0]),
-                                  blocks,
-                                  "probe");
+        kernel_test::check_serial(serial_log.of(KernelRange::decode)[0]->slots, blocks, "decode");
+        kernel_test::check_serial(serial_log.of(KernelRange::incoming_probe)[0]->slots, blocks, "probe");
     }
 }
 
@@ -981,7 +968,7 @@ BOOST_AUTO_TEST_CASE(openmp_probe_frozen_positions_workers_participate,
                                        AccumulatingObserver{&log},
                                        KernelRange::self_probe);
     BOOST_REQUIRE(log.of(KernelRange::self_probe).size() == 1U);
-    kernel_test::check_participation(kernel_test::slots_of(log.calls[0]), 4, "frozen probe");
+    kernel_test::check_participation(log.calls[0].slots, 4, "frozen probe");
 }
 
 /* ── Phase-3 scatter: capability-gated parallel on_resolved ─────────────────────────────────────── */
@@ -1016,7 +1003,7 @@ struct ExplicitlySerialSink : AppendingSink<N> {
 };
 
 struct ScatterRun {
-    std::vector<std::vector<double>> responses; // bit patterns compared through bit_cast
+    std::vector<std::vector<double>> responses; // compared bitwise
     std::vector<std::vector<uint64_t>> sink_state;
     std::vector<uint8_t> marks;
     std::vector<std::vector<uint64_t>> rows;
@@ -1062,18 +1049,10 @@ auto run_scatter(const QueryPlan<N> &plan,
 }
 
 auto same_scatter(const ScatterRun &a, const ScatterRun &b) -> bool {
-    if (a.responses.size() != b.responses.size()) {
-        return false;
-    }
-    for (size_t s = 0; s < a.responses.size(); ++s) {
-        if (a.responses[s].size() != b.responses[s].size()
-            || !std::ranges::equal(a.responses[s], b.responses[s], [](double x, double y) {
-                   return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y);
-               })) {
-            return false;
-        }
-    }
-    return a.sink_state == b.sink_state && a.marks == b.marks && a.rows == b.rows;
+    return std::ranges::equal(a.responses,
+                              b.responses,
+                              [](const auto &x, const auto &y) { return kernel_test::bitwise_equal(x, y); })
+           && a.sink_state == b.sink_state && a.marks == b.marks && a.rows == b.rows;
 }
 
 template <size_t N>
@@ -1128,14 +1107,9 @@ BOOST_AUTO_TEST_CASE(openmp_resolve_scatter_threaded_matches_serial) {
             for (const bool swept : {false, true}) {
                 auto op = make_op<N>(plan.seeds);
                 detail::FusedContract fc;
-                detail::ContractSink<N> sink{.R = window.stop(),
-                                             .my_rank = 0,
-                                             .fc = fc,
-                                             .op_coeffs = coeffs,
-                                             .fused_scale = swept,
-                                             .inv_cos = swept ? 1.25 : 1.0,
-                                             .schrodinger = false,
-                                             .basis = Basis::Majorana};
+                auto sink = contract_sink<N>(window.stop(), fc, coeffs);
+                sink.fused_scale = swept;
+                sink.inv_cos = swept ? 1.25 : 1.0;
                 (swept ? contract_swept : contract)
                     .push_back(run_scatter<N>(plan, window, leader, threads, sink, op, [&](const auto &) {
                         return contract_state(fc);
@@ -1163,22 +1137,15 @@ BOOST_AUTO_TEST_CASE(openmp_resolve_scatter_workers_participate,
         const auto run =
             run_scatter<N>(plan, window, true, 4, sink, op, [](const auto &s) { return graph_state<N>(s); });
         BOOST_REQUIRE(run.log.of(KernelRange::scatter).size() == 1U);
-        kernel_test::check_participation(kernel_test::slots_of(*run.log.of(KernelRange::scatter)[0]), 4, "graph");
+        kernel_test::check_participation(run.log.of(KernelRange::scatter)[0]->slots, 4, "graph");
     }
     {
         auto op = make_op<N>(plan.seeds);
         detail::FusedContract fc;
-        detail::ContractSink<N> sink{.R = 2,
-                                     .my_rank = 0,
-                                     .fc = fc,
-                                     .op_coeffs = coeffs,
-                                     .fused_scale = false,
-                                     .inv_cos = 1.0,
-                                     .schrodinger = false,
-                                     .basis = Basis::Majorana};
+        auto sink = contract_sink<N>(2, fc, coeffs);
         const auto run =
             run_scatter<N>(plan, window, true, 4, sink, op, [&](const auto &) { return contract_state(fc); });
-        kernel_test::check_participation(kernel_test::slots_of(*run.log.of(KernelRange::scatter)[0]), 4, "contract");
+        kernel_test::check_participation(run.log.of(KernelRange::scatter)[0]->slots, 4, "contract");
     }
 }
 
@@ -1196,7 +1163,7 @@ BOOST_AUTO_TEST_CASE(openmp_resolve_scatter_stays_serial_without_the_capability)
         auto op = make_op<N>(plan.seeds);
         AppendingSink<N> generic;
         const auto a = run_scatter<N>(plan, window, true, threads, generic, op, order_state);
-        kernel_test::check_serial(kernel_test::slots_of(*a.log.of(KernelRange::scatter)[0]), blocks, "no member");
+        kernel_test::check_serial(a.log.of(KernelRange::scatter)[0]->slots, blocks, "no member");
         std::vector<uint64_t> in_order(2600);
         std::iota(in_order.begin(), in_order.end(), 0);
         BOOST_TEST(a.sink_state[0] == in_order);
@@ -1204,7 +1171,7 @@ BOOST_AUTO_TEST_CASE(openmp_resolve_scatter_stays_serial_without_the_capability)
         auto op2 = make_op<N>(plan.seeds);
         ExplicitlySerialSink<N> declared;
         const auto b = run_scatter<N>(plan, window, true, threads, declared, op2, order_state);
-        kernel_test::check_serial(kernel_test::slots_of(*b.log.of(KernelRange::scatter)[0]), blocks, "false");
+        kernel_test::check_serial(b.log.of(KernelRange::scatter)[0]->slots, blocks, "false");
         BOOST_TEST(b.sink_state[0] == in_order);
     }
     // Schrodinger: fresh cross-rank misses are state-scored from their positions (paired-only mono_at).
@@ -1215,19 +1182,11 @@ BOOST_AUTO_TEST_CASE(openmp_resolve_scatter_stays_serial_without_the_capability)
         auto op = make_op<N>(plan_s.seeds);
         op.initial_state = {0, 3, 5, 9};
         detail::FusedContract fc;
-        detail::ContractSink<N> sink{.R = 3,
-                                     .my_rank = 0,
-                                     .fc = fc,
-                                     .op_coeffs = coeffs,
-                                     .fused_scale = false,
-                                     .inv_cos = 1.0,
-                                     .schrodinger = true,
-                                     .basis = Basis::Majorana};
+        auto sink = contract_sink<N>(3, fc, coeffs);
+        sink.schrodinger = true;
         runs.push_back(
             run_scatter<N>(plan_s, window, true, threads, sink, op, [&](const auto &) { return contract_state(fc); }));
-        kernel_test::check_serial(kernel_test::slots_of(*runs.back().log.of(KernelRange::scatter)[0]),
-                                  blocks,
-                                  "schrodinger");
+        kernel_test::check_serial(runs.back().log.of(KernelRange::scatter)[0]->slots, blocks, "schrodinger");
     }
     BOOST_TEST(same_scatter(runs[0], runs[1]));
 }
@@ -1352,14 +1311,7 @@ auto run_self(const std::vector<Monomial<N>> &seeds,
                                                        0,
                                                        matched,
                                                        combined,
-                                                       detail::ContractSink<N>{.R = 1,
-                                                                               .my_rank = 0,
-                                                                               .fc = fc,
-                                                                               .op_coeffs = coeffs,
-                                                                               .fused_scale = false,
-                                                                               .inv_cos = 1.0,
-                                                                               .schrodinger = false,
-                                                                               .basis = Basis::Majorana},
+                                                       contract_sink<N>(1, fc, coeffs),
                                                        window,
                                                        {.threads = threads},
                                                        AccumulatingObserver{&run.log});
@@ -1418,18 +1370,8 @@ BOOST_AUTO_TEST_CASE(openmp_self_windows_match_serial) {
     constexpr size_t N = 128;
     std::mt19937_64 rng(24);
     const auto seeds = draw_distinct<N>(rng, 6000);
-    std::set<std::vector<uint64_t>> used;
-    for (const auto &m : seeds) {
-        used.insert(key_of<N>(m));
-    }
-    const auto fresh = [&] {
-        for (;;) {
-            const auto m = draw_distinct<N>(rng, 1)[0];
-            if (used.insert(key_of<N>(m)).second) {
-                return m;
-            }
-        }
-    };
+    auto used = keys_of<N>(seeds);
+    const auto fresh = [&] { return fresh_key<N>(rng, used); };
     const size_t n_leader = (2 * detail::self_probe_window) + 37;
     std::vector<Monomial<N>> leader_keys;
     std::vector<size_t> leader_srcs;
@@ -1458,6 +1400,7 @@ BOOST_AUTO_TEST_CASE(openmp_self_windows_match_serial) {
         }
     }
     const size_t kept_followers = follower_keys.size() - filtered;
+    const bool two_workers = !!kernel_test::runtime_offers_two_workers(0);
     for (const bool contract : {false, true}) {
         const auto run_at = [&](int threads) {
             return contract
@@ -1472,21 +1415,19 @@ BOOST_AUTO_TEST_CASE(openmp_self_windows_match_serial) {
             const size_t leader_windows = detail::logical_ranges(n_leader, detail::self_probe_window);
             const size_t follower_windows = detail::logical_ranges(kept_followers, detail::self_probe_window);
             BOOST_REQUIRE(calls.size() == leader_windows + follower_windows);
-            BOOST_TEST(calls[0]->worker.size() == 16U);
-            BOOST_TEST(calls[leader_windows - 1]->worker.size() == 1U); // the 37-query tail
-            BOOST_TEST(calls[leader_windows]->worker.size() == 16U);
+            BOOST_TEST(calls[0]->slots.worker.size() == 16U);
+            BOOST_TEST(calls[leader_windows - 1]->slots.worker.size() == 1U); // the 37-query tail
+            BOOST_TEST(calls[leader_windows]->slots.worker.size() == 16U);
             BOOST_TEST(
-                calls.back()->worker.size()
+                calls.back()->slots.worker.size()
                 == detail::logical_ranges(kept_followers % detail::self_probe_window, detail::probe_block_queries));
             for (const auto *c : calls) {
-                BOOST_TEST(c->worker.size() <= detail::self_probe_window / detail::probe_block_queries);
+                BOOST_TEST(c->slots.worker.size() <= detail::self_probe_window / detail::probe_block_queries);
             }
-        }
-        if (!!kernel_test::runtime_offers_two_workers(0)) {
-            const auto threaded = run_at(4);
-            const auto calls = threaded.log.of(KernelRange::self_probe);
-            kernel_test::check_participation(kernel_test::slots_of(*calls[0]), 16, "self window");
-            kernel_test::check_serial(kernel_test::slots_of(*calls[2]), 1, "self tail");
+            if (threads == 4 && two_workers) {
+                kernel_test::check_participation(calls[0]->slots, 16, "self window");
+                kernel_test::check_serial(calls[2]->slots, 1, "self tail");
+            }
         }
     }
 }
@@ -1498,22 +1439,9 @@ BOOST_AUTO_TEST_CASE(openmp_mixed_self_and_remote_publication_order) {
     constexpr size_t N = 250;
     std::mt19937_64 rng(25);
     const auto seeds = draw_distinct<N>(rng, 3000);
-    std::set<std::vector<uint64_t>> used;
-    for (const auto &m : seeds) {
-        used.insert(key_of<N>(m));
-    }
+    auto used = keys_of<N>(seeds);
     size_t next_seed = 0;
-    const auto pick = [&](bool hit) {
-        if (hit) {
-            return seeds[next_seed++];
-        }
-        for (;;) {
-            const auto m = draw_distinct<N>(rng, 1)[0];
-            if (used.insert(key_of<N>(m)).second) {
-                return m;
-            }
-        }
-    };
+    const auto pick = [&](bool hit) { return hit ? seeds[next_seed++] : fresh_key<N>(rng, used); };
     const auto keys = [&](size_t n) {
         std::vector<Monomial<N>> out;
         for (size_t q = 0; q < n; ++q) {
@@ -1536,6 +1464,7 @@ BOOST_AUTO_TEST_CASE(openmp_mixed_self_and_remote_publication_order) {
     const auto remote = [&](const std::vector<Monomial<N>> &k) {
         return serialize<N>(std::vector<std::vector<Monomial<N>>>{{}, k}, false, window);
     };
+    const std::unordered_set<Monomial<N>, MonomialHash<N>> seed_set(seeds.begin(), seeds.end());
     std::vector<std::vector<std::vector<uint64_t>>> results;
     for (const int threads : {1, 2, 3, 4}) {
         auto op = make_op<N>(seeds);
@@ -1572,7 +1501,7 @@ BOOST_AUTO_TEST_CASE(openmp_mixed_self_and_remote_publication_order) {
                 if (srcs != nullptr && matched.is_marked((*srcs)[q])) {
                     continue;
                 }
-                if (std::ranges::find(seeds, k[q]) == seeds.end()) {
+                if (!seed_set.contains(k[q])) {
                     expect.push_back(k[q]);
                 }
             }

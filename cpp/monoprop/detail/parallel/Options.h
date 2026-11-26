@@ -30,4 +30,7 @@ struct Options {
     int threads = 1; //!< Requested positive per-object budget; not a global runtime setting.
 };
 
+//! A one-thread budget: within-shard kernels run serially, the team's parallelism is across owners.
+inline constexpr Options serial{};
+
 } // namespace monoprop::detail::parallel

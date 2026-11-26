@@ -181,8 +181,7 @@ BOOST_AUTO_TEST_CASE(openmp_budget_explicit_value_overrides_the_default) {
 }
 
 BOOST_AUTO_TEST_CASE(openmp_budget_rejects_malformed_values) {
-    for (const std::string_view text :
-         {"", "0", "00", "-1", "-0", "abc", "2,3", " 3", "3 ", "+3", "\t3", "3\n", "0x10", "1e3", "3.0", "3a"}) {
+    const auto rejects = [](std::string_view text) {
         BOOST_TEST_CONTEXT("value=\"" << text << "\"") {
             BOOST_CHECK_EXCEPTION((void)resolve_thread_budget(text, 2),
                                   std::invalid_argument,
@@ -190,24 +189,22 @@ BOOST_AUTO_TEST_CASE(openmp_budget_rejects_malformed_values) {
                                       return std::string_view(e.what()).find(budget_variable) != std::string_view::npos;
                                   });
         }
+    };
+    for (const std::string_view text :
+         {"", "0", "00", "-1", "-0", "abc", "2,3", " 3", "3 ", "+3", "\t3", "3\n", "0x10", "1e3", "3.0", "3a"}) {
+        rejects(text);
     }
-    // Non-ASCII digits (Arabic-Indic three, U+0663) are not decimal digits here.
-    BOOST_CHECK_THROW((void)resolve_thread_budget("\xd9\xa3", 2), std::invalid_argument);
+    // Overflow, and non-ASCII digits (Arabic-Indic three, U+0663), which are not decimal digits here.
+    for (const std::string_view text :
+         {"2147483648", "4294967297", "18446744073709551617", "99999999999999999999999", "\xd9\xa3"}) {
+        rejects(text);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(openmp_budget_accepts_int_max_without_creating_a_team) {
     // Parsing only: no region is opened, so no INT_MAX-sized team is ever requested.
     BOOST_TEST(resolve_thread_budget("2147483647", 1).threads == INT_MAX);
     BOOST_TEST(resolve_thread_budget("0002147483647", 1).threads == INT_MAX);
-}
-
-BOOST_AUTO_TEST_CASE(openmp_budget_rejects_overflow) {
-    for (const std::string_view text :
-         {"2147483648", "4294967297", "18446744073709551617", "99999999999999999999999"}) {
-        BOOST_TEST_CONTEXT("value=" << text) {
-            BOOST_CHECK_THROW((void)resolve_thread_budget(text, 2), std::invalid_argument);
-        }
-    }
 }
 
 // --- capture_thread_budget: one environment read per call ---------------------------------------------
@@ -221,13 +218,9 @@ BOOST_AUTO_TEST_CASE(openmp_capture_reads_the_environment) {
         const ScopedEnv env(budget_variable, std::nullopt);
         BOOST_TEST(capture_thread_budget().threads == omp_get_max_threads());
     }
-    {
-        // Present but empty is an error, never the fallback.
-        const ScopedEnv env(budget_variable, "");
-        BOOST_CHECK_THROW((void)capture_thread_budget(), std::invalid_argument);
-    }
-    {
-        const ScopedEnv env(budget_variable, "two");
+    // Present but empty or malformed is an error, never the fallback.
+    for (const char *bad : {"", "two"}) {
+        const ScopedEnv env(budget_variable, bad);
         BOOST_CHECK_THROW((void)capture_thread_budget(), std::invalid_argument);
     }
 }

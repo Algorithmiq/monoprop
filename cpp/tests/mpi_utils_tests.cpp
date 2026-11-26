@@ -25,6 +25,7 @@
 #include <random>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
@@ -105,17 +106,6 @@ auto draw_well_formed(std::mt19937_64 &rng, size_t logical, size_t weight) -> Mo
         }
     }
     return indices_to_bitset<N>(idx);
-}
-
-auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> {
-    detail::MPOperator<32> op;
-    op.basis = Basis::Majorana;
-    detail::insert_absent_terms<32>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<32> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<32>(*op.store, base + k, terms[k]); });
-    return op;
 }
 
 auto check_bucket_ownership(const mpi::WindowVec<VecZ> &buckets, const routing::Router &router, size_t &checked)
@@ -210,7 +200,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                     }
                 }
                 BOOST_REQUIRE(!owned.empty());
-                auto op = build_op(owned);
+                auto op = kernel_test::make_op<kN>(owned);
                 const mpi::SlotWindow window = plan.window(my_rank, ranks, /*parts=*/1);
                 VecD coeffs(op.store->size(), 1.0);
                 const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt,
