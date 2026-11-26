@@ -39,16 +39,13 @@
 
 #include <algorithm>
 #include <atomic>
-#include <bit>
 #include <cmath>
-#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <format>
 #include <functional>
-#include <map>
 #include <memory>
 #include <numbers>
 #include <numeric>
@@ -63,7 +60,8 @@
 
 #include "AllocationProbe.h"
 #include "PauliTestOracle.h"
-#include "PropagatorTestAccess.h"
+#include "ShardedFixtures.h"
+#include "ShardedTestSupport.h"
 #include "TestUtilities.h"
 #include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
@@ -73,13 +71,10 @@
 #include "monoprop/detail/evolution/LayerReplay.h"
 #include "monoprop/detail/monomial_propagator/MonomialPropagatorCommon.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/parallel/Options.h"
-#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/pare/PareGraph.h"
 #include "monoprop/detail/sharded/Construction.h"
 #include "monoprop/detail/sharded/State.h"
-#include "monoprop/detail/sharded/Team.h"
 
 namespace {
 
@@ -90,44 +85,34 @@ namespace replay = monoprop::detail::replay;
 namespace allocation = test_utils::allocation;
 using E = sharded::EvaluationWork;
 using W = sharded::ConstructionWork;
-using Key = std::vector<uint64_t>;
+using sharded_test::add_term;
+using sharded_test::bits;
+using sharded_test::Case;
+using sharded_test::Circuit;
+using sharded_test::data_circuit;
+using sharded_test::disarm_team;
+using sharded_test::Fixture;
+using sharded_test::fixture_cases;
+using sharded_test::generators;
+using sharded_test::has_allocation_probe;
+using sharded_test::has_nonprimary_worker;
+using sharded_test::Key;
+using sharded_test::key_of;
+using sharded_test::kN;
+using sharded_test::label;
+using sharded_test::majorana_circuit;
+using sharded_test::majorana_operator;
+using sharded_test::message_of;
+using sharded_test::pauli_circuit;
+using sharded_test::pauli_operator;
+using sharded_test::reference_root;
+using sharded_test::RetainedMap;
+using sharded_test::seed;
+using sharded_test::Sharded;
+using sharded_test::team_options;
+using sharded_test::team_size;
 
-constexpr size_t kN = 8;
 constexpr double kExactAtol = 1e-9; // the frozen exact-energy tolerance of the construction and fused-sweep tests
-
-auto team_options() -> parallel::Options {
-    return parallel::capture_thread_budget();
-}
-
-auto team_size() -> size_t {
-    return static_cast<size_t>(team_options().threads);
-}
-
-auto has_nonprimary_worker(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto threads = parallel::capture_thread_budget().threads;
-    boost::test_tools::assertion_result result(threads >= 2);
-    result.message() << "the captured team budget is " << threads << "; this case needs a nonprimary worker";
-    return result;
-}
-
-auto has_allocation_probe(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    boost::test_tools::assertion_result result(allocation::available());
-    result.message() << "this build's sanitizer runtime owns operator new/delete, so no allocation probe is linked";
-    return result;
-}
-
-template <size_t N>
-auto key_of(const Monomial<N> &m) -> Key {
-    Key key;
-    for (size_t w = 0; w < Monomial<N>::num_words(); ++w) {
-        key.push_back(m.word(w));
-    }
-    return key;
-}
-
-auto bits(double v) -> uint64_t {
-    return std::bit_cast<uint64_t>(v);
-}
 
 auto bits_of(const VecD &v) -> std::vector<uint64_t> {
     std::vector<uint64_t> out;
@@ -138,199 +123,7 @@ auto bits_of(const VecD &v) -> std::vector<uint64_t> {
     return out;
 }
 
-auto message_of(const std::exception_ptr &error) -> std::string {
-    try {
-        std::rethrow_exception(error);
-    }
-    catch (const std::exception &e) {
-        return e.what();
-    }
-    catch (...) {
-        return "non-standard exception";
-    }
-}
-
 // --- Fixtures -------------------------------------------------------------------------------------------------
-
-struct Fixture {
-    std::string name;
-    OperatorDict op;
-    VecZ initial_state;
-    std::optional<unsigned int> schrodinger_cutoff = std::nullopt;
-    Basis basis = Basis::Majorana;
-    CutoffType cutoff_type = CutoffType::Length;
-    unsigned int cutoff = 4;
-    size_t logical = kN;
-    std::optional<double> lower_atol = std::nullopt;
-    std::optional<double> upper_atol = std::nullopt;
-    std::optional<std::vector<VecZ>> basis_change = std::nullopt;
-};
-
-struct Circuit {
-    std::vector<VecZ> gates;
-    VecZ mapping;
-    VecD gen_coeffs;
-    VecD params;
-};
-
-struct Case {
-    Fixture f;
-    Circuit c;
-    std::optional<size_t> k = std::nullopt; // only_rotate_len_k
-};
-
-auto add_term(OperatorDict &op, Basis basis, const VecZ &indices, double value) -> void {
-    op[indices] = algebra_decode_coeff<kN>(basis, std::complex<double>(value, 0.0), indices_to_bitset<kN>(indices));
-}
-
-// Pairs, a ladder of quartics and long terms (which spill past the packed inline width), plus identity.
-auto majorana_operator(size_t logical) -> OperatorDict {
-    OperatorDict op;
-    const size_t slots = 2 * logical;
-    auto value = 0.25;
-    for (size_t i = 0; i < slots; ++i) {
-        for (size_t j = i + 1; j < slots; j += 2) {
-            add_term(op, Basis::Majorana, {i, j}, value);
-            value += 0.125;
-        }
-    }
-    for (size_t i = 0; i + 3 < slots; ++i) {
-        add_term(op, Basis::Majorana, {i, i + 1, i + 2, i + 3}, -0.5 - (0.03125 * static_cast<double>(i)));
-    }
-    add_term(op, Basis::Majorana, {0, 1, 2, 3, 4, 5}, 0.75);
-    add_term(op, Basis::Majorana, {1, 3, 5, 7, 9, 11}, -1.25);
-    add_term(op, Basis::Majorana, {0, 1, 2, 3, 4, 5, 6, 7}, 2.0);
-    add_term(op, Basis::Majorana, {}, 3.5);
-    return op;
-}
-
-auto pauli_operator() -> OperatorDict {
-    OperatorDict op;
-    auto value = 0.5;
-    const auto add = [&](const std::string &pauli) {
-        add_term(op, Basis::Pauli, pauli_oracle::slots_of_string(pauli), value);
-        value += 0.25;
-    };
-    for (size_t q = 0; q < kN; ++q) {
-        for (const char p : {'X', 'Z'}) {
-            std::string s(kN, 'I');
-            s[q] = p;
-            add(s);
-        }
-    }
-    for (size_t q = 0; q + 1 < kN; ++q) {
-        std::string s(kN, 'I');
-        s[q] = 'Z';
-        s[q + 1] = 'Z';
-        add(s);
-    }
-    add("XYZXYIII");
-    add("ZZZZZZZZ");
-    add_term(op, Basis::Pauli, {}, -1.75);
-    return op;
-}
-
-// Two-, three- (odd), four- and six-slot generators, a repeated gate, a repeated parameter and an identity gate.
-auto majorana_circuit(size_t logical) -> Circuit {
-    const size_t s = 2 * logical;
-    Circuit c;
-    c.gates = {{0, 1}, {2, 5}, {1, 3, 4, 6}, {0, s - 1}, {}, {3}, {2, 4, s - 3}, {5, 6, 7, s - 2}, {0, 1}, {1, 2}};
-    c.mapping = {0, 1, 2, 3, 4, 5, 6, 2, 7, 8};
-    for (size_t i = 0; i < c.gates.size(); ++i) {
-        c.gen_coeffs.push_back(i % 3 == 0 ? -1.0 : 0.5 + (0.25 * static_cast<double>(i)));
-    }
-    for (size_t i = 0; i < 9; ++i) {
-        c.params.push_back(0.11 + (0.07 * static_cast<double>(i)));
-    }
-    return c;
-}
-
-auto pauli_circuit() -> Circuit {
-    Circuit c;
-    for (const std::string g : {"XXIIIIII", "YZXIIIII", "ZIIIIIII", "IIXYIIII", "IIIIIIII", "ZZZZIIII", "IYIIIXII"}) {
-        c.gates.push_back(pauli_oracle::slots_of_string(g));
-    }
-    c.mapping.resize(c.gates.size());
-    std::iota(c.mapping.begin(), c.mapping.end(), size_t{0});
-    for (size_t i = 0; i < c.gates.size(); ++i) {
-        c.gen_coeffs.push_back(0.75 - (0.125 * static_cast<double>(i)));
-        c.params.push_back(0.2 + (0.05 * static_cast<double>(i)));
-    }
-    return c;
-}
-
-auto data_circuit(const test_utils::CaseData &data) -> Circuit {
-    return {.gates = data.majoranas,
-            .mapping = data.param_inds,
-            .gen_coeffs = data.gen_coeffs,
-            .params = data.parameters};
-}
-
-// A basis change that permutes the slots pairwise.
-auto swap_basis(size_t logical) -> std::vector<VecZ> {
-    std::vector<VecZ> rows;
-    for (size_t i = 0; i < 2 * logical; ++i) {
-        rows.push_back({i ^ 1U});
-    }
-    return rows;
-}
-
-// Every basis and picture, trimming cutoffs, coefficient cutoffs, length caps (two-pass fallback), a basis change,
-// odd Majorana generators and native Pauli folding.
-auto fixture_cases() -> std::vector<Case> {
-    const auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
-    const Fixture maj{.name = "majorana-heisenberg-logical-6",
-                      .op = majorana_operator(6),
-                      .initial_state = {0, 3},
-                      .logical = 6};
-    auto maj_s = maj;
-    maj_s.name = "majorana-schrodinger-logical-6";
-    maj_s.schrodinger_cutoff = 5;
-    auto maj_atol = maj;
-    maj_atol.name = "majorana-heisenberg-atol";
-    maj_atol.lower_atol = 0.02;
-    maj_atol.upper_atol = 0.3;
-    auto maj_s_atol = maj_s;
-    maj_s_atol.name = "majorana-schrodinger-atol";
-    maj_s_atol.lower_atol = 0.001;
-    maj_s_atol.upper_atol = 0.05;
-    auto maj_bc = maj;
-    maj_bc.name = "majorana-heisenberg-basis-change";
-    maj_bc.basis_change = swap_basis(6);
-    const Fixture rnd{.name = "majorana-heisenberg-random-exact",
-                      .op = data.hamiltonian,
-                      .initial_state = data.initial_state,
-                      .cutoff = 6};
-    auto rnd_s = rnd;
-    rnd_s.name = "majorana-schrodinger-random-exact";
-    rnd_s.schrodinger_cutoff = 6;
-    const Fixture pauli{.name = "pauli-heisenberg",
-                        .op = pauli_operator(),
-                        .initial_state = {},
-                        .basis = Basis::Pauli,
-                        .cutoff_type = CutoffType::Support,
-                        .cutoff = 3};
-    auto pauli_s = pauli;
-    pauli_s.name = "pauli-schrodinger";
-    pauli_s.schrodinger_cutoff = 5;
-    return {
-        {.f = maj, .c = majorana_circuit(6)},
-        {.f = maj_s, .c = majorana_circuit(6)},
-        {.f = maj_atol, .c = majorana_circuit(6)},
-        {.f = maj_s_atol, .c = majorana_circuit(6)},
-        {.f = maj, .c = majorana_circuit(6), .k = 4},
-        {.f = maj_s, .c = majorana_circuit(6), .k = 2},
-        {.f = maj_bc, .c = majorana_circuit(6)},
-        {.f = rnd, .c = data_circuit(data)},
-        {.f = rnd_s, .c = data_circuit(data)},
-        {.f = pauli, .c = pauli_circuit()},
-        {.f = pauli_s, .c = pauli_circuit()},
-    };
-}
-
-auto label(const Case &c) -> std::string {
-    return c.k ? std::format("{} k={}", c.f.name, *c.k) : c.f.name;
-}
 
 // Parameter vectors on the case's axis: the case's own, a deep-amplification set (every layer records what the layer
 // below rotates), and one with vanishing cosines on two consecutive layers (duplicate record indices).
@@ -357,100 +150,7 @@ auto parameter_sets(const Circuit &c) -> std::vector<std::pair<std::string, VecD
     return sets;
 }
 
-// --- The rank-level reference ---------------------------------------------------------------------------------
-
-template <size_t N>
-using Access = monoprop::detail::PropagatorTestAccess<N>;
-
-// The rank-level reference at geometry (1, T): the root over MPI_COMM_SELF at the launch's T, through its public
-// operations. It drives the same seams, so comparing against it checks the root's wiring of them, while each case
-// keeps its independent references.
-template <size_t N>
-auto reference_root(const Fixture &f, size_t threads) -> MonomialPropagator<N> {
-    auto p = MonomialPropagator<N>(f.op,
-                                   f.cutoff,
-                                   f.initial_state,
-                                   f.schrodinger_cutoff,
-                                   MPI_COMM_SELF,
-                                   f.lower_atol,
-                                   f.upper_atol,
-                                   f.cutoff_type,
-                                   f.basis_change,
-                                   f.logical,
-                                   f.basis);
-    BOOST_TEST_REQUIRE(Access<N>::shards(p).size() == threads);
-    return p;
-}
-
 // --- Sharded setup ----------------------------------------------------------------------------------------------
-
-template <size_t N>
-auto make_cutoff_fn(const Fixture &f) -> CutoffFn<N> {
-    if (f.basis_change) {
-        MonomialList<N> basis;
-        for (size_t i = 0; i < 2 * f.logical; ++i) {
-            basis.push_back(indices_to_bitset_checked<N>((*f.basis_change)[i], 2 * f.logical));
-        }
-        return monoprop::detail::cutoff_function_basis_change<N>(f.cutoff_type, f.cutoff, basis, f.logical);
-    }
-    return monoprop::detail::cutoff_function<N>(f.cutoff_type, f.cutoff, f.logical);
-}
-
-template <size_t N>
-struct Sharded {
-    Fixture f;
-    CutoffFn<N> cutoff_fn;
-    routing::Router router;
-    sharded::Shards<N> shards;
-    sharded::PhysicalWorld world{}; // one process unless a multi-rank case seeds over MPI_COMM_WORLD
-
-    [[nodiscard]] auto ctx() const -> sharded::ConstructionContext<N> {
-        return {.cutoff_fn = cutoff_fn,
-                .router = router,
-                .lower_atol = f.lower_atol,
-                .upper_atol = f.upper_atol,
-                .basis = f.basis,
-                .schrodinger = f.schrodinger_cutoff.has_value(),
-                .world = world};
-    }
-    [[nodiscard]] auto schrodinger() const -> bool { return f.schrodinger_cutoff.has_value(); }
-    [[nodiscard]] auto core() const -> double {
-        return sharded::validate_initial_operator<N>(f.op, f.basis, f.logical);
-    }
-};
-
-template <size_t N>
-auto seed(const Fixture &f, parallel::Options options, const sharded::PhysicalWorld &world = {}) -> Sharded<N> {
-    const auto router = routing::make_router<N>(world.ranks, static_cast<size_t>(options.threads));
-    const auto cutoff_fn = make_cutoff_fn<N>(f);
-    std::optional<sharded::PairedBasisBounds> paired;
-    if (f.schrodinger_cutoff) {
-        paired = sharded::paired_basis_bounds(*f.schrodinger_cutoff, f.logical, router.flat_world());
-    }
-    const auto width_fn = monoprop::detail::cutoff_function<N>(f.cutoff_type, f.cutoff, f.logical);
-    const auto seed_inputs = sharded::OperatorSeed<N>{
-        .initial_operator = f.op,
-        .initial_state = f.initial_state,
-        .router = router,
-        .basis = f.basis,
-        .logical_num_modes = f.logical,
-        .paired = paired,
-        .inline_width = sharded::packed_inline_width<N>(paired.has_value(), f.basis_change ? cutoff_fn : width_fn)};
-    return {.f = f,
-            .cutoff_fn = cutoff_fn,
-            .router = router,
-            .shards = sharded::seed_shards(options, seed_inputs, world.rank),
-            .world = world};
-}
-
-template <size_t N>
-auto generators(const Fixture &f, const Circuit &c) -> std::vector<Monomial<N>> {
-    std::vector<Monomial<N>> out;
-    for (const auto &g : c.gates) {
-        out.push_back(indices_to_bitset_checked<N>(g, 2 * f.logical));
-    }
-    return out;
-}
 
 auto require_success(const std::exception_ptr &error, const char *what) -> void {
     if (error) {
@@ -655,16 +355,7 @@ private:
     std::optional<AllocAt> alloc_;
 };
 
-// After an injected allocation failure, no worker thread keeps an armed failure.
-auto disarm_team() -> void {
-    static_cast<void>(sharded::run_team(team_options(), [](size_t, sharded::TeamFailure &) noexcept {
-        (void)allocation::disarm_failure();
-    }));
-}
-
 // --- Independent references -------------------------------------------------------------------------------------
-
-using RetainedMap = std::map<Key, double>;
 
 template <size_t N>
 auto mono_of(const Key &key) -> Monomial<N> {

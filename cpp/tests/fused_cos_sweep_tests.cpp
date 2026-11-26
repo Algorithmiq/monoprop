@@ -50,6 +50,7 @@ namespace {
 
 using namespace test_utils;
 using namespace monoprop;
+using scan_test::bitwise_equal;
 
 // The two paths accumulate FP differently even before the sweep, so demand 1e-12: tight enough that a
 // wrong cos factor on any endpoint (relative error O(1)) fails loudly, loose enough for reordering.
@@ -167,10 +168,6 @@ auto big_root(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm)
         SimulatorConfig{.schrodinger_cutoff = schrodinger ? std::optional<unsigned int>(2 * kBig) : std::nullopt,
                         .comm = comm},
         budget);
-}
-
-auto bitwise_equal(const VecD &a, const VecD &b) -> bool {
-    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0;
 }
 
 auto comm_size(MPI_Comm comm) -> int {

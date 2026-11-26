@@ -26,13 +26,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
 #include <vector>
 
 #include "KernelTestSupport.h"
+#include "ScanTestSupport.h"
 #include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/evolution/layer_build/FusedApply.h"
 #include "monoprop/detail/parallel/Options.h"
@@ -44,6 +44,7 @@ using kernel_test::RangeLog;
 using kernel_test::RecordingObserver;
 using monoprop::detail::KernelRange;
 using monoprop::detail::parallel::Options;
+using scan_test::bitwise_equal;
 
 constexpr auto kBudgets = {1, 2, 3, 4};
 
@@ -54,10 +55,6 @@ auto distinct_values(size_t n) -> VecD {
         v[i] = 1.0 + static_cast<double>(i) * 1e-3;
     }
     return v;
-}
-
-auto bitwise_equal(const VecD &a, const VecD &b) -> bool {
-    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0;
 }
 
 // Equal up to the rounding of one multiply-add whose terms are bounded by |original| + 1 (|cos|, |sin| and every

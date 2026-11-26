@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "PropagatorTestAccess.h"
+#include "ShardedTestSupport.h"
 #include "TestUtilities.h"
 #include "monoprop/Evolution.h"
 #include "monoprop/MPFunctions.h"
@@ -58,6 +59,7 @@ using namespace monoprop;
 using monoprop::detail::parallel::capture_thread_budget;
 using monoprop::detail::parallel::Options;
 using monoprop::detail::parallel::resolve_thread_budget;
+using sharded_test::ScopedEnv;
 
 constexpr size_t kNumModes = 8;
 constexpr unsigned int kCutoff = 4;
@@ -65,36 +67,6 @@ constexpr const char *kBudgetVariable = "monoprop_NUM_THREADS";
 
 using Access = monoprop::detail::PropagatorTestAccess<kNumModes>;
 using Propagator = MonomialPropagator<kNumModes>;
-
-// Sets (or unsets, for nullopt) one environment variable for a scope, then restores it.
-class ScopedEnv {
-public:
-    ScopedEnv(const char *name, std::optional<std::string> value) : name_(name) {
-        if (const char *old = std::getenv(name)) {
-            old_ = std::string(old);
-        }
-        if (value) {
-            ::setenv(name, value->c_str(), 1);
-        }
-        else {
-            ::unsetenv(name);
-        }
-    }
-    ScopedEnv(const ScopedEnv &) = delete;
-    auto operator=(const ScopedEnv &) -> ScopedEnv & = delete;
-    ~ScopedEnv() {
-        if (old_) {
-            ::setenv(name_, old_->c_str(), 1);
-        }
-        else {
-            ::unsetenv(name_);
-        }
-    }
-
-private:
-    const char *name_;
-    std::optional<std::string> old_;
-};
 
 // A distinct type, so a test can tell the original exception from anything the library substitutes.
 class InjectedFailure : public std::runtime_error {
@@ -349,8 +321,10 @@ BOOST_AUTO_TEST_CASE(openmp_low_level_calls_default_to_serial_options) {
     const auto mapped = map_params(data.parameters, sim.parameter_mapping(), VecD(sim.graph_layers(), 1.0), 1.0, true);
     const auto cos =
         monoprop::detail::make_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(), view, Basis::Majorana);
-    const auto cos_threaded = monoprop::detail::make_cos_callbacks<kNumModes>(
-        sim.mp_op().inverted_index(), view, Basis::Majorana, Options{.threads = 3});
+    const auto cos_threaded = monoprop::detail::make_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(),
+                                                                              view,
+                                                                              Basis::Majorana,
+                                                                              Options{.threads = 3});
 
     const VecD op = sim.mp_op().get_operator();
     const VecD by_default = evolve_operator(VecD(op), view, mapped, MPI_COMM_SELF, cos.scale);

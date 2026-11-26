@@ -39,7 +39,6 @@
 #include <chrono>
 #include <complex>
 #include <cstddef>
-#include <cstdlib>
 #include <exception>
 #include <format>
 #include <map>
@@ -57,6 +56,7 @@
 #include "AllocationProbe.h"
 #include "PauliTestOracle.h"
 #include "PropagatorTestAccess.h"
+#include "ShardedTestSupport.h"
 #include "TestUtilities.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/algebra/Algebra.h"
@@ -73,7 +73,13 @@ namespace sharded = monoprop::detail::sharded;
 namespace allocation = test_utils::allocation;
 using namespace std::chrono_literals;
 
-constexpr size_t kN = 8;
+using sharded_test::add_term;
+using sharded_test::has_allocation_probe;
+using sharded_test::has_nonprimary_worker;
+using sharded_test::kN;
+using sharded_test::ScopedEnv;
+using sharded_test::team_options;
+using sharded_test::team_size;
 using State = sharded::ShardState<kN>;
 using Shards = sharded::Shards<kN>;
 using Operator = monoprop::detail::MPOperator<kN>;
@@ -91,27 +97,6 @@ struct MonoLess {
     }
 };
 
-auto team_options() -> parallel::Options {
-    return parallel::capture_thread_budget();
-}
-
-auto team_size() -> size_t {
-    return static_cast<size_t>(team_options().threads);
-}
-
-auto has_nonprimary_worker(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto threads = parallel::capture_thread_budget().threads;
-    boost::test_tools::assertion_result result(threads >= 2);
-    result.message() << "the captured team budget is " << threads << "; this case needs a nonprimary worker";
-    return result;
-}
-
-auto has_allocation_probe(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    boost::test_tools::assertion_result result(allocation::available());
-    result.message() << "this build's sanitizer runtime owns operator new/delete, so no allocation probe is linked";
-    return result;
-}
-
 // --- Fixtures -------------------------------------------------------------------------------------------------
 
 struct Fixture {
@@ -124,11 +109,6 @@ struct Fixture {
     unsigned int cutoff = 4;
     size_t logical = kN;
 };
-
-// Stores the coefficient whose encoding is `value`, so every fixture is encodable in its basis.
-auto add_term(OperatorDict &op, Basis basis, const VecZ &indices, double value) -> void {
-    op[indices] = algebra_decode_coeff<kN>(basis, std::complex<double>(value, 0.0), indices_to_bitset<kN>(indices));
-}
 
 // Pairs, a ladder of quartics and a few six- and eight-slot terms over the first 2 * logical slots, plus identity.
 // Under a length-4 cutoff the long terms exceed the packed inline width and spill to the overflow map.
@@ -533,30 +513,6 @@ auto built_source(size_t threads) -> BuiltSource {
     propagator.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     return {std::move(data), std::move(fixture), std::move(propagator)};
 }
-
-class ScopedEnv {
-public:
-    ScopedEnv(const char *name, const char *value) : name_(name) {
-        if (const char *old = std::getenv(name)) {
-            old_ = old;
-        }
-        setenv(name, value, 1);
-    }
-    ScopedEnv(const ScopedEnv &) = delete;
-    auto operator=(const ScopedEnv &) -> ScopedEnv & = delete;
-    ~ScopedEnv() {
-        if (old_) {
-            setenv(name_, old_->c_str(), 1);
-        }
-        else {
-            unsetenv(name_);
-        }
-    }
-
-private:
-    const char *name_;
-    std::optional<std::string> old_;
-};
 
 struct WorkerError {
     size_t shard;

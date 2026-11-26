@@ -56,6 +56,7 @@
 
 #include "AllocationProbe.h"
 #include "PropagatorTestAccess.h"
+#include "ShardedTestSupport.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/Routing.h"
@@ -989,6 +990,8 @@ BOOST_AUTO_TEST_CASE(sharded_root_allocation_failures_are_catchable) {
 
 namespace {
 
+using sharded_test::dedicated_launch;
+
 auto world_size() -> size_t {
     return static_cast<size_t>(mpi::size(mpi::Comm(MPI_COMM_WORLD)));
 }
@@ -1002,14 +1005,8 @@ auto routable_world() -> bool {
     return !routing::linear_requested() || std::has_single_bit(world_size());
 }
 
-// Multi-rank cases run only in their dedicated launches, which name the world size (cpp/tests/CMakeLists.txt).
-auto dedicated_launch() -> bool {
-    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
-    return text != nullptr && std::stoul(text) == world_size();
-}
-
 auto has_routable_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    boost::test_tools::assertion_result result(world_size() >= 2 && dedicated_launch() && routable_world());
+    boost::test_tools::assertion_result result(world_size() >= 2 && dedicated_launch(world_size()) && routable_world());
     result.message() << "the launch has " << world_size() << " rank(s)"
                      << (routing::linear_requested() ? " under linear routing" : "")
                      << "; this case needs at least 2 ranks the router accepts";
@@ -1096,7 +1093,7 @@ auto check_close_vectors(const VecD &got, const VecD &want, const char *what) ->
 } // namespace
 
 BOOST_AUTO_TEST_CASE(sharded_root_multirank_rejects_an_unroutable_geometry) {
-    if (world_size() < 2 || !dedicated_launch()) {
+    if (world_size() < 2 || !dedicated_launch(world_size())) {
         BOOST_TEST_MESSAGE("not a dedicated multi-rank launch");
         return;
     }

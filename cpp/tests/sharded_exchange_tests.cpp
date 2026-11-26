@@ -34,7 +34,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <format>
 #include <limits>
@@ -44,56 +43,40 @@
 #include <utility>
 #include <vector>
 
+#include "ShardedTestSupport.h"
 #include "monoprop/detail/mpi/Comm.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/parallel/Options.h"
-#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/Team.h"
 
 namespace {
 
-namespace parallel = monoprop::detail::parallel;
 namespace sharded = monoprop::detail::sharded;
 using sharded::ExchangeElement;
 using sharded::ExchangeTransport;
 using sharded::PhysicalExchange;
 using sharded::PhysicalWorld;
+using sharded_test::dedicated_launch;
+using sharded_test::has_nonprimary_worker;
+using sharded_test::team_options;
 
 constexpr int kTag = 0x5E01;
-
-auto team_options() -> parallel::Options {
-    return parallel::capture_thread_budget();
-}
 
 auto world() -> PhysicalWorld {
     return PhysicalWorld::of(monoprop::mpi::Comm(MPI_COMM_WORLD));
 }
 
-// Multi-rank cases run only in their dedicated launches, which name the world size (cpp/tests/CMakeLists.txt).
-auto dedicated_launch() -> bool {
-    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
-    return text != nullptr && std::stoul(text) == world().ranks;
-}
-
 auto has_two_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
     const auto ranks = world().ranks;
-    boost::test_tools::assertion_result result(ranks >= 2 && dedicated_launch());
+    boost::test_tools::assertion_result result(ranks >= 2 && dedicated_launch(ranks));
     result.message() << "the launch has " << ranks << " MPI rank(s); this case needs a dedicated launch of at least 2";
     return result;
 }
 
 auto has_even_ranks(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
     const auto ranks = world().ranks;
-    boost::test_tools::assertion_result result(ranks >= 2 && ranks % 2 == 0 && dedicated_launch());
+    boost::test_tools::assertion_result result(ranks >= 2 && ranks % 2 == 0 && dedicated_launch(ranks));
     result.message() << "the launch has " << ranks << " MPI rank(s); the XOR peer needs a dedicated launch of an even "
                      << "count of at least 2";
-    return result;
-}
-
-auto has_nonprimary_worker(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto threads = team_options().threads;
-    boost::test_tools::assertion_result result(threads >= 2);
-    result.message() << "the captured team budget is " << threads << "; this case needs a nonprimary worker";
     return result;
 }
 
@@ -594,7 +577,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_rounds_persist_by_kind) {
 BOOST_AUTO_TEST_CASE(sharded_exchange_payload_totals_must_fit_mpi_counts) {
     // Per-peer totals are prefix sums of int counts; a sum past INT_MAX is refused by plan_send, before posting.
     const auto w = world();
-    if (w.ranks < 2 || !dedicated_launch()) {
+    if (w.ranks < 2 || !dedicated_launch(w.ranks)) {
         // One process has no peer to address; the per-count bound is covered above.
         BOOST_TEST_MESSAGE("world size 1: no peer to overflow");
         return;

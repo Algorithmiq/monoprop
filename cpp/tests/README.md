@@ -89,6 +89,13 @@ name and cannot address suite-nested cases, tests use flat
   shard interface.
 - **`RankPreconditions.h`**: Boost preconditions `min_ranks`, `power_of_two_ranks`,
   `even_ranks`, `linear_routing`, `default_routing`.
+- **`ShardedTestSupport.h`**: the launch's captured team (`team_options`, `team_size`), the Boost
+  preconditions `has_nonprimary_worker` and `has_allocation_probe`, `disarm_team`, `ScopedEnv`,
+  `dedicated_launch`, and exact keys and bit patterns (`key_of`, `bits`) for the sharded and OpenMP
+  runtime suites.
+- **`ShardedFixtures.h`**: the operator, circuit and shard-seeding fixtures (`fixture_cases`, `seed`,
+  `Sharded`) and the rank-level `reference_root`, shared by `sharded_construction_tests.cpp` and
+  `sharded_evaluation_tests.cpp`.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 

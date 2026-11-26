@@ -44,8 +44,8 @@
 #include <thread>
 #include <vector>
 
+#include "ShardedTestSupport.h"
 #include "monoprop/detail/parallel/Options.h"
-#include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/Team.h"
 
 namespace parallel = monoprop::detail::parallel;
@@ -54,18 +54,14 @@ using namespace std::chrono_literals;
 
 namespace {
 
+using sharded_test::has_nonprimary_worker;
+using sharded_test::team_options;
+using sharded_test::team_size;
+
 // Orchestration bodies must be noexcept; potentially throwing work belongs inside phase().
 static_assert(sharded::TeamBody<decltype([](size_t, sharded::TeamFailure &) noexcept {})>);
 static_assert(!sharded::TeamBody<decltype([](size_t, sharded::TeamFailure &) {})>);
 static_assert(!sharded::TeamBody<decltype([](size_t) noexcept {})>);
-
-auto team_options() -> parallel::Options {
-    return parallel::capture_thread_budget();
-}
-
-auto team_size(parallel::Options options) -> size_t {
-    return static_cast<size_t>(options.threads);
-}
 
 // The team a fixed-T launch in cpp/tests/CMakeLists.txt promises; absent in ordinary discovered runs.
 auto expected_team() -> std::optional<int> {
@@ -74,13 +70,6 @@ auto expected_team() -> std::optional<int> {
         return std::nullopt;
     }
     return std::stoi(value);
-}
-
-auto has_nonprimary_worker(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto threads = parallel::capture_thread_budget().threads;
-    boost::test_tools::assertion_result result(threads >= 2);
-    result.message() << "the captured team budget is " << threads << "; this case needs a nonprimary worker";
-    return result;
 }
 
 // What one worker saw of its own team, written only by that worker.
