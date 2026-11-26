@@ -62,6 +62,7 @@ from monoprop_bench_tools.models import (
     make_random_problem,
 )
 from monoprop_bench_tools.preflight import (
+    RUNTIME_SHAPES,
     PreflightError,
     build_has_mpi,
     declared_shape,
@@ -205,7 +206,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     shape = parser.getgroup("monoprop-shape", "monoprop measurement preflight")
     shape.addoption(
         "--runtime-shape",
-        choices=("openmp",),
+        choices=RUNTIME_SHAPES,
         default=None,
         help="Declared process layout, checked against the environment and rank count.",
     )
@@ -232,11 +233,6 @@ def _bench_comm() -> Any:
     return None if MPI is None or not _HAS_MPI else MPI.COMM_WORLD
 
 
-def _measured_core() -> Any:
-    """Return the extension module the benchmarks run on: ``_core_mpi`` under ``bench_comm``."""
-    return measured_extension(monoprop, _bench_comm())
-
-
 def _core_md5() -> str:
     """Return the md5 of the extension module this run measures.
 
@@ -244,7 +240,7 @@ def _core_md5() -> str:
     site-packages holds its own copies, so hash what the module actually resolved to.
     """
     try:
-        path = Path(_measured_core().__file__)
+        path = Path(measured_extension(monoprop, _bench_comm()).__file__)
         return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
     except (AttributeError, OSError, TypeError):
         return "unavailable"
@@ -306,19 +302,18 @@ def _require_shape(config: pytest.Config) -> dict[str, Any] | None:
             f"extension has has_mpi={_HAS_MPI}."
         )
         raise pytest.UsageError(msg)
-    if runtime_shape is not None:
-        try:
-            shape = declared_shape(
-                runtime_shape,
-                os.environ,
-                ranks=_size(),
-                has_mpi=_HAS_MPI,
-                expected_has_mpi=expected_has_mpi,
-            )
-        except PreflightError as exc:
-            raise pytest.UsageError(str(exc)) from exc
-        return shape
-    return None
+    if runtime_shape is None:
+        return None
+    try:
+        return declared_shape(
+            runtime_shape,
+            os.environ,
+            ranks=_size(),
+            has_mpi=_HAS_MPI,
+            expected_has_mpi=expected_has_mpi,
+        )
+    except PreflightError as exc:
+        raise pytest.UsageError(str(exc)) from exc
 
 
 @pytest.hookimpl(trylast=True)

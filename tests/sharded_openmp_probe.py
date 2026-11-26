@@ -31,9 +31,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
-import itertools
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -46,15 +44,13 @@ sys.path.insert(0, str(_TESTS.parent))
 import monoprop  # noqa: E402
 from monoprop import (  # noqa: E402
     Circuit,
-    ExpGate,
     MajoranaPropagator,
-    Pauli,
     PauliOperator,
     PauliPropagator,
     _core,
 )
 from monoprop.circuit import expand_monomials  # noqa: E402
-from tests.reference_data import load_problem  # noqa: E402
+from tests.reference_data import deep_circuit, load_problem  # noqa: E402
 
 
 def _has_mpi() -> bool:
@@ -84,83 +80,36 @@ def _raw_map(propagator: Any, params: list[float], atol: float) -> dict[str, lis
     }
 
 
-def _breakdowns(propagator: Any) -> dict[str, Any]:  # noqa: ANN401
+def _aggregates(propagator: Any) -> dict[str, Any]:  # noqa: ANN401
     sim = propagator._simulator
-    return {
-        "size": sim.size(),
-        "graph_size": list(sim.graph_size()),
-        "graph_layers": sim.graph_layers(),
-        "n_gates": sim.n_gates(),
-        "operator": dict(sim.operator_memory_breakdown()),
-        "graph": dict(sim.graph_memory_breakdown()),
-        "operator_bytes": sim.operator_memory_bytes(),
-        "graph_bytes": sim.graph_memory_bytes(),
-    }
+    return {"size": sim.size(), "graph_layers": sim.graph_layers()}
 
 
 class _Problem:
     """A fixture: a factory for fresh propagators, a circuit and evaluation parameters."""
 
-    def __init__(self, name: str, picture: str, informed_atol: float | None) -> None:
-        self.name = name
+    def __init__(self, name: str, picture: str) -> None:
         self.schrodinger = picture == "schrodinger"
-        self.informed_atol = informed_atol
-        if name.startswith("pauli_deep"):
-            self._pauli_deep(name)
-        else:
-            self._majorana(name)
+        {"random_exact": self._random_exact, "pauli_deep": self._pauli_deep}[name]()
+        if self.schrodinger:
+            self.kwargs["schrodinger_cutoff"] = self.kwargs["cutoff"]
 
-    def _majorana(self, name: str) -> None:
-        files = {
-            "random_exact": "random_exact",
-            "rx_rz": "rx_rz_ry_rz_exact",
-            "lih": "lih_fermionic_spin_exact",
-            "s0_8e8o": "S0_8e8o_majoranic_c8",
-        }
-        problem = load_problem(_TESTS / "data" / f"{files[name]}.msgpack")
+    def _random_exact(self) -> None:
+        problem = load_problem(_TESTS / "data" / "random_exact.msgpack")
         self.basis = "majorana"
         self.circuit = problem.monomial_circuit.to_circuit()
         self.params = [float(v) for v in problem.monomial_circuit.parameters]
         self.operator = problem.operator
         self.state = list(problem.monomial_circuit.initial_state)
         self.num_modes = problem.n_modes
-        cutoff = {
-            "random_exact": 2 * problem.n_modes,
-            "rx_rz": 2,
-            "lih": 4,
-            "s0_8e8o": 6,
-        }[name]
-        self.kwargs: dict[str, Any] = {"cutoff": cutoff}
-        if self.schrodinger:
-            self.kwargs["schrodinger_cutoff"] = min(cutoff, 2 * problem.n_modes)
+        self.kwargs: dict[str, Any] = {"cutoff": 2 * problem.n_modes}
 
-    def _pauli_deep(self, name: str) -> None:
-        # The deep-gradient regression family (tests/test_deep_circuit_gradient.py): repeated parameters, records and,
-        # at theta = pi/4, a vanishing cosine.
-        layers, theta = (2, 1.0) if name == "pauli_deep" else (2, math.pi / 4)
-        num_qubits = 6
-        observable = PauliOperator(
-            {
-                Pauli("ZZ", [i, j]): 0.5
-                for i, j in itertools.combinations(range(num_qubits), 2)
-            },
-            num_qubits=num_qubits,
-        )
-        gates = []
-        for k in range(layers):
-            gates += [
-                ExpGate(PauliOperator({pauli: v}, num_qubits=num_qubits), index=k)
-                for pauli, v in observable.terms.items()
-            ]
-            gates += [
-                ExpGate(
-                    PauliOperator({Pauli("X", i): -1.0}, num_qubits=num_qubits),
-                    index=layers + k,
-                )
-                for i in range(num_qubits)
-            ]
+    def _pauli_deep(self) -> None:
+        # The deep-gradient regression family (tests/test_deep_circuit_gradient.py): repeated parameters and records.
+        layers, num_qubits = 2, 6
+        observable, gates = deep_circuit(num_qubits, layers)
         self.basis = "pauli"
-        self.params = [theta] * (2 * layers)
+        self.params = [1.0] * (2 * layers)
         self.circuit = Circuit(
             gates=gates, system_size=num_qubits, parameters=self.params
         )
@@ -168,8 +117,6 @@ class _Problem:
         self.state = [0, 2]
         self.num_modes = num_qubits
         self.kwargs = {"cutoff": 3}
-        if self.schrodinger:
-            self.kwargs["schrodinger_cutoff"] = 3
 
     def make(self, **overrides: Any) -> Any:  # noqa: ANN401
         kwargs = {**self.kwargs, **overrides}
@@ -206,7 +153,7 @@ def _evaluations(propagator: Any, params: list[float]) -> dict[str, Any]:  # noq
 
 
 def _scenario_full(spec: dict[str, Any]) -> dict[str, Any]:
-    problem = _Problem(spec["fixture"], spec["picture"], spec.get("informed_atol"))
+    problem = _Problem(spec["fixture"], spec["picture"])
     params = problem.params
     out: dict[str, Any] = {}
 
@@ -220,8 +167,7 @@ def _scenario_full(spec: dict[str, Any]) -> dict[str, Any]:
         "map0": _raw_map(graph, params, 0.0),
         "map": _raw_map(graph, params, 1e-12),
         "contract": _hexes(graph.contract_partially(params, inplace=False)),
-        "aggregates": _breakdowns(graph),
-        "parameter_mapping": graph.parameter_mapping,
+        "aggregates": _aggregates(graph),
         "python_terms": len(graph.evolved_operator(params, atol=0.0).terms),
     }
     # Non-inplace contraction leaves the graph and its answers unchanged.
@@ -240,7 +186,7 @@ def _scenario_full(spec: dict[str, Any]) -> dict[str, Any]:
     out["informed"] = {
         **_evaluations(informed, params),
         "map0": _raw_map(informed, params, 0.0),
-        "aggregates": _breakdowns(informed),
+        "aggregates": _aggregates(informed),
     }
 
     # Graph-free propagation.
@@ -250,7 +196,7 @@ def _scenario_full(spec: dict[str, Any]) -> dict[str, Any]:
         "energy": _hex(direct.expectation_value([])),
         "map0": _raw_map(direct, [], 0.0),
         "contract": _hexes(direct.contract_partially([], inplace=False)),
-        "aggregates": _breakdowns(direct),
+        "aggregates": _aggregates(direct),
     }
 
     # Incremental axis: build twice (structural extension), evaluate on the doubled axis, contract in place, then
@@ -293,11 +239,7 @@ def _scenario_full(spec: dict[str, Any]) -> dict[str, Any]:
     updates.build_graph(problem.circuit)
     stale = updates.expectation_value_functional()
     updates.update_initial_operator(problem.scaled_operator(0.5))
-    try:
-        stale(params)
-        out["stale_functional"] = "answered"
-    except Exception as exc:  # noqa: BLE001 - the parent checks the type and message
-        out["stale_functional"] = f"{type(exc).__name__}: {exc}"
+    out["stale_functional"] = _attempt(lambda: stale(params))
     out["updated"] = {
         "energy": _hex(updates.expectation_value(params)),
         "functional": _hex(updates.expectation_value_functional()(params)),
@@ -411,28 +353,19 @@ def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     global _COMM, _CORE  # noqa: PLW0603 - fixed once, before any propagator exists
     spec = json.loads(sys.argv[1])
-    has_mpi = _has_mpi()
-    if has_mpi:
+    if _has_mpi():
         from mpi4py import MPI  # noqa: PLC0415 - MPI-off runs never import mpi4py
 
         _COMM = MPI.COMM_WORLD
     _CORE = monoprop._backend.core_module(_COMM)
-    result: dict[str, Any] = {"has_mpi": has_mpi}
+    scenarios = {"full": _scenario_full, "controls": _scenario_controls}
     scenario = spec["scenario"]
-    if scenario == "full":
-        result["full"] = _scenario_full(spec)
-    elif scenario == "controls":
-        result["controls"] = _scenario_controls(spec)
-    else:
-        msg = f"unknown scenario {scenario!r}"
-        raise ValueError(msg)
+    result: dict[str, Any] = {scenario: scenarios[scenario](spec)}
     out = spec.get("out")
     if out is None:
         sys.stdout.write(json.dumps(result) + "\n")
         return
-    rank, ranks = 0, 1
-    if _COMM is not None:
-        rank, ranks = _COMM.Get_rank(), _COMM.Get_size()
+    rank, ranks = (0, 1) if _COMM is None else (_COMM.Get_rank(), _COMM.Get_size())
     result["rank"], result["ranks"] = rank, ranks
     Path(out, f"rank{rank}.json").write_text(json.dumps(result))
 

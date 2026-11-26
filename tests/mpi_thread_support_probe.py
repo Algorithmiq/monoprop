@@ -51,7 +51,6 @@ doc: dict[str, object] = {
     "provided": _LEVELS[MPI.Query_thread()],
 }
 
-import monoprop  # noqa: E402
 from monoprop import (  # noqa: E402
     Circuit,
     ExpGate,
@@ -100,7 +99,6 @@ def _write() -> None:
     print(json.dumps(doc), flush=True)  # noqa: T201
 
 
-doc["has_mpi"] = bool(monoprop.MPI_ABIS)
 if mode not in ("operations", "wrong-thread"):
     raise SystemExit(f"unknown mode {mode!r}")
 try:

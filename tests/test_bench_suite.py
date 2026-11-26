@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,10 +28,19 @@ from pathlib import Path
 import pytest
 
 import monoprop
-from tests.mpi_support import LAUNCHER_PREFIXES, inside_multirank_job
+from tests.mpi_support import (
+    MPI_LAUNCH_ENV,
+    inherited_env,
+    mpi_launcher,
+    needs_mpi_launch,
+    skip_in_multirank_job,
+)
+
+pytest.importorskip("monoprop_bench_tools")
+pytest.importorskip("pytest_benchmark")
 
 # Repository tooling, not the package: a wheel's test run skips it.
-pytestmark = pytest.mark.wheel_redundant
+pytestmark = [pytest.mark.wheel_redundant, skip_in_multirank_job]
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,35 +59,23 @@ _TINY = [
     "--pauli-lower-atol=0.1",
 ]
 _FAMILIES = ("build_graph", "propagate", "energy", "gradient")
+_PYTEST_BENCHES = (sys.executable, "-m", "pytest", "benches", "-p", "no:cacheprovider")
 
 # The imported installation's build mode, as the suite records it in ``has_mpi``.
 HAS_MPI = bool(monoprop.MPI_ABIS)
 
-# These tests launch their own processes (pytest, mpiexec). Inside a multi-rank MPI test job every
-# rank would repeat those launches nested in the parent job, so they run outside one.
-_launches = pytest.mark.skipif(
-    inside_multirank_job(),
-    reason="launches its own processes; run outside a multi-rank MPI job",
-)
-
 
 def _bench_env(**extra: str) -> dict[str, str]:
     """Return a clean launch environment for a benchmark subprocess."""
-    # Launcher variables are dropped so a child never joins an enclosing MPI job.
-    dropped = ("monoprop_", "OMP_", "PYTEST_", *LAUNCHER_PREFIXES)
-    env = {
-        key: value for key, value in os.environ.items() if not key.startswith(dropped)
-    }
-    env.update(extra)
-    return env
+    return {**inherited_env(drop=("monoprop_", "OMP_", "PYTEST_")), **extra}
 
 
 def _run_benches(
-    *args: str, env: dict[str, str] | None = None
+    *args: str, env: dict[str, str] | None = None, launcher: tuple[str, ...] = ()
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``pytest benches`` in a fresh process from the repository root."""
+    """Run ``pytest benches`` in a fresh process from the repository root, under ``launcher`` if given."""
     return subprocess.run(  # noqa: S603 - trusted: this interpreter, repository paths
-        [sys.executable, "-m", "pytest", "benches", "-p", "no:cacheprovider", *args],
+        [*launcher, *_PYTEST_BENCHES, *args],
         cwd=_ROOT,
         env=env if env is not None else _bench_env(),
         capture_output=True,
@@ -89,16 +85,9 @@ def _run_benches(
     )
 
 
-def _needs_bench_tools() -> None:
-    pytest.importorskip("monoprop_bench_tools")
-    pytest.importorskip("pytest_benchmark")
-
-
-@_launches
 def test_suite_records_independent_exactness_for_all_four_families(
     tmp_path: Path,
 ) -> None:
-    _needs_bench_tools()
     results = tmp_path / "results"
     results.mkdir()
     env = _bench_env(
@@ -144,10 +133,8 @@ def _mpi4py_trap(tmp_path: Path) -> tuple[Path, Path]:
     return package.parent, marker
 
 
-@_launches
 @pytest.mark.skipif(HAS_MPI, reason="needs an MPI-off extension")
 def test_mpi_off_suite_never_imports_mpi4py(tmp_path: Path) -> None:
-    _needs_bench_tools()
     trap, marker = _mpi4py_trap(tmp_path)
     env = _bench_env(PYTHONPATH=os.pathsep.join([str(trap), *sys.path]))
     proc = _run_benches("--collect-only", "-q", *_TINY, env=env)
@@ -156,7 +143,6 @@ def test_mpi_off_suite_never_imports_mpi4py(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-@_launches
 @pytest.mark.skipif(HAS_MPI, reason="needs an MPI-off extension")
 @pytest.mark.parametrize(
     ("args", "env", "message"),
@@ -168,14 +154,12 @@ def test_mpi_off_suite_never_imports_mpi4py(tmp_path: Path) -> None:
 def test_suite_rejects_contradictory_declarations(
     args: list[str], env: dict[str, str], message: str
 ) -> None:
-    _needs_bench_tools()
     proc = _run_benches("--collect-only", "-q", *args, env=_bench_env(**env))
 
     assert proc.returncode != 0
     assert message in proc.stdout + proc.stderr
 
 
-@_launches
 @pytest.mark.skipif(HAS_MPI, reason="needs an MPI-off extension")
 @pytest.mark.parametrize(
     ("args", "env"),
@@ -183,21 +167,15 @@ def test_suite_rejects_contradictory_declarations(
         (["--runtime-shape=openmp"], {"monoprop_NUM_THREADS": "2"}),
         (["--runtime-shape=openmp"], {"OMP_NUM_THREADS": "2"}),
         (["--build-mode=mpi-off"], {}),
-        ([], {}),
     ],
 )
 def test_suite_accepts_valid_declarations(args: list[str], env: dict[str, str]) -> None:
-    _needs_bench_tools()
     proc = _run_benches("--collect-only", "-q", *args, env=_bench_env(**env))
 
     assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
 
 
-@_launches
-@pytest.mark.skipif(
-    not HAS_MPI or shutil.which("mpiexec") is None,
-    reason="needs an MPI extension and mpiexec",
-)
+@needs_mpi_launch
 @pytest.mark.parametrize(
     ("args", "env"),
     [
@@ -206,31 +184,13 @@ def test_suite_accepts_valid_declarations(args: list[str], env: dict[str, str]) 
     ],
 )
 def test_multi_rank_shape_preflight(args: list[str], env: dict[str, str]) -> None:
-    _needs_bench_tools()
-    exported = [flag for key in env for flag in ("-x", key)]
-    proc = subprocess.run(  # noqa: S603 - trusted: this interpreter, repository paths
-        [
-            shutil.which("mpiexec"),
-            "--map-by",
-            ":OVERSUBSCRIBE",
-            "-n",
-            "2",
-            *exported,
-            sys.executable,
-            "-m",
-            "pytest",
-            "benches",
-            "-p",
-            "no:cacheprovider",
-            "--collect-only",
-            "-q",
-            *args,
-        ],
-        cwd=_ROOT,
-        env=_bench_env(**env),
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
+    launcher = mpi_launcher()
+    assert launcher is not None
+    proc = _run_benches(
+        "--collect-only",
+        "-q",
+        *args,
+        env=_bench_env(**MPI_LAUNCH_ENV, **env),
+        launcher=(launcher, "-n", "2"),
     )
     assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]

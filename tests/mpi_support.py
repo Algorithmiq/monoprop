@@ -17,14 +17,20 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
-from typing import TYPE_CHECKING
+import subprocess
+import sys
+from typing import TYPE_CHECKING, Any
+
+import pytest
 
 import monoprop
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
 # An installation without MPI never initializes MPI, even where mpi4py happens to be installed:
 # importing mpi4py.MPI would initialize it as a side effect of collecting the suite.
@@ -62,20 +68,58 @@ def mpi_launcher() -> str | None:
     return shutil.which("mpiexec") or shutil.which("mpirun")
 
 
+skip_in_multirank_job = pytest.mark.skipif(
+    inside_multirank_job(),
+    reason="launches fresh processes, which cannot run inside a multi-rank MPI job",
+)
+
+needs_mpi_launch = pytest.mark.skipif(
+    not HAS_MPI_BACKEND or mpi_launcher() is None,
+    reason="needs an MPI build, mpi4py and an MPI launcher on PATH",
+)
+
+
 def close(a: float, b: float) -> bool:
     """Return whether ``a`` and ``b`` agree within ``1e-9 + 1e-7 * max(|a|, |b|)``."""
     return abs(a - b) <= 1e-9 + 1e-7 * max(abs(a), abs(b))
 
 
+def inherited_env(*, drop: tuple[str, ...] = ()) -> dict[str, str]:
+    """Return this environment without launcher variables or variables starting with any of ``drop``."""
+    prefixes = (*LAUNCHER_PREFIXES, *drop)
+    return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
+
+
 def child_env(threads: int, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return this environment without launcher variables, at an exact team of ``threads``, updated by ``extra``."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith(LAUNCHER_PREFIXES)}
-    env.update(
-        {
-            "monoprop_NUM_THREADS": str(threads),
-            "OMP_NUM_THREADS": str(threads),
-            "OMP_DYNAMIC": "FALSE",
-        }
+    return {
+        **inherited_env(),
+        "monoprop_NUM_THREADS": str(threads),
+        "OMP_NUM_THREADS": str(threads),
+        "OMP_DYNAMIC": "FALSE",
+        **(extra or {}),
+    }
+
+
+def run_probe(
+    probe: Path,
+    *args: str,
+    threads: int,
+    extra_env: Mapping[str, str] | None = None,
+    timeout: float,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    """Run ``probe`` with ``args`` in a fresh interpreter at ``child_env(threads, extra_env)``.
+
+    Returns:
+        The finished process and the last JSON document it printed, empty when it printed none.
+    """
+    result = subprocess.run(  # noqa: S603 - trusted: this interpreter and a test probe
+        [sys.executable, str(probe), *args],
+        env=child_env(threads, extra_env),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
-    env.update(extra or {})
-    return env
+    lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
+    return result, (json.loads(lines[-1]) if lines else {})

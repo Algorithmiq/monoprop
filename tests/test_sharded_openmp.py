@@ -30,7 +30,7 @@ Comparisons:
 
 from __future__ import annotations
 
-import importlib.util
+import functools
 import json
 import subprocess
 import sys
@@ -40,13 +40,14 @@ from typing import Any
 
 import pytest
 
-import monoprop
 from tests.mpi_support import (
     MPI_LAUNCH_ENV,
     child_env,
     close,
-    inside_multirank_job,
     mpi_launcher,
+    needs_mpi_launch,
+    run_probe,
+    skip_in_multirank_job,
 )
 
 _PROBE = Path(__file__).resolve().parent / "sharded_openmp_probe.py"
@@ -73,10 +74,7 @@ def _wheel_subset(values: list[Any], keep: set[Any]) -> list[Any]:
     ]
 
 
-pytestmark = pytest.mark.skipif(
-    inside_multirank_job(),
-    reason="launches fresh interpreters, which cannot run inside a multi-rank job",
-)
+pytestmark = skip_in_multirank_job
 
 
 def _run(
@@ -85,16 +83,11 @@ def _run(
     *,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    result = subprocess.run(  # noqa: S603 - trusted: this interpreter and a fixed probe
-        [sys.executable, str(_PROBE), json.dumps(spec)],
-        env=child_env(threads, extra_env),
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=False,
+    result, doc = run_probe(
+        _PROBE, json.dumps(spec), threads=threads, extra_env=extra_env, timeout=900
     )
     assert result.returncode == 0, result.stderr[-4000:]
-    return json.loads(result.stdout.strip().splitlines()[-1])
+    return doc
 
 
 def _f(text: str) -> float:
@@ -117,9 +110,7 @@ def _assert_map_close(
 def _assert_values_close(left: Any, right: Any, what: str) -> None:
     if isinstance(left, dict):
         for key in left:
-            if key.startswith(
-                ("map", "contract", "aggregates", "python_terms", "parameter_mapping")
-            ):
+            if key.startswith(("map", "contract", "aggregates", "python_terms")):
                 continue
             _assert_values_close(left[key], right[key], f"{what}.{key}")
     elif isinstance(left, list):
@@ -187,9 +178,8 @@ def test_controls_and_lifecycle() -> None:
         # The replicated identity is added once, at every T.
         assert _f(out["core_only"]["energy"]) == 2.5
         assert out["core_only"]["map"] == {"[]": (2.5).hex()}
-    for key in ("logical_energy",):
-        values = [_f(results[t]["controls"][key]) for t in _TEAMS]
-        assert all(close(v, values[0]) for v in values), (key, values)
+    values = [_f(results[t]["controls"]["logical_energy"]) for t in _TEAMS]
+    assert all(close(v, values[0]) for v in values), values
     for key in ("energy", "gradient"):
         values = [results[t]["controls"]["identity_generator"][key] for t in _TEAMS]
         assert all(v == values[0] for v in values)
@@ -202,6 +192,16 @@ def _full_spec(fixture: str, picture: str) -> dict[str, Any]:
         "picture": picture,
         "informed_atol": 1e-3,
     }
+
+
+def _full_run(fixture: str, picture: str, threads: int) -> dict[str, Any]:
+    return _run(_full_spec(fixture, picture), threads)["full"]
+
+
+@functools.cache
+def _reference_full(fixture: str, picture: str) -> dict[str, Any]:
+    """The single-process T=4 ``full`` document, shared read-only by every test that needs it."""
+    return _full_run(fixture, picture, 4)
 
 
 def _check_single_run(full: dict[str, Any], picture: str) -> None:
@@ -234,38 +234,16 @@ def _check_single_run(full: dict[str, Any], picture: str) -> None:
     ("fixture", "picture"), _wheel_subset(_FIXTURES, _WHEEL_FIXTURES)
 )
 def test_full_api_agrees_across_team_sizes(fixture: str, picture: str) -> None:
-    runs = {t: _run(_full_spec(fixture, picture), t) for t in _TEAMS}
-    for run in runs.values():
-        _check_single_run(run["full"], picture)
-    reference = runs[1]["full"]
+    runs = {
+        t: _reference_full(fixture, picture)
+        if t == 4
+        else _full_run(fixture, picture, t)
+        for t in _TEAMS
+    }
+    for full in runs.values():
+        _check_single_run(full, picture)
     for t in _TEAMS[1:]:
-        full = runs[t]["full"]
-        for section in reference:
-            if isinstance(reference[section], dict):
-                for key, value in reference[section].items():
-                    if key.startswith("map"):
-                        _assert_map_close(
-                            value, full[section][key], f"T={t} {section}.{key}"
-                        )
-            _assert_values_close(reference[section], full[section], f"T={t} {section}")
-        # Global retained operators have one row per key at any geometry.
-        for section in ("graph", "informed", "propagate"):
-            assert (
-                full[section]["aggregates"]["size"]
-                == reference[section]["aggregates"]["size"]
-            )
-            assert (
-                full[section]["aggregates"]["graph_layers"]
-                == reference[section]["aggregates"]["graph_layers"]
-            )
-
-
-needs_mpi_launch = pytest.mark.skipif(
-    not monoprop.MPI_ABIS
-    or importlib.util.find_spec("mpi4py") is None
-    or mpi_launcher() is None,
-    reason="needs an MPI build, mpi4py and an MPI launcher on PATH",
-)
+        _assert_full_close(runs[1], runs[t], f"T={t}")
 
 
 def _run_ranks(
@@ -363,32 +341,12 @@ def _assert_full_close(
                         value, other[section][key], f"{what} {section}.{key}"
                     )
         _assert_values_close(values, other[section], f"{what} {section}")
+    # Global retained operators have one row per key at any geometry.
     for section in ("graph", "informed", "propagate"):
-        assert (
-            other[section]["aggregates"]["size"]
-            == reference[section]["aggregates"]["size"]
-        ), (what, section)
-        assert (
-            other[section]["aggregates"]["graph_layers"]
-            == reference[section]["aggregates"]["graph_layers"]
-        ), (what, section)
-
-
-def _single_process(fixture: str, picture: str, threads: int) -> dict[str, Any]:
-    full = _run(_full_spec(fixture, picture), threads)["full"]
-    return {
-        section: (
-            {
-                **values,
-                "aggregates": {
-                    k: values["aggregates"][k] for k in ("size", "graph_layers")
-                },
-            }
-            if isinstance(values, dict) and "aggregates" in values
-            else values
+        assert other[section]["aggregates"] == reference[section]["aggregates"], (
+            what,
+            section,
         )
-        for section, values in full.items()
-    }
 
 
 @needs_mpi_launch
@@ -396,7 +354,7 @@ def _single_process(fixture: str, picture: str, threads: int) -> dict[str, Any]:
 def test_multirank_agrees_across_geometries(
     fixture: str, picture: str, tmp_path: Path
 ) -> None:
-    reference = _single_process(fixture, picture, 4)
+    reference = _reference_full(fixture, picture)
     for ranks, threads in ((2, 2), (4, 1)):
         docs = _run_ranks(_full_spec(fixture, picture), ranks, threads, tmp_path)
         for doc in docs:
@@ -411,7 +369,7 @@ def test_multirank_agrees_across_geometries(
 def test_multirank_splitmix_three_processes(
     fixture: str, picture: str, tmp_path: Path
 ) -> None:
-    reference = _single_process(fixture, picture, 6)
+    reference = _full_run(fixture, picture, 6)
     docs = _run_ranks(
         _full_spec(fixture, picture),
         3,
