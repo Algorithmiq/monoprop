@@ -540,33 +540,14 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
   monoprop_add_failure_scenario(
     sharded_malformed_receive malformed-receive "" "QueryWire: malformed record.*${_monoprop_abort_diagnostic}" "UNGUARDED"
   )
-  # The low-level one-owner-per-rank engine and the exported replay functions, on the sole shard of a T = 1 root.
-  # Worker 1 of a two-worker kernel team owns the failing range, so the failure starts off the calling thread.
+  # The exported replay functions, on the sole shard of a T = 1 root. Worker 1 of a two-worker kernel team owns the
+  # failing range, so the failure starts off the calling thread.
   monoprop_add_failure_scenario(
     active_ticket active-ticket ticket "injected failure while the replay Ticket.*${_monoprop_abort_diagnostic}" "UNGUARDED"
   )
   monoprop_add_failure_scenario(
     active_ticket_cosine_worker active-ticket cosine-worker "cosine range 2 on OpenMP worker 1 while the replay Ticket.*${_monoprop_abort_diagnostic}" "UNGUARDED"
   )
-  monoprop_add_failure_scenario(
-    active_pending active-ticket pending "injected failure while a PendingAlltoallv.*${_monoprop_abort_diagnostic}" "UNGUARDED"
-  )
-  monoprop_add_failure_scenario(
-    before_exchange_scan_worker before-exchange scan-worker "scan range 1 on OpenMP worker 1.*${_monoprop_abort_diagnostic}" "UNGUARDED|NOT REACHED"
-  )
-  # Resolve workers: the self probe fails before the query exchange; the incoming decode, frozen probe and scatter fail
-  # after the query round while the peers enter the response round. Worker 1 owns the last range.
-  foreach(_phase self-probe decode incoming-probe scatter)
-    string(
-      REPLACE "-"
-      "_"
-      _phase_name
-      "${_phase}"
-    )
-    monoprop_add_failure_scenario(
-      resolve_worker_${_phase_name} resolve-worker ${_phase} "${_phase} range [0-9]+ on OpenMP worker 1.*${_monoprop_abort_diagnostic}" "UNGUARDED|NOT REACHED"
-    )
-  endforeach()
 
   # Thread support: FUNNELED is requested and required. Acceptance runs real distributed operations at two threads per
   # rank and must complete; SINGLE is refused at construction, before any communication.

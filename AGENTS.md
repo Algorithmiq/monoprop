@@ -72,14 +72,14 @@ just build-docs
   enforces MPI's initializing thread; only that thread (the team's primary) calls MPI, so FUNNELED is
   required. Every state operation separates validation from mutation (`run_operation_`): a failure after
   mutation starts invalidates the object and aborts a multi-rank communicator (`mpi::operation_failed`).
-  Catch failures inside posted `Ticket`/`PendingAlltoallv`/physical-round lifetimes, never only at the
-  outermost level. `detail::build_layer` (with `run_exchange` and `mpi::begin_alltoallv`) is the low-level
-  one-owner-per-rank engine kept only as the tests' reference; production builds layers through
-  `detail/sharded/Construction.h`.
+  Catch failures inside posted `Ticket`/physical-round lifetimes, never only at the outermost level.
+  Production builds layers through `detail/sharded/Construction.h`.
 - Threaded kernels (`scale_cos_*`, `apply_fused_contract`, the `fused_find_and_collect` scan, the resolve
   phases: incoming decode, `probe_frozen_positions`, certified-sink scatter) take a defaulted test-only
   range observer; participation tests read it (`cpp/tests/KernelTestSupport.h`, `ScanTestSupport.h`).
-  Serial and threaded runs must agree bitwise. Scan workers only traverse frozen storage and merge in range
+  Serial and threaded runs must agree bitwise. Inside the sharded root every kernel runs serially on its owner;
+  only tests and external callers of the exported `evolve_*` entry points pass a multi-worker budget. Scan
+  workers only traverse frozen storage and merge in range
   order; only typed cutoffs (`CutoffEvaluator::parallel_safe`) run on them. Probes read a frozen store;
   received query streams are validated on the caller (`QueryWire::checked_extent`) before any decode;
   miss IDs, insertion (`bulk_insert_hashed`) and inverted-index maintenance stay single-writer. A sink's

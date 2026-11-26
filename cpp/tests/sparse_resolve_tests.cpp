@@ -1492,7 +1492,7 @@ BOOST_AUTO_TEST_CASE(openmp_self_windows_match_serial) {
     }
 }
 
-// Mixed self and remote hits and misses across the leader and follower passes, as run_exchange orders them:
+// Mixed self and remote hits and misses across the leader and follower passes, as sharded construction orders them:
 // remote leader misses publish in the leader round, remote follower misses in the follower round, and the
 // deferred self misses (leader, then follower) only after both passes. Identical at every budget.
 BOOST_AUTO_TEST_CASE(openmp_mixed_self_and_remote_publication_order) {

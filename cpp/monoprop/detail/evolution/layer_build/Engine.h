@@ -400,7 +400,7 @@ struct ContractSink {
  *
  * finish() then inserts the deferred same-owner misses (leaders, then followers) and finalizes the sink. The phases
  * perform no MPI, no barrier and no nested worksharing beyond the serial-or-budgeted kernels `options` selects; the
- * caller owns every handoff. run_exchange() is the low-level engine's MPI transport adapter over the same phases.
+ * caller owns every handoff.
  *
  * Handoff lifetimes: the payload prepare_exchange returns is read by its destinations until they have resolved it,
  * and consume_published still reads this owner's own sources and plain queries, so neither may change until this
@@ -608,46 +608,6 @@ struct LayerBuildEngine {
         process_responses<NumModes>(responses, src_idx_r, queries_r, my_rank, sink);
     }
 
-    /*!
-     * \brief The low-level engine's transport adapter: one pass over the same phases, with MPI rounds over `comm`.
-     *
-     * Round 1 carries the payload, and the resolver inserts absent partners in that same round; round 2 returns the
-     * answers. Each round completes inside its handle's lifetime and under the distributed guard, so a failure after
-     * posting never reaches a handle's draining destructor while a peer is still inside the round.
-     *
-     * \param comm The communicator whose flat slots are the routing owners.
-     * \param plan The generator's peer plan; its window is this engine's window.
-     */
-    auto run_exchange(mpi::Comm comm,
-                      mpi::PeerPlan plan,
-                      bool is_leader_pass,
-                      mpi::WindowVec<VecZ> &&queries,
-                      mpi::WindowVec<std::vector<size_t>> &&src_idx,
-                      mpi::WindowVec<std::vector<double>> &&src_val,
-                      SelfQueryStage<NumModes> &&self_stage) -> void {
-        const mpi::WindowVec<VecZ> &send = prepare_exchange(is_leader_pass,
-                                                            std::move(queries),
-                                                            std::move(src_idx),
-                                                            std::move(src_val),
-                                                            std::move(self_stage));
-        if (R <= 1) {
-            return;
-        }
-        mpi::WindowVec<VecZ> inc_q;
-        auto query_round = mpi::begin_alltoallv(send, comm, /*skip_self=*/false, /*known_recv_counts=*/nullptr, plan);
-        mpi::guard_distributed(comm, [&] { query_round.wait_into(inc_q); });
-        // The peers may already be inside the response round, so a failure here (a malformed stream, a
-        // decode/probe/scatter worker, publication) aborts rather than unwinds.
-        auto resp =
-            mpi::guard_distributed(comm, [&] { return resolve_published(mpi::views_of(inc_q), is_leader_pass); });
-        std::vector<int> resp_recv = response_recv_counts();
-        mpi::WindowVec<std::vector<Response>> inc_r;
-        // Answers retrace the queries over an XOR involution, so the same plan holds.
-        auto response_round = mpi::begin_alltoallv(resp, comm, /*skip_self=*/false, &resp_recv, plan);
-        mpi::guard_distributed(comm, [&] { response_round.wait_into(inc_r); });
-        consume_published(mpi::views_of(inc_r));
-    }
-
     // Followers a leader already matched must not be re-resolved over the wire, so compact them out.
     auto drop_matched_cross_rank_followers() -> void {
         using QW = QueryWire<NumModes>;
@@ -728,18 +688,6 @@ struct LayerBuildEngine {
     }
 
 private:
-    // Response counts are the transpose of the query counts (one answer per query), so passing them as
-    // known_recv_counts skips the response count-Alltoall round.
-    // Flat [P], as begin_alltoallv's known_recv_counts is; only the window's slots are non-zero.
-    auto response_recv_counts() const -> std::vector<int> {
-        std::vector<int> counts(R, 0);
-        for (const auto wi : window.indices()) {
-            // One response per query, and src_idx_r's block holds one source per query: no walk, no division.
-            counts[window.slot(wi)] = static_cast<int>(src_idx_r[wi].size());
-        }
-        return counts;
-    }
-
     bool leaders_pass_ = true; // the pass the retained streams belong to, as prepare_exchange() adopted them
 
     // Max-sins on a self miss: whether to create the partner (always, without max-sins). A reference-state
@@ -894,7 +842,6 @@ template <size_t NumModes>
 struct GateScan {
     FusedScanResult<NumModes> streams; //!< Leader/follower queries, sources, values and self stages.
     CosMask cos_all;                   //!< Anticommuting rows, ascending and disjoint; empty for the fused sweep.
-    mpi::PeerPlan plan;                //!< The generator's peer plan (the low-level engine's transport only).
     mpi::SlotWindow window;            //!< The owner's destination window: every per-slot stream is sized to it.
     size_t combined_size = 0;          //!< Pre-layer store size: the source boundary and the matched-set bound.
     bool identity = false;             //!< Identity generator: nothing anticommutes and nothing is exchanged.
@@ -905,10 +852,10 @@ struct GateScan {
 /*!
  * \brief Owner traversal and source capture for one gate: the partner queries of every anticommuting row.
  *
- * The first phase of build_layer(), extracted so that a sharded caller can run it per owner. Reads `op` and its lazy
- * caches, which it may build, and under the fused sweep writes `*fused_scale_coeffs` (captured values are taken
- * before each overwrite); it grows no store and performs no MPI. With a serial `options` it runs entirely on the
- * calling thread. An opaque cutoff predicate is evaluated here, on whichever thread calls it.
+ * The first phase of a layer build, run per owner. Reads `op` and its lazy caches, which it may build, and under the
+ * fused sweep writes `*fused_scale_coeffs` (captured values are taken before each overwrite); it grows no store and
+ * performs no MPI. With a serial `options` it runs entirely on the calling thread. An opaque cutoff predicate is
+ * evaluated here, on whichever thread calls it.
  *
  * \param router    Flat-owner routing; `my_rank` is this owner's flat slot and `op` holds only rows it owns.
  * \param use_fused Whether the caller contracts immediately (ContractSink): values are captured and the fused
@@ -940,9 +887,9 @@ auto scan_gate(MPOperator<NumModes> &local_op,
     GateScan<NumModes> scan;
     // Under linear routing every query for this generator goes to rank my_rank ^ rank_shift(gen).
     const size_t gen_shift = router.rank_shift<NumModes>(gen);
-    scan.plan = mpi::PeerPlan{.sparse = router.is_linear(), .shift = static_cast<int>(gen_shift)};
+    const mpi::PeerPlan plan{.sparse = router.is_linear(), .shift = static_cast<int>(gen_shift)};
     // S of the P slots under linear routing, all P otherwise; every per-slot array is sized to it.
-    scan.window = scan.plan.window(my_rank, router.ranks(), router.shards_per_rank());
+    scan.window = plan.window(my_rank, router.ranks(), router.shards_per_rank());
     const auto cut_st = build_majorana_evolution_cutoff_state(atol, local_coeffs, upper_atol, param);
     const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
     const CutoffEvaluator<NumModes> cut_eval{cutoff_fn};
@@ -1019,114 +966,6 @@ auto stamp_layer_metadata(LayerCore &storage, const Monomial<NumModes> &gen, con
     -> void {
     storage.generator_words.assign(gen.data(), gen.data() + mpi_detail::kWords<NumModes>);
     storage.scaled_count = static_cast<uint64_t>(local_op.store->size());
-}
-
-// Primary-path layer builder: one fused scan, then two resolve passes into the chosen sink. See LayerBuilder.h.
-// The scan (fused_find_and_collect), the incoming decode and frozen probes, the self probe and a certified
-// sink's scatter may run on workers; validation, missing-ID assignment, insertion, publication, inverted-index
-// maintenance and graph packing stay on the caller. `observer` is the test seam of those phases (NoRangeObserver).
-template <size_t NumModes, class Observer = NoRangeObserver>
-auto build_layer(MPOperator<NumModes> &local_op,
-                 const Monomial<NumModes> &gen,
-                 const CutoffFn<NumModes> &cutoff_fn,
-                 const std::optional<double> &atol,
-                 std::optional<std::reference_wrapper<const VecD>> local_coeffs,
-                 const std::optional<double> &upper_atol,
-                 const std::optional<double> &param,
-                 std::optional<size_t> only_rotate_len_k,
-                 MatchedEpochSet &matched_scratch,
-                 mpi::Comm comm,
-                 CosMask *out_cos = nullptr,
-                 FusedContract *fused_contract = nullptr,
-                 bool schrodinger = false,
-                 VecD *fused_scale_coeffs = nullptr,
-                 bool *fused_scale_out = nullptr,
-                 Basis basis = Basis::Majorana,
-                 parallel::Options options = {},
-                 const Observer &observer = {},
-                 const SinTrack *sin_track = nullptr) -> std::shared_ptr<LayerCore> {
-    validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
-    const size_t my_rank = static_cast<size_t>(mpi::rank(comm));
-    const size_t R = static_cast<size_t>(mpi::size(comm));
-    // R is the flat world: one owner per rank.
-    const routing::Router router = router_for<NumModes>(comm);
-    assert(router.flat_world() == R);
-    // Fused contraction runs at all rank counts (R>1 via the cross-rank half-rotation exchange).
-    const bool use_fused = (fused_contract != nullptr);
-    auto scan = scan_gate<NumModes, Observer>(local_op,
-                                              gen,
-                                              cutoff_fn,
-                                              atol,
-                                              local_coeffs,
-                                              upper_atol,
-                                              param,
-                                              only_rotate_len_k,
-                                              router,
-                                              my_rank,
-                                              use_fused,
-                                              fused_scale_coeffs,
-                                              basis,
-                                              options,
-                                              observer,
-                                              sin_track);
-    // scan_gate is the single authority for this decision; the fused caller must drive its apply from it.
-    if (fused_scale_out != nullptr) {
-        *fused_scale_out = scan.fused_scale;
-    }
-
-    auto run = [&]<typename Sink>(Sink sink) -> std::shared_ptr<LayerCore> {
-        LayerBuildEngine<NumModes, Sink, Observer> eng(local_op,
-                                                       R,
-                                                       my_rank,
-                                                       matched_scratch,
-                                                       scan.combined_size,
-                                                       std::move(sink),
-                                                       scan.window,
-                                                       options,
-                                                       observer);
-        if (!scan.identity) {
-            auto &fused = scan.streams;
-            eng.run_exchange(comm,
-                             scan.plan,
-                             /*is_leader_pass=*/true,
-                             std::move(fused.leader_queries),
-                             std::move(fused.leader_src),
-                             std::move(fused.leader_val),
-                             std::move(fused.leader_self));
-            eng.run_exchange(comm,
-                             scan.plan,
-                             /*is_leader_pass=*/false,
-                             std::move(fused.follower_queries),
-                             std::move(fused.follower_src),
-                             std::move(fused.follower_val),
-                             std::move(fused.follower_self));
-        }
-
-        return eng.finish(std::move(scan.cos_all), out_cos);
-    };
-
-    std::shared_ptr<LayerCore> storage;
-    if (use_fused) {
-        const auto &coeffs = local_coeffs.value_or(empty_coeffs()).get();
-        storage = run(ContractSink<NumModes>{.R = R,
-                                             .my_rank = my_rank,
-                                             .fc = *fused_contract,
-                                             .op_coeffs = coeffs,
-                                             .fused_scale = scan.fused_scale,
-                                             .inv_cos = scan.inv_cos,
-                                             .schrodinger = schrodinger,
-                                             .basis = basis});
-    }
-    else {
-        storage = run(GraphSink<NumModes>{R, my_rank, sin_track});
-    }
-
-    // Recompute metadata rides with the layer so it survives every graph transform.
-    if (storage != nullptr) {
-        stamp_layer_metadata<NumModes>(*storage, gen, local_op);
-    }
-
-    return storage;
 }
 
 } // namespace monoprop::detail

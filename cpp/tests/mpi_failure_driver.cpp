@@ -32,17 +32,11 @@
 //                                    round's draining destructor runs
 //   malformed-receive                rank 1 rewrites its outgoing query blocks; rank 0's owners must refuse them
 //
-// The low-level one-owner-per-rank engine and the exported replay functions, on the sole shard of a root launched with
-// one thread per rank (raw access is available at T = 1, also over several ranks), with explicit kernel budgets:
+// The exported replay functions, on the sole shard of a root launched with one thread per rank (raw access is
+// available at T = 1, also over several ranks), with explicit kernel budgets:
 //
 //   active-ticket ticket|cosine-worker   a failure (on the caller, or on worker 1 of the threaded cosine kernel) while
 //                                        evolve_step's replay Ticket is posted
-//   active-ticket pending                a failure while a begin_alltoallv PendingAlltoallv is posted
-//   before-exchange scan-worker          a worker of the threaded scan throws before the first query exchange
-//   resolve-worker self-probe            a worker of the threaded self probe throws before the first query exchange
-//   resolve-worker decode|incoming-probe|scatter
-//                                        a worker of the threaded incoming phases throws after the query round, while
-//                                        the peers enter the response round
 //
 // Thread support. The library requests MPI_THREAD_FUNNELED and requires at least FUNNELED from whoever initialized
 // MPI; only the initializing thread, as the primary of the library's team, calls MPI. Each line below records the
@@ -233,7 +227,7 @@ auto sharded_scenario(int rank, std::string_view scenario, std::string_view opti
     (void)sim->expectation_value(kParams);
 }
 
-// --- the low-level engine and replay functions on the sole shard of a T = 1 root -----------------------------------
+// --- the exported replay functions on the sole shard of a T = 1 root -----------------------------------------------
 
 auto make_sole_shard_root() -> std::unique_ptr<Propagator> {
     set_team(1);
@@ -287,115 +281,6 @@ auto active_ticket_cosine_worker(int rank) -> void {
     };
     say(rank, "posting the replay exchange");
     evolve_step(coeffs, view, 0.3, 0, MPI_COMM_WORLD, scale);
-}
-
-auto active_pending(int rank, int size) -> void {
-    const mpi::SlotWindow window{.base = 0, .count = static_cast<size_t>(size)};
-    mpi::WindowVec<std::vector<double>> send(window);
-    for (const auto wi : window.indices()) {
-        send[wi].assign(4, static_cast<double>(rank));
-    }
-    auto pending = mpi::begin_alltoallv(send, MPI_COMM_WORLD);
-    say(rank, std::format("PendingAlltoallv posted {} request(s)", pending.posted));
-    if (rank == 0) {
-        mpi::guard_distributed(MPI_COMM_WORLD, [] {
-            throw std::runtime_error("injected failure while a PendingAlltoallv is in flight");
-        });
-    }
-    mpi::WindowVec<std::vector<double>> recv;
-    pending.wait_into(recv);
-}
-
-// Enough terms that each rank's store spans several fold blocks, so the threaded kernels really open a two-worker team.
-constexpr size_t kWideModes = 16;
-using WideAccess = detail::PropagatorTestAccess<kWideModes>;
-
-auto make_wide_sole_shard_root() -> std::unique_ptr<MonomialPropagator<kWideModes>> {
-    OperatorDict ham;
-    uint64_t state = 0x5CA3ULL;
-    while (ham.size() < 200000) {
-        VecZ idx;
-        while (idx.size() < 6) { // weight 6: C(32, 6) ~ 9e5 distinct terms, and an imaginary Hermitian coefficient
-            state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
-            const size_t m = (state >> 33) % (2 * kWideModes);
-            if (std::ranges::find(idx, m) == idx.end()) {
-                idx.push_back(m);
-            }
-        }
-        std::ranges::sort(idx);
-        ham[idx] = std::complex<double>{0.0, 1e-3};
-    }
-    set_team(1);
-    return WideAccess::construct_observed(nullptr,
-                                          ham,
-                                          static_cast<unsigned int>(2 * kWideModes),
-                                          VecZ{0, 1},
-                                          std::optional<unsigned int>{},
-                                          mpi::Comm(MPI_COMM_WORLD),
-                                          std::optional<double>{},
-                                          std::optional<double>{},
-                                          CutoffType::Length,
-                                          std::optional<std::vector<VecZ>>{},
-                                          kWideModes,
-                                          Basis::Majorana);
-}
-
-// Throws from one word range of the real threaded scan, on whichever worker owns it.
-struct ThrowingScanObserver {
-    int rank;
-    auto prepare(detail::KernelRange, size_t) const noexcept -> void {}
-    auto visit(detail::KernelRange kind, size_t range) const -> void {
-        if (rank == 0 && kind == detail::KernelRange::scan && range == 1) {
-            throw std::runtime_error(
-                std::format("injected failure in scan range {} on OpenMP worker {}", range, omp_get_thread_num()));
-        }
-    }
-};
-
-auto scan_worker(int rank) -> void {
-    auto sim = make_wide_sole_shard_root();
-    say(rank, std::format("{} local terms, {} words", sim->size(), sim->mp_op().inverted_index().words()));
-    (void)WideAccess::sole_shard_layer_observed(*sim, VecZ{0, 5}, {.threads = 2}, ThrowingScanObserver{rank});
-    if (rank == 0) {
-        say(rank, "INJECTION NOT REACHED: the scan ran in fewer than two ranges");
-    }
-}
-
-// Throws from the last logical range of one resolve phase on rank 0, so with a two-worker team the failure starts on
-// worker 1, off the calling thread. Only the first call of that phase with two or more ranges throws.
-struct ThrowingResolveObserver {
-    int rank;
-    detail::KernelRange kind;
-    const char *label;
-    std::shared_ptr<size_t> ranges = std::make_shared<size_t>(0);
-
-    auto prepare(detail::KernelRange k, size_t n) const noexcept -> void {
-        if (k == kind && *ranges < 2) {
-            *ranges = n;
-        }
-    }
-    auto visit(detail::KernelRange k, size_t range) const -> void {
-        if (rank == 0 && k == kind && *ranges >= 2 && range + 1 == *ranges) {
-            throw std::runtime_error(
-                std::format("injected failure in {} range {} on OpenMP worker {}", label, range, omp_get_thread_num()));
-        }
-    }
-};
-
-auto resolve_worker(int rank, std::string_view phase) -> void {
-    auto sim = make_wide_sole_shard_root();
-    const auto kind = phase == "self-probe" ? detail::KernelRange::self_probe
-                      : phase == "decode"   ? detail::KernelRange::decode
-                      : phase == "scatter"  ? detail::KernelRange::scatter
-                                            : detail::KernelRange::incoming_probe;
-    say(rank, std::format("{} local terms", sim->size()));
-    (void)WideAccess::sole_shard_layer_observed(*sim,
-                                                VecZ{0, 5},
-                                                {.threads = 2},
-                                                ThrowingResolveObserver{rank, kind, phase.data()});
-    if (rank == 0) {
-        say(rank, std::format("INJECTION NOT REACHED: the {} phase ran in fewer than two ranges", phase));
-    }
 }
 
 // --- thread support ------------------------------------------------------------------------------------------------
@@ -593,17 +478,6 @@ auto main(int argc, char **argv) -> int {
         }
         else if (scenario == "active-ticket" && option == "cosine-worker") {
             active_ticket_cosine_worker(rank);
-        }
-        else if (scenario == "active-ticket" && option == "pending") {
-            active_pending(rank, size);
-        }
-        else if (scenario == "before-exchange" && option == "scan-worker") {
-            scan_worker(rank);
-        }
-        else if (scenario == "resolve-worker"
-                 && (option == "self-probe" || option == "decode" || option == "incoming-probe"
-                     || option == "scatter")) {
-            resolve_worker(rank, option);
         }
         else if (scenario == "worker-throw" || scenario == "before-exchange" || scenario == "active-ticket"
                  || scenario == "malformed-receive") {

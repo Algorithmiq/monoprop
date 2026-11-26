@@ -88,41 +88,6 @@ struct PropagatorTestAccess {
         const auto requests = retained.requests(params);
         return sharded::evaluate_shards(requests, retained.callbacks, retained.options, false, observer, p.world_);
     }
-
-    // One graph-only layer (no coefficients, not appended to the graph) built by the low-level one-owner-per-rank
-    // engine (build_layer) on the sole shard of a T = 1 root, over the root's communicator, with an explicit kernel
-    // budget and a test observer on the kernels' ranges, under the root's own operation guard: a failure after the
-    // layer started counts as a post-mutation failure (invalidation, then mpi::operation_failed). The shard may grow,
-    // so the object is for inspection only.
-    template <class KernelObserver>
-    static auto sole_shard_layer_observed(Propagator &p,
-                                          const VecZ &gate,
-                                          parallel::Options kernels,
-                                          const KernelObserver &observer) -> std::shared_ptr<LayerCore> {
-        return p.run_operation_(true, [&](bool &mutation_started) {
-            auto &state = p.sole_shard_("sole_shard_layer_observed()");
-            const auto gen = indices_to_bitset_checked<NumModes>(gate, 2 * p.logical_num_modes_);
-            mutation_started = true;
-            return build_layer<NumModes>(state.op,
-                                         gen,
-                                         p.cutoff_fn_,
-                                         p.lower_atol_,
-                                         std::nullopt,
-                                         p.upper_atol_,
-                                         std::nullopt,
-                                         std::nullopt,
-                                         state.matched,
-                                         p.comm_,
-                                         nullptr,
-                                         nullptr,
-                                         p.schrodinger_,
-                                         nullptr,
-                                         nullptr,
-                                         p.basis_,
-                                         kernels,
-                                         observer);
-        });
-    }
 };
 
 } // namespace monoprop::detail

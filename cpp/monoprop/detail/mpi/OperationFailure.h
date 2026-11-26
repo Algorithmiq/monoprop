@@ -56,7 +56,7 @@ inline auto describe_exception(const std::exception_ptr &error) noexcept -> std:
  * instead. On one rank or without MPI, it rethrows \a error unchanged, preserving the original type.
  *
  * Callers catch failures where they happen, inside the lifetime of any posted request handle
- * (mpi::Ticket, mpi::PendingAlltoallv), so that unwinding never drains requests peers will not complete.
+ * (such as mpi::Ticket), so that unwinding never drains requests peers will not complete.
  * Never call it from an OpenMP worker or from a thread other than MPI's initializing thread.
  *
  * \param comm  The communicator the operation runs on.

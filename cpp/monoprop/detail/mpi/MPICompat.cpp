@@ -177,45 +177,6 @@ auto allreduce_sum_inplace(VecD &values, Comm comm) -> void {
 #endif
 }
 
-auto alltoall_counts(const int *send_counts, int *recv_counts, int n, Comm comm, PeerPlan plan) -> void {
-    require_routable(plan, size(comm));
-#ifdef monoprop_ENABLE_MPI
-    if (!plan.dense()) {
-        // One int with the peer. Non-peers are zero by definition, so clear them.
-        int me = 0;
-        MPI_Comm_rank(comm.mpi, &me);
-        std::fill(recv_counts, recv_counts + n, 0);
-        const PeerLayout one{.block = 1};
-        // Eager: the caller reads recv_counts on return.
-        std::vector<MPI_Request> reqs;
-        const SparsePairwiseArgs pairwise{
-            .plan = plan,
-            .me = me,
-            .num_ranks = n,
-            .comm = comm.mpi,
-            .tag = kFlatCountTag,
-            .datatype = MPI_INT,
-            .elem = sizeof(int),
-            .send = reinterpret_cast<const std::byte *>(send_counts),
-            .send_layout = one,
-            .recv = reinterpret_cast<std::byte *>(recv_counts),
-            .recv_layout = one,
-        };
-        const int posted = sparse_pairwise(pairwise, reqs);
-        MPI_Waitall(posted, reqs.data(), MPI_STATUSES_IGNORE);
-        return;
-    }
-    (void)n;
-    MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT, comm.mpi);
-#else
-    (void)plan; // single participant: nothing to narrow
-    (void)comm;
-    for (int i = 0; i < n; ++i) {
-        recv_counts[i] = send_counts[i];
-    }
-#endif
-}
-
 auto check_exchange_layout_width(std::span<const int> send_counts, const Comm &comm) -> void {
     const auto n = static_cast<int>(send_counts.size());
     const int comm_size = mpi::size(comm);

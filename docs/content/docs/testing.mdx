@@ -258,11 +258,9 @@ a 30-second timeout. Rank 0 fails in one of these ways while its peer follows th
 - `mpi_failure_sharded_*` drive the sharded root at two threads per rank: rank 0's worker 1 throws in a replay
   finish; the primary throws in a traversal before any physical round, in a cosine pass while a replay round is
   posted, or while packing queries with the count round posted; rank 1 sends malformed query blocks;
-- the low-level engine and the exported replay functions, on the sole shard of a root launched with one thread
-  per rank, with explicit two-worker kernel budgets: a failure (on the caller or on worker 1 of the cosine kernel)
-  while a replay `Ticket` is posted, or while a `PendingAlltoallv` is posted; a worker of the threaded scan or self
-  probe throws before the first query exchange; a worker of the incoming decode, frozen probe or scatter throws
-  while the peer enters the response round;
+- the exported replay functions, on the sole shard of a root launched with one thread per rank, with explicit
+  two-worker kernel budgets: a failure (on the caller or on worker 1 of the cosine kernel) while a replay `Ticket`
+  is posted;
 - host-initialized MPI provides only `SINGLE` (`mpi_failure_insufficient_thread_level_single`);
 - a guarded call arrives from a `std::thread` under `FUNNELED`, `SERIALIZED` or `MULTIPLE`.
 

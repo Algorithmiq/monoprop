@@ -86,9 +86,8 @@ name and cannot address suite-nested cases, tests use flat
 - **`PropagatorTestAccess.h`**: white-box access that `MonomialPropagator` befriends but the library
   never defines. Tests use it to read an object's captured thread budget and validity, to inject
   failures through existing members (a throwing cutoff predicate), to inspect the root's actual
-  shards, router and physical rounds, to attach the test-only `RootObserver`, and to run one layer
-  of the low-level one-owner-per-rank engine on the sole shard of a T = 1 root
-  (`sole_shard_layer_observed`, for the failure driver); it adds no public shard interface.
+  shards, router and physical rounds, and to attach the test-only `RootObserver`; it adds no public
+  shard interface.
 - **`RankPreconditions.h`**: Boost preconditions `min_ranks`, `power_of_two_ranks`,
   `even_ranks`, `linear_routing`, `default_routing`.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
@@ -103,7 +102,7 @@ name and cannot address suite-nested cases, tests use flat
   CutoffEvaluator, interleave phase, coeff encode/decode, cutoff_sums vs a
   bitwise reference), `validation_tests.cpp`
   (parameter validators), `mpi_utils_tests.cpp` (find_rank, word serialization,
-  scan routing agreement), `routing_tests.cpp` (Router term -> flat-slot map:
+  scan routing agreement, the sparse peer plan, the physical reductions), `routing_tests.cpp` (Router term -> flat-slot map:
   splitmix equivalence, the linear shift identity, and the coverage diagnostic),
   `evolution_detail_tests.cpp` (MatchedEpochSet + CutoffContext),
   `row_accessor_tests.cpp` (dense vs OperatorIndex row accessors).
@@ -128,10 +127,7 @@ name and cannot address suite-nested cases, tests use flat
 - **Graph / paring**: `pare_graph_tests.cpp`, `mpi_pare.cpp`,
   `mp_graph_tests.cpp` (MPGraph slice_graph/slice_view transforms, the
   front_offset lazy-compaction arms, MPGraphView reverse mapping + OOB throw).
-- **Transports / distribution**: `mpi_alltoallv_tests.cpp` (the real-MPI request
-  helpers of the low-level engine: `begin_alltoallv`, `PendingAlltoallv`,
-  `alltoall_counts` and the sparse `PeerPlan`, at world size 1 and in the whole-suite
-  MPI variants), `flat_exchange_tests.cpp` (`post_flat_alltoallv`/`Ticket`),
+- **Transports / distribution**: `flat_exchange_tests.cpp` (`post_flat_alltoallv`/`Ticket`),
   `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp`
   (serial↔world equivalence of the Schrödinger fused-resolve fresh-insert arms,
   Majorana + native Pauli; self-skips at world size 1),
@@ -259,13 +255,10 @@ name and cannot address suite-nested cases, tests use flat
   excludes it). The MPI build compiles it into `monoprop_mpi_failure_driver.x`, and
   `run_mpi_failure_scenario.cmake` runs each scenario on two ranks with a 30 s timeout, as the
   `mpi_failure_*` CTest entries. The sharded root's scenarios (`mpi_failure_sharded_*`) inject at two
-  threads per rank through its `RootObserver`. The low-level ones run on the sole shard of a root
-  launched with one thread per rank: `active_ticket` and `active_ticket_cosine_worker` throw while
-  an `evolve_step` replay `Ticket` is posted (the latter from worker 1 of the threaded cosine
-  kernel), `active_pending` while a `PendingAlltoallv` is posted, `before_exchange_scan_worker` and
-  `resolve_worker_self_probe` throw from a scan or self-probe worker before the query exchange, and
-  `resolve_worker_decode|incoming_probe|scatter` from the incoming phases after the query round,
-  while the peer enters the response round. The thread-support scenarios require a clean exit
+  threads per rank through its `RootObserver`. The exported replay functions' scenarios run on the
+  sole shard of a root launched with one thread per rank: `active_ticket` and
+  `active_ticket_cosine_worker` throw while an `evolve_step` replay `Ticket` is posted (the latter
+  from worker 1 of the threaded cosine kernel). The thread-support scenarios require a clean exit
   (`EXPECT_SUCCESS`): `library_initialized_level` (monoprop's own `mpi::init`, which requests
   FUNNELED) and `host_initialized_funneled|serialized|multiple` run real operations at two threads per
   rank on the world and on a reordered split communicator against one process;
