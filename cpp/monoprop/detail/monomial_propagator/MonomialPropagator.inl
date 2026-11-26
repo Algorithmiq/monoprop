@@ -228,22 +228,6 @@ auto MonomialPropagator<NumModes>::cos_index_count_of_(const MPGraph &graph,
     return total;
 }
 
-/// Per-layer cosine callbacks replaying `graph` against `inverted_index`; each closure captures `options`
-/// for its kernels. The closures keep raw pointers into the index, so they must not outlive it.
-template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
-                         const MPGraphView &graph,
-                         Basis basis = Basis::Majorana,
-                         detail::parallel::Options options = {}) -> detail::CosCallbacks;
-
-template <size_t NumModes>
-auto build_cos_callbacks(const detail::InvertedIndex<NumModes> &inverted_index,
-                         const MPGraphView &graph,
-                         Basis basis,
-                         detail::parallel::Options options) -> detail::CosCallbacks {
-    return detail::make_cos_callbacks<NumModes>(inverted_index, graph, basis, options);
-}
-
 } // namespace monoprop
 
 #include "monoprop/detail/monomial_propagator/ShardedPropagator.inl"

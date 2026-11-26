@@ -444,9 +444,7 @@ auto full_cos_mask(const InvertedIndex<NumModes> &inverted_index, const LayerTra
  * fold from the index. Each closure captures `options` for its kernels. The closures keep raw pointers into the index
  * and into the layers' stored masks, so they must outlive neither the index nor the graph owning those layers. Row
  * parity words are fetched inside each call, never cached, since they move whenever the store grows. The result is
- * marked CosCallbacks::owner_parallel. Named apart from monoprop::build_cos_callbacks,
- * which delegates here, so argument-dependent lookup never makes an unqualified call ambiguous: the closures touch only
- * this index, these layers and thread-local scratch.
+ * marked CosCallbacks::owner_parallel: the closures touch only this index, these layers and thread-local scratch.
  *
  * \param inverted_index The index of the store whose rows the graph's endpoints name.
  * \param graph          The replay window; its layers must outlive the callbacks.

@@ -90,8 +90,8 @@
  *
  * Failure: arguments are checked before the team, with nothing mutated. Every call that can throw runs inside a
  * phase; a failure suppresses every later phase body, the team joins, and the lowest failing worker's original
- * exception is returned by evaluate_shards() / replay_shards(), and delivered by ev_sharded() /
- * ev_and_grad_sharded() through mpi::operation_failed() before any result reduction.
+ * exception is returned by evaluate_shards() / replay_shards(); the caller delivers it through
+ * mpi::operation_failed() before any result reduction.
  */
 
 namespace monoprop::detail::sharded {
@@ -452,10 +452,10 @@ struct EvaluationOutcome {
 /*!
  * \brief Evaluate T shards in one team and return their local contributions, without combining them.
  *
- * The S4 seam beneath ev_sharded() and ev_and_grad_sharded(). Request t must view shard t's retained state,
- * operator and graph; parameters, mapping, generator coefficients and identity are replicated. Energy-only
- * evaluation contracts with EvalState::dot (sparse stays sparse); a gradient scatters the state densely and
- * contracts with inner_product(). Empty parameters use EvalState::dot and need no callbacks.
+ * Request t must view shard t's retained state, operator and graph; parameters, mapping, generator coefficients and
+ * identity are replicated. Energy-only evaluation contracts with EvalState::dot (sparse stays sparse); a gradient
+ * scatters the state densely and contracts with inner_product(). Empty parameters use EvalState::dot and need no
+ * callbacks.
  *
  * \param requests  One request per shard, in shard order.
  * \param callbacks One callback set per shard, built for that shard's index and graph.
@@ -488,37 +488,6 @@ monoprop_EXPORT auto combine_contributions(std::span<const double> contributions
  * \throws std::invalid_argument if the shards' gradients differ in length.
  */
 monoprop_EXPORT auto combine_gradients(std::span<const VecD> gradients) -> VecD;
-
-/*!
- * \brief Expectation value over T shards: the replicated identity plus the ascending-shard fold of their terms,
- *        reduced over `comm`.
- *
- * One team spans the whole replay. Outside the team the communicator is used only on the caller: its rank, size and
- * agreed replay transport are read before the team (PhysicalWorld::of()), and the result reduction runs after the
- * join. Inside it, only the primary posts and completes the replay rounds. A phase failure goes to
- * mpi::operation_failed(comm, error) before the reduction, which at one rank rethrows the original exception.
- *
- * \param requests  One request per shard; see evaluate_shards().
- * \param callbacks One callback set per shard.
- * \param options   The captured budget; its thread count T is the team size.
- * \param comm      The ordinary physical communicator of P ranks the shards' graphs were built over.
- * \param observer  Test-only seam, or null.
- * \throws As evaluate_shards() before the team, and std::invalid_argument if `comm` is not an ordinary communicator.
- */
-monoprop_EXPORT auto ev_sharded(std::span<const EvalRequest> requests,
-                                std::span<const CosCallbacks> callbacks,
-                                parallel::Options options,
-                                mpi::Comm comm,
-                                const EvaluationObserver *observer = nullptr) -> double;
-
-/*!
- * \brief As ev_sharded(), plus the full gradient: per component, the ascending-shard fold, reduced over `comm`.
- */
-monoprop_EXPORT auto ev_and_grad_sharded(std::span<const EvalRequest> requests,
-                                         std::span<const CosCallbacks> callbacks,
-                                         parallel::Options options,
-                                         mpi::Comm comm,
-                                         const EvaluationObserver *observer = nullptr) -> std::pair<double, VecD>;
 
 // --- Partial contraction ----------------------------------------------------------------------------------------
 

@@ -731,39 +731,6 @@ auto combine_gradients(std::span<const VecD> gradients) -> VecD {
     return total;
 }
 
-auto ev_sharded(std::span<const EvalRequest> requests,
-                std::span<const CosCallbacks> callbacks,
-                parallel::Options options,
-                mpi::Comm comm,
-                const EvaluationObserver *observer) -> double {
-    const auto world = PhysicalWorld::of(comm);
-    auto outcome = evaluate_shards(requests, callbacks, options, /*gradient=*/false, observer, world);
-    if (outcome.error) {
-        mpi::operation_failed(comm, outcome.error);
-    }
-    const double local = combine_contributions(outcome.contributions);
-    return requests.front().e_core + mpi::allreduce_sum(local, comm);
-}
-
-auto ev_and_grad_sharded(std::span<const EvalRequest> requests,
-                         std::span<const CosCallbacks> callbacks,
-                         parallel::Options options,
-                         mpi::Comm comm,
-                         const EvaluationObserver *observer) -> std::pair<double, VecD> {
-    const auto world = PhysicalWorld::of(comm);
-    auto outcome = evaluate_shards(requests, callbacks, options, /*gradient=*/true, observer, world);
-    if (outcome.error) {
-        mpi::operation_failed(comm, outcome.error);
-    }
-    const double local = combine_contributions(outcome.contributions);
-    const double expectation_value = mpi::allreduce_sum(local, comm);
-    VecD gradient = combine_gradients(outcome.gradients);
-    if (!requests.front().params.empty()) {
-        mpi::allreduce_sum_inplace(gradient, comm);
-    }
-    return {requests.front().e_core + expectation_value, std::move(gradient)};
-}
-
 auto replay_shards(std::span<const ReplayRequest> requests,
                    std::span<const double> mapped_params,
                    std::span<const CosCallbacks> callbacks,

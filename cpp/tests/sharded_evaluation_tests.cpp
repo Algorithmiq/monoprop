@@ -559,17 +559,32 @@ auto evaluate(const sharded::RetainedEvaluation &r,
     return sharded::evaluate_shards(requests, r.callbacks, team_options(), gradient, observer, world);
 }
 
-auto energy(const sharded::RetainedEvaluation &r, const VecD &params, const sharded::PhysicalWorld &world = {})
-    -> double {
-    const auto requests = r.requests(params);
-    return sharded::ev_sharded(requests, r.callbacks, team_options(), world.comm);
-}
-
+// The root's combination: the ascending-shard fold, the reduction over the world, then the replicated identity.
 auto energy_and_gradient(const sharded::RetainedEvaluation &r,
                          const VecD &params,
                          const sharded::PhysicalWorld &world = {}) -> std::pair<double, VecD> {
     const auto requests = r.requests(params);
-    return sharded::ev_and_grad_sharded(requests, r.callbacks, team_options(), world.comm);
+    const auto outcome = sharded::evaluate_shards(requests, r.callbacks, team_options(), true, nullptr, world);
+    if (outcome.error) {
+        std::rethrow_exception(outcome.error);
+    }
+    const double value = mpi::allreduce_sum(sharded::combine_contributions(outcome.contributions), world.comm);
+    VecD gradient = sharded::combine_gradients(outcome.gradients);
+    if (!params.empty()) {
+        mpi::allreduce_sum_inplace(gradient, world.comm);
+    }
+    return {requests.front().e_core + value, std::move(gradient)};
+}
+
+auto energy(const sharded::RetainedEvaluation &r, const VecD &params, const sharded::PhysicalWorld &world = {})
+    -> double {
+    const auto requests = r.requests(params);
+    const auto outcome = sharded::evaluate_shards(requests, r.callbacks, team_options(), false, nullptr, world);
+    if (outcome.error) {
+        std::rethrow_exception(outcome.error);
+    }
+    return requests.front().e_core
+           + mpi::allreduce_sum(sharded::combine_contributions(outcome.contributions), world.comm);
 }
 
 // --- Observation ------------------------------------------------------------------------------------------------
@@ -1731,9 +1746,8 @@ auto no_later_work(const Recorder &rec, long long limit, size_t layers) -> bool 
 
 } // namespace
 
-// A failure in any evaluation phase, on the primary or the last owner, joins the team, suppresses every later phase,
-// returns the original exception from evaluate_shards(), and is rethrown unchanged by ev_sharded() and
-// ev_and_grad_sharded(); independent copies survive.
+// A failure in any evaluation phase, on the primary or the last owner, joins the team, suppresses every later phase and
+// returns the original exception from evaluate_shards(); independent copies survive.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_work) {
     const auto options = team_options();
     const size_t threads = team_size();
@@ -1773,20 +1787,6 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_failure_in_each_phase_suppresses_later_w
                 BOOST_TEST(message_of(outcome.error) == message);
                 const Visit probe{site.work, site.step, 0, 0, 0, {}};
                 BOOST_TEST(no_later_work(rec, phase_of(probe, layers), layers));
-                const Recorder again(threads, {{site.work, site.step, shard}});
-                const auto requests = r.requests(params);
-                try {
-                    if (site.gradient) {
-                        (void)sharded::ev_and_grad_sharded(requests, r.callbacks, options, MPI_COMM_SELF, &again);
-                    }
-                    else {
-                        (void)sharded::ev_sharded(requests, r.callbacks, options, MPI_COMM_SELF, &again);
-                    }
-                    BOOST_FAIL("the failure was not rethrown");
-                }
-                catch (const std::runtime_error &e) {
-                    BOOST_TEST(std::string(e.what()) == message);
-                }
             }
         }
     }

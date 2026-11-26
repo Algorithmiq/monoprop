@@ -199,7 +199,7 @@ name and cannot address suite-nested cases, tests use flat
   streams and kernel ranges per shard. `sharded_construction_env_t1`, `_t2` and `_t4` rerun the cases in
   fresh exact-team processes, as for the team primitive.
 - **Snapshot-safe evaluation**: `sharded_evaluation_tests.cpp` covers `detail/sharded/Evaluation.h`
-  (`evaluate_shards`, `ev_sharded`, `ev_and_grad_sharded`, `replay_shards`, `prepare_retained`, the
+  (`evaluate_shards`, `replay_shards`, `prepare_retained`, the
   owner-local forward replay phases and the ascending-shard folds), the owner-local paring seam
   `detail::pare_graph_owner` and coefficient-informed construction (`sharded::build_graph_informed`). At
   geometry (1, T) every shard's evolved operator and local term, the energy and every gradient component

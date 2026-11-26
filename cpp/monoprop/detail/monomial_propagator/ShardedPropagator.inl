@@ -687,7 +687,7 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
             std::rethrow_exception(outcome.error);
         }
         detail::sharded::notify_root(observer_, detail::sharded::RootWork::combine, 0);
-        // Ascending-shard fold, then the physical reduction, then the identity once (as ev_sharded()).
+        // Ascending-shard fold, then the physical reduction, then the identity once.
         const double local = detail::sharded::combine_contributions(outcome.contributions);
         const double expectation_value = mpi::allreduce_sum(local, comm_);
         VecD total_gradient;

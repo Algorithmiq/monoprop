@@ -358,9 +358,10 @@ BOOST_AUTO_TEST_CASE(openmp_low_level_calls_default_to_serial_options) {
     const auto &graph = sim.graph();
     const auto view = graph.replay_view();
     const auto mapped = map_params(data.parameters, sim.parameter_mapping(), VecD(sim.graph_layers(), 1.0), 1.0, true);
-    const auto cos = build_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(), view, Basis::Majorana);
-    const auto cos_threaded =
-        build_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(), view, Basis::Majorana, Options{.threads = 3});
+    const auto cos =
+        monoprop::detail::make_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(), view, Basis::Majorana);
+    const auto cos_threaded = monoprop::detail::make_cos_callbacks<kNumModes>(
+        sim.mp_op().inverted_index(), view, Basis::Majorana, Options{.threads = 3});
 
     const VecD op = sim.mp_op().get_operator();
     const VecD by_default = evolve_operator(VecD(op), view, mapped, MPI_COMM_SELF, cos.scale);
