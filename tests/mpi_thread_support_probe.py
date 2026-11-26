@@ -14,18 +14,17 @@
 
 """Fresh-process probe for ``tests/test_mpi_thread_support.py``.
 
-Run as ``python mpi_thread_support_probe.py LEVEL MODE [OUT]``, directly or under an MPI launcher. It configures
+Run as ``python mpi_thread_support_probe.py LEVEL MODE``. It configures
 ``mpi4py`` to initialize MPI at ``LEVEL`` (``single``, ``funneled``, ``serialized`` or ``multiple``) and imports
 ``mpi4py.MPI`` *before* ``monoprop``, as a host application would, so the library finds MPI already initialized and
 must work with the level actually provided. Modes:
 
 - ``operations``: construct, build a graph, evaluate energies, gradients and retained functionals on the world
   communicator, and the same on ``MPI.COMM_SELF`` as a single-process reference.
-- ``construct``: only construct (the insufficient-level refusal).
 - ``wrong-thread``: construct and build on the initializing thread, then evaluate from another Python thread.
 
-Each rank writes one JSON document (``OUT/rank<r>.json`` when ``OUT`` is given, else the last stdout line) carrying the
-requested and the provided level. Not collected by pytest: the file name has no ``test_`` prefix.
+It prints one JSON document, as its last stdout line, carrying the requested and the provided level. Not collected by
+pytest: the file name has no ``test_`` prefix.
 """
 
 from __future__ import annotations
@@ -33,12 +32,10 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from pathlib import Path
 
 import mpi4py
 
 level, mode = sys.argv[1], sys.argv[2]
-out_dir = Path(sys.argv[3]) if len(sys.argv) > 3 else None
 mpi4py.rc.thread_level = level
 
 from mpi4py import MPI  # noqa: E402
@@ -49,12 +46,9 @@ _LEVELS = {
     MPI.THREAD_SERIALIZED: "serialized",
     MPI.THREAD_MULTIPLE: "multiple",
 }
-rank = MPI.COMM_WORLD.Get_rank()
 doc: dict[str, object] = {
     "requested": level,
     "provided": _LEVELS[MPI.Query_thread()],
-    "rank": rank,
-    "ranks": MPI.COMM_WORLD.Get_size(),
 }
 
 import monoprop  # noqa: E402
@@ -103,22 +97,16 @@ def _evaluate(comm: object) -> dict[str, object]:
 
 
 def _write() -> None:
-    text = json.dumps(doc)
-    if out_dir is not None:
-        (out_dir / f"rank{rank}.json").write_text(text)
-    else:
-        print(text, flush=True)  # noqa: T201
+    print(json.dumps(doc), flush=True)  # noqa: T201
 
 
 doc["has_mpi"] = bool(monoprop.MPI_ABIS)
-if mode not in ("operations", "construct", "wrong-thread"):
+if mode not in ("operations", "wrong-thread"):
     raise SystemExit(f"unknown mode {mode!r}")
 try:
     if mode == "operations":
         doc["world"] = _evaluate(MPI.COMM_WORLD)
         doc["self"] = _evaluate(MPI.COMM_SELF)
-    elif mode == "construct":
-        doc["size"] = _propagator(MPI.COMM_WORLD)._simulator.size()
     elif mode == "wrong-thread":
         propagator = _propagator(MPI.COMM_WORLD)
         propagator.build_graph(circuit)

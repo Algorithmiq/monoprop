@@ -302,29 +302,6 @@ There is one runtime, and every suite compiles against it.
   the replay step's bulk path, symmetric rows and column views, against the entry-wise path) and, in
   `sharded_exchange_mpi*`, closed-form blocks between processes.
 
-Bitwise parity with an independently implemented runtime at the same geometry, and parity across geometries, is
-checked from separate processes by `tests/test_sharded_openmp.py` (with `monoprop_TEST_LEGACY_PYTHON` naming a
-separately built pre-removal legacy environment), because two class definitions must never share a process.
-
-Migration ledger, closed by the removal of the partition runtime (S8). Categories: (1) unchanged at launch-time
-T = 1, (2) rewritten with private shard inspection at fixed geometry, (3) replaced by separate-process or
-global-map coverage, (4) retired with its subject (the deleted runtime), with the named replacement.
-
-| Suite or registration | Disposition | Coverage now |
-| --- | --- | --- |
-| `partition_equivalence_tests.cpp`, `partition_group_clone_tests.cpp` | (4) deleted | `sharded_api_tests.cpp` proves the facade and factory absent; ordinary hooks in `sharded_root_virtual_hooks_keep_working`; cross-T maps in Python |
-| `shm_comm_tests.cpp`, `hybrid_comm_tests.cpp`, `ThreadHarness.h`, `SlotBlocks.h` | (4) deleted; plain-MPI arms ported | `mpi_alltoallv_tests.cpp` (sparse plans, known counts, empty legs, back-to-back rounds, unroutable plans, request ownership), `flat_exchange_tests.cpp`; in-process verbs have no subject |
-| `cpu_topology_tests.cpp` | (4) deleted | no topology code remains; placement is the launcher's |
-| `exchange_layout_precondition_tests.cpp` | (2) ShmComm fixture replaced | ordinary communicator; rank-0-only check on the world proves rejection before communication |
-| S1-S3 seam suites' legacy-oracle cases (10) and `sharded_{construction,evaluation}_multirank_*` | (3)/(4) retired with the in-process oracle | independent references and the root at the same launch; bitwise per rank against a separately built legacy runtime in `tests/test_sharded_openmp.py` (contraction blocks pin each shard's row order) |
-| `openmp_runtime_tests.cpp` one-store cases | (4) | `sharded_root_functional_failures_invalidate_their_owner`; parser, fallback, copy budget and invalid-owner cases kept |
-| `fused_cos_sweep_tests.cpp` one-store and cross-budget cases | (3)/(4) | fused shard records and fixed-geometry determinism; kernel budgets in `openmp_scan_*`/`openmp_env_kernels_*`; cross-T maps in Python |
-| `mpi_distributed_layer_equivalence.cpp`, `mpi_fresh_insert_equivalence.cpp` hybrid/one-store cases | (4) | `sharded_world_equivalence_mpi*`, `sharded_root_mpi*` |
-| `mpi_failure_*` | (2) | sharded scenarios; low-level scenarios migrated to the T = 1 root's sole shard; FUNNELED acceptance added |
-| `env_config_tests.cpp` permissive-parser cases | (4) | absence probe in `sharded_api_tests.cpp` |
-| Other propagator suites | (1) T = 1 | unchanged assertions on the sole shard |
-| `link_export_probe`, `find_package_smoke` | (2) | constructor shape, every operation family, derived hooks, raw-access rule at T = 1 and 2, no selector, the MPI setting, and (MPI) a two-rank comparison with one process |
-
 ## MPI Test Configuration
 
 With an MPI launcher on PATH (`MPIEXEC_EXECUTABLE`, `mpiexec`, or `mpirun`),

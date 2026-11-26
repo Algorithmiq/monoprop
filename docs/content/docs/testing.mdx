@@ -236,28 +236,19 @@ The Python integration tests launch a fresh interpreter per T from a parent that
 skip inside one), so run them from an ordinary `pytest` process:
 
 ```bash
-monoprop_TEST_LEGACY_PYTHON="$LEGACY_ENV/bin/python" uv run --no-sync pytest tests/test_sharded_openmp.py -v
+uv run --no-sync pytest tests/test_sharded_openmp.py -v
 ```
 
-`monoprop_TEST_LEGACY_PYTHON` names the interpreter of an environment built separately from a checkout from
-before the partition runtime was removed (with its default, legacy build). Its processes run at
-`monoprop_PARTITIONS=T` for a bitwise comparison at the same (1, T) geometry — an independently implemented
-runtime, never loaded into the same process; without it those cases skip, so a verification run sets it. The
-same file checks the extension's runtime identity (the attribute and the NUL-terminated literal, and neither
-pre-removal marker), that the removed constructor arguments raise `TypeError` at every level (the `_core`
-classes, [MajoranaPropagator][], [PauliPropagator][] and the generated adapters) and that a `monoprop_PARTITIONS`
-set before launch changes nothing, bit for bit. In an MPI build with an MPI launcher on `PATH`, the
-`test_multirank_*` cases also run the probe on several processes, each rank writing its own document: at two
-ranks against a legacy MPI environment rank by rank and bit for bit, across the geometries (1, 4), (2, 2) and
-(4, 1), and on three processes under splitmix, with the gathered maps, energies and gradients within the map
-tolerance.
+In an MPI build with an MPI launcher on `PATH`, the `test_multirank_*` cases also run the probe on several
+processes, each rank writing its own document: across the geometries (1, 4), (2, 2) and (4, 1), and on three
+processes under splitmix, with the gathered maps, energies and gradients within the map tolerance.
 
 `tests/test_mpi_thread_support.py` (MPI builds) launches `tests/mpi_thread_support_probe.py`, which sets
-`mpi4py.rc.thread_level` and imports `mpi4py.MPI` before `monoprop`, as a host would: FUNNELED, SERIALIZED and
-MULTIPLE complete real construction, graph, energy, gradient and retained-functional work on one rank and on two
-ranks of two threads, against a `COMM_SELF` reference; SINGLE is refused on one rank and aborts two ranks promptly;
-and a call from another Python thread fails fast at FUNNELED and MULTIPLE. Each case reads back the level MPI
-actually provided and skips, saying so, when it does not exercise the case's route.
+`mpi4py.rc.thread_level` and imports `mpi4py.MPI` before `monoprop`, as a host would: FUNNELED completes real
+construction, graph, energy, gradient and retained-functional work against a `COMM_SELF` reference, and a call from
+another Python thread fails fast at FUNNELED and MULTIPLE. Each case reads back the level MPI actually provided and
+skips, saying so, when it does not exercise the case's route. The C++ failure driver covers the other levels and
+two-rank launches.
 
 The MPI build also registers `mpi_failure_*` entries, labelled `mpi` and `mpi_failure`, from
 `cpp/tests/mpi_failure_driver.cpp`. That driver has its own `main()`, so the unit-runner glob

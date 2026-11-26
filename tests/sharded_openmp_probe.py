@@ -19,11 +19,10 @@ Run as ``python sharded_openmp_probe.py '<json spec>'`` in a process whose threa
 controls) and prints one JSON document on its last stdout line. Floats are emitted as ``float.hex`` so
 the parent can compare bits; the parent decides what has to agree.
 
-In an MPI build every rank runs the same calls on the world communicator, passed explicitly: the legacy runtime took
-it as the propagators' default, a current build runs ``comm=None`` serially on ``_core``. When the
-spec names an ``out`` directory, each rank writes its own document to ``<out>/rank<r>.json`` instead of stdout, so
-interleaved launcher output cannot split one; exports, contraction blocks and aggregates are rank-local, energies and
-gradients global.
+In an MPI build every rank runs the same calls on the world communicator, passed explicitly: ``comm=None`` runs
+serially on ``_core``. When the spec names an ``out`` directory, each rank writes its own document to
+``<out>/rank<r>.json`` instead of stdout, so interleaved launcher output cannot split one; exports, contraction blocks
+and aggregates are rank-local, energies and gradients global.
 
 Not collected by pytest: the file name has no ``test_`` prefix.
 """
@@ -59,12 +58,8 @@ from tests.reference_data import load_problem  # noqa: E402
 
 
 def _has_mpi() -> bool:
-    # A current build reports MPI_ABIS; the legacy environment this probe also runs in reports has_mpi. An MPI-enabled
-    # wheel tested without mpi4py (cibuildwheel's serial suite) runs serially, like an MPI-off build.
-    if importlib.util.find_spec("mpi4py") is None:
-        return False
-    abis = getattr(monoprop, "MPI_ABIS", None)
-    return bool(abis) if abis is not None else bool(getattr(monoprop, "has_mpi", False))
+    # An MPI-enabled wheel tested without mpi4py (cibuildwheel's serial suite) runs serially, like an MPI-off build.
+    return importlib.util.find_spec("mpi4py") is not None and bool(monoprop.MPI_ABIS)
 
 
 # Set by main() before any scenario runs: MPI.COMM_WORLD in an MPI build, None otherwise, and the extension module
@@ -421,9 +416,7 @@ def main() -> None:
         from mpi4py import MPI  # noqa: PLC0415 - MPI-off runs never import mpi4py
 
         _COMM = MPI.COMM_WORLD
-    backend = getattr(monoprop, "_backend", None)
-    if backend is not None:
-        _CORE = backend.core_module(_COMM)
+    _CORE = monoprop._backend.core_module(_COMM)
     result: dict[str, Any] = {"has_mpi": has_mpi}
     scenario = spec["scenario"]
     if scenario == "full":

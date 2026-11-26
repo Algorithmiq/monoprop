@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 import monoprop
+from tests.mpi_support import LAUNCHER_PREFIXES, inside_multirank_job
 
 # Repository tooling, not the package: a wheel's test run skips it.
 pytestmark = pytest.mark.wheel_redundant
@@ -56,18 +57,16 @@ HAS_MPI = bool(monoprop.MPI_ABIS)
 
 # These tests launch their own processes (pytest, mpiexec). Inside a multi-rank MPI test job every
 # rank would repeat those launches nested in the parent job, so they run outside one.
-_IN_MPI_JOB = (
-    int(os.environ.get("OMPI_COMM_WORLD_SIZE", os.environ.get("PMI_SIZE", "1"))) > 1
-)
 _launches = pytest.mark.skipif(
-    _IN_MPI_JOB, reason="launches its own processes; run outside a multi-rank MPI job"
+    inside_multirank_job(),
+    reason="launches its own processes; run outside a multi-rank MPI job",
 )
 
 
 def _bench_env(**extra: str) -> dict[str, str]:
     """Return a clean launch environment for a benchmark subprocess."""
     # Launcher variables are dropped so a child never joins an enclosing MPI job.
-    dropped = ("monoprop_", "OMP_", "PYTEST_", "OMPI_", "PMIX_", "PRTE_", "PMI_")
+    dropped = ("monoprop_", "OMP_", "PYTEST_", *LAUNCHER_PREFIXES)
     env = {
         key: value for key, value in os.environ.items() if not key.startswith(dropped)
     }

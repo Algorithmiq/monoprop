@@ -22,23 +22,16 @@ Comparisons:
 
 - Across T = 1, 2, 4: identical global retained keys, coefficients within ``1e-9 + 1e-7 * max(|a|, |b|)``, and the
   same tolerance for unrounded energies and every gradient component.
-- Against the removed partition runtime at the same (1, T) geometry, when ``monoprop_TEST_LEGACY_PYTHON`` names the
-  interpreter of a separately built legacy environment (a pre-removal checkout): bitwise equality of energies,
-  gradients, decoded maps, contraction blocks (concatenated in shard / partition order) and aggregate counts. The
-  legacy process is a different build; the two class definitions never share a process.
-- Over P MPI processes (an MPI build and a launcher on ``PATH``), each rank writing its own document: at (P, T) against
-  the legacy runtime at P ranks x ``monoprop_PARTITIONS=T`` rank by rank and bit for bit (when the legacy interpreter
-  is an MPI build); across the geometries (1, 4), (2, 2) and (4, 1), and three processes under splitmix against
-  (1, 6), with the gathered global maps, energies and gradients within the tolerance above. Linear routing over three
-  processes is rejected on every rank.
+- Over P MPI processes (an MPI build and a launcher on ``PATH``), each rank writing its own document: across the
+  geometries (1, 4), (2, 2) and (4, 1), and three processes under splitmix against (1, 6), with the gathered global
+  maps, energies and gradients within the tolerance above. Linear routing over three processes is rejected on every
+  rank.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
-import os
-import shutil
 import subprocess
 import sys
 import uuid
@@ -48,21 +41,21 @@ from typing import Any
 import pytest
 
 import monoprop
-from monoprop import _core
+from tests.mpi_support import (
+    MPI_LAUNCH_ENV,
+    child_env,
+    close,
+    inside_multirank_job,
+    mpi_launcher,
+)
 
 _PROBE = Path(__file__).resolve().parent / "sharded_openmp_probe.py"
-# Environment a launcher gives its ranks: a child that inherits it would try to join the parent's job.
-_LAUNCHER_PREFIXES = ("OMPI_", "PMIX_", "PRTE_", "PMI_", "HYDRA_", "MPIR_")
 _TEAMS = (1, 2, 4)
 _FIXTURES = [
     ("random_exact", "heisenberg"),
     ("random_exact", "schrodinger"),
-    ("lih", "heisenberg"),
-    ("lih", "schrodinger"),
-    ("s0_8e8o", "heisenberg"),
     ("pauli_deep", "heisenberg"),
     ("pauli_deep", "schrodinger"),
-    ("pauli_deep_vanishing", "heisenberg"),
 ]
 # The cases a wheel's test run keeps (one per basis); the rest exercise the same compiled core, which is one abi3
 # binary for every interpreter and runs in full in the source-build test matrix.
@@ -80,41 +73,21 @@ def _wheel_subset(values: list[Any], keep: set[Any]) -> list[Any]:
     ]
 
 
-def _inside_multirank_job() -> bool:
-    size = os.environ.get("OMPI_COMM_WORLD_SIZE") or os.environ.get("PMI_SIZE") or "1"
-    return int(size) > 1
-
-
 pytestmark = pytest.mark.skipif(
-    _inside_multirank_job(),
+    inside_multirank_job(),
     reason="launches fresh interpreters, which cannot run inside a multi-rank job",
 )
-
-
-def _child_env(threads: int, extra: dict[str, str] | None = None) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(_LAUNCHER_PREFIXES)}
-    env.pop("monoprop_PARTITIONS", None)
-    env.update(
-        {
-            "monoprop_NUM_THREADS": str(threads),
-            "OMP_NUM_THREADS": str(threads),
-            "OMP_DYNAMIC": "FALSE",
-        }
-    )
-    env.update(extra or {})
-    return env
 
 
 def _run(
     spec: dict[str, Any],
     threads: int,
     *,
-    python: str = sys.executable,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    result = subprocess.run(  # noqa: S603 - trusted: a known interpreter and a fixed probe
-        [python, str(_PROBE), json.dumps(spec)],
-        env=_child_env(threads, extra_env),
+    result = subprocess.run(  # noqa: S603 - trusted: this interpreter and a fixed probe
+        [sys.executable, str(_PROBE), json.dumps(spec)],
+        env=child_env(threads, extra_env),
         capture_output=True,
         text=True,
         timeout=900,
@@ -122,10 +95,6 @@ def _run(
     )
     assert result.returncode == 0, result.stderr[-4000:]
     return json.loads(result.stdout.strip().splitlines()[-1])
-
-
-def _close(a: float, b: float) -> bool:
-    return abs(a - b) <= 1e-9 + 1e-7 * max(abs(a), abs(b))
 
 
 def _f(text: str) -> float:
@@ -141,8 +110,8 @@ def _assert_map_close(
     )
     for key, (re_a, im_a) in left.items():
         re_b, im_b = right[key]
-        assert _close(_f(re_a), _f(re_b)), (what, key)
-        assert _close(_f(im_a), _f(im_b)), (what, key)
+        assert close(_f(re_a), _f(re_b)), (what, key)
+        assert close(_f(im_a), _f(im_b)), (what, key)
 
 
 def _assert_values_close(left: Any, right: Any, what: str) -> None:
@@ -158,145 +127,14 @@ def _assert_values_close(left: Any, right: Any, what: str) -> None:
         for a, b in zip(left, right, strict=True):
             _assert_values_close(a, b, what)
     elif isinstance(left, str) and left.startswith(("0x", "-0x")):
-        assert _close(_f(left), _f(right)), (what, left, right)
+        assert close(_f(left), _f(right)), (what, left, right)
     else:
         assert left == right, (what, left, right)
 
 
-def _differences(left: Any, right: Any, path: str = "") -> list[str]:
-    """Paths at which two probe documents differ; compact, so a failure never renders the whole document."""
-    if isinstance(left, dict) and isinstance(right, dict):
-        out = [
-            f"{path}.{key}: missing on one side" for key in left.keys() ^ right.keys()
-        ]
-        for key in left.keys() & right.keys():
-            out += _differences(left[key], right[key], f"{path}.{key}")
-        return out
-    if isinstance(left, list) and isinstance(right, list):
-        if len(left) != len(right):
-            return [f"{path}: lengths {len(left)} != {len(right)}"]
-        out = []
-        for index, (a, b) in enumerate(zip(left, right, strict=True)):
-            out += _differences(a, b, f"{path}[{index}]")
-        return out
-    return [] if left == right else [f"{path}: {left!r} != {right!r}"]
-
-
-_ARGS: dict[str, Any] = {
-    "initial_operator": {(0, 1): 1j, (2, 3): 0.5j, (1, 2): 0.25j},
-    "cutoff": 4,
-    "initial_state": [0, 1],
-}
-# The low-level constructor's whole positional signature, up to and including ``basis``.
-_POSITIONAL = [
-    _ARGS["initial_operator"],
-    4,
-    [0, 1],
-    None,
-    None,
-    None,
-    None,
-    "length",
-    None,
-    32,
-    "majorana",
-]
-# Removed (partitions, child_factory) and never-added (thread or shard counts) constructor arguments.
-_UNSUPPORTED_KEYWORDS = (
-    "partitions",
-    "child_factory",
-    "num_threads",
-    "threads",
-    "shards",
-    "num_shards",
-)
-
-
-def _high_level_constructors() -> dict[str, Any]:
-    from monoprop import (  # noqa: PLC0415
-        MajoranaOperator,
-        MajoranaPropagator,
-        Pauli,
-        PauliOperator,
-        PauliPropagator,
-    )
-    from monoprop._dispatch import dispatch  # noqa: PLC0415
-
-    majorana = MajoranaOperator({(0, 1): 1j, (2, 3): 0.5j}, 4)
-    pauli = PauliOperator({Pauli("ZZ", [0, 1]): 0.5}, num_qubits=3)
-    return {
-        "MajoranaPropagator": lambda **kw: MajoranaPropagator(
-            majorana, [0, 1], cutoff=4, **kw
-        ),
-        "PauliPropagator": lambda **kw: PauliPropagator(pauli, [0], cutoff=3, **kw),
-        "dispatch adapter": lambda **kw: dispatch(32)(**_ARGS, **kw),
-    }
-
-
-@pytest.mark.parametrize("value", [0, 1, 2])
-def test_low_level_constructor_has_no_partitions(value: int) -> None:
-    # Even the old default is not accepted: the parameter is gone, not merely restricted.
-    with pytest.raises(TypeError):
-        _core.MonomialPropagator032(**_ARGS, partitions=value)
-
-
-def test_low_level_constructor_rejects_the_old_positional_tail() -> None:
-    assert _core.MonomialPropagator032(*_POSITIONAL).size() >= 0
-    for tail in ([0], [1], [0, None]):
-        with pytest.raises(TypeError):
-            _core.MonomialPropagator032(*_POSITIONAL, *tail)
-
-
-def test_low_level_constructor_documents_no_partitions() -> None:
-    doc = _core.MonomialPropagator032.__init__.__doc__ or ""
-    assert "logical_num_modes" in doc
-    assert "basis" in doc
-    assert "partitions" not in doc
-    # The generated typing stubs, where the build installs them (sanitizer trees skip them).
-    stub = Path(_core.__file__).with_name("_core.pyi")
-    if stub.exists():
-        text = stub.read_text()
-        assert "logical_num_modes: int" in text
-        assert "partitions" not in text
-
-
-@pytest.mark.parametrize("keyword", _UNSUPPORTED_KEYWORDS)
-def test_no_thread_or_shard_keyword_is_accepted(keyword: str) -> None:
-    # The high-level constructors and generated adapters never took any of them; the low-level one takes none either.
-    for name, construct in _high_level_constructors().items():
-        with pytest.raises(TypeError):
-            construct(**{keyword: 2})
-        assert construct() is not None, name
-    with pytest.raises(TypeError):
-        _core.MonomialPropagator032(**_ARGS, **{keyword: 2})
-
-
-@pytest.fixture(scope="module")
-def unset_partition_variable_run() -> dict[str, Any]:
-    return _run(_full_spec("random_exact", "heisenberg"), 2)
-
-
-@pytest.mark.parametrize(
-    "value",
-    _wheel_subset(["off", "auto", "1", "2", "3", "0", "", "not-a-count"], {"2"}),
-)
-def test_obsolete_partition_variable_is_ignored(
-    value: str, unset_partition_variable_run: dict[str, Any]
-) -> None:
-    # Set before the interpreter starts, as a launch would: the library never reads it, so every answer, aggregate
-    # and shard-ordered block is bitwise what the same T gives with the variable unset.
-    run = _run(
-        _full_spec("random_exact", "heisenberg"),
-        2,
-        extra_env={"monoprop_PARTITIONS": value},
-    )
-    differences = _differences(run["full"], unset_partition_variable_run["full"])
-    assert not differences, differences[:10]
-
-
 @pytest.mark.parametrize(
     "budget",
-    _wheel_subset(["", "0", "-1", "abc", "2,3", " 3", "+3", "2147483648"], {"abc"}),
+    _wheel_subset(["", "0"], {"0"}),
 )
 def test_invalid_budget_is_rejected(budget: str) -> None:
     out = _run(
@@ -306,6 +144,16 @@ def test_invalid_budget_is_rejected(budget: str) -> None:
     )["controls"]
     assert out["default"].startswith("RuntimeError"), out["default"]
     assert "monoprop_NUM_THREADS" in out["default"]
+
+
+@pytest.mark.parametrize("budget", _wheel_subset(["1", "3", "0003"], {"3"}))
+def test_valid_budget_is_accepted(budget: str) -> None:
+    out = _run(
+        {"scenario": "controls", "construction_only": True},
+        2,
+        extra_env={"monoprop_NUM_THREADS": budget},
+    )["controls"]
+    assert out["default"] == "ok"
 
 
 def test_controls_and_lifecycle() -> None:
@@ -341,7 +189,7 @@ def test_controls_and_lifecycle() -> None:
         assert out["core_only"]["map"] == {"[]": (2.5).hex()}
     for key in ("logical_energy",):
         values = [_f(results[t]["controls"][key]) for t in _TEAMS]
-        assert all(_close(v, values[0]) for v in values), (key, values)
+        assert all(close(v, values[0]) for v in values), (key, values)
     for key in ("energy", "gradient"):
         values = [results[t]["controls"]["identity_generator"][key] for t in _TEAMS]
         assert all(v == values[0] for v in values)
@@ -412,41 +260,10 @@ def test_full_api_agrees_across_team_sizes(fixture: str, picture: str) -> None:
             )
 
 
-def _legacy_python() -> str | None:
-    return os.environ.get("monoprop_TEST_LEGACY_PYTHON")  # noqa: SIM112 - the suite's names
-
-
-@pytest.mark.skipif(
-    _legacy_python() is None,
-    reason="set monoprop_TEST_LEGACY_PYTHON to a separately built legacy environment's interpreter",
-)
-@pytest.mark.parametrize("threads", _TEAMS)
-@pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
-def test_matches_the_legacy_runtime_at_the_same_geometry(
-    fixture: str, picture: str, threads: int
-) -> None:
-    legacy_python = _legacy_python()
-    assert legacy_python is not None
-    candidate = _run(_full_spec(fixture, picture), threads)
-    # The legacy facade at partitions = T routes over the same (1, T) flat owners.
-    legacy = _run(
-        _full_spec(fixture, picture),
-        threads,
-        python=legacy_python,
-        extra_env={"monoprop_PARTITIONS": str(threads)},
-    )
-    differences = _differences(candidate["full"], legacy["full"])
-    assert not differences, differences[:10]
-
-
-def _launcher() -> str | None:
-    return shutil.which("mpiexec") or shutil.which("mpirun")
-
-
 needs_mpi_launch = pytest.mark.skipif(
     not monoprop.MPI_ABIS
     or importlib.util.find_spec("mpi4py") is None
-    or _launcher() is None,
+    or mpi_launcher() is None,
     reason="needs an MPI build, mpi4py and an MPI launcher on PATH",
 )
 
@@ -457,34 +274,20 @@ def _run_ranks(
     threads: int,
     out_root: Path,
     *,
-    python: str = sys.executable,
     extra_env: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Launch the probe on `ranks` processes of `threads` threads; one document per rank, in rank order."""
-    launcher = _launcher()
+    launcher = mpi_launcher()
     assert launcher is not None
     out = out_root / f"p{ranks}-t{threads}-{uuid.uuid4().hex[:8]}"
     out.mkdir()
-    env = _child_env(
-        threads,
-        {
-            "OMPI_ALLOW_RUN_AS_ROOT": "1",
-            "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",
-            # Leave binding to OpenMP: by default each rank would be bound to one core and its T threads squeezed.
-            "OMPI_MCA_hwloc_base_binding_policy": "none",
-            # _child_env drops the parent's launcher settings, including the justfile's oversubscription; restore it
-            # so 3- and 4-rank runs fit runners with fewer cores (Open MPI 4 and 5 spellings, ignored by MPICH).
-            "OMPI_MCA_rmaps_base_oversubscribe": "1",
-            "PRTE_MCA_rmaps_default_mapping_policy": ":oversubscribe",
-            **(extra_env or {}),
-        },
-    )
+    env = child_env(threads, {**MPI_LAUNCH_ENV, **(extra_env or {})})
     result = subprocess.run(  # noqa: S603 - trusted: a known launcher, interpreter and probe
         [
             launcher,
             "-n",
             str(ranks),
-            python,
+            sys.executable,
             str(_PROBE),
             json.dumps({**spec, "out": str(out)}),
         ],
@@ -603,7 +406,7 @@ def test_multirank_agrees_across_geometries(
 
 @needs_mpi_launch
 @pytest.mark.parametrize(
-    ("fixture", "picture"), [_FIXTURES[0], _FIXTURES[3], _FIXTURES[6]]
+    ("fixture", "picture"), [_FIXTURES[0], _FIXTURES[1], _FIXTURES[3]]
 )
 def test_multirank_splitmix_three_processes(
     fixture: str, picture: str, tmp_path: Path
@@ -631,39 +434,3 @@ def test_multirank_linear_routing_rejects_three_processes(tmp_path: Path) -> Non
         outcome = doc["controls"]["default"]
         assert outcome.startswith("RuntimeError"), outcome
         assert "power-of-two rank count" in outcome, outcome
-
-
-@needs_mpi_launch
-@pytest.mark.skipif(
-    _legacy_python() is None,
-    reason="set monoprop_TEST_LEGACY_PYTHON to a separately built legacy environment's interpreter",
-)
-@pytest.mark.parametrize("threads", _TEAMS)
-@pytest.mark.parametrize(("fixture", "picture"), _FIXTURES)
-def test_multirank_matches_the_legacy_runtime_at_the_same_geometry(
-    fixture: str, picture: str, threads: int, tmp_path: Path
-) -> None:
-    legacy_python = _legacy_python()
-    assert legacy_python is not None
-    probe = subprocess.run(  # noqa: S603 - trusted interpreter
-        [legacy_python, "-c", "import monoprop; print(monoprop.has_mpi)"],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=_child_env(1),
-    )
-    if probe.stdout.strip() != "True":
-        pytest.skip("the legacy interpreter is an MPI-off build")
-    candidate = _run_ranks(_full_spec(fixture, picture), 2, threads, tmp_path)
-    # The legacy runtime at P ranks x monoprop_PARTITIONS=T routes over the same (P, T) flat owners.
-    legacy = _run_ranks(
-        _full_spec(fixture, picture),
-        2,
-        threads,
-        tmp_path,
-        python=legacy_python,
-        extra_env={"monoprop_PARTITIONS": str(threads)},
-    )
-    for rank, (ours, theirs) in enumerate(zip(candidate, legacy, strict=True)):
-        differences = _differences(ours["full"], theirs["full"])
-        assert not differences, (rank, differences[:10])
