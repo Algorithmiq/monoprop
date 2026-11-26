@@ -96,48 +96,8 @@
 
 namespace monoprop::detail::sharded {
 
-//! The step reported for work outside a step loop.
-inline constexpr size_t no_step = std::numeric_limits<size_t>::max();
-
-//! The owner work an evaluation reports to its observer.
-enum class EvaluationWork : std::uint8_t {
-    frame,              //!< Rebind and reset the owner's working frame; copy its operator (and state).
-    record,             //!< Forward step: take the selective pre-layer record.
-    publish,            //!< Forward step: snapshot own sources, publish partner endpoints.
-    cosine,             //!< Forward step: the cosine pass (callback).
-    finish,             //!< Forward step: add partners' published and own snapshotted sine terms.
-    contribution,       //!< The owner's local energy term.
-    reverse_publish,    //!< Reverse step: snapshot endpoints, publish partner pairs.
-    reverse_accumulate, //!< Reverse step: predivide, cosine accumulation (callback), restore.
-    reverse_finish,     //!< Reverse step: self pairs, partner endpoints, the local parameter contribution.
-    retain,             //!< Retained preparation: snapshot, pare and build callbacks.
-};
-
 //! The values one run of staged partner blocks holds at least: small enough to stay cache-resident until applied.
 inline constexpr size_t staging_run_values = 4096;
-
-/*!
- * \brief Test-only observation seam; production passes none.
- *
- * `visit(work, step, shard)` runs inside the protected phase, on the thread that performs `work` for `shard` (its
- * owner, or the primary for an opaque callback), before that work. `step` is the replay step or no_step. An
- * exception it throws is that phase's failure.
- */
-class EvaluationObserver {
-public:
-    EvaluationObserver() = default;                                               //!< Stateless base.
-    EvaluationObserver(const EvaluationObserver &) = default;                     //!< Copyable.
-    auto operator=(const EvaluationObserver &) -> EvaluationObserver & = default; //!< Copyable.
-    EvaluationObserver(EvaluationObserver &&) = default;                          //!< Movable.
-    auto operator=(EvaluationObserver &&) -> EvaluationObserver & = default;      //!< Movable.
-    virtual ~EvaluationObserver() = default;                                      //!< Polymorphic base.
-
-    //! Called before `work` of `step` for `shard`; may throw.
-    virtual auto visit(EvaluationWork work, size_t step, size_t shard) const -> void = 0;
-
-    //! Test-only: the minimum staging run of every owner's finishes, so small layers can cover multi-run staging.
-    [[nodiscard]] virtual auto staging_run() const noexcept -> size_t { return staging_run_values; }
-};
 
 // --- Owner-local replay phases ----------------------------------------------------------------------------------
 
@@ -295,10 +255,9 @@ struct PartnerStaging {
         size_t count = 0;             //!< The values it published for this owner.
         const double *data = nullptr; //!< Where the apply reads them: staged, or the partner's block if over a run.
     };
-    std::vector<size_t> position;           //!< Per flat slot: its index in `blocks`.
-    std::vector<Block> blocks;              //!< The step's partners, in the order the apply visits them.
-    VecD values;                            //!< The current run.
-    size_t run_values = staging_run_values; //!< The minimum run; EvaluationObserver::staging_run() in tests.
+    std::vector<size_t> position; //!< Per flat slot: its index in `blocks`.
+    std::vector<Block> blocks;    //!< The step's partners, in the order the apply visits them.
+    VecD values;                  //!< The current run.
 };
 
 /*!
@@ -408,13 +367,9 @@ struct ForwardReplayJob {
  * \param failure  The team's failure state.
  * \param shard    The calling worker's shard.
  * \param job      The replay; the caller keeps it alive through the join.
- * \param observer Test-only seam, or null.
  * \return Whether every checkpoint passed, identically on every worker.
  */
-monoprop_EXPORT auto replay_forward_in_team(TeamFailure &failure,
-                                            size_t shard,
-                                            ForwardReplayJob &job,
-                                            const EvaluationObserver *observer = nullptr) noexcept -> bool;
+monoprop_EXPORT auto replay_forward_in_team(TeamFailure &failure, size_t shard, ForwardReplayJob &job) noexcept -> bool;
 
 // --- Rank-level evaluation --------------------------------------------------------------------------------------
 
@@ -439,7 +394,6 @@ struct EvaluationOutcome {
  * \param callbacks One callback set per shard, built for that shard's index and graph.
  * \param options   The captured budget; its thread count T is the team size.
  * \param gradient  Whether to run the reverse pass.
- * \param observer  Test-only seam, or null.
  * \param world     This process among the ranks the shards' graphs were built over (PhysicalWorld::of() on the
  *                  caller); the default is one process. Every rank of a multi-rank world must call this together.
  * \return The outcome; a phase failure is returned, never thrown, except that a failure leaving a physical round's
@@ -452,7 +406,6 @@ monoprop_EXPORT auto evaluate_shards(std::span<const EvalRequest> requests,
                                      std::span<const CosCallbacks> callbacks,
                                      parallel::Options options,
                                      bool gradient,
-                                     const EvaluationObserver *observer = nullptr,
                                      const PhysicalWorld &world = {},
                                      PhysicalRounds *rounds = nullptr) -> EvaluationOutcome;
 
@@ -504,7 +457,6 @@ monoprop_EXPORT auto replay_shards(std::span<const ReplayRequest> requests,
                                    std::span<const double> mapped_params,
                                    std::span<const CosCallbacks> callbacks,
                                    parallel::Options options,
-                                   const EvaluationObserver *observer = nullptr,
                                    const PhysicalWorld &world = {},
                                    PhysicalRounds *rounds = nullptr) -> ReplayOutcome;
 
@@ -601,14 +553,11 @@ struct RetainedOutcome {
  * \param options  The shards' captured budget.
  * \param shards   The process's T shards; their caches are warmed in place.
  * \param context  Rank-level inputs.
- * \param observer Test-only seam, or null.
  * \throws std::invalid_argument before the team if the shards do not fit `options` or disagree on layer counts.
  */
 template <size_t NumModes>
-auto prepare_retained(parallel::Options options,
-                      Shards<NumModes> &shards,
-                      const RetainedContext &context,
-                      const EvaluationObserver *observer = nullptr) -> RetainedOutcome {
+auto prepare_retained(parallel::Options options, Shards<NumModes> &shards, const RetainedContext &context)
+    -> RetainedOutcome {
     if (options.threads < 1 || shards.size() != static_cast<size_t>(options.threads)
         || std::ranges::any_of(shards, [](const auto &state) { return !state; })) {
         throw std::invalid_argument(std::format("sharded::prepare_retained: expected {} non-null shards, got {}",
@@ -634,9 +583,6 @@ auto prepare_retained(parallel::Options options,
             mutation_started = true;
         }
         static_cast<void>(phase(failure, t, [&] {
-            if (observer != nullptr) {
-                observer->visit(EvaluationWork::retain, no_step, t);
-            }
             auto &op = shards[t]->op;
             const auto num_terms = op.size();
             auto state = [&] {

@@ -256,7 +256,7 @@ sanitizer-reports:
 test-cpp-tsan:
     #!/usr/bin/env bash
     set -euo pipefail
-    selection='^(sharded_(team|state|construction|evaluation|exchange|root)_|fused_env_t|openmp_|evolved_coefficients_env_t|combined_threaded_)'
+    selection='^(sharded_|openmp_)'
     TSAN_OPTIONS="halt_on_error=1:history_size=4${TSAN_OPTIONS:+:$TSAN_OPTIONS}" \
       ctest --test-dir {{ build_dir }} --output-on-failure --no-tests=error -R "$selection"
 

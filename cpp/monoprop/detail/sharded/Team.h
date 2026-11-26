@@ -65,12 +65,6 @@
 
 namespace monoprop::detail::sharded {
 
-//! The default checkpoint observer: does nothing.
-struct NoCheckpointObserver {
-    //! Ignore the checkpoint generation.
-    auto operator()(std::size_t /*generation*/) const noexcept -> void {}
-};
-
 /*!
  * \brief Operation-local failure state for one team: one error slot per worker and the first failed generation.
  *
@@ -123,13 +117,10 @@ public:
      * `single`, `masked` or `critical` construct, and never from a nested region. Outside any parallel
      * region it binds to a one-thread team, whose worker is 0.
      *
-     * \param after_barrier Test-only observer, called as `after_barrier(generation)` on each worker between the
-     *        barrier and its read of the decision, so tests can delay that read deterministically. Must not throw.
      * \return True, identically on every worker, if no error was recorded at or before this checkpoint's
      *         generation.
      */
-    template <class Observer = NoCheckpointObserver>
-    auto checkpoint(Observer &&after_barrier = {}) noexcept -> bool {
+    auto checkpoint() noexcept -> bool {
         // The barrier orders every record() of this phase before any worker's read below. A one-worker team has nothing
         // to order and runs without a region (run_team()), so it skips the barrier's runtime call.
         if (slots_.size() > 1) {
@@ -137,7 +128,6 @@ public:
         }
         auto &slot = slots_[static_cast<std::size_t>(omp_get_thread_num())];
         const auto generation = slot.generation++;
-        std::invoke(after_barrier, generation);
         return first_failed_.load(std::memory_order_acquire) > generation;
     }
 

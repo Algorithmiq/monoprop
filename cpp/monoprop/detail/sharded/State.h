@@ -289,25 +289,6 @@ struct ShardState {
 template <size_t NumModes>
 using Shards = std::vector<std::unique_ptr<ShardState<NumModes>>>;
 
-//! The substantial work an owner performs in seed_shards() or copy_shards(), as reported to an observer.
-enum class ShardWork : std::uint8_t {
-    seed, //!< seed_operator() and the new state.
-    copy, //!< Copy construction from the source shard.
-};
-
-/*!
- * \brief The observer production code uses: it does nothing and compiles away.
- *
- * seed_shards() and copy_shards() call `begin(work, shard)` on the owner inside its protected phase before any of
- * the shard's substantial allocation, and `end(work, shard)` after the state is complete and before it is
- * published. Tests substitute an observer that records the executing worker or arms a failure; no production caller
- * passes one. An exception thrown by an observer is that owner's failure.
- */
-struct NoShardObserver {
-    auto begin(ShardWork /*work*/, size_t /*shard*/) const noexcept -> void {}
-    auto end(ShardWork /*work*/, size_t /*shard*/) const noexcept -> void {}
-};
-
 /*!
  * \brief Build T shard states, each allocated and initialized on its owner worker.
  *
@@ -361,17 +342,13 @@ auto make_shards(parallel::Options options, Initialize &&initialize) -> Shards<N
  * \param options  The already-captured budget; its thread count T must equal `seed.router.shards_per_rank()`.
  * \param seed     Prepared inputs; see OperatorSeed.
  * \param rank     This process's rank, below `seed.router.ranks()`.
- * \param observer Test-only seam; see NoShardObserver.
  * \return This rank's T seeded states.
  * \throws std::invalid_argument if T is not positive, disagrees with the router's shard count, or `rank` is out of
  *         range, before the team starts.
  * \throws As make_shards() for owner failures.
  */
-template <size_t NumModes, class Observer = NoShardObserver>
-auto seed_shards(parallel::Options options,
-                 const OperatorSeed<NumModes> &seed,
-                 size_t rank,
-                 const Observer &observer = {}) -> Shards<NumModes> {
+template <size_t NumModes>
+auto seed_shards(parallel::Options options, const OperatorSeed<NumModes> &seed, size_t rank) -> Shards<NumModes> {
     if (options.threads < 1 || seed.router.shards_per_rank() != static_cast<size_t>(options.threads)
         || rank >= seed.router.ranks()) {
         throw std::invalid_argument(std::format("sharded::seed_shards: {} shards on rank {} do not fit routing "
@@ -383,11 +360,9 @@ auto seed_shards(parallel::Options options,
     }
     const auto threads = static_cast<size_t>(options.threads);
     return make_shards<NumModes>(options, [&](size_t shard) {
-        observer.begin(ShardWork::seed, shard);
         // Built on the heap and seeded in place: no operator passes through this worker's frame.
         auto state = std::make_unique<ShardState<NumModes>>(seed.paired.has_value());
         seed_operator(seed, (rank * threads) + shard, state->op);
-        observer.end(ShardWork::seed, shard);
         return state;
     });
 }
@@ -401,26 +376,20 @@ auto seed_shards(parallel::Options options,
  *
  * \param options  The source owner's captured budget; its thread count must equal `source.size()`.
  * \param source   The states to copy; every entry non-null.
- * \param observer Test-only seam; see NoShardObserver.
  * \return T independent states.
  * \throws std::invalid_argument if the shard count does not match or an entry is null, before the team starts.
  * \throws As make_shards() for owner failures; the source is left unchanged.
  */
-template <size_t NumModes, class Observer = NoShardObserver>
-auto copy_shards(parallel::Options options, const Shards<NumModes> &source, const Observer &observer = {})
-    -> Shards<NumModes> {
+template <size_t NumModes>
+auto copy_shards(parallel::Options options, const Shards<NumModes> &source) -> Shards<NumModes> {
     if (options.threads < 1 || source.size() != static_cast<size_t>(options.threads)
         || std::ranges::any_of(source, [](const auto &state) { return !state; })) {
         throw std::invalid_argument(std::format("sharded::copy_shards: expected {} non-null source shards, got {}",
                                                 options.threads,
                                                 source.size()));
     }
-    return make_shards<NumModes>(options, [&](size_t shard) {
-        observer.begin(ShardWork::copy, shard);
-        auto state = std::make_unique<ShardState<NumModes>>(*source[shard]);
-        observer.end(ShardWork::copy, shard);
-        return state;
-    });
+    return make_shards<NumModes>(options,
+                                 [&](size_t shard) { return std::make_unique<ShardState<NumModes>>(*source[shard]); });
 }
 
 //! Rows over all shards of this rank, the rank-local operator size.

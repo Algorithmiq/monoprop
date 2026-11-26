@@ -14,78 +14,23 @@
 
 #pragma once
 
-// Test-only support shared by the sharded runtime suites: the launch's captured team and the Boost preconditions on
-// it, a scoped environment variable, the dedicated multi-rank launch check, failure inspection, the exactness
-// tolerance, exact keys and bit patterns for bitwise comparisons, and the coefficient encoding the operator fixtures
-// use.
+// Test-only support shared by the sharded runtime suites: the launch's captured team, a scoped environment variable
+// and failure inspection.
 
-#include <boost/test/unit_test.hpp>
-
-#include <bit>
-#include <complex>
-#include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <exception>
-#include <map>
-#include <new>
 #include <optional>
-#include <stdexcept>
 #include <string>
-#include <vector>
 
-#include "AllocationProbe.h"
 #include "RankPreconditions.h"
-#include "monoprop/TypeAliases.h"
-#include "monoprop/algebra/Algebra.h"
-#include "monoprop/algebra/AlgebraCommon.h"
-#include "monoprop/core/Monomial.h"
-#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/OperationFailure.h"
 #include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
-#include "monoprop/detail/sharded/Team.h"
 
 namespace sharded_test {
 
-using namespace monoprop;
-namespace parallel = monoprop::detail::parallel;
-namespace sharded = monoprop::detail::sharded;
-namespace allocation = test_utils::allocation;
-using Key = std::vector<uint64_t>;
-using RetainedMap = std::map<Key, double>;
-
-inline constexpr size_t num_modes = 8;
-
-// Absolute tolerance of an exact-cutoff energy against an independent reference or a frozen exact energy.
-inline constexpr double exact_atol = 1e-9;
-
-inline auto team_options() -> parallel::Options {
-    return parallel::capture_thread_budget();
-}
-
-inline auto team_size(parallel::Options options = team_options()) -> size_t {
-    return static_cast<size_t>(options.threads);
-}
-
-inline auto has_nonprimary_worker(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    const auto threads = parallel::capture_thread_budget().threads;
-    boost::test_tools::assertion_result result(threads >= 2);
-    result.message() << "the captured team budget is " << threads << "; this case needs a nonprimary worker";
-    return result;
-}
-
-inline auto has_allocation_probe(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    boost::test_tools::assertion_result result(allocation::available());
-    result.message() << "this build's sanitizer runtime owns operator new/delete, so no allocation probe is linked";
-    return result;
-}
-
-// After an injected allocation failure, no worker thread keeps an armed failure.
-inline auto disarm_team() -> void {
-    static_cast<void>(sharded::run_team(team_options(), [](size_t, sharded::TeamFailure &) noexcept {
-        (void)allocation::disarm_failure();
-    }));
+inline auto team_options() -> monoprop::detail::parallel::Options {
+    return monoprop::detail::parallel::capture_thread_budget();
 }
 
 // Sets (or unsets, for nullopt) one environment variable for a scope, then restores it.
@@ -128,69 +73,9 @@ inline auto expected_team() -> std::optional<int> {
     return std::stoi(value);
 }
 
-// Multi-rank cases run only in their dedicated launches, which name the world size (cpp/tests/CMakeLists.txt).
-inline auto dedicated_launch(size_t ranks) -> bool {
-    const char *text = std::getenv("monoprop_TEST_SHARDED_RANKS");
-    return text != nullptr && std::stoul(text) == ranks;
-}
-
-// Requires the dedicated launch of MPI_COMM_WORLD's size; stacks with the world-size preconditions of
-// RankPreconditions.h.
-inline auto dedicated_launch() -> boost::unit_test::decorator::precondition {
-    return boost::unit_test::precondition([](boost::unit_test::test_unit_id) {
-        const int ranks = monoprop::mpi::size(MPI_COMM_WORLD);
-        boost::test_tools::assertion_result result(dedicated_launch(static_cast<size_t>(ranks)));
-        result.message() << "needs the dedicated launch of " << ranks << " ranks (monoprop_TEST_SHARDED_RANKS)";
-        return result;
-    });
-}
-
-// A failure the suites inject, distinguishable from any the library raises.
-struct InjectedFailure : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
 // The message of a non-empty exception pointer.
 inline auto message_of(const std::exception_ptr &error) -> std::string {
     return monoprop::mpi::describe_exception(error);
-}
-
-inline auto require_success(const std::exception_ptr &error, const char *what) -> void {
-    if (error) {
-        BOOST_FAIL(what << " failed: " << message_of(error));
-    }
-}
-
-// Whether a non-empty exception pointer holds a std::bad_alloc. Makes no Boost.Test call, so any thread may ask.
-inline auto holds_bad_alloc(const std::exception_ptr &error) -> bool {
-    try {
-        std::rethrow_exception(error);
-    }
-    catch (const std::bad_alloc &) {
-        return true;
-    }
-    catch (...) {
-        return false;
-    }
-}
-
-template <size_t N>
-auto key_of(const Monomial<N> &m) -> Key {
-    Key key;
-    for (size_t w = 0; w < Monomial<N>::num_words(); ++w) {
-        key.push_back(m.word(w));
-    }
-    return key;
-}
-
-inline auto bits(double v) -> uint64_t {
-    return std::bit_cast<uint64_t>(v);
-}
-
-// Stores the coefficient whose encoding is `value`, so every fixture is encodable in its basis.
-inline auto add_term(OperatorDict &op, Basis basis, const VecZ &indices, double value) -> void {
-    op[indices] =
-        algebra_decode_coeff<num_modes>(basis, std::complex<double>(value, 0.0), indices_to_bitset<num_modes>(indices));
 }
 
 } // namespace sharded_test

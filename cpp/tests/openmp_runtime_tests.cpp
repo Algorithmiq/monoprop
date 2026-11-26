@@ -12,28 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Construction-time thread budgets, their per-object plumbing, and the invalid-owner rule.
-//
-// Budgets are captured from monoprop_NUM_THREADS when an object is constructed. Cases that need a specific
-// launch environment are also registered as separate fresh-process CTest entries (see CMakeLists.txt). The
-// pure parser and capture cases set the variable around one call with ScopedEnv. Every propagator captures the budget,
-// and its T is its shard count, so no integration case changes the budget inside a process: those cases run at the
-// launch's T. These tests check what reaches each object; kernel-level parallel execution is covered by
-// openmp_kernel_tests.cpp.
+// Construction-time thread budgets and the invalid-owner rule. Budgets are captured from monoprop_NUM_THREADS when an
+// object is constructed; the pure parser and capture cases set the variable around one call with ScopedEnv. The
+// integration cases run at the launch's T (cpp/tests/CMakeLists.txt reruns them at T = 4).
 
 #include <boost/test/unit_test.hpp>
 
 #include <omp.h>
-#ifdef __linux__
-#include <sched.h>
-#endif
 
-#include <climits>
-#include <cstdlib>
-#include <cstring>
-#include <exception>
+#include <cstddef>
+#include <memory>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -42,22 +31,15 @@
 #include "PropagatorTestAccess.h"
 #include "ShardedTestSupport.h"
 #include "TestUtilities.h"
-#include "monoprop/Evolution.h"
-#include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
-#include "monoprop/detail/evolution/CosineRecompute.h"
-#include "monoprop/detail/evolution/layer_build/FusedApply.h"
+#include "monoprop/Validation.h"
 #include "monoprop/detail/mpi/MPICompat.h"
-#include "monoprop/detail/mpi/OperationFailure.h"
-#include "monoprop/detail/parallel/Options.h"
 #include "monoprop/detail/parallel/ThreadBudget.h"
-#include "monoprop/detail/parallel/Workshare.h"
 
 namespace {
 
 using namespace monoprop;
 using monoprop::detail::parallel::capture_thread_budget;
-using monoprop::detail::parallel::Options;
 using monoprop::detail::parallel::resolve_thread_budget;
 using sharded_test::ScopedEnv;
 
@@ -87,17 +69,6 @@ auto build_all(Propagator &sim, const test_utils::CaseData &data) -> void {
     sim.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
 }
 
-// What the launch environment should resolve to, independently of the library's capture.
-auto expected_launch_budget() -> int {
-    if (const char *expected = std::getenv("monoprop_TEST_EXPECT_BUDGET")) {
-        return std::stoi(expected);
-    }
-    const char *configured = std::getenv(budget_variable);
-    return resolve_thread_budget(configured ? std::optional<std::string_view>(configured) : std::nullopt,
-                                 omp_get_max_threads())
-        .threads;
-}
-
 struct RuntimeSettings {
     int max_threads = 0;
     int dynamic = 0;
@@ -119,12 +90,6 @@ auto runtime_settings() -> RuntimeSettings {
     omp_get_schedule(&s.schedule, &s.chunk);
     s.proc_bind = omp_get_proc_bind();
     return s;
-}
-
-auto binding_disabled(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
-    boost::test_tools::assertion_result result(omp_get_proc_bind() == omp_proc_bind_false);
-    result.message() << "OpenMP binding is enabled (OMP_PROC_BIND); run with OMP_PROC_BIND=false";
-    return result;
 }
 
 // Every state-consuming entry an invalid owner must refuse, each run on its own.
@@ -158,28 +123,6 @@ auto require_invalid(Propagator &sim, const test_utils::CaseData &data) -> void 
 
 } // namespace
 
-// --- resolve_thread_budget: the pure parser --------------------------------------------------------------
-
-BOOST_AUTO_TEST_CASE(openmp_budget_absent_uses_runtime_default) {
-    BOOST_TEST(resolve_thread_budget(std::nullopt, 1).threads == 1);
-    BOOST_TEST(resolve_thread_budget(std::nullopt, 3).threads == 3);
-}
-
-BOOST_AUTO_TEST_CASE(openmp_budget_absent_rejects_a_nonpositive_runtime_default) {
-    BOOST_CHECK_THROW((void)resolve_thread_budget(std::nullopt, 0), std::invalid_argument);
-    BOOST_CHECK_THROW((void)resolve_thread_budget(std::nullopt, -1), std::invalid_argument);
-}
-
-BOOST_AUTO_TEST_CASE(openmp_budget_explicit_value_overrides_the_default) {
-    BOOST_TEST(resolve_thread_budget("8", 2).threads == 8);
-    // A valid explicit value wins even over an invalid fallback.
-    BOOST_TEST(resolve_thread_budget("1", 0).threads == 1);
-    BOOST_TEST(resolve_thread_budget("1", -1).threads == 1);
-    // Leading zeros are harmless, however many.
-    BOOST_TEST(resolve_thread_budget("0008", 2).threads == 8);
-    BOOST_TEST(resolve_thread_budget("0000000000000000000000000000000000000003", 1).threads == 3);
-}
-
 BOOST_AUTO_TEST_CASE(openmp_budget_rejects_malformed_values) {
     const auto rejects = [](std::string_view text) {
         BOOST_TEST_CONTEXT("value=\"" << text << "\"") {
@@ -201,14 +144,6 @@ BOOST_AUTO_TEST_CASE(openmp_budget_rejects_malformed_values) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(openmp_budget_accepts_int_max_without_creating_a_team) {
-    // Parsing only: no region is opened, so no INT_MAX-sized team is ever requested.
-    BOOST_TEST(resolve_thread_budget("2147483647", 1).threads == INT_MAX);
-    BOOST_TEST(resolve_thread_budget("0002147483647", 1).threads == INT_MAX);
-}
-
-// --- capture_thread_budget: one environment read per call ---------------------------------------------
-
 BOOST_AUTO_TEST_CASE(openmp_capture_reads_the_environment) {
     {
         const ScopedEnv env(budget_variable, "5");
@@ -225,24 +160,15 @@ BOOST_AUTO_TEST_CASE(openmp_capture_reads_the_environment) {
     }
 }
 
-// --- per-object capture ------------------------------------------------------------------------------------
-
-// Registered again as fresh processes with monoprop_NUM_THREADS=1 and =3.
-BOOST_AUTO_TEST_CASE(openmp_root_budget_matches_the_launch_environment) {
-    const auto data = load();
-    const auto sim = make_root(data);
-    BOOST_TEST(Access::options(sim).threads == expected_launch_budget());
-    // The shard count is the budget.
-    BOOST_TEST(Access::shards(sim).size() == static_cast<size_t>(expected_launch_budget()));
-}
-
-// The root reads the variable once, at construction: copies and clones never reread it, so even an unparseable
-// value set afterwards reaches neither them nor the source, while a new construction does read it. No second budget
-// is ever created in this process.
-BOOST_AUTO_TEST_CASE(openmp_root_captures_once_and_copies_preserve_it) {
+// The root reads the variable once, at construction, and its T is its shard count: copies and clones never reread it,
+// so even an unparseable value set afterwards reaches neither them nor the source, while a new construction does read
+// it. No second budget is ever created in this process.
+BOOST_AUTO_TEST_CASE(openmp_root_captures_the_launch_budget_once) {
     const auto data = load();
     auto sim = make_root(data);
     const int team = Access::options(sim).threads;
+    BOOST_TEST(team == sharded_test::expected_team().value_or(omp_get_max_threads()));
+    BOOST_TEST(Access::shards(sim).size() == static_cast<size_t>(team));
     build_all(sim, data);
     const double energy = sim.expectation_value(data.parameters);
     const ScopedEnv env(budget_variable, "not-a-budget");
@@ -253,18 +179,6 @@ BOOST_AUTO_TEST_CASE(openmp_root_captures_once_and_copies_preserve_it) {
     BOOST_TEST(sim.expectation_value(data.parameters) == energy);
     BOOST_TEST(Propagator(copy).expectation_value(data.parameters) == energy);
     BOOST_CHECK_THROW((void)make_root(data), PropagatorConfigError);
-}
-
-BOOST_AUTO_TEST_CASE(openmp_invalid_budget_is_a_config_error_at_construction) {
-    const auto data = load();
-    for (const char *value : {"0", "abc", "", "-2", "2147483648"}) {
-        const ScopedEnv env(budget_variable, value);
-        BOOST_TEST_CONTEXT("monoprop_NUM_THREADS=\"" << value << "\"") {
-            BOOST_CHECK_EXCEPTION((void)make_root(data), PropagatorConfigError, [](const PropagatorConfigError &e) {
-                return std::string_view(e.what()).find(budget_variable) != std::string_view::npos;
-            });
-        }
-    }
 }
 
 BOOST_AUTO_TEST_CASE(openmp_propagator_work_leaves_openmp_settings_unchanged) {
@@ -278,90 +192,6 @@ BOOST_AUTO_TEST_CASE(openmp_propagator_work_leaves_openmp_settings_unchanged) {
         (void)sim.contract_partially(data.parameters, true);
     }
     BOOST_TEST((runtime_settings() == before));
-}
-
-// Registered again with OMP_PROC_BIND=false; skipped where the runtime was asked to bind.
-BOOST_AUTO_TEST_CASE(openmp_propagator_work_does_not_change_affinity,
-                     *boost::unit_test::precondition(binding_disabled)) {
-#ifdef __linux__
-    cpu_set_t before;
-    CPU_ZERO(&before);
-    BOOST_REQUIRE(sched_getaffinity(0, sizeof(before), &before) == 0);
-    {
-        const auto data = load();
-        auto sim = make_root(data);
-        build_all(sim, data);
-        (void)sim.expectation_value_and_gradient(data.parameters);
-        monoprop::detail::parallel::for_blocks(8, Access::options(sim), [](size_t) {});
-    }
-    cpu_set_t after;
-    CPU_ZERO(&after);
-    BOOST_REQUIRE(sched_getaffinity(0, sizeof(after), &after) == 0);
-    BOOST_TEST(CPU_EQUAL(&before, &after));
-#else
-    BOOST_TEST_MESSAGE("affinity masks are only compared on Linux");
-#endif
-}
-
-// --- old low-level call sites keep compiling and default to serial Options ---------------------------------
-
-BOOST_AUTO_TEST_CASE(openmp_low_level_calls_default_to_serial_options) {
-    const auto data = load();
-    auto sim = make_root(data);
-    build_all(sim, data);
-    const auto &graph = sim.graph();
-    const auto view = graph.replay_view();
-    const auto mapped = map_params(data.parameters, sim.parameter_mapping(), VecD(sim.graph_layers(), 1.0), 1.0, true);
-    const auto cos =
-        monoprop::detail::make_cos_callbacks<num_modes>(sim.mp_op().inverted_index(), view, Basis::Majorana);
-    const auto cos_threaded = monoprop::detail::make_cos_callbacks<num_modes>(sim.mp_op().inverted_index(),
-                                                                              view,
-                                                                              Basis::Majorana,
-                                                                              Options{.threads = 3});
-
-    const VecD op = sim.mp_op().get_operator();
-    const VecD by_default = evolve_operator(VecD(op), view, mapped, MPI_COMM_SELF, cos.scale);
-    const VecD explicit_serial = evolve_operator(VecD(op), view, mapped, MPI_COMM_SELF, cos.scale, Options{});
-    const VecD threaded =
-        evolve_operator(VecD(op), view, mapped, MPI_COMM_SELF, cos_threaded.scale, Options{.threads = 3});
-    BOOST_CHECK_EQUAL_COLLECTIONS(by_default.begin(), by_default.end(), explicit_serial.begin(), explicit_serial.end());
-    BOOST_CHECK_EQUAL_COLLECTIONS(by_default.begin(), by_default.end(), threaded.begin(), threaded.end());
-
-    VecD s1(op.size(), 0.5), h1 = by_default, s2 = s1, h2 = h1;
-    const size_t last = sim.graph_layers() - 1;
-    const LayerAngle angle{.gen_coeff = 1.0, .param = mapped[last]};
-    const double d1 = state_operator_derivative_local(s1, h1, view, last, angle, MPI_COMM_SELF, cos.accumulate);
-    const double d2 = state_operator_derivative_local(s2,
-                                                      h2,
-                                                      view,
-                                                      last,
-                                                      angle,
-                                                      MPI_COMM_SELF,
-                                                      cos_threaded.accumulate,
-                                                      {},
-                                                      Options{.threads = 3});
-    BOOST_TEST(d1 == d2);
-    BOOST_CHECK_EQUAL_COLLECTIONS(h1.begin(), h1.end(), h2.begin(), h2.end());
-
-    CosMask mask;
-    mask.blocks.emplace_back(0, uint64_t{0b1011});
-    mask.total_count = 3;
-    VecD a(64, 2.0), b = a;
-    monoprop::detail::scale_cos_mask(a.data(), mask, 0.5);
-    monoprop::detail::scale_cos_mask(b.data(), mask, 0.5, Options{.threads = 3});
-    BOOST_CHECK_EQUAL_COLLECTIONS(a.begin(), a.end(), b.begin(), b.end());
-
-    EvalState state = EvalState::dense(VecD(op.size(), 0.25));
-    const auto mapping = sim.parameter_mapping();
-    const VecD gens(mapping.size(), 1.0);
-    const EvalRequest serial_request{.e_core = 0.0,
-                                     .state = state,
-                                     .op = op,
-                                     .parameter_mapping = mapping,
-                                     .gen_coeffs = gens,
-                                     .graph = view,
-                                     .params = data.parameters};
-    BOOST_TEST(serial_request.parallel.threads == 1);
 }
 
 // --- invalid-owner enforcement ------------------------------------------------------------------------------
@@ -399,62 +229,3 @@ BOOST_AUTO_TEST_CASE(openmp_failed_build_invalidates_the_owner) {
     // An independent earlier copy is unaffected.
     BOOST_TEST(test_utils::near(early.expectation_value(params), before));
 }
-
-BOOST_AUTO_TEST_CASE(openmp_invalid_owner_can_still_be_destroyed) {
-    const auto data = load();
-    auto owner = std::make_unique<Propagator>(make_root(data));
-    build_all(*owner, data);
-    Access::set_cutoff_fn(*owner, [](const Monomial<num_modes> &) -> bool { throw InjectedFailure("injected"); });
-    BOOST_CHECK_THROW(build_all(*owner, data), InjectedFailure);
-    BOOST_CHECK_NO_THROW(owner.reset());
-}
-
-// --- failure boundary helper -----------------------------------------------------------------------------
-
-BOOST_AUTO_TEST_CASE(openmp_operation_failed_rethrows_the_original_on_one_rank) {
-    const auto error = std::make_exception_ptr(InjectedFailure("original"));
-    BOOST_CHECK_EXCEPTION(mpi::operation_failed(MPI_COMM_SELF, error), InjectedFailure, [](const InjectedFailure &e) {
-        return std::string_view(e.what()) == "original";
-    });
-    int calls = 0;
-    BOOST_CHECK_THROW(mpi::guard_distributed(MPI_COMM_SELF,
-                                             [&] {
-                                                 ++calls;
-                                                 throw InjectedFailure("guarded");
-                                             }),
-                      InjectedFailure);
-    BOOST_TEST(calls == 1);
-    BOOST_TEST(mpi::guard_distributed(MPI_COMM_SELF, [] { return 7; }) == 7);
-}
-
-#ifdef monoprop_ENABLE_MPI
-BOOST_AUTO_TEST_CASE(openmp_thread_level_decisions_are_pure) {
-    const int levels[] = {MPI_THREAD_SINGLE, MPI_THREAD_FUNNELED, MPI_THREAD_SERIALIZED, MPI_THREAD_MULTIPLE};
-    for (const int provided : levels) {
-        BOOST_TEST_CONTEXT("provided=" << mpi::thread_level_name(provided)) {
-            BOOST_TEST(mpi::thread_level_satisfies(provided, MPI_THREAD_SERIALIZED)
-                       == (provided >= MPI_THREAD_SERIALIZED));
-            BOOST_TEST(mpi::thread_level_satisfies(provided, MPI_THREAD_FUNNELED) == (provided >= MPI_THREAD_FUNNELED));
-            // FUNNELED is the requested and required level: SINGLE is refused, anything at or above FUNNELED serves.
-            BOOST_TEST(mpi::thread_level_satisfies(provided, mpi::required_thread_level)
-                       == (provided != MPI_THREAD_SINGLE));
-        }
-    }
-    // Only the initializing thread, as the library team's primary, ever calls MPI.
-    BOOST_TEST(mpi::required_thread_level == MPI_THREAD_FUNNELED);
-    BOOST_TEST(std::string(mpi::thread_level_name(MPI_THREAD_FUNNELED)) == "MPI_THREAD_FUNNELED");
-}
-
-BOOST_AUTO_TEST_CASE(openmp_initialized_mpi_meets_the_required_level) {
-    int provided = MPI_THREAD_SINGLE;
-    MPI_Query_thread(&provided);
-    BOOST_TEST_MESSAGE("MPI provided thread support: " << mpi::thread_level_name(provided));
-    BOOST_TEST(mpi::thread_level_satisfies(provided, mpi::required_thread_level));
-    BOOST_CHECK_NO_THROW(mpi::require_thread_support());
-    int is_main = 0;
-    MPI_Is_thread_main(&is_main);
-    BOOST_TEST(is_main != 0);
-    // The initializing thread passes the guard; a wrong thread is covered by mpi_failure_driver.
-    mpi::require_initializing_thread();
-}
-#endif

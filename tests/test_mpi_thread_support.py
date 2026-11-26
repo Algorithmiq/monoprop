@@ -19,7 +19,7 @@ that did; only the initializing thread (the primary of the library's OpenMP team
 ``tests/mpi_thread_support_probe.py`` in a fresh interpreter of two threads and reads the requested and the provided
 level back from the probe. MPI may provide more support than requested: a run whose provided level does not exercise
 the case's route is skipped and says so, never passed. The C++ failure driver (``cpp/tests/mpi_failure_driver.cpp``)
-covers the other levels and two-rank launches.
+covers the refusal below FUNNELED and two-rank launches.
 """
 
 from __future__ import annotations

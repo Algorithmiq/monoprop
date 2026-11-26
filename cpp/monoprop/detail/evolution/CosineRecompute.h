@@ -267,23 +267,19 @@ inline auto cos_indices_mask(const CosMask &cos, std::vector<TermIndex> &out) ->
  * \param coeff    Coefficients, covering at least `r.fold.mask_words * 64` rows or the index rows.
  * \param cos_val  The factor.
  * \param options  Thread budget.
- * \param observer Test seam; see NoRangeObserver.
  */
-template <size_t NumModes, class Observer = NoRangeObserver>
+template <size_t NumModes>
 auto scale_cos_lazy(const InvertedIndex<NumModes> &sc,
                     const LazyFold<NumModes> &r,
                     double *coeff,
                     double cos_val,
-                    parallel::Options options = {},
-                    const Observer &observer = {}) -> void {
+                    parallel::Options options = {}) -> void {
     const size_t mask_words = r.fold.mask_words;
     // Fetched here, on the caller, for this call only: row_parity_words() builds its cache lazily, so it must
     // never run in a worker, and the pointer moves whenever the index grows.
     const uint64_t *const row_parity = fold_row_parity<NumModes>(sc, r.fold);
     const size_t ranges = logical_ranges(mask_words, kColumnBlockWords);
-    observer.prepare(KernelRange::cos_lazy, ranges);
     parallel::for_blocks(ranges, options, [&](size_t range) {
-        observer.visit(KernelRange::cos_lazy, range);
         const size_t bb = range * kColumnBlockWords;
         const size_t be = std::min(bb + kColumnBlockWords, mask_words);
         for_each_cos_fold_word<NumModes>(sc, r, bb, be, row_parity, [&](size_t wi, uint64_t bits) {
@@ -322,19 +318,11 @@ auto accumulate_cos_lazy(const InvertedIndex<NumModes> &sc,
  * \param cos      The mask.
  * \param cos_val  The factor.
  * \param options  Thread budget.
- * \param observer Test seam; see NoRangeObserver.
  */
-template <class Observer = NoRangeObserver>
-auto scale_cos_mask(double *coeff,
-                    const CosMask &cos,
-                    double cos_val,
-                    parallel::Options options = {},
-                    const Observer &observer = {}) -> void {
+inline auto scale_cos_mask(double *coeff, const CosMask &cos, double cos_val, parallel::Options options = {}) -> void {
     const size_t n = cos.blocks.size();
     const size_t ranges = logical_ranges(n, cos_mask_range_blocks);
-    observer.prepare(KernelRange::cos_mask, ranges);
     parallel::for_blocks(ranges, options, [&](size_t range) {
-        observer.visit(KernelRange::cos_mask, range);
         const size_t hi = std::min(n, (range + 1) * cos_mask_range_blocks);
         for (size_t k = range * cos_mask_range_blocks; k < hi; ++k) {
             const auto [base, bits] = cos.blocks[k];

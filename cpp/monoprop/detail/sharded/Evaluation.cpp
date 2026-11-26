@@ -54,12 +54,6 @@ auto publication_layout(const PackedCrossRankStorage &cross_rank,
     derive_exchange_layout(cross_rank, flat_owner, scale, out, what);
 }
 
-auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step, size_t shard) -> void {
-    if (observer != nullptr) {
-        observer->visit(work, step, shard);
-    }
-}
-
 /*
  * The blocks partners published for this owner, `Scale` values per endpoint of its slot for them, read through the
  * owner's `staging`.
@@ -83,7 +77,7 @@ auto board_reader(const EndpointBoard &board, const LayerTraversal &layer, size_
             total += Scale * slot.sin_send_count;
         }
     });
-    grow_to(staging.values, staging_capacity(staging.run_values, total));
+    grow_to(staging.values, staging_capacity(staging_run_values, total));
     // Stage one run of consecutive blocks starting at `first`; returns the index after the run.
     const auto stage = [&board, &staging, flat_owner](size_t first) {
         auto &blocks = staging.blocks;
@@ -248,7 +242,6 @@ struct EvaluationRun {
     std::span<const CosCallbacks> callbacks;
     const EvaluationPlan &plan;
     bool gradient;
-    const EvaluationObserver *observer;
     size_t first_local = 0;
     ReplayRound remote{};                     // the steps' physical round; inert when P = 1
     std::vector<OwnerFrame *> frames;         // entry t written by owner t in its frame phase
@@ -267,7 +260,6 @@ struct EvaluationRun {
     }
 
     auto frame(size_t t) -> void {
-        notify(observer, EvaluationWork::frame, no_step, t);
         OwnerFrame &f = owner_frame();
         const EvalRequest &request = requests[t];
         if (!plan.empty) {
@@ -283,7 +275,6 @@ struct EvaluationRun {
                 (*gradients)[t].assign(request.params.size(), 0.0);
             }
         }
-        f.forward.partners.run_values = observer != nullptr ? observer->staging_run() : staging_run_values;
         f.accumulated = 0.0;
         f.self_pre = false;
         frames[t] = &f;
@@ -297,17 +288,14 @@ struct EvaluationRun {
         const CosCallbacks &cos = callbacks[s];
         if (step < plan.layers) {
             if (gradient) {
-                notify(observer, EvaluationWork::record, step, s);
                 replay::record_pre_layer(f.records, plan.wanted, request.graph, cos.indices, step, f.op);
                 if (step + 1 == plan.layers) {
                     replay::close_records(f.records, plan.layers);
                 }
             }
-            notify(observer, EvaluationWork::cosine, step, s);
             forward_scale(f.op, step, plan.mapped[step], cos.scale);
             return;
         }
-        notify(observer, EvaluationWork::reverse_accumulate, step, s);
         const size_t idx = reverse_layer(step);
         f.accumulated = replay::accumulate_layer_raw(f.state,
                                                      f.op,
@@ -323,11 +311,9 @@ struct EvaluationRun {
         const size_t flat = first_local + t;
         PublishedEndpoints &out = f.published[step % 2];
         if (step < plan.layers) {
-            notify(observer, EvaluationWork::publish, step, t);
             forward_publish(f.op, request.graph.get_layer_traversal(step), flat, f.forward, out);
         }
         else {
-            notify(observer, EvaluationWork::reverse_publish, step, t);
             const size_t idx = reverse_layer(step);
             const auto layer = request.graph.get_layer_traversal(idx);
             const auto record = replay::layer_record_in(f.records, idx);
@@ -359,7 +345,6 @@ struct EvaluationRun {
         const size_t flat = first_local + t;
         const EndpointBoard published = board(step);
         if (step < plan.layers) {
-            notify(observer, EvaluationWork::finish, step, t);
             forward_finish(f.op,
                            request.graph.get_layer_traversal(step),
                            plan.mapped[step],
@@ -368,7 +353,6 @@ struct EvaluationRun {
                            published);
             return;
         }
-        notify(observer, EvaluationWork::reverse_finish, step, t);
         const size_t idx = reverse_layer(step);
         const auto layer = request.graph.get_layer_traversal(idx);
         const replay::TrigValues &trig = reverse_trig(step);
@@ -394,7 +378,6 @@ struct EvaluationRun {
     }
 
     auto contribution(size_t t) -> void {
-        notify(observer, EvaluationWork::contribution, no_step, t);
         const EvalRequest &request = requests[t];
         if (plan.empty) {
             (*contributions)[t] = request.state.dot(request.op);
@@ -449,22 +432,18 @@ struct EvaluationRun {
 auto forward_steps(TeamFailure &failure,
                    size_t t,
                    ForwardReplayJob &job,
-                   std::span<const PublishedPair *const> pairs,
-                   const EvaluationObserver *observer) noexcept -> bool {
+                   std::span<const PublishedPair *const> pairs) noexcept -> bool {
     const size_t steps = job.params.size();
     const size_t flat = job.first_local + t;
     PhysicalExchange *const round = job.remote.round;
-    job.owners[t].scratch.partners.run_values = observer != nullptr ? observer->staging_run() : staging_run_values;
     const auto cosine = [&](size_t s, size_t step) {
         ForwardReplayOwner &owner = job.owners[s];
-        notify(observer, EvaluationWork::cosine, step, s);
         forward_scale(*owner.coeffs, step, job.params[step], owner.callbacks->scale);
     };
     for (size_t p = 0; p <= steps; ++p) {
         const bool ok = phase(failure, t, [&] {
             ForwardReplayOwner &own = job.owners[t];
             if (p > 0) {
-                notify(observer, EvaluationWork::finish, p - 1, t);
                 const EndpointBoard board{.owners = pairs,
                                           .buffer = (p - 1) % 2,
                                           .first_local = job.first_local,
@@ -477,7 +456,6 @@ auto forward_steps(TeamFailure &failure,
                                board);
             }
             if (p < steps) {
-                notify(observer, EvaluationWork::publish, p, t);
                 forward_publish(*own.coeffs,
                                 own.graph->get_layer_traversal(p),
                                 flat,
@@ -628,10 +606,7 @@ auto forward_finish(VecD &coeffs,
     replay::apply_self_sources(coeffs, layer, sin_val, scratch.self_sources);
 }
 
-auto replay_forward_in_team(TeamFailure &failure,
-                            size_t shard,
-                            ForwardReplayJob &job,
-                            const EvaluationObserver *observer) noexcept -> bool {
+auto replay_forward_in_team(TeamFailure &failure, size_t shard, ForwardReplayJob &job) noexcept -> bool {
     // The pair pointers are derived, not stored: every worker builds the same span over the caller's entries.
     std::vector<const PublishedPair *> pairs;
     bool ok = phase(failure, shard, [&] {
@@ -643,14 +618,13 @@ auto replay_forward_in_team(TeamFailure &failure,
             pairs.push_back(&owner.published);
         }
     });
-    return ok && forward_steps(failure, shard, job, pairs, observer);
+    return ok && forward_steps(failure, shard, job, pairs);
 }
 
 auto evaluate_shards(std::span<const EvalRequest> requests,
                      std::span<const CosCallbacks> callbacks,
                      parallel::Options options,
                      bool gradient,
-                     const EvaluationObserver *observer,
                      const PhysicalWorld &world,
                      PhysicalRounds *rounds) -> EvaluationOutcome {
     const EvaluationPlan plan = plan_evaluation(requests, callbacks, options, gradient);
@@ -666,7 +640,6 @@ auto evaluate_shards(std::span<const EvalRequest> requests,
                       .callbacks = callbacks,
                       .plan = plan,
                       .gradient = gradient,
-                      .observer = observer,
                       .first_local = world.rank * threads,
                       .remote = {.round = round, .transport = transport_for(world)},
                       .frames = std::vector<OwnerFrame *>(threads, nullptr),
@@ -703,7 +676,6 @@ auto replay_shards(std::span<const ReplayRequest> requests,
                    std::span<const double> mapped_params,
                    std::span<const CosCallbacks> callbacks,
                    parallel::Options options,
-                   const EvaluationObserver *observer,
                    const PhysicalWorld &world,
                    PhysicalRounds *rounds) -> ReplayOutcome {
     check_team("replay_shards", options, requests.size(), callbacks.size());
@@ -728,12 +700,11 @@ auto replay_shards(std::span<const ReplayRequest> requests,
     check_replay_job(job);
     outcome.error = run_team(options, [&](size_t t, TeamFailure &failure) noexcept {
         if (!phase(failure, t, [&] {
-                notify(observer, EvaluationWork::frame, no_step, t);
                 outcome.coeffs[t] = requests[t].coeffs; // allocated on the owner
             })) {
             return;
         }
-        static_cast<void>(replay_forward_in_team(failure, t, job, observer));
+        static_cast<void>(replay_forward_in_team(failure, t, job));
     });
     hand_off_live_failure(outcome.error, round, world);
     return outcome;

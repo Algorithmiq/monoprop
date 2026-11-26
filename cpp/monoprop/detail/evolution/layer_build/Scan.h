@@ -768,12 +768,11 @@ auto merge_scan_ranges(std::vector<FusedScanResult<NumModes>> &pieces,
 // (scan_ranges), the words split into ranges that scan workers traverse with fused_find_and_collect_range,
 // each into a private result, and merge_scan_ranges joins them in range order: the output is identical to
 // the serial scan's at every budget and team size. Otherwise the serial scan runs on the caller. Lazy
-// index/parity data is prepared here, on the caller, before any worker starts. `observer` is a test seam
-// (see NoRangeObserver) reporting the KernelRange::scan ranges.
+// index/parity data is prepared here, on the caller, before any worker starts.
 //
 // `sin_counts` (max-sins truncation; per-row, null when off) makes cross-rank records Counted, carrying
 // the source's count to the resolver; a self-owned query needs none, its resolve reads the row directly.
-template <size_t NumModes, Algebra A, class Observer = NoRangeObserver>
+template <size_t NumModes, Algebra A>
 auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             const Monomial<NumModes> &gen,
                             const CutoffEvaluator<NumModes> &cutoff_eval,
@@ -788,7 +787,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
                             double *fused_scale_coeffs = nullptr,
                             double fused_scale_cos = 1.0,
                             parallel::Options options = {},
-                            const Observer &observer = {},
                             const uint8_t *sin_counts = nullptr) -> FusedScanResult<NumModes> {
     validate_only_rotate_len_k_(only_rotate_len_k, 2 * NumModes);
     (void)scan_ranges(0, options); // validates the budget before anything runs
@@ -798,14 +796,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     const bool g_odd = A::fold_needs_odd_correction(gen);
     const auto gen_columns = build_even_parity_generator_columns<NumModes>(fold_gen);
     if (gen_columns.count == 0) {
-        observer.prepare(KernelRange::scan, 0);
         return empty_scan_result<NumModes>(window, capture_values);
     }
     // Both lazy accessors may build caches, so they run here and never in a worker.
     const auto &index = op.inverted_index();
     const size_t word_count = index.words();
     if (word_count == 0) {
-        observer.prepare(KernelRange::scan, 0);
         return empty_scan_result<NumModes>(window, capture_values);
     }
     const uint64_t *const row_parity = g_odd ? index.row_parity_words() : nullptr;
@@ -825,7 +821,6 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     // Zero-postings early-out: no term touches a fold column ⇒ nothing anticommutes, so skip pass 1.
     // g_odd guard is load-bearing: an odd Majorana generator anticommutes with disjoint odd-weight terms.
     if (!g_odd && fold_cols_empty) {
-        observer.prepare(KernelRange::scan, 0);
         auto res = empty_scan_result<NumModes>(window, capture_values);
         res.cos_blocks.push_back(CosMask{});
         return res;
@@ -853,15 +848,12 @@ auto fused_find_and_collect(const MPOperator<NumModes> &op,
     };
     // Opaque cutoffs and small scans keep the serial scan: one range on the caller, no merge.
     const size_t ranges = cutoff_eval.parallel_safe() ? scan_ranges(word_count, options) : 1;
-    observer.prepare(KernelRange::scan, ranges);
     if (ranges <= 1) {
-        observer.visit(KernelRange::scan, 0);
         return scan_words(0, word_count);
     }
     // One private result per logical range, never per fold block: O(ranges * window.count) metadata.
     std::vector<FusedScanResult<NumModes>> pieces(ranges);
     parallel::for_blocks(ranges, options, [&](size_t range) {
-        observer.visit(KernelRange::scan, range);
         const auto [wlo, whi] = scan_range_words(range, ranges, word_count);
         pieces[range] = scan_words(wlo, whi);
     });

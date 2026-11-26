@@ -6,28 +6,19 @@
 # ld64 errors on undefined symbols by default, so no flag is needed there ("-Wl,-undefined,error" is
 # accepted but deprecated, and warns).
 
-# The probe's sources, built once per consumer: the serial libmonoprop and every MPI-enabled one.
-set(
-  _monoprop_probe_sources
-  link_export_probe.cpp
-  sharded_state_chain.cpp
-  sharded_construction_chain.cpp
-  sharded_evaluation_chain.cpp
-)
-
 # monoprop-sanitizers is a no-op interface library outside a sanitizer build. Under one, libmonoprop.so
 # is ASan-instrumented; without this, the probe executable itself is not, so the ASan runtime reaches
 # the process only as a transitive dependency instead of as its own first library, and ASan refuses to
 # start ("runtime does not come first in initial library list"). A real external consumer building
 # against an ASan-instrumented monoprop would face the same requirement to sanitize their own code.
 #
-# (g): the consumer must inherit exactly its target's MPI setting: the serial libmonoprop never carries
+# (c): the consumer must inherit exactly its target's MPI setting: the serial libmonoprop never carries
 # monoprop_ENABLE_MPI, every MPI-enabled one always does.
 #
-# The test runs at a fixed team of two, so the multi-shard paths (and the raw-access rejection) run; ENV_PREFIX entries
-# go ahead of that team in its environment.
+# The test runs at a fixed team of two, so the multi-shard paths run; ENV_PREFIX entries go ahead of that team in its
+# environment.
 function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI ENV_PREFIX)
-  add_executable(${NAME}.x ${_monoprop_probe_sources})
+  add_executable(${NAME}.x link_export_probe.cpp)
   target_link_libraries(
     ${NAME}.x
     PRIVATE
@@ -57,7 +48,7 @@ function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI ENV_PREFIX)
       ENVIRONMENT
         "${_environment}"
   )
-  monoprop_set_test_processors(${NAME} 1 2 "")
+  monoprop_set_test_processors(${NAME} 1 2)
 endfunction()
 
 monoprop_add_link_export_probe(monoprop_link_export_probe monoprop 0 "")

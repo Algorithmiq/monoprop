@@ -75,9 +75,8 @@ just build-docs
   Catch failures inside posted `Ticket`/physical-round lifetimes, never only at the outermost level.
   Production builds layers through `detail/sharded/Construction.h`.
 - Threaded kernels (`scale_cos_*`, `apply_fused_contract`, the `fused_find_and_collect` scan, the resolve
-  phases: incoming decode, `probe_frozen_positions`, certified-sink scatter) take a defaulted test-only
-  range observer; participation tests read it (`cpp/tests/KernelTestSupport.h`, `ScanTestSupport.h`).
-  Serial and threaded runs must agree bitwise. Inside the sharded root every kernel runs serially on its owner;
+  phases: incoming decode, `probe_frozen_positions`, certified-sink scatter) split their work into fixed
+  logical ranges. Serial and threaded runs must agree bitwise (`cpp/tests/openmp_kernel_tests.cpp`). Inside the sharded root every kernel runs serially on its owner;
   only tests and external callers of the exported `evolve_*` entry points pass a multi-worker budget. Scan
   workers only traverse frozen storage and merge in range
   order; only typed cutoffs (`CutoffEvaluator::parallel_safe`) run on them. Probes read a frozen store;

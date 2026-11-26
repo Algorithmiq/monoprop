@@ -58,20 +58,17 @@ inline constexpr size_t self_probe_window = 4096;
  * The store must stay frozen -- no row, overflow, table or index mutation -- until this returns; it returns
  * only after every worker has joined.
  *
- * \param observer Test seam; see NoRangeObserver. \param kind The KernelRange it reports.
  * \throws std::invalid_argument unless `pos_off`, `k_of` and `out` have equal lengths, `hash_out` is empty or of
  *         that length, and every query's span lies inside `pos_flat`; all checked before any block runs.
  */
-template <size_t NumModes, class Observer = NoRangeObserver>
+template <size_t NumModes>
 auto probe_frozen_positions(const OperatorIndex<NumModes> &store,
                             std::span<const typename OperatorIndex<NumModes>::PosT> pos_flat,
                             std::span<const size_t> pos_off,
                             std::span<const uint32_t> k_of,
                             std::span<size_t> out,
                             std::span<uint32_t> hash_out,
-                            parallel::Options options = {},
-                            const Observer &observer = {},
-                            KernelRange kind = KernelRange::incoming_probe) -> void {
+                            parallel::Options options = {}) -> void {
     const size_t n = out.size();
     if (pos_off.size() != n || k_of.size() != n || (!hash_out.empty() && hash_out.size() != n)) {
         throw std::invalid_argument(std::format("probe_frozen_positions: {} offsets, {} counts, {} outputs and {} "
@@ -92,10 +89,8 @@ auto probe_frozen_positions(const OperatorIndex<NumModes> &store,
         }
     }
     const size_t blocks = logical_ranges(n, probe_block_queries);
-    observer.prepare(kind, blocks);
     // Each block writes only its own slice of `out` and `hash_out`; the store and pos_flat are read-only.
     parallel::for_blocks(blocks, options, [&](size_t block) {
-        observer.visit(kind, block);
         const size_t lo = block * probe_block_queries;
         const size_t m = std::min(probe_block_queries, n - lo);
         store.find_batch_positions(pos_flat,
@@ -196,19 +191,17 @@ auto check_fits(const Vec &v, size_t n, const char *what) -> void {
  * A failure in any phase leaves `op` untouched. The caller runs phase 3 (the scatter), then
  * insert_incoming_misses.
  *
- * \param observer Test seam reporting KernelRange::decode and KernelRange::incoming_probe; see NoRangeObserver.
  * \param sins     Max-sins state of the resolving shard, or null; non-null exactly for the Counted form.
  * \throws MalformedQueryStream for a malformed stream (from the caller before decoding, or from a decode worker
  *         for invalid positions, rethrown after the join and before probing).
  * \throws TermIndexCeilingReached if the misses would pass the row-ID ceiling.
  */
-template <size_t NumModes, class Stream, class Observer = NoRangeObserver>
+template <size_t NumModes, class Stream>
     requires std::convertible_to<const Stream &, typename QueryWire<NumModes>::WireView>
 auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialized, one stream per sender slot
                             MPOperator<NumModes> &op,
                             QueryForm form,
                             parallel::Options options = {},
-                            const Observer &observer = {},
                             const SinTrack *sins = nullptr) -> IncomingProbe<NumModes> {
     assert((sins != nullptr) == (form == QueryForm::Counted));
     using QW = QueryWire<NumModes>;
@@ -289,9 +282,7 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
 
     // 2. Decode disjoint records into their prepared spans.
     const size_t blocks = logical_ranges(n, probe_block_queries);
-    observer.prepare(KernelRange::decode, blocks);
     parallel::for_blocks(blocks, options, [&](size_t block) {
-        observer.visit(KernelRange::decode, block);
         const size_t hi = std::min(n, (block + 1) * probe_block_queries);
         for (size_t g = block * probe_block_queries; g < hi; ++g) {
             const size_t k = pr.sender_wi[g];
@@ -322,9 +313,7 @@ auto probe_incoming_queries(const mpi::WindowVec<Stream> &incoming, // serialize
                                      std::span<const uint32_t>(pr.k_of),
                                      std::span<size_t>(pr.idx_of),
                                      std::span<uint32_t>(pr.hash_of),
-                                     options,
-                                     observer,
-                                     KernelRange::incoming_probe);
+                                     options);
 
     // 4. Phase 2 ((sender,query) prefix order): each miss takes the next index base+j. The row-ID limit is
     // checked before any predicted ID is written. A miss max-sins declines takes kDroppedIndex.
@@ -453,11 +442,11 @@ auto sink_resolves_in_parallel(const Sink &sink) -> bool {
 // cross-rank absent terms). Matched-follower marks stay here so both sinks mark byte-identically.
 // Threading: decode and probe as probe_incoming_queries; the scatter runs on workers only for a sink that
 // certifies it (sink_resolves_in_parallel), otherwise on the caller; publication stays on the caller, after
-// the scatter, which reads pre-insert coefficients. `observer` is the test seam (see NoRangeObserver).
+// the scatter, which reads pre-insert coefficients.
 //
 // `incoming` is as for probe_incoming_queries: owning blocks or read-only views of published buffers, unchanged until
 // this returns. The sink's on_resolved receives the sender's stream as a QueryWire::WireView.
-template <size_t NumModes, class Stream, typename Sink, class Observer = NoRangeObserver>
+template <size_t NumModes, class Stream, typename Sink>
     requires std::convertible_to<const Stream &, typename QueryWire<NumModes>::WireView>
 auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one stream per sender slot
                       MPOperator<NumModes> &op,
@@ -465,19 +454,17 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
                       MatchedEpochSet &matched,
                       size_t combined_size, // pre-layer op size: bounds the matched set
                       Sink &sink,
-                      parallel::Options options = {},
-                      const Observer &observer = {}) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
+                      parallel::Options options = {}) -> mpi::WindowVec<std::vector<typename Sink::Response>> {
     using Resp = typename Sink::Response;
     const SinTrack *const sins = sink_sin_track(sink);
     const IncomingProbe<NumModes> pr =
-        probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), options, observer, sins);
+        probe_incoming_queries<NumModes>(incoming, op, sink.incoming_form(), options, sins);
     // The pairing is an XOR involution, so the response window is the query window.
     mpi::WindowVec<std::vector<Resp>> responses(pr.window);
     for (const auto wi : pr.window.indices()) {
         responses[wi].assign(pr.goff[wi.value + 1] - pr.goff[wi.value], Sink::init_response());
     }
     if (pr.nq_total == 0) {
-        observer.prepare(KernelRange::scatter, 0);
         return responses;
     }
 
@@ -487,7 +474,6 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
     const size_t n = pr.nq_total;
     const size_t blocks = logical_ranges(n, resolve_scatter_block);
     const auto scatter = [&](size_t block) {
-        observer.visit(KernelRange::scatter, block);
         const size_t hi = std::min(n, (block + 1) * resolve_scatter_block);
         for (size_t g = block * resolve_scatter_block; g < hi; ++g) {
             const mpi::WindowIndex s = pr.sender_index(g);
@@ -499,7 +485,6 @@ auto resolve_incoming(const mpi::WindowVec<Stream> &incoming, // serialized, one
             }
         }
     };
-    observer.prepare(KernelRange::scatter, blocks);
     // In parallel, each query writes its own response and its own sink record; a leader hit marks its own row,
     // distinct across queries (leader_marks_unique), and misses (ip >= base >= combined_size) mark nothing. The
     // marks are distinct uint16 elements, so no synchronization; never paper over a duplicate with atomics.

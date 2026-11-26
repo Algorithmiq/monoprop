@@ -23,10 +23,9 @@ those serial entries as skipped.
 The launch-time thread policy belongs to the CTest registration, not to the runner:
 every discovered case (per case, and in the whole-suite MPI variants) runs with
 `monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE monoprop_TEST_EXPECT_TEAM=1`, so
-white-box tests observe one store per rank. Exact teams are dedicated fresh-process launches
-(`*_env_t*`), and `sharded_root_env_openmp_default_t3` removes `monoprop_NUM_THREADS` on
-purpose, so the custom `main()` in `unit_tests.cpp` only initializes MPI and never
-supplies the variable. Running the binary by hand uses your environment; set the
+white-box tests observe one store per rank. The cases that depend on T rerun in one fresh-process
+launch at T = 4 (`sharded_env_t4`), so the custom `main()` in `unit_tests.cpp` only initializes MPI
+and never supplies the variable. Running the binary by hand uses your environment; set the
 variables above to reproduce a CTest case.
 
 ## Building Tests
@@ -84,22 +83,13 @@ name and cannot address suite-nested cases, tests use flat
   sync with the wire format.
 - **`PropagatorTestAccess.h`**: white-box access that `MonomialPropagator` befriends but the library
   never defines. Tests use it to read an object's captured thread budget and validity, to inject
-  failures through existing members (a throwing cutoff predicate), to inspect the root's actual
-  shards, router and physical rounds, and to attach the test-only `RootObserver`; it adds no public
-  shard interface.
+  failures through existing members (a throwing cutoff predicate) and to inspect the root's actual
+  shards and router; it adds no public shard interface.
 - **`RankPreconditions.h`**: Boost preconditions `min_ranks`, `power_of_two_ranks`,
   `even_ranks`, `linear_routing`, `default_routing`.
-- **`ShardedTestSupport.h`**: the launch's captured team (`team_options`, `team_size`) and the team it
-  names (`expected_team`), the Boost preconditions `has_nonprimary_worker`, `has_allocation_probe` and
-  `dedicated_launch` (stacked on the world-size preconditions of `RankPreconditions.h`), `disarm_team`, `ScopedEnv`,
-  failure inspection (`InjectedFailure`, `message_of`, `require_success`, `holds_bad_alloc`), the exact-energy
-  tolerance `exact_atol`, and exact keys and bit patterns (`key_of`, `bits`) for the sharded and OpenMP runtime
-  suites.
-- **`ShardedFixtures.h`**: the operator, circuit and shard-seeding fixtures (`fixture_cases`,
-  `exact_reference_cases`, `seed`, `Sharded`), graph construction (`run_graph`, `build_checked`,
-  `seed_and_build`), phase-visit recording
-  (`record_visit`), and the references `reference_root` and `reference_propagate` (a coefficient-map propagator),
-  shared by `sharded_state_tests.cpp`, `sharded_construction_tests.cpp` and `sharded_evaluation_tests.cpp`.
+- **`ShardedTestSupport.h`**: the launch's captured team (`team_options`) and the team it names (`expected_team`),
+  `ScopedEnv` and `message_of`.
+- **`KernelTestSupport.h`**: `make_op`, `column_rows`, `distinct_values` and `bitwise_equal`.
 - **`TestData.{h,cpp}`**: the `CaseData` struct and msgpack fixture loader.
 - **`boost-test.cmake` / `boostAddTests.cmake`**: CMake test discovery.
 
@@ -126,7 +116,8 @@ name and cannot address suite-nested cases, tests use flat
 - **Layer build / evolution**: `build_graph_tests.cpp`,
   `pauli_build_layer_tests.cpp`, `fused_cos_sweep_tests.cpp`,
   `sparse_query_tests.cpp` (the QueryWire wire record against the frozen dense
-  oracle, plus the fused value channel), `sparse_resolve_tests.cpp` (probe and
+  oracle, the fused value channel, and `QueryWire::checked_extent` refusing malformed records before any
+  decode), `sparse_resolve_tests.cpp` (probe and
   insert from wire positions vs the dense Monomial-keyed path),
   `combined_recompute_equivalence.cpp` (recompute equivalence +
   snapshot invariance), `exact_upper_atol_rescue.cpp`,
@@ -148,83 +139,41 @@ name and cannot address suite-nested cases, tests use flat
   rails + MPGraph bounds).
 - **Per-term coefficients and expectation values**: `evolved_operator_coefficients_tests.cpp` checks
   `evolved_operator_coefficients()` against `evolved_operator_terms()`, and `term_expectation_values_tests.cpp`
-  checks `term_expectation_values()` against `expectation_value()`, at the launch's T.
-  `evolved_coefficients_env_t2` and `_t4`, and `term_expectation_values_env_t2` and `_t4`, rerun them with
-  several shards per rank.
+  checks `term_expectation_values()` against `expectation_value()`, at the launch's T; `sharded_env_t4` reruns
+  them with several shards per rank.
 - **Exchange layout preconditions**: `exchange_layout_precondition_tests.cpp`
   (the layout width check on an ordinary communicator; rank 0 alone runs it on the
   world communicator, so a check that communicated would hang).
-- **OpenMP worksharing**: `openmp_workshare_tests.cpp` (`parallel::for_blocks`:
-  exactly-once visits, serial and nested fallbacks, budget and bound validation,
-  unchanged runtime settings, joined worker exceptions, and actual multi-worker
-  participation, which is skipped when the runtime cannot provide two workers).
-  Run it in fresh processes under `OMP_DYNAMIC=TRUE`, `OMP_DYNAMIC=FALSE` and
-  `OMP_THREAD_LIMIT=1` when changing the helper.
-- **Fixed-team phase primitive**: `sharded_team_tests.cpp` covers `detail/sharded/Team.h` (`run_team`, `phase`,
-  `TeamFailure`): owners on their own workers, checkpoint decisions (an interleaving forced through the test-only
-  `TeamFailure::checkpoint` observer) and failures returned after the join. `sharded_team_env_t1`, `_t2`, `_t4` and
-  `_t4_passive` (`OMP_WAIT_POLICY=PASSIVE`) rerun it (120 s); the T = 4 entries need four cores.
-- **Owner-initialized shard state**: `sharded_state_tests.cpp` covers `detail/sharded/State.h` against a seeding
-  reference derived from the router and the store, and the root at the same launch; `AllocationProbe.cpp` (the
-  executable's counting, failure-injecting `operator new`) fails every seed and copy allocation in turn.
-  `sharded_state_env_t1`, `_t2` and `_t4` rerun it (300 s).
-- **Direct-buffer construction**: `sharded_construction_tests.cpp` covers `detail/sharded/Construction.h` and the engine
-  phases it drives against the root at geometry (1, T), an insertion-order reference, a coefficient-map propagator and
-  the frozen exact energy; the test observer records visits and kernel ranges per shard.
-  `sharded_construction_env_t1`, `_t2` and `_t4` rerun it (900 s).
-- **Snapshot-safe evaluation**: `sharded_evaluation_tests.cpp` covers `detail/sharded/Evaluation.h`,
-  `detail::pare_graph_owner` and `sharded::build_graph_informed`, bitwise against the root at (1, T) and against a
-  coefficient-map propagator, closed-form fits and finite differences. `sharded_evaluation_env_t1`, `_t2` and `_t4`
-  rerun it (900 s).
+- **OpenMP worksharing**: `openmp_workshare_tests.cpp` (`parallel::for_blocks` rejoins its workers before it
+  rethrows a worker's exception).
 - **Root**: `sharded_root_tests.cpp` covers the root (`ShardedPropagator.inl`) through its public operations, with
-  shard inspection, phase observation and fault injection (`PropagatorTestAccess.h`), including the raw-accessor rule
-  (`MultiShardUnsupported` beyond T = 1). `sharded_root_env_t1`, `_t2` and `_t4` rerun it (900 s), and
-  `sharded_root_env_openmp_default_t3` without `monoprop_NUM_THREADS` (`OMP_NUM_THREADS=3`); its
-  `sharded_root_multirank_*` cases run only in `sharded_root_mpi*`.
-- **Fused records**: `fused_cos_sweep_tests.cpp` checks the fused sweep against graph replay, audits every shard's real
-  fused records through `RootObserver::fused_records`, and checks shard-by-shard determinism at fixed geometry.
-  `fused_env_t2` and `_t4` rerun it (900 s).
-- **Physical round**: `sharded_exchange_tests.cpp` covers `detail/sharded/Exchange.h` in one process (the bulk replay
-  path against the entry-wise path) and, in `sharded_exchange_mpi*`, closed-form blocks between processes.
-- **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the budget parser and capture, the MPI
-  thread-level decisions (FUNNELED required), the initializing-thread guard and the invalid-owner rule. Fresh-process
-  reruns: `openmp_env_root_budget_1` and `_3` (`monoprop_NUM_THREADS=1`, `=3`), `openmp_env_root_t4` (exact team of
-  four) and `openmp_env_no_affinity_change` (`OMP_PROC_BIND=false`).
-- **Threaded kernels**: `openmp_kernel_tests.cpp` checks `scale_cos_mask`, `scale_cos_lazy` and `apply_fused_contract`
-  bitwise against budget one, with participation read from the range observer of `KernelTestSupport.h`; multi-block
-  lazy folds are checked against the materialised fold in `combined_recompute_equivalence.cpp`.
-  `openmp_env_kernels_thread_limit_2` and `_dynamic_teams` rerun the kernel, scan and resolve cases under
-  `OMP_THREAD_LIMIT=2` and `OMP_DYNAMIC=TRUE`.
-- **Threaded scan**: the `openmp_scan_*` cases (in `evolution_detail_tests.cpp`, `pauli_build_layer_tests.cpp`,
-  `exact_upper_atol_rescue.cpp`, `majorana_cutoff_tests.cpp`, `sparse_query_tests.cpp` and `fused_cos_sweep_tests.cpp`)
-  compare the threaded `fused_find_and_collect` with budget one byte for byte over the scenarios of `ScanTestSupport.h`.
-- **Threaded resolution**: `sparse_resolve_tests.cpp` checks the incoming decode, `probe_frozen_positions`, publication
-  and scatter at budgets 2-8 against budget one, and malformed streams refused before any decode; `PhaseLog` keeps
-  every call of a per-window phase. `sparse_query_tests.cpp` covers `QueryWire::checked_extent`.
+  shard inspection (`PropagatorTestAccess.h`): the raw-accessor rule (`MultiShardUnsupported` beyond T = 1), owner
+  routing, rejections before mutation, empty operators, and (`sharded_root_multirank_*`) P ranks against one process.
+- **Reference energies at T > 1**: `build_graph_tests.cpp` and `fused_cos_sweep_tests.cpp` check the frozen exact
+  energy of `random_exact.msgpack` at T = 1 per case and at T = 4 in `sharded_env_t4`.
+- **Physical round**: `sharded_exchange_tests.cpp` covers `detail/sharded/Exchange.h` between processes: closed-form
+  blocks over both transports, with exchanged and known counts, count blocks of every wire width, the XOR peer, empty
+  rounds and the per-peer `int` bound.
+- **Thread budgets and failed-owner rule**: `openmp_runtime_tests.cpp` covers the strict budget parser, its capture at
+  construction, unchanged OpenMP settings and the invalid-owner rule.
+- **Threaded kernels**: `openmp_kernel_tests.cpp` checks `scale_cos_mask` at budgets 2-64 bitwise against budget one
+  and a hand oracle.
 - **Distributed failure driver**: `mpi_failure_driver.cpp` has its own `main()` (excluded from the glob) and builds
   `monoprop_mpi_failure_driver.x` in MPI builds; `run_mpi_failure_scenario.cmake` runs each scenario on two ranks with a
   30 s timeout as an `mpi_failure_*` entry (labels `mpi`, `mpi_failure`). A failure scenario passes only on a prompt
   nonzero exit with the expected diagnostic, an acceptance scenario (`EXPECT_SUCCESS`) only on exit 0; a timeout means
   a rank was left blocked, and fails.
-  - `mpi_failure_sharded_*`, at two threads per rank through `RootObserver` (rank 0 fails, its peer follows the normal
-    phase): `worker_throw` (worker 1 throws in a replay finish), `before_exchange` (the primary throws before any
-    physical round), `active_round` and `active_local_round` (a cosine pass while the replay round, or a caller-local
-    replay round, is posted), `active_counts` (packing queries while the count round is posted) and
-    `malformed_receive` (rank 1 sends malformed query blocks, which rank 0's owners must refuse).
-  - `active_ticket` and `active_ticket_cosine_worker`: the exported replay functions on the sole shard of a root at one
-    thread per rank throw while an `evolve_step` replay `Ticket` is posted (the latter from worker 1 of the threaded
-    cosine kernel).
-  - Thread support: `library_initialized_level` (monoprop's `mpi::init`, requesting FUNNELED) and
-    `host_initialized_funneled|serialized|multiple` must complete real operations at two threads per rank, on the
-    world and a reordered split communicator; `insufficient_thread_level_single` must be refused; `wrong_thread_entry_*`
-    (a guarded call from a `std::thread`) must fail fast at every level, relying on the launcher ending the peers of an
-    aborting process (Open MPI's default). A provided level that does not exercise the route ends as a skip
-    ("NOT EXERCISED", exit 77).
+  - `build_failure`: rank 0's cutoff predicate throws in a build at two threads per rank that has started mutating.
+  - `active_ticket`: the exported `evolve_step` on the sole shard of a root at one thread per rank throws while its
+    replay `Ticket` is posted.
+  - Thread support: `host_initialized_funneled` must complete real operations at two threads per rank, on the world
+    and a reordered split communicator; `insufficient_thread_level_single` must be refused;
+    `wrong_thread_entry_funneled` (a guarded call from a `std::thread`) must fail fast, relying on the launcher ending
+    the peers of an aborting process (Open MPI's default). A provided level that does not exercise the route ends as a
+    skip ("NOT EXERCISED", exit 77).
 
-Every fixed-T entry is a fresh process, since a propagator reads its thread budget once, when it is constructed; no
-case changes T inside a process, and results across T are compared from separate processes
-(`tests/test_sharded_openmp.py`). The sharded suites keep an `_env_t1` launch because the per-case entries, which
-also run at T = 1, get only CTest's default timeout.
+`sharded_env_t4` is a fresh process, since a propagator reads its thread budget once, when it is constructed;
+results across T are compared from separate processes (`tests/test_sharded_openmp.py`).
 
 New `*.cpp` files are auto-discovered on the next configure, with no CMake edit
 needed. A file with its own `main()` must be excluded from the glob, as
@@ -241,21 +190,10 @@ runner indefinitely. `just test-mpi` runs the same entries CI does. To run a sin
 debugging, invoke the binary directly:
 `mpirun -n 2 build/editable/Release-mpi/bin/monoprop_unit_tests.x --run_test=<case>`.
 
-Multi-process cases of the sharded runtime have their own launches, one per P ranks x T threads, labelled `mpi`
-and `mpi-<P>`, with a 300-second timeout. Each sets `monoprop_NUM_THREADS`, `OMP_NUM_THREADS` and
-`monoprop_TEST_EXPECT_TEAM` to T with `OMP_DYNAMIC=FALSE` and `OMP_WAIT_POLICY=PASSIVE`, leaves binding to OpenMP
-(`OMPI_MCA_hwloc_base_binding_policy=none`), allows oversubscription, and names the world size in
-`monoprop_TEST_SHARDED_RANKS`; a multi-rank case skips without it, so the whole-suite variants never run one at
-their default budget.
-
-| Entries | What they run |
-| --- | --- |
-| `sharded_exchange_mpi2_t*`, `_mpi3_t*` | the physical round (`detail/sharded/Exchange.h`): closed-form blocks over both transports, with exchanged and known counts (count blocks of every wire width), the XOR peer, empty rounds, staging reuse, request moves |
-| `sharded_root_mpi2_t*`, `_mpi4_t*`, `_mpi3_t2_splitmix`, `_mpi3_t2_linear_rejected` | the root over P ranks against one process, raw access and derived hooks per rank, MPI on the primary only, the owner's physical rounds reused across operations and never shared by a copy, construction rounds unmapping their staging when a construction ends while the replay round keeps its staging, and the unroutable-geometry rejection |
-| `sharded_world_equivalence_mpi2_t*`, `_mpi4_t*` | the serial-against-world cases of `mpi_distributed_layer_equivalence.cpp` and `mpi_fresh_insert_equivalence.cpp` |
-| `monoprop_unit_tests.x_mpi_<n>`, `monoprop_unit_tests.x_mpi_<n>_splitmix` | the whole suite at T = 1 per rank |
-
-A `_t*` suffix covers T = 1, 2 and 4. Every MPI build with a launcher registers all of them.
+The multi-rank cases of the sharded runtime (`sharded_root_multirank_*`, `sharded_exchange_*` and the
+serial-against-world cases of `mpi_distributed_layer_equivalence.cpp` and `mpi_fresh_insert_equivalence.cpp`) run in
+the whole-suite variants at T = 1 and again in `sharded_mpi2_t2`: two ranks of two threads each, labelled `mpi` and
+`mpi-2`, with a 300-second timeout, `OMP_WAIT_POLICY=PASSIVE` and binding left to OpenMP.
 
 ## Adding New Tests
 

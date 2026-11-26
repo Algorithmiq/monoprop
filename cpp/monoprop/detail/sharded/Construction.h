@@ -154,59 +154,6 @@
 
 namespace monoprop::detail::sharded {
 
-//! The owner work a construction reports to its observer, in phase order.
-enum class ConstructionWork : std::uint8_t {
-    frame,             //!< Allocate the owner's operation frame; mutates no shard.
-    picture,           //!< Propagation only: bring the live picture coefficients up to date.
-    traverse,          //!< Scan the shard for this gate's partner queries.
-    prepare_leaders,   //!< Resolve same-shard leaders and expose the leader payload.
-    resolve_leaders,   //!< Resolve the leader queries published to this shard; insert and index misses.
-    consume_leaders,   //!< Fold the answers to this shard's leader queries.
-    prepare_followers, //!< Filter followers, resolve same-shard followers and expose the follower payload.
-    resolve_followers, //!< Resolve the follower queries published to this shard; insert and index misses.
-    consume_followers, //!< Fold the answers to this shard's follower queries.
-    finalize,          //!< Insert deferred same-shard misses; finalize the layer and append it to the graph.
-    apply,             //!< Propagation only: extend the coefficients and apply the fused records.
-    retire,            //!< Blockwise truncation, at a block's last gate: retire the block's failing unpaired rows.
-    caches,            //!< After the last gate: release gate buffers, warm the shard's caches, shrink its vectors.
-    seed,              //!< Informed construction: copy the picture, prepare and run the seed replay.
-    replay,            //!< Informed construction: begin (P5) or finish (P6) the replay of the new layer.
-    exchange,          //!< Multi-rank: the primary lays out, posts or completes a physical round (shard 0 only).
-    pack,              //!< Multi-rank: copy this owner's remote blocks into a round's send staging.
-};
-
-/*!
- * \brief The observer production code uses: it does nothing and compiles away.
- *
- * `visit(work, step, shard)` runs inside the protected phase, on the thread that performs `work` for `shard`, before
- * that work; `step` is the gate-loop step or no_step. `kernels(shard)` supplies the range observer the shard's
- * kernels and exchange phases report to (see NoRangeObserver and LayerBuildEngine); it is called once, by the owner,
- * in its frame phase. Tests substitute observers that record the executing worker, capture streams or throw; an
- * exception from either method is that phase's failure. A test observer may also define
- * `queries_packed(step, shard, PhysicalExchange &)`, detected at compile time and called after the owner packed its
- * remote query blocks, which may rewrite them to inject malformed traffic, and
- * `fused_records(step, shard, const FusedGateView &)`, which propagation calls with the owner's real fused records
- * just before it applies them.
- */
-struct NoConstructionObserver {
-    auto visit(ConstructionWork /*work*/, size_t /*step*/, size_t /*shard*/) const noexcept -> void {}
-    [[nodiscard]] auto kernels(size_t /*shard*/) const noexcept -> NoRangeObserver { return {}; }
-};
-
-/*!
- * \brief Test-only view of one owner's fused records for one propagation gate, just before they are applied.
- *
- * Everything apply_fused_contract() receives, read-only: an observer may copy it and replay the apply itself.
- */
-struct FusedGateView {
-    const FusedContract &records;   //!< The gate's hit, insert and cross-rank-half records for this shard.
-    const CosMask &cos;             //!< The gate's cosine set on this shard.
-    std::span<const double> coeffs; //!< The picture coefficients the records apply to, already extended.
-    double apply_angle;             //!< The angle apply_fused_contract() receives.
-    bool schrodinger;               //!< Picture.
-    bool fused_scale;               //!< Whether the traversal already applied the cosine (fused sweep).
-};
-
 /*!
  * \brief Rank-level configuration of a construction, read concurrently and never mutated by the owners.
  */
@@ -430,25 +377,23 @@ auto add_received(mpi::WindowVec<std::span<const T>> &views,
 }
 
 // One owner's buffers for the current gate. The fused records precede the engine, which refers to them.
-template <size_t NumModes, typename Sink, class KernelObserver>
+template <size_t NumModes, typename Sink>
 struct GateWork {
     using Response = typename Sink::Response;
     GateScan<NumModes> scan;
     FusedContract fc;
     CosMask cos;
-    std::optional<LayerBuildEngine<NumModes, Sink, KernelObserver>> engine;
+    std::optional<LayerBuildEngine<NumModes, Sink>> engine;
     const mpi::WindowVec<VecZ> *payload = nullptr; // the engine's payload for the current pass (multi-rank packing)
     mpi::WindowVec<std::vector<Response>> answers; // this owner's answers for the current pass
     std::shared_ptr<LayerCore> core;               // informed: the new layer, replayed at P5/P6
 };
 
 // One owner's operation frame, allocated by the owner in the frame phase.
-template <size_t NumModes, typename Sink, class KernelObserver>
+template <size_t NumModes, typename Sink>
 struct OwnerFrame {
-    explicit OwnerFrame(KernelObserver kernels_) : kernels(std::move(kernels_)) {}
-    KernelObserver kernels;
     VecD *coeffs = nullptr; // propagation: the live picture coefficients; informed: `informed` below
-    std::optional<GateWork<NumModes, Sink, KernelObserver>> work;
+    std::optional<GateWork<NumModes, Sink>> work;
     VecD informed;                        // informed: the evolving coefficients (seed, then gate by gate)
     std::optional<MPGraphView> seed_view; // informed: the existing graph's replay window
     CosCallbacks seed_callbacks;          // informed: the seed replay's callbacks
@@ -504,19 +449,6 @@ auto retire_block_rows(MPOperator<NumModes> &op,
     op.retire_rows(retired);
 }
 
-// Construction's work reported through an evaluation observer: the seed replay's steps.
-template <class Observer>
-class SeedObserver final : public EvaluationObserver {
-public:
-    explicit SeedObserver(const Observer &observer) : observer_(&observer) {}
-    auto visit(EvaluationWork /*work*/, size_t step, size_t shard) const -> void override {
-        observer_->visit(ConstructionWork::seed, step, shard);
-    }
-
-private:
-    const Observer *observer_;
-};
-
 //! Which gate loop run_gates() executes.
 enum class GateMode : std::uint8_t { graph, informed, propagate };
 
@@ -567,12 +499,11 @@ auto check_arguments(const char *what,
  * only_rotate_len_k. `angles[idx]` is the build angle of gate idx (informed and propagation); `seed_params` are the
  * informed seed replay's angles, or empty for the picture seed.
  */
-template <size_t NumModes, GateMode Mode, class Observer>
+template <size_t NumModes, GateMode Mode>
 auto run_gates(parallel::Options options,
                Shards<NumModes> &shards,
                const ConstructionContext<NumModes> &ctx,
                const GraphCircuit<NumModes> &circuit,
-               const Observer &observer,
                std::span<const double> angles = {},
                std::optional<std::span<const double>> seed_params = std::nullopt) -> ConstructionOutcome {
     constexpr bool Fused = Mode == GateMode::propagate;
@@ -580,9 +511,7 @@ auto run_gates(parallel::Options options,
     constexpr bool Graph = Mode == GateMode::graph;
     using Sink = std::conditional_t<Fused, ContractSink<NumModes>, GraphSink<NumModes>>;
     using Response = typename Sink::Response;
-    using KernelObserver = std::remove_cvref_t<decltype(std::declval<const Observer &>().kernels(size_t{}))>;
-    using Frame = OwnerFrame<NumModes, Sink, KernelObserver>;
-    using W = ConstructionWork;
+    using Frame = OwnerFrame<NumModes, Sink>;
 
     const size_t threads = shards.size();
     const size_t gates = circuit.generators.size();
@@ -620,7 +549,6 @@ auto run_gates(parallel::Options options,
             seed_job.owners.resize(threads);
         }
     }
-    const SeedObserver<Observer> seed_observer(observer);
     bool mutation_started = false; // written by the primary only, read after the join
 
     // Physical rounds, only when there are other processes; allocated on the caller and alive through the join.
@@ -673,8 +601,7 @@ auto run_gates(parallel::Options options,
         };
 
         if (!phase(failure, t, [&] {
-                observer.visit(W::frame, no_step, t);
-                frames[t] = std::make_unique<Frame>(observer.kernels(t));
+                frames[t] = std::make_unique<Frame>();
                 replay_pairs[t] = &frames[t]->replay_published;
                 if (track_sins) {
                     frames[t]->sins = SinTrack{.counts = &own.op.sin_counts_,
@@ -693,7 +620,6 @@ auto run_gates(parallel::Options options,
         if constexpr (Informed) {
             // The seed: the current picture, or the existing graph replayed from it at the seed angles.
             if (!phase(failure, t, [&] {
-                    observer.visit(W::seed, no_step, t);
                     frame.informed = own.op.current_picture(schrodinger);
                     frame.coeffs = &frame.informed;
                     if (seed_params) {
@@ -710,13 +636,12 @@ auto run_gates(parallel::Options options,
                 })) {
                 return;
             }
-            if (seed_params && !replay_forward_in_team(failure, t, seed_job, &seed_observer)) {
+            if (seed_params && !replay_forward_in_team(failure, t, seed_job)) {
                 return;
             }
         }
         if constexpr (Fused) {
             if (!phase(failure, t, [&] {
-                    observer.visit(W::picture, no_step, t);
                     // Materializes pending initial entries (Heisenberg) or scores the state (Schrödinger).
                     (void)own.op.current_picture(schrodinger);
                     frame.coeffs = schrodinger ? &own.op.state_coeffs : &own.op.op_coeffs;
@@ -753,32 +678,28 @@ auto run_gates(parallel::Options options,
              * construction and propagation traverse with the coefficients and the build angle; only propagation fuses
              * the sweep, and it never blocks (gate_cutoff is ctx.cutoff_fn) nor tracks sines (sin_track() is null). */
             const auto traverse = [&](size_t s) {
-                observer.visit(W::traverse, step, s);
                 Frame &f = *frames[s];
                 ShardState<NumModes> &state = *shards[s];
                 auto &work = f.work.emplace();
                 using CoeffsRef = std::optional<std::reference_wrapper<const VecD>>;
-                work.scan = scan_gate<NumModes, KernelObserver>(
-                    state.op,
-                    gen,
-                    gate_cutoff,
-                    ctx.lower_atol,
-                    Graph ? CoeffsRef{} : CoeffsRef{std::cref(*f.coeffs)},
-                    ctx.upper_atol,
-                    Graph ? std::optional<double>{} : std::optional<double>{angles[idx]},
-                    circuit.only_rotate_len_k,
-                    ctx.router,
-                    first_local + s,
-                    /*use_fused=*/Fused,
-                    Fused ? f.coeffs : nullptr,
-                    ctx.basis,
-                    parallel::serial,
-                    f.kernels,
-                    f.sin_track());
+                work.scan = scan_gate<NumModes>(state.op,
+                                                gen,
+                                                gate_cutoff,
+                                                ctx.lower_atol,
+                                                Graph ? CoeffsRef{} : CoeffsRef{std::cref(*f.coeffs)},
+                                                ctx.upper_atol,
+                                                Graph ? std::optional<double>{} : std::optional<double>{angles[idx]},
+                                                circuit.only_rotate_len_k,
+                                                ctx.router,
+                                                first_local + s,
+                                                /*use_fused=*/Fused,
+                                                Fused ? f.coeffs : nullptr,
+                                                ctx.basis,
+                                                parallel::serial,
+                                                f.sin_track());
             };
             // Owner-local: builds the engine (which starts the matched epoch) and runs the leader prepare.
             const auto prepare_leaders = [&] {
-                observer.visit(W::prepare_leaders, step, t);
                 auto &work = *frame.work;
                 auto &engine = [&]() -> auto & {
                     if constexpr (Fused) {
@@ -796,8 +717,7 @@ auto run_gates(parallel::Options options,
                                                         .schrodinger = schrodinger,
                                                         .basis = ctx.basis},
                                                    work.scan.window,
-                                                   parallel::serial,
-                                                   frame.kernels);
+                                                   parallel::serial);
                     }
                     else {
                         return work.engine.emplace(own.op,
@@ -807,8 +727,7 @@ auto run_gates(parallel::Options options,
                                                    work.scan.combined_size,
                                                    Sink(flat_world, flat, frame.sin_track()),
                                                    work.scan.window,
-                                                   parallel::serial,
-                                                   frame.kernels);
+                                                   parallel::serial);
                     }
                 }();
                 if (passes) {
@@ -825,7 +744,6 @@ auto run_gates(parallel::Options options,
                 }
             };
             const auto resolve = [&](bool leaders) {
-                observer.visit(leaders ? W::resolve_leaders : W::resolve_followers, step, t);
                 auto &work = *frame.work;
                 auto incoming = collect_blocks<size_t>(work.engine->window, first_local, t, threads, query_inbox);
                 if (remote) {
@@ -838,7 +756,6 @@ auto run_gates(parallel::Options options,
                 }
             };
             const auto consume = [&](bool leaders) {
-                observer.visit(leaders ? W::consume_leaders : W::consume_followers, step, t);
                 auto &work = *frame.work;
                 auto received = collect_blocks<Response>(work.engine->window, first_local, t, threads, answer_inbox);
                 if (remote) {
@@ -852,22 +769,13 @@ auto run_gates(parallel::Options options,
                     return true;
                 }
                 return exclusive_phase([&] {
-                           observer.visit(W::exchange, step, t);
                            queries->plan_send(peers, transport);
                            queries->post_counts();
                        })
                        && phase(failure,
                                 t,
-                                [&] {
-                                    observer.visit(W::pack, step, t);
-                                    pack_blocks<size_t>(*queries, *frame.work->payload, peers, threads, t);
-                                    // Test-only: an observer that asks may rewrite this owner's slices.
-                                    if constexpr (requires { observer.queries_packed(step, t, *queries); }) {
-                                        observer.queries_packed(step, t, *queries);
-                                    }
-                                })
+                                [&] { pack_blocks<size_t>(*queries, *frame.work->payload, peers, threads, t); })
                        && exclusive_phase([&] {
-                              observer.visit(W::exchange, step, t);
                               queries->wait_counts();
                               queries->plan_recv();
                               queries->post();
@@ -880,18 +788,13 @@ auto run_gates(parallel::Options options,
                     return true;
                 }
                 return exclusive_phase([&] {
-                           observer.visit(W::exchange, step, t);
                            answers->plan_send(peers, transport);
                            answers->plan_recv();
                        })
                        && phase(failure,
                                 t,
-                                [&] {
-                                    observer.visit(W::pack, step, t);
-                                    pack_blocks<Response>(*answers, frame.work->answers, peers, threads, t);
-                                })
+                                [&] { pack_blocks<Response>(*answers, frame.work->answers, peers, threads, t); })
                        && exclusive_phase([&] {
-                              observer.visit(W::exchange, step, t);
                               answers->post();
                               answers->wait();
                           });
@@ -928,7 +831,6 @@ auto run_gates(parallel::Options options,
                     if (cross) {
                         consume(true);
                     }
-                    observer.visit(W::prepare_followers, step, t);
                     auto &work = *frame.work;
                     auto &streams = work.scan.streams;
                     work.payload = &work.engine->prepare_exchange(false,
@@ -958,40 +860,25 @@ auto run_gates(parallel::Options options,
                     if (cross) {
                         consume(false);
                     }
-                    observer.visit(W::finalize, step, t);
                     auto &work = *frame.work;
                     if constexpr (Fused) {
                         (void)work.engine->finish(std::move(work.scan.cos_all), &work.cos);
-                        observer.visit(W::apply, step, t);
                         // After the inserts, before the insert-target gather of the apply.
                         own.op.extend_from_current_picture(*frame.coeffs, schrodinger);
                         const double build_angle = angles[idx];
-                        if constexpr (requires(const FusedGateView &view) { observer.fused_records(step, t, view); }) {
-                            observer.fused_records(
-                                step,
-                                t,
-                                FusedGateView{.records = work.fc,
-                                              .cos = work.cos,
-                                              .coeffs = *frame.coeffs,
-                                              .apply_angle = schrodinger ? -build_angle : build_angle,
-                                              .schrodinger = schrodinger,
-                                              .fused_scale = work.scan.fused_scale});
-                        }
                         apply_fused_contract(work.fc,
                                              *frame.coeffs,
                                              work.cos,
                                              schrodinger ? -build_angle : build_angle,
                                              schrodinger,
                                              work.scan.fused_scale,
-                                             parallel::serial,
-                                             frame.kernels);
+                                             parallel::serial);
                     }
                     else if constexpr (Informed) {
                         // The cosine set is not persisted on the layer; it drives only this gate's replay.
                         work.core = work.engine->finish(std::move(work.scan.cos_all), &work.cos);
                         stamp_layer_metadata<NumModes>(*work.core, gen, own.op);
                         append(own, work.core, idx);
-                        observer.visit(W::replay, step, t);
                         // After the inserts, before the new layer's endpoints are read.
                         own.op.extend_from_current_picture(*frame.coeffs, schrodinger);
                         const double build_angle = angles[idx];
@@ -1024,10 +911,7 @@ auto run_gates(parallel::Options options,
                     && !replay_round.run(
                         failure,
                         t,
-                        [&] {
-                            observer.visit(W::pack, step, t);
-                            pack_replay_column(*replay, replay_pairs, 0, t);
-                        },
+                        [&] { pack_replay_column(*replay, replay_pairs, 0, t); },
                         [&] {
                             const double build_angle = angles[idx];
                             forward_scale_mask(*frame.coeffs,
@@ -1037,7 +921,6 @@ auto run_gates(parallel::Options options,
                     return;
                 }
                 if (!phase(failure, t, [&] {
-                        observer.visit(W::replay, step, t);
                         const double build_angle = angles[idx];
                         const EndpointBoard board{.owners = replay_pairs,
                                                   .buffer = 0,
@@ -1059,7 +942,6 @@ auto run_gates(parallel::Options options,
              * shard; an opaque cutoff sweeps every shard on the primary, as the traversal does. */
             if (blockwise && block_end) {
                 const auto retire = [&](size_t s) {
-                    observer.visit(W::retire, step, s);
                     Frame &f = *frames[s];
                     MPOperator<NumModes> &op = shards[s]->op;
                     retire_block_rows<NumModes>(op,
@@ -1083,7 +965,6 @@ auto run_gates(parallel::Options options,
 
         // The last phase: its decision ends the sequence either way.
         static_cast<void>(phase(failure, t, [&] {
-            observer.visit(W::caches, no_step, t);
             frame.work.reset();
             own.op.warm_caches(schrodinger);
             if (own.op.slack_copy_bytes() < small_slack_copy_bytes) {
@@ -1128,18 +1009,16 @@ auto run_gates(parallel::Options options,
  * \param shards   The process's T shards, seeded or copied before the call; mutated in place, each by its owner.
  * \param ctx      Rank-level configuration; see ConstructionContext.
  * \param circuit  The validated circuit; see GraphCircuit.
- * \param observer Test-only seam; see NoConstructionObserver.
  * \return The outcome after the team has joined; see ConstructionOutcome. Phase failures are returned, not thrown.
  * \throws std::invalid_argument before the team, with nothing mutated, if the shards, geometry or per-gate arrays do
  *         not fit; as validate_only_rotate_len_k_() for an out-of-range `only_rotate_len_k`; std::bad_alloc if the
  *         caller-side metadata cannot be allocated.
  */
-template <size_t NumModes, class Observer = NoConstructionObserver>
+template <size_t NumModes>
 [[nodiscard]] auto build_graph(parallel::Options options,
                                Shards<NumModes> &shards,
                                const ConstructionContext<NumModes> &ctx,
-                               const GraphCircuit<NumModes> &circuit,
-                               const Observer &observer = {}) -> ConstructionOutcome {
+                               const GraphCircuit<NumModes> &circuit) -> ConstructionOutcome {
     const size_t gates = circuit.generators.size();
     construction_detail::check_arguments(
         "build_graph",
@@ -1156,8 +1035,7 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
     return construction_detail::run_gates<NumModes, construction_detail::GateMode::graph>(options,
                                                                                           shards,
                                                                                           ctx,
-                                                                                          circuit,
-                                                                                          observer);
+                                                                                          circuit);
 }
 
 /*!
@@ -1177,18 +1055,16 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
  * \param shards   The process's T shards; mutated in place, each by its owner.
  * \param ctx      Rank-level configuration; its atols apply.
  * \param circuit  The validated circuit and angles; see InformedCircuit.
- * \param observer Test-only seam; see NoConstructionObserver. Seed replay steps report ConstructionWork::seed.
  * \return The outcome after the team has joined; see ConstructionOutcome. Phase failures are returned, not thrown.
  * \throws As build_graph(), before the team, with nothing mutated; std::invalid_argument if `mapped_params` does not
  *         have one angle per gate, or if `seed_params` is absent while the shards hold layers or does not have one
  *         angle per existing layer of every shard.
  */
-template <size_t NumModes, class Observer = NoConstructionObserver>
+template <size_t NumModes>
 [[nodiscard]] auto build_graph_informed(parallel::Options options,
                                         Shards<NumModes> &shards,
                                         const ConstructionContext<NumModes> &ctx,
-                                        const InformedCircuit<NumModes> &circuit,
-                                        const Observer &observer = {}) -> ConstructionOutcome {
+                                        const InformedCircuit<NumModes> &circuit) -> ConstructionOutcome {
     const auto &graph = circuit.graph;
     const size_t gates = graph.generators.size();
     construction_detail::check_arguments("build_graph_informed",
@@ -1218,7 +1094,6 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
                                                                                              shards,
                                                                                              ctx,
                                                                                              graph,
-                                                                                             observer,
                                                                                              circuit.mapped_params,
                                                                                              circuit.seed_params);
 }
@@ -1237,16 +1112,14 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
  * \param shards   The process's T shards; mutated in place, each by its owner.
  * \param ctx      Rank-level configuration; see ConstructionContext.
  * \param circuit  The validated circuit; see PropagationCircuit.
- * \param observer Test-only seam; see NoConstructionObserver.
  * \return The outcome after the team has joined; see ConstructionOutcome. Phase failures are returned, not thrown.
  * \throws As build_graph(), before the team, with nothing mutated.
  */
-template <size_t NumModes, class Observer = NoConstructionObserver>
+template <size_t NumModes>
 [[nodiscard]] auto propagate(parallel::Options options,
                              Shards<NumModes> &shards,
                              const ConstructionContext<NumModes> &ctx,
-                             const PropagationCircuit<NumModes> &circuit,
-                             const Observer &observer = {}) -> ConstructionOutcome {
+                             const PropagationCircuit<NumModes> &circuit) -> ConstructionOutcome {
     const size_t gates = circuit.generators.size();
     construction_detail::check_arguments("propagate",
                                          options,
@@ -1270,7 +1143,6 @@ template <size_t NumModes, class Observer = NoConstructionObserver>
                                .gen_coeffs = {},
                                .gate_indices = {},
                                .only_rotate_len_k = circuit.only_rotate_len_k},
-        observer,
         circuit.mapped_params);
 }
 

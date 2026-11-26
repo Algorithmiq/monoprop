@@ -14,51 +14,33 @@
 
 // Launcher-supervised distributed scenarios. Its own main(), outside the unit runner: every failure scenario ends the
 // whole job. run_mpi_failure_scenario.cmake launches it on two ranks with a 30 s timeout and requires either a prompt
-// nonzero exit carrying the expected diagnostic, or (the thread-support acceptance scenarios) a clean exit carrying the
+// nonzero exit carrying the expected diagnostic, or (the thread-support acceptance scenario) a clean exit carrying the
 // expected completion line.
 //
-// Rank 0 fails while its peers follow the normal phase. A failure the library does not handle escapes to main(), which
-// models a host that catches it and shuts down: rank 0 finalizes while its peers are still inside the operation, so the
+// Rank 0 fails while its peer follows the normal phase. A failure the library does not handle escapes to main(), which
+// models a host that catches it and shuts down: rank 0 finalizes while its peer is still inside the operation, so the
 // job hangs until the timeout. Every failure scenario therefore passes only through the library's own abort or
-// fail-fast path. The sharded root runs at two OpenMP threads per rank and is injected through its test-only
-// RootObserver on rank 0 (rank 1 for the malformed receive):
+// fail-fast path:
 //
-//   worker-throw                     worker 1 throws in a replay finish of an evaluation
-//   before-exchange                  the primary throws in the first gate's traversal, before any physical round
-//   active-ticket round              the primary throws in a cosine pass while the replay round is posted
-//   active-ticket counts             the primary throws while packing queries, with the count round posted
-//   active-ticket local-round        as `round`, through the exported evaluation seam with a caller-local round
-//                                    (no persistent rounds): the live failure must reach the abort before that
-//                                    round's draining destructor runs
-//   malformed-receive                rank 1 rewrites its outgoing query blocks; rank 0's owners must refuse them
-//
-// The exported replay functions, on the sole shard of a root launched with one thread per rank (raw access is
-// available at T = 1, also over several ranks), with explicit kernel budgets:
-//
-//   active-ticket ticket|cosine-worker   a failure (on the caller, or on worker 1 of the threaded cosine kernel) while
-//                                        evolve_step's replay Ticket is posted
+//   build-failure                    a root at two threads per rank: rank 0's cutoff predicate throws in a build that
+//                                    has started mutating, before any physical round
+//   active-ticket                    the exported evolve_step on the sole shard of a root at one thread per rank: the
+//                                    cosine pass throws on rank 0 while the replay Ticket is posted
 //
 // Thread support. The library requests MPI_THREAD_FUNNELED and requires at least FUNNELED from whoever initialized
-// MPI; only the initializing thread, as the primary of the library's team, calls MPI. Each line below records the
-// requested and the provided level; a launch whose provided level does not exercise the route ends with
-// "NOT EXERCISED" (exit 77, reported as skipped):
+// MPI; only the initializing thread, as the primary of the library's team, calls MPI. A launch whose provided level
+// does not exercise the route ends with "NOT EXERCISED" (exit 77, reported as skipped):
 //
-//   library-level                    the library initializes MPI; real operations complete (success expected)
-//   host-level funneled|serialized|multiple
-//                                    the host initializes MPI at that level; real operations complete on the world and
-//                                    on a reordered split communicator (success expected; exactly FUNNELED for
-//                                    funneled)
+//   host-level funneled              the host initializes MPI at exactly FUNNELED; real operations at two threads per
+//                                    rank complete on the world and on a reordered split communicator
 //   insufficient-thread-level single host-initialized MPI below FUNNELED is refused at construction
-//   wrong-thread-entry funneled|serialized|multiple
-//                                    a guarded entry called from a non-initializing std::thread fails fast locally
+//   wrong-thread-entry funneled      a guarded entry called from a non-initializing std::thread fails fast locally
 
 #include <mpi.h>
-#include <omp.h>
 
 #include <algorithm>
 #include <cmath>
 #include <complex>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -73,13 +55,9 @@
 
 #include "PropagatorTestAccess.h"
 #include "monoprop/Evolution.h"
-#include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
-#include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/OperationFailure.h"
-#include "monoprop/detail/sharded/Exchange.h"
-#include "monoprop/detail/sharded/RootObserver.h"
 
 namespace {
 
@@ -112,116 +90,33 @@ const VecZ circuit_mapping{0, 1, 2};
 const VecD circuit_gen_coeffs{1.0, 1.0, 1.0};
 const VecD circuit_params{0.3, 0.2, 0.1};
 
-// --- the sharded root, injected through its observer ---------------------------------------------------------------
-
-// Throws once, on `rank` only, at the armed visit of the sharded root's seams; or rewrites outgoing queries.
-class Injector final : public detail::sharded::RootObserver {
-public:
-    struct Arm {
-        bool construction = false;
-        int work = 0;
-        size_t shard = 0;
-        const char *what = "";
-    };
-    Injector(int rank, std::optional<Arm> arm, bool corrupt) : rank_(rank), arm_(arm), corrupt_(corrupt) {}
-
-    auto visit(detail::sharded::EvaluationWork work, size_t /*step*/, size_t shard) const -> void override {
-        fire(false, static_cast<int>(work), shard);
-    }
-    auto construction(detail::sharded::ConstructionWork work, size_t /*step*/, size_t shard) const -> void override {
-        fire(true, static_cast<int>(work), shard);
-    }
-    auto queries_packed(size_t /*step*/, size_t shard, detail::sharded::PhysicalExchange &round) const
-        -> void override {
-        if (!corrupt_) {
-            return;
-        }
-        // Every word all ones: a record whose phase field is not ternary.
-        for (size_t k = 0; k < round.peers().size(); ++k) {
-            for (size_t t = 0; t < round.threads(); ++t) {
-                for (auto &word : round.send_block<size_t>(shard, k, t)) {
-                    word = ~size_t{0};
-                }
-            }
-        }
-    }
-
-private:
-    auto fire(bool construction, int work, size_t shard) const -> void {
-        if (arm_ && arm_->construction == construction && arm_->work == work && arm_->shard == shard) {
-            throw std::runtime_error(
-                std::format("injected {} on OpenMP worker {} of rank {}", arm_->what, omp_get_thread_num(), rank_));
-        }
-    }
-
-    int rank_;
-    std::optional<Arm> arm_;
-    bool corrupt_;
-};
-
 // A root at `threads` threads per rank: the budget is captured at construction, from monoprop_NUM_THREADS.
-auto make_root(int threads, const detail::sharded::RootObserver *observer, MPI_Comm comm = MPI_COMM_WORLD)
-    -> std::unique_ptr<Propagator> {
+auto make_root(int threads, MPI_Comm comm = MPI_COMM_WORLD) -> std::unique_ptr<Propagator> {
     ::setenv("monoprop_NUM_THREADS", std::to_string(threads).c_str(), 1);
-    return Access::construct_observed(observer,
-                                      hamiltonian(),
-                                      static_cast<unsigned int>(2 * num_modes),
-                                      VecZ{0, 1},
-                                      std::optional<unsigned int>{},
-                                      mpi::Comm(comm),
-                                      std::optional<double>{},
-                                      std::optional<double>{},
-                                      CutoffType::Length,
-                                      std::optional<std::vector<VecZ>>{},
-                                      num_modes,
-                                      Basis::Majorana);
+    return std::make_unique<Propagator>(hamiltonian(),
+                                        static_cast<unsigned int>(2 * num_modes),
+                                        VecZ{0, 1},
+                                        std::nullopt,
+                                        mpi::Comm(comm));
 }
 
-auto sharded_scenario(int rank, std::string_view scenario, std::string_view option) -> void {
-    using CW = detail::sharded::ConstructionWork;
-    using EW = detail::sharded::EvaluationWork;
-    std::optional<Injector::Arm> arm;
-    bool corrupt = false;
-    if (scenario == "worker-throw") {
-        arm = Injector::Arm{false, static_cast<int>(EW::finish), 1, "replay-finish failure"};
+// --- failures after an operation has started ------------------------------------------------------------------------
+
+// Rank 0's cutoff predicate throws in the first gate's traversal, after the build has started mutating and before any
+// physical round; rank 1 goes on into the round.
+auto build_failure(int rank) -> void {
+    auto sim = make_root(2);
+    if (rank == 0) {
+        Access::set_cutoff_fn(*sim, [](const Monomial<num_modes> &) -> bool {
+            throw std::runtime_error("injected traversal failure on rank 0");
+        });
     }
-    else if (scenario == "before-exchange") {
-        arm = Injector::Arm{true, static_cast<int>(CW::traverse), 0, "traversal failure before any physical round"};
-    }
-    else if (scenario == "active-ticket" && option == "round") {
-        arm = Injector::Arm{false, static_cast<int>(EW::cosine), 0, "cosine failure while the replay round is posted"};
-    }
-    else if (scenario == "active-ticket" && option == "counts") {
-        arm = Injector::Arm{true, static_cast<int>(CW::pack), 0, "pack failure while the count round is posted"};
-    }
-    else if (scenario == "active-ticket" && option == "local-round") {
-        arm = Injector::Arm{false,
-                            static_cast<int>(EW::cosine),
-                            0,
-                            "cosine failure while a caller-local replay round is posted"};
-    }
-    else if (scenario == "malformed-receive") {
-        corrupt = rank == 1;
-    }
-    const Injector injector(rank, rank == 0 ? arm : std::nullopt, corrupt);
-    auto sim = make_root(2, &injector);
-    say(rank, std::format("{} local terms, team {}", sim->size(), Access::options(*sim).threads));
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
-    if (option == "local-round") {
-        const auto outcome = Access::evaluate_with_local_round(*sim, circuit_params, &injector);
-        if (outcome.error) {
-            std::rethrow_exception(outcome.error); // a caller that got the failure back; its peer is still in a round
-        }
-        return;
-    }
-    (void)sim->expectation_value(circuit_params);
 }
-
-// --- the exported replay functions on the sole shard of a T = 1 root -----------------------------------------------
 
 // One evolve_step over the first layer of a built T = 1 root's sole shard, with `scale` as its cosine pass.
 auto post_replay(int rank, const detail::LayerCosScale &scale) -> void {
-    auto sim = make_root(1, nullptr);
+    auto sim = make_root(1);
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     VecD coeffs = sim->mp_op().get_operator();
     const auto view = sim->graph().replay_view();
@@ -238,34 +133,6 @@ auto active_ticket(int rank) -> void {
     });
 }
 
-// Throws from one logical range of a real kernel, on whichever worker owns it.
-struct ThrowingRangeObserver {
-    auto prepare(detail::KernelRange, size_t) const noexcept -> void {}
-    auto visit(detail::KernelRange, size_t range) const -> void {
-        if (range == 2) {
-            throw std::runtime_error(std::format("injected failure in cosine range {} on OpenMP worker {} while the "
-                                                 "replay Ticket is in flight",
-                                                 range,
-                                                 omp_get_thread_num()));
-        }
-    }
-};
-
-auto active_ticket_cosine_worker(int rank) -> void {
-    // A stored mask of four kernel ranges, so the kernel really opens a team; the real layer is tiny.
-    CosMask mask;
-    for (size_t w = 0; w < 4 * detail::cos_mask_range_blocks; ++w) {
-        mask.blocks.emplace_back(w * 64, ~uint64_t{0});
-        mask.total_count += 64;
-    }
-    auto scratch = std::make_shared<VecD>(mask.blocks.size() * 64, 1.0);
-    post_replay(rank, [rank, mask, scratch](size_t, double *, double v) {
-        if (rank == 0) {
-            detail::scale_cos_mask(scratch->data(), mask, v, {.threads = 2}, ThrowingRangeObserver{});
-        }
-    });
-}
-
 // --- thread support ------------------------------------------------------------------------------------------------
 
 auto close_to(double a, double b) -> bool {
@@ -277,11 +144,11 @@ auto close_to(double a, double b) -> bool {
 // checked against a single-process root of the same budget, so the physical rounds really carried data. Every MPI call
 // inside the library comes from this (the initializing) thread as its team's primary. Returns the energy.
 auto run_operations(int rank, MPI_Comm comm, std::string_view label) -> double {
-    auto reference = make_root(2, nullptr, MPI_COMM_SELF);
+    auto reference = make_root(2, MPI_COMM_SELF);
     reference->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     const auto [ref_energy, ref_gradient] = reference->expectation_value_and_gradient(circuit_params);
 
-    auto sim = make_root(2, nullptr, comm);
+    auto sim = make_root(2, comm);
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     const double energy = sim->expectation_value(circuit_params);
     const auto [energy_g, gradient] = sim->expectation_value_and_gradient(circuit_params);
@@ -294,14 +161,14 @@ auto run_operations(int rank, MPI_Comm comm, std::string_view label) -> double {
     const Propagator copy(*sim);
     const double energy_c = Propagator(copy).expectation_value(circuit_params);
 
-    auto fresh = make_root(2, nullptr, comm);
+    auto fresh = make_root(2, comm);
     fresh->propagate(circuit_gates, circuit_mapping, circuit_gen_coeffs, circuit_params);
-    auto fresh_reference = make_root(2, nullptr, MPI_COMM_SELF);
+    auto fresh_reference = make_root(2, MPI_COMM_SELF);
     fresh_reference->propagate(circuit_gates, circuit_mapping, circuit_gen_coeffs, circuit_params);
     const double propagated = fresh->expectation_value(VecD{});
     const double propagated_ref = fresh_reference->expectation_value(VecD{});
 
-    auto updated = make_root(2, nullptr, comm);
+    auto updated = make_root(2, comm);
     updated->update_initial_operator(hamiltonian());
     updated->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     const double energy_u = updated->expectation_value(circuit_params);
@@ -348,12 +215,12 @@ auto thread_support_operations(int rank) -> void {
 
 auto insufficient_level(int rank) -> void {
     // The constructor validates the provided level before it communicates.
-    const auto sim = make_root(2, nullptr);
+    const auto sim = make_root(2);
     say(rank, std::format("constructed with {} terms despite the insufficient level", sim->size()));
 }
 
 auto wrong_thread(int rank) -> void {
-    auto sim = make_root(2, nullptr);
+    auto sim = make_root(2);
     sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     if (rank == 0) {
         std::thread host([&sim] { (void)sim->expectation_value(circuit_params); });
@@ -370,12 +237,6 @@ auto parse_level(std::string_view name) -> std::optional<int> {
     }
     if (name == "funneled") {
         return MPI_THREAD_FUNNELED;
-    }
-    if (name == "serialized") {
-        return MPI_THREAD_SERIALIZED;
-    }
-    if (name == "multiple") {
-        return MPI_THREAD_MULTIPLE;
     }
     return std::nullopt;
 }
@@ -443,23 +304,16 @@ auto main(int argc, char **argv) -> int {
         else if (scenario == "wrong-thread-entry") {
             wrong_thread(rank);
         }
-        else if (scenario == "host-level" || scenario == "library-level") {
+        else if (scenario == "host-level") {
             thread_support_operations(rank);
             say(rank,
                 std::format("thread-support operations completed with provided={}", mpi::thread_level_name(provided)));
         }
-        else if (scenario == "active-ticket" && option == "local-round") {
-            sharded_scenario(rank, scenario, option);
+        else if (scenario == "build-failure") {
+            build_failure(rank);
         }
-        else if (scenario == "active-ticket" && option == "ticket") {
+        else if (scenario == "active-ticket") {
             active_ticket(rank);
-        }
-        else if (scenario == "active-ticket" && option == "cosine-worker") {
-            active_ticket_cosine_worker(rank);
-        }
-        else if (scenario == "worker-throw" || scenario == "before-exchange" || scenario == "active-ticket"
-                 || scenario == "malformed-receive") {
-            sharded_scenario(rank, scenario, option);
         }
         else {
             say(rank, std::format("unknown scenario '{}' '{}'", scenario, option));

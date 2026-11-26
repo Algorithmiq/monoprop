@@ -35,7 +35,6 @@
 #include "monoprop/detail/parallel/ThreadBudget.h"
 #include "monoprop/detail/sharded/Construction.h"
 #include "monoprop/detail/sharded/Evaluation.h"
-#include "monoprop/detail/sharded/RootObserver.h"
 #include "monoprop/detail/sharded/State.h"
 #include "monoprop/detail/sharded/Team.h"
 
@@ -81,36 +80,6 @@ MonomialPropagator<NumModes>::MonomialPropagator(const OperatorDict &initial_ope
                                                  size_t logical_num_modes,
                                                  Basis basis,
                                                  std::optional<size_t> max_sins)
-    : MonomialPropagator(ObservedTag{},
-                         nullptr,
-                         initial_operator,
-                         cutoff,
-                         initial_state,
-                         schrodinger_cutoff,
-                         comm,
-                         lower_atol,
-                         upper_atol,
-                         cutoff_type,
-                         std::move(basis_change),
-                         logical_num_modes,
-                         basis,
-                         max_sins) {}
-
-template <size_t NumModes>
-MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
-                                                 const detail::sharded::RootObserver *observer,
-                                                 const OperatorDict &initial_operator,
-                                                 unsigned int cutoff,
-                                                 const VecZ &initial_state,
-                                                 std::optional<unsigned int> schrodinger_cutoff,
-                                                 mpi::Comm comm,
-                                                 std::optional<double> lower_atol,
-                                                 std::optional<double> upper_atol,
-                                                 CutoffType cutoff_type,
-                                                 std::optional<std::vector<VecZ>> basis_change,
-                                                 size_t logical_num_modes,
-                                                 Basis basis,
-                                                 std::optional<size_t> max_sins)
     : schrodinger_{schrodinger_cutoff.has_value()},
       comm_{comm},
       cutoff_{cutoff},
@@ -120,8 +89,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
       logical_num_modes_{logical_num_modes},
       cutoff_type_{cutoff_type},
       basis_change_{std::move(basis_change)},
-      basis_{basis},
-      observer_{observer} {
+      basis_{basis} {
     // The geometry is the launch's: P ranks of comm x the captured budget T. No argument or other environment variable
     // selects or checks it.
     // Before any MPI query or collective in this constructor.
@@ -187,10 +155,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
         .logical_num_modes = logical_num_modes_,
         .paired = paired,
         .inline_width = detail::sharded::packed_inline_width<NumModes>(schrodinger_, cutoff_fn_)};
-    shards_ = detail::sharded::seed_shards<NumModes>(parallel_,
-                                                     seed,
-                                                     world_.rank,
-                                                     detail::sharded::RootShardObserver{observer_});
+    shards_ = detail::sharded::seed_shards<NumModes>(parallel_, seed, world_.rank);
     core_term_ = core_term;
 }
 
@@ -214,11 +179,8 @@ MonomialPropagator<NumModes>::MonomialPropagator(const MonomialPropagator &other
       parallel_(other.parallel_),
       router_(other.router_),
       world_(other.world_),
-      observer_(other.observer_),
       // The source's budget, not a new capture: a copy keeps T.
-      shards_(detail::sharded::copy_shards<NumModes>(other.parallel_,
-                                                     other.shards_,
-                                                     detail::sharded::RootShardObserver{other.observer_})) {}
+      shards_(detail::sharded::copy_shards<NumModes>(other.parallel_, other.shards_)) {}
 
 template <size_t NumModes>
 auto MonomialPropagator<NumModes>::mutation_failed_(std::exception_ptr error) -> void {
@@ -376,8 +338,7 @@ auto MonomialPropagator<NumModes>::replay_(const VecD &mapped_params, Request &&
                                                                  basis_,
                                                                  detail::parallel::serial));
     }
-    auto outcome =
-        detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, observer_, world_, rounds_.get());
+    auto outcome = detail::sharded::replay_shards(requests, mapped_params, callbacks, parallel_, world_, rounds_.get());
     if (outcome.error) {
         std::rethrow_exception(outcome.error);
     }
@@ -408,14 +369,11 @@ auto MonomialPropagator<NumModes>::finish_construction_(const detail::sharded::C
 
 template <size_t NumModes>
 template <typename Body>
-auto MonomialPropagator<NumModes>::run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> void {
+auto MonomialPropagator<NumModes>::run_owner_phase_(Body &&body) -> void {
     const auto error =
         detail::sharded::run_team(parallel_, [&](size_t shard, detail::sharded::TeamFailure &failure) noexcept {
             // The only phase: its decision ends the sequence either way.
-            static_cast<void>(detail::sharded::phase(failure, shard, [&] {
-                detail::sharded::notify_root(observer_, work, shard);
-                body(shard);
-            }));
+            static_cast<void>(detail::sharded::phase(failure, shard, [&] { body(shard); }));
         });
     if (error) {
         std::rethrow_exception(error);
@@ -480,9 +438,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
             .only_rotate_len_k = only_rotate_len_k,
             .block_ids = block_ids ? std::span<const size_t>(*block_ids) : std::span<const size_t>{},
             .count_sins = count_sins};
-        const auto observer = detail::sharded::RootConstructionObserver{observer_};
         if (!parameters.has_value()) {
-            finish_construction_(detail::sharded::build_graph<NumModes>(parallel_, shards_, ctx, circuit, observer),
+            finish_construction_(detail::sharded::build_graph<NumModes>(parallel_, shards_, ctx, circuit),
                                  mutation_started);
             return;
         }
@@ -490,9 +447,8 @@ auto MonomialPropagator<NumModes>::build_graph(const std::vector<VecZ> &majorana
             .graph = circuit,
             .mapped_params = mapped_params,
             .seed_params = seed_params ? std::optional<std::span<const double>>(*seed_params) : std::nullopt};
-        finish_construction_(
-            detail::sharded::build_graph_informed<NumModes>(parallel_, shards_, ctx, informed, observer),
-            mutation_started);
+        finish_construction_(detail::sharded::build_graph_informed<NumModes>(parallel_, shards_, ctx, informed),
+                             mutation_started);
     });
 }
 
@@ -528,12 +484,7 @@ auto MonomialPropagator<NumModes>::propagate(const std::vector<VecZ> &majoranas,
         const auto circuit = detail::sharded::PropagationCircuit<NumModes>{.generators = generators,
                                                                            .mapped_params = mapped_params,
                                                                            .only_rotate_len_k = only_rotate_len_k};
-        finish_construction_(detail::sharded::propagate<NumModes>(parallel_,
-                                                                  shards_,
-                                                                  ctx,
-                                                                  circuit,
-                                                                  detail::sharded::RootConstructionObserver{observer_}),
-                             mutation_started);
+        finish_construction_(detail::sharded::propagate<NumModes>(parallel_, shards_, ctx, circuit), mutation_started);
         if (!schrodinger_) {
             heisenberg_gates_absorbed_ = true;
         }
@@ -547,8 +498,7 @@ auto MonomialPropagator<NumModes>::reset_sin_counts() -> void {
             return;
         }
         mutation_started = true;
-        run_owner_phase_(detail::sharded::RootWork::sin_counts,
-                         [&](size_t shard) { std::ranges::fill(shards_[shard]->op.sin_counts_, uint8_t{0}); });
+        run_owner_phase_([&](size_t shard) { std::ranges::fill(shards_[shard]->op.sin_counts_, uint8_t{0}); });
     });
 }
 
@@ -568,7 +518,7 @@ auto MonomialPropagator<NumModes>::set_parameter_mapping(const VecZ &parameter_m
         mutation_started = true;
         // The LayerCore is shared and immutable, so relabelling copies it and replaces the layer's core; each owner
         // copies its own shard's cores.
-        run_owner_phase_(detail::sharded::RootWork::remap, [&](size_t shard) {
+        run_owner_phase_([&](size_t shard) {
             MPGraph &graph = shards_[shard]->graph;
             for (size_t layer = 0; layer < count; ++layer) {
                 // Per-layer mapping in optimizer order; per-gate mapping indexed by absolute gate index.
@@ -618,7 +568,7 @@ auto MonomialPropagator<NumModes>::apply_initial_operator_(const OperatorDict &o
             core_term_ = *new_core_term;
         }
         std::vector<std::pair<MonomialList<NumModes>, VecD>> updated(shards_.size());
-        run_owner_phase_(detail::sharded::RootWork::initial_operator, [&](size_t shard) {
+        run_owner_phase_([&](size_t shard) {
             updated[shard] = shards_[shard]->op.update_initial_operator(shares[shard], schrodinger_);
         });
         // This rank's new (terms, coefficients), shard blocks in shard order.
@@ -642,7 +592,7 @@ auto MonomialPropagator<NumModes>::prepare_retained_(std::optional<double> pare_
                                                           .basis = basis_,
                                                           .schrodinger = schrodinger_,
                                                           .rank = world_.rank};
-    auto outcome = detail::sharded::prepare_retained<NumModes>(parallel_, shards_, context, observer_);
+    auto outcome = detail::sharded::prepare_retained<NumModes>(parallel_, shards_, context);
     mutation_started = mutation_started || outcome.mutation_started;
     if (outcome.error) {
         std::rethrow_exception(outcome.error);
@@ -658,13 +608,11 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
     // Views of the retained snapshots and `params`, built for this call only. A failure up to and including the
     // evaluator's own argument checks happens before its team and mutates nothing.
     const auto requests = retained.requests(params);
-    if (requests.size() == 1 && world_.ranks == 1 && observer_ == nullptr) {
+    if (requests.size() == 1 && world_.ranks == 1) {
         /*
          * One shard on one rank: nothing to exchange and no team to coordinate, so the sole shard goes to the
          * low-level serial evaluator (MPFunctions.cpp), the loop the sharded phases reduce to at T = 1, without
-         * their per-step publication, staging and checkpoints. Bitwise the sharded result (sharded_root_tests:
-         * sharded_root_sole_shard_serial_evaluation_matches_the_phases). A test observer keeps the phases, which it
-         * observes.
+         * their per-step publication, staging and checkpoints. Bitwise the sharded result.
          */
         detail::sharded::check_shard_request(requests.front());
         if (mutation_started != nullptr) {
@@ -687,7 +635,6 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
                                                     retained.callbacks,
                                                     retained.options,
                                                     gradient,
-                                                    observer_,
                                                     world_,
                                                     rounds_.get());
     // The team has run: owners warmed their lazy caches and per-thread scratch.
@@ -698,7 +645,6 @@ auto MonomialPropagator<NumModes>::evaluate_retained_(const detail::sharded::Ret
         if (outcome.error) {
             std::rethrow_exception(outcome.error);
         }
-        detail::sharded::notify_root(observer_, detail::sharded::RootWork::combine, 0);
         // Ascending-shard fold, then the physical reduction, then the identity once.
         const double local = detail::sharded::combine_contributions(outcome.contributions);
         const double expectation_value = mpi::allreduce_sum(local, comm_);
@@ -802,8 +748,7 @@ auto MonomialPropagator<NumModes>::contract_blocks_(const VecD &parameters,
         // Nothing to replay: each owner copies its current picture (materializing pending entries, a lazy cache).
         mutation_started = true;
         std::vector<VecD> blocks(threads);
-        run_owner_phase_(detail::sharded::RootWork::picture,
-                         [&](size_t shard) { blocks[shard] = shards_[shard]->op.current_picture(schrodinger_); });
+        run_owner_phase_([&](size_t shard) { blocks[shard] = shards_[shard]->op.current_picture(schrodinger_); });
         concatenate(blocks, false);
         return blocks;
     }
@@ -861,7 +806,6 @@ auto MonomialPropagator<NumModes>::evolved_operator_terms(const VecD &parameters
         std::vector<Term> terms;
         // Each shard's index decodes that shard's own block; shards in ascending order.
         for (size_t shard = 0; shard < shards_.size(); ++shard) {
-            detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
             const VecD &evolved = blocks[shard];
             shards_[shard]->op.store->for_each([&](const auto &mono, size_t idx) {
                 if (idx >= evolved.size()) {
@@ -899,7 +843,6 @@ auto MonomialPropagator<NumModes>::evolved_operator_coefficients(const VecD &par
         std::vector<Monomial<NumModes>> queries;
         std::vector<size_t> rows;
         for (size_t shard = 0; shard < shards_.size(); ++shard) {
-            detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
             const VecD &evolved = blocks[shard];
             queries.clear();
             for (const size_t q : routed[shard]) {
@@ -996,7 +939,7 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
          */
         mutation_started = true;
         std::vector<VecD> seeds(threads);
-        run_owner_phase_(detail::sharded::RootWork::adjoint_seed, [&](size_t shard) {
+        run_owner_phase_([&](size_t shard) {
             auto &op = shards_[shard]->op;
             if (schrodinger_) {
                 seeds[shard] = op.dense_state();
@@ -1019,7 +962,6 @@ auto MonomialPropagator<NumModes>::term_expectation_values(const VecD &parameter
 
         VecD gathered(count, 0.0);
         for (size_t shard = 0; shard < threads; ++shard) {
-            detail::sharded::notify_root(observer_, detail::sharded::RootWork::export_block, shard);
             for (size_t i = 0; i < routed[shard].size(); ++i) {
                 if (rows[shard][i] < values[shard].size()) {
                     gathered[routed[shard][i]] = values[shard][rows[shard][i]];

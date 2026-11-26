@@ -178,8 +178,8 @@ case and in the whole-suite variants, runs with `monoprop_NUM_THREADS=1 OMP_NUM_
 reproduce a CTest case.
 
 Cases that need another launch environment run again as separate entries, each a fresh process, because a
-propagator reads its thread budget once, when it is constructed: the `openmp_env_*` entries, the exact-team
-`*_env_t<T>` entries and, in MPI builds, the launches of P ranks x T threads and the `mpi_failure_*` scenarios.
+propagator reads its thread budget once, when it is constructed: `sharded_env_t4` (the cases that depend on T, at
+T = 4) and, in MPI builds, `sharded_mpi2_t2` (two ranks of two threads) and the `mpi_failure_*` scenarios.
 [`cpp/tests/README.md`](https://github.com/Algorithmiq/monoprop/blob/main/cpp/tests/README.md) lists every entry,
 its launch environment and what it covers.
 
@@ -190,7 +190,7 @@ Select the entries by name or label:
 ```bash
 ctest --test-dir build/editable/Release --output-on-failure --no-tests=error -LE mpi
 ctest --test-dir build/editable/Release --output-on-failure --no-tests=error -R '^sharded_'
-ctest --test-dir build/editable/Release --output-on-failure --no-tests=error -R '^(sharded_root|fused)_env'
+ctest --test-dir build/editable/Release --output-on-failure --no-tests=error -R '^sharded_env'
 ctest --test-dir build/editable/Release-mpi --output-on-failure --no-tests=error -L mpi
 ctest --test-dir build/editable/Release-mpi --output-on-failure --no-tests=error -L mpi_failure
 ```
@@ -210,8 +210,8 @@ processes under splitmix, with the gathered maps, energies and gradients within 
 `mpi4py.rc.thread_level` and imports `mpi4py.MPI` before `monoprop`, as a host would: FUNNELED completes real
 construction, graph, energy, gradient and retained-functional work against a `COMM_SELF` reference, and a call from
 another Python thread fails fast at FUNNELED and MULTIPLE. Each case reads back the level MPI actually provided and
-skips, saying so, when it does not exercise the case's route. The C++ failure driver covers the other levels and
-two-rank launches.
+skips, saying so, when it does not exercise the case's route. The C++ failure driver covers the refusal below
+FUNNELED and two-rank launches.
 
 CI runs the non-MPI and MPI labels separately with `--no-tests=error`, so an MPI
 lane fails if its MPI variant was not registered. Standalone MPI-enabled C++

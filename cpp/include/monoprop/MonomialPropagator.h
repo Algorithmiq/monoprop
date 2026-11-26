@@ -50,8 +50,9 @@
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
 #include "monoprop/detail/parallel/Options.h"
+#include "monoprop/detail/sharded/Construction.h"
+#include "monoprop/detail/sharded/Evaluation.h"
 #include "monoprop/detail/sharded/Exchange.h"
-#include "monoprop/detail/sharded/RootObserver.h"
 #include "monoprop/detail/sharded/State.h"
 
 namespace monoprop {
@@ -481,25 +482,6 @@ private:
     static auto cos_index_count_of_(const MPGraph &graph, const detail::MPOperator<NumModes> &op, Basis basis)
         -> size_t;
 
-    //! Tag of the private constructor PropagatorTestAccess uses to observe construction.
-    struct ObservedTag {};
-
-    /// The public constructor's body, with a test-only observer (null from the public constructor).
-    MonomialPropagator(ObservedTag tag,
-                       const detail::sharded::RootObserver *observer,
-                       const OperatorDict &initial_operator,
-                       unsigned int cutoff,
-                       const VecZ &initial_state,
-                       std::optional<unsigned int> schrodinger_cutoff,
-                       mpi::Comm comm,
-                       std::optional<double> lower_atol,
-                       std::optional<double> upper_atol,
-                       CutoffType cutoff_type,
-                       std::optional<std::vector<VecZ>> basis_change,
-                       size_t logical_num_modes,
-                       Basis basis,
-                       std::optional<size_t> max_sins = std::nullopt);
-
     // Flat-owner routing at geometry (P, T): P = comm_'s size, T = the captured budget. Prepared once on the caller at
     // construction and used for seeding, construction and initial-operator updates.
     std::optional<routing::Router> router_;
@@ -509,8 +491,6 @@ private:
     // This owner's physical rounds, reused by every multi-rank operation (construction, evaluation, replay) and by its
     // functionals, so their staging persists across calls. Never shared: a copy starts with its own empty set.
     std::unique_ptr<detail::sharded::PhysicalRounds> rounds_ = std::make_unique<detail::sharded::PhysicalRounds>();
-    // Test-only: null in production, set only through PropagatorTestAccess. Copies inherit it.
-    const detail::sharded::RootObserver *observer_ = nullptr;
     // The T shard states of this rank, shard t at flat owner t; one per worker of the captured budget. Declared
     // last, so a copy validates its source (checked_source_, first initializer) before allocating any shard.
     detail::sharded::Shards<NumModes> shards_;
@@ -548,10 +528,10 @@ private:
     static auto finish_construction_(const detail::sharded::ConstructionOutcome &outcome, bool &mutation_started)
         -> void;
 
-    /// Run `body(shard)` once on every owner, in one team of the captured budget, after reporting `work`.
+    /// Run `body(shard)` once on every owner, in one team of the captured budget.
     /// \throws The lowest failing owner's original exception, after the join.
     template <typename Body>
-    auto run_owner_phase_(detail::sharded::RootWork work, Body &&body) -> void;
+    auto run_owner_phase_(Body &&body) -> void;
 
     /// Snapshot, optionally pare and build callbacks for every shard (prepare_retained), transferring the outcome.
     auto prepare_retained_(std::optional<double> pare_threshold, bool &mutation_started)

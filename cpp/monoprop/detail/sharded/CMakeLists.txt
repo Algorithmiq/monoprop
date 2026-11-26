@@ -7,7 +7,6 @@ target_sources(
         "Construction.h"
         "Evaluation.h"
         "Exchange.h"
-        "RootObserver.h"
         "State.h"
         "Team.h"
 )

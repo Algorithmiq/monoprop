@@ -106,18 +106,14 @@ inline auto fused_add_owners_unique(const FusedContract &fc) -> bool {
  *
  * The caller has already sized and extended op_coeffs. The three phases below run in order, each joined
  * before the next, and each is split into fixed logical ranges that run on up to `options.threads` workers.
- *
- * \param observer Test seam; see NoRangeObserver.
  */
-template <class Observer = NoRangeObserver>
-auto apply_fused_contract(FusedContract &fc,
-                          VecD &op_coeffs,
-                          const CosMask &cos,
-                          double param,
-                          bool schrodinger,
-                          bool fused_scale,
-                          parallel::Options options = {},
-                          const Observer &observer = {}) -> void {
+inline auto apply_fused_contract(FusedContract &fc,
+                                 VecD &op_coeffs,
+                                 const CosMask &cos,
+                                 double param,
+                                 bool schrodinger,
+                                 bool fused_scale,
+                                 parallel::Options options = {}) -> void {
     double *const c = op_coeffs.data();
 
     // (1) insert records: v_tgt is the freshly-inserted term's pre-cos coeff, readable only now op_coeffs
@@ -126,10 +122,8 @@ auto apply_fused_contract(FusedContract &fc,
         RotationRec *const inserts = fc.inserts.data();
         const size_t n_inserts = fc.inserts.size();
         const size_t ranges = logical_ranges(n_inserts, fused_record_range);
-        observer.prepare(KernelRange::fused_gather, ranges);
         // Each range writes only its own records' snapshot field and reads coefficients nothing writes yet.
         parallel::for_blocks(ranges, options, [&](size_t range) {
-            observer.visit(KernelRange::fused_gather, range);
             const size_t hi = std::min(n_inserts, (range + 1) * fused_record_range);
             for (size_t k = range * fused_record_range; k < hi; ++k) {
                 inserts[k].v_tgt = c[inserts[k].tgt];
@@ -141,7 +135,7 @@ auto apply_fused_contract(FusedContract &fc,
     const double cos_val = std::cos(2 * param);
     const double sin_val = std::sin(2 * param);
     if (!fused_scale) {
-        scale_cos_mask(c, cos, cos_val, options, observer);
+        scale_cos_mask(c, cos, cos_val, options);
     }
 
     // (3) One pass over hits ++ inserts ++ cross_half. Each op slot is touched by exactly one add (pivot
@@ -151,12 +145,10 @@ auto apply_fused_contract(FusedContract &fc,
     assert(fused_add_owners_unique(fc));
     const size_t n_records = fc.hits.size() + fc.inserts.size() + fc.cross_half.size();
     const size_t ranges = logical_ranges(n_records, fused_record_range);
-    observer.prepare(KernelRange::fused_apply, ranges);
     // Distinct records write distinct slots (the one-add-owner property above), and every value a record
     // reads is its own snapshot or its own slot, so the ranges need no synchronization. Never paper over a
     // violation with atomics: it would mean the scan emitted a slot twice.
     parallel::for_blocks(ranges, options, [&](size_t range) {
-        observer.visit(KernelRange::fused_apply, range);
         const size_t lo = range * fused_record_range;
         apply_fused_record_range(fc,
                                  c,

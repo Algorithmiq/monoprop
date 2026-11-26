@@ -403,12 +403,8 @@ struct ContractSink {
  * Handoff lifetimes: the payload prepare_exchange returns is read by its destinations until they have resolved it,
  * and consume_published still reads this owner's own sources and plain queries, so neither may change until this
  * owner consumed its answers and every destination resolved the payload. The next prepare_exchange replaces them.
- *
- * `Observer` is the test seam of the threaded kernels (see NoRangeObserver). It may also provide
- * `exchange_prepared(leaders)`, which prepare_exchange() calls once it has produced the payload; production observers
- * do not.
  */
-template <size_t NumModes, typename Sink, class Observer = NoRangeObserver>
+template <size_t NumModes, typename Sink>
 struct LayerBuildEngine {
     using RowPosT = typename OperatorIndex<NumModes>::PosT;
     using Response = typename Sink::Response; //!< One answer per resolved query.
@@ -446,7 +442,6 @@ struct LayerBuildEngine {
     Sink sink;
     // Budget forwarded to the within-owner kernels; a sharded caller passes the serial default.
     parallel::Options options;
-    Observer observer;
 
     LayerBuildEngine(MPOperator<NumModes> &local_op_,
                      size_t R_,
@@ -455,8 +450,7 @@ struct LayerBuildEngine {
                      size_t combined_size_,
                      Sink &&sink_,
                      mpi::SlotWindow window_,
-                     parallel::Options options_ = {},
-                     const Observer &observer_ = {})
+                     parallel::Options options_ = {})
         : local_op(local_op_),
           R(R_),
           my_rank(my_rank_),
@@ -464,8 +458,7 @@ struct LayerBuildEngine {
           combined_size(combined_size_),
           window(window_),
           sink(std::move(sink_)),
-          options(options_),
-          observer(observer_) {
+          options(options_) {
         assert(window.stop() <= R && window.count != 0);
         queries_r.reset(window);
         src_idx_r.reset(window);
@@ -531,9 +524,6 @@ struct LayerBuildEngine {
         if (R > 1) {
             payload = &sink.send_buffer(queries_r, src_val_r, combined_qv_);
         }
-        if constexpr (requires { observer.exchange_prepared(leaders); }) {
-            observer.exchange_prepared(leaders);
-        }
         return *payload;
     }
 
@@ -561,7 +551,7 @@ struct LayerBuildEngine {
                                                     window.base,
                                                     window.stop()));
         }
-        return resolve_incoming<NumModes>(incoming, local_op, leaders, matched, combined_size, sink, options, observer);
+        return resolve_incoming<NumModes>(incoming, local_op, leaders, matched, combined_size, sink, options);
     }
 
     /*!
@@ -708,7 +698,7 @@ private:
     std::vector<double> self_val_; // ContractSink only
 
     // Self-resolve in bounded windows. For each window, on the caller: stable follower filtering (leaders skip
-    // it) and a gather into the scratch; then probe_frozen_positions (KernelRange::self_probe) on workers over
+    // it) and a gather into the scratch; then probe_frozen_positions on workers over
     // at most 16 blocks; then, on the caller, hit/miss emission in original order. Nothing is inserted between
     // windows or passes: misses keep their positions and hashes for insert_deferred_self_misses. `lv` is the
     // per-query v_src array parallel to `ls` (read only when Sink::wants_values).
@@ -760,9 +750,7 @@ private:
                                              std::span<const uint32_t>(self_k_of_).first(m),
                                              std::span<size_t>(self_found_).first(m),
                                              std::span<uint32_t>(self_hash_).first(m),
-                                             options,
-                                             observer,
-                                             KernelRange::self_probe);
+                                             options);
             // Overlap the batch's scattered hit-coefficient misses; smaller operators are cache-resident.
             if constexpr (requires { sink.op_coeffs[size_t{}]; }) {
                 constexpr auto prefetch_hit_min_rows = size_t{1} << 21;
@@ -849,7 +837,7 @@ struct GateScan {
  *                  here, and cross-owner queries become Counted records.
  * \return The streams, cosine set and decisions; `fused_scale` is the single authority for the apply.
  */
-template <size_t NumModes, class Observer = NoRangeObserver>
+template <size_t NumModes>
 auto scan_gate(MPOperator<NumModes> &local_op,
                const Monomial<NumModes> &gen,
                const CutoffFn<NumModes> &cutoff_fn,
@@ -864,7 +852,6 @@ auto scan_gate(MPOperator<NumModes> &local_op,
                VecD *fused_scale_coeffs,
                Basis basis,
                parallel::Options options = {},
-               const Observer &observer = {},
                const SinTrack *sin_track = nullptr) -> GateScan<NumModes> {
     // Max-sins is a graph-build rule; the fused contraction has no count to keep.
     assert(sin_track == nullptr || !use_fused);
@@ -896,22 +883,21 @@ auto scan_gate(MPOperator<NumModes> &local_op,
         double *const sweep_ptr = scan.fused_scale ? fused_scale_coeffs->data() : nullptr;
         auto &fused = scan.streams;
         fused = with_algebra<NumModes>(basis, [&]<typename A>() {
-            return fused_find_and_collect<NumModes, A, Observer>(local_op,
-                                                                 gen,
-                                                                 cut_eval,
-                                                                 cut_st,
-                                                                 coeffs,
-                                                                 only_rotate_len_k,
-                                                                 scan.window,
-                                                                 my_rank,
-                                                                 router,
-                                                                 gen_shift,
-                                                                 /*capture_values=*/use_fused,
-                                                                 sweep_ptr,
-                                                                 cos_build,
-                                                                 options,
-                                                                 observer,
-                                                                 sin_counts);
+            return fused_find_and_collect<NumModes, A>(local_op,
+                                                       gen,
+                                                       cut_eval,
+                                                       cut_st,
+                                                       coeffs,
+                                                       only_rotate_len_k,
+                                                       scan.window,
+                                                       my_rank,
+                                                       router,
+                                                       gen_shift,
+                                                       /*capture_values=*/use_fused,
+                                                       sweep_ptr,
+                                                       cos_build,
+                                                       options,
+                                                       sin_counts);
         });
         auto &cos_all = scan.cos_all;
         if (fused.cos_blocks.size() == 1) {
