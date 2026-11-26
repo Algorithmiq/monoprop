@@ -331,7 +331,7 @@ auto make_cutoff_fn(const Fixture &f) -> CutoffFn<N> {
     return fn;
 }
 
-// Shards seeded through the real S1 path, with the context that goes with them.
+// Shards seeded through the production seeding path, with the context that goes with them.
 template <size_t N>
 struct Sharded {
     Fixture f;

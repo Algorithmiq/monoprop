@@ -229,7 +229,7 @@ BOOST_AUTO_TEST_CASE(find_batch_on_empty_store_is_all_missing) {
 // Shared invariant 14, pinned: bulk insertion does not deduplicate. Two rows holding the same key are both
 // indexed, and a lookup returns the first one inserted (it sits earlier on the probe chain). Production never
 // relies on this -- query keys are distinct by construction -- but a replacement index must either keep it or
-// change it as an explicit, reviewed contract change. The options overload is the Task 11 publication seam;
+// change it as an explicit, reviewed contract change. The options overload is the threaded publication seam;
 // the packed index ignores it and publishes serially, identically.
 BOOST_AUTO_TEST_CASE(bulk_insert_duplicate_keys_are_both_indexed) {
     const auto dup = bs({2, 7, 9});

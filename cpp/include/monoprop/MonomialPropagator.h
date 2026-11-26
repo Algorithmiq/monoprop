@@ -94,7 +94,7 @@ public:
     /// Collective over `comm`: every one of its P ranks constructs with the same arguments. Captures the thread budget
     /// T once, here, from monoprop_NUM_THREADS (strictly parsed) or, when the variable is unset, from
     /// omp_get_max_threads(); T is also this rank's shard count, and every rank must be launched with the same T. The
-    /// router's flat owner of shard t on rank r is r * T + t. There is no partition, thread or shard argument.
+    /// router's flat owner of shard t on rank r is r * T + t.
     /// \throws PropagatorConfigError for an invalid budget or setting, before any shard is allocated.
     MonomialPropagator(const OperatorDict &initial_operator,
                        unsigned int cutoff,

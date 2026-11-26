@@ -124,7 +124,7 @@ MonomialPropagator<NumModes>::MonomialPropagator(ObservedTag /*tag*/,
       basis_{basis},
       observer_{observer} {
     // The geometry is the launch's: P ranks of comm x the captured budget T. No argument or other environment variable
-    // selects or checks it (the removed partition runtime's monoprop_PARTITIONS is never read).
+    // selects or checks it.
     // Before any MPI query or collective in this constructor.
     mpi::require_initializing_thread();
     try {

@@ -33,8 +33,7 @@
  *
  * The thread budget is not read here. Every propagator captures monoprop_NUM_THREADS when it is constructed, through
  * the strict parallel::capture_thread_budget() (ThreadBudget.h), which rejects a malformed value and falls back to
- * omp_get_max_threads() only when the variable is unset. No partition count is read at all: the removed partition
- * runtime's monoprop_PARTITIONS is ignored.
+ * omp_get_max_threads() only when the variable is unset.
  */
 
 namespace monoprop::config {

@@ -84,8 +84,7 @@ jobs:
         uses: ./.github/actions/setup
         with:
           python-version: ${{ matrix.python-version }}
-          # The MPI-off and MPI builds are ABI-incompatible, and so is every build from before the partition runtime was
-          # removed: the `sharded` part retires the caches of the dual-runtime matrix.
+          # The MPI-off and MPI builds are ABI-incompatible.
           cache-suffix: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}-sharded
           ccache: ${{ matrix.compiler }}-mpi-${{ matrix.mpi }}
           mpi: ${{ matrix.mpi }}

@@ -95,7 +95,7 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
     auto name = std::format("MonomialPropagator{:03d}", NumModes);
     auto cls = nb::class_<MonomialPropagator<NumModes>>(mod, name.c_str());
 
-    // No partition, thread or shard argument: T is the budget captured at construction.
+    // The thread budget T is captured at construction from the environment, never passed as an argument.
     cls.def(
         "__init__",
         [](MonomialPropagator<NumModes> *t,

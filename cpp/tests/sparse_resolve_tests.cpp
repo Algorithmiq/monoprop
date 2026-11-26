@@ -417,7 +417,7 @@ BOOST_AUTO_TEST_CASE(sparse_resolve_finds_dense_inserted_keys) {
     BOOST_TEST(genuinely_absent > 0);
 }
 
-/* ── Task 6: checked, threaded incoming resolution and bounded self probing ─────────────────────── */
+/* ── Checked, threaded incoming resolution and bounded self probing ─────────────────────────────── */
 
 namespace {
 
@@ -642,8 +642,7 @@ auto check_incoming_budgets(const char *label,
 
 } // namespace
 
-// The plan's fixture: a window at base 4, senders 4 and 6 (5 is empty), predicted and published IDs. Repeated
-// at base zero. This preserves behavior that existed before Task 6 and may pass before it.
+// A window at base 4, senders 4 and 6 (5 is empty), predicted and published IDs. Repeated at base zero.
 BOOST_AUTO_TEST_CASE(openmp_incoming_miss_order) {
     using namespace monoprop;
     const auto a = indices_to_bitset<8>({0, 1});

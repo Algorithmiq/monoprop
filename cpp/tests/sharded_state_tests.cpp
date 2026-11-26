@@ -1041,8 +1041,8 @@ BOOST_AUTO_TEST_CASE(sharded_state_copy_keeps_the_captured_budget) {
     BOOST_TEST(difference.empty(), difference);
 }
 
-// Preservation evidence for the rank-level owner guard (MonomialPropagator::require_valid_), which S1 reuses rather
-// than duplicating per shard: an invalid owner's state is rejected before anything is copied, while copies made
+// Preservation evidence for the rank-level owner guard (MonomialPropagator::require_valid_), which shard seeding reuses
+// rather than duplicating per shard: an invalid owner's state is rejected before anything is copied, while copies made
 // before the failure stay exact and usable.
 
 // --- Failure paths --------------------------------------------------------------------------------------------

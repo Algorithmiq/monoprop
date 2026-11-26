@@ -87,8 +87,7 @@
  *
  * The identity generator skips the exchange phases; with one flat owner there is no cross owner, so only the resolve
  * and consume work is skipped, and same-shard resolution still runs. Row insertion order is therefore cross-owner
- * leaders, cross-owner followers, deferred same-shard leaders, deferred same-shard followers, as the removed partition
- * runtime inserted them at the same (P, T) geometry.
+ * leaders, cross-owner followers, deferred same-shard leaders, deferred same-shard followers.
  *
  * Other processes. A gate's window reaches another rank exactly when its peer plan does: the single peer
  * rank ^ shift(generator) under linear routing (none when the shift is zero), every other rank under splitmix. That
