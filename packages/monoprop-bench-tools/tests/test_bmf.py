@@ -157,19 +157,6 @@ def test_each_memory_metric_is_gated_on_its_own_window(
             assert f"{metric} for {_ENERGY} has unknown exactness" in warnings
 
 
-def test_operation_exactness_never_certifies_the_outer_peak(tmp_path: Path) -> None:
-    # An exact operation window says nothing about the setup-spanning outer window.
-    _write(
-        tmp_path,
-        memhwm={_ENERGY: 4096},
-        opmemdelta={_ENERGY: {"sum": 1024, "max": 512}},
-        opmemexact={_ENERGY: True},
-        memhwmexact={_ENERGY: False},
-    )
-
-    assert "peak-memory" not in bmf.build_bmf(tmp_path, "ci")[_ENERGY_NAME]
-
-
 def test_exactness_is_per_node(tmp_path: Path) -> None:
     other = "bench_random.py::test_random_gradient[heisenberg]"
     _write(

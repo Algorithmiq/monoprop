@@ -70,14 +70,15 @@ def _openmp_threads(env: Mapping[str, str]) -> tuple[int, str]:
             "monoprop_NUM_THREADS", configured
         ), "monoprop_NUM_THREADS"
     fallback = env.get("OMP_NUM_THREADS", "")
-    if not fallback.isascii() or not fallback.isdigit() or int(fallback) < 1:
+    try:
+        return _positive_decimal("OMP_NUM_THREADS", fallback), "OMP_NUM_THREADS"
+    except PreflightError as exc:
         msg = (
             "Runtime shape 'openmp' with monoprop_NUM_THREADS unset cannot establish the "
             f"declared team size from OMP_NUM_THREADS={fallback!r}; set either to one "
             "positive integer."
         )
-        raise PreflightError(msg)
-    return int(fallback), "OMP_NUM_THREADS"
+        raise PreflightError(msg) from exc
 
 
 def declared_shape(

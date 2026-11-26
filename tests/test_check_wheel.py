@@ -75,6 +75,7 @@ def test_parse_otool() -> None:
     assert check_wheel.parse_otool(OTOOL) == (
         ("@rpath/libmpi.40.dylib", "/usr/lib/libc++.1.dylib"),
         ("@loader_path/lib", "/opt/homebrew/lib"),
+        None,
     )
 
 
@@ -159,8 +160,7 @@ def test_parse_otool_install_id() -> None:
         "      cmdsize 48\n"
         "         name @rpath/libomp.dylib (offset 24)\n"
     )
-    assert check_wheel.parse_otool_install_id(text) == "@rpath/libomp.dylib"
-    assert check_wheel.parse_otool_install_id(OTOOL) is None
+    assert check_wheel.parse_otool(text) == ((), (), "@rpath/libomp.dylib")
 
 
 def test_macos_bundled_library_named_through_rpath_passes() -> None:

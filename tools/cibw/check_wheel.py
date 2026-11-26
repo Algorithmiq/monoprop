@@ -82,10 +82,11 @@ def parse_readelf(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return needed, tuple(rpaths)
 
 
-def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return (LC_LOAD_DYLIB names, LC_RPATH paths) from ``otool -l`` output."""
+def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...], str | None]:
+    """Return (LC_LOAD_DYLIB names, LC_RPATH paths, LC_ID_DYLIB name or None) from ``otool -l`` output."""
     needed: list[str] = []
     rpaths: list[str] = []
+    install_id = None
     command = None
     for line in text.splitlines():
         fields = line.split()
@@ -97,21 +98,11 @@ def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
             and command in {"LC_LOAD_DYLIB", "LC_LOAD_WEAK_DYLIB"}
         ):
             needed.append(fields[1])
+        elif len(fields) >= 2 and fields[0] == "name" and command == "LC_ID_DYLIB":
+            install_id = fields[1]
         elif len(fields) >= 2 and fields[0] == "path" and command == "LC_RPATH":
             rpaths.append(fields[1])
-    return tuple(needed), tuple(rpaths)
-
-
-def parse_otool_install_id(text: str) -> str | None:
-    """Return the LC_ID_DYLIB name from ``otool -l`` output, if the binary has one."""
-    command = None
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0] == "cmd":
-            command = fields[1]
-        elif len(fields) >= 2 and fields[0] == "name" and command == "LC_ID_DYLIB":
-            return fields[1]
-    return None
+    return tuple(needed), tuple(rpaths), install_id
 
 
 def audit_install_id(binary: Binary, *, macos: bool) -> list[str]:
@@ -228,12 +219,9 @@ def audit_abi_table(
 def _read_binary(root: Path, path: Path, *, macos: bool) -> Binary:
     command = ["otool", "-l", str(path)] if macos else ["readelf", "-d", str(path)]
     output = subprocess.run(command, check=True, capture_output=True, text=True).stdout  # noqa: S603
-    if macos:
-        needed, rpaths = parse_otool(output)
-        install_id = parse_otool_install_id(output)
-    else:
-        needed, rpaths = parse_readelf(output)
-        install_id = None
+    needed, rpaths, install_id = (
+        parse_otool(output) if macos else (*parse_readelf(output), None)
+    )
     return Binary(path.relative_to(root).as_posix(), needed, rpaths, install_id)
 
 
