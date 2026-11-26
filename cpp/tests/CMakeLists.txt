@@ -204,36 +204,40 @@ monoprop_add_launch_env_case(
   ENVIRONMENT "OMP_DYNAMIC=TRUE"
 )
 
+# One exact-team launch per T of the cases matching PATTERN, each a fresh process named <PREFIX>_env_t<T> with
+# monoprop_NUM_THREADS = OMP_NUM_THREADS = T and OMP_DYNAMIC off, never a limited or dynamic team. EXPECT_TEAM also names
+# the team the cases must see. Cases that need a nonprimary worker skip themselves at T = 1. A timeout is a hang, not a
+# pass.
+function(monoprop_add_team_launches PREFIX PATTERN)
+  cmake_parse_arguments("" "EXPECT_TEAM" "TIMEOUT" "THREADS" ${ARGN})
+  foreach(_threads IN LISTS _THREADS)
+    set(
+      _environment
+      "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
+    )
+    if(_EXPECT_TEAM)
+      string(APPEND _environment ";monoprop_TEST_EXPECT_TEAM=${_threads}")
+    endif()
+    monoprop_add_launch_env_case(
+      ${PREFIX}_env_t${_threads}
+      "${PATTERN}"
+      ENVIRONMENT "${_environment}"
+    )
+    if(_TIMEOUT)
+      set_tests_properties(
+        ${PREFIX}_env_t${_threads}
+        PROPERTIES
+          TIMEOUT
+            ${_TIMEOUT}
+      )
+    endif()
+  endforeach()
+endfunction()
+
 # The fixed-team phase primitive (detail/sharded/Team.h) assumes exactly T workers, so its cases run only under
 # exact-team launches, never under the limited or dynamic teams above, which test for_blocks' reduced-team contract.
-# Each T is a fresh process; cases that need a nonprimary worker are left out of T = 1. The passive-wait launch parks
-# waiting workers, which widens the windows the checkpoint-generation cases probe.
-set(
-  _monoprop_sharded_team_single_cases
-  "sharded_team_visits_each_owner,sharded_team_observes_worker_identity,sharded_team_keeps_owner_across_phases,sharded_team_primary_only_phase_runs_on_the_caller,sharded_team_empty_owners_reach_the_checkpoint,sharded_team_publishes_writes_to_the_next_phase,sharded_team_single_worker_failure_is_returned_after_join,sharded_team_failure_is_returned_not_rethrown,sharded_team_failure_selects_the_lowest_recorded_slot,sharded_team_preserves_the_original_exception,sharded_team_fresh_invocation_has_no_stale_failure,sharded_team_rejects_a_nonpositive_budget_before_the_region,sharded_team_leaves_runtime_settings_unchanged,sharded_team_launch_supplies_the_expected_team,sharded_team_section_limit_bounds_concurrent_holders,sharded_team_section_limit_releases_on_exception,sharded_team_section_limit_admits_at_least_one"
-)
-foreach(_threads IN ITEMS 1 2 4)
-  if(_threads EQUAL 1)
-    set(_cases "${_monoprop_sharded_team_single_cases}")
-  else()
-    set(_cases "sharded_team_*")
-  endif()
-  set(
-    _team_environment
-    "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${_threads}"
-  )
-  monoprop_add_launch_env_case(
-    sharded_team_env_t${_threads}
-    "${_cases}"
-    ENVIRONMENT "${_team_environment}"
-  )
-  set_tests_properties(
-    sharded_team_env_t${_threads}
-    PROPERTIES
-      TIMEOUT
-        120
-  )
-endforeach()
+# The passive-wait launch parks waiting workers, which widens the windows the checkpoint-generation cases probe.
+monoprop_add_team_launches(sharded_team "sharded_team_*" THREADS 1 2 4 EXPECT_TEAM TIMEOUT 120)
 monoprop_add_launch_env_case(
   sharded_team_env_t4_passive
   "sharded_team_*"
@@ -246,135 +250,32 @@ set_tests_properties(
       120
 )
 
-# Owner-initialized shard state (detail/sharded/State.h) under the same exact-team launches: one fresh process per T,
-# never a limited or dynamic team. Cases that need a nonprimary worker are left out of T = 1.
-set(
-  _monoprop_sharded_state_single_cases
-  "sharded_state_make_shards_initializes_each_owner_once,sharded_state_seed_matches_an_independent_reference,sharded_state_routed_rows_belong_to_their_flat_owner,sharded_state_keeps_sparse_heisenberg_and_dense_schrodinger_caches,sharded_state_counts_and_accounting_sum_over_shards,sharded_state_rejects_invalid_arguments_before_the_team,sharded_state_copy_is_exact_and_owner_allocated,sharded_state_copies_mutate_independently,sharded_state_graph_cores_are_shared_and_lists_independent,sharded_state_copy_keeps_the_captured_budget,sharded_state_initializer_failure_on_the_primary_is_returned,sharded_state_seed_allocation_failures_are_catchable,sharded_state_copy_allocation_failures_leave_sources_intact"
-)
-foreach(_threads IN ITEMS 1 2 4)
-  if(_threads EQUAL 1)
-    set(_cases "${_monoprop_sharded_state_single_cases}")
-  else()
-    set(_cases "sharded_state_*")
-  endif()
-  monoprop_add_launch_env_case(
-    sharded_state_env_t${_threads}
-    "${_cases}"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-  )
-  set_tests_properties(
-    sharded_state_env_t${_threads}
-    PROPERTIES
-      TIMEOUT
-        300
-  )
-endforeach()
+# Owner-initialized shard state (detail/sharded/State.h).
+monoprop_add_team_launches(sharded_state "sharded_state_*" THREADS 1 2 4 TIMEOUT 300)
 
 # evolved_operator_coefficients() probes every shard of the rank: its suite reruns at T = 2 and 4, where the keys spread
 # over several shards, against the shard-transparent evolved_operator_terms() oracle at the same T.
-foreach(_threads IN ITEMS 2 4)
-  monoprop_add_launch_env_case(
-    evolved_coefficients_env_t${_threads}
-    "evolved_coefficients_*"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-  )
-endforeach()
+monoprop_add_team_launches(evolved_coefficients "evolved_coefficients_*" THREADS 2 4)
 
 # term_expectation_values() sweeps every shard's state back through its layers and gathers each key from the one shard
 # holding it: its suite reruns at T = 2 and 4 against the shard-transparent expectation_value() oracle at the same T.
-foreach(_threads IN ITEMS 2 4)
-  monoprop_add_launch_env_case(
-    term_expectation_values_env_t${_threads}
-    "term_expectation_values_*"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-  )
-endforeach()
+monoprop_add_team_launches(term_expectation_values "term_expectation_values_*" THREADS 2 4)
 
-# Direct-buffer construction and propagation (detail/sharded/Construction.h) under the same exact-team launches: one
-# fresh process per T. Cases that need a nonprimary worker are left out of T = 1. A timeout is a hang, not a pass.
-set(
-  _monoprop_sharded_construction_single_cases
-  "sharded_construction_rows_follow_the_ordering_contract,sharded_construction_propagation_matches_an_independent_reference,sharded_construction_owners_do_their_own_work,sharded_construction_opaque_cutoff_traverses_on_the_primary,sharded_construction_empty_operators_circuits_and_identity,sharded_construction_published_views_cover_the_window,sharded_construction_published_resolution_matches_owning_blocks,sharded_construction_large_self_streams_match_the_root,sharded_construction_wide_terms_match_the_root,sharded_construction_failure_in_each_phase_suppresses_later_work,sharded_construction_allocation_failures_are_contained,sharded_construction_rejects_invalid_arguments_before_the_team"
-)
-foreach(_threads IN ITEMS 1 2 4)
-  if(_threads EQUAL 1)
-    set(_cases "${_monoprop_sharded_construction_single_cases}")
-  else()
-    set(_cases "sharded_construction_*")
-  endif()
-  monoprop_add_launch_env_case(
-    sharded_construction_env_t${_threads}
-    "${_cases}"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-  )
-  set_tests_properties(
-    sharded_construction_env_t${_threads}
-    PROPERTIES
-      TIMEOUT
-        900
-  )
-endforeach()
+# Direct-buffer construction and propagation (detail/sharded/Construction.h).
+monoprop_add_team_launches(sharded_construction "sharded_construction_*" THREADS 1 2 4 TIMEOUT 900)
 
 # Snapshot-safe replay, energy, gradients, retained/pared functionals and coefficient-informed construction
-# (detail/sharded/Evaluation.h, Construction.h) under the same exact-team launches: one fresh process per T. Cases that
-# need a nonprimary worker are left out of T = 1. A timeout is a hang, not a pass.
-set(
-  _monoprop_sharded_evaluation_single_cases
-  "sharded_evaluation_identity_once_and_empty_parameters,sharded_evaluation_rejects_invalid_arguments_before_the_team,sharded_evaluation_matches_independent_references,sharded_evaluation_deep_circuit_gradients,sharded_evaluation_repeated_parameters_and_duplicate_records,sharded_evaluation_pared_functionals_match_the_root,sharded_evaluation_cosine_counts_reserve_records_exactly,sharded_evaluation_empty_stored_mask_applies_nothing,sharded_evaluation_repeated_instances_copies_and_index_growth,sharded_evaluation_owners_do_their_own_work,sharded_evaluation_opaque_callbacks_run_on_the_primary,sharded_evaluation_combination_folds_in_shard_order,sharded_evaluation_failure_in_each_phase_suppresses_later_work,sharded_evaluation_callback_paring_and_construction_failures,sharded_evaluation_allocation_failures_are_contained"
-)
-foreach(_threads IN ITEMS 1 2 4)
-  if(_threads EQUAL 1)
-    set(_cases "${_monoprop_sharded_evaluation_single_cases}")
-  else()
-    set(_cases "sharded_evaluation_*")
-  endif()
-  monoprop_add_launch_env_case(
-    sharded_evaluation_env_t${_threads}
-    "${_cases}"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-  )
-  set_tests_properties(
-    sharded_evaluation_env_t${_threads}
-    PROPERTIES
-      TIMEOUT
-        900
-  )
-endforeach()
+# (detail/sharded/Evaluation.h, Construction.h).
+monoprop_add_team_launches(sharded_evaluation "sharded_evaluation_*" THREADS 1 2 4 TIMEOUT 900)
 
 # The root (MonomialPropagator over detail/sharded/*) through its public operations, with private shard inspection,
-# phase observation and fault injection (PropagatorTestAccess.h). One fresh process per T, exact teams only; a timeout
-# is a hang, not a pass. Cases needing a nonprimary worker skip themselves at T = 1.
-foreach(_threads IN ITEMS 1 2 4)
-  monoprop_add_launch_env_case(
-    sharded_root_env_t${_threads}
-    "sharded_root_*"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_TEAM=${_threads}"
-  )
-  set_tests_properties(
-    sharded_root_env_t${_threads}
-    PROPERTIES
-      TIMEOUT
-        900
-  )
-endforeach()
+# phase observation and fault injection (PropagatorTestAccess.h).
+monoprop_add_team_launches(sharded_root "sharded_root_*" THREADS 1 2 4 EXPECT_TEAM TIMEOUT 900)
 
 # The fused-sweep, two-pass and real-record cases (fused_cos_sweep_tests.cpp) at fixed teams of two and four: each
 # launch audits its own shards' records and agrees with itself bitwise; geometries are compared through complete
 # retained maps in tests/test_sharded_openmp.py, never inside one process.
-foreach(_threads IN ITEMS 2 4)
-  monoprop_add_launch_env_case(
-    fused_env_t${_threads}
-    "fused_*,two_pass_apply_matches_graph_replay"
-    ENVIRONMENT "monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE"
-  )
-  set_tests_properties(
-    fused_env_t${_threads}
-    PROPERTIES
-      TIMEOUT
-        900
-  )
-endforeach()
+monoprop_add_team_launches(fused "fused_*,two_pass_apply_matches_graph_replay" THREADS 2 4 TIMEOUT 900)
 
 # No monoprop_NUM_THREADS at all, whatever the caller's environment holds: the root takes the OpenMP default, so
 # nothing between CTest and the library may supply the variable.
@@ -398,6 +299,10 @@ set_tests_properties(
 # is allowed in both Open MPI spellings, so a direct `ctest -L mpi` fits 3- and 4-rank launches onto smaller hosts.
 # Oversubscribed, spinning OpenMP waiters starve the ranks' MPI progress (4 ranks x 4 threads on a 4-core runner take
 # minutes instead of seconds), so waiting workers sleep.
+set(
+  _monoprop_mpi_launch_env
+  "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe"
+)
 function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
   cmake_parse_arguments("" "" "" "ENVIRONMENT" ${ARGN})
   add_test(
@@ -418,7 +323,7 @@ function(monoprop_add_sharded_mpi_launch NAME RANKS THREADS CASES)
       PROCESSORS
         ${_processors}
       ENVIRONMENT
-        "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
+        "${_monoprop_mpi_launch_env};monoprop_NUM_THREADS=${THREADS};OMP_NUM_THREADS=${THREADS};OMP_DYNAMIC=FALSE;OMP_WAIT_POLICY=PASSIVE;monoprop_TEST_EXPECT_TEAM=${THREADS};monoprop_TEST_SHARDED_RANKS=${RANKS};${_ENVIRONMENT}"
   )
 endfunction()
 
@@ -517,7 +422,7 @@ if(monoprop_ENABLE_MPI AND _monoprop_mpiexec)
         # As for the suite's MPI variants: CI containers may run as root. Binding is left to OpenMP, so a rank's two
         # threads are not squeezed onto one core.
         ENVIRONMENT
-          "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;OMP_DYNAMIC=FALSE"
+          "${_monoprop_mpi_launch_env};OMP_DYNAMIC=FALSE"
     )
   endfunction()
 
