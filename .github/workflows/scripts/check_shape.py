@@ -15,9 +15,9 @@
 """Fail a rung that did not run at the shape it was asked for.
 
 A knob that fails to reach the ranks does not fail the run: it measures a different team at a
-plausible wall time. So the recorded rank count and per-rank thread count must be the rung's,
-and the removed partition runtime's variable must not be set at all. Placement is the launcher's
-and OpenMP's (`--bind-to core`, `OMP_PROC_BIND`/`OMP_PLACES`); its summary is printed for the log.
+plausible wall time. So the recorded rank count and per-rank thread count must be the rung's.
+Placement is the launcher's and OpenMP's (`--bind-to core`, `OMP_PROC_BIND`/`OMP_PLACES`); its
+summary is printed for the log.
 
 Usage: check_shape.py <results/<label>.json> <ranks> <threads>
 """
@@ -36,7 +36,6 @@ def main(argv: list[str]) -> str | None:
 
     print(
         f"  ranks={meta['ranks']} threads={meta['monoprop_threads']} "
-        f"partitions_env={meta['partitions_env']} "
         f"single-cpu threads>={pin.get('single_cpu_threads_min', 0)} of {pin.get('threads', 0)} "
         f"mask={pin.get('affinity_cpus_min')}..{pin.get('affinity_cpus_max')}"
     )
@@ -45,11 +44,6 @@ def main(argv: list[str]) -> str | None:
         return (
             f"::error::{path.stem} ran at ranks={meta['ranks']} "
             f"threads={meta['monoprop_threads']}, asked for {ranks}x{threads}"
-        )
-    if meta["partitions_env"] != "unset":
-        return (
-            f"::error::{path.stem} ran with monoprop_PARTITIONS={meta['partitions_env']}; "
-            "the sharded runtime ignores it, so a rung must not set it"
         )
     return None
 

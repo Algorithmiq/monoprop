@@ -23,36 +23,13 @@ import pytest
 from monoprop_bench_tools import preflight
 from monoprop_bench_tools.preflight import PreflightError
 
-_BASELINE = {"monoprop_PARTITIONS": "4", "monoprop_NUM_THREADS": "4"}
+_OPENMP = {"monoprop_NUM_THREADS": "4"}
 
 
 def _declare(shape: str, env: dict[str, str], **kwargs: object) -> dict:
     kwargs.setdefault("ranks", 1)
     kwargs.setdefault("has_mpi", False)
     return preflight.declared_shape(shape, env, **kwargs)  # type: ignore[arg-type]
-
-
-def test_baseline_declares_both_legacy_thread_variables() -> None:
-    shape = _declare("partitions", {**_BASELINE, "OMP_NUM_THREADS": "4"})
-
-    assert shape["runtime_shape"] == "partitions"
-    assert (shape["ranks"], shape["threads"]) == (1, 4)
-    assert shape["settings"] == {**_BASELINE, "OMP_NUM_THREADS": "4"}
-
-
-@pytest.mark.parametrize(
-    "env",
-    [
-        {},
-        {"monoprop_NUM_THREADS": "4"},
-        {"monoprop_PARTITIONS": "4"},
-        {"monoprop_PARTITIONS": "4", "monoprop_NUM_THREADS": "2"},
-        {"monoprop_PARTITIONS": "auto", "monoprop_NUM_THREADS": "4"},
-    ],
-)
-def test_baseline_declaration_must_be_complete_and_consistent(env: dict) -> None:
-    with pytest.raises(PreflightError, match="partitions"):
-        _declare("partitions", env)
 
 
 def test_candidate_explicit_thread_budget() -> None:
@@ -79,57 +56,38 @@ def test_candidate_without_any_resolvable_budget_is_rejected() -> None:
         _declare("openmp", {"OMP_NUM_THREADS": "4,2"})
 
 
-def test_leftover_partition_setting_in_candidate_environment_is_rejected() -> None:
-    env = {"monoprop_NUM_THREADS": "4", "monoprop_PARTITIONS": "4"}
-    with pytest.raises(PreflightError, match="monoprop_PARTITIONS"):
-        _declare("openmp", env)
-
-
 def test_unknown_runtime_shape_is_rejected() -> None:
     with pytest.raises(PreflightError, match="runtime shape"):
-        _declare("hybrid", _BASELINE)
+        _declare("hybrid", _OPENMP)
 
 
 def test_wrong_observed_ranks_or_threads_is_rejected() -> None:
     with pytest.raises(PreflightError, match="ranks"):
-        _declare("partitions", _BASELINE, ranks=2, has_mpi=True, expected_ranks=1)
+        _declare("openmp", _OPENMP, ranks=2, has_mpi=True, expected_ranks=1)
     with pytest.raises(PreflightError, match="threads"):
-        _declare("partitions", _BASELINE, expected_threads=8)
+        _declare("openmp", _OPENMP, expected_threads=8)
 
 
 def test_nonpositive_ranks_are_rejected() -> None:
     with pytest.raises(PreflightError, match="ranks"):
-        _declare("partitions", _BASELINE, ranks=0)
+        _declare("openmp", _OPENMP, ranks=0)
 
 
 def test_mpi_off_declaration_with_several_ranks_is_rejected() -> None:
     with pytest.raises(PreflightError, match="MPI-off"):
-        _declare("partitions", _BASELINE, ranks=2, has_mpi=False)
+        _declare("openmp", _OPENMP, ranks=2, has_mpi=False)
 
 
 def test_requested_build_mode_must_match_the_imported_binary() -> None:
     with pytest.raises(PreflightError, match="has_mpi"):
-        _declare("partitions", _BASELINE, has_mpi=True, expected_has_mpi=False)
+        _declare("openmp", _OPENMP, has_mpi=True, expected_has_mpi=False)
     with pytest.raises(PreflightError, match="has_mpi"):
-        _declare("partitions", _BASELINE, has_mpi=False, expected_has_mpi=True)
+        _declare("openmp", _OPENMP, has_mpi=False, expected_has_mpi=True)
 
 
 def test_missing_build_mode_evidence_is_rejected() -> None:
     with pytest.raises(PreflightError, match="has_mpi"):
-        _declare("partitions", _BASELINE, has_mpi=None)
-
-
-@pytest.mark.parametrize(
-    ("arm", "shape"), [("baseline", "openmp"), ("candidate", "partitions")]
-)
-def test_a_relabelled_arm_cannot_bypass_the_shape(arm: str, shape: str) -> None:
-    with pytest.raises(PreflightError, match="arm"):
-        preflight.require_arm_shape(arm, shape)
-
-
-def test_matching_arm_and_shape_pass() -> None:
-    preflight.require_arm_shape("baseline", "partitions")
-    preflight.require_arm_shape("candidate", "openmp")
+        _declare("openmp", _OPENMP, has_mpi=None)
 
 
 def test_mpi_off_never_imports_mpi4py(monkeypatch: pytest.MonkeyPatch) -> None:

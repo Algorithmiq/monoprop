@@ -244,29 +244,20 @@ of per-rank peak RSS: an upper bound, shared pages counted once per rank and ran
 even when they never coexisted.
 
 Declare a multi-rank run's shape with `--runtime-shape=openmp` (below); the declared shape is recorded in `meta`.
-Without a declaration the suite keeps the removed partition runtime's guard and asks for `monoprop_PARTITIONS`
-above one rank, which the library itself ignores. The guard stays because this suite is a frozen measurement
-overlay that also serves the preserved partition baseline.
 
 `mpi4py` is imported only when the imported installation ships an MPI backend (a non-empty
-[MPI_ABIS][monoprop.MPI_ABIS]; the preserved partition baseline reports it as `monoprop.has_mpi`): importing
+[MPI_ABIS][monoprop.MPI_ABIS]; builds from before the MPI ABI variants report it as `monoprop.has_mpi`): importing
 `mpi4py.MPI` initializes MPI, which an MPI-off run must never do, even with `mpi4py` installed. An
 MPI-off build runs one process, launched directly. An MPI build measures on `MPI.COMM_WORLD`, so its
-propagators run on the MPI extension `_core_mpi`, and that is the file the run hashes and reads the
-runtime identity from.
+propagators run on the MPI extension `_core_mpi`, and that is the file the run hashes.
 
 Two options declare what a run measures and fail before anything is measured when the process
 contradicts them. `meta` records the declaration, the build mode as `has_mpi` and the measured extension's
-SHA-256:
+MD5:
 
-- `--runtime-shape=openmp` (every current build) requires `monoprop_PARTITIONS` unset, and a positive
-  `monoprop_NUM_THREADS`, or with it unset a single positive `OMP_NUM_THREADS`. `--runtime-shape=partitions`
-  serves only a binary of the removed partition runtime (the preserved baseline) and requires
-  `monoprop_PARTITIONS` and `monoprop_NUM_THREADS`, equal and positive. MPI-off builds must run one rank.
+- `--runtime-shape=openmp` requires a positive `monoprop_NUM_THREADS`, or with it unset a single positive
+  `OMP_NUM_THREADS`. MPI-off builds must run one rank.
 - `--build-mode=mpi` or `--build-mode=mpi-off` must match the imported installation's build mode.
-
-The `openmp` shape's requirement that `monoprop_PARTITIONS` be unset is measurement hygiene in the preflight:
-the library ignores the variable.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
@@ -291,103 +282,6 @@ can fall short of a transient that really was resident, by tens of MiB. On a 96-
 shortfall ranged from 2 to 51 MiB, independent of the transient's size. A single thread loses
 under 1 MiB, and `VmRSS` itself stays exact. Size memory comparisons so that peaks are well above
 this bound.
-
-### Parity evidence for the rank-local OpenMP refactor
-
-`tools/benchmark-rank-local-openmp.py` wraps the pytest suite above to collect the evidence the
-rank-local OpenMP plan (`docs/superpowers/plans/2026-09-18-rank-local-openmp.md`) requires. It adds no benchmarks of its own, apart from the paring-construction measurement below.
-The launcher, CPU binding and environment stay external. The driver checks them against a
-campaign inventory and an external placement file, and refuses to run when they disagree.
-
-It has three modes, each run in a fresh process:
-
-- `observe` measures one campaign cell and writes `DIR/ARM/CELL/SAMPLE/timed.json`. A historical
-  node runs in-process through pytest, and its raw artifacts are kept under `SAMPLE/timed/`. Add
-  `--whole-process` for a separate, untimed run that writes `construction.json`. That window opens
-  before any input is built and closes after the operation's outputs, graph and callable are all
-  still alive.
-- `validate` rebuilds the cell's workload in an untimed process. It records the energy, the full
-  gradient where the operation has one, and, for unpared operations, per-rank term files. Each
-  term file is sorted, gzip-compressed JSON Lines (`.jsonl.gz`, level 1, with a reproducible
-  header), `{"key": [...], "real": x, "imag": y}`, exported with
-  `evolved_operator(parameters, 0.0)`, so coefficients are rounded to `1e-12`. Pared operations
-  record scalars only. For `propagate` without coefficient truncation, validation also checks the
-  result against a graph replay of the same inputs.
-- `compare --campaign FILE --manifest FILE --output FILE` joins baseline and candidate artifacts
-  against the inventory. It exits `0` when every cell passes, `1` for an unmet gate or incomplete
-  coverage, and `2` for malformed or incompatible evidence.
-
-`compare` applies exactly five gates per cell, each a median ratio that must be at most 1.00:
-
-- runtime;
-- operation peak, summed over ranks and per-rank maximum;
-- whole-construction peak, summed over ranks and per-rank maximum.
-
-Both exactness flags must be true. Outer-window peaks are reported as labelled diagnostics and never
-gate. `compare` wants five paired observations per arm and cell, or ten after the prescribed
-repetition, and says when a first failure needs five more.
-
-It rejects evidence that cannot be joined:
-
-- run IDs or measurement files reused anywhere;
-- mismatched identities or build modes;
-- placement files that do not certify the full team;
-- artifacts from another campaign, such as calibration runs;
-- an arm whose binary was built with the wrong runtime.
-
-Each arm is bound to the runtime its extension was compiled with, read from the measured file
-itself. A build sets `__runtime_identity__` on its extension (`_core`, or the `_core_mpi` an MPI cell runs on)
-and embeds the same NUL-terminated literal: every
-current build `monoprop-runtime=sharded-openmp`; builds from before the partition runtime was removed
-`monoprop-runtime=sharded-openmp-prototype` (the development selector) or
-`monoprop-runtime=legacy-partitions`. The preflight matches each literal with its terminator, so the
-final marker is never mistaken for a prefix of the prototype's, and a binary carrying two markers, or
-an attribute its bytes do not carry, is refused. `observe` and `validate` require the attribute to agree
-with the bytes of the file whose SHA-256 they record, and record both. Only a sharded build (final or
-prototype) can serve `--runtime-shape openmp` (the candidate arm); a legacy build, including the
-preserved partition baseline, which predates the markers, serves only `partitions`. `compare` refuses
-candidate evidence without a marker-backed sharded identity for its own binary, and baseline evidence
-that records a sharded one. The baseline's frozen records carry no identity field and remain
-consumable; archived candidate records carry the prototype attribute, so evidence of the final binary
-is told apart from them by its attribute and binary hash, never by an arm label. This is read-only
-provenance, not a runtime switch: relabelling `--arm`, `--runtime-shape` or the environment cannot
-change which runtime a binary contains. The benchmark suite's `--runtime-shape` preflight applies
-the same check.
-
-Numerically, it merges each arm's rank files into a global map and requires equal key sets, with
-coefficients agreeing under `abs(a-b) <= 1e-9 + 1e-7*max(|a|,|b|)`. The Heisenberg identity term,
-replicated on every rank, is checked for agreement and counted once.
-
-`driver::pare_functional_construct[heisenberg|schrodinger]` is the one measurement the driver owns.
-It times only `expectation_value_and_gradient_functional(1e-10)` on a graph built beforehand, and
-keeps the returned callable alive until both memory windows close. `validate` then evaluates that
-callable at the recorded parameters.
-
-```bash
-# Baseline (the preserved partition baseline's own environment), MPI-off full machine: direct launch, no mpiexec.
-monoprop_PARTITIONS=96 monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 taskset -c 0-95 \
-  .venv/bin/python tools/benchmark-rank-local-openmp.py observe --arm baseline \
-  --runtime-shape partitions --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
-  --placement "$PLACEMENT" --output "$RESULTS"
-# Repeat with --whole-process in a new process; run `validate` without --sample-id.
-```
-
-The candidate arm uses its own environment and the ordinary public constructors, with no partition selector
-and no constructor overlay (the constructor has no partition argument, and the preflight refuses a candidate
-launch that sets `monoprop_PARTITIONS`):
-
-```bash
-# Candidate, MPI-off full machine: an ordinary MPI-off build, exact team.
-monoprop_NUM_THREADS=96 OMP_NUM_THREADS=96 OMP_DYNAMIC=FALSE taskset -c 0-95 \
-  "$CANDIDATE_ENV"/bin/python tools/benchmark-rank-local-openmp.py observe --arm candidate \
-  --runtime-shape openmp --campaign "$CAMPAIGN" --cell-id "$CELL" --sample-id s01 \
-  --placement "$PLACEMENT" --output "$RESULTS"
-```
-
-`tools/rank-local-openmp-workloads.json` holds each profile's complete configurations and
-parameter vectors. `tools/rank-local-openmp-campaign.json` is the owner-approved, frozen inventory of
-required cells, each with its identity and digests. `compare` treats that file as authoritative, so
-evidence cannot pass by regenerating either file.
 
 ### Benchmarking ladder
 
@@ -514,7 +408,7 @@ resident; on a floor of its own it is 2.10, so `peak-memory` now means at L1 wha
 `rungs` is one rung per line, `<name> <ranks> <threads> <rounds> | <pytest args>`: `threads` (OpenMP threads,
 and so shards, per rank) an integer or `per-rank` for one per physical core of the rank's share, and a `.suffix`
 picking the process within a shape. A shape that does not fit is refused rather than oversubscribed, and every
-rung reads its `ranks` and threads back out of its result JSON, requires `monoprop_PARTITIONS` unset, and logs the
+rung reads its `ranks` and threads back out of its result JSON and logs the
 thread placement. Once a
 testbed has history these should stay fixed — a new shape is a new prefix, so a new testbed.
 

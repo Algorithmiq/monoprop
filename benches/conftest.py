@@ -33,7 +33,7 @@ writes results.
 
 Each memory window records whether it was exact on every rank, independently:
 ``opmemexact`` for the operation window and ``memhwmexact`` for the outer ``memhwm`` window.
-``--runtime-shape`` (``partitions`` or ``openmp``) and ``--build-mode`` (``mpi`` or
+``--runtime-shape`` (``openmp``) and ``--build-mode`` (``mpi`` or
 ``mpi-off``) declare the measured shape; the preflight in
 :mod:`monoprop_bench_tools.preflight` checks them against the environment, the rank count and
 the imported extension before anything is measured.
@@ -67,8 +67,6 @@ from monoprop_bench_tools.preflight import (
     declared_shape,
     import_mpi,
     measured_extension,
-    require_shape_runtime,
-    runtime_identity,
 )
 
 import monoprop
@@ -207,7 +205,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     shape = parser.getgroup("monoprop-shape", "monoprop measurement preflight")
     shape.addoption(
         "--runtime-shape",
-        choices=("partitions", "openmp"),
+        choices=("openmp",),
         default=None,
         help="Declared process layout, checked against the environment and rank count.",
     )
@@ -239,15 +237,6 @@ def _measured_core() -> Any:
     return measured_extension(monoprop, _bench_comm())
 
 
-def _core_sha256() -> str:
-    """Return the SHA-256 of the extension module this run measures (see :func:`_core_md5`)."""
-    try:
-        path = Path(_measured_core().__file__)
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except (AttributeError, OSError, TypeError):
-        return "unavailable"
-
-
 def _core_md5() -> str:
     """Return the md5 of the extension module this run measures.
 
@@ -268,7 +257,7 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
     except PackageNotFoundError:
         nanobind_backend_version = "not installed"
 
-    meta = {
+    return {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
         "nodes": nodes,
@@ -279,11 +268,6 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         "hostname": socket.gethostname(),
         "monoprop_version": monoprop.__version__,
         "monoprop_core_md5": _core_md5(),
-        "monoprop_core_sha256": _core_sha256(),
-        "monoprop_core_path": str(getattr(_measured_core(), "__file__", "unavailable")),
-        "monoprop_runtime_identity": getattr(
-            _measured_core(), "__runtime_identity__", None
-        ),
         "has_mpi": _HAS_MPI,
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
@@ -296,11 +280,6 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         # Filled by _record_placement: the threads exist only once a propagator does.
         "pinning": {},
     }
-    # No nanobind property exposes the engine's resolved partition count (see bindings/binder.h),
-    # so record the requested env var under its own name rather than claim it is the effective value.
-    # Recorded even when absent: "unset" and a missing field render identically in the report.
-    meta["partitions_env"] = os.environ.get("monoprop_PARTITIONS", "unset")  # noqa: SIM112
-    return meta
 
 
 def _params(config: pytest.Config) -> dict[str, Any]:
@@ -312,15 +291,11 @@ def _params(config: pytest.Config) -> dict[str, Any]:
 
 
 def _require_shape(config: pytest.Config) -> dict[str, Any] | None:
-    """Check the declared measurement shape, or the legacy guard when none is declared.
+    """Check the declared measurement shape and build mode, if any.
 
     With ``--runtime-shape`` the shared preflight validates the declaration against the
     environment, the observed rank count and the imported build mode (plus ``--build-mode``),
-    and returns it for the run metadata. Without one, the legacy guard remains: a multi-rank run
-    must declare its partition count, because ``resolve_partition_count_`` defaults to
-    ``ranks == 1 ? cores : 1`` and an unset knob under MPI measures one partition per rank -- a
-    single-threaded run at a plausible wall time, with nothing in the timing to say so. Every
-    rank raises, so no rank is left in a collective. Serial runs take the engine default.
+    and returns it for the run metadata. Every rank raises, so no rank is left in a collective.
     """
     runtime_shape = config.getoption("--runtime-shape")
     build_mode = config.getoption("--build-mode")
@@ -340,24 +315,9 @@ def _require_shape(config: pytest.Config) -> dict[str, Any] | None:
                 has_mpi=_HAS_MPI,
                 expected_has_mpi=expected_has_mpi,
             )
-            # The declared shape must be one the imported binary's own runtime serves.
-            measured = _measured_core()
-            identity = runtime_identity(
-                Path(measured.__file__),
-                getattr(measured, "__runtime_identity__", None),
-            )
-            require_shape_runtime(runtime_shape, identity)
         except PreflightError as exc:
             raise pytest.UsageError(str(exc)) from exc
-        return {**shape, "runtime_identity": identity}
-    if _size() > 1 and not os.environ.get("monoprop_PARTITIONS"):  # noqa: SIM112
-        msg = (
-            "monoprop_PARTITIONS is unset on a run of "
-            f"{_size()} ranks. The engine would use one partition per rank. Export the "
-            "shape you intend, e.g. `export monoprop_PARTITIONS=16 monoprop_NUM_THREADS=16` "
-            "for 8 ranks per 128-core node."
-        )
-        raise pytest.UsageError(msg)
+        return shape
     return None
 
 

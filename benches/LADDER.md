@@ -58,12 +58,10 @@ export OMP_PLACES=cores OMP_PROC_BIND=close   # one thread per physical core
 ```
 
 Pass `--runtime-shape=openmp` (and `--build-mode=mpi` or `--build-mode=mpi-off`) to have the suite
-refuse a run whose environment, rank count or imported build contradicts that declaration; above one
-rank the suite otherwise asks for the partition count of the removed runtime. Do not set
-`monoprop_PARTITIONS`: the library ignores it, and the `openmp` shape refuses it.
+refuse a run whose environment, rank count or imported build contradicts that declaration.
 
-Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `partitions_env`,
-`monoprop_threads`, `declared_shape` and `has_mpi` in the run metadata.
+Before comparing results, check `ranks`, `nodes`, `ranks_per_node`, `monoprop_threads`,
+`declared_shape` and `has_mpi` in the run metadata.
 
 ## Calibrating model size
 

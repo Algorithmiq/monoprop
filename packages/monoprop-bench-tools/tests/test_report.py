@@ -145,11 +145,11 @@ def test_build_report_includes_node_placement(tmp_path: Path) -> None:
     _write_timings(tmp_path)
     _write_results(
         tmp_path,
-        meta={"nodes": 4, "ranks_per_node": 8, "partitions_env": "16"},
+        meta={"nodes": 4, "ranks_per_node": 8, "monoprop_threads": "16"},
     )
     md = _collapse(report.build_report(tmp_path))
 
-    assert "| Nodes | Ranks/node | Partitions (requested) |" in md
+    assert "| Nodes | Ranks/node | monoprop threads |" in md
     assert "| 4 | 8 | 16 |" in md
 
 
@@ -158,7 +158,7 @@ def test_build_report_omits_node_placement_when_absent(tmp_path: Path) -> None:
     _write_results(tmp_path, meta={"ranks": 8})
     md = _collapse(report.build_report(tmp_path))
 
-    assert "| 8 | — | — | — | default |" in md
+    assert "| 8 | — | — | default |" in md
 
 
 def test_fmt_config_formats_floats_compactly() -> None:
