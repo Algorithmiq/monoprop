@@ -19,7 +19,10 @@
 #include <vector>
 
 #include "TestUtilities.h"
+#include "monoprop/MPFunctions.h"
 #include "monoprop/MonomialPropagator.h"
+#include "monoprop/algebra/Algebra.h"
+#include "monoprop/detail/evolution/CosineRecompute.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
 // Tests for term_expectation_values(), which returns each term's expectation value. The main checks: the
@@ -187,4 +190,49 @@ BOOST_AUTO_TEST_CASE(term_expectation_values_out_of_range_slot_index_throws) {
     const auto data = load_case_data<kNumModes>(kCase);
     auto sim = built_sim(data, kTruncatedCutoff);
     BOOST_CHECK_THROW(sim.term_expectation_values(data.parameters, {VecZ{2 * kNumModes}}), AlgebraIndexOutOfRange);
+}
+
+// ev_op_gradient() is the one-store form of the same sweep: at T = 1 each initial term's row of the operator gradient,
+// decoded, is that term's value. The two paths replay differently, so they agree to tolerance, not bitwise.
+BOOST_AUTO_TEST_CASE(ev_op_gradient_matches_term_expectation_values) {
+    const auto data = load_case_data<kNumModes>(kCase);
+    auto sim = built_sim(data, kTruncatedCutoff);
+    const auto keys = keys_of(data.hamiltonian);
+    const auto values = sim.term_expectation_values(data.parameters, keys);
+
+    auto &op = sim.mp_op();
+    const VecD coeffs = op.get_operator();
+    const auto sparse = op.sparse_state();
+    const auto state = EvalState::sparse(op.size(), sparse.rows, sparse.values);
+    const auto &graph = sim.graph();
+    const size_t layers = graph.layers();
+    VecD gen_coeffs(layers); // optimizer order: the reverse of the layers'
+    for (size_t layer = 0; layer < layers; ++layer) {
+        gen_coeffs[layers - 1 - layer] = graph.get_layer_traversal(layer).gen_coeff();
+    }
+    const VecZ mapping = sim.parameter_mapping();
+    const auto view = graph.replay_view();
+    const auto cos = monoprop::detail::make_cos_callbacks<kNumModes>(op.inverted_index(), view, Basis::Majorana);
+    const EvalRequest request{.e_core = sim.core_term(),
+                              .state = state,
+                              .op = coeffs,
+                              .parameter_mapping = mapping,
+                              .gen_coeffs = gen_coeffs,
+                              .graph = view,
+                              .params = data.parameters};
+    const VecD gradient = ev_op_gradient(request, MPI_COMM_SELF, cos);
+
+    for (size_t q = 0; q < keys.size(); ++q) {
+        if (keys[q].empty()) {
+            continue; // the identity is rank-level metadata, not a row
+        }
+        const auto mono = indices_to_bitset<kNumModes>(keys[q]);
+        const auto row = sim.indexing().find(mono);
+        BOOST_TEST_REQUIRE(row.has_value());
+        const auto expected = std::conj(algebra_decode_coeff<kNumModes>(Basis::Majorana, gradient[*row], mono));
+        BOOST_TEST_CONTEXT("term " << q) {
+            BOOST_TEST(near(values[q].real(), expected.real()));
+            BOOST_TEST(near(values[q].imag(), expected.imag()));
+        }
+    }
 }
