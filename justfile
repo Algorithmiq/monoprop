@@ -154,7 +154,7 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     cmake -S cpp/tests/find_package_smoke -B "$build_dir" \
       -Dmonoprop_DIR="$site_packages/monoprop/cmake"
     cmake --build "$build_dir"
-    monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE "$build_dir/smoke"
+    {{ test_launch }} "$build_dir/smoke"
     monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE "$build_dir/smoke"
     abis="$("${python[@]}" -c 'import monoprop; print(" ".join(monoprop.MPI_ABIS))')"
     if [[ -z "$abis" ]]; then
@@ -171,7 +171,7 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
       -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_OPTIONAL_MPI=ON \
       -DCMAKE_DISABLE_FIND_PACKAGE_MPI=ON
     cmake --build "$build_dir-optional-mpi"
-    monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE "$build_dir-optional-mpi/smoke"
+    {{ test_launch }} "$build_dir-optional-mpi/smoke"
     # The targets file locates the libraries relative to the config directory, so the altered
     # copy sits in a mirror of the installation tree whose other entries link to the real ones.
     mismatch="$(mktemp -d)"
@@ -300,7 +300,7 @@ code-coverage-collect MPI BUILD_DIR OUTPUT_DIR:
     uv run --no-sync coverage erase
 
     # The test launch policy (test_launch above), for this recipe's test commands only.
-    export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE
+    export {{ test_launch }}
     uv run --no-sync coverage run --parallel-mode -m pytest -m "not mpi"
     if [[ "$mpi" == "on" ]]; then
       # The coverage lane runs in a container as root.
