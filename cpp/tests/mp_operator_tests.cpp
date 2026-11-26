@@ -260,12 +260,12 @@ BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_branches_pau
     BOOST_CHECK_EQUAL(grad.first.size(), 2U); // every supplied term recorded in the grad arrays
 }
 
-BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_heisenberg_rejects_absent_term) {
+BOOST_AUTO_TEST_CASE(mp_operator_require_updatable_terms_heisenberg_rejects_absent_term) {
     auto op = build_indexed_op({indices_to_bitset<8>({0, 2})}, Basis::Pauli);
 
     OperatorDict dict;
     dict[VecZ{1, 3, 5}] = cd(1.0, 0.0); // absent from both store and init_op_map
-    BOOST_CHECK_THROW(op.update_initial_operator(dict, /*schrodinger=*/false), std::runtime_error);
+    BOOST_CHECK_THROW(op.require_updatable_terms(dict, /*schrodinger=*/false), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(mp_operator_update_initial_operator_schrodinger_admits_absent_term) {

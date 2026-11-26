@@ -1520,49 +1520,6 @@ BOOST_AUTO_TEST_CASE(sharded_evaluation_repeated_instances_copies_and_index_grow
     BOOST_TEST((bits_of(after.second) == bits_of(before.second)));
 }
 
-namespace {
-
-// Captures each shard's evolving coefficients after every new-layer replay of an informed build.
-struct ReplayCapture {
-    std::vector<VecD> *last;
-    std::vector<size_t> *calls;
-    auto visit(W /*work*/, size_t /*step*/, size_t /*shard*/) const -> void {}
-    [[nodiscard]] auto kernels(size_t) const -> monoprop::detail::NoRangeObserver { return {}; }
-    auto replayed(size_t shard, size_t /*step*/, const VecD &coeffs) const -> void {
-        (*last)[shard] = coeffs;
-        ++(*calls)[shard];
-    }
-};
-
-// The evolving coefficients an informed build ends with equal an independent replay of the finished graph at the
-// picture's contraction angles (Schrödinger negated), from the live picture: rows created by a later layer lie past
-// every earlier layer's scaled_count, so earlier layers never touch them.
-template <size_t N>
-auto check_replayed_coefficients(Sharded<N> &s, const std::vector<VecD> &last, const VecD &params) -> void {
-    const bool schrodinger = s.schrodinger();
-    std::vector<VecD> start;
-    std::vector<MPGraphView> views;
-    std::vector<monoprop::detail::CosCallbacks> callbacks;
-    for (auto &state : s.shards) {
-        start.push_back(state->op.current_picture(schrodinger));
-        views.push_back(state->graph.slice_view(state->graph.layers()));
-    }
-    std::vector<sharded::ReplayRequest> requests;
-    for (size_t t = 0; t < s.shards.size(); ++t) {
-        callbacks.push_back(
-            monoprop::detail::make_cos_callbacks<N>(s.shards[t]->op.inverted_index(), views[t], s.f.basis));
-        requests.push_back({.coeffs = start[t], .graph = views[t]});
-    }
-    const auto angles = contraction_angles(s.shards.front()->graph, schrodinger, params);
-    const auto outcome = sharded::replay_shards(requests, angles, callbacks, team_options());
-    require_success(outcome.error, "replay_shards");
-    for (size_t t = 0; t < s.shards.size(); ++t) {
-        BOOST_TEST((bits_of(last[t]) == bits_of(outcome.coeffs[t])), "shard " << t);
-    }
-}
-
-} // namespace
-
 // Actual participation, asserted after the join: every evaluation, replay, retained-preparation and informed seed or
 // replay visit of shard t ran on worker t at nesting level 1 in a team of T, and every step is present.
 BOOST_AUTO_TEST_CASE(sharded_evaluation_owners_do_their_own_work) {

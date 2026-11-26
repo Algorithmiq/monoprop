@@ -340,7 +340,7 @@ struct MPOperator {
         return copied(op_coeffs) + copied(state_rows_) + copied(state_vals_) + copied(state_coeffs);
     }
 
-    // Throws OperatorTermNotFound for the first term update_initial_operator() would reject, changing nothing:
+    // Throws OperatorTermNotFound for the first term update_initial_operator() cannot take, changing nothing:
     // Heisenberg rejects a term that is neither pending nor an evolved-operator row (new monomials may have no graph
     // paths); Schrödinger admits every term (the state was already evolved).
     auto require_updatable_terms(const OperatorDict &op_dict, bool schrodinger) const -> void {
@@ -357,12 +357,11 @@ struct MPOperator {
         }
     }
 
-    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized; the terms
-    // are checked with require_updatable_terms() first. Returns the supplied terms with their encoded coefficients, in
-    // order.
+    // Each term lands on its existing evolved-operator row, or in the pending map if not yet materialized.
+    // Precondition: require_updatable_terms(op_dict, schrodinger) accepted the terms. Returns the supplied terms with
+    // their encoded coefficients, in order.
     auto update_initial_operator(const OperatorDict &op_dict, bool schrodinger)
         -> std::pair<MonomialList<NumModes>, VecD> {
-        require_updatable_terms(op_dict, schrodinger);
         MonomialMap<NumModes> new_op_map;
         std::pair<MonomialList<NumModes>, VecD> new_grad_op;
         VecD new_op_coeffs(size(), 0.0);
@@ -379,6 +378,7 @@ struct MPOperator {
                     new_op_map[mono] = coeff;
                 }
                 else {
+                    assert(rank_evolved_op && "term rejected by require_updatable_terms()");
                     new_op_coeffs[*rank_evolved_op] = coeff;
                 }
             }

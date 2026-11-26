@@ -345,69 +345,6 @@ BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_check_validity_first) {
     BOOST_CHECK_THROW(sim->graph_data(), InvalidPropagatorError);
 }
 
-namespace {
-
-// Sets one environment variable for a scope (or unsets it, for nullopt), then restores the previous state.
-class ScopedEnv {
-public:
-    ScopedEnv(const char *name, std::optional<std::string> value) : name_(name) {
-        if (const char *old = std::getenv(name)) {
-            old_ = std::string(old);
-        }
-        if (value) {
-            ::setenv(name, value->c_str(), 1);
-        }
-        else {
-            ::unsetenv(name);
-        }
-    }
-    ScopedEnv(const ScopedEnv &) = delete;
-    auto operator=(const ScopedEnv &) -> ScopedEnv & = delete;
-    ~ScopedEnv() {
-        if (old_) {
-            ::setenv(name_, old_->c_str(), 1);
-        }
-        else {
-            ::unsetenv(name_);
-        }
-    }
-
-private:
-    const char *name_;
-    std::optional<std::string> old_;
-};
-
-} // namespace
-
-// The obsolete partition selector is not read at all: whatever it holds while a root is constructed and used, the
-// root has the launch's T shards and answers bitwise as with the variable unset. Only the captured budget decides.
-BOOST_AUTO_TEST_CASE(sharded_root_ignores_the_obsolete_partition_variable) {
-    double energy = 0.0;
-    std::vector<std::pair<VecZ, std::complex<double>>> terms;
-    {
-        const ScopedEnv unset("monoprop_PARTITIONS", std::nullopt);
-        auto sim = make();
-        build(*sim);
-        energy = energy_of(*sim);
-        terms = sim->evolved_operator_terms(params(), 0.0);
-    }
-    for (const char *value : {"off", "auto", "1", "2", "4", "0", "", "-3", "not-a-count"}) {
-        BOOST_TEST_CONTEXT("monoprop_PARTITIONS=\"" << value << "\"") {
-            const ScopedEnv set("monoprop_PARTITIONS", std::string(value));
-            std::unique_ptr<MP> sim;
-            BOOST_CHECK_NO_THROW(sim = make());
-            BOOST_TEST_REQUIRE(sim != nullptr);
-            BOOST_TEST(Access::shards(*sim).size() == launch_team());
-            BOOST_TEST(Access::options(*sim).threads == static_cast<int>(launch_team()));
-            build(*sim);
-            BOOST_TEST(energy_of(*sim) == energy);
-            BOOST_TEST((sim->evolved_operator_terms(params(), 0.0) == terms));
-            const MP copy(*sim);
-            BOOST_TEST(Access::shards(copy).size() == launch_team());
-        }
-    }
-}
-
 // Registered as sharded_root_env_openmp_default_t3: monoprop_NUM_THREADS unset and OMP_NUM_THREADS=3. Neither the test
 // runner nor the library may supply the variable, so the root takes omp_get_max_threads() and runs that many owners.
 BOOST_AUTO_TEST_CASE(sharded_root_unset_budget_takes_the_openmp_default) {

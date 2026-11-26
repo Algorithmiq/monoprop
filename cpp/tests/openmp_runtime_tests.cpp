@@ -493,7 +493,6 @@ BOOST_AUTO_TEST_CASE(openmp_validation_errors_leave_the_owner_usable) {
     BOOST_CHECK_THROW(sim.update_initial_operator(OperatorDict{{absent_term, 1.0}}), std::runtime_error);
     check_usable("initial-operator term absent from the operator");
     BOOST_TEST(test_utils::near(retained(data.parameters), before));
-    BOOST_TEST(test_utils::near(retained(data.parameters), before));
 }
 
 BOOST_AUTO_TEST_CASE(openmp_invalid_owner_can_still_be_destroyed) {

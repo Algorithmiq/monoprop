@@ -28,7 +28,7 @@ observe one store per rank. Teams of T > 1 are dedicated fresh-process launches
 `openmp_env_root_budget_openmp_default_3` remove `monoprop_NUM_THREADS` on
 purpose, so the custom `main()` in `unit_tests.cpp` only initializes MPI and never
 supplies the variable. Running the binary by hand uses your environment; set the
-variables above to reproduce a CTest case. Nothing reads `monoprop_PARTITIONS`.
+variables above to reproduce a CTest case.
 
 ## Building Tests
 
@@ -291,7 +291,7 @@ There is one runtime, and every suite compiles against it.
 - `sharded_root_tests.cpp` covers the root (`ShardedPropagator.inl`): T routed shards at the (P, T) router,
   aggregates over every shard with shared metadata counted once, the raw-accessor rule (the actual sole shard at
   T = 1, `MultiShardUnsupported` naming the T = 1 launch otherwise, the validity guard first, the object still usable),
-  the obsolete `monoprop_PARTITIONS` ignored bit for bit, the unset budget taking the OpenMP default, actual-worker
+  the unset budget taking the OpenMP default, actual-worker
   participation in seeding, copies, construction and publication, informed seed replay, propagation, retained
   preparation, forward replay, reverse derivatives, contraction and the root's own owner phases, per-shard export and
   contraction blocks, initial-operator routing, remapping, ordinary virtual hooks, pre-mutation rejections,

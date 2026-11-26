@@ -184,9 +184,8 @@ enum class ConstructionWork : std::uint8_t {
  * kernels and exchange phases report to (see NoRangeObserver and LayerBuildEngine); it is called once, by the owner,
  * in its frame phase. Tests substitute observers that record the executing worker, capture streams or throw; an
  * exception from either method is that phase's failure. A test observer may also define
- * `replayed(shard, step, const VecD &coeffs)`, detected at compile time, which informed construction calls after each
- * new layer's replay with the owner's evolving coefficients, `queries_packed(step, shard, PhysicalExchange &)`,
- * called after the owner packed its remote query blocks, which may rewrite them to inject malformed traffic, and
+ * `queries_packed(step, shard, PhysicalExchange &)`, detected at compile time and called after the owner packed its
+ * remote query blocks, which may rewrite them to inject malformed traffic, and
  * `fused_records(step, shard, const FusedGateView &)`, which propagation calls with the owner's real fused records
  * just before it applies them.
  */
@@ -1145,10 +1144,6 @@ auto run_gates(parallel::Options options,
                                        flat,
                                        frame.replay_scratch,
                                        board);
-                        // Test-only: an observer that asks sees the evolving coefficients; production has no hook.
-                        if constexpr (requires { observer.replayed(t, step, std::as_const(*frame.coeffs)); }) {
-                            observer.replayed(t, step, std::as_const(*frame.coeffs));
-                        }
                     })) {
                     return;
                 }
