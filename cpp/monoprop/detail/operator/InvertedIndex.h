@@ -219,15 +219,6 @@ inline constexpr size_t kColumnBlockWords = 1024; // 8 KB block ≈ L1-resident 
 
 static_assert(kColumnBlockWords % 64 == 0, "the zero-block summary holds one bit per block word");
 
-// Per-thread fold block, overwritten on every use.
-inline auto column_block_scratch() -> std::vector<uint64_t> & {
-    static thread_local std::vector<uint64_t> blk;
-    if (blk.size() < kColumnBlockWords) {
-        blk.assign(kColumnBlockWords, 0);
-    }
-    return blk;
-}
-
 // Block that is all-zero between uses, with one summary bit per touched word. Users must re-zero what
 // they touch.
 struct ZeroBlockScratch {
@@ -236,11 +227,40 @@ struct ZeroBlockScratch {
     std::array<uint64_t, kSummaryWords> summary{};
 };
 
-// Per-thread zero blocks for the fold and the sparse pivot, which are expanded together.
-inline auto fold_zero_scratch() -> ZeroBlockScratch & {
-    static thread_local ZeroBlockScratch scratch;
-    return scratch;
+/*
+ * The thread's fold block. A fold runs one kernel per block, so the word sweep (which overwrites the words) and the
+ * posting fold (which needs them all-zero and leaves them so) share it: a second block per thread was about 0.8 MiB
+ * at T = 96, where every owner folds. `zero` records whether the words are all-zero now; the summary always is between
+ * uses. Neither accessor's result may be held across a fold on the same thread.
+ */
+struct SharedFoldBlock {
+    ZeroBlockScratch block;
+    bool zero = true;
+};
+
+inline auto shared_fold_block() -> SharedFoldBlock & {
+    static thread_local SharedFoldBlock shared;
+    return shared;
 }
+
+// The fold block for a word sweep, which overwrites it.
+inline auto column_block_scratch() -> std::vector<uint64_t> & {
+    SharedFoldBlock &shared = shared_fold_block();
+    shared.zero = false;
+    return shared.block.words;
+}
+
+// The fold block for the posting fold: all-zero, re-zeroed first if a word sweep last wrote it.
+inline auto fold_zero_scratch() -> ZeroBlockScratch & {
+    SharedFoldBlock &shared = shared_fold_block();
+    if (!shared.zero) {
+        std::ranges::fill(shared.block.words, 0);
+        shared.zero = true;
+    }
+    return shared.block;
+}
+
+// The sparse pivot's zero block, expanded while the fold's block is in use.
 inline auto pivot_zero_scratch() -> ZeroBlockScratch & {
     static thread_local ZeroBlockScratch scratch;
     return scratch;
@@ -449,8 +469,7 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
         }
     }
 
-    uint64_t *const blk = column_block_scratch().data();
-    ZeroBlockScratch &zs = fold_zero_scratch();
+    // The block is fetched per kernel, never held across both: they share it (SharedFoldBlock).
     for (size_t bb = wlo; bb < whi; bb += kColumnBlockWords) {
         const size_t be = std::min(bb + kColumnBlockWords, whi);
         size_t postings = 0;
@@ -466,7 +485,8 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
             postings_eligible
             && static_cast<double>(postings) <= kSparseFoldPostingsPerWord * static_cast<double>(be - bb);
         if (by_postings) {
-            fold_block_by_postings<NumModes>(sc, cols, begin, end, zs, bb, be, last_word, last_word_mask, on_word);
+            fold_block_by_postings<
+                NumModes>(sc, cols, begin, end, fold_zero_scratch(), bb, be, last_word, last_word_mask, on_word);
         }
         else {
             fold_block_by_words<NumModes>(sc,
@@ -474,7 +494,7 @@ inline auto for_each_fold_word(const InvertedIndex<NumModes> &sc,
                                           dense_seed,
                                           begin,
                                           end,
-                                          blk,
+                                          column_block_scratch().data(),
                                           bb,
                                           be,
                                           last_word,

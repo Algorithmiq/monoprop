@@ -18,7 +18,8 @@
 
 Each MPI extension and MPI libmonoprop must depend on exactly its ABI family's MPI soname, left
 unresolved for the user's MPI; nothing else may depend on MPI; no binary may carry an absolute
-RPATH, except the macOS MPI search directories on MPI binaries; no MPI library may be bundled;
+RPATH, except the macOS MPI search directories on MPI binaries; no MPI library may be bundled; a
+library bundled into a macOS wheel must be named ``@rpath/<file>`` (see ``name_bundled_dylibs.py``);
 the type stub and ``py.typed`` must be present.
 """
 
@@ -64,6 +65,7 @@ class Binary(NamedTuple):
     path: str
     needed: tuple[str, ...]
     rpaths: tuple[str, ...]
+    install_id: str | None = None
 
 
 def parse_readelf(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -80,10 +82,11 @@ def parse_readelf(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return needed, tuple(rpaths)
 
 
-def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return (LC_LOAD_DYLIB names, LC_RPATH paths) from ``otool -l`` output."""
+def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...], str | None]:
+    """Return (LC_LOAD_DYLIB names, LC_RPATH paths, LC_ID_DYLIB name or None) from ``otool -l`` output."""
     needed: list[str] = []
     rpaths: list[str] = []
+    install_id = None
     command = None
     for line in text.splitlines():
         fields = line.split()
@@ -95,9 +98,24 @@ def parse_otool(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
             and command in {"LC_LOAD_DYLIB", "LC_LOAD_WEAK_DYLIB"}
         ):
             needed.append(fields[1])
+        elif len(fields) >= 2 and fields[0] == "name" and command == "LC_ID_DYLIB":
+            install_id = fields[1]
         elif len(fields) >= 2 and fields[0] == "path" and command == "LC_RPATH":
             rpaths.append(fields[1])
-    return tuple(needed), tuple(rpaths)
+    return tuple(needed), tuple(rpaths), install_id
+
+
+def audit_install_id(binary: Binary, *, macos: bool) -> list[str]:
+    """Return a message if ``binary`` is a library bundled into a macOS wheel not named ``@rpath/<file>``."""
+    path = Path(binary.path)
+    if not macos or ".dylibs" not in path.parts[:-1]:
+        return []
+    want = f"@rpath/{path.name}"
+    if binary.install_id == want:
+        return []
+    return [
+        f"{binary.path}: bundled library is named {binary.install_id!r}, not {want!r}"
+    ]
 
 
 def audit_binary(binary: Binary, *, macos: bool) -> list[str]:
@@ -119,6 +137,7 @@ def audit_binary(binary: Binary, *, macos: bool) -> list[str]:
             errors.append(
                 f"{binary.path}: MPI must be loaded through @rpath: {mpi_deps}"
             )
+    errors += audit_install_id(binary, macos=macos)
     allowed = MACOS_MPI_RPATHS if macos and abi else ()
     missing = [rpath for rpath in allowed if rpath not in binary.rpaths]
     if missing:
@@ -200,8 +219,10 @@ def audit_abi_table(
 def _read_binary(root: Path, path: Path, *, macos: bool) -> Binary:
     command = ["otool", "-l", str(path)] if macos else ["readelf", "-d", str(path)]
     output = subprocess.run(command, check=True, capture_output=True, text=True).stdout  # noqa: S603
-    needed, rpaths = parse_otool(output) if macos else parse_readelf(output)
-    return Binary(path.relative_to(root).as_posix(), needed, rpaths)
+    needed, rpaths, install_id = (
+        parse_otool(output) if macos else (*parse_readelf(output), None)
+    )
+    return Binary(path.relative_to(root).as_posix(), needed, rpaths, install_id)
 
 
 def main() -> int:

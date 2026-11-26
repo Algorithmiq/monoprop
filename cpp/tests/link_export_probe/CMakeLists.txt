@@ -6,52 +6,56 @@
 # ld64 errors on undefined symbols by default, so no flag is needed there ("-Wl,-undefined,error" is
 # accepted but deprecated, and warns).
 
-add_executable(monoprop_link_export_probe.x link_export_probe.cpp)
-
 # monoprop-sanitizers is a no-op interface library outside a sanitizer build. Under one, libmonoprop.so
 # is ASan-instrumented; without this, the probe executable itself is not, so the ASan runtime reaches
 # the process only as a transitive dependency instead of as its own first library, and ASan refuses to
 # start ("runtime does not come first in initial library list"). A real external consumer building
 # against an ASan-instrumented monoprop would face the same requirement to sanitize their own code.
-target_link_libraries(
-  monoprop_link_export_probe.x
-  PRIVATE
-    monoprop-sanitizers
-    monoprop
-)
-
-if(NOT APPLE)
-  target_link_options(monoprop_link_export_probe.x PRIVATE "-Wl,--no-undefined")
-endif()
-
-add_test(NAME monoprop_link_export_probe COMMAND monoprop_link_export_probe.x)
-set_tests_properties(
-  monoprop_link_export_probe
-  PROPERTIES
-    LABELS
-      "unit"
-)
-
-# The same probe against every MPI-enabled libmonoprop, in singleton MPI (no mpiexec).
-foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
-  set(_probe monoprop_mpi_${_abi}_link_export_probe)
-  add_executable(${_probe}.x link_export_probe.cpp)
+#
+# (c): the consumer must inherit exactly its target's MPI setting: the serial libmonoprop never carries
+# monoprop_ENABLE_MPI, every MPI-enabled one always does.
+#
+# The test runs at a fixed team of two, so the multi-shard paths run; ENV_PREFIX entries go ahead of that team in its
+# environment.
+function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI ENV_PREFIX)
+  add_executable(${NAME}.x link_export_probe.cpp)
   target_link_libraries(
-    ${_probe}.x
+    ${NAME}.x
     PRIVATE
       monoprop-sanitizers
-      monoprop_mpi_${_abi}
+      ${LIBRARY}
+  )
+  target_compile_definitions(
+    ${NAME}.x
+    PRIVATE
+      monoprop_EXPECT_MPI=${EXPECT_MPI}
   )
   if(NOT APPLE)
-    target_link_options(${_probe}.x PRIVATE "-Wl,--no-undefined")
+    target_link_options(${NAME}.x PRIVATE "-Wl,--no-undefined")
   endif()
-  add_test(NAME ${_probe} COMMAND ${_probe}.x)
+  add_test(NAME ${NAME} COMMAND ${NAME}.x)
+  monoprop_team_environment(_team 2)
+  set(
+    _environment
+    ${ENV_PREFIX}
+    ${_team}
+  )
   set_tests_properties(
-    ${_probe}
+    ${NAME}
     PROPERTIES
       LABELS
         "unit"
       ENVIRONMENT
-        "${_monoprop_serial_env_entries}"
+        "${_environment}"
+  )
+  monoprop_set_test_processors(${NAME} 1 2)
+endfunction()
+
+monoprop_add_link_export_probe(monoprop_link_export_probe monoprop 0 "")
+
+# The same probe against every MPI-enabled libmonoprop, in singleton MPI (no mpiexec).
+foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
+  monoprop_add_link_export_probe(
+    monoprop_mpi_${_abi}_link_export_probe monoprop_mpi_${_abi} 1 "${_monoprop_serial_env_entries}"
   )
 endforeach()

@@ -286,7 +286,7 @@ BOOST_FIXTURE_TEST_CASE(snapshot_invariance_repeated_evaluation, ExampleDataFix)
     BOOST_TEST_MESSAGE("snapshot_invariance energy=" << e1);
 }
 
-// Lifetime contract: a LazyFold outlives the index it was built from (build_cos_callbacks retains one
+// Lifetime contract: a LazyFold outlives the index it was built from (make_cos_callbacks retains one
 // per layer in a functional's closure, and a later build_graph rebuilds InvertedIndex::row_parity_),
 // so it must hold no pointer into that buffer. Pins both halves — that the buffer really does move
 // under growth, and that a fold built before the growth still folds like a FoldCache built after it.

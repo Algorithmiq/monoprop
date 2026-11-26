@@ -154,7 +154,8 @@ function(monoprop_add_python_core target)
   nanobind_add_module(${target}
     NB_SUPPRESS_WARNINGS  # suppress warnings from nanobind and Python headers
     NOMINSIZE  # don’t perform optimizations to minimize binary size
-    LTO  # perform link-time optimization
+    # No LTO: the hot templates are instantiated and optimized whole inside each binding unit, and the core objects
+    # and nanobind's backend sit outside the LTO set, so it only moved code generation to the uncacheable link.
     BACKEND_MODULE nanobind_backend
     ${_domain}
     ${CMAKE_CURRENT_BINARY_DIR}/bindings.cpp

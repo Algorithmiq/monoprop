@@ -49,6 +49,9 @@ export OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 export OMPI_MCA_rmaps_base_oversubscribe=1 PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
 # Open MPI's shared-memory PMIx store cannot attach at its base address in some containers.
 export PMIX_MCA_gds=hash
+# Two threads per rank, as in `just test-py-mpi`'s ranks2-threads2 leg. Left unset, each rank takes the OpenMP default
+# (every core): two ranks of spinning waiters oversubscribe a 4-core runner, and the MPI suite takes ~8 min, not ~1.
+export monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE
 # Older impi-rt wheels keep libfabric in lib/libfabric and give libmpi.so.12 no RUNPATH, leaving
 # the loader path to Intel's vars script; newer ones set a RUNPATH and have no such directory.
 if [[ -d "$venv/lib/libfabric" ]]; then

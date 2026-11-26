@@ -109,7 +109,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
            std::optional<std::vector<std::vector<size_t>>> basis_change,
            size_t logical_num_modes,
            const std::string &basis,
-           size_t partitions,
            std::optional<size_t> max_sins) {
             new (t) MonomialPropagator<NumModes>(initial_operator,
                                                  cutoff,
@@ -122,7 +121,6 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
                                                  basis_change,
                                                  logical_num_modes,
                                                  basis_str_2_enum(basis),
-                                                 partitions,
                                                  max_sins);
         },
         "initial_operator"_a,
@@ -136,9 +134,10 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         "basis_change"_a = std::nullopt,
         "logical_num_modes"_a = NumModes,
         "basis"_a = "majorana",
-        "partitions"_a = 0,
+        // Keyword-only: a positional value here would land where the removed partition count went.
+        nb::kw_only(),
         "max_sins"_a = std::nullopt,
-        "Instantiate the simulator.");
+        "Instantiate the simulator; its shard count is the thread budget captured from monoprop_NUM_THREADS.");
 
     cls.def("build_graph",
             &MonomialPropagator<NumModes>::build_graph,
@@ -323,8 +322,8 @@ auto bind_monomial_propagator(nb::module_ &mod) -> void {
         return operator_breakdown_dict(self.operator_memory_usage());
     });
 
-    // The graph does not partition: its arrays are indexed by the flat world, so these grow with a P
-    // the MPI rank count never reveals.
+    // Summed over this rank's stores. The graph's slot arrays are indexed by the flat world (ranks x shards), so these
+    // grow with T as well as with the MPI rank count.
     cls.def("graph_memory_breakdown", [](const MonomialPropagator<NumModes> &self) {
         const auto b = self.graph_memory_usage();
         return std::map<std::string, size_t>{{"layer_descriptor_bytes", b.layer_descriptor_bytes},

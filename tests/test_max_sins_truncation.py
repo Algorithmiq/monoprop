@@ -258,10 +258,11 @@ def test_size_is_monotone_in_the_limit(lih_problem):
     assert sizes[1] < sizes[-1]
 
 
-@pytest.mark.parametrize("partitions", [1, 3])
-def test_partition_count_does_not_change_results(partitions, monkeypatch):
-    """The cross-partition path carries counts in the query records."""
-    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
+@pytest.mark.parametrize("threads", [1, 3])
+def test_shard_count_does_not_change_results(threads, monkeypatch):
+    """The cross-shard path carries counts in the query records."""
+    # Captured when the propagator is built: the serial run has T = threads shards.
+    monkeypatch.setenv("monoprop_NUM_THREADS", str(threads))
     rng = np.random.default_rng(51)
     hamiltonian = _random_hamiltonian(rng, 2)
     gates = _excitation_gates(rng, 8)

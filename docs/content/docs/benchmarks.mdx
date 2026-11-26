@@ -218,7 +218,7 @@ just bench serial                              # serial run, column "serial"
 just bench-smoke                               # quick sanity check (tiny sizes)
 just bench serial --num-modes 64 --bench-rounds 10
 
-monoprop_NUM_THREADS=10 just bench serial-t10  # cap the partition count
+monoprop_NUM_THREADS=10 OMP_NUM_THREADS=10 OMP_DYNAMIC=FALSE just bench serial-t10 --runtime-shape=openmp  # T=10 shards
 
 uv run --group bench monoprop-bench-report benches/results  # rebuild report, no re-run
 ```
@@ -243,13 +243,45 @@ Barriers delimit each timed operation, so runtime is the **makespan** across ran
 of per-rank peak RSS: an upper bound, shared pages counted once per rank and rank-local peaks summed
 even when they never coexisted.
 
-`monoprop_PARTITIONS` is mandatory above one rank — the engine's default is `ranks == 1 ? cores : 1`,
-which would silently measure one partition per rank — and the declared shape is recorded in `meta`.
+Declare a multi-rank run's shape with `--runtime-shape=openmp` (below); the declared shape is recorded in `meta`.
+
+`mpi4py` is imported only when the imported installation ships an MPI backend (a non-empty
+[MPI_ABIS][monoprop.MPI_ABIS]; builds from before the MPI ABI variants report it as `monoprop.has_mpi`): importing
+`mpi4py.MPI` initializes MPI, which an MPI-off run must never do, even with `mpi4py` installed. An
+MPI-off build runs one process, launched directly. An MPI build measures on `MPI.COMM_WORLD`, so its
+propagators run on the MPI extension `_core_mpi`, and that is the file the run hashes.
+
+Two options declare what a run measures and fail before anything is measured when the process
+contradicts them. `meta` records the declaration, the build mode as `has_mpi` and the measured extension's
+MD5:
+
+- `--runtime-shape=openmp` requires a positive `monoprop_NUM_THREADS`, or with it unset a single positive
+  `OMP_NUM_THREADS`. MPI-off builds must run one rank.
+- `--build-mode=mpi` or `--build-mode=mpi-off` must match the imported installation's build mode.
 
 ```bash
 just bench-build-mpi                           # build once (MPI on)
-monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2 just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
+monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE just bench-mpi r5t2 5 --map-by slot:PE=2 --bind-to core
 ```
+
+### Memory exactness
+
+Each memory window records whether its kernel reset worked on every rank, independently:
+`opmemexact` for the operation window (`opmempeak`, `opmembase`, `opmemdelta`) and `memhwmexact` for
+the outer window (`memhwm`, `memhwm_max`). One never certifies the other.
+
+In `REPORT.md`, a cell from a `false` window reads *non-exact* (the peak fell back to the RSS at
+exit, a lower bound). A cell with no flag, as in artifacts from before the flags existed, reads
+*exactness unknown*. `monoprop-bench-bmf` publishes `peak-memory` only when `memhwmexact` is true
+and `operation-memory` only when `opmemexact` is true, and warns on stderr otherwise. Latency and
+`terms` are unaffected.
+
+An exact window is not byte-exact on a many-core host. The kernel keeps `VmHWM` from per-CPU RSS
+counters that it reads approximately. When threads on many CPUs fault in memory, the recorded peak
+can fall short of a transient that really was resident, by tens of MiB. On a 96-core EC2 host the
+shortfall ranged from 2 to 51 MiB, independent of the transient's size. A single thread loses
+under 1 MiB, and `VmRSS` itself stays exact. Size memory comparisons so that peaks are well above
+this bound.
 
 ### Benchmarking ladder
 
@@ -265,10 +297,10 @@ reports threshold violations. The ladder itself lives in `bench.yml`. To reprodu
 declare its shape and take its selector and flags from the tables below — the label is your own:
 
 ```bash
-export monoprop_PARTITIONS=1 monoprop_NUM_THREADS=1     # the shape, declared
-just bench l1-hubbard --bench-rounds 3 -k "test_model_propagate and hubbard"
+export monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE   # the shape, declared
+just bench l1-hubbard --runtime-shape=openmp --bench-rounds 3 -k "test_model_propagate and hubbard"
 
-export monoprop_PARTITIONS=2 monoprop_NUM_THREADS=2     # P sizes the pinning
+export monoprop_NUM_THREADS=2 OMP_NUM_THREADS=2 OMP_DYNAMIC=FALSE OMP_PROC_BIND=close OMP_PLACES=cores
 just bench-mpi l2b 4 --map-by slot:PE=2 --bind-to core
 monoprop-bench-bmf benches/results l2b    # results as Bencher Metric Format JSON
 ```
@@ -279,8 +311,8 @@ monoprop-bench-bmf benches/results l2b    # results as Bencher Metric Format JSO
 | Measure | Unit | Source | Threshold |
 |---|---|---|---|
 | `latency` | nanoseconds | pytest-benchmark mean ± 1σ | Student's t-test, upper 0.99, ≥12 samples |
-| `peak-memory` | bytes | the process's peak RSS (`VmHWM`) while the row ran, summed over ranks | +10% |
-| `operation-memory` | bytes | what the timed call added above its own floor, summed over ranks | +10% |
+| `peak-memory` | bytes | the process's peak RSS (`VmHWM`) while the row ran, summed over ranks; only when `memhwmexact` | +10% |
+| `operation-memory` | bytes | what the timed call added above its own floor, summed over ranks; only when `opmemexact` | +10% |
 | `terms` | count | terms in the evolved operator | any change |
 
 The `~GiB` columns below are `peak-memory`. `terms` is deterministic for a fixed seed and size, so
@@ -295,16 +327,20 @@ one shape. It is the rung name up to the first `.`: `<cpu>-<cores>c-<prefix>`, f
 cores**, 32 GiB nominal (~30 usable), no swap — three testbeds:
 `intel-xeon-platinum-8488c-8c-L1`, `-L2a` and `-L2b`.
 
-| rungs | testbed | `R` × `P` | launch | `monoprop_PARTITIONS` | rounds |
+| rungs | testbed | `R` × `P` | launch | `monoprop_NUM_THREADS` | rounds |
 |---|---|---|---|---:|---:|
 | `L1.ops`, `L1.propagate` | L1 | 1 × 1 | `pytest benches` | 1 | 3 |
 | `L2a.ops`, `L2a.propagate` | L2a | 1 × 8 | `pytest benches` | 8 | 1 |
 | `L2b.ops`, `L2b.propagate` | L2b | 4 × 2 | `mpiexec -n 4 --map-by slot:PE=2 --bind-to core` | 2 | 1 |
 
+Every rung declares `--runtime-shape=openmp` with an exact team (`OMP_DYNAMIC=FALSE`) and binds one thread per
+core through `OMP_PROC_BIND=close OMP_PLACES=cores`; the series recorded before the partition runtime was
+removed ran `P` pinned partitions per rank instead, so a step at that commit is the runtime change.
+
 - One node, one MPI-enabled build, so an edge moves the shape and nothing else.
 - `R × P` = 8 at both L2 shapes. 4 × 2 pays the per-rank cost four times on one node, so it is the
   memory-worst shape and the one the size ceiling is set against; `P` = 2 keeps more than one
-  partition inside a rank, which 8 × 1 would not.
+  shard inside a rank, which 8 × 1 would not.
 - Rounds is 1 above L1 because `pedantic` builds round *k+1*'s propagator before releasing *k*'s — a
   memory setting, not a statistics one.
 
@@ -369,10 +405,11 @@ resident; on a floor of its own it is 2.10, so `peak-memory` now means at L1 wha
 
 #### Inputs
 
-`rungs` is one rung per line, `<name> <ranks> <partitions> <rounds> | <pytest args>`: `partitions` an
-integer or `per-rank` for one per physical core of the rank's share, and a `.suffix` picking the
-process within a shape. A shape that does not fit is refused rather than oversubscribed, and every
-rung reads its `ranks`, `partitions_env` and thread placement back out of its result JSON. Once a
+`rungs` is one rung per line, `<name> <ranks> <threads> <rounds> | <pytest args>`: `threads` (OpenMP threads,
+and so shards, per rank) an integer or `per-rank` for one per physical core of the rank's share, and a `.suffix`
+picking the process within a shape. A shape that does not fit is refused rather than oversubscribed, and every
+rung reads its `ranks` and threads back out of its result JSON and logs the
+thread placement. Once a
 testbed has history these should stay fixed — a new shape is a new prefix, so a new testbed.
 
 **No benchmark workflow gates a pull request.** It tracks `main`, and a threshold is a report, not a

@@ -48,9 +48,9 @@ def main() -> str | None:
     if not monoprop.MPI_ABIS:
         return "monoprop was built without MPI; every rung shares this binary"
 
-    # PHYSICAL cores, and only the ones this process may run on. Physical, because that is what
-    # the engine enumerates and the logical count would cross the `partitions > visible cores`
-    # threshold on any SMT machine. Visible, because psutil counts the whole machine: under a
+    # PHYSICAL cores, and only the ones this process may run on. Physical, because the rungs size
+    # their thread counts in cores and an SMT sibling is not a second core; monoprop itself takes
+    # whatever OpenMP reports. Visible, because psutil counts the whole machine: under a
     # mask -- a cpuset, taskset, or a shared runner -- that number oversubscribes every rung and
     # names the testbed after cores the run never had.
     visible = os.sched_getaffinity(0)

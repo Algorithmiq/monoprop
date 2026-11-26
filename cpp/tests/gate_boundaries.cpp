@@ -20,8 +20,10 @@
 #include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 
+#include "ShardedTestSupport.h"
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
 
@@ -192,29 +194,34 @@ namespace {
 constexpr size_t kBlockModes = 3;
 
 // Every unpaired observable term is within cutoff 2, the regime where blockwise truncation is the
-// literal Eq. 4 rule.
+// literal Eq. 4 rule. `shards` is the root's thread budget T, captured at construction.
 auto make_block_sim(unsigned int cutoff,
-                    size_t partitions = 1,
+                    size_t shards = 1,
                     std::optional<unsigned int> schrodinger_cutoff = std::nullopt,
                     std::optional<size_t> max_sins = std::nullopt) -> MonomialPropagator<kBlockModes> {
+    const sharded_test::ScopedEnv budget("monoprop_NUM_THREADS", std::to_string(shards));
     OperatorDict ham;
     ham[VecZ{0, 1}] = std::complex<double>{0.0, 0.7};
     ham[VecZ{2, 3}] = std::complex<double>{0.0, -0.4};
     ham[VecZ{0, 2}] = std::complex<double>{0.0, 0.3};
     ham[VecZ{1, 4}] = std::complex<double>{0.0, 0.5};
-    return MonomialPropagator<kBlockModes>(ham,
-                                           cutoff,
-                                           VecZ{0},
-                                           schrodinger_cutoff,
-                                           MPI_COMM_SELF,
-                                           std::nullopt,
-                                           std::nullopt,
-                                           CutoffType::Length,
-                                           std::nullopt,
-                                           kBlockModes,
-                                           Basis::Majorana,
-                                           partitions,
-                                           max_sins);
+    MonomialPropagator<kBlockModes> sim(ham,
+                                        cutoff,
+                                        VecZ{0},
+                                        schrodinger_cutoff,
+                                        MPI_COMM_SELF,
+                                        std::nullopt,
+                                        std::nullopt,
+                                        CutoffType::Length,
+                                        std::nullopt,
+                                        kBlockModes,
+                                        Basis::Majorana,
+                                        max_sins);
+    if (shards > 1) {
+        // Several shards: no single store represents the rank.
+        BOOST_CHECK_THROW((void)sim.mp_op(), MultiShardUnsupported);
+    }
+    return sim;
 }
 
 // Two-term "excitation-like" gates and one four-index gate, each gate its own parameter.
@@ -287,10 +294,10 @@ BOOST_AUTO_TEST_CASE(one_block_over_everything_is_exact) {
     }
 }
 
-// Retirement is partition-local; the partition count must not change the result.
-BOOST_AUTO_TEST_CASE(blockwise_truncation_is_partition_count_invariant) {
-    const auto run = [](size_t partitions, bool seeded, std::optional<unsigned int> schrodinger_cutoff) {
-        auto sim = make_block_sim(2, partitions, schrodinger_cutoff);
+// Retirement is shard-local; the shard count must not change the result.
+BOOST_AUTO_TEST_CASE(blockwise_truncation_is_shard_count_invariant) {
+    const auto run = [](size_t shards, bool seeded, std::optional<unsigned int> schrodinger_cutoff) {
+        auto sim = make_block_sim(2, shards, schrodinger_cutoff);
         sim.build_graph(kBlockMonos,
                         kBlockMapping,
                         kBlockCoeffs,
@@ -351,11 +358,11 @@ BOOST_AUTO_TEST_CASE(max_sins_uncounted_call_matches_off) {
     BOOST_TEST(uncounted.expectation_value(kBlockParams) == off.expectation_value(kBlockParams));
 }
 
-// Counts are partition-local and cross partitions in the query records; the partition count must not
-// change the result. The constructor argument reaches every partition.
-BOOST_AUTO_TEST_CASE(max_sins_is_partition_count_invariant) {
-    const auto run = [](size_t partitions, std::optional<unsigned int> schrodinger_cutoff, bool blocks) {
-        auto sim = make_block_sim(2, partitions, schrodinger_cutoff, /*max_sins=*/1);
+// Counts are shard-local and cross shards in the query records; the shard count must not change the
+// result. The constructor argument reaches every shard.
+BOOST_AUTO_TEST_CASE(max_sins_is_shard_count_invariant) {
+    const auto run = [](size_t shards, std::optional<unsigned int> schrodinger_cutoff, bool blocks) {
+        auto sim = make_block_sim(2, shards, schrodinger_cutoff, /*max_sins=*/1);
         BOOST_TEST(sim.max_sins().value_or(0) == 1u);
         sim.build_graph(kBlockMonos,
                         kBlockMapping,

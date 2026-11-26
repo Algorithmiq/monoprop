@@ -28,6 +28,11 @@
 
 namespace monoprop::detail {
 
+//! Number of `per_range`-sized logical ranges covering `items`.
+inline constexpr auto logical_ranges(size_t items, size_t per_range) -> size_t {
+    return (items + per_range - 1) / per_range;
+}
+
 // Sentinel for "no index resolved yet" in the resolve slots. Deliberately equal to
 // OperatorIndex::kNotFound, so one `>= size` bound check covers a miss and an unresolved slot alike.
 inline constexpr size_t kMissingIndex = std::numeric_limits<size_t>::max();
@@ -45,7 +50,7 @@ inline constexpr size_t kDroppedIndex = kMissingIndex - 1;
  * In Schrodinger a fully paired row belongs to the lazily materialized reference state, so
  * `paired_is_initial` treats such a partner as present from the start: always created, at count 0. */
 struct SinTrack {
-    std::vector<uint8_t> *counts; // the partition's per-row counts, sized to the operator
+    std::vector<uint8_t> *counts; // the shard's per-row counts, sized to the operator
     uint8_t max_sins;             // at most 254, so a parent count plus inc always fits a byte
     uint8_t inc;                  // 1, or 0 for a call whose sine branches are free
     bool paired_is_initial;       // Schrodinger: see above

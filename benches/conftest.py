@@ -25,9 +25,18 @@ readers are :mod:`monoprop_bench_tools.report` and :mod:`monoprop_bench_tools.bm
 so a change to ``_RESULTS`` has to land in both places. Recording is on only when
 the ``just bench`` recipe exports ``monoprop_BENCH_LABEL`` / ``monoprop_BENCH_RESULTS``.
 
-The ``bench_comm`` fixture yields ``MPI.COMM_WORLD`` when ``mpi4py`` is available
-(``None`` otherwise). Operations are barrier-wrapped so the timed cost reflects
-the slowest rank, and only rank 0 writes results.
+The ``bench_comm`` fixture yields ``MPI.COMM_WORLD`` when the imported extension was built
+with MPI and ``mpi4py`` is available (``None`` otherwise). An MPI-off extension never imports
+``mpi4py``: importing ``mpi4py.MPI`` initializes MPI, which an MPI-off measurement must not do.
+Operations are barrier-wrapped so the timed cost reflects the slowest rank, and only rank 0
+writes results.
+
+Each memory window records whether it was exact on every rank, independently:
+``opmemexact`` for the operation window and ``memhwmexact`` for the outer ``memhwm`` window.
+``--runtime-shape`` (``openmp``) and ``--build-mode`` (``mpi`` or
+``mpi-off``) declare the measured shape; the preflight in
+:mod:`monoprop_bench_tools.preflight` checks them against the environment, the rank count and
+the imported extension before anything is measured.
 """
 
 from __future__ import annotations
@@ -52,6 +61,14 @@ from monoprop_bench_tools.models import (
     build_random_propagator,
     make_random_problem,
 )
+from monoprop_bench_tools.preflight import (
+    RUNTIME_SHAPES,
+    PreflightError,
+    build_has_mpi,
+    declared_shape,
+    import_mpi,
+    measured_extension,
+)
 
 import monoprop
 
@@ -62,12 +79,13 @@ if TYPE_CHECKING:
 
     from monoprop import MajoranaPropagator
 
-try:
-    from mpi4py import MPI
-except (ImportError, OSError, RuntimeError):  # pragma: no cover - optional MPI build
-    # mpi4py may be absent, or (the ABI wheel) present but unable to dlopen libmpi
-    # on a serial node with no MPI module loaded.
-    MPI = None
+# The build mode of the installation actually imported; ``None`` if it cannot be read.
+_HAS_MPI: bool | None = build_has_mpi(monoprop)
+
+# Gated on the build mode before mpi4py is touched: an MPI-off run must not initialize MPI even
+# when mpi4py is installed. For an MPI build, mpi4py may still be absent, or (the ABI wheel)
+# present but unable to dlopen libmpi on a serial node; the run is then serial.
+MPI = import_mpi(has_mpi=bool(_HAS_MPI))
 
 
 def _rank() -> int:
@@ -118,6 +136,11 @@ def _gather_lists(comm: Any, values: list[int]) -> list[list[int]]:
     return gathered if gathered is not None else []
 
 
+def _all_ranks(comm: Any, *, flag: bool) -> bool:
+    """Return whether ``flag`` holds on every rank. Collective; serial returns ``flag``."""
+    return _reduce_min(comm, int(flag)) == 1
+
+
 def _spread(comm: Any, value: int) -> dict[str, int]:
     """Reduce a per-rank number to ``sum`` (bounds the job) and ``max`` (bounds a node)."""
     return {"sum": _reduce_sum(comm, value), "max": _reduce_max(comm, value)}
@@ -153,6 +176,9 @@ _RESULTS: dict[str, Any] = {
     "opmembase": {},  # node id -> that floor
     "opbytes": {},  # node id -> {"operator": n, "graph": n}
     "opmembreak": {},  # node id -> operator memory split (bytes)
+    # Per-window exactness, each true only when every rank's window was exact.
+    "opmemexact": {},  # node id -> the operation window (opmem*)
+    "memhwmexact": {},  # node id -> the outer window (memhwm, memhwm_max)
 }
 
 
@@ -177,6 +203,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     for name, kind, default, help_text in _RANDOM_OPTIONS:
         group.addoption(f"--{name}", type=kind, default=default, help=help_text)
 
+    shape = parser.getgroup("monoprop-shape", "monoprop measurement preflight")
+    shape.addoption(
+        "--runtime-shape",
+        choices=RUNTIME_SHAPES,
+        default=None,
+        help="Declared process layout, checked against the environment and rank count.",
+    )
+    shape.addoption(
+        "--build-mode",
+        choices=("mpi", "mpi-off"),
+        default=None,
+        help="Required build mode, checked against whether the imported installation ships an MPI backend.",
+    )
+
     models = parser.getgroup("monoprop-models", "monoprop fixed-model overrides")
     for model, (config_cls, _builder, _steps) in MODELS.items():
         for field in fields(config_cls):
@@ -188,14 +228,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             )
 
 
+def _bench_comm() -> Any:
+    """Return the benchmark communicator (``MPI.COMM_WORLD``, or ``None`` without an MPI backend)."""
+    return None if MPI is None or not _HAS_MPI else MPI.COMM_WORLD
+
+
 def _core_md5() -> str:
-    """Return the md5 of the extension module this run imported.
+    """Return the md5 of the extension module this run measures.
 
     The install-time version stamp is not rewritten by a later ``cmake --build`` and
-    site-packages holds its own copies, so hash what ``_core`` actually resolved to.
+    site-packages holds its own copies, so hash what the module actually resolved to.
     """
     try:
-        path = Path(monoprop._core.__file__)
+        path = Path(measured_extension(monoprop, _bench_comm()).__file__)
         return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
     except (AttributeError, OSError, TypeError):
         return "unavailable"
@@ -208,7 +253,7 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
     except PackageNotFoundError:
         nanobind_backend_version = "not installed"
 
-    meta = {
+    return {
         "label": os.environ.get("monoprop_BENCH_LABEL", "?"),  # noqa: SIM112
         "ranks": _size(),
         "nodes": nodes,
@@ -219,6 +264,7 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         "hostname": socket.gethostname(),
         "monoprop_version": monoprop.__version__,
         "monoprop_core_md5": _core_md5(),
+        "has_mpi": _HAS_MPI,
         "monoprop_variant": monoprop.__variant__,
         "monoprop_compiler_flags": monoprop.__compiler_flags__,
         "python_version": platform.python_version(),
@@ -230,11 +276,6 @@ def _meta(nodes: int, ranks_per_node: int) -> dict[str, Any]:
         # Filled by _record_placement: the threads exist only once a propagator does.
         "pinning": {},
     }
-    # No nanobind property exposes the engine's resolved partition count (see bindings/binder.h),
-    # so record the requested env var under its own name rather than claim it is the effective value.
-    # Recorded even when absent: "unset" and a missing field render identically in the report.
-    meta["partitions_env"] = os.environ.get("monoprop_PARTITIONS", "unset")  # noqa: SIM112
-    return meta
 
 
 def _params(config: pytest.Config) -> dict[str, Any]:
@@ -245,22 +286,34 @@ def _params(config: pytest.Config) -> dict[str, Any]:
     }
 
 
-def _require_shape() -> None:
-    """Fail a multi-rank run that has not declared its partition count.
+def _require_shape(config: pytest.Config) -> dict[str, Any] | None:
+    """Check the declared measurement shape and build mode, if any.
 
-    ``resolve_partition_count_`` defaults to ``ranks == 1 ? cores : 1``, so an unset knob
-    under MPI measures one partition per rank -- a single-threaded run at a plausible wall
-    time, with nothing in the timing to say so. Every rank raises, so no rank is left in a
-    collective. Serial runs take the engine default and are unaffected.
+    With ``--runtime-shape`` the shared preflight validates the declaration against the
+    environment, the observed rank count and the imported build mode (plus ``--build-mode``),
+    and returns it for the run metadata. Every rank raises, so no rank is left in a collective.
     """
-    if _size() > 1 and not os.environ.get("monoprop_PARTITIONS"):  # noqa: SIM112
+    runtime_shape = config.getoption("--runtime-shape")
+    build_mode = config.getoption("--build-mode")
+    expected_has_mpi = None if build_mode is None else build_mode == "mpi"
+    if expected_has_mpi is not None and _HAS_MPI is not expected_has_mpi:
         msg = (
-            "monoprop_PARTITIONS is unset on a run of "
-            f"{_size()} ranks. The engine would use one partition per rank. Export the "
-            "shape you intend, e.g. `export monoprop_PARTITIONS=16 monoprop_NUM_THREADS=16` "
-            "for 8 ranks per 128-core node."
+            f"--build-mode={build_mode} requires has_mpi={expected_has_mpi}, but the imported "
+            f"extension has has_mpi={_HAS_MPI}."
         )
         raise pytest.UsageError(msg)
+    if runtime_shape is None:
+        return None
+    try:
+        return declared_shape(
+            runtime_shape,
+            os.environ,
+            ranks=_size(),
+            has_mpi=_HAS_MPI,
+            expected_has_mpi=expected_has_mpi,
+        )
+    except PreflightError as exc:
+        raise pytest.UsageError(str(exc)) from exc
 
 
 @pytest.hookimpl(trylast=True)
@@ -271,9 +324,10 @@ def pytest_configure(config: pytest.Config) -> None:
     ``trylast`` so the terminal reporter exists before non-root ranks unregister it.
     """
     nodes, ranks_per_node = _nodes()  # collective; every rank must call this
-    _require_shape()
+    shape = _require_shape(config)
     if _rank() == 0:
         _RESULTS["meta"] = _meta(nodes, ranks_per_node)
+        _RESULTS["meta"]["declared_shape"] = shape
         _RESULTS["params"] = _params(config)
         return
 
@@ -304,7 +358,7 @@ def pytest_sessionfinish() -> None:
 @pytest.fixture(scope="session")
 def bench_comm() -> Any:
     """Return the benchmark communicator (``MPI.COMM_WORLD``, or ``None`` without an MPI backend)."""
-    return None if MPI is None or not monoprop.MPI_ABIS else MPI.COMM_WORLD
+    return _bench_comm()
 
 
 @pytest.fixture(scope="session")
@@ -418,6 +472,7 @@ class OpMemory:
         _record("opmemdelta", self._key, _spread(self._comm, window.delta_bytes))
         _record("opmempeak", self._key, _spread(self._comm, window.peak_bytes))
         _record("opmembase", self._key, _spread(self._comm, window.baseline_bytes))
+        _record("opmemexact", self._key, _all_ranks(self._comm, flag=window.exact))
 
         _record_placement(self._comm)
 
@@ -487,6 +542,8 @@ def record_memory(request: pytest.FixtureRequest, bench_comm: Any) -> Iterator[N
     key = request.node.nodeid.split("/")[-1]
     hwm = _reduce_sum(bench_comm, window.peak_bytes)
     hwm_max = _reduce_max(bench_comm, window.peak_bytes)
+    # Its own flag: an exact operation window inside it certifies nothing about this one.
+    _record("memhwmexact", key, _all_ranks(bench_comm, flag=window.exact))
     if hwm:
         _record("memhwm", key, hwm)
     if hwm_max:

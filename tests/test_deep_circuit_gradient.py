@@ -27,12 +27,11 @@ vacuously. Regression tests for issues #146 and #190.
 
 from __future__ import annotations
 
-import itertools
-
 import numpy as np
 import pytest
 
-from monoprop import Circuit, ExpGate, Pauli, PauliOperator, PauliPropagator
+from monoprop import Circuit, PauliPropagator
+from tests.reference_data import deep_circuit
 
 NUM_QUBITS = 8
 CUTOFF = 4
@@ -50,27 +49,7 @@ def _central_differences(expval, params, eps=1e-5):
 
 def _built_propagator(layers):
     """A ZZ observable propagated through `layers` of (every ZZ term, then an X on every qubit)."""
-    observable = PauliOperator(
-        {
-            Pauli("ZZ", [i, j]): 0.5
-            for i, j in itertools.combinations(range(NUM_QUBITS), 2)
-        },
-        num_qubits=NUM_QUBITS,
-    )
-    gates = []
-    for k in range(layers):
-        gates += [
-            ExpGate(PauliOperator({pauli: v}, num_qubits=NUM_QUBITS), index=k)
-            for pauli, v in observable.terms.items()
-        ]
-        gates += [
-            ExpGate(
-                PauliOperator({Pauli("X", i): -1.0}, num_qubits=NUM_QUBITS),
-                index=layers + k,
-            )
-            for i in range(NUM_QUBITS)
-        ]
-
+    observable, gates = deep_circuit(NUM_QUBITS, layers)
     propagator = PauliPropagator(observable, [], cutoff=CUTOFF)
     propagator.build_graph(Circuit(gates=gates, system_size=NUM_QUBITS))
     assert propagator.graph_size()[0] > 0, (

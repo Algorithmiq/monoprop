@@ -40,13 +40,7 @@ function(monoprop_add_core_objects name)
   cmake_parse_arguments(PARSE_ARGV 1 _arg "" "MPI" "")
   get_property(_sources GLOBAL PROPERTY monoprop_CORE_SOURCES)
   add_library(${name} OBJECT ${_sources})
-  target_link_libraries(
-    ${name}
-    PUBLIC
-      monoprop-core-usage
-    PRIVATE
-      PkgConfig::HWLOC
-  )
+  target_link_libraries(${name} PUBLIC monoprop-core-usage)
   if(_arg_MPI)
     target_link_libraries(${name} PUBLIC ${_arg_MPI})
     target_compile_definitions(${name} PUBLIC monoprop_ENABLE_MPI)

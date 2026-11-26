@@ -46,7 +46,8 @@ public:
 // inline_width_ is a free parameter -- any width is correct, over-long rows spill losslessly to overflow.
 // Rows are append-only; erase_row only unhooks a row from the lookup, so the lookup holds at most one
 // row per monomial while the rows themselves may repeat an erased monomial.
-// Single-writer: one partition, one thread; parallelism is cross-partition.
+// Single-writer: every mutation (growth, set, overflow, table insertion) runs on one thread. The const lookups
+// (find, find_batch, find_batch_positions) may run concurrently only while nothing mutates the store.
 template <size_t NumModes>
 class OperatorIndex {
 public:
@@ -366,6 +367,8 @@ public:
     // bulk_insert with the hashes already in hand: same precondition (n distinct rows, already written,
     // at consecutive indices) and the same slot assignment. `hashes[k]` must be fold_hash of the key of
     // row base+k -- a wrong one leaves the row unfindable, which surfaces later as a duplicate insert.
+    // Neither this nor bulk_insert deduplicates: two rows with one key are both indexed and find() returns
+    // the first (pinned by operator_index_tests). Inserts serially, in order.
     template <typename HashFn>
     auto bulk_insert_hashed(size_t n, mapped_type base, HashFn &&hash_at) -> void {
         if (n == 0) {
@@ -581,8 +584,8 @@ private:
     static auto check_append_fits(size_t base, size_t n) -> void {
         if (n > kIndexCeiling - base) {
             throw TermIndexCeilingReached(
-                std::format("OperatorIndex: appending {} terms to a partition holding {} would pass the "
-                            "2^32 TermIndex ceiling; raise the partition or rank count to split it further.",
+                std::format("OperatorIndex: appending {} terms to a store holding {} would pass the "
+                            "2^32 TermIndex ceiling; raise the rank or thread (shard) count to split it further.",
                             n,
                             base));
         }
@@ -590,8 +593,8 @@ private:
 
     static auto check_index_fits(size_t value) -> void {
         if (value >= kIndexCeiling) {
-            throw TermIndexCeilingReached("OperatorIndex: this partition's term count reached the 2^32 TermIndex "
-                                          "ceiling; raise the partition or rank count to split it further.");
+            throw TermIndexCeilingReached("OperatorIndex: this store's term count reached the 2^32 TermIndex "
+                                          "ceiling; raise the rank or thread (shard) count to split it further.");
         }
     }
 

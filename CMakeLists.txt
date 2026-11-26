@@ -71,6 +71,10 @@ find_package(
 
 find_package(Threads REQUIRED)
 
+# Required in every configuration, including MPI-off and single-thread builds: there is no
+# OpenMP-disabled variant of the library.
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+
 include(${PROJECT_SOURCE_DIR}/cmake/custom/monopropMPI.cmake)
 
 include(${PROJECT_SOURCE_DIR}/cmake/compiler_flags/Sanitizers.cmake)

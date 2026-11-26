@@ -205,6 +205,12 @@ BOOST_AUTO_TEST_CASE(majorana_cutoff_evaluator_dispatch_and_popcount) {
     BOOST_TEST((opaque_ev.support_cutoff() == nullptr));
     BOOST_TEST(!opaque_ev.max_slot_bound().has_value());
 
+    // Only the typed built-in cutoffs may run in scan workers. A stateless lambda is still opaque: the
+    // evaluator cannot see what it does, and constness of the std::function says nothing about it.
+    BOOST_TEST(length_ev.parallel_safe());
+    BOOST_TEST(support_ev.parallel_safe());
+    BOOST_TEST(!opaque_ev.parallel_safe());
+
     // passes_with_popcount: pc <= cutoff short-circuits to true; otherwise it equals a direct eval.
     Monomial<N> unpaired; // length 4, not paired
     unpaired.set(0);

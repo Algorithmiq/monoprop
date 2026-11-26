@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // The pure MPIUtils.h primitives (term->owner mapping, wire word packing), driven without a comm --
-// plus the routing agreement between find_rank and the scan, a property of neither call site alone.
+// plus the routing agreement between find_rank and the scan, a property of neither call site alone, the sparse peer
+// plan and the physical reductions.
 
 #include <boost/test/unit_test.hpp>
 
@@ -24,10 +25,12 @@
 #include <random>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "monoprop/algebra/MajoranaAlgebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
 #include "monoprop/detail/evolution/layer_build/Scan.h"
 #include "monoprop/detail/mpi/Comm.h"
+#include "monoprop/detail/mpi/MPICompat.h"
 #include "monoprop/detail/mpi/MPIUtils.h"
 #include "monoprop/detail/mpi/Routing.h"
 #include "monoprop/detail/operator/MPOperator.h"
@@ -103,17 +106,6 @@ auto draw_well_formed(std::mt19937_64 &rng, size_t logical, size_t weight) -> Mo
         }
     }
     return indices_to_bitset<N>(idx);
-}
-
-auto build_op(const std::vector<Monomial<32>> &terms) -> detail::MPOperator<32> {
-    detail::MPOperator<32> op;
-    op.basis = Basis::Majorana;
-    detail::insert_absent_terms<32>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<32> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<32>(*op.store, base + k, terms[k]); });
-    return op;
 }
 
 auto check_bucket_ownership(const mpi::WindowVec<VecZ> &buckets, const routing::Router &router, size_t &checked)
@@ -208,7 +200,7 @@ BOOST_AUTO_TEST_CASE(mpi_utils_scan_routing_agrees_with_find_rank) {
                     }
                 }
                 BOOST_REQUIRE(!owned.empty());
-                auto op = build_op(owned);
+                auto op = kernel_test::make_op<kN>(owned);
                 const mpi::SlotWindow window = plan.window(my_rank, ranks, /*parts=*/1);
                 VecD coeffs(op.store->size(), 1.0);
                 const auto cut = detail::build_majorana_evolution_cutoff_state(std::nullopt,
@@ -319,4 +311,40 @@ BOOST_AUTO_TEST_CASE(mpi_utils_paired_enumeration_partitions_by_find_rank) {
             BOOST_CHECK_EQUAL(total, full.size());
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(mpi_utils_sparse_plan_peer_is_an_involution) {
+    for (const int shift : {0, 1, 2, 3, 5, 8, 13, 255}) {
+        const mpi::PeerPlan plan{.sparse = true, .shift = shift};
+        BOOST_REQUIRE(!plan.dense());
+        BOOST_REQUIRE_EQUAL(plan.count(256), 1);
+        for (int me = 0; me < 256; ++me) {
+            const int peer = plan.peer(me, 0);
+            BOOST_REQUIRE_EQUAL(plan.peer(peer, 0), me);
+            BOOST_REQUIRE(plan.contains(me, peer));
+            BOOST_REQUIRE(plan.contains(peer, me));
+            BOOST_REQUIRE(!plan.contains(me, peer ^ 1)); // the peer set is a singleton
+        }
+    }
+    const mpi::PeerPlan dense_plan{};
+    BOOST_REQUIRE(dense_plan.dense());
+    BOOST_REQUIRE_EQUAL(dense_plan.count(7), 7);
+    for (int k = 0; k < 7; ++k) {
+        BOOST_REQUIRE_EQUAL(dense_plan.peer(3, k), k); // dense ignores `me`: every rank is a peer
+        BOOST_REQUIRE(dense_plan.contains(3, k));
+    }
+}
+
+// The physical reductions are ordinary MPI sums; every rank ends with the same value.
+BOOST_AUTO_TEST_CASE(mpi_utils_allreduce_sums_agree) {
+    const mpi::Comm c(MPI_COMM_WORLD);
+    const int ranks = mpi::size(c);
+    const int me = mpi::rank(c);
+    BOOST_CHECK_EQUAL(mpi::allreduce_sum<size_t>(static_cast<size_t>(me) + 1, c),
+                      static_cast<size_t>(ranks) * (static_cast<size_t>(ranks) + 1) / 2);
+    VecD values{static_cast<double>(me) + 0.5, 1.0, 0.0};
+    mpi::allreduce_sum_inplace(values, c);
+    BOOST_CHECK_CLOSE(values[0], static_cast<double>(ranks) * static_cast<double>(ranks) / 2.0, 1e-12);
+    BOOST_CHECK_EQUAL(values[1], static_cast<double>(ranks));
+    BOOST_CHECK_EQUAL(values[2], 0.0);
 }

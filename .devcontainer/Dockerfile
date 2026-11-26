@@ -9,6 +9,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     | grep -v '^$' \
     | xargs apt-get -y install \
     clang \
+    libomp-dev \
     clang-tidy \
     clang-format \
     cmake \

@@ -571,9 +571,10 @@ def test_pared_functional_matches_exact_graph():
     np.testing.assert_allclose(pared_grad, grad, atol=1e-10)
 
 
-@pytest.mark.parametrize("partitions", [1, 3])
-def test_partition_count_does_not_change_blockwise_results(partitions, monkeypatch):
-    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
+@pytest.mark.parametrize("threads", [1, 3])
+def test_shard_count_does_not_change_blockwise_results(threads, monkeypatch):
+    # Captured when the propagator is built: the serial run has T = threads shards.
+    monkeypatch.setenv("monoprop_NUM_THREADS", str(threads))
     rng = np.random.default_rng(51)
     hamiltonian = _random_hamiltonian(rng, 2)
     gates = [_random_commuting_gate(rng) for _ in range(8)]
@@ -946,11 +947,11 @@ def test_schrodinger_pared_functional_matches_exact_graph():
     np.testing.assert_allclose(pared_grad, grad, atol=1e-10)
 
 
-@pytest.mark.parametrize("partitions", [1, 3])
-def test_schrodinger_partition_count_does_not_change_blockwise_results(
-    partitions, monkeypatch
+@pytest.mark.parametrize("threads", [1, 3])
+def test_schrodinger_shard_count_does_not_change_blockwise_results(
+    threads, monkeypatch
 ):
-    monkeypatch.setenv("monoprop_PARTITIONS", str(partitions))
+    monkeypatch.setenv("monoprop_NUM_THREADS", str(threads))
     rng = np.random.default_rng(307)
     hamiltonian = _random_hamiltonian(rng)
     gates = [_random_commuting_gate(rng) for _ in range(8)]

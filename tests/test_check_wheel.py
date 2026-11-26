@@ -75,6 +75,7 @@ def test_parse_otool() -> None:
     assert check_wheel.parse_otool(OTOOL) == (
         ("@rpath/libmpi.40.dylib", "/usr/lib/libc++.1.dylib"),
         ("@loader_path/lib", "/opt/homebrew/lib"),
+        None,
     )
 
 
@@ -148,6 +149,28 @@ def test_macos_mpi_dependency_must_go_through_rpath() -> None:
         "monoprop/_core_mpi.openmpi.abi3.so",
         ("/opt/mpi/openmpi/lib/libmpi.40.dylib",),
         (),
+    )
+    assert check_wheel.audit_binary(binary, macos=True)
+
+
+def test_parse_otool_install_id() -> None:
+    text = (
+        "Load command 3\n"
+        "          cmd LC_ID_DYLIB\n"
+        "      cmdsize 48\n"
+        "         name @rpath/libomp.dylib (offset 24)\n"
+    )
+    assert check_wheel.parse_otool(text) == ((), (), "@rpath/libomp.dylib")
+
+
+def test_macos_bundled_library_named_through_rpath_passes() -> None:
+    binary = Binary("monoprop/.dylibs/libomp.dylib", (), (), "@rpath/libomp.dylib")
+    assert check_wheel.audit_binary(binary, macos=True) == []
+
+
+def test_macos_bundled_library_with_delocate_placeholder_fails() -> None:
+    binary = Binary(
+        "monoprop/.dylibs/libomp.dylib", (), (), "/DLC/monoprop/.dylibs/libomp.dylib"
     )
     assert check_wheel.audit_binary(binary, macos=True)
 

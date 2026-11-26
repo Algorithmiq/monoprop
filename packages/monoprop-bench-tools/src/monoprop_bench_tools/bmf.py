@@ -39,6 +39,12 @@ Four measures are emitted:
     window opens inside ``setup``, after construction, so it excludes both the build
     transient and anything a previous row left resident -- the figure to compare across
     the rows of one plot.
+Each memory measure is published only when its own window was exact on every rank:
+``peak-memory`` needs ``memhwmexact`` and ``operation-memory`` needs ``opmemexact``. A false
+flag means the window fell back to a lower bound; an absent flag (legacy artifact) means the
+exactness is unknown. Either way the measure is withheld with a warning on stderr rather than
+seeding Bencher's history with an uncertified number, and one window never certifies the other.
+
 ``terms`` (count)
     Terms in the evolved operator. Deterministic for a fixed seed and problem
     size, so it is held to an exact match: it is the only check that a timing
@@ -145,6 +151,20 @@ def _timings(results_dir: Path, label: str) -> Iterator[tuple[str, Metric]]:
         yield benchmark_name(bench["fullname"].split("/")[-1]), _latency(bench["stats"])
 
 
+def _exact(flags: dict[str, bool], node_id: str, metric: str) -> bool:
+    """Return whether ``metric`` of ``node_id`` is certified by its own window's flag.
+
+    Warns on stderr when it is not: ``False`` is a known lower-bound fallback, absence is a
+    legacy artifact whose exactness is unknown and is never assumed to be ``True``.
+    """
+    flag = flags.get(node_id)
+    if flag is True:
+        return True
+    reason = "is not exact" if flag is False else "has unknown exactness"
+    print(f"bmf: {metric} for {node_id} {reason}; not published", file=sys.stderr)
+    return False
+
+
 def build_bmf(results_dir: Path, label: str) -> Bmf:
     """Return the BMF JSON object for ``label``'s artifacts in ``results_dir``."""
     results = _read_json(results_dir / f"{label}.json")
@@ -156,15 +176,20 @@ def build_bmf(results_dir: Path, label: str) -> Bmf:
     for benchmark, latency in _timings(results_dir, label):
         bmf.setdefault(benchmark, {})["latency"] = latency
 
-    # ``memhwm`` is the kernel's exact peak RSS per operation, summed over ranks under MPI.
+    # ``memhwm`` is the kernel's peak RSS per operation, summed over ranks under MPI. Its
+    # window spans setup, so only its own ``memhwmexact`` flag can certify it.
+    outer_exact = results.get("memhwmexact", {})
     for benchmark, peak in results.get("memhwm", {}).items():
-        measure(benchmark_name(benchmark), "peak-memory", peak)
+        if _exact(outer_exact, benchmark, "peak-memory"):
+            measure(benchmark_name(benchmark), "peak-memory", peak)
 
     # ``opmemdelta`` is spread over the ranks rather than reduced to one number: ``sum``
     # matches what ``peak-memory`` uploads, and ``max`` is the per-node bound that
     # ``memhwm_max`` is for the footprint. Only rows that ran a timed call have one.
+    op_exact = results.get("opmemexact", {})
     for benchmark, delta in results.get("opmemdelta", {}).items():
-        measure(benchmark_name(benchmark), "operation-memory", delta["sum"])
+        if _exact(op_exact, benchmark, "operation-memory"):
+            measure(benchmark_name(benchmark), "operation-memory", delta["sum"])
 
     # A node-id key names the benchmark that built the operator, so its count belongs on
     # that benchmark, beside the latency and peak memory of the same call. Where a shared

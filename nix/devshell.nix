@@ -7,7 +7,6 @@
   # C++ toolchain
   cmake,
   ninja,
-  pkg-config,
   clang-tools,
   gdb,
   lcov,
@@ -15,7 +14,7 @@
 
   # C++ dependencies
   boost,
-  hwloc,
+  llvmPackages,
   openmpi,
 
   # workflow tooling
@@ -30,7 +29,6 @@ mkShell {
   nativeBuildInputs = [
     cmake
     ninja
-    pkg-config
     clang-tools
     gdb
     lcov
@@ -43,12 +41,13 @@ mkShell {
   ];
 
   # Host inputs, so that CMake's setup hook puts them on NIXPKGS_CMAKE_PREFIX_PATH
-  # and PKG_CONFIG_PATH for the CMake run scikit-build-core drives.
+  # for the CMake run scikit-build-core drives. OpenMP is required:
+  # the GCC stdenv ships libgomp, while Clang (the Darwin stdenv) needs the LLVM runtime.
   buildInputs = [
     boost
-    hwloc
     openmpi
-  ];
+  ]
+  ++ lib.optionals stdenv.cc.isClang [ llvmPackages.openmp ];
 
   shellHook = ''
     # `[tool.uv] python-preference = "only-managed"` pulls prebuilt interpreters

@@ -342,3 +342,14 @@ BOOST_AUTO_TEST_CASE(sparse_fold_replay_kernels_match_oracle) {
         }
     }
 }
+
+// The word sweep and the posting fold use one block per thread (every owner folds at T = 96, so a second block is
+// resident on each worker): the posting fold gets it all-zero even straight after a word sweep left it dirty.
+BOOST_AUTO_TEST_CASE(sparse_fold_word_and_posting_kernels_share_one_block) {
+    std::vector<uint64_t> &swept = column_block_scratch();
+    std::ranges::fill(swept, ~uint64_t{0}); // what a word sweep leaves behind
+    const uint64_t *const storage = swept.data();
+    const ZeroBlockScratch &zs = fold_zero_scratch();
+    BOOST_TEST(zs.words.data() == storage);
+    BOOST_TEST(zero_scratch_is_clean(zs));
+}

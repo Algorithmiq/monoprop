@@ -1,0 +1,374 @@
+# Copyright 2026 Algorithmiq
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Fresh-process probe for ``tests/test_sharded_openmp.py``.
+
+Run as ``python sharded_openmp_probe.py '<json spec>'`` in a process whose thread configuration was set before
+``monoprop`` is imported. It drives only the public API (plus the extension's low-level constructor for configuration
+controls) and prints one JSON document on its last stdout line. Floats are emitted as ``float.hex`` so
+the parent can compare bits; the parent decides what has to agree.
+
+In an MPI build every rank runs the same calls on the world communicator, passed explicitly: ``comm=None`` runs
+serially on ``_core``. When the spec names an ``out`` directory, each rank writes its own document to
+``<out>/rank<r>.json`` instead of stdout, so interleaved launcher output cannot split one; exports, contraction blocks
+and aggregates are rank-local, energies and gradients global.
+
+Not collected by pytest: the file name has no ``test_`` prefix.
+"""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+_TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(_TESTS.parent))
+
+import monoprop  # noqa: E402
+from monoprop import (  # noqa: E402
+    Circuit,
+    MajoranaPropagator,
+    PauliOperator,
+    PauliPropagator,
+    _core,
+)
+from monoprop.circuit import expand_monomials  # noqa: E402
+from tests.reference_data import deep_circuit, load_problem  # noqa: E402
+
+
+def _has_mpi() -> bool:
+    # An MPI-enabled wheel tested without mpi4py (cibuildwheel's serial suite) runs serially, like an MPI-off build.
+    return importlib.util.find_spec("mpi4py") is not None and bool(monoprop.MPI_ABIS)
+
+
+# Set by main() before any scenario runs: MPI.COMM_WORLD in an MPI build, None otherwise, and the extension module
+# that serves it (a current MPI build serves a communicator from _core_mpi).
+_COMM: Any = None
+_CORE: Any = _core
+
+
+def _hex(value: float) -> str:
+    return float(value).hex()
+
+
+def _hexes(values: Any) -> list[str]:  # noqa: ANN401
+    return [_hex(v) for v in np.asarray(values, dtype=np.float64).ravel()]
+
+
+def _raw_map(propagator: Any, params: list[float], atol: float) -> dict[str, list[str]]:  # noqa: ANN401
+    raw = propagator._simulator.evolved_operator(params, atol)
+    return {
+        json.dumps(list(key)): [_hex(complex(v).real), _hex(complex(v).imag)]
+        for key, v in raw.items()
+    }
+
+
+def _aggregates(propagator: Any) -> dict[str, Any]:  # noqa: ANN401
+    sim = propagator._simulator
+    return {"size": sim.size(), "graph_layers": sim.graph_layers()}
+
+
+class _Problem:
+    """A fixture: a factory for fresh propagators, a circuit and evaluation parameters."""
+
+    def __init__(self, name: str, picture: str) -> None:
+        self.schrodinger = picture == "schrodinger"
+        {"random_exact": self._random_exact, "pauli_deep": self._pauli_deep}[name]()
+        if self.schrodinger:
+            self.kwargs["schrodinger_cutoff"] = self.kwargs["cutoff"]
+
+    def _random_exact(self) -> None:
+        problem = load_problem(_TESTS / "data" / "random_exact.msgpack")
+        self.basis = "majorana"
+        self.circuit = problem.monomial_circuit.to_circuit()
+        self.params = [float(v) for v in problem.monomial_circuit.parameters]
+        self.operator = problem.operator
+        self.state = list(problem.monomial_circuit.initial_state)
+        self.num_modes = problem.n_modes
+        self.kwargs: dict[str, Any] = {"cutoff": 2 * problem.n_modes}
+
+    def _pauli_deep(self) -> None:
+        # The deep-gradient regression family (tests/test_deep_circuit_gradient.py): repeated parameters and records.
+        layers, num_qubits = 2, 6
+        observable, gates = deep_circuit(num_qubits, layers)
+        self.basis = "pauli"
+        self.params = [1.0] * (2 * layers)
+        self.circuit = Circuit(
+            gates=gates, system_size=num_qubits, parameters=self.params
+        )
+        self.operator = observable
+        self.state = [0, 2]
+        self.num_modes = num_qubits
+        self.kwargs = {"cutoff": 3}
+
+    def make(self, **overrides: Any) -> Any:  # noqa: ANN401
+        kwargs = {**self.kwargs, **overrides}
+        cls = PauliPropagator if self.basis == "pauli" else MajoranaPropagator
+        return cls(self.operator, self.state, comm=_COMM, **kwargs)
+
+    def scaled_operator(self, factor: float) -> Any:  # noqa: ANN401
+        terms = {k: v * factor for k, v in self.operator.terms.items()}
+        if self.basis == "pauli":
+            return PauliOperator(terms, num_qubits=self.num_modes)
+        return type(self.operator)(terms, self.num_modes)
+
+
+def _evaluations(propagator: Any, params: list[float]) -> dict[str, Any]:  # noqa: ANN401
+    energy = propagator.expectation_value(params)
+    value, grad = propagator.expectation_value_and_gradient(params)
+    unpared = propagator.expectation_value_and_gradient_functional()
+    pared = propagator.expectation_value_and_gradient_functional(1e-3)
+    pared_energy = propagator.expectation_value_functional(0.05)
+    out: dict[str, Any] = {
+        "energy": _hex(energy),
+        "value": _hex(value),
+        "gradient": _hexes(grad),
+    }
+    for label, fn in (("unpared", unpared), ("pared", pared)):
+        v, g = fn(params)
+        out[f"{label}_value"] = _hex(v)
+        out[f"{label}_gradient"] = _hexes(g)
+        # A second call of the same functional must answer identically.
+        v2, g2 = fn(params)
+        out[f"{label}_repeat"] = _hex(v2) == _hex(v) and _hexes(g2) == _hexes(g)
+    out["pared_energy"] = _hex(pared_energy(params))
+    return out
+
+
+def _scenario_full(spec: dict[str, Any]) -> dict[str, Any]:
+    problem = _Problem(spec["fixture"], spec["picture"])
+    params = problem.params
+    out: dict[str, Any] = {}
+
+    # The public build_graph seeds a first build with the circuit's parameters (the coefficient-informed engine path);
+    # the engine's structural path is reached by omitting them at the binding.
+    graph = problem.make()
+    graph._simulator.build_graph(*_expanded(graph, problem.circuit), None, None)
+    graph._n_params = problem.circuit.n_parameters
+    out["graph"] = {
+        **_evaluations(graph, params),
+        "map0": _raw_map(graph, params, 0.0),
+        "map": _raw_map(graph, params, 1e-12),
+        "contract": _hexes(graph.contract_partially(params, inplace=False)),
+        "aggregates": _aggregates(graph),
+        "python_terms": len(graph.evolved_operator(params, atol=0.0).terms),
+    }
+    # Non-inplace contraction leaves the graph and its answers unchanged.
+    out["graph"]["after_contract_energy"] = _hex(graph.expectation_value(params))
+
+    # Copy, then mutate the copy: the source answers as before; the copy diverges.
+    duplicate = copy.deepcopy(graph)
+    out["copy"] = {"energy": _hex(duplicate.expectation_value(params))}
+    duplicate.update_initial_operator(problem.scaled_operator(2.0))
+    out["copy"]["scaled_energy"] = _hex(duplicate.expectation_value(params))
+    out["copy"]["source_energy"] = _hex(graph.expectation_value(params))
+
+    # Coefficient-informed construction: the circuit's own parameters seed the lower-atol truncation.
+    informed = problem.make(lower_atol=spec.get("informed_atol", 1e-3))
+    informed.build_graph(problem.circuit)
+    out["informed"] = {
+        **_evaluations(informed, params),
+        "map0": _raw_map(informed, params, 0.0),
+        "aggregates": _aggregates(informed),
+    }
+
+    # Graph-free propagation.
+    direct = problem.make()
+    direct.propagate(problem.circuit)
+    out["propagate"] = {
+        "energy": _hex(direct.expectation_value([])),
+        "map0": _raw_map(direct, [], 0.0),
+        "contract": _hexes(direct.contract_partially([], inplace=False)),
+        "aggregates": _aggregates(direct),
+    }
+
+    # Incremental axis: build twice (structural extension), evaluate on the doubled axis, contract in place, then
+    # build again (informed by the contracted picture) and evaluate.
+    incremental = problem.make()
+    incremental.build_graph(problem.circuit)
+    incremental.build_graph(problem.circuit)
+    doubled = params + params
+    out["incremental"] = {"energy": _hex(incremental.expectation_value(doubled))}
+    out["incremental"]["contract"] = _hexes(
+        incremental.contract_partially(doubled, inplace=True)
+    )
+    out["incremental"]["after_contract_layers"] = incremental.graph_layers
+    out["incremental"]["contracted_energy"] = _hex(incremental.expectation_value([]))
+    incremental.build_graph(problem.circuit)
+    out["incremental"]["rebuilt_energy"] = _hex(incremental.expectation_value(params))
+    out["incremental"]["rebuilt_gradient"] = _hexes(incremental.gradient(params))
+    out["incremental"]["map0"] = _raw_map(incremental, params, 0.0)
+
+    # Remapping: every layer driven by parameter 0; then settings updates followed by a further build.
+    remap = problem.make()
+    remap.build_graph(problem.circuit)
+    remap.parameter_mapping = [0] * remap.graph_layers
+    out["remap"] = {
+        "value": _hex(remap.expectation_value([params[0]])),
+        "gradient": _hexes(remap.gradient([params[0]])),
+    }
+    settings = problem.make(lower_atol=1e-9, upper_atol=1e-1)
+    settings.build_graph(problem.circuit)
+    settings.cutoff = settings.cutoff + 1
+    settings.lower_atol = 1e-6
+    settings.build_graph(problem.circuit, seed_parameters=params + params)
+    out["settings"] = {
+        "energy": _hex(settings.expectation_value(params + params)),
+        "map0": _raw_map(settings, params + params, 0.0),
+    }
+
+    # Initial-operator updates: an earlier functional is invalidated, a new one sees the new coefficients.
+    updates = problem.make()
+    updates.build_graph(problem.circuit)
+    stale = updates.expectation_value_functional()
+    updates.update_initial_operator(problem.scaled_operator(0.5))
+    out["stale_functional"] = _attempt(lambda: stale(params))
+    out["updated"] = {
+        "energy": _hex(updates.expectation_value(params)),
+        "functional": _hex(updates.expectation_value_functional()(params)),
+        "map0": _raw_map(updates, params, 0.0),
+    }
+    return out
+
+
+def _expanded(propagator: Any, circuit: Circuit) -> tuple[Any, ...]:  # noqa: ANN401
+    gates = propagator._circuit_gates(circuit)
+    majoranas, gen_coeffs, mapping, gate_indices = expand_monomials(
+        gates,
+        circuit.resolved_mapping,
+        propagator._system_size,
+    )
+    return majoranas, mapping, gen_coeffs, gate_indices
+
+
+def _attempt(fn: Any) -> str:  # noqa: ANN401
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 - the parent checks the type and message
+        return f"{type(exc).__name__}: {exc}"
+    return "ok"
+
+
+def _scenario_controls(spec: dict[str, Any]) -> dict[str, Any]:
+    terms = {(0, 1): 1j, (2, 3): 0.5j, (1, 2): 0.25j}
+
+    def construct(**kwargs: Any) -> Any:  # noqa: ANN401
+        return _CORE.MonomialPropagator032(
+            initial_operator=terms, cutoff=4, initial_state=[0, 1], comm=_COMM, **kwargs
+        )
+
+    out: dict[str, Any] = {}
+    out["default"] = _attempt(construct)
+    if spec.get("construction_only"):
+        return out
+    out["logical_modes_zero"] = _attempt(lambda: construct(logical_num_modes=0))
+    out["logical_modes_too_large"] = _attempt(lambda: construct(logical_num_modes=33))
+    # A logical width below capacity: indices at or above 2 * logical_num_modes are rejected.
+    out["logical_modes_index"] = _attempt(
+        lambda: _CORE.MonomialPropagator032(
+            initial_operator={(0, 9): 1j},
+            cutoff=4,
+            initial_state=[0],
+            comm=_COMM,
+            logical_num_modes=4,
+        )
+    )
+    narrow = _CORE.MonomialPropagator032(
+        initial_operator={(0, 1): 1j, (2, 3): 0.5j},
+        cutoff=4,
+        initial_state=[0],
+        comm=_COMM,
+        logical_num_modes=4,
+    )
+    out["logical_generator_index"] = _attempt(
+        lambda: narrow.build_graph([[0, 8]], [0], [1.0])
+    )
+    narrow.build_graph([[1, 2], [0, 3]], [0, 1], [1.0, 1.0])
+    out["logical_energy"] = _hex(narrow.expectation_value([0.3, 0.2]))
+
+    # Empty circuits, empty operators and identity generators.
+    empty = _CORE.MonomialPropagator032(
+        initial_operator={}, cutoff=4, initial_state=[], comm=_COMM
+    )
+    empty.build_graph([], [], [])
+    out["empty_operator"] = {
+        "size": empty.size(),
+        "energy": _hex(empty.expectation_value([])),
+        "map": _attempt(lambda: empty.evolved_operator([], 0.0)),
+    }
+    empty.build_graph([[0, 1]], [0], [1.0])
+    out["empty_operator"]["energy_after_gate"] = _hex(empty.expectation_value([0.4]))
+    identity = construct()
+    identity.build_graph([[]], [0], [1.0])
+    out["identity_generator"] = {
+        "layers": identity.graph_layers(),
+        "energy": _hex(identity.expectation_value([0.7])),
+        "gradient": _hexes(identity.expectation_value_and_gradient([0.7])[1]),
+    }
+    core_only = _CORE.MonomialPropagator032(
+        initial_operator={(): 2.5}, cutoff=4, initial_state=[], comm=_COMM
+    )
+    core_only.build_graph([[0, 1]], [0], [1.0])
+    out["core_only"] = {
+        "energy": _hex(core_only.expectation_value([0.3])),
+        "map": {
+            json.dumps(list(k)): _hex(complex(v).real)
+            for k, v in core_only.evolved_operator([0.3], 0.0).items()
+        },
+    }
+
+    # Pre-mutation rejection leaves the object usable, a missing Heisenberg term included.
+    sim = construct()
+    sim.build_graph([[0, 2], [1, 3]], [0, 1], [1.0, 1.0])
+    out["bad_parameter_count"] = _attempt(lambda: sim.expectation_value([0.1]))
+    out["usable_after_rejection"] = _attempt(lambda: sim.expectation_value([0.3, 0.2]))
+    out["propagate_on_graph"] = _attempt(
+        lambda: sim.propagate([[0, 2]], [0], [1.0], [0.1])
+    )
+    out["missing_term_update"] = _attempt(
+        lambda: sim.update_initial_operator({(4, 5): 1j})
+    )
+    out["after_missing_term"] = _attempt(lambda: sim.expectation_value([0.3, 0.2]))
+    out["copy_after_missing_term"] = _attempt(lambda: copy.deepcopy(sim))
+    return out
+
+
+def main() -> None:
+    global _COMM, _CORE  # noqa: PLW0603 - fixed once, before any propagator exists
+    spec = json.loads(sys.argv[1])
+    if _has_mpi():
+        from mpi4py import MPI  # noqa: PLC0415 - MPI-off runs never import mpi4py
+
+        _COMM = MPI.COMM_WORLD
+    _CORE = monoprop._backend.core_module(_COMM)
+    scenarios = {"full": _scenario_full, "controls": _scenario_controls}
+    scenario = spec["scenario"]
+    result: dict[str, Any] = {scenario: scenarios[scenario](spec)}
+    out = spec.get("out")
+    if out is None:
+        sys.stdout.write(json.dumps(result) + "\n")
+        return
+    rank, ranks = (0, 1) if _COMM is None else (_COMM.Get_rank(), _COMM.Get_size())
+    result["rank"], result["ranks"] = rank, ranks
+    Path(out, f"rank{rank}.json").write_text(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

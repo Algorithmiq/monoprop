@@ -50,6 +50,10 @@ FIGURES = {
 TOLERANCE = 0.5
 
 
+# Repository tooling, not the package: a wheel's test run skips it.
+pytestmark = pytest.mark.wheel_redundant
+
+
 @pytest.fixture
 def plot_script(monkeypatch, tmp_path):
     """Run a plot script as `__main__`, saving its figures into `tmp_path` by file name."""

@@ -100,6 +100,9 @@ public:
     /// Non-owning replay view over the active layers, in build order.
     auto replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), false}; }
 
+    /// Non-owning view over the active layers, newest first: the window of an adjoint sweep.
+    auto reverse_replay_view() const -> MPGraphView { return {layers_, active_begin_index(), layers(), true}; }
+
     auto is_schrodinger() const -> bool { return schrodinger_; }
 
     /// A normally-built layer stores no cosine set, so the companion cosine-index count cannot come from

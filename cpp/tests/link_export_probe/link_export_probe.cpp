@@ -21,11 +21,14 @@
 //
 // Explicit class-template instantiation alone is not sufficient: it emits every member function's
 // object code (including their calls into detail/** free functions), which is what the linker checks,
-// but it does not run any of it. main() below actually drives both chains implicated by the bug report:
+// but it does not run any of it. main() below actually drives the chain implicated by the bug report:
 //  (a) the graph-building / Schrodinger path (detail/graph_encoding/MPGraphEncodingStorage.h), via
 //      build_graph(), graph_memory_usage(), and expectation_value_and_gradient().
-//  (b) the partition path (detail/partition/CpuTopology.h), via a partitions > 1 construction, which is
-//      the only way to make PartitionGroup actually place and pin partition-worker threads.
+// It also checks the installed usage requirements a consumer inherits:
+//  (b) the OpenMP compile and link flags, which must reach the consumer through the imported target alone: the
+//      instantiations below compile the library's OpenMP regions in this translation unit;
+//  (c) the MPI setting: the consumer sees monoprop_ENABLE_MPI exactly when it linked an MPI-enabled libmonoprop
+//      (monoprop_EXPECT_MPI, when set).
 
 #include "monoprop/MonomialPropagator.h"
 #include "monoprop/detail/mpi/MPICompat.h"
@@ -34,6 +37,14 @@
 #include <optional>
 #include <print>
 #include <vector>
+
+#if defined(monoprop_EXPECT_MPI)
+#if monoprop_EXPECT_MPI && !defined(monoprop_ENABLE_MPI)
+#error "expected an MPI-enabled libmonoprop, but the imported target did not carry monoprop_ENABLE_MPI"
+#elif !monoprop_EXPECT_MPI && defined(monoprop_ENABLE_MPI)
+#error "expected the serial libmonoprop, but the imported target carries monoprop_ENABLE_MPI"
+#endif
+#endif
 
 // Forces every member function of MonomialPropagator<NumModes> to be compiled for these two
 // representative widths, regardless of which ones main() below happens to call.
@@ -76,36 +87,17 @@ auto run_graph_build_chain() -> void {
                  grad.size());
 }
 
-// Drives PartitionGroup's constructor: partitions > 1 is required for the facade to actually exist, so
-// enumerate_physical_cores / affinity_mask_words / summarize_masks / format_place_line / partition_cpusets /
-// pin_this_thread all run for real (not merely compiled) on the master threads it spawns.
-auto run_partition_chain() -> void {
-    constexpr size_t kModes = 6;
-    OperatorDict ham;
-    ham[VecZ{0, 1}] = std::complex<double>{0.0, 1.0};
-
-    MonomialPropagator<kModes> sim(ham,
-                                   2 * kModes,
-                                   VecZ{0, 1},
-                                   /*schrodinger_cutoff=*/std::nullopt,
-                                   MPI_COMM_SELF,
-                                   /*lower_atol=*/std::nullopt,
-                                   /*upper_atol=*/std::nullopt,
-                                   CutoffType::Length,
-                                   /*basis_change=*/std::nullopt,
-                                   /*logical_num_modes=*/kModes,
-                                   Basis::Majorana,
-                                   /*partitions=*/2);
-
-    std::println(stderr, "[link_export_probe] partition chain: size={}", sim.size());
-}
+// Without the imported target's OpenMP compile flags the library's pragmas would silently compile out, so check for
+// them explicitly rather than rely on a link failure.
+#ifndef _OPENMP
+#error "monoprop::monoprop did not propagate the OpenMP compile flags to this consumer"
+#endif
 
 } // namespace
 
 auto main() -> int {
     monoprop::mpi::init();
     run_graph_build_chain();
-    run_partition_chain();
     monoprop::mpi::finalize();
     std::println(stderr, "[link_export_probe] OK");
     return 0;

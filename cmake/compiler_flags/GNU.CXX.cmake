@@ -6,9 +6,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES GNU)
     )
   endif()
 
+  # GCC's default -ffp-contract=fast fuses multiplies and adds across statements, so two code paths that compute the
+  # same expression can round differently. `on` contracts within one expression only, which is Clang's default, and
+  # keeps the bitwise cross-path checks in the test suite meaningful.
   set(
     monoprop_CXX_FLAGS
-    "-Wall -Wno-unknown-pragmas -Wno-sign-compare -Woverloaded-virtual -Wwrite-strings -Wextra -Wconversion -Wnon-virtual-dtor -Wcast-align -Wunused-parameter -fdiagnostics-color=always -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"
+    "-Wall -Wno-unknown-pragmas -Wno-sign-compare -Woverloaded-virtual -Wwrite-strings -Wextra -Wconversion -Wnon-virtual-dtor -Wcast-align -Wunused-parameter -fdiagnostics-color=always -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffp-contract=on"
   )
 
   set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")

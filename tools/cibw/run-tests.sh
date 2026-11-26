@@ -7,7 +7,8 @@ project="${1:?usage: run-tests.sh <project> <wheel>}"
 wheel="${2:?usage: run-tests.sh <project> <wheel>}"
 
 cd "$project"
-python -m pytest tests -p no:cacheprovider
+# Every interpreter runs the suite; the wheel_redundant cases (pyproject.toml) run in the source-build matrix.
+python -m pytest tests -p no:cacheprovider -m "not wheel_redundant"
 
 for mpi in mpich openmpi; do
   echo "::group::MPI tests against PyPI $mpi"

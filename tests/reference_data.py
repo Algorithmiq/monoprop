@@ -14,14 +14,16 @@
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 from msgpack import unpackb
 
-from monoprop.circuit import Circuit
+from monoprop.circuit import Circuit, ExpGate
 from monoprop.majorana import MajoranaOperator
+from monoprop.pauli import Pauli, PauliOperator
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -95,3 +97,38 @@ def load_problem(path: Path) -> FermionicProblem:
         exact_gradient=np.asarray(data["actual_gradient"]),
         n_modes=data["num_modes"],
     )
+
+
+def deep_circuit(num_qubits: int, layers: int) -> tuple[PauliOperator, list[ExpGate]]:
+    """Build a ZZ observable and `layers` of (every ZZ term, then an X on every qubit).
+
+    Layer k's ZZ gates share parameter k and its X gates parameter `layers + k`.
+
+    Args:
+        num_qubits: Number of qubits; the observable holds a ZZ term on every pair.
+        layers: Number of layers.
+
+    Returns:
+        The observable and the gate sequence.
+    """
+    observable = PauliOperator(
+        {
+            Pauli("ZZ", [i, j]): 0.5
+            for i, j in itertools.combinations(range(num_qubits), 2)
+        },
+        num_qubits=num_qubits,
+    )
+    gates = []
+    for k in range(layers):
+        gates += [
+            ExpGate(PauliOperator({pauli: v}, num_qubits=num_qubits), index=k)
+            for pauli, v in observable.terms.items()
+        ]
+        gates += [
+            ExpGate(
+                PauliOperator({Pauli("X", i): -1.0}, num_qubits=num_qubits),
+                index=layers + k,
+            )
+            for i in range(num_qubits)
+        ]
+    return observable, gates

@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "KernelTestSupport.h"
 #include "monoprop/TypeAliases.h"
 #include "monoprop/algebra/Algebra.h"
 #include "monoprop/detail/evolution/CutoffContext.h"
@@ -39,20 +40,10 @@ namespace {
 // resolve_range_ touches only wants_values and self_hit, so the engine drives without the cross-rank sink surface.
 struct RecordingSink {
     static constexpr bool wants_values = false;
+    using Response = TermIndex;                  // named by the engine's exchange phases, which this case never calls
     std::vector<std::pair<size_t, size_t>> hits; // (src, found)
     auto self_hit(size_t src, size_t found, int /*phase*/, double /*v_src*/) -> void { hits.emplace_back(src, found); }
 };
-
-// append_term writes a row only; find_batch needs the hash index, which insert_absent_terms populates.
-auto indexed_op(const std::vector<Monomial<8>> &terms) -> detail::MPOperator<8> {
-    detail::MPOperator<8> op;
-    detail::insert_absent_terms<8>(
-        op,
-        terms.size(),
-        [&](size_t k) -> const Monomial<8> & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<8>(*op.store, base + k, terms[k]); });
-    return op;
-}
 
 } // namespace
 
@@ -139,7 +130,7 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     for (size_t i = 0; i < 6; ++i) {
         terms.push_back(indices_to_bitset<8>({i, i + 8}));
     }
-    detail::MPOperator<8> op = indexed_op(terms);
+    detail::MPOperator<8> op = kernel_test::make_op<8>(terms);
     const size_t combined_size = 4; // rows 4 and 5 stand for terms this layer inserted after construction
 
     MatchedEpochSet matched;
@@ -148,13 +139,11 @@ BOOST_AUTO_TEST_CASE(self_resolve_mark_bounded_by_combined_size) {
     matched.begin_gate(op.size());
 
     detail::LayerBuildEngine<8, RecordingSink> eng(op,
-                                                   mpi::Comm{},
                                                    /*R_=*/1,
                                                    /*my_rank_=*/0,
                                                    matched,
                                                    combined_size,
                                                    RecordingSink{},
-                                                   mpi::PeerPlan{},
                                                    mpi::SlotWindow{.base = 0, .count = 1});
     // The self leg is staged as positions, never encoded, so this feeds the stage the scan would fill.
     using Eng = detail::LayerBuildEngine<8, RecordingSink>;

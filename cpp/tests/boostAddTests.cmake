@@ -81,6 +81,9 @@ while(_common_prop_idx LESS _common_prop_len)
   math(EXPR _common_prop_idx "${_common_prop_idx} + 2")
 endwhile()
 
+# Every variant's launch environment (the caller's ENVIRONMENT), ahead of what a variant adds.
+list(APPEND common_env_list ${TEST_ENVIRONMENT})
+
 list(APPEND common_labels_list cxx)
 list(REMOVE_DUPLICATES common_labels_list)
 list(REMOVE_DUPLICATES common_env_list)
@@ -291,6 +294,9 @@ function(register_mpi_variant RANKS ROUTING)
     PROPERTIES
       TIMEOUT
       600
+      # CTest's parallel scheduler charges the launch its ranks (each at T = 1).
+      PROCESSORS
+      ${RANKS}
   )
   set(script "${script}" PARENT_SCOPE)
   set(tests ${tests} PARENT_SCOPE)

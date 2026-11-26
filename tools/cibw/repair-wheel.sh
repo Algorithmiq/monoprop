@@ -24,6 +24,9 @@ case "$(uname)" in
       --exclude libmpi.12.dylib --exclude libpmpi.12.dylib \
       --exclude libmpi.40.dylib --exclude libmpi_abi.1.dylib \
       -w "$dest_dir" "$wheel"
+    # delocate's placeholder install names would leave the CMake package's consumers unable to load
+    # the bundled libomp that libmonoprop loads.
+    python "$(dirname "$0")/name_bundled_dylibs.py" "$dest_dir"/*.whl
     ;;
   *)
     echo "repair-wheel.sh: unsupported platform $(uname)" >&2
