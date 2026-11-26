@@ -91,11 +91,11 @@ using sharded_test::has_allocation_probe;
 using sharded_test::has_nonprimary_worker;
 using sharded_test::Key;
 using sharded_test::key_of;
-using sharded_test::kN;
 using sharded_test::label;
 using sharded_test::majorana_circuit;
 using sharded_test::majorana_operator;
 using sharded_test::message_of;
+using sharded_test::num_modes;
 using sharded_test::pauli_circuit;
 using sharded_test::pauli_operator;
 using sharded_test::reference_root;
@@ -105,7 +105,7 @@ using sharded_test::Sharded;
 using sharded_test::team_options;
 using sharded_test::team_size;
 
-constexpr double kExactAtol = 1e-9; // fused_cos_sweep_tests' exactness tolerance against the frozen energy
+constexpr double exact_atol = 1e-9; // fused_cos_sweep_tests' exactness tolerance against the frozen energy
 
 auto bits(TermIndex v) -> uint64_t {
     return v;
@@ -591,29 +591,30 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rows_follow_the_ordering_contract) {
     size_t cross_matches = 0;
     for (const auto &cs : cases) {
         BOOST_TEST_CONTEXT(label(cs) << " T=" << threads) {
-            auto s = seed<kN>(cs.f, options);
-            OrderReference<kN> ref;
+            auto s = seed<num_modes>(cs.f, options);
+            OrderReference<num_modes> ref;
             ref.rows.resize(threads);
             for (size_t t = 0; t < threads; ++t) {
                 for (size_t i = 0; i < s.shards[t]->op.store->size(); ++i) {
                     ref.append(t, s.shards[t]->op.store->row(i));
                 }
             }
-            const auto gens = generators<kN>(cs.f, cs.c);
-            const auto plain = monoprop::detail::cutoff_function<kN>(cs.f.cutoff_type, cs.f.cutoff, cs.f.logical);
+            const auto gens = generators<num_modes>(cs.f, cs.c);
+            const auto plain =
+                monoprop::detail::cutoff_function<num_modes>(cs.f.cutoff_type, cs.f.cutoff, cs.f.logical);
             const bool schrodinger = cs.f.schrodinger_cutoff.has_value();
             for (size_t step = 0; step < gens.size(); ++step) {
                 ref.gate(gens[schrodinger ? step : gens.size() - 1 - step], s.router, cs.f.basis, plain);
             }
-            require_success(run_graph<kN>(s, cs.c, cs.k));
+            require_success(run_graph<num_modes>(s, cs.c, cs.k));
             for (size_t t = 0; t < threads; ++t) {
                 std::vector<Key> got;
                 std::vector<Key> want;
                 for (size_t i = 0; i < s.shards[t]->op.store->size(); ++i) {
-                    got.push_back(key_of<kN>(s.shards[t]->op.store->row(i)));
+                    got.push_back(key_of<num_modes>(s.shards[t]->op.store->row(i)));
                 }
                 for (const auto &m : ref.rows[t]) {
-                    want.push_back(key_of<kN>(m));
+                    want.push_back(key_of<num_modes>(m));
                 }
                 BOOST_TEST((got == want), "shard " << t);
             }
@@ -731,14 +732,14 @@ auto shard_energy(sharded::Shards<N> &shards, bool schrodinger, double core) -> 
 BOOST_AUTO_TEST_CASE(sharded_construction_propagation_matches_an_independent_reference) {
     const auto options = team_options();
     const size_t threads = team_size();
-    const auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
     std::vector<std::pair<Fixture, Circuit>> cases;
     for (const auto sc : {std::optional<unsigned int>{}, std::optional<unsigned int>{16}}) {
         cases.push_back({{.name = "random-exact",
                           .op = data.hamiltonian,
                           .initial_state = data.initial_state,
                           .schrodinger_cutoff = sc,
-                          .cutoff = 2 * kN},
+                          .cutoff = 2 * num_modes},
                          data_circuit(data)});
         cases.push_back({{.name = "majorana-logical-6",
                           .op = majorana_operator(6),
@@ -753,25 +754,30 @@ BOOST_AUTO_TEST_CASE(sharded_construction_propagation_matches_an_independent_ref
                           .schrodinger_cutoff = sc,
                           .basis = Basis::Pauli,
                           .cutoff_type = CutoffType::Support,
-                          .cutoff = kN},
+                          .cutoff = num_modes},
                          pauli_circuit()});
     }
     for (const auto &[f, c] : cases) {
         const bool schrodinger = f.schrodinger_cutoff.has_value();
         BOOST_TEST_CONTEXT(f.name << (schrodinger ? " schrodinger" : " heisenberg") << " T=" << threads) {
-            auto s = seed<kN>(f, options);
+            auto s = seed<num_modes>(f, options);
             for (auto &state : s.shards) {
                 (void)state->op.current_picture(schrodinger);
             }
-            const auto initial = global_map<kN>(s.shards, schrodinger);
-            require_success(run_propagate<kN>(s, c, std::nullopt));
+            const auto initial = global_map<num_modes>(s.shards, schrodinger);
+            require_success(run_propagate<num_modes>(s, c, std::nullopt));
             const auto mapped = map_params(c.params, c.mapping, c.gen_coeffs, 1.0);
-            const auto want =
-                reference_propagate<kN>(initial, generators<kN>(f, c), mapped, schrodinger, f.basis, f.initial_state);
-            check_maps_agree(global_map<kN>(s.shards, schrodinger), want, "reference map");
+            const auto want = reference_propagate<num_modes>(initial,
+                                                             generators<num_modes>(f, c),
+                                                             mapped,
+                                                             schrodinger,
+                                                             f.basis,
+                                                             f.initial_state);
+            check_maps_agree(global_map<num_modes>(s.shards, schrodinger), want, "reference map");
             if (f.name == "random-exact") {
-                const auto core = sharded::validate_initial_operator<kN>(f.op, f.basis, f.logical);
-                BOOST_CHECK_SMALL(shard_energy<kN>(s.shards, schrodinger, core) - data.actual_expval, kExactAtol);
+                const auto core = sharded::validate_initial_operator<num_modes>(f.op, f.basis, f.logical);
+                BOOST_CHECK_SMALL(shard_energy<num_modes>(s.shards, schrodinger, core) - data.actual_expval,
+                                  exact_atol);
             }
         }
     }
@@ -853,10 +859,10 @@ BOOST_AUTO_TEST_CASE(sharded_construction_owners_do_their_own_work) {
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
     for (const bool fused : {false, true}) {
-        auto s = seed<kN>(cs.f, options);
+        auto s = seed<num_modes>(cs.f, options);
         auto logs = make_logs(threads);
-        require_success(fused ? run_propagate<kN>(s, cs.c, cs.k, Probe{.logs = &logs})
-                              : run_graph<kN>(s, cs.c, cs.k, Probe{.logs = &logs}));
+        require_success(fused ? run_propagate<num_modes>(s, cs.c, cs.k, Probe{.logs = &logs})
+                              : run_graph<num_modes>(s, cs.c, cs.k, Probe{.logs = &logs}));
         check_owner_participation(logs, cs.c.gates.size(), false, fused ? "propagate" : "graph");
         const size_t gates = cs.c.gates.size();
         BOOST_TEST(count_visits(logs, W::traverse) == threads * gates);
@@ -889,10 +895,10 @@ BOOST_AUTO_TEST_CASE(sharded_construction_opaque_cutoff_traverses_on_the_primary
         opaque.f.opaque = true;
         for (const bool fused : {false, true}) {
             BOOST_TEST_CONTEXT(label(base) << (fused ? " propagate" : " graph") << " T=" << threads) {
-                auto s = seed<kN>(opaque.f, options);
+                auto s = seed<num_modes>(opaque.f, options);
                 auto logs = make_logs(threads);
-                require_success(fused ? run_propagate<kN>(s, opaque.c, opaque.k, Probe{.logs = &logs})
-                                      : run_graph<kN>(s, opaque.c, opaque.k, Probe{.logs = &logs}));
+                require_success(fused ? run_propagate<num_modes>(s, opaque.c, opaque.k, Probe{.logs = &logs})
+                                      : run_graph<num_modes>(s, opaque.c, opaque.k, Probe{.logs = &logs}));
                 check_owner_participation(logs, opaque.c.gates.size(), true, "opaque");
                 // Each traversal names its target shard, and the primary executed all of them.
                 for (size_t t = 0; t < threads; ++t) {
@@ -902,7 +908,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_opaque_cutoff_traverses_on_the_primary
                         }
                     }
                 }
-                auto p = reference_root<kN>(base.f, threads);
+                auto p = reference_root<num_modes>(base.f, threads);
                 if (fused) {
                     p.propagate(base.c.gates, base.c.mapping, base.c.gen_coeffs, base.c.params, base.k);
                 }
@@ -910,7 +916,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_opaque_cutoff_traverses_on_the_primary
                     p.build_graph(base.c.gates, base.c.mapping, base.c.gen_coeffs, std::nullopt, std::nullopt, base.k);
                 }
                 for (size_t t = 0; t < threads; ++t) {
-                    BOOST_TEST((digest<kN>(*s.shards[t]) == reference_digest<kN>(p, t)), "shard " << t);
+                    BOOST_TEST((digest<num_modes>(*s.shards[t]) == reference_digest<num_modes>(p, t)), "shard " << t);
                 }
             }
         }
@@ -926,19 +932,19 @@ BOOST_AUTO_TEST_CASE(sharded_construction_empty_operators_circuits_and_identity)
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
     {
-        auto s = seed<kN>(cs.f, options);
+        auto s = seed<num_modes>(cs.f, options);
         std::vector<ShardDigest> before;
         for (const auto &state : s.shards) {
-            before.push_back(digest<kN>(*state));
+            before.push_back(digest<num_modes>(*state));
         }
         auto logs = make_logs(threads);
-        const auto outcome = run_graph<kN>(s, Circuit{}, std::nullopt, Probe{.logs = &logs});
+        const auto outcome = run_graph<num_modes>(s, Circuit{}, std::nullopt, Probe{.logs = &logs});
         BOOST_TEST(!outcome.error);
         BOOST_TEST(!outcome.mutation_started);
-        const auto outcome2 = run_propagate<kN>(s, Circuit{}, std::nullopt, Probe{.logs = &logs});
+        const auto outcome2 = run_propagate<num_modes>(s, Circuit{}, std::nullopt, Probe{.logs = &logs});
         BOOST_TEST(!outcome2.mutation_started);
         for (size_t t = 0; t < threads; ++t) {
-            BOOST_TEST((digest<kN>(*s.shards[t]) == before[t]));
+            BOOST_TEST((digest<num_modes>(*s.shards[t]) == before[t]));
             BOOST_TEST(logs[t].visits.empty());
         }
     }
@@ -955,11 +961,11 @@ BOOST_AUTO_TEST_CASE(sharded_construction_empty_operators_circuits_and_identity)
         for (const auto &c : {identity, cs.c}) {
             for (const bool fused : {false, true}) {
                 BOOST_TEST_CONTEXT(f.name << " gates=" << c.gates.size() << (fused ? " propagate" : " graph")) {
-                    auto s = seed<kN>(f, options);
+                    auto s = seed<num_modes>(f, options);
                     auto logs = make_logs(threads);
-                    require_success(fused ? run_propagate<kN>(s, c, std::nullopt, Probe{.logs = &logs})
-                                          : run_graph<kN>(s, c, std::nullopt, Probe{.logs = &logs}));
-                    auto p = reference_root<kN>(f, threads);
+                    require_success(fused ? run_propagate<num_modes>(s, c, std::nullopt, Probe{.logs = &logs})
+                                          : run_graph<num_modes>(s, c, std::nullopt, Probe{.logs = &logs}));
+                    auto p = reference_root<num_modes>(f, threads);
                     if (fused) {
                         p.propagate(c.gates, c.mapping, c.gen_coeffs, c.params);
                     }
@@ -967,7 +973,8 @@ BOOST_AUTO_TEST_CASE(sharded_construction_empty_operators_circuits_and_identity)
                         p.build_graph(c.gates, c.mapping, c.gen_coeffs);
                     }
                     for (size_t t = 0; t < threads; ++t) {
-                        BOOST_TEST((digest<kN>(*s.shards[t]) == reference_digest<kN>(p, t)), "shard " << t);
+                        BOOST_TEST((digest<num_modes>(*s.shards[t]) == reference_digest<num_modes>(p, t)),
+                                   "shard " << t);
                         // Empty owners reach every checkpoint: the frame, every gate's finish, the caches.
                         BOOST_TEST(static_cast<size_t>(
                                        std::ranges::count_if(logs[t].visits,
@@ -1192,7 +1199,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_published_resolution_matches_owning_bl
             }
         }
     };
-    check.template operator()<kN>(3, 6);
+    check.template operator()<num_modes>(3, 6);
     check.template operator()<250>(1, 40); // positions above 255, escaped counts (k >= 31), multiword keys
 
     // The retained malformed Plain QueryWire<128> fixture: a header past its one-word stream.
@@ -1373,16 +1380,16 @@ BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later
                 const size_t step = loop ? 1 : sharded::no_step;
                 BOOST_TEST_CONTEXT((fused ? "propagate" : "graph")
                                    << " work " << static_cast<int>(work) << " shard " << shard) {
-                    auto s = seed<kN>(cs.f, options);
+                    auto s = seed<num_modes>(cs.f, options);
                     const auto copy = sharded::copy_shards(options, s.shards);
                     std::vector<ShardDigest> copy_before;
                     for (const auto &state : copy) {
-                        copy_before.push_back(digest<kN>(*state));
+                        copy_before.push_back(digest<num_modes>(*state));
                     }
                     auto logs = make_logs(threads);
                     const Probe probe{.logs = &logs, .capture = false, .fail = {{work, step, shard}}};
-                    const auto outcome =
-                        fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
+                    const auto outcome = fused ? run_propagate<num_modes>(s, cs.c, cs.k, probe)
+                                               : run_graph<num_modes>(s, cs.c, cs.k, probe);
                     BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
                     BOOST_TEST(message_of(outcome.error)
                                == std::format("injected failure: work {} step {} shard {}",
@@ -1392,12 +1399,12 @@ BOOST_AUTO_TEST_CASE(sharded_construction_failure_in_each_phase_suppresses_later
                     BOOST_TEST(outcome.mutation_started == (work != W::frame));
                     BOOST_TEST(no_later_work(logs, step, work));
                     for (size_t t = 0; t < threads; ++t) {
-                        BOOST_TEST((digest<kN>(*copy[t]) == copy_before[t]));
+                        BOOST_TEST((digest<num_modes>(*copy[t]) == copy_before[t]));
                     }
                     if (work == W::frame) {
                         // Nothing mutated: the shards still equal the untouched copy.
                         for (size_t t = 0; t < threads; ++t) {
-                            BOOST_TEST((digest<kN>(*s.shards[t]) == copy_before[t]));
+                            BOOST_TEST((digest<num_modes>(*s.shards[t]) == copy_before[t]));
                         }
                     }
                 }
@@ -1437,20 +1444,20 @@ BOOST_AUTO_TEST_CASE(sharded_construction_kernel_decode_and_publication_failures
     };
     for (const auto &sc : scenarios) {
         BOOST_TEST_CONTEXT(sc.name) {
-            auto s = seed<kN>(cs.f, options);
+            auto s = seed<num_modes>(cs.f, options);
             const auto copy = sharded::copy_shards(options, s.shards);
-            const auto copy_digest = digest<kN>(*copy[0]);
+            const auto copy_digest = digest<num_modes>(*copy[0]);
             auto logs = make_logs(threads);
             const Probe probe{.logs = &logs,
                               .capture = false,
                               .kernel_fail = sc.kernel,
                               .publication_fail = sc.publication};
             const auto outcome =
-                sc.fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
+                sc.fused ? run_propagate<num_modes>(s, cs.c, cs.k, probe) : run_graph<num_modes>(s, cs.c, cs.k, probe);
             BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
             BOOST_TEST(message_of(outcome.error) == sc.message);
             BOOST_TEST(outcome.mutation_started);
-            BOOST_TEST((digest<kN>(*copy[0]) == copy_digest));
+            BOOST_TEST((digest<num_modes>(*copy[0]) == copy_digest));
             // No shard started the caches phase after the failure.
             BOOST_TEST(count_visits(logs, W::caches) == 0U);
         }
@@ -1463,12 +1470,12 @@ BOOST_AUTO_TEST_CASE(sharded_construction_concurrent_failures_select_the_lowest_
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
-    auto s = seed<kN>(cs.f, options);
+    auto s = seed<num_modes>(cs.f, options);
     auto logs = make_logs(threads);
     const Probe probe{.logs = &logs,
                       .capture = false,
                       .fail = {{W::resolve_followers, 2, threads - 1}, {W::resolve_followers, 2, 1}}};
-    const auto outcome = run_graph<kN>(s, cs.c, cs.k, probe);
+    const auto outcome = run_graph<num_modes>(s, cs.c, cs.k, probe);
     BOOST_TEST_REQUIRE(static_cast<bool>(outcome.error));
     BOOST_TEST(message_of(outcome.error)
                == std::format("injected failure: work {} step 2 shard 1", static_cast<int>(W::resolve_followers)));
@@ -1498,8 +1505,9 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
     for (const bool fused : {false, true}) {
         // Warm every worker's retained thread-local scan scratch, which later runs reuse and never free.
         {
-            auto warm = seed<kN>(cs.f, options);
-            require_success(fused ? run_propagate<kN>(warm, cs.c, cs.k) : run_graph<kN>(warm, cs.c, cs.k));
+            auto warm = seed<num_modes>(cs.f, options);
+            require_success(fused ? run_propagate<num_modes>(warm, cs.c, cs.k)
+                                  : run_graph<num_modes>(warm, cs.c, cs.k));
         }
         for (const auto &site : sites) {
             if (site.work == W::apply && !fused) {
@@ -1511,15 +1519,15 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
                 {
                     const allocation::LiveBytes live;
                     {
-                        auto s = seed<kN>(cs.f, options);
+                        auto s = seed<num_modes>(cs.f, options);
                         const auto copy = sharded::copy_shards(options, s.shards);
-                        const auto copy_digest = digest<kN>(*copy[threads - 1]);
+                        const auto copy_digest = digest<num_modes>(*copy[threads - 1]);
                         auto logs = make_logs(threads);
                         const Probe probe{.logs = &logs,
                                           .capture = false,
                                           .alloc = AllocAt{site.work, site.step, site.shard, nth}};
-                        const auto outcome =
-                            fused ? run_propagate<kN>(s, cs.c, cs.k, probe) : run_graph<kN>(s, cs.c, cs.k, probe);
+                        const auto outcome = fused ? run_propagate<num_modes>(s, cs.c, cs.k, probe)
+                                                   : run_graph<num_modes>(s, cs.c, cs.k, probe);
                         disarm_team();
                         failed = static_cast<bool>(outcome.error);
                         if (failed) {
@@ -1535,7 +1543,7 @@ BOOST_AUTO_TEST_CASE(sharded_construction_allocation_failures_are_contained,
                             }
                             BOOST_TEST(bad_alloc);
                             BOOST_TEST(outcome.mutation_started == (site.work != W::frame));
-                            BOOST_TEST((digest<kN>(*copy[threads - 1]) == copy_digest));
+                            BOOST_TEST((digest<num_modes>(*copy[threads - 1]) == copy_digest));
                         }
                     }
                     BOOST_TEST(live.net() == 0);
@@ -1557,41 +1565,42 @@ BOOST_AUTO_TEST_CASE(sharded_construction_rejects_invalid_arguments_before_the_t
     const auto options = team_options();
     const size_t threads = team_size();
     const auto cs = fixture_cases()[0];
-    auto s = seed<kN>(cs.f, options);
-    const auto before = digest<kN>(*s.shards[0]);
+    auto s = seed<num_modes>(cs.f, options);
+    const auto before = digest<num_modes>(*s.shards[0]);
     auto logs = make_logs(threads);
-    const auto gens = generators<kN>(cs.f, cs.c);
+    const auto gens = generators<num_modes>(cs.f, cs.c);
     VecZ gate_indices(gens.size());
     const auto good = s.ctx();
-    const auto graph =
-        [&](const sharded::ConstructionContext<kN> &ctx, std::span<const double> coeffs, std::optional<size_t> k) {
-            return sharded::build_graph<kN>(options,
-                                            s.shards,
-                                            ctx,
-                                            {.generators = gens,
-                                             .parameter_mapping = cs.c.mapping,
-                                             .gen_coeffs = coeffs,
-                                             .gate_indices = gate_indices,
-                                             .only_rotate_len_k = k},
-                                            Probe{.logs = &logs});
-        };
+    const auto graph = [&](const sharded::ConstructionContext<num_modes> &ctx,
+                           std::span<const double> coeffs,
+                           std::optional<size_t> k) {
+        return sharded::build_graph<num_modes>(options,
+                                               s.shards,
+                                               ctx,
+                                               {.generators = gens,
+                                                .parameter_mapping = cs.c.mapping,
+                                                .gen_coeffs = coeffs,
+                                                .gate_indices = gate_indices,
+                                                .only_rotate_len_k = k},
+                                               Probe{.logs = &logs});
+    };
     BOOST_CHECK_THROW((void)graph(good, std::span<const double>(cs.c.gen_coeffs).first(2), std::nullopt),
                       std::invalid_argument);
-    BOOST_CHECK_THROW((void)graph(good, cs.c.gen_coeffs, 2 * kN + 1), std::runtime_error);
+    BOOST_CHECK_THROW((void)graph(good, cs.c.gen_coeffs, 2 * num_modes + 1), std::runtime_error);
     auto two_ranks = good;
     two_ranks.router = routing::Router::splitmix(2 * threads);
     BOOST_CHECK_THROW((void)graph(two_ranks, cs.c.gen_coeffs, std::nullopt), std::invalid_argument);
     auto wrong_rank = good;
     wrong_rank.world.rank = 1;
     BOOST_CHECK_THROW((void)graph(wrong_rank, cs.c.gen_coeffs, std::nullopt), std::invalid_argument);
-    sharded::Shards<kN> short_shards;
-    BOOST_CHECK_THROW(
-        (void)sharded::propagate<kN>(options,
-                                     short_shards,
-                                     good,
-                                     {.generators = gens, .mapped_params = {}, .only_rotate_len_k = std::nullopt}),
-        std::invalid_argument);
-    BOOST_TEST((digest<kN>(*s.shards[0]) == before));
+    sharded::Shards<num_modes> short_shards;
+    BOOST_CHECK_THROW((void)sharded::propagate<num_modes>(
+                          options,
+                          short_shards,
+                          good,
+                          {.generators = gens, .mapped_params = {}, .only_rotate_len_k = std::nullopt}),
+                      std::invalid_argument);
+    BOOST_TEST((digest<num_modes>(*s.shards[0]) == before));
     for (const auto &log : logs) {
         BOOST_TEST(log.visits.empty());
     }

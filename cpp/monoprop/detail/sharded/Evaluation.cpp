@@ -53,7 +53,7 @@ auto publication_layout(const PackedCrossRankStorage &cross_rank,
 }
 
 // Within-shard kernels run serially: the team's parallelism is across owners.
-constexpr parallel::Options kSerial{};
+constexpr parallel::Options serial_kernels{};
 
 auto notify(const EvaluationObserver *observer, EvaluationWork work, size_t step, size_t shard) -> void {
     if (observer != nullptr) {
@@ -633,7 +633,7 @@ auto forward_scale(VecD &coeffs, size_t layer_idx, double param, const LayerCosS
 
 auto forward_scale_mask(VecD &coeffs, const CosMask &cos, double param) -> void {
     const double cos_val = std::cos(2 * param);
-    scale_cos_mask(coeffs.data(), cos, cos_val, kSerial);
+    scale_cos_mask(coeffs.data(), cos, cos_val, serial_kernels);
 }
 
 auto forward_finish(VecD &coeffs,

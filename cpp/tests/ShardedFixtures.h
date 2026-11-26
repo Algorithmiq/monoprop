@@ -52,7 +52,7 @@ struct Fixture {
     Basis basis = Basis::Majorana;
     CutoffType cutoff_type = CutoffType::Length;
     unsigned int cutoff = 4;
-    size_t logical = kN;
+    size_t logical = num_modes;
     std::optional<double> lower_atol = std::nullopt;
     std::optional<double> upper_atol = std::nullopt;
     std::optional<std::vector<VecZ>> basis_change = std::nullopt;
@@ -100,15 +100,15 @@ inline auto pauli_operator() -> OperatorDict {
         add_term(op, Basis::Pauli, pauli_oracle::slots_of_string(pauli), value);
         value += 0.25;
     };
-    for (size_t q = 0; q < kN; ++q) {
+    for (size_t q = 0; q < num_modes; ++q) {
         for (const char p : {'X', 'Z'}) {
-            std::string s(kN, 'I');
+            std::string s(num_modes, 'I');
             s[q] = p;
             add(s);
         }
     }
-    for (size_t q = 0; q + 1 < kN; ++q) {
-        std::string s(kN, 'I');
+    for (size_t q = 0; q + 1 < num_modes; ++q) {
+        std::string s(num_modes, 'I');
         s[q] = 'Z';
         s[q + 1] = 'Z';
         add(s);
@@ -167,7 +167,7 @@ inline auto swap_basis(size_t logical) -> std::vector<VecZ> {
 // Every basis and picture, trimming cutoffs, coefficient cutoffs, length caps (two-pass fallback), a basis change,
 // odd Majorana generators and native Pauli folding.
 inline auto fixture_cases() -> std::vector<Case> {
-    const auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
     const Fixture maj{.name = "majorana-heisenberg-logical-6",
                       .op = majorana_operator(6),
                       .initial_state = {0, 3},

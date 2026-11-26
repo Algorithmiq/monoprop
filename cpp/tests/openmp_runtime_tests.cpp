@@ -61,12 +61,12 @@ using monoprop::detail::parallel::Options;
 using monoprop::detail::parallel::resolve_thread_budget;
 using sharded_test::ScopedEnv;
 
-constexpr size_t kNumModes = 8;
-constexpr unsigned int kCutoff = 4;
-constexpr const char *kBudgetVariable = "monoprop_NUM_THREADS";
+constexpr size_t num_modes = 8;
+constexpr unsigned int fixture_cutoff = 4;
+constexpr const char *budget_variable = "monoprop_NUM_THREADS";
 
-using Access = monoprop::detail::PropagatorTestAccess<kNumModes>;
-using Propagator = MonomialPropagator<kNumModes>;
+using Access = monoprop::detail::PropagatorTestAccess<num_modes>;
+using Propagator = MonomialPropagator<num_modes>;
 
 // A distinct type, so a test can tell the original exception from anything the library substitutes.
 class InjectedFailure : public std::runtime_error {
@@ -76,11 +76,11 @@ public:
 
 // The root at the launch's budget.
 auto make_root(const test_utils::CaseData &data) -> Propagator {
-    return Propagator(data.hamiltonian, kCutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
+    return Propagator(data.hamiltonian, fixture_cutoff, data.initial_state, std::nullopt, MPI_COMM_SELF);
 }
 
 auto load() -> test_utils::CaseData {
-    return test_utils::load_case_data<kNumModes>("random_exact.msgpack");
+    return test_utils::load_case_data<num_modes>("random_exact.msgpack");
 }
 
 auto build_all(Propagator &sim, const test_utils::CaseData &data) -> void {
@@ -92,7 +92,7 @@ auto expected_launch_budget() -> int {
     if (const char *expected = std::getenv("monoprop_TEST_EXPECT_BUDGET")) {
         return std::stoi(expected);
     }
-    const char *configured = std::getenv(kBudgetVariable);
+    const char *configured = std::getenv(budget_variable);
     return resolve_thread_budget(configured ? std::optional<std::string_view>(configured) : std::nullopt,
                                  omp_get_max_threads())
         .threads;
@@ -140,7 +140,7 @@ auto for_each_state_entry(Propagator &sim, const test_utils::CaseData &data, Che
     check("evolved_operator_terms", [&] { (void)sim.evolved_operator_terms(data.parameters, 0.0); });
     check("update_initial_operator", [&] { sim.update_initial_operator(data.hamiltonian); });
     check("set_parameter_mapping", [&] { sim.set_parameter_mapping(sim.parameter_mapping()); });
-    check("update_cutoff", [&] { sim.update_cutoff(kCutoff); });
+    check("update_cutoff", [&] { sim.update_cutoff(fixture_cutoff); });
     check("size", [&] { (void)sim.size(); });
     check("graph_size", [&] { (void)sim.graph_size(); });
     check("graph_data", [&] { (void)sim.graph_data(); });
@@ -187,7 +187,7 @@ BOOST_AUTO_TEST_CASE(openmp_budget_rejects_malformed_values) {
             BOOST_CHECK_EXCEPTION((void)resolve_thread_budget(text, 2),
                                   std::invalid_argument,
                                   [](const std::invalid_argument &e) {
-                                      return std::string_view(e.what()).find(kBudgetVariable) != std::string_view::npos;
+                                      return std::string_view(e.what()).find(budget_variable) != std::string_view::npos;
                                   });
         }
     }
@@ -214,20 +214,20 @@ BOOST_AUTO_TEST_CASE(openmp_budget_rejects_overflow) {
 
 BOOST_AUTO_TEST_CASE(openmp_capture_reads_the_environment) {
     {
-        const ScopedEnv env(kBudgetVariable, "5");
+        const ScopedEnv env(budget_variable, "5");
         BOOST_TEST(capture_thread_budget().threads == 5);
     }
     {
-        const ScopedEnv env(kBudgetVariable, std::nullopt);
+        const ScopedEnv env(budget_variable, std::nullopt);
         BOOST_TEST(capture_thread_budget().threads == omp_get_max_threads());
     }
     {
         // Present but empty is an error, never the fallback.
-        const ScopedEnv env(kBudgetVariable, "");
+        const ScopedEnv env(budget_variable, "");
         BOOST_CHECK_THROW((void)capture_thread_budget(), std::invalid_argument);
     }
     {
-        const ScopedEnv env(kBudgetVariable, "two");
+        const ScopedEnv env(budget_variable, "two");
         BOOST_CHECK_THROW((void)capture_thread_budget(), std::invalid_argument);
     }
 }
@@ -252,7 +252,7 @@ BOOST_AUTO_TEST_CASE(openmp_root_captures_once_and_copies_preserve_it) {
     const int team = Access::options(sim).threads;
     build_all(sim, data);
     const double energy = sim.expectation_value(data.parameters);
-    const ScopedEnv env(kBudgetVariable, "not-a-budget");
+    const ScopedEnv env(budget_variable, "not-a-budget");
     const Propagator copy(sim);
     BOOST_TEST(Access::options(copy).threads == team);
     BOOST_TEST(Access::shards(copy).size() == static_cast<size_t>(team));
@@ -265,10 +265,10 @@ BOOST_AUTO_TEST_CASE(openmp_root_captures_once_and_copies_preserve_it) {
 BOOST_AUTO_TEST_CASE(openmp_invalid_budget_is_a_config_error_at_construction) {
     const auto data = load();
     for (const char *value : {"0", "abc", "", "-2", "2147483648"}) {
-        const ScopedEnv env(kBudgetVariable, value);
+        const ScopedEnv env(budget_variable, value);
         BOOST_TEST_CONTEXT("monoprop_NUM_THREADS=\"" << value << "\"") {
             BOOST_CHECK_EXCEPTION((void)make_root(data), PropagatorConfigError, [](const PropagatorConfigError &e) {
-                return std::string_view(e.what()).find(kBudgetVariable) != std::string_view::npos;
+                return std::string_view(e.what()).find(budget_variable) != std::string_view::npos;
             });
         }
     }
@@ -320,8 +320,8 @@ BOOST_AUTO_TEST_CASE(openmp_low_level_calls_default_to_serial_options) {
     const auto view = graph.replay_view();
     const auto mapped = map_params(data.parameters, sim.parameter_mapping(), VecD(sim.graph_layers(), 1.0), 1.0, true);
     const auto cos =
-        monoprop::detail::make_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(), view, Basis::Majorana);
-    const auto cos_threaded = monoprop::detail::make_cos_callbacks<kNumModes>(sim.mp_op().inverted_index(),
+        monoprop::detail::make_cos_callbacks<num_modes>(sim.mp_op().inverted_index(), view, Basis::Majorana);
+    const auto cos_threaded = monoprop::detail::make_cos_callbacks<num_modes>(sim.mp_op().inverted_index(),
                                                                               view,
                                                                               Basis::Majorana,
                                                                               Options{.threads = 3});
@@ -391,7 +391,7 @@ BOOST_AUTO_TEST_CASE(openmp_failed_build_invalidates_the_owner) {
     Propagator early(sim);
     auto retained = sim.expectation_value_functional();
 
-    Access::set_cutoff_fn(sim, [](const Monomial<kNumModes> &) -> bool {
+    Access::set_cutoff_fn(sim, [](const Monomial<num_modes> &) -> bool {
         throw InjectedFailure("injected cutoff failure");
     });
     // The original exception reaches a single-rank caller unchanged.
@@ -401,7 +401,7 @@ BOOST_AUTO_TEST_CASE(openmp_failed_build_invalidates_the_owner) {
     require_invalid(sim, data);
     BOOST_CHECK_THROW((void)retained(params), InvalidPropagatorError);
     // Immutable configuration stays readable.
-    BOOST_TEST(sim.cutoff() == kCutoff);
+    BOOST_TEST(sim.cutoff() == fixture_cutoff);
     BOOST_TEST(!sim.schrodinger());
     // An independent earlier copy is unaffected.
     BOOST_TEST(test_utils::near(early.expectation_value(params), before));
@@ -411,7 +411,7 @@ BOOST_AUTO_TEST_CASE(openmp_invalid_owner_can_still_be_destroyed) {
     const auto data = load();
     auto owner = std::make_unique<Propagator>(make_root(data));
     build_all(*owner, data);
-    Access::set_cutoff_fn(*owner, [](const Monomial<kNumModes> &) -> bool { throw InjectedFailure("injected"); });
+    Access::set_cutoff_fn(*owner, [](const Monomial<num_modes> &) -> bool { throw InjectedFailure("injected"); });
     BOOST_CHECK_THROW(build_all(*owner, data), InjectedFailure);
     BOOST_CHECK_NO_THROW(owner.reset());
 }

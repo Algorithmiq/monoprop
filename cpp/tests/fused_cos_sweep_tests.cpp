@@ -121,20 +121,20 @@ void check_root_agreement(const CaseData &data, const SimulatorConfig &cfg, int 
 
 // --- a workload large enough for the threaded kernels ---------------------------------------------------------
 
-constexpr size_t kBig = 10; // 20 Majoranas
-using BigAccess = monoprop::detail::PropagatorTestAccess<kBig>;
+constexpr size_t big_modes = 10; // 20 Majoranas
+using BigAccess = monoprop::detail::PropagatorTestAccess<big_modes>;
 
 // A synthetic Hermitian operator of 16k even-weight terms and gates of weights 2-4 (odd included), large
 // enough that fused records and replayed folds span several logical ranges. One gate sits at theta = pi/4,
 // where the fused sweep recovers pre-cos values through 1/cos ~ 1.6e16.
 auto big_case() -> CaseData {
     CaseData data;
-    data.num_modes = kBig;
+    data.num_modes = big_modes;
     kernel_test::SplitMix rng{2026};
     const auto draw_indices = [&rng](size_t weight) {
         VecZ idx;
         while (idx.size() < weight) {
-            const size_t m = rng.below(2 * kBig);
+            const size_t m = rng.below(2 * big_modes);
             if (std::ranges::find(idx, m) == idx.end()) {
                 idx.push_back(m);
             }
@@ -145,7 +145,7 @@ auto big_case() -> CaseData {
     while (data.hamiltonian.size() < 16000) {
         const auto idx = draw_indices(2 * (1 + rng.below(3)));
         const double x = static_cast<double>(rng.below(1U << 20)) / (1U << 20) - 0.5;
-        data.hamiltonian[idx] = x * hermitian_coefficient<kBig>(indices_to_bitset<kBig>(idx));
+        data.hamiltonian[idx] = x * hermitian_coefficient<big_modes>(indices_to_bitset<big_modes>(idx));
     }
     data.initial_state = {0, 2, 4, 6, 8};
     constexpr size_t gates = 9;
@@ -162,10 +162,10 @@ auto big_case() -> CaseData {
     return data;
 }
 
-auto big_root(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm) -> MonomialPropagator<kBig> {
-    return build_root<kBig>(
+auto big_root(const CaseData &data, bool schrodinger, int budget, MPI_Comm comm) -> MonomialPropagator<big_modes> {
+    return build_root<big_modes>(
         data,
-        SimulatorConfig{.schrodinger_cutoff = schrodinger ? std::optional<unsigned int>(2 * kBig) : std::nullopt,
+        SimulatorConfig{.schrodinger_cutoff = schrodinger ? std::optional<unsigned int>(2 * big_modes) : std::nullopt,
                         .comm = comm},
         budget);
 }
@@ -266,7 +266,7 @@ private:
     mutable std::vector<std::vector<CapturedGate>> gates_;
 };
 
-auto picture_of(const monoprop::detail::MPOperator<kBig> &op, bool schrodinger) -> const VecD & {
+auto picture_of(const monoprop::detail::MPOperator<big_modes> &op, bool schrodinger) -> const VecD & {
     return schrodinger ? op.state_coeffs : op.op_coeffs;
 }
 
@@ -314,7 +314,7 @@ BOOST_AUTO_TEST_CASE(fused_shard_records_have_one_add_owner_and_apply_exactly) {
                 const auto &shards = BigAccess::shards(sim);
                 const RecordCapture capture(shards.size());
                 BigAccess::observe(sim, &capture);
-                const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * kBig) : std::nullopt;
+                const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * big_modes) : std::nullopt;
                 sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
                 BigAccess::observe(sim, nullptr);
 
@@ -391,7 +391,7 @@ BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
     for (const bool schrodinger : {false, true}) {
         for (const bool length_cap : {false, true}) {
             BOOST_TEST_CONTEXT("schrodinger=" << schrodinger << " length_cap=" << length_cap << " T=" << launch) {
-                const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * kBig) : std::nullopt;
+                const std::optional<size_t> cap = length_cap ? std::optional<size_t>(2 * big_modes) : std::nullopt;
                 auto first = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
                 auto second = big_root(data, schrodinger, launch, MPI_COMM_WORLD);
                 first.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, cap);
@@ -404,13 +404,13 @@ BOOST_AUTO_TEST_CASE(fused_shards_are_deterministic_at_fixed_geometry) {
                 for (size_t t = 0; t < a.size(); ++t) {
                     BOOST_TEST(a[t]->op.store->size() == b[t]->op.store->size());
                     for (size_t i = 0; i < a[t]->op.store->size() && i < b[t]->op.store->size(); ++i) {
-                        BOOST_TEST(
-                            (materialize_row<kBig>(*a[t]->op.store, i) == materialize_row<kBig>(*b[t]->op.store, i)));
+                        BOOST_TEST((materialize_row<big_modes>(*a[t]->op.store, i)
+                                    == materialize_row<big_modes>(*b[t]->op.store, i)));
                     }
                     BOOST_TEST(bitwise_equal(picture_of(a[t]->op, schrodinger), picture_of(b[t]->op, schrodinger)));
                     a[t]->op.store->for_each([&](const auto &mono, size_t) {
-                        misrouted += static_cast<size_t>(router.dest<kBig>(mono) != rank * a.size() + t);
-                        keys.insert(bitset_to_indices<kBig>(mono));
+                        misrouted += static_cast<size_t>(router.dest<big_modes>(mono) != rank * a.size() + t);
+                        keys.insert(bitset_to_indices<big_modes>(mono));
                     });
                 }
                 BOOST_TEST(misrouted == 0U);
@@ -476,19 +476,19 @@ BOOST_AUTO_TEST_CASE(openmp_scan_fused_sweep_scales_each_source_once) {
 
 namespace {
 
-constexpr size_t kWide = 16; // 32 Majoranas
-using WideAccess = monoprop::detail::PropagatorTestAccess<kWide>;
+constexpr size_t wide_modes = 16; // 32 Majoranas
+using WideAccess = monoprop::detail::PropagatorTestAccess<wide_modes>;
 
 // About 90k even-weight terms, so the scan's operator spans at least two fold blocks from the first gate and
 // more as gates insert partners; gates of weights 2-4 with two repeats, and one at theta = pi/4.
 auto wide_case() -> CaseData {
     CaseData data;
-    data.num_modes = kWide;
+    data.num_modes = wide_modes;
     kernel_test::SplitMix rng{0x5CA2ULL};
     const auto draw_indices = [&rng](size_t weight) {
         VecZ idx;
         while (idx.size() < weight) {
-            const size_t m = rng.below(2 * kWide);
+            const size_t m = rng.below(2 * wide_modes);
             if (std::ranges::find(idx, m) == idx.end()) {
                 idx.push_back(m);
             }
@@ -499,7 +499,7 @@ auto wide_case() -> CaseData {
     while (data.hamiltonian.size() < 90000) {
         const auto idx = draw_indices(2 * (1 + rng.below(3)));
         const double x = static_cast<double>(rng.below(1U << 20)) / (1U << 20) - 0.5;
-        data.hamiltonian[idx] = x * hermitian_coefficient<kWide>(indices_to_bitset<kWide>(idx));
+        data.hamiltonian[idx] = x * hermitian_coefficient<wide_modes>(indices_to_bitset<wide_modes>(idx));
     }
     data.initial_state = {0, 2, 4, 6, 8, 10, 12, 14};
     constexpr size_t gates = 6;
@@ -514,28 +514,28 @@ auto wide_case() -> CaseData {
 }
 
 // The root at the launch's T.
-auto wide_root(const CaseData &data, bool schrodinger, MPI_Comm comm) -> MonomialPropagator<kWide> {
-    return MonomialPropagator<kWide>(data.hamiltonian,
-                                     /*cutoff=*/10,
-                                     data.initial_state,
-                                     schrodinger ? std::optional<unsigned int>(2 * kWide) : std::nullopt,
-                                     comm,
-                                     /*lower_atol=*/1e-12,
-                                     std::nullopt,
-                                     CutoffType::Length,
-                                     std::nullopt,
-                                     kWide,
-                                     Basis::Majorana);
+auto wide_root(const CaseData &data, bool schrodinger, MPI_Comm comm) -> MonomialPropagator<wide_modes> {
+    return MonomialPropagator<wide_modes>(data.hamiltonian,
+                                          /*cutoff=*/10,
+                                          data.initial_state,
+                                          schrodinger ? std::optional<unsigned int>(2 * wide_modes) : std::nullopt,
+                                          comm,
+                                          /*lower_atol=*/1e-12,
+                                          std::nullopt,
+                                          CutoffType::Length,
+                                          std::nullopt,
+                                          wide_modes,
+                                          Basis::Majorana);
 }
 
 // Rows in row-ID order: a store's IDs are its insertion order, so equal rows mean equal IDs.
-auto same_store_rows(const monoprop::detail::OperatorIndex<kWide> &sa, const monoprop::detail::OperatorIndex<kWide> &sb)
-    -> bool {
+auto same_store_rows(const monoprop::detail::OperatorIndex<wide_modes> &sa,
+                     const monoprop::detail::OperatorIndex<wide_modes> &sb) -> bool {
     if (sa.size() != sb.size()) {
         return false;
     }
     for (size_t i = 0; i < sa.size(); ++i) {
-        if (materialize_row<kWide>(sa, i) != materialize_row<kWide>(sb, i)) {
+        if (materialize_row<wide_modes>(sa, i) != materialize_row<wide_modes>(sb, i)) {
             return false;
         }
     }
@@ -613,7 +613,7 @@ BOOST_AUTO_TEST_CASE(fused_wide_shards_match_at_fixed_geometry) {
             for (const bool cap : {false, true}) {
                 auto x = wide_root(data, schrodinger, MPI_COMM_WORLD);
                 auto y = wide_root(data, schrodinger, MPI_COMM_WORLD);
-                const std::optional<size_t> k = cap ? std::optional<size_t>(2 * kWide) : std::nullopt;
+                const std::optional<size_t> k = cap ? std::optional<size_t>(2 * wide_modes) : std::nullopt;
                 x.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, k);
                 y.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters, k);
                 const auto &xs = WideAccess::shards(x);

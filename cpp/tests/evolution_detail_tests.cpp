@@ -229,19 +229,24 @@ BOOST_AUTO_TEST_CASE(cutoff_context_is_below_sin) {
 // Ranges are contiguous runs of whole fold blocks, nonempty, ascending with the range ID, covering every
 // word, and depend only on the word count and the budget.
 BOOST_AUTO_TEST_CASE(openmp_scan_ranges_partition_words_in_order) {
-    constexpr size_t kBlock = detail::kColumnBlockWords;
-    for (const size_t words :
-         {size_t{1}, kBlock - 1, kBlock, kBlock + 1, (3 * kBlock) + 1, 7 * kBlock, size_t{100003}}) {
+    constexpr size_t block_words = detail::kColumnBlockWords;
+    for (const size_t words : {size_t{1},
+                               block_words - 1,
+                               block_words,
+                               block_words + 1,
+                               (3 * block_words) + 1,
+                               7 * block_words,
+                               size_t{100003}}) {
         for (const int threads : {1, 2, 3, 4, 7, 96}) {
             const size_t ranges = detail::scan_ranges(words, {.threads = threads});
             BOOST_TEST_CONTEXT("words=" << words << " threads=" << threads) {
-                BOOST_TEST(ranges == std::min<size_t>(threads, detail::logical_ranges(words, kBlock)));
+                BOOST_TEST(ranges == std::min<size_t>(threads, detail::logical_ranges(words, block_words)));
                 size_t next = 0;
                 for (size_t r = 0; r < ranges; ++r) {
                     const auto [lo, hi] = detail::scan_range_words(r, ranges, words);
                     BOOST_TEST(lo == next);
                     BOOST_TEST(hi > lo);
-                    BOOST_TEST((lo % kBlock) == 0U);
+                    BOOST_TEST((lo % block_words) == 0U);
                     next = hi;
                 }
                 BOOST_TEST(next == words);

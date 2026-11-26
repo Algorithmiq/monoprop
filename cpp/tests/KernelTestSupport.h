@@ -46,7 +46,7 @@ namespace kernel_test {
 
 using monoprop::detail::KernelRange;
 
-inline constexpr size_t kKinds = 9;
+inline constexpr size_t num_range_kinds = 9;
 
 // What one kernel invocation reported for one kind of range.
 struct RangeSlots {
@@ -58,7 +58,7 @@ struct RangeSlots {
 };
 
 struct RangeLog {
-    std::array<RangeSlots, kKinds> slots{};
+    std::array<RangeSlots, num_range_kinds> slots{};
     auto operator[](KernelRange kind) -> RangeSlots & { return slots[static_cast<size_t>(kind)]; }
 };
 
@@ -235,14 +235,14 @@ struct SplitMix {
     auto below(uint64_t n) -> uint64_t { return next() % n; }
 };
 
-inline constexpr size_t kIndexModes = 8; // 16 columns
+inline constexpr size_t synthetic_index_modes = 8; // 16 columns
 
 // A synthetic InvertedIndex<8> over `rows` rows with every column tier a fold can meet: dense random
 // columns, sparse columns (including rows straddling fold-block edges), a dense-but-sparse column and
 // empty columns. Consistent with an operator whose row r touches column c iff bit r of column c is set,
 // so its lazily built row parity is well defined. Bits beyond `rows` stay clear, as in the real index.
-inline auto make_synthetic_index(size_t rows, uint64_t seed) -> monoprop::detail::InvertedIndex<kIndexModes> {
-    using Index = monoprop::detail::InvertedIndex<kIndexModes>;
+inline auto make_synthetic_index(size_t rows, uint64_t seed) -> monoprop::detail::InvertedIndex<synthetic_index_modes> {
+    using Index = monoprop::detail::InvertedIndex<synthetic_index_modes>;
     Index index;
     index.row_count = rows;
     const size_t words = index.words();
@@ -302,8 +302,9 @@ inline auto make_synthetic_index(size_t rows, uint64_t seed) -> monoprop::detail
 // Append rows [index.rows(), new_rows) the way operator growth does: new bits for dense columns (including
 // the old tail word's unused bits), ascending new rows for sparse ones. Existing rows keep their columns.
 // Does not touch row_parity_; the caller decides whether to drop or keep it.
-inline auto grow_synthetic_index(monoprop::detail::InvertedIndex<kIndexModes> &index, size_t new_rows, uint64_t seed)
-    -> void {
+inline auto grow_synthetic_index(monoprop::detail::InvertedIndex<synthetic_index_modes> &index,
+                                 size_t new_rows,
+                                 uint64_t seed) -> void {
     const size_t old_rows = index.row_count;
     index.row_count = new_rows;
     const size_t words = index.words();
@@ -328,8 +329,8 @@ inline auto grow_synthetic_index(monoprop::detail::InvertedIndex<kIndexModes> &i
 }
 
 // A Majorana/Pauli generator over the synthetic index's 16 columns.
-inline auto generator(std::initializer_list<size_t> columns) -> monoprop::Monomial<kIndexModes> {
-    monoprop::Monomial<kIndexModes> gen{};
+inline auto generator(std::initializer_list<size_t> columns) -> monoprop::Monomial<synthetic_index_modes> {
+    monoprop::Monomial<synthetic_index_modes> gen{};
     for (const auto c : columns) {
         gen.set(c);
     }

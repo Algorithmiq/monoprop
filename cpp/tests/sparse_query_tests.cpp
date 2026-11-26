@@ -635,8 +635,8 @@ BOOST_AUTO_TEST_CASE(sparse_record_round_trips_every_reachable_k_and_gap_width) 
 
 namespace {
 
-constexpr size_t kMergeModes = 32;
-using MergeResult = FusedScanResult<kMergeModes>;
+constexpr size_t merge_modes = 32;
+using MergeResult = FusedScanResult<merge_modes>;
 
 auto reset_streams(MergeResult &r, mpi::SlotWindow w, bool capture) -> void {
     r.leader_queries.reset(w);
@@ -649,7 +649,7 @@ auto reset_streams(MergeResult &r, mpi::SlotWindow w, bool capture) -> void {
     }
 }
 
-auto same_stage(const SelfQueryStage<kMergeModes> &a, const SelfQueryStage<kMergeModes> &b) -> bool {
+auto same_stage(const SelfQueryStage<merge_modes> &a, const SelfQueryStage<merge_modes> &b) -> bool {
     if (a.size() != b.size() || a.positions() != b.positions()) {
         return false;
     }
@@ -675,7 +675,7 @@ auto bits_equal(const std::vector<double> &a, const std::vector<double> &b) -> b
 // records, sources and values in range order, each self stage rebased in range order, cosine sets in
 // range order, and every piece's buffers released afterwards.
 BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stages) {
-    using QW = QueryWire<kMergeModes>;
+    using QW = QueryWire<merge_modes>;
     const mpi::SlotWindow window{.base = 2, .count = 3};
     const size_t me = 3;
     for (const bool capture : {false, true}) {
@@ -726,7 +726,7 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_keeps_source_order_windows_and_self_stage
             expect_cos.push_back(piece.cos_blocks.front());
         }
 
-        const auto merged = merge_scan_ranges<kMergeModes>(pieces, window, me, capture);
+        const auto merged = merge_scan_ranges<merge_modes>(pieces, window, me, capture);
 
         BOOST_TEST_CONTEXT("capture=" << capture) {
             BOOST_TEST((merged.leader_queries.window() == window));
@@ -810,7 +810,7 @@ BOOST_AUTO_TEST_CASE(openmp_scan_merge_moves_the_first_useful_buffer) {
     pieces[0].leader_self.reserve(8, 4); // capacity without content is not a query
     const auto *stage_data = pieces[1].leader_self.pos_flat.data();
 
-    auto merged = merge_scan_ranges<kMergeModes>(pieces, window, me, false);
+    auto merged = merge_scan_ranges<merge_modes>(pieces, window, me, false);
     BOOST_TEST(merged.leader_src.at_slot(0).data() == only_data);
     BOOST_TEST(merged.follower_src.at_slot(1).data() == roomy_data);
     BOOST_TEST((merged.follower_src.at_slot(1) == std::vector<size_t>{1, 2, 9}));

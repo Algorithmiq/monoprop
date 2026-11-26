@@ -76,16 +76,16 @@ using namespace std::chrono_literals;
 using sharded_test::add_term;
 using sharded_test::has_allocation_probe;
 using sharded_test::has_nonprimary_worker;
-using sharded_test::kN;
+using sharded_test::num_modes;
 using sharded_test::ScopedEnv;
 using sharded_test::team_options;
 using sharded_test::team_size;
-using State = sharded::ShardState<kN>;
-using Shards = sharded::Shards<kN>;
-using Operator = monoprop::detail::MPOperator<kN>;
-using Propagator = MonomialPropagator<kN>;
-using Access = monoprop::detail::PropagatorTestAccess<kN>;
-using Mono = Monomial<kN>;
+using State = sharded::ShardState<num_modes>;
+using Shards = sharded::Shards<num_modes>;
+using Operator = monoprop::detail::MPOperator<num_modes>;
+using Propagator = MonomialPropagator<num_modes>;
+using Access = monoprop::detail::PropagatorTestAccess<num_modes>;
+using Mono = Monomial<num_modes>;
 
 // Monomials have no ordering of their own; any strict order serves the key-set comparisons.
 struct MonoLess {
@@ -107,7 +107,7 @@ struct Fixture {
     Basis basis = Basis::Majorana;
     CutoffType cutoff_type = CutoffType::Length;
     unsigned int cutoff = 4;
-    size_t logical = kN;
+    size_t logical = num_modes;
 };
 
 // Pairs, a ladder of quartics and a few six- and eight-slot terms over the first 2 * logical slots, plus identity.
@@ -140,15 +140,15 @@ auto pauli_operator() -> OperatorDict {
         add_term(op, Basis::Pauli, pauli_oracle::slots_of_string(pauli), value);
         value += 0.25;
     };
-    for (size_t q = 0; q < kN; ++q) {
+    for (size_t q = 0; q < num_modes; ++q) {
         for (const char p : {'X', 'Y', 'Z'}) {
-            std::string s(kN, 'I');
+            std::string s(num_modes, 'I');
             s[q] = p;
             add(s);
         }
     }
-    for (size_t q = 0; q + 1 < kN; ++q) {
-        std::string s(kN, 'I');
+    for (size_t q = 0; q + 1 < num_modes; ++q) {
+        std::string s(num_modes, 'I');
         s[q] = 'Z';
         s[q + 1] = 'Z';
         add(s);
@@ -161,7 +161,7 @@ auto pauli_operator() -> OperatorDict {
 }
 
 auto nontrivial_fixtures() -> std::vector<Fixture> {
-    const auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
+    const auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
     return {
         {.name = "majorana-heisenberg-logical-6",
          .op = majorana_operator(6),
@@ -251,8 +251,8 @@ auto oracle_of(const Fixture &f, size_t threads) -> Propagator {
 }
 
 // Caller-side preparation, as the rank-level constructor performs it.
-auto make_seed(const Fixture &f, routing::Router router) -> sharded::OperatorSeed<kN> {
-    const auto cutoff_fn = monoprop::detail::cutoff_function<kN>(f.cutoff_type, f.cutoff, f.logical);
+auto make_seed(const Fixture &f, routing::Router router) -> sharded::OperatorSeed<num_modes> {
+    const auto cutoff_fn = monoprop::detail::cutoff_function<num_modes>(f.cutoff_type, f.cutoff, f.logical);
     std::optional<sharded::PairedBasisBounds> paired;
     if (f.schrodinger_cutoff) {
         paired = sharded::paired_basis_bounds(*f.schrodinger_cutoff, f.logical, router.flat_world());
@@ -263,11 +263,11 @@ auto make_seed(const Fixture &f, routing::Router router) -> sharded::OperatorSee
             .basis = f.basis,
             .logical_num_modes = f.logical,
             .paired = paired,
-            .inline_width = sharded::packed_inline_width<kN>(f.schrodinger_cutoff.has_value(), cutoff_fn)};
+            .inline_width = sharded::packed_inline_width<num_modes>(f.schrodinger_cutoff.has_value(), cutoff_fn)};
 }
 
 auto local_router(size_t threads) -> routing::Router {
-    return routing::make_router<kN>(1, threads);
+    return routing::make_router<num_modes>(1, threads);
 }
 
 // --- Owner observation ----------------------------------------------------------------------------------------
@@ -507,8 +507,8 @@ struct BuiltSource {
 };
 
 auto built_source(size_t threads) -> BuiltSource {
-    auto data = test_utils::load_case_data<kN>("random_exact.msgpack");
-    auto fixture = Fixture{.name = "built", .op = majorana_operator(kN), .initial_state = data.initial_state};
+    auto data = test_utils::load_case_data<num_modes>("random_exact.msgpack");
+    auto fixture = Fixture{.name = "built", .op = majorana_operator(num_modes), .initial_state = data.initial_state};
     auto propagator = oracle_of(fixture, threads);
     propagator.build_graph(data.majoranas, data.param_inds, data.gen_coeffs);
     return {std::move(data), std::move(fixture), std::move(propagator)};
@@ -526,8 +526,8 @@ public:
 // An initializer body for make_shards that builds a small real state on the owner.
 auto small_state(bool schrodinger) -> std::unique_ptr<State> {
     auto op = Operator{};
-    op.store->push_back(indices_to_bitset<kN>({0, 1}));
-    op.store->emplace(indices_to_bitset<kN>({0, 1}), 0);
+    op.store->push_back(indices_to_bitset<num_modes>({0, 1}));
+    op.store->emplace(indices_to_bitset<num_modes>({0, 1}), 0);
     op.op_coeffs.assign(1, 1.0);
     return std::make_unique<State>(std::move(op), schrodinger);
 }
@@ -540,7 +540,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_make_shards_initializes_each_owner_once) {
     const auto options = team_options();
     const auto threads = team_size();
     auto slots = std::vector<OwnerSlot>(threads);
-    auto shards = sharded::make_shards<kN>(options, [&](size_t shard) {
+    auto shards = sharded::make_shards<num_modes>(options, [&](size_t shard) {
         auto &slot = slots.at(shard);
         slot.begins.fetch_add(1);
         slot.worker = omp_get_thread_num();
@@ -577,7 +577,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_an_independent_reference) {
     const auto options = team_options();
     const auto threads = team_size();
     for (const size_t ranks : {size_t{1}, size_t{2}}) {
-        const auto router = routing::make_router<kN>(ranks, threads);
+        const auto router = routing::make_router<num_modes>(ranks, threads);
         for (const auto &fixture : all_fixtures()) {
             BOOST_TEST_CONTEXT(fixture.name << " ranks " << ranks) {
                 const auto seed = make_seed(fixture, router);
@@ -593,22 +593,22 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_an_independent_reference) {
                 if (fixture.schrodinger_cutoff) {
                     const auto effective = std::min<size_t>(*fixture.schrodinger_cutoff, 2 * fixture.logical);
                     const auto pairs = (effective + 1) / 2;
-                    paired_basis = generate_paired_op<kN>(pairs, fixture.logical);
+                    paired_basis = generate_paired_op<num_modes>(pairs, fixture.logical);
                     paired_reserve = std::max<size_t>(1, paired_basis.size() / (ranks * threads));
                 }
                 const size_t rank = ranks - 1;
                 const auto shards = sharded::seed_shards(options, seed, rank);
                 for (size_t shard = 0; shard < threads; ++shard) {
                     const auto flat = (rank * threads) + shard;
-                    const auto owned = [&](const Mono &mono) { return router.dest<kN>(mono) == flat; };
+                    const auto owned = [&](const Mono &mono) { return router.dest<num_modes>(mono) == flat; };
                     std::vector<Mono> rows;
                     std::map<Mono, double, MonoLess> coefficients;
                     for (const auto &[indices, coefficient] : fixture.op) {
-                        const auto mono = indices_to_bitset<kN>(indices);
+                        const auto mono = indices_to_bitset<num_modes>(indices);
                         if (indices.empty() || !owned(mono)) {
                             continue;
                         }
-                        coefficients[mono] = algebra_encode_coeff<kN>(fixture.basis, coefficient, mono);
+                        coefficients[mono] = algebra_encode_coeff<num_modes>(fixture.basis, coefficient, mono);
                         if (!fixture.schrodinger_cutoff) {
                             rows.push_back(mono);
                         }
@@ -618,7 +618,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_seed_matches_an_independent_reference) {
                             rows.push_back(mono);
                         }
                     }
-                    auto store = monoprop::detail::OperatorIndex<kN>(width);
+                    auto store = monoprop::detail::OperatorIndex<num_modes>(width);
                     store.reserve(fixture.schrodinger_cutoff ? paired_reserve : std::max<size_t>(1, rows.size()));
                     for (size_t i = 0; i < rows.size(); ++i) {
                         store.push_back(rows[i]);
@@ -666,20 +666,20 @@ BOOST_AUTO_TEST_CASE(sharded_state_routed_rows_belong_to_their_flat_owner) {
         bool linear;
     };
     for (const auto geometry : {Geometry{1, true}, Geometry{2, true}, Geometry{4, true}, Geometry{3, false}}) {
-        const auto router = routing::Router::for_modes<kN>(geometry.ranks, threads, geometry.linear);
+        const auto router = routing::Router::for_modes<num_modes>(geometry.ranks, threads, geometry.linear);
         for (const auto &fixture : all_fixtures()) {
             BOOST_TEST_CONTEXT(fixture.name << " ranks " << geometry.ranks << " linear " << geometry.linear) {
                 const auto seed = make_seed(fixture, router);
                 std::set<Mono, MonoLess> expected;
                 if (seed.paired) {
-                    for (const auto &mono : generate_paired_op<kN>(seed.paired->max_pairs, fixture.logical)) {
+                    for (const auto &mono : generate_paired_op<num_modes>(seed.paired->max_pairs, fixture.logical)) {
                         expected.insert(mono);
                     }
                 }
                 else {
                     for (const auto &[indices, coefficient] : fixture.op) {
                         if (!indices.empty()) {
-                            expected.insert(indices_to_bitset<kN>(indices));
+                            expected.insert(indices_to_bitset<num_modes>(indices));
                         }
                     }
                 }
@@ -696,7 +696,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_routed_rows_belong_to_their_flat_owner) {
                         const auto &op = shards[shard]->op;
                         for (size_t i = 0; i < op.size(); ++i) {
                             const auto key = op.store->row(i);
-                            misrouted += router.dest<kN>(key) != flat ? 1 : 0;
+                            misrouted += router.dest<num_modes>(key) != flat ? 1 : 0;
                             owners.emplace(key, flat);
                             ++rows;
                             if (key.none() && op.op_coeffs.at(i) != 0.0) {
@@ -715,7 +715,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_routed_rows_belong_to_their_flat_owner) {
                 BOOST_TEST(identity_coefficient_nonzero == 0U);
                 BOOST_TEST(owners.contains(Mono{}) == seed.paired.has_value());
                 if (seed.paired) {
-                    BOOST_TEST(owners.at(Mono{}) == router.dest<kN>(Mono{}));
+                    BOOST_TEST(owners.at(Mono{}) == router.dest<num_modes>(Mono{}));
                 }
             }
         }
@@ -812,17 +812,18 @@ BOOST_AUTO_TEST_CASE(sharded_state_rejects_invalid_arguments_before_the_team) {
         calls.fetch_add(1);
         return small_state(false);
     };
-    BOOST_CHECK_THROW((void)sharded::make_shards<kN>(parallel::Options{.threads = 0}, counting), std::invalid_argument);
-    BOOST_CHECK_THROW((void)sharded::make_shards<kN>(parallel::Options{.threads = -3}, counting),
+    BOOST_CHECK_THROW((void)sharded::make_shards<num_modes>(parallel::Options{.threads = 0}, counting),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW((void)sharded::make_shards<num_modes>(parallel::Options{.threads = -3}, counting),
                       std::invalid_argument);
     BOOST_TEST(calls.load() == 0);
 
     // An initializer that publishes nothing is a failure, reported after the join.
-    BOOST_CHECK_THROW((void)sharded::make_shards<kN>(options, [](size_t) { return std::unique_ptr<State>{}; }),
+    BOOST_CHECK_THROW((void)sharded::make_shards<num_modes>(options, [](size_t) { return std::unique_ptr<State>{}; }),
                       std::logic_error);
 
     const auto fixture = nontrivial_fixtures().front();
-    const auto mismatched = make_seed(fixture, routing::make_router<kN>(1, threads + 1));
+    const auto mismatched = make_seed(fixture, routing::make_router<num_modes>(1, threads + 1));
     BOOST_CHECK_THROW((void)sharded::seed_shards(options, mismatched, 0), std::invalid_argument);
     const auto seed = make_seed(fixture, local_router(threads));
     BOOST_CHECK_THROW((void)sharded::seed_shards(options, seed, 1), std::invalid_argument);
@@ -836,11 +837,13 @@ BOOST_AUTO_TEST_CASE(sharded_state_rejects_invalid_arguments_before_the_team) {
     // Caller-side validation of the logical-mode bound and the coefficient encoding.
     OperatorDict out_of_range;
     add_term(out_of_range, Basis::Majorana, {0, 12}, 1.0);
-    BOOST_CHECK_THROW((void)sharded::validate_initial_operator<kN>(out_of_range, Basis::Majorana, 6), std::exception);
-    BOOST_CHECK_NO_THROW((void)sharded::validate_initial_operator<kN>(out_of_range, Basis::Majorana, kN));
+    BOOST_CHECK_THROW((void)sharded::validate_initial_operator<num_modes>(out_of_range, Basis::Majorana, 6),
+                      std::exception);
+    BOOST_CHECK_NO_THROW((void)sharded::validate_initial_operator<num_modes>(out_of_range, Basis::Majorana, num_modes));
     OperatorDict non_hermitian;
     non_hermitian[VecZ{0, 1}] = std::complex<double>(1.0, 0.0);
-    BOOST_CHECK_THROW((void)sharded::validate_initial_operator<kN>(non_hermitian, Basis::Majorana, kN), std::exception);
+    BOOST_CHECK_THROW((void)sharded::validate_initial_operator<num_modes>(non_hermitian, Basis::Majorana, num_modes),
+                      std::exception);
 }
 
 // --- Copying and lifecycle ------------------------------------------------------------------------------------
@@ -901,19 +904,19 @@ BOOST_AUTO_TEST_CASE(sharded_state_copies_mutate_independently) {
             (void)op.inverted_index();
             for (size_t i = 0; i < op.size(); ++i) {
                 if (!op.store->row_positions(i).inlined()) {
-                    op.store->set(i, indices_to_bitset<kN>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
+                    op.store->set(i, indices_to_bitset<num_modes>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
                     break;
                 }
             }
             if (op.size() > 0) {
-                op.store->set(0, indices_to_bitset<kN>({15}));
+                op.store->set(0, indices_to_bitset<num_modes>({15}));
                 op.op_coeffs.at(0) += 1.0;
             }
-            op.store->push_back(indices_to_bitset<kN>({14, 15}));
+            op.store->push_back(indices_to_bitset<num_modes>({14, 15}));
             op.reindex_after_growth(op.size() - 1, 1);
             op.op_coeffs.push_back(2.0);
             op.state_coeffs.assign(op.size(), 0.5);
-            op.init_op_map[indices_to_bitset<kN>({13})] = 4.0;
+            op.init_op_map[indices_to_bitset<num_modes>({13})] = 4.0;
             state->matched.begin_gate(op.size());
             state->matched.mark(0);
             if (state->graph.layers() > 0) {
@@ -1011,7 +1014,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_initializer_failure_on_the_primary_is_returne
     {
         const allocation::LiveBytes live;
         try {
-            (void)sharded::make_shards<kN>(options, [](size_t shard) {
+            (void)sharded::make_shards<num_modes>(options, [](size_t shard) {
                 auto state = small_state(false); // unwinds inside the failing initializer
                 if (shard == 0) {
                     throw InjectedFailure("primary initializer failure");
@@ -1030,7 +1033,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_initializer_failure_on_the_primary_is_returne
         BOOST_TEST(net == 0, "published sibling shards are released after the join");
     }
     // A fresh construction afterwards succeeds.
-    const auto shards = sharded::make_shards<kN>(options, [](size_t) { return small_state(true); });
+    const auto shards = sharded::make_shards<num_modes>(options, [](size_t) { return small_state(true); });
     BOOST_TEST(shards.size() == threads);
 }
 
@@ -1047,7 +1050,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_initializer_failure_on_a_nonprimary_owner,
             {
                 const allocation::LiveBytes live;
                 try {
-                    (void)sharded::make_shards<kN>(options, [&](size_t shard) {
+                    (void)sharded::make_shards<num_modes>(options, [&](size_t shard) {
                         if (shard + 1 == threads) {
                             if (after_publication) {
                                 // Bounded wait for every sibling to finish its state; nobody waits on this owner.
@@ -1079,7 +1082,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_initializer_failure_on_a_nonprimary_owner,
             }
         }
     }
-    const auto shards = sharded::make_shards<kN>(options, [](size_t) { return small_state(false); });
+    const auto shards = sharded::make_shards<num_modes>(options, [](size_t) { return small_state(false); });
     BOOST_TEST(sharded::total_size(shards) == threads);
 }
 
@@ -1090,7 +1093,7 @@ BOOST_AUTO_TEST_CASE(sharded_state_concurrent_failures_select_the_lowest_owner,
     for (const size_t stride : {size_t{1}, size_t{2}}) {
         auto caught = std::optional<size_t>{};
         try {
-            (void)sharded::make_shards<kN>(options, [&](size_t shard) {
+            (void)sharded::make_shards<num_modes>(options, [&](size_t shard) {
                 auto state = small_state(false);
                 if (shard % stride == stride - 1) {
                     throw WorkerError{shard};

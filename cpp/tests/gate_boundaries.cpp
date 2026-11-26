@@ -197,24 +197,24 @@ constexpr size_t kBlockModes = 3;
 class ScopedBudget {
 public:
     explicit ScopedBudget(size_t threads) {
-        if (const char *old = std::getenv(kName)) {
+        if (const char *old = std::getenv(budget_variable_)) {
             old_ = std::string(old);
         }
-        ::setenv(kName, std::to_string(threads).c_str(), 1);
+        ::setenv(budget_variable_, std::to_string(threads).c_str(), 1);
     }
     ScopedBudget(const ScopedBudget &) = delete;
     auto operator=(const ScopedBudget &) -> ScopedBudget & = delete;
     ~ScopedBudget() {
         if (old_) {
-            ::setenv(kName, old_->c_str(), 1);
+            ::setenv(budget_variable_, old_->c_str(), 1);
         }
         else {
-            ::unsetenv(kName);
+            ::unsetenv(budget_variable_);
         }
     }
 
 private:
-    static constexpr const char *kName = "monoprop_NUM_THREADS";
+    static constexpr const char *budget_variable_ = "monoprop_NUM_THREADS";
     std::optional<std::string> old_;
 };
 

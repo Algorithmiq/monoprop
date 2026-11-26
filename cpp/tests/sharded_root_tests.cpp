@@ -69,9 +69,9 @@ using namespace monoprop;
 using namespace test_utils;
 namespace sharded = monoprop::detail::sharded;
 
-constexpr size_t kN = 12;
-using MP = MonomialPropagator<kN>;
-using Access = monoprop::detail::PropagatorTestAccess<kN>;
+constexpr size_t num_modes = 12;
+using MP = MonomialPropagator<num_modes>;
+using Access = monoprop::detail::PropagatorTestAccess<num_modes>;
 
 auto launch_team() -> size_t {
     const char *text = std::getenv("monoprop_TEST_EXPECT_TEAM");
@@ -79,7 +79,7 @@ auto launch_team() -> size_t {
 }
 
 auto lih() -> const CaseData & {
-    static const auto data = load_case_data<kN>("lih_fermionic_spin_exact.msgpack");
+    static const auto data = load_case_data<num_modes>("lih_fermionic_spin_exact.msgpack");
     return data;
 }
 
@@ -187,7 +187,7 @@ auto make(const Config &config = {}, const sharded::RootObserver *observer = nul
                                       std::optional<double>{},
                                       CutoffType::Length,
                                       config.basis_change,
-                                      kN,
+                                      num_modes,
                                       config.basis);
 }
 
@@ -335,7 +335,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_sole_shard_serial_evaluation_matches_the_phase
 BOOST_AUTO_TEST_CASE(sharded_root_raw_accessors_check_validity_first) {
     auto sim = make();
     build(*sim);
-    Access::set_cutoff_fn(*sim, [](const Monomial<kN> &) -> bool { throw Injected("injected cutoff failure"); });
+    Access::set_cutoff_fn(*sim, [](const Monomial<num_modes> &) -> bool { throw Injected("injected cutoff failure"); });
     BOOST_CHECK_THROW(build(*sim), Injected);
     BOOST_TEST_REQUIRE(Access::is_invalid(*sim));
     BOOST_CHECK_THROW(sim->mp_op(), InvalidPropagatorError);
@@ -383,8 +383,8 @@ BOOST_AUTO_TEST_CASE(sharded_root_owns_t_routed_shards) {
             for (size_t t = 0; t < team; ++t) {
                 BOOST_TEST(shards[t]->graph.layers() == sim->graph_layers());
                 shards[t]->op.store->for_each([&](const auto &mono, size_t) {
-                    BOOST_TEST(router.dest<kN>(mono) == t);                      // flat owner rank * T + t at rank 0
-                    BOOST_TEST(keys.insert(bitset_to_indices<kN>(mono)).second); // no key on two shards
+                    BOOST_TEST(router.dest<num_modes>(mono) == t); // flat owner rank * T + t at rank 0
+                    BOOST_TEST(keys.insert(bitset_to_indices<num_modes>(mono)).second); // no key on two shards
                     ++rows;
                 });
             }
@@ -404,7 +404,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_aggregates_cover_every_shard_once) {
     const auto &shards = Access::shards(*sim);
     size_t rows = 0;
     std::pair<size_t, size_t> graph_size{0, 0};
-    auto op_memory = monoprop::detail::MPOperatorMemoryBreakdown<kN>{};
+    auto op_memory = monoprop::detail::MPOperatorMemoryBreakdown<num_modes>{};
     auto graph_memory = GraphMemoryBreakdown{};
     for (const auto &state : shards) {
         rows += state->size();
@@ -519,7 +519,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_opaque_cutoff_traverses_on_the_primary) {
     }
     // A basis-change cutoff is an opaque closure: never called from two threads at once.
     std::vector<VecZ> identity_basis;
-    for (size_t i = 0; i < 2 * kN; ++i) {
+    for (size_t i = 0; i < 2 * num_modes; ++i) {
         identity_basis.push_back(VecZ{i});
     }
     Recorder recorder;
@@ -552,8 +552,9 @@ BOOST_AUTO_TEST_CASE(sharded_root_export_pairs_each_shard_with_its_block) {
             size_t offset = 0;
             for (const auto &state : shards) {
                 state->op.store->for_each([&](const auto &mono, size_t idx) {
-                    const auto decoded = algebra_decode_coeff<kN>(Basis::Majorana, contracted[offset + idx], mono);
-                    expected.emplace_back(bitset_to_indices<kN>(mono),
+                    const auto decoded =
+                        algebra_decode_coeff<num_modes>(Basis::Majorana, contracted[offset + idx], mono);
+                    expected.emplace_back(bitset_to_indices<num_modes>(mono),
                                           std::complex<double>(std::round(decoded.real() * 1e12) / 1e12,
                                                                std::round(decoded.imag() * 1e12) / 1e12));
                 });
@@ -627,7 +628,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_initial_operator_updates_route_to_owners) {
     const auto &shards = Access::shards(*sim);
     for (size_t t = 0; t < shards.size(); ++t) {
         for (const auto &[mono, coeff] : shards[t]->op.init_op_map) {
-            BOOST_TEST(router.dest<kN>(mono) == t);
+            BOOST_TEST(router.dest<num_modes>(mono) == t);
         }
     }
     auto reference = make();
@@ -688,7 +689,7 @@ public:
     }
 
     size_t calls = 0;
-    MonomialList<kN> last_terms;
+    MonomialList<num_modes> last_terms;
     VecD last_coeffs;
 
 protected:
@@ -730,11 +731,11 @@ BOOST_AUTO_TEST_CASE(sharded_root_virtual_hooks_keep_working) {
     std::set<VecZ> returned;
     for (size_t i = 0; i < sim.last_terms.size(); ++i) {
         const auto &mono = sim.last_terms[i];
-        const auto key = bitset_to_indices<kN>(mono);
+        const auto key = bitset_to_indices<num_modes>(mono);
         BOOST_TEST(returned.insert(key).second);
-        BOOST_TEST(router.dest<kN>(mono) < launch_team());
+        BOOST_TEST(router.dest<num_modes>(mono) < launch_team());
         BOOST_TEST_REQUIRE(scaled.contains(key));
-        BOOST_TEST(sim.last_coeffs[i] == algebra_encode_coeff<kN>(Basis::Majorana, scaled.at(key), mono));
+        BOOST_TEST(sim.last_coeffs[i] == algebra_encode_coeff<num_modes>(Basis::Majorana, scaled.at(key), mono));
     }
     // The update reached the source only: the copy and the clone answer as before.
     const double updated = sim.expectation_value(params());
@@ -757,7 +758,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_rejections_before_mutation_leave_it_usable) {
     const auto &data = lih();
     BOOST_CHECK_THROW(sim->build_graph(data.majoranas, VecZ{0}, data.gen_coeffs), std::exception);
     // A generator index past the system is rejected before any gate runs, even behind a valid gate.
-    const std::vector<VecZ> bad_gates{data.majoranas.front(), VecZ{0, 2 * kN}};
+    const std::vector<VecZ> bad_gates{data.majoranas.front(), VecZ{0, 2 * num_modes}};
     BOOST_CHECK_THROW(sim->build_graph(bad_gates, VecZ{0, 0}, VecD{1.0, 1.0}), std::exception);
     auto fresh = make();
     BOOST_CHECK_THROW(fresh->propagate(bad_gates, VecZ{0, 0}, VecD{1.0, 1.0}, VecD{0.1}), std::exception);
@@ -766,7 +767,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_rejections_before_mutation_leave_it_usable) {
     BOOST_CHECK_THROW(sim->expectation_value(VecD{0.1}), std::exception);
     BOOST_CHECK_THROW((void)retained(VecD{0.1}), std::exception);
     BOOST_CHECK_THROW(sim->contract_partially(VecD{}, false), std::exception);
-    BOOST_CHECK_THROW(sim->update_initial_operator(OperatorDict{{VecZ{0, 2 * kN}, 1.0}}), std::exception);
+    BOOST_CHECK_THROW(sim->update_initial_operator(OperatorDict{{VecZ{0, 2 * num_modes}, 1.0}}), std::exception);
     // Past the cutoff, so no shard holds the term: Heisenberg rejects it before the epoch moves.
     BOOST_CHECK_THROW(sim->update_initial_operator(OperatorDict{{VecZ{0, 2, 4, 6, 8, 10, 12, 14}, 1.0}}),
                       std::runtime_error);
@@ -1026,7 +1027,7 @@ auto make_on(mpi::Comm comm, const Config &config = {}, const sharded::RootObser
                                       std::optional<double>{},
                                       CutoffType::Length,
                                       config.basis_change,
-                                      kN,
+                                      num_modes,
                                       config.basis);
 }
 
@@ -1116,8 +1117,9 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_owns_its_flat_owners, *boost::unit_t
     BOOST_TEST_REQUIRE(shards.size() == team);
     size_t misrouted = 0;
     for (size_t t = 0; t < team; ++t) {
-        shards[t]->op.store->for_each(
-            [&](const auto &mono, size_t) { misrouted += router.dest<kN>(mono) == (world_rank() * team) + t ? 0 : 1; });
+        shards[t]->op.store->for_each([&](const auto &mono, size_t) {
+            misrouted += router.dest<num_modes>(mono) == (world_rank() * team) + t ? 0 : 1;
+        });
     }
     BOOST_TEST(misrouted == 0U);
     // The seeded rows tile the one-process operator, and so do the built rows.
@@ -1321,7 +1323,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_multirank_raw_accessors_and_hooks,
     const auto &router = Access::router(derived);
     size_t foreign = 0;
     for (const auto &mono : derived.last_terms) {
-        const size_t owner = router.dest<kN>(mono);
+        const size_t owner = router.dest<num_modes>(mono);
         foreign += owner / team == world_rank() ? 0 : 1;
     }
     BOOST_TEST(foreign == 0U);
@@ -1354,7 +1356,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
                                             std::optional<double>{},
                                             CutoffType::Length,
                                             std::optional<std::vector<VecZ>>{},
-                                            kN,
+                                            num_modes,
                                             Basis::Majorana);
     BOOST_TEST(empty->size() == 0U);
     empty->build_graph({VecZ{0, 1}, VecZ{}}, VecZ{0, 1}, VecD{1.0, 1.0});
@@ -1378,7 +1380,7 @@ BOOST_AUTO_TEST_CASE(sharded_root_empty_operators_and_identity_generators) {
                                                 std::optional<double>{},
                                                 CutoffType::Length,
                                                 std::optional<std::vector<VecZ>>{},
-                                                kN,
+                                                num_modes,
                                                 Basis::Majorana);
     core_only->build_graph({VecZ{0, 1}}, VecZ{0}, VecD{1.0});
     BOOST_TEST(core_only->core_term() == 2.5);

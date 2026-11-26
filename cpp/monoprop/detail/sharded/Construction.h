@@ -361,7 +361,7 @@ template <typename T>
 }
 
 //! Within-shard kernels run serially: the team's parallelism is across owners.
-inline constexpr parallel::Options kSerial{};
+inline constexpr parallel::Options serial_kernels{};
 
 /*
  * The peer ranks a gate's handoffs reach: the single linear peer rank ^ shift (none when that is this rank), or every
@@ -724,8 +724,10 @@ auto run_gates(parallel::Options options,
                     frame.coeffs = &frame.informed;
                     if (seed_params != nullptr) {
                         frame.seed_view.emplace(own.graph.slice_view(own.graph.layers()));
-                        frame.seed_callbacks =
-                            make_cos_callbacks<NumModes>(own.op.inverted_index(), *frame.seed_view, ctx.basis, kSerial);
+                        frame.seed_callbacks = make_cos_callbacks<NumModes>(own.op.inverted_index(),
+                                                                            *frame.seed_view,
+                                                                            ctx.basis,
+                                                                            serial_kernels);
                         auto &entry = seed_job.owners[t];
                         entry.coeffs = &frame.informed;
                         entry.graph = &*frame.seed_view;
@@ -793,7 +795,7 @@ auto run_gates(parallel::Options options,
                                                                     /*use_fused=*/true,
                                                                     f.coeffs,
                                                                     ctx.basis,
-                                                                    kSerial,
+                                                                    serial_kernels,
                                                                     f.kernels);
                 }
                 else if constexpr (Informed) {
@@ -811,7 +813,7 @@ auto run_gates(parallel::Options options,
                                                                     /*use_fused=*/false,
                                                                     nullptr,
                                                                     ctx.basis,
-                                                                    kSerial,
+                                                                    serial_kernels,
                                                                     f.kernels,
                                                                     f.sin_track());
                 }
@@ -829,7 +831,7 @@ auto run_gates(parallel::Options options,
                                                                     /*use_fused=*/false,
                                                                     nullptr,
                                                                     ctx.basis,
-                                                                    kSerial,
+                                                                    serial_kernels,
                                                                     f.kernels,
                                                                     f.sin_track());
                 }
@@ -854,7 +856,7 @@ auto run_gates(parallel::Options options,
                                                         .schrodinger = schrodinger,
                                                         .basis = ctx.basis},
                                                    work.scan.window,
-                                                   kSerial,
+                                                   serial_kernels,
                                                    frame.kernels);
                     }
                     else {
@@ -865,7 +867,7 @@ auto run_gates(parallel::Options options,
                                                    work.scan.combined_size,
                                                    Sink(flat_world, flat, frame.sin_track()),
                                                    work.scan.window,
-                                                   kSerial,
+                                                   serial_kernels,
                                                    frame.kernels);
                     }
                 }();
@@ -1077,7 +1079,7 @@ auto run_gates(parallel::Options options,
                                              schrodinger ? -build_angle : build_angle,
                                              schrodinger,
                                              work.scan.fused_scale,
-                                             kSerial,
+                                             serial_kernels,
                                              frame.kernels);
                     }
                     else if constexpr (Informed) {

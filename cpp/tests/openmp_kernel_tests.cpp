@@ -46,7 +46,7 @@ using monoprop::detail::KernelRange;
 using monoprop::detail::parallel::Options;
 using scan_test::bitwise_equal;
 
-constexpr auto kBudgets = {1, 2, 3, 4};
+constexpr auto thread_budgets = {1, 2, 3, 4};
 
 // Distinct, non-degenerate values, so a missed, extra or doubled scaling shows up bitwise.
 auto distinct_values(size_t n) -> VecD {
@@ -124,7 +124,7 @@ auto check_mask_budgets(const CosMask &mask, size_t n, const char *label) -> voi
     monoprop::detail::scale_cos_mask(serial.data(), mask, cos_val, Options{.threads = 1});
     BOOST_TEST_CONTEXT(label) {
         BOOST_TEST(bitwise_equal(serial, oracle));
-        for (const int threads : kBudgets) {
+        for (const int threads : thread_budgets) {
             VecD threaded = original;
             monoprop::detail::scale_cos_mask(threaded.data(), mask, cos_val, Options{.threads = threads});
             BOOST_TEST_INFO("threads " << threads);
@@ -332,15 +332,16 @@ BOOST_AUTO_TEST_CASE(openmp_cos_lazy_workers_participate,
     const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
     const auto index = kernel_test::make_synthetic_index(rows, 11);
     const auto gen = kernel_test::generator({0, 3, 7}); // odd: exercises the caller-prepared row parity
-    const auto recipe = monoprop::detail::make_lazy_fold<kernel_test::kIndexModes>(index, gen, rows, Basis::Majorana);
+    const auto recipe =
+        monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index, gen, rows, Basis::Majorana);
     VecD c = distinct_values(rows);
     RangeLog log;
-    monoprop::detail::scale_cos_lazy<kernel_test::kIndexModes>(index,
-                                                               recipe,
-                                                               c.data(),
-                                                               0.5,
-                                                               Options{.threads = 4},
-                                                               RecordingObserver{&log});
+    monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(index,
+                                                                         recipe,
+                                                                         c.data(),
+                                                                         0.5,
+                                                                         Options{.threads = 4},
+                                                                         RecordingObserver{&log});
     kernel_test::check_participation(log[KernelRange::cos_lazy], 4, "scale_cos_lazy budget 4");
 }
 
@@ -348,26 +349,27 @@ BOOST_AUTO_TEST_CASE(openmp_cos_lazy_small_or_serial_work_stays_on_the_caller) {
     const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
     const auto index = kernel_test::make_synthetic_index(rows, 12);
     const auto gen = kernel_test::generator({1, 4});
-    const auto recipe = monoprop::detail::make_lazy_fold<kernel_test::kIndexModes>(index, gen, rows, Basis::Majorana);
+    const auto recipe =
+        monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index, gen, rows, Basis::Majorana);
     VecD c = distinct_values(rows);
     RangeLog one_thread;
-    monoprop::detail::scale_cos_lazy<kernel_test::kIndexModes>(index,
-                                                               recipe,
-                                                               c.data(),
-                                                               0.5,
-                                                               Options{.threads = 1},
-                                                               RecordingObserver{&one_thread});
+    monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(index,
+                                                                         recipe,
+                                                                         c.data(),
+                                                                         0.5,
+                                                                         Options{.threads = 1},
+                                                                         RecordingObserver{&one_thread});
     kernel_test::check_serial(one_thread[KernelRange::cos_lazy], 4, "budget 1");
     // A partial scaled_count inside the first block: one range, serial at any budget.
     const auto short_recipe =
-        monoprop::detail::make_lazy_fold<kernel_test::kIndexModes>(index, gen, 1000, Basis::Majorana);
+        monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index, gen, 1000, Basis::Majorana);
     RangeLog tiny;
-    monoprop::detail::scale_cos_lazy<kernel_test::kIndexModes>(index,
-                                                               short_recipe,
-                                                               c.data(),
-                                                               0.5,
-                                                               Options{.threads = 4},
-                                                               RecordingObserver{&tiny});
+    monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(index,
+                                                                         short_recipe,
+                                                                         c.data(),
+                                                                         0.5,
+                                                                         Options{.threads = 4},
+                                                                         RecordingObserver{&tiny});
     kernel_test::check_serial(tiny[KernelRange::cos_lazy], 1, "one range, budget 4");
 }
 
@@ -490,13 +492,13 @@ BOOST_AUTO_TEST_CASE(openmp_kernel_worker_failures_join_before_rethrow) {
             const size_t rows = 3 * monoprop::detail::kColumnBlockWords * 64 + 1000;
             const auto index = kernel_test::make_synthetic_index(rows, 13);
             const auto recipe =
-                monoprop::detail::make_lazy_fold<kernel_test::kIndexModes>(index,
-                                                                           kernel_test::generator({0, 3, 7}),
-                                                                           rows,
-                                                                           Basis::Majorana);
+                monoprop::detail::make_lazy_fold<kernel_test::synthetic_index_modes>(index,
+                                                                                     kernel_test::generator({0, 3, 7}),
+                                                                                     rows,
+                                                                                     Basis::Majorana);
             VecD lazy = distinct_values(rows);
             RangeLog lazy_log;
-            BOOST_CHECK_THROW(monoprop::detail::scale_cos_lazy<kernel_test::kIndexModes>(
+            BOOST_CHECK_THROW(monoprop::detail::scale_cos_lazy<kernel_test::synthetic_index_modes>(
                                   index,
                                   recipe,
                                   lazy.data(),

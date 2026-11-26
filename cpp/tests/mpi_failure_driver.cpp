@@ -85,12 +85,12 @@ namespace {
 
 using namespace monoprop;
 
-constexpr size_t kModes = 6;
-using Propagator = MonomialPropagator<kModes>;
-using Access = detail::PropagatorTestAccess<kModes>;
+constexpr size_t num_modes = 6;
+using Propagator = MonomialPropagator<num_modes>;
+using Access = detail::PropagatorTestAccess<num_modes>;
 
 // Exit code CTest reads as "skipped": the MPI library's provided level does not exercise the scenario's route.
-constexpr int kNotExercised = 77;
+constexpr int skip_exit_code = 77;
 
 auto say(int rank, std::string_view text) -> void {
     std::fputs(std::format("[driver] rank {}: {}\n", rank, text).c_str(), stderr);
@@ -106,17 +106,17 @@ auto world_rank() -> int {
 // Twenty terms anticommuting with the {0, 1} generator, so both ranks own work under any hash split.
 auto hamiltonian() -> OperatorDict {
     OperatorDict ham;
-    for (size_t j = 2; j < 2 * kModes; ++j) {
+    for (size_t j = 2; j < 2 * num_modes; ++j) {
         ham[VecZ{0, j}] = std::complex<double>{0.0, 0.1 * static_cast<double>(j)};
         ham[VecZ{1, j}] = std::complex<double>{0.0, 0.05 * static_cast<double>(j)};
     }
     return ham;
 }
 
-const std::vector<VecZ> kGates{{0, 1}, {2, 3}, {1, 4}};
-const VecZ kMapping{0, 1, 2};
-const VecD kGenCoeffs{1.0, 1.0, 1.0};
-const VecD kParams{0.3, 0.2, 0.1};
+const std::vector<VecZ> circuit_gates{{0, 1}, {2, 3}, {1, 4}};
+const VecZ circuit_mapping{0, 1, 2};
+const VecD circuit_gen_coeffs{1.0, 1.0, 1.0};
+const VecD circuit_params{0.3, 0.2, 0.1};
 
 // The budget is captured when a root is constructed, from the launch's monoprop_NUM_THREADS.
 auto set_team(int threads) -> void {
@@ -174,7 +174,7 @@ auto make_root(const detail::sharded::RootObserver *observer, MPI_Comm comm = MP
     -> std::unique_ptr<Propagator> {
     return Access::construct_observed(observer,
                                       hamiltonian(),
-                                      static_cast<unsigned int>(2 * kModes),
+                                      static_cast<unsigned int>(2 * num_modes),
                                       VecZ{0, 1},
                                       std::optional<unsigned int>{},
                                       mpi::Comm(comm),
@@ -182,7 +182,7 @@ auto make_root(const detail::sharded::RootObserver *observer, MPI_Comm comm = MP
                                       std::optional<double>{},
                                       CutoffType::Length,
                                       std::optional<std::vector<VecZ>>{},
-                                      kModes,
+                                      num_modes,
                                       Basis::Majorana);
 }
 
@@ -216,15 +216,15 @@ auto sharded_scenario(int rank, std::string_view scenario, std::string_view opti
     const Injector injector(rank, rank == 0 ? arm : std::nullopt, corrupt);
     auto sim = make_root(&injector);
     say(rank, std::format("{} local terms, team {}", sim->size(), Access::options(*sim).threads));
-    sim->build_graph(kGates, kMapping, kGenCoeffs);
+    sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     if (option == "local-round") {
-        const auto outcome = Access::evaluate_with_local_round(*sim, kParams, &injector);
+        const auto outcome = Access::evaluate_with_local_round(*sim, circuit_params, &injector);
         if (outcome.error) {
             std::rethrow_exception(outcome.error); // a caller that got the failure back; its peer is still in a round
         }
         return;
     }
-    (void)sim->expectation_value(kParams);
+    (void)sim->expectation_value(circuit_params);
 }
 
 // --- the exported replay functions on the sole shard of a T = 1 root -----------------------------------------------
@@ -236,7 +236,7 @@ auto make_sole_shard_root() -> std::unique_ptr<Propagator> {
 
 auto active_ticket(int rank) -> void {
     auto sim = make_sole_shard_root();
-    sim->build_graph(kGates, kMapping, kGenCoeffs);
+    sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     VecD coeffs = sim->mp_op().get_operator();
     const auto view = sim->graph().replay_view();
     // Splitmix replays through MPI_Ialltoallv, so the Ticket always holds a posted request here.
@@ -264,7 +264,7 @@ struct ThrowingRangeObserver {
 
 auto active_ticket_cosine_worker(int rank) -> void {
     auto sim = make_sole_shard_root();
-    sim->build_graph(kGates, kMapping, kGenCoeffs);
+    sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     VecD coeffs = sim->mp_op().get_operator();
     const auto view = sim->graph().replay_view();
     // A stored mask of four kernel ranges, so the kernel really opens a team; the real layer is tiny.
@@ -296,33 +296,33 @@ auto close_to(double a, double b) -> bool {
 auto run_operations(int rank, MPI_Comm comm, std::string_view label) -> double {
     set_team(2);
     auto reference = make_root(nullptr, MPI_COMM_SELF);
-    reference->build_graph(kGates, kMapping, kGenCoeffs);
-    const auto [ref_energy, ref_gradient] = reference->expectation_value_and_gradient(kParams);
+    reference->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
+    const auto [ref_energy, ref_gradient] = reference->expectation_value_and_gradient(circuit_params);
 
     auto sim = make_root(nullptr, comm);
-    sim->build_graph(kGates, kMapping, kGenCoeffs);
-    const double energy = sim->expectation_value(kParams);
-    const auto [energy_g, gradient] = sim->expectation_value_and_gradient(kParams);
+    sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
+    const double energy = sim->expectation_value(circuit_params);
+    const auto [energy_g, gradient] = sim->expectation_value_and_gradient(circuit_params);
     const auto functional = sim->expectation_value_and_gradient_functional();
-    const auto [energy_f, gradient_f] = functional(kParams);
+    const auto [energy_f, gradient_f] = functional(circuit_params);
     const auto pared = sim->expectation_value_functional(1e-10);
-    const double energy_p = pared(kParams);
-    const auto contracted = sim->contract_partially(kParams, false);
-    const auto terms = sim->evolved_operator_terms(kParams, 0.0);
+    const double energy_p = pared(circuit_params);
+    const auto contracted = sim->contract_partially(circuit_params, false);
+    const auto terms = sim->evolved_operator_terms(circuit_params, 0.0);
     const Propagator copy(*sim);
-    const double energy_c = Propagator(copy).expectation_value(kParams);
+    const double energy_c = Propagator(copy).expectation_value(circuit_params);
 
     auto fresh = make_root(nullptr, comm);
-    fresh->propagate(kGates, kMapping, kGenCoeffs, kParams);
+    fresh->propagate(circuit_gates, circuit_mapping, circuit_gen_coeffs, circuit_params);
     auto fresh_reference = make_root(nullptr, MPI_COMM_SELF);
-    fresh_reference->propagate(kGates, kMapping, kGenCoeffs, kParams);
+    fresh_reference->propagate(circuit_gates, circuit_mapping, circuit_gen_coeffs, circuit_params);
     const double propagated = fresh->expectation_value(VecD{});
     const double propagated_ref = fresh_reference->expectation_value(VecD{});
 
     auto updated = make_root(nullptr, comm);
     updated->update_initial_operator(hamiltonian());
-    updated->build_graph(kGates, kMapping, kGenCoeffs);
-    const double energy_u = updated->expectation_value(kParams);
+    updated->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
+    const double energy_u = updated->expectation_value(circuit_params);
 
     bool ok = close_to(energy, ref_energy) && close_to(energy_g, ref_energy) && close_to(energy_f, ref_energy)
               && close_to(energy_p, ref_energy) && close_to(energy_c, ref_energy) && close_to(energy_u, ref_energy)
@@ -375,13 +375,13 @@ auto insufficient_level(int rank) -> void {
 auto wrong_thread(int rank) -> void {
     set_team(2);
     auto sim = make_root(nullptr);
-    sim->build_graph(kGates, kMapping, kGenCoeffs);
+    sim->build_graph(circuit_gates, circuit_mapping, circuit_gen_coeffs);
     if (rank == 0) {
-        std::thread host([&sim] { (void)sim->expectation_value(kParams); });
+        std::thread host([&sim] { (void)sim->expectation_value(circuit_params); });
         host.join();
     }
     else {
-        (void)sim->expectation_value(kParams);
+        (void)sim->expectation_value(circuit_params);
     }
 }
 
@@ -449,7 +449,7 @@ auto main(int argc, char **argv) -> int {
                         mpi::thread_level_name(provided),
                         why));
         MPI_Finalize();
-        return kNotExercised;
+        return skip_exit_code;
     };
     if (scenario == "insufficient-thread-level" && mpi::thread_level_satisfies(provided, mpi::required_thread_level)) {
         return not_exercised("the refusal needs a level below the required one");

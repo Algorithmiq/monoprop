@@ -112,15 +112,15 @@ auto run_graph_build_chain() -> void {
 // Instantiates for_blocks here: its region, and the omp_* calls it makes, are compiled and linked in
 // the consumer. The body only writes its own element; library calls stay outside the region.
 auto run_openmp_workshare_chain() -> void {
-    constexpr size_t kBlocks = 257;
-    std::vector<size_t> squares(kBlocks, 0);
-    monoprop::detail::parallel::for_blocks(kBlocks, {.threads = 2}, [&](size_t b) { squares[b] = b * b; });
+    constexpr size_t num_blocks = 257;
+    std::vector<size_t> squares(num_blocks, 0);
+    monoprop::detail::parallel::for_blocks(num_blocks, {.threads = 2}, [&](size_t b) { squares[b] = b * b; });
     size_t sum = 0;
     for (const auto s : squares) {
         sum += s;
     }
-    const size_t expected = (kBlocks - 1) * kBlocks * (2 * kBlocks - 1) / 6;
-    std::println(stderr, "[link_export_probe] openmp chain: blocks={} sum={} expected={}", kBlocks, sum, expected);
+    const size_t expected = (num_blocks - 1) * num_blocks * (2 * num_blocks - 1) / 6;
+    std::println(stderr, "[link_export_probe] openmp chain: blocks={} sum={} expected={}", num_blocks, sum, expected);
     if (sum != expected) {
         std::println(stderr, "[link_export_probe] openmp chain: FAILED");
         std::exit(1);
@@ -160,21 +160,21 @@ auto run_sharded_team_chain() -> void {
 
 // The Pauli basis: slots 2q/2q+1 are qubit q's x/z planes, so {0, 1} is Z on qubit 0 and {0} is X.
 auto run_pauli_chain() -> void {
-    constexpr size_t kQubits = 3;
+    constexpr size_t num_qubits = 3;
     OperatorDict observable;
     observable[VecZ{0, 1}] = std::complex<double>{1.0, 0.0};
 
-    MonomialPropagator<kQubits> sim(observable,
-                                    /*cutoff=*/2 * kQubits,
-                                    VecZ{},
-                                    /*schrodinger_cutoff=*/std::nullopt,
-                                    MPI_COMM_SELF,
-                                    /*lower_atol=*/std::nullopt,
-                                    /*upper_atol=*/std::nullopt,
-                                    CutoffType::Support,
-                                    /*basis_change=*/std::nullopt,
-                                    /*logical_num_modes=*/kQubits,
-                                    Basis::Pauli);
+    MonomialPropagator<num_qubits> sim(observable,
+                                       /*cutoff=*/2 * num_qubits,
+                                       VecZ{},
+                                       /*schrodinger_cutoff=*/std::nullopt,
+                                       MPI_COMM_SELF,
+                                       /*lower_atol=*/std::nullopt,
+                                       /*upper_atol=*/std::nullopt,
+                                       CutoffType::Support,
+                                       /*basis_change=*/std::nullopt,
+                                       /*logical_num_modes=*/num_qubits,
+                                       Basis::Pauli);
     sim.propagate(std::vector<VecZ>{{0}}, VecZ{0}, VecD{1.0}, VecD{0.3});
 
     std::println(stderr, "[link_export_probe] pauli chain: size={}", sim.size());

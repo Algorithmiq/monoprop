@@ -50,24 +50,24 @@ namespace scan_test {
 
 using namespace monoprop;
 
-inline constexpr size_t kModes = 32; // 64 bits, so a monomial is one word
-using Mono = Monomial<kModes>;
-using Op = detail::MPOperator<kModes>;
-using Result = detail::FusedScanResult<kModes>;
+inline constexpr size_t num_modes = 32; // 64 bits, so a monomial is one word
+using Mono = Monomial<num_modes>;
+using Op = detail::MPOperator<num_modes>;
+using Result = detail::FusedScanResult<num_modes>;
 
 // Column tiers of the synthetic operator, by bit index (the generator's pivot is its lowest set bit):
-inline constexpr size_t kEmptyEnd = 4;   // bits [0, 4) are never set: empty fold columns
-inline constexpr size_t kSparseEnd = 12; // bits [4, 12) are set with probability 1/256: sparse columns
+inline constexpr size_t empty_columns_end = 4;   // bits [0, 4) are never set: empty fold columns
+inline constexpr size_t sparse_columns_end = 12; // bits [4, 12) are set with probability 1/256: sparse columns
 // bits [12, 64) are set with probability 1/8: dense columns (the promotion threshold is 1/64).
 
 // Three full fold blocks and a one-word fourth, whose last word holds 37 rows: budgets 2-4 split it into
 // 2-4 ranges, and the last range carries the global tail.
-inline constexpr size_t kRowsPerRank = (3 * detail::kColumnBlockWords * 64) + 37;
+inline constexpr size_t rows_per_rank = (3 * detail::kColumnBlockWords * 64) + 37;
 
 inline auto draw_term(kernel_test::SplitMix &rng) -> uint64_t {
     uint64_t w = 0;
-    for (size_t b = kEmptyEnd; b < 64; ++b) {
-        const bool set = b < kSparseEnd ? rng.below(256) == 0 : rng.below(8) == 0;
+    for (size_t b = empty_columns_end; b < 64; ++b) {
+        const bool set = b < sparse_columns_end ? rng.below(256) == 0 : rng.below(8) == 0;
         w |= static_cast<uint64_t>(set) << b;
     }
     return w;
@@ -92,11 +92,11 @@ inline auto mono_of_bits(std::initializer_list<size_t> bits) -> Mono {
 inline auto build_op(const std::vector<Mono> &terms, Basis basis) -> Op {
     Op op;
     op.basis = basis;
-    detail::insert_absent_terms<kModes>(
+    detail::insert_absent_terms<num_modes>(
         op,
         terms.size(),
         [&](size_t k) -> const Mono & { return terms[k]; },
-        [&](size_t k, size_t base) { assign_row<kModes>(*op.store, base + k, terms[k]); });
+        [&](size_t k, size_t base) { assign_row<num_modes>(*op.store, base + k, terms[k]); });
     return op;
 }
 
@@ -114,7 +114,7 @@ inline auto owned_terms(const routing::Router &router, size_t my_rank, size_t ro
             continue;
         }
         const Mono m = mono_of(w);
-        if (router.flat_world() == 1 || find_rank<kModes>(m, router) == my_rank) {
+        if (router.flat_world() == 1 || find_rank<num_modes>(m, router) == my_rank) {
             terms.push_back(m);
         }
     }
@@ -141,7 +141,7 @@ struct Geometry {
 };
 
 inline auto router_of(const Geometry &g) -> routing::Router {
-    return routing::Router::for_modes<kModes>(g.ranks, g.parts, g.linear);
+    return routing::Router::for_modes<num_modes>(g.ranks, g.parts, g.linear);
 }
 
 // Operators are expensive to build at this size, so each (geometry, basis) is built once per process.
@@ -151,7 +151,7 @@ inline auto geometry_op(const Geometry &g, Basis basis) -> const Op & {
     auto it = cache.find(key);
     if (it == cache.end()) {
         const auto router = router_of(g);
-        auto op = build_op(owned_terms(router, g.my_rank, kRowsPerRank, 0x5CA11ULL + g.my_rank), basis);
+        auto op = build_op(owned_terms(router, g.my_rank, rows_per_rank, 0x5CA11ULL + g.my_rank), basis);
         (void)op.inverted_index();
         it = cache.emplace(key, std::move(op)).first;
     }
@@ -170,7 +170,7 @@ struct Scenario {
     const char *label;
     Basis basis = Basis::Majorana;
     Mono gen{};
-    CutoffFn<kModes> cutoff = detail::LengthCutoff<kModes>{2 * kModes};
+    CutoffFn<num_modes> cutoff = detail::LengthCutoff<num_modes>{2 * num_modes};
     std::optional<size_t> cap = std::nullopt; // only_rotate_len_k
     Atol atol = Atol::none;
     bool capture = false;
@@ -186,7 +186,7 @@ struct Outcome {
     size_t my_rank = 0;
 };
 
-inline constexpr size_t kAtolTerm = 1234; // the term whose |sin|·|c| an atol scenario lands on exactly
+inline constexpr size_t atol_term = 1234; // the term whose |sin|·|c| an atol scenario lands on exactly
 
 // Runs `s` on `op`, which must be the operator of geometry `g` (or one built the same way).
 template <class Observer = detail::NoRangeObserver>
@@ -196,7 +196,7 @@ auto run_scan_on(const Op &op,
                  detail::parallel::Options options,
                  const Observer &observer = {}) -> Outcome {
     const auto router = router_of(g);
-    const size_t shift = router.rank_shift<kModes>(s.gen);
+    const size_t shift = router.rank_shift<num_modes>(s.gen);
     const mpi::PeerPlan plan{.sparse = router.is_linear(), .shift = static_cast<int>(shift)};
     Outcome out;
     out.window = plan.window(g.my_rank, router.ranks(), router.shards_per_rank());
@@ -206,35 +206,35 @@ auto run_scan_on(const Op &op,
     std::optional<double> lower;
     std::optional<double> upper;
     if (s.atol == Atol::lower_equal) {
-        lower = abs_sin * std::abs(out.coeffs[kAtolTerm]);
+        lower = abs_sin * std::abs(out.coeffs[atol_term]);
     }
     if (s.atol == Atol::upper_equal) {
-        upper = abs_sin * std::abs(out.coeffs[kAtolTerm]);
+        upper = abs_sin * std::abs(out.coeffs[atol_term]);
     }
     if (s.atol == Atol::drop_all) {
         lower = 2.0;
     }
     const auto cut_st =
         detail::build_majorana_evolution_cutoff_state(lower, std::cref(out.coeffs), upper, std::optional{s.param});
-    const detail::CutoffEvaluator<kModes> eval(s.cutoff);
+    const detail::CutoffEvaluator<num_modes> eval(s.cutoff);
     double *const sweep = s.fused_scale ? out.coeffs.data() : nullptr;
     const double cos_val = std::cos(2 * s.param);
-    out.result = with_algebra<kModes>(s.basis, [&]<typename A>() {
-        return detail::fused_find_and_collect<kModes, A>(op,
-                                                         s.gen,
-                                                         eval,
-                                                         cut_st,
-                                                         out.coeffs,
-                                                         s.cap,
-                                                         out.window,
-                                                         g.my_rank,
-                                                         router,
-                                                         shift,
-                                                         s.capture,
-                                                         sweep,
-                                                         cos_val,
-                                                         options,
-                                                         observer);
+    out.result = with_algebra<num_modes>(s.basis, [&]<typename A>() {
+        return detail::fused_find_and_collect<num_modes, A>(op,
+                                                            s.gen,
+                                                            eval,
+                                                            cut_st,
+                                                            out.coeffs,
+                                                            s.cap,
+                                                            out.window,
+                                                            g.my_rank,
+                                                            router,
+                                                            shift,
+                                                            s.capture,
+                                                            sweep,
+                                                            cos_val,
+                                                            options,
+                                                            observer);
     });
     return out;
 }
@@ -247,7 +247,7 @@ auto run_scan(const Geometry &g, const Scenario &s, detail::parallel::Options op
 
 // A fresh operator for `g`: its inverted index and row-parity cache have never been built.
 inline auto cold_op(const Geometry &g, Basis basis) -> Op {
-    return build_op(owned_terms(router_of(g), g.my_rank, kRowsPerRank, 0x5CA11ULL + g.my_rank), basis);
+    return build_op(owned_terms(router_of(g), g.my_rank, rows_per_rank, 0x5CA11ULL + g.my_rank), basis);
 }
 
 inline auto bitwise_equal(std::span<const double> a, std::span<const double> b) -> bool {
@@ -278,8 +278,8 @@ inline auto emitted(const Result &r) -> size_t {
 }
 
 // The self stage's logical content only: never its capacity tail.
-inline auto check_same_stage(const detail::SelfQueryStage<kModes> &a,
-                             const detail::SelfQueryStage<kModes> &b,
+inline auto check_same_stage(const detail::SelfQueryStage<num_modes> &a,
+                             const detail::SelfQueryStage<num_modes> &b,
                              const char *which) -> void {
     BOOST_TEST_CONTEXT(which) {
         BOOST_TEST_REQUIRE(a.size() == b.size());
@@ -444,7 +444,7 @@ inline auto check_threaded_matches_serial(const Geometry &g, const Scenario &s, 
     BOOST_TEST_CONTEXT(g.label << " / " << s.label) {
         const size_t words = geometry_op(g, s.basis).inverted_index().words();
         const size_t blocks = detail::logical_ranges(words, detail::kColumnBlockWords);
-        const bool safe = detail::CutoffEvaluator<kModes>(s.cutoff).parallel_safe();
+        const bool safe = detail::CutoffEvaluator<num_modes>(s.cutoff).parallel_safe();
         const size_t scanned = expect == Expect::not_scanned ? 0U : 1U;
 
         kernel_test::RangeLog serial_log;
@@ -506,7 +506,7 @@ inline auto find_generator(const routing::Router &router,
             const size_t b = pivot + 1 + rng.below(64 - pivot - 1);
             g.set(b);
         }
-        if ((router.rank_shift<kModes>(g) == 0) == want_zero_shift) {
+        if ((router.rank_shift<num_modes>(g) == 0) == want_zero_shift) {
             return g;
         }
     }

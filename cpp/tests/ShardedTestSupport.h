@@ -49,7 +49,7 @@ namespace allocation = test_utils::allocation;
 using Key = std::vector<uint64_t>;
 using RetainedMap = std::map<Key, double>;
 
-inline constexpr size_t kN = 8;
+inline constexpr size_t num_modes = 8;
 
 inline auto team_options() -> parallel::Options {
     return parallel::capture_thread_budget();
@@ -142,7 +142,8 @@ inline auto bits(double v) -> uint64_t {
 
 // Stores the coefficient whose encoding is `value`, so every fixture is encodable in its basis.
 inline auto add_term(OperatorDict &op, Basis basis, const VecZ &indices, double value) -> void {
-    op[indices] = algebra_decode_coeff<kN>(basis, std::complex<double>(value, 0.0), indices_to_bitset<kN>(indices));
+    op[indices] =
+        algebra_decode_coeff<num_modes>(basis, std::complex<double>(value, 0.0), indices_to_bitset<num_modes>(indices));
 }
 
 } // namespace sharded_test

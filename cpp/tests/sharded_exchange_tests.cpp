@@ -59,7 +59,7 @@ using sharded_test::dedicated_launch;
 using sharded_test::has_nonprimary_worker;
 using sharded_test::team_options;
 
-constexpr int kTag = 0x5E01;
+constexpr int exchange_tag = 0x5E01;
 
 auto world() -> PhysicalWorld {
     return PhysicalWorld::of(monoprop::mpi::Comm(MPI_COMM_WORLD));
@@ -249,7 +249,7 @@ auto describe(const std::exception_ptr &error) -> std::string {
 template <class T>
 auto check_rounds(const std::vector<RoundSpec> &specs) -> void {
     const auto w = world();
-    PhysicalExchange ex(w, static_cast<size_t>(team_options().threads), element_of<T>(), kTag);
+    PhysicalExchange ex(w, static_cast<size_t>(team_options().threads), element_of<T>(), exchange_tag);
     for (const auto &spec : specs) {
         BOOST_TEST_CONTEXT("rank " << w.rank << " of " << w.ranks << ", T " << team_options().threads << ", round "
                                    << spec.round << " scale " << spec.scale << ", "
@@ -296,7 +296,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_world_reads_the_communicator) {
 BOOST_AUTO_TEST_CASE(sharded_exchange_rejects_invalid_layouts_before_posting) {
     const auto w = world();
     const size_t threads = 2;
-    PhysicalExchange ex(w, threads, ExchangeElement::f64, kTag);
+    PhysicalExchange ex(w, threads, ExchangeElement::f64, exchange_tag);
     // A peer set must name other ranks, ascending, each once.
     BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{w.rank}, ExchangeTransport::pairwise), std::invalid_argument);
     BOOST_CHECK_THROW(ex.plan_send(std::vector<size_t>{w.ranks}, ExchangeTransport::pairwise), std::invalid_argument);
@@ -345,8 +345,8 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
                     BOOST_TEST_CONTEXT("ranks " << ranks << " threads " << threads << " rank " << rank << " density "
                                                 << density) {
                         const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = rank, .ranks = ranks};
-                        PhysicalExchange primary(w, threads, ExchangeElement::f64, kTag);
-                        PhysicalExchange owners(w, threads, ExchangeElement::f64, kTag);
+                        PhysicalExchange primary(w, threads, ExchangeElement::f64, exchange_tag);
+                        PhysicalExchange owners(w, threads, ExchangeElement::f64, exchange_tag);
                         std::vector<size_t> peers;
                         for (size_t b = 0; b < ranks; ++b) {
                             if (b != rank) {
@@ -406,12 +406,12 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_owner_parallel_planning_matches_the_primar
     }
     // Placing a column before the round is sized is refused.
     const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = 0, .ranks = 2};
-    PhysicalExchange unplanned(w, 2, ExchangeElement::f64, kTag);
+    PhysicalExchange unplanned(w, 2, ExchangeElement::f64, exchange_tag);
     BOOST_CHECK_THROW(unplanned.place_column(0), std::logic_error);
     BOOST_CHECK_THROW(unplanned.plan_column(2), std::out_of_range);
     BOOST_CHECK_THROW(unplanned.close_rows(2), std::out_of_range);
     // A per-peer total past INT_MAX is refused before anything is placed or posted, as by plan_send().
-    PhysicalExchange big(w, 2, ExchangeElement::f64, kTag);
+    PhysicalExchange big(w, 2, ExchangeElement::f64, exchange_tag);
     for (size_t t = 0; t < 2; ++t) {
         big.reset_rows(t);
         big.set_send_count(t, 0, 0, static_cast<size_t>(std::numeric_limits<int>::max()));
@@ -441,8 +441,8 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_
                     BOOST_TEST_CONTEXT("ranks " << ranks << " threads " << threads << " rank " << rank << " short "
                                                 << short_layouts) {
                         const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = rank, .ranks = ranks};
-                        PhysicalExchange entrywise(w, threads, ExchangeElement::f64, kTag);
-                        PhysicalExchange bulk(w, threads, ExchangeElement::f64, kTag);
+                        PhysicalExchange entrywise(w, threads, ExchangeElement::f64, exchange_tag);
+                        PhysicalExchange bulk(w, threads, ExchangeElement::f64, exchange_tag);
                         std::vector<size_t> peers;
                         for (size_t b = 0; b < ranks; ++b) {
                             if (b != rank) {
@@ -516,7 +516,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_symmetric_rows_and_column_views_match_the_
         }
     }
     const PhysicalWorld w{.comm = monoprop::mpi::Comm(MPI_COMM_SELF), .rank = 1, .ranks = 3};
-    PhysicalExchange round(w, 2, ExchangeElement::f64, kTag);
+    PhysicalExchange round(w, 2, ExchangeElement::f64, exchange_tag);
     BOOST_CHECK_THROW(round.write_symmetric_rows(2, std::vector<int>{}), std::out_of_range);
     BOOST_CHECK_THROW(round.write_symmetric_rows(0, std::vector<int>{0, 0, 0, 0, -1, 0}), std::length_error);
     // Columns are readable only once the round is planned, with the round's element type, inside the table.
@@ -583,7 +583,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_payload_totals_must_fit_mpi_counts) {
         return;
     }
     const size_t threads = 2;
-    PhysicalExchange ex(w, threads, ExchangeElement::f64, kTag);
+    PhysicalExchange ex(w, threads, ExchangeElement::f64, exchange_tag);
     ex.reset_rows(0);
     ex.reset_rows(1);
     const int big = std::numeric_limits<int>::max();
@@ -598,7 +598,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_mpi_calls_run_only_on_the_primary,
                      *boost::unit_test::precondition(has_nonprimary_worker)) {
     const auto w = world();
     const auto options = team_options();
-    PhysicalExchange ex(w, static_cast<size_t>(options.threads), ExchangeElement::u64, kTag);
+    PhysicalExchange ex(w, static_cast<size_t>(options.threads), ExchangeElement::u64, exchange_tag);
     // No peers: a primary post is a no-op, a worker's post is refused before it reaches MPI.
     std::vector<int> refused(static_cast<size_t>(options.threads), 0);
     const auto error = sharded::run_team(options, [&](size_t s, sharded::TeamFailure &failure) noexcept {
@@ -663,7 +663,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_sparse_peer_round, *boost::unit_test::prec
 BOOST_AUTO_TEST_CASE(sharded_exchange_empty_rounds_complete, *boost::unit_test::precondition(has_two_ranks)) {
     // A round whose every count is zero still completes on every rank, under both transports.
     const auto w = world();
-    PhysicalExchange ex(w, static_cast<size_t>(team_options().threads), ExchangeElement::f64, kTag);
+    PhysicalExchange ex(w, static_cast<size_t>(team_options().threads), ExchangeElement::f64, exchange_tag);
     for (const auto transport : {ExchangeTransport::pairwise, ExchangeTransport::collective}) {
         for (const bool known : {false, true}) {
             const RoundSpec spec{.peers = all_other_ranks(w),
@@ -683,7 +683,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_moves_keep_and_drain_requests, *boost::uni
     // A posted round moved into a new owner keeps its requests; assigning over a live owner drains it first.
     const auto w = world();
     const auto peers = all_other_ranks(w);
-    PhysicalExchange ex(w, 1, ExchangeElement::f64, kTag);
+    PhysicalExchange ex(w, 1, ExchangeElement::f64, exchange_tag);
     const auto post_one = [&](PhysicalExchange &e, double value) {
         e.reset_rows(0);
         for (size_t k = 0; k < peers.size(); ++k) {
@@ -705,7 +705,7 @@ BOOST_AUTO_TEST_CASE(sharded_exchange_moves_keep_and_drain_requests, *boost::uni
     for (size_t k = 0; k < peers.size(); ++k) {
         BOOST_TEST(moved.recv_block<double>(0, k, 0)[0] == 10.0 + static_cast<double>(peers[k]));
     }
-    PhysicalExchange target(w, 1, ExchangeElement::f64, kTag + 2);
+    PhysicalExchange target(w, 1, ExchangeElement::f64, exchange_tag + 2);
     post_one(target, 20.0);
     BOOST_TEST(target.live() > 0);
     target = std::move(moved); // drains the round target had posted
