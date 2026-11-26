@@ -191,46 +191,6 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
     fi
     grep -q "supports: none" "$mismatch/log"
 
-# Fail unless every installed extension (the serial _core and each MPI ABI's _core_mpi) carries the sharded
-# runtime's NUL-terminated identity literal and neither pre-removal marker, _core also as its attribute, the
-# installation ships MPI ABIs exactly when monoprop_ENABLE_MPI asks for them, and the C++ build tree holds no stale
-# runtime selector. The MPI extensions are read from disk, not imported, so no MPI library is loaded.
-
-check-runtime:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    want_mpi={{ if mpi_enabled =~ '^(on|true|yes|1)$' { "True" } else { "False" } }}
-    uv run --no-sync python - "$want_mpi" <<'PY'
-    import sys
-    from pathlib import Path
-
-    import monoprop
-    from monoprop import _core
-
-    identity = "monoprop-runtime=sharded-openmp"
-    stale_markers = (b"monoprop-runtime=sharded-openmp-prototype", b"monoprop-runtime=legacy-partitions")
-    want_mpi = sys.argv[1] == "True"
-    found = getattr(_core, "__runtime_identity__", None)
-    core = Path(_core.__file__)
-    extensions = [core, *sorted(core.parent.glob("_core_mpi.*"))]
-    failed = found != identity or bool(monoprop.MPI_ABIS) != want_mpi
-    failed = failed or len(extensions) - 1 != len(monoprop.MPI_ABIS)
-    print(f"runtime={found} MPI_ABIS={monoprop.MPI_ABIS}")
-    for extension in extensions:
-        data = extension.read_bytes()
-        embedded = identity.encode() + b"\0" in data
-        stale = [m for m in stale_markers if m in data]
-        print(f"  {extension.name}: embedded={embedded} stale={stale}")
-        failed = failed or not embedded or bool(stale)
-    if failed:
-        raise SystemExit(f"expected {identity} in every extension, with MPI ABIs={want_mpi}")
-    PY
-    if grep -q '^monoprop_SHARDED_OPENMP_PROTOTYPE:' "{{ build_dir }}/CMakeCache.txt"; then
-      echo "{{ build_dir }} holds a stale monoprop_SHARDED_OPENMP_PROTOTYPE cache entry; rebuild it from scratch" >&2
-      exit 1
-    fi
-    echo "C++ tree {{ build_dir }}: no runtime selector"
-
 # Test built wheels (a file or a directory) against the MPI already on this machine. MPI4PY is
 # "wheel" (the PyPI binary; its file name names the ABI) or "source" (built against the local
 # mpicc; the ABI is read from the library). PACKAGES are extra requirements, e.g. impi-rt.

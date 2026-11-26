@@ -492,28 +492,6 @@ Python API under TSan would require a TSan-instrumented CPython.
   those files, so there is one list per platform to keep current.
 
 
-## The runtime a build contains
-
-There is one runtime and no build option that selects another: a default build is the sharded OpenMP runtime
-([Parallelism and distribution](/features/parallelism)). Its extensions carry a read-only identity: the serial
-`_core` as the attribute `_core.__runtime_identity__`, and every extension, `_core_mpi` included, as the same
-NUL-terminated literal in its file:
-
-```bash
-uv run --no-sync python -c 'from monoprop import _core; print(_core.__runtime_identity__)'
-# monoprop-runtime=sharded-openmp
-just check-runtime   # attribute, literals, MPI ABIs, and no stale selector in the C++ tree
-```
-
-The parity driver and the benchmark preflight read both, so evidence names the binary it came from. Builds from
-before the partition runtime was removed carried `monoprop-runtime=sharded-openmp-prototype` (the development
-selector `monoprop_SHARDED_OPENMP_PROTOTYPE=ON`) or `monoprop-runtime=legacy-partitions`, and the preserved
-partition baseline carries none; the tools still read those for archived evidence. A build tree configured before
-the removal keeps a `monoprop_SHARDED_OPENMP_PROTOTYPE` cache entry that no longer does anything: delete the tree.
-
-Linux x86_64 with GCC/libgomp, Clang/libomp, ASan/UBSan and Clang TSan with Archer, with and without MPI, has been
-run. macOS, Linux aarch64, wheels from CI, Nix and the minimum compiler versions are pending their own runs.
-
 ## Container images
 
 `.github/workflows/container.yml` publishes two images to GHCR for

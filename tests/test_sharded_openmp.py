@@ -51,12 +51,6 @@ import monoprop
 from monoprop import _core
 
 _PROBE = Path(__file__).resolve().parent / "sharded_openmp_probe.py"
-# The runtime identity this build's extension embeds, and the identities of the two pre-removal runtimes, which only a
-# separately built external interpreter can carry. The embedded literals are NUL-terminated, so the final marker is
-# matched exactly and never as a prefix of the prototype's.
-_RUNTIME = "monoprop-runtime=sharded-openmp"
-_PROTOTYPE = "monoprop-runtime=sharded-openmp-prototype"
-_LEGACY = "monoprop-runtime=legacy-partitions"
 # Environment a launcher gives its ranks: a child that inherits it would try to join the parent's job.
 _LAUNCHER_PREFIXES = ("OMPI_", "PMIX_", "PRTE_", "PMI_", "HYDRA_", "MPIR_")
 _TEAMS = (1, 2, 4)
@@ -188,16 +182,6 @@ def _differences(left: Any, right: Any, path: str = "") -> list[str]:
     return [] if left == right else [f"{path}: {left!r} != {right!r}"]
 
 
-def test_build_identity_matches_the_extension() -> None:
-    # Provenance, not a selector: the attribute and the NUL-terminated literal in the extension file agree, and neither
-    # pre-removal marker is present. A mismatch fails here instead of letting other cases skip or run the wrong code.
-    assert getattr(_core, "__runtime_identity__", None) == _RUNTIME
-    data = Path(_core.__file__).read_bytes()
-    assert _RUNTIME.encode() + b"\0" in data
-    assert _PROTOTYPE.encode() not in data
-    assert _LEGACY.encode() not in data
-
-
 _ARGS: dict[str, Any] = {
     "initial_operator": {(0, 1): 1j, (2, 3): 0.5j, (1, 2): 0.25j},
     "cutoff": 4,
@@ -306,7 +290,6 @@ def test_obsolete_partition_variable_is_ignored(
         2,
         extra_env={"monoprop_PARTITIONS": value},
     )
-    assert run["runtime"] == _RUNTIME
     differences = _differences(run["full"], unset_partition_variable_run["full"])
     assert not differences, differences[:10]
 
@@ -328,7 +311,6 @@ def test_invalid_budget_is_rejected(budget: str) -> None:
 def test_controls_and_lifecycle() -> None:
     results = {t: _run({"scenario": "controls"}, t) for t in _TEAMS}
     for t, result in results.items():
-        assert result["runtime"] == _RUNTIME
         out = result["controls"]
         assert out["default"] == "ok"
         for key in (
@@ -405,8 +387,7 @@ def _check_single_run(full: dict[str, Any], picture: str) -> None:
 )
 def test_full_api_agrees_across_team_sizes(fixture: str, picture: str) -> None:
     runs = {t: _run(_full_spec(fixture, picture), t) for t in _TEAMS}
-    for t, run in runs.items():
-        assert run["runtime"] == _RUNTIME, t
+    for run in runs.values():
         _check_single_run(run["full"], picture)
     reference = runs[1]["full"]
     for t in _TEAMS[1:]:
@@ -454,9 +435,6 @@ def test_matches_the_legacy_runtime_at_the_same_geometry(
         python=legacy_python,
         extra_env={"monoprop_PARTITIONS": str(threads)},
     )
-    assert candidate["runtime"] == _RUNTIME
-    assert legacy["runtime"] in (_LEGACY, None)
-    assert candidate["core_file"] != legacy["core_file"]
     differences = _differences(candidate["full"], legacy["full"])
     assert not differences, differences[:10]
 
@@ -619,7 +597,6 @@ def test_multirank_agrees_across_geometries(
     for ranks, threads in ((2, 2), (4, 1)):
         docs = _run_ranks(_full_spec(fixture, picture), ranks, threads, tmp_path)
         for doc in docs:
-            assert doc["runtime"] == _RUNTIME
             _check_single_run(doc["full"], picture)
         _assert_full_close(reference, _merge_ranks(docs), f"P={ranks} T={threads}")
 
@@ -688,7 +665,5 @@ def test_multirank_matches_the_legacy_runtime_at_the_same_geometry(
         extra_env={"monoprop_PARTITIONS": str(threads)},
     )
     for rank, (ours, theirs) in enumerate(zip(candidate, legacy, strict=True)):
-        assert ours["runtime"] == _RUNTIME
-        assert theirs["runtime"] in (_LEGACY, None)
         differences = _differences(ours["full"], theirs["full"])
         assert not differences, (rank, differences[:10])

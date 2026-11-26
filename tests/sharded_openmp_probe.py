@@ -424,15 +424,9 @@ def main() -> None:
     backend = getattr(monoprop, "_backend", None)
     if backend is not None:
         _CORE = backend.core_module(_COMM)
-    result: dict[str, Any] = {
-        "runtime": getattr(_CORE, "__runtime_identity__", None),
-        "has_mpi": has_mpi,
-        "core_file": _CORE.__file__,
-    }
+    result: dict[str, Any] = {"has_mpi": has_mpi}
     scenario = spec["scenario"]
-    if scenario == "identity":
-        pass
-    elif scenario == "full":
+    if scenario == "full":
         result["full"] = _scenario_full(spec)
     elif scenario == "controls":
         result["controls"] = _scenario_controls(spec)

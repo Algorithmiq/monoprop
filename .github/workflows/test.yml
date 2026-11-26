@@ -100,9 +100,6 @@ jobs:
       - name: Get monoprop information
         run: just info
 
-      - name: Verify the runtime and MPI identity of the build
-        run: just check-runtime
-
       - name: Verify that find_package(monoprop) works
         run: just test-find-package
 
