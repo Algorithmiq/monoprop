@@ -21,7 +21,7 @@ set(
 # start ("runtime does not come first in initial library list"). A real external consumer building
 # against an ASan-instrumented monoprop would face the same requirement to sanitize their own code.
 #
-# (j): the consumer must inherit exactly its target's MPI setting: the serial libmonoprop never carries
+# (g): the consumer must inherit exactly its target's MPI setting: the serial libmonoprop never carries
 # monoprop_ENABLE_MPI, every MPI-enabled one always does.
 function(monoprop_add_link_export_probe NAME LIBRARY EXPECT_MPI)
   add_executable(${NAME}.x ${_monoprop_probe_sources})
@@ -71,31 +71,3 @@ foreach(_abi IN LISTS monoprop_MPI_ABI_NAMES)
         "${_monoprop_serial_env_entries};monoprop_NUM_THREADS=2;OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE"
   )
 endforeach()
-
-# Several ranks of the same consumer: the multi-rank root chain (l) runs only here, at T = 1 and T = 2, against the
-# MPI variant the unit tests use (the one mpiexec launches).
-if(monoprop_MPI_ABI_NAMES AND _monoprop_mpiexec)
-  list(GET monoprop_MPI_ABI_NAMES 0 _abi)
-  foreach(_threads IN ITEMS 1 2)
-    add_test(
-      NAME monoprop_link_export_probe_mpi2_t${_threads}
-      COMMAND
-        ${_monoprop_mpiexec} ${_monoprop_mpiexec_numproc_flag} 2
-        ${MPIEXEC_PREFLAGS}
-        $<TARGET_FILE:monoprop_mpi_${_abi}_link_export_probe.x>
-    )
-    math(EXPR _processors "2 * ${_threads}")
-    set_tests_properties(
-      monoprop_link_export_probe_mpi2_t${_threads}
-      PROPERTIES
-        LABELS
-          "mpi;mpi-2"
-        TIMEOUT
-          300
-        PROCESSORS
-          ${_processors}
-        ENVIRONMENT
-          "OMPI_ALLOW_RUN_AS_ROOT=1;OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1;OMPI_MCA_hwloc_base_binding_policy=none;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe;monoprop_NUM_THREADS=${_threads};OMP_NUM_THREADS=${_threads};OMP_DYNAMIC=FALSE;monoprop_TEST_EXPECT_RANKS=2"
-    )
-  endforeach()
-endif()

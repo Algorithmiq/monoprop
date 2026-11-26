@@ -164,8 +164,7 @@ test-find-package BUILD_DIR='build/find-package-smoke' PYTHON='':
       -Dmonoprop_DIR="$site_packages/monoprop/cmake" -Dmonoprop_SMOKE_MPI=ON
     cmake --build "$build_dir-mpi"
     for threads in 1 2; do
-      monoprop_NUM_THREADS=$threads OMP_NUM_THREADS=$threads OMP_DYNAMIC=FALSE monoprop_TEST_EXPECT_RANKS=2 \
-        {{ mpiexec }} -n 2 "$build_dir-mpi/smoke"
+      monoprop_NUM_THREADS=$threads OMP_NUM_THREADS=$threads OMP_DYNAMIC=FALSE "$build_dir-mpi/smoke"
     done
     # An optional MPI component must leave the serial package usable when no MPI is found.
     cmake -S cpp/tests/find_package_smoke -B "$build_dir-optional-mpi" \

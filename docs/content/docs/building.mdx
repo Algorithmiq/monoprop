@@ -339,20 +339,14 @@ instantiates the internal OpenMP worksharing template in its own translation uni
 consumer only builds if the imported target carries OpenMP's compile
 and link flags — the consumer project adds none of its own. Its constructor calls reach the library's out-of-line
 thread-budget and MPI thread checks, so an unexported helper fails the consumer's link. The consumer also checks
-that it inherited no runtime selector and exactly its target's MPI setting: `monoprop::monoprop` must not carry
-`monoprop_ENABLE_MPI`, `monoprop::monoprop_mpi` must. It checks the constructor's shape at compile time, runs every
-public operation family, an ordinary derived class through the base interface and the raw-access rule (at one and at
-two threads), and, when launched on several ranks with `monoprop_TEST_EXPECT_RANKS` set, compares the root on
-`MPI_COMM_WORLD` with one process's. It also runs the
-header-only fixed-team phase primitive (`detail/sharded/Team.h`), whose barriers must compile through
-the same imported OpenMP flags, and the owner-initialized shard state (`detail/sharded/State.h`) and the
-direct-buffer construction engine (`detail/sharded/Construction.h`), each from a separate translation unit that
-includes only that header, so the installed headers must be self-contained. A further translation unit starts with
-the sharded evaluation header (`detail/sharded/Evaluation.h`) and calls the exported `ev_sharded` and
-`ev_and_grad_sharded` at run time, after a coefficient-informed build whose seed replay crosses the shared-library
-boundary. With an MPI installation it also builds the consumer through the `MPI` component and runs it under
-`mpiexec -n 2` at one and at two threads, checks that an optional `MPI` component still yields the serial package
-when no MPI is found, and checks that a package lacking the consumer's MPI ABI fails at configure time.
+that it inherited exactly its target's MPI setting: `monoprop::monoprop` must not carry `monoprop_ENABLE_MPI`,
+`monoprop::monoprop_mpi` must. It runs the raw-access rule at one and at two threads, and the header-only fixed-team
+phase primitive (`detail/sharded/Team.h`), whose barriers must compile through the same imported OpenMP flags. The
+internal sharded headers (`detail/sharded/State.h`, `Construction.h` and `Evaluation.h`) are each the only include
+of a separate translation unit, so the installed headers must be self-contained. With an MPI installation it also
+builds the consumer through the `MPI` component and runs it at one and at two threads, checks that an optional `MPI`
+component still yields the serial package when no MPI is found, and checks that a package lacking the consumer's MPI
+ABI fails at configure time.
 
 The exported low-level entry points (`evolve_step`, `evolve_operator` and
 `state_operator_derivative_local`) take a trailing thread budget with a serial default. Removing the
