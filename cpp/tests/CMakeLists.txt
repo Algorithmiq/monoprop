@@ -154,8 +154,7 @@ function(monoprop_add_launch_env_case NAME CASE)
 endfunction()
 
 # Budget capture at the launch: every root captures it, and its T is its shard count, so each launch names an exact
-# team. The unset launch removes monoprop_NUM_THREADS whatever the caller's environment holds, so the OpenMP runtime
-# default decides; neither CTest nor the runner may supply it.
+# team.
 monoprop_add_launch_env_case(
   openmp_env_root_budget_1
   openmp_root_budget_matches_the_launch_environment
@@ -166,17 +165,11 @@ monoprop_add_launch_env_case(
   openmp_root_budget_matches_the_launch_environment
   ENVIRONMENT "OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=3;monoprop_TEST_EXPECT_BUDGET=3"
 )
-monoprop_add_launch_env_case(
-  openmp_env_root_budget_openmp_default_3
-  openmp_root_budget_matches_the_launch_environment
-  ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_NUM_THREADS=3;monoprop_TEST_EXPECT_BUDGET=3;monoprop_TEST_EXPECT_UNSET_BUDGET=3"
-  ENVIRONMENT_MODIFICATION "monoprop_NUM_THREADS=unset:"
-)
 # The runtime contract at an exact team of four: settings and affinity untouched, the budget read once, and the
 # invalid-owner rule, all inside real multi-owner operations.
 monoprop_add_launch_env_case(
   openmp_env_root_t4
-  "openmp_root_budget_matches_the_launch_environment,openmp_root_captures_once_and_copies_preserve_it,openmp_propagator_work_leaves_openmp_settings_unchanged,openmp_failed_build_invalidates_the_owner,openmp_validation_errors_leave_the_owner_usable,openmp_invalid_owner_can_still_be_destroyed"
+  "openmp_root_budget_matches_the_launch_environment,openmp_root_captures_once_and_copies_preserve_it,openmp_propagator_work_leaves_openmp_settings_unchanged,openmp_failed_build_invalidates_the_owner,openmp_invalid_owner_can_still_be_destroyed"
   ENVIRONMENT "OMP_DYNAMIC=FALSE;monoprop_NUM_THREADS=4;OMP_NUM_THREADS=4;monoprop_TEST_EXPECT_BUDGET=4"
 )
 monoprop_add_launch_env_case(

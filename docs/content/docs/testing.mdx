@@ -177,8 +177,7 @@ ordinary cases see one store per rank. The runner itself never sets `monoprop_NU
 by hand uses your environment: set those variables yourself to reproduce a CTest case.
 
 A few cases also run again as separate `openmp_env_*` entries, each a fresh process with its own
-launch environment. They cover `monoprop_NUM_THREADS=1` and `=3`, the OpenMP default with the
-variable removed from the environment (the case checks that nothing supplied it), and
+launch environment. They cover `monoprop_NUM_THREADS=1` and `=3`, and
 `OMP_PROC_BIND=false` for the affinity check, and `openmp_env_root_t4` runs the runtime contract at an exact team of
 four. They are needed because a propagator reads its thread budget once, when it is constructed.
 Kernel cases rerun under `OMP_THREAD_LIMIT=2` and `OMP_DYNAMIC=TRUE` (`openmp_env_kernels_*`) to test the

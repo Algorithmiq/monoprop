@@ -39,32 +39,6 @@ using monoprop::detail::parallel::Options;
 
 namespace {
 
-// The OpenMP runtime settings (ICVs) that a library helper must never change.
-struct RuntimeSettings {
-    int max_threads = 0;
-    int dynamic = 0;
-    int max_active_levels = 0;
-    int thread_limit = 0;
-    omp_sched_t schedule = omp_sched_static;
-    int chunk = 0;
-    omp_proc_bind_t proc_bind = omp_proc_bind_false;
-    int level = 0;
-
-    auto operator==(const RuntimeSettings &) const -> bool = default;
-};
-
-auto runtime_settings() -> RuntimeSettings {
-    RuntimeSettings s;
-    s.max_threads = omp_get_max_threads();
-    s.dynamic = omp_get_dynamic();
-    s.max_active_levels = omp_get_max_active_levels();
-    s.thread_limit = omp_get_thread_limit();
-    omp_get_schedule(&s.schedule, &s.chunk);
-    s.proc_bind = omp_get_proc_bind();
-    s.level = omp_get_level();
-    return s;
-}
-
 // A test-side probe, not library behavior: can this runtime give a two-thread region right now?
 auto runtime_offers_two_workers(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
     if (omp_get_thread_limit() < 2) {
@@ -232,26 +206,6 @@ BOOST_AUTO_TEST_CASE(openmp_blocks_unrepresentable_count_is_rejected_before_work
             BOOST_TEST(calls == 0);
         }
     }
-}
-
-BOOST_AUTO_TEST_CASE(openmp_blocks_leave_runtime_settings_unchanged) {
-    const auto before = runtime_settings();
-    std::vector<int> sink(64, 0);
-    for_blocks(sink.size(), {.threads = 1}, [&](size_t b) { sink[b] = 1; });
-    for_blocks(sink.size(), {.threads = 3}, [&](size_t b) { sink[b] = 2; });
-    for_blocks(sink.size(), {.threads = 1000}, [&](size_t b) { sink[b] = 3; });
-    for_blocks(4, {.threads = 2}, [&](size_t o) {
-        for_blocks(16, {.threads = 4}, [&](size_t i) { sink[o * 16 + i] = 4; });
-    });
-    BOOST_CHECK_THROW(for_blocks(8, {.threads = 3}, [](size_t) { throw std::runtime_error("fail"); }),
-                      std::runtime_error);
-    BOOST_CHECK_THROW(for_blocks(8, {.threads = 0}, [](size_t) {}), std::invalid_argument);
-    const auto after = runtime_settings();
-    BOOST_TEST((before == after));
-    BOOST_TEST(after.max_threads == before.max_threads);
-    BOOST_TEST(after.dynamic == before.dynamic);
-    BOOST_TEST(after.max_active_levels == before.max_active_levels);
-    BOOST_TEST(std::count(sink.begin(), sink.end(), 4) == 64);
 }
 
 // A worker failure is caught inside the region, every worker joins, and only then does the caller

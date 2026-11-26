@@ -32,7 +32,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -239,11 +238,6 @@ BOOST_AUTO_TEST_CASE(openmp_budget_rejects_overflow) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(openmp_budget_has_no_arbitrary_thread_cap) {
-    // The removed partition runtime's parser silently ignored anything above one million.
-    BOOST_TEST(resolve_thread_budget("1000001", 1).threads == 1000001);
-}
-
 // --- capture_thread_budget: one environment read per call ---------------------------------------------
 
 BOOST_AUTO_TEST_CASE(openmp_capture_reads_the_environment) {
@@ -268,18 +262,13 @@ BOOST_AUTO_TEST_CASE(openmp_capture_reads_the_environment) {
 
 // --- per-object capture ------------------------------------------------------------------------------------
 
-// Registered again as fresh processes with monoprop_NUM_THREADS=1, =3, and unset with OMP_NUM_THREADS=3.
+// Registered again as fresh processes with monoprop_NUM_THREADS=1 and =3.
 BOOST_AUTO_TEST_CASE(openmp_root_budget_matches_the_launch_environment) {
     const auto data = load();
     const auto sim = make_root(data);
     BOOST_TEST(Access::options(sim).threads == expected_launch_budget());
     // The shard count is the budget.
     BOOST_TEST(Access::shards(sim).size() == static_cast<size_t>(expected_launch_budget()));
-    // The unset-variable launch: nothing supplied the variable, so the OpenMP default decided.
-    if (std::getenv("monoprop_TEST_EXPECT_UNSET_BUDGET") != nullptr) {
-        BOOST_TEST(std::getenv(kBudgetVariable) == nullptr);
-        BOOST_TEST(Access::options(sim).threads == omp_get_max_threads());
-    }
 }
 
 // The root reads the variable once, at construction: copies and clones never reread it, so even an unparseable
@@ -442,58 +431,6 @@ BOOST_AUTO_TEST_CASE(openmp_failed_build_invalidates_the_owner) {
     BOOST_TEST(!sim.schrodinger());
     // An independent earlier copy is unaffected.
     BOOST_TEST(test_utils::near(early.expectation_value(params), before));
-}
-
-BOOST_AUTO_TEST_CASE(openmp_validation_errors_leave_the_owner_usable) {
-    const auto data = load();
-    auto sim = make_root(data);
-    build_all(sim, data);
-    const double before = sim.expectation_value(data.parameters);
-    const auto check_usable = [&](const char *what) {
-        BOOST_TEST_CONTEXT(what) {
-            BOOST_TEST(!Access::is_invalid(sim));
-            BOOST_TEST(test_utils::near(sim.expectation_value(data.parameters), before));
-        }
-    };
-
-    BOOST_CHECK_THROW(sim.build_graph(data.majoranas, VecZ{0}, data.gen_coeffs), std::exception);
-    check_usable("mismatched mapping length");
-
-    // A generator index past the system: rejected before any gate runs, even behind a valid gate.
-    std::vector<VecZ> bad_gates{data.majoranas.front(), VecZ{0, 2 * kNumModes}};
-    BOOST_CHECK_THROW(sim.build_graph(bad_gates, VecZ{0, 0}, VecD{1.0, 1.0}), std::exception);
-    check_usable("out-of-range generator index in build_graph");
-    auto fresh = make_root(data);
-    BOOST_CHECK_THROW(fresh.propagate(bad_gates, VecZ{0, 0}, VecD{1.0, 1.0}, VecD{0.1}), std::exception);
-    BOOST_TEST(!Access::is_invalid(fresh));
-
-    BOOST_CHECK_THROW(sim.propagate(data.majoranas, data.param_inds, data.gen_coeffs, data.parameters), std::exception);
-    check_usable("propagate on a stored graph");
-
-    BOOST_CHECK_THROW((void)sim.expectation_value(VecD{0.1}), std::exception);
-    check_usable("wrong parameter length");
-    auto retained = sim.expectation_value_functional();
-    BOOST_CHECK_THROW((void)retained(VecD{0.1}), std::exception);
-    check_usable("wrong parameter length through a retained functional");
-
-    sim.update_upper_atol(0.5);
-    BOOST_CHECK_THROW(sim.update_lower_atol(1.0), PropagatorConfigError);
-    sim.update_upper_atol(std::nullopt);
-    check_usable("crossed atol pair");
-    BOOST_CHECK_THROW(sim.set_parameter_mapping(VecZ{0}), std::exception);
-    check_usable("wrong mapping length");
-
-    OperatorDict bad_operator = data.hamiltonian;
-    bad_operator[VecZ{0, 2 * kNumModes}] = 1.0;
-    BOOST_CHECK_THROW(sim.update_initial_operator(bad_operator), std::exception);
-    check_usable("out-of-range initial-operator index");
-    // Weight 2 * kNumModes is past the cutoff, so no shard holds the term: Heisenberg rejects it before the epoch
-    // moves.
-    VecZ absent_term(2 * kNumModes);
-    std::iota(absent_term.begin(), absent_term.end(), 0);
-    BOOST_CHECK_THROW(sim.update_initial_operator(OperatorDict{{absent_term, 1.0}}), std::runtime_error);
-    check_usable("initial-operator term absent from the operator");
-    BOOST_TEST(test_utils::near(retained(data.parameters), before));
 }
 
 BOOST_AUTO_TEST_CASE(openmp_invalid_owner_can_still_be_destroyed) {

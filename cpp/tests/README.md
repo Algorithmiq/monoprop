@@ -24,8 +24,7 @@ The launch-time thread policy belongs to the CTest registration, not to the runn
 every discovered case (per case, and in the whole-suite MPI variants) runs with
 `monoprop_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE`, so white-box tests
 observe one store per rank. Teams of T > 1 are dedicated fresh-process launches
-(`*_env_t*`), and `sharded_root_env_openmp_default_t3` and
-`openmp_env_root_budget_openmp_default_3` remove `monoprop_NUM_THREADS` on
+(`*_env_t*`), and `sharded_root_env_openmp_default_t3` removes `monoprop_NUM_THREADS` on
 purpose, so the custom `main()` in `unit_tests.cpp` only initializes MPI and never
 supplies the variable. Running the binary by hand uses your environment; set the
 variables above to reproduce a CTest case.

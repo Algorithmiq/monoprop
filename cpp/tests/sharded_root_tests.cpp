@@ -752,19 +752,33 @@ BOOST_AUTO_TEST_CASE(sharded_root_rejections_before_mutation_leave_it_usable) {
     auto sim = make();
     build(*sim);
     const double energy = energy_of(*sim);
+    const auto retained = sim->expectation_value_functional();
     const auto &data = lih();
     BOOST_CHECK_THROW(sim->build_graph(data.majoranas, VecZ{0}, data.gen_coeffs), std::exception);
-    BOOST_CHECK_THROW(sim->build_graph({VecZ{0, 2 * kN}}, VecZ{0}, VecD{1.0}), std::exception);
+    // A generator index past the system is rejected before any gate runs, even behind a valid gate.
+    const std::vector<VecZ> bad_gates{data.majoranas.front(), VecZ{0, 2 * kN}};
+    BOOST_CHECK_THROW(sim->build_graph(bad_gates, VecZ{0, 0}, VecD{1.0, 1.0}), std::exception);
+    auto fresh = make();
+    BOOST_CHECK_THROW(fresh->propagate(bad_gates, VecZ{0, 0}, VecD{1.0, 1.0}, VecD{0.1}), std::exception);
+    BOOST_TEST(!Access::is_invalid(*fresh));
     BOOST_CHECK_THROW(sim->propagate(data.majoranas, data.param_inds, data.gen_coeffs, params()), std::exception);
     BOOST_CHECK_THROW(sim->expectation_value(VecD{0.1}), std::exception);
+    BOOST_CHECK_THROW((void)retained(VecD{0.1}), std::exception);
     BOOST_CHECK_THROW(sim->contract_partially(VecD{}, false), std::exception);
     BOOST_CHECK_THROW(sim->update_initial_operator(OperatorDict{{VecZ{0, 2 * kN}, 1.0}}), std::exception);
+    // Past the cutoff, so no shard holds the term: Heisenberg rejects it before the epoch moves.
+    BOOST_CHECK_THROW(sim->update_initial_operator(OperatorDict{{VecZ{0, 2, 4, 6, 8, 10, 12, 14}, 1.0}}),
+                      std::runtime_error);
     BOOST_CHECK_THROW(sim->set_parameter_mapping(VecZ{0}), std::exception);
     BOOST_CHECK_THROW(sim->update_basis_change(std::vector<VecZ>{VecZ{0}}), std::exception);
     BOOST_CHECK_THROW(sim->build_graph(data.majoranas, data.param_inds, data.gen_coeffs, std::nullopt, VecD{0.1}),
                       std::exception);
+    sim->update_upper_atol(0.5);
+    BOOST_CHECK_THROW(sim->update_lower_atol(1.0), PropagatorConfigError);
+    sim->update_upper_atol(std::nullopt);
     BOOST_TEST(!Access::is_invalid(*sim));
     BOOST_TEST(energy_of(*sim) == energy);
+    BOOST_TEST(near(retained(params()), energy));
     BOOST_TEST(sim->graph_layers() == data.majoranas.size());
 }
 

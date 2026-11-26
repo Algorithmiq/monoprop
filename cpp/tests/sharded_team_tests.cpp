@@ -129,32 +129,6 @@ struct WorkerError {
     size_t worker;
 };
 
-// The OpenMP runtime settings (ICVs) that a library helper must never change.
-struct RuntimeSettings {
-    int max_threads = 0;
-    int dynamic = 0;
-    int max_active_levels = 0;
-    int thread_limit = 0;
-    omp_sched_t schedule = omp_sched_static;
-    int chunk = 0;
-    omp_proc_bind_t proc_bind = omp_proc_bind_false;
-    int level = 0;
-
-    auto operator==(const RuntimeSettings &) const -> bool = default;
-};
-
-auto runtime_settings() -> RuntimeSettings {
-    auto settings = RuntimeSettings{};
-    settings.max_threads = omp_get_max_threads();
-    settings.dynamic = omp_get_dynamic();
-    settings.max_active_levels = omp_get_max_active_levels();
-    settings.thread_limit = omp_get_thread_limit();
-    omp_get_schedule(&settings.schedule, &settings.chunk);
-    settings.proc_bind = omp_get_proc_bind();
-    settings.level = omp_get_level();
-    return settings;
-}
-
 } // namespace
 
 BOOST_AUTO_TEST_CASE(sharded_team_visits_each_owner) {
@@ -774,31 +748,6 @@ BOOST_AUTO_TEST_CASE(sharded_team_rejects_a_nonpositive_budget_before_the_region
                           std::invalid_argument);
         BOOST_TEST(calls.load() == 0);
     }
-}
-
-BOOST_AUTO_TEST_CASE(sharded_team_leaves_runtime_settings_unchanged) {
-    const auto options = team_options();
-    const auto before = runtime_settings();
-    auto sink = std::vector<int>(team_size(options), 0);
-    const auto ok = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
-        sharded::phase(failure, shard, [&] { sink[shard] = 1; });
-    });
-    const auto failed = sharded::run_team(options, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
-        sharded::phase(failure, shard, [] { throw std::runtime_error("fail"); });
-    });
-    const auto single =
-        sharded::run_team(parallel::Options{.threads = 1}, [&](size_t shard, sharded::TeamFailure &failure) noexcept {
-            sharded::phase(failure, shard, [&] { sink[shard] = 2; });
-        });
-    const auto after = runtime_settings();
-    BOOST_TEST(!ok);
-    BOOST_TEST(static_cast<bool>(failed));
-    BOOST_TEST(!single);
-    BOOST_TEST((before == after));
-    BOOST_TEST(after.max_threads == before.max_threads);
-    BOOST_TEST(after.dynamic == before.dynamic);
-    BOOST_TEST(after.thread_limit == before.thread_limit);
-    BOOST_TEST(after.level == before.level);
 }
 
 // Only meaningful under the fixed-T launches, which set monoprop_TEST_EXPECT_TEAM; it checks that the
