@@ -50,7 +50,7 @@ jobs:
           fetch-depth: 0 # such that setuptools_scm can do its job correctly
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.3
+        uses: astral-sh/setup-uv@v10.4.0
 
       - name: Build SDist
         id: sdist
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v10.3.3
+        uses: astral-sh/setup-uv@v10.4.0
 
       - name: Render the base Dockerfile
         run: |
