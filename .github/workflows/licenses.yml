@@ -25,10 +25,10 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: Algorithmiq/release-tools/actions/sbom@v1.6.1
+      - uses: Algorithmiq/release-tools/actions/sbom@v1.6.3
         with:
           flavours: |
             core
             mpi --extra mpi
             qiskit --extra qiskit
-      - uses: Algorithmiq/release-tools/actions/license-check@v1.6.1
+      - uses: Algorithmiq/release-tools/actions/license-check@v1.6.3
