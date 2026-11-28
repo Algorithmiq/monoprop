@@ -13,4 +13,4 @@ jobs:
   # Reports the checks "PR checks / PR title" and "PR checks / Migration notes".
   pr-checks:
     name: PR checks
-    uses: Algorithmiq/release-tools/.github/workflows/pr-checks.yml@v1.6.1
+    uses: Algorithmiq/release-tools/.github/workflows/pr-checks.yml@v1.6.3
